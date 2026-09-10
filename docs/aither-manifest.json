@@ -8,6 +8,7 @@
   "status": "public",
   "adopt": "Point it at a backend you already pay for and run one agent loop.",
   "pairs_with": [
+    "aitheros",
     "awskills",
     "awm",
     "awnode",
@@ -22,12 +23,12 @@
   "includes": [],
   "metrics": {
     "files": {
-      "value": 1299,
-      "as_of": "2026-09-08T10:37:36-07:00"
+      "value": 1293,
+      "as_of": "2026-09-10T15:47:52-07:00"
     },
     "tests": {
-      "value": 292,
-      "as_of": "2026-09-08T10:37:36-07:00"
+      "value": 293,
+      "as_of": "2026-09-10T15:47:52-07:00"
     }
   }
 }
