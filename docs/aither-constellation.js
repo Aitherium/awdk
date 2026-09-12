@@ -69,7 +69,9 @@
     { id: "awkno", label: "awkno", blurb: "The man page for the Aither World — every..." },
     { id: "awembed", label: "awembed", blurb: "Train an embedding model that knows your..." },
     { id: "awtax", label: "awtax", blurb: "Turn any tax PDF -- returns, W-2, 1099,..." },
-    { id: "awsettings", label: "awsettings", blurb: "Your agent's permissions and config,..." }
+    { id: "awflow", label: "awflow", blurb: "A deterministic workflow runtime — chain..." },
+    { id: "awsettings", label: "awsettings", blurb: "Your agent's permissions and config,..." },
+    { id: "awavatar", label: "awavatar", blurb: "One character spec in, a rigged, animated,..." }
   ];
 
   var CSS = [
