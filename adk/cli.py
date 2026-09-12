@@ -392,17 +392,57 @@ def cmd_ssh(args):
 
     cfg = load_saved_config()
     # Prefer the device-flow access_token (a real JWT the tunnel validates at
-    # /identity/auth/me); fall back to an API key / env.
+    # /identity/auth/me); fall back to an API key / env. The auto-provisioned
+    # local root key (`aither_root_local`) is NOT a login the tunnel accepts —
+    # it closes 4001 — so when config.json still carries it, look past it to
+    # the active auth.json profile (where `adk login` / `aither login` write).
+    from adk.config import _active_profile_creds
     token = (cfg.get("access_token") or cfg.get("api_key")
              or os.environ.get("AITHER_API_KEY", ""))
-    if not token:
+    if not token or token.startswith("aither_root_"):
+        token = _active_profile_creds().get("access_token") or token
+    if not token or token.startswith("aither_root_"):
         print("Not authenticated. Run: adk login")
         return 1
+
+    # ── Headless one-shot: `adk ssh -x "<cmd>"` / `adk ssh [container] -- <cmd…>` ──
+    # No TTY, no termios, works on Windows: CI, cron, PowerShell, Claude Code/Codex.
+    commands = list(getattr(args, "exec_cmd", None) or [])
+    trailing = [t for t in (getattr(args, "trailing", None) or []) if t != "--"]
+    if "--" in sys.argv:
+        # argparse hands the first word after `--` to the optional `container`
+        # positional (nargs="?") and only the rest to REMAINDER. Rebuild the
+        # command from argv, and drop `container` if it came from after `--`.
+        dash = sys.argv.index("--")
+        trailing = sys.argv[dash + 1:]
+        if container and container not in sys.argv[:dash]:
+            container = None
+    if trailing:
+        commands.append(" ".join(trailing))
+    if commands:
+        from adk.tunnel_exec import exec_remote_sync
+        as_json = bool(getattr(args, "json", False))
+        sink = None if as_json else (lambda chunk: (sys.stdout.write(chunk), sys.stdout.flush()))
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # the banner has a ⚠
+        except Exception:
+            pass
+        result = exec_remote_sync(
+            commands, token=token, container=container, host=host,
+            timeout_s=float(getattr(args, "timeout", 120) or 120), sink=sink,
+        )
+        if as_json:
+            print(json.dumps({"code": result.code, "output": result.output, "reason": result.reason}))
+        elif result.reason in ("error", "timeout"):
+            last = result.output.strip().splitlines()[-1:] or [""]
+            print(f"{result.reason}: {last[0]}", file=sys.stderr)
+        return result.code
+
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print("adk shell needs an interactive terminal (TTY).")
+        print("adk ssh needs an interactive terminal (TTY) — or pass -x \"<cmd>\" to run headless.")
         return 1
     if os.name != "posix":
-        print("adk shell raw mode is POSIX-only. On Windows use: aither connect")
+        print("adk ssh raw mode is POSIX-only. On Windows use `aither connect`, or `adk ssh -x \"<cmd>\"`.")
         return 1
     try:
         import signal
@@ -13016,6 +13056,14 @@ def _register_commands(sub):
                        help="Dev-workspace container (alternative to positional)")
     ssh_p.add_argument("--tunnel-url", default="tunnel.aitherium.com",
                        help="Tunnel host (default: tunnel.aitherium.com)")
+    ssh_p.add_argument("-x", "--exec", dest="exec_cmd", action="append", metavar="CMD",
+                       help="Run CMD headlessly (no TTY) and exit with its code; repeatable")
+    ssh_p.add_argument("--timeout", type=float, default=120,
+                       help="Headless run cap in seconds (default 120)")
+    ssh_p.add_argument("--json", action="store_true",
+                       help="Headless: print {code, output, reason} as JSON instead of streaming")
+    ssh_p.add_argument("trailing", nargs=argparse.REMAINDER,
+                       help="After `--`: one command line to run headlessly")
 
     sshcert_p = sub.add_parser(
         "ssh-cert",
