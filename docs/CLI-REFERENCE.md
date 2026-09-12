@@ -1060,6 +1060,22 @@ Open a remote terminal into a prod/dev environment via the tunnel
 | `<container>` | str |  |  | Dev-workspace container to attach to (optional) |
 | `--container` | str |  |  | Dev-workspace container (alternative to positional) |
 | `--tunnel-url` | str |  | `tunnel.aitherium.com` | Tunnel host (default: tunnel.aitherium.com) |
+| `-x`, `--exec` | str |  |  | Run CMD headlessly (no TTY) and exit with its code; repeatable |
+| `--timeout` | float |  | `120` | Headless run cap in seconds |
+| `--json` | flag |  |  | Headless: print `{code, output, reason}` as JSON instead of streaming |
+| `-- <cmd…>` | — |  |  | Everything after `--` is one command line to run headlessly |
+
+Headless mode works on Windows and without a TTY (CI, cron, PowerShell, Claude
+Code / Codex). Without a container you get the tunnel's restricted allow-listed
+shell (`docker`, `curl`, `cat`, `grep`, `ps`, `git`, … — one command per line,
+no `;`); with one, the workspace's tmux-backed bash and the real `$?`:
+
+```bash
+adk ssh -x "docker ps"
+adk ssh -x "docker logs --tail 50 aitheros-arc-solver"
+adk ssh devws-you -- make test          # exit code is the remote $?
+adk ssh --json -x "docker ps"           # for scripts
+```
 
 ## `adk ssh-cert`
 
