@@ -27,6 +27,7 @@ from __future__ import annotations
 
 __all__ = [
     "enroll_on_boot",
+    "enroll_base_url",
 ]
 
 import asyncio
@@ -71,14 +72,40 @@ def _should_enroll() -> bool:
 
 
 def _load_auth_config() -> Dict[str, Any]:
-    """Load auth.json to get tenant info."""
+    """Load auth.json and return the ACTIVE identity as a flat dict.
+
+    ``adk login`` writes the multi-profile layout of ``adk.shell.auth.AuthStore``
+    (``{"version": 1, "active_profile": "cloud", "profiles": {"cloud": {...}}}``),
+    but every reader here looked for ``access_token`` / ``tenant_slug`` at the TOP
+    level — so after a real login ``adk enroll`` said "Not signed in" and the boot
+    path enrolled with the bearer ``aither_root_local``. Measured 2026-09-13 while
+    wiring the phone door. Flatten to the active profile; a legacy flat file passes
+    through unchanged. The local root placeholder is NOT an identity.
+    """
     if not _AUTH_FILE.exists():
         return {}
     try:
-        return json.loads(_AUTH_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_AUTH_FILE.read_text(encoding="utf-8"))
     except Exception as e:
         log.warning("Failed to read auth.json: %s", e)
         return {}
+    if not isinstance(data, dict):
+        return {}
+    profiles = data.get("profiles")
+    if isinstance(profiles, dict):
+        active = data.get("active_profile") or ""
+        profile = profiles.get(active) if active else None
+        if not isinstance(profile, dict) and profiles:
+            # No active marker: the only profile, or the first one, is the identity.
+            profile = next((p for p in profiles.values() if isinstance(p, dict)), None)
+        if not isinstance(profile, dict) or profile.get("is_local_root"):
+            return {}
+        flat = dict(profile)
+        user = flat.get("user") if isinstance(flat.get("user"), dict) else {}
+        if user.get("tenant_slug") and not flat.get("tenant_slug"):
+            flat["tenant_slug"] = user["tenant_slug"]
+        return flat
+    return data
 
 
 def _load_node_auth() -> Dict[str, Any]:
@@ -496,10 +523,56 @@ async def _self_mint_gateway_key(bearer_token: str, node_id: str) -> str:
     return ""
 
 
+def enroll_base_url() -> str:
+    """The Identity service that owns ``/v1/nodes/*`` — one resolution for
+    enrollment, the heartbeat and ``adk devices``."""
+    return (
+        os.environ.get("AITHER_ENROLL_BASE")
+        or os.environ.get("AITHERIDENTITY_URL")
+        or os.environ.get("AITHER_IDP_PUBLIC_URL")
+        or "https://idp.aitherium.com"
+    ).rstrip("/")
+
+
+#: Identity ANSWERED and said no. These are never papered over by the federation
+#: path: a 402 (subscription_required) or 403 (device_quota_exceeded) that turned
+#: into a "successful" federation registration is the fail-open shape this code
+#: keeps paying for — the device looks enrolled and is in no list the owner sees.
+_REFUSAL_STATUSES = (401, 402, 403)
+
+# One heartbeat task per process. This used to be a `_heartbeat_started` flag
+# PERSISTED in node_auth.json, which is wrong across processes: `adk enroll`
+# exits, the task dies with its loop, and every later boot read the flag and
+# never started a heartbeat again.
+_heartbeat_task: Optional["asyncio.Task[None]"] = None
+
+
+def _start_heartbeat_task(coro) -> bool:
+    """Schedule ``coro`` as this process's heartbeat unless one is already running.
+
+    Returns True if scheduled. Never raises: no running loop means the caller is
+    synchronous and the task is simply not started.
+    """
+    global _heartbeat_task
+    if _heartbeat_task is not None and not _heartbeat_task.done():
+        coro.close()
+        return False
+    try:
+        _heartbeat_task = asyncio.get_running_loop().create_task(coro)
+        return True
+    except RuntimeError:
+        coro.close()
+        log.debug("No event loop for heartbeat; skipping background task")
+        return False
+
+
 async def enroll_on_boot(
     genesis_url: Optional[str] = None,
     portal_url: Optional[str] = None,
     enable_heartbeat: bool = True,
+    *,
+    inference_url: Optional[str] = None,
+    node_class: str = "laptop",
 ) -> Dict[str, Any]:
     """Enroll this node into both local and portal fleets.
 
@@ -513,13 +586,18 @@ async def enroll_on_boot(
         genesis_url: Local Genesis URL (default http://localhost:8001)
         portal_url: Portal hub URL (default https://api.aitherium.com)
         enable_heartbeat: Start background heartbeat loop (default True)
+        inference_url: Explicit local inference base URL; ``None``/``"auto"``
+            walks :func:`adk.enrollment.probe_inference`'s ladder. The url the
+            probe settles on is persisted so the heartbeat re-probes the SAME one.
+        node_class: ``phone`` | ``laptop`` | ``sovereign``.
 
     Returns:
         {
             "enrolled": bool,
             "node_id": str,
             "agents_upserted": int,
-            "error": optional error detail
+            "error": optional error detail,
+            "http_status" / "body": present when identity REFUSED (verbatim)
         }
     """
     if not _should_enroll():
@@ -534,12 +612,7 @@ async def enroll_on_boot(
     portal_url = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
 
     # Resolve Identity service URL for rich enrollment (node registration)
-    enroll_base = (
-        os.environ.get("AITHER_ENROLL_BASE")
-        or os.environ.get("AITHERIDENTITY_URL")
-        or os.environ.get("AITHER_IDP_PUBLIC_URL")
-        or "https://idp.aitherium.com"
-    )
+    enroll_base = enroll_base_url()
 
     log.info(
         "Enrolling node in fleet (identity=%s, genesis=%s, portal=%s)",
@@ -555,40 +628,63 @@ async def enroll_on_boot(
     if node_auth.get("node_id"):
         log.info("Node already enrolled: %s", node_auth["node_id"])
         # Still upsert agents and start heartbeat if enabled
-        if enable_heartbeat and not node_auth.get("_heartbeat_started"):
-            try:
-                asyncio.create_task(
-                    _heartbeat_loop(
-                        node_auth.get("hub_url", genesis_url),
-                        node_auth.get("api_key", api_key),
-                        node_auth["node_id"],
-                    )
-                )
-                node_auth["_heartbeat_started"] = True
-                _save_node_auth(node_auth)
-            except RuntimeError:
-                # No running event loop (sync context) — never crash boot.
-                log.debug("No event loop for heartbeat; skipping background task")
+        if enable_heartbeat:
+            if node_auth.get("mode") == "rich":
+                # The identity spine's heartbeat, re-probing the url that was
+                # persisted at registration — not a fresh ladder walk.
+                from adk.enrollment import heartbeat_loop as _rich_heartbeat
+
+                _start_heartbeat_task(_rich_heartbeat(
+                    node_auth.get("enroll_base") or enroll_base,
+                    api_key,
+                    node_auth["node_id"],
+                    inference_url=node_auth.get("inference_url") or None,
+                    node_class=node_auth.get("node_class") or "laptop",
+                ))
+            else:
+                _start_heartbeat_task(_heartbeat_loop(
+                    node_auth.get("hub_url", genesis_url),
+                    node_auth.get("api_key", api_key),
+                    node_auth["node_id"],
+                ))
         return {
             "enrolled": True,
             "node_id": node_auth["node_id"],
             "already_registered": True,
+            "inference_url": node_auth.get("inference_url", ""),
+            "inference_kind": node_auth.get("inference_kind", "none"),
+            "node_class": node_auth.get("node_class", "laptop"),
         }
 
     node_id = _generate_node_id()
 
     # PRIMARY: rich endpoint enrollment (hardware + inference readiness → Identity
     # node registry → AitherDirectory). Falls through to the legacy federation path
-    # if it doesn't take (older control plane, no token, offline, etc.).
+    # if it doesn't take (older control plane, no token, offline, etc.) — but NOT
+    # when identity answered with a refusal; that is surfaced verbatim.
     try:
         from adk.enrollment import rich_enroll
 
         rich = await rich_enroll(
-            enroll_base, api_key, node_id, enable_heartbeat=enable_heartbeat
+            enroll_base, api_key, node_id,
+            enable_heartbeat=enable_heartbeat,
+            inference_url=inference_url,
+            node_class=node_class,
         )
     except Exception as e:  # never let enrollment block boot
         log.debug("Rich enrollment unavailable: %s", e)
         rich = {"enrolled": False, "error": str(e)}
+
+    if not rich.get("enrolled") and rich.get("http_status") in _REFUSAL_STATUSES:
+        log.error("Identity refused enrollment (HTTP %s): %s",
+                  rich.get("http_status"), (rich.get("body") or "")[:200])
+        return {
+            "enrolled": False,
+            "error": rich.get("error", "identity refused enrollment"),
+            "http_status": rich.get("http_status"),
+            "body": rich.get("body", ""),
+            "url": rich.get("url", ""),
+        }
 
     if rich.get("enrolled"):
         # Self-service a node-scoped gateway key using the capability token
@@ -603,13 +699,20 @@ async def enroll_on_boot(
             if minted:
                 node_api_key = minted
 
+        reg = rich.get("registration", {}) or {}
         _save_node_auth({
             "node_id": node_id,
             "api_key": node_api_key,
             "hub_url": portal_url,
+            "enroll_base": enroll_base,
             "tenant_slug": _extract_tenant_slug(),
             "mode": "rich",
-            "_heartbeat_started": enable_heartbeat,
+            # The url the probe SETTLED on (explicit or the ladder's hit), so the
+            # heartbeat re-probes this exact server instead of walking again.
+            "inference_url": reg.get("inference_url", ""),
+            "inference_kind": reg.get("inference_kind", "none"),
+            "node_class": reg.get("node_class", node_class),
+            "public_url": rich.get("public_url", ""),
         })
 
         # Enable session sync by default (post-enrollment)
@@ -633,6 +736,13 @@ async def enroll_on_boot(
             "packs_failed": packs_failed,
             "mode": "rich",
             "workspace": rich.get("workspace", {}),
+            "workspace_id": rich.get("workspace_id", ""),
+            "registration": reg,
+            "public_url": rich.get("public_url", ""),
+            "inference_url": reg.get("inference_url", ""),
+            "inference_kind": reg.get("inference_kind", "none"),
+            "inference_ready": bool(reg.get("inference_ready")),
+            "node_class": reg.get("node_class", node_class),
         }
 
     # FALLBACK: legacy federation registration (agents only, no hardware).
@@ -680,11 +790,7 @@ async def enroll_on_boot(
 
     # Start heartbeat
     if enable_heartbeat:
-        try:
-            asyncio.create_task(_heartbeat_loop(hub_url, api_key, node_id))
-        except RuntimeError:
-            # No running event loop (sync context) — never crash boot.
-            log.debug("No event loop for heartbeat; skipping background task")
+        _start_heartbeat_task(_heartbeat_loop(hub_url, api_key, node_id))
 
     return {
         "enrolled": True,

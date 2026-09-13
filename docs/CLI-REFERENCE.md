@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**103 commands.**
+**106 commands.**
 
 | command | what it does |
 |---|---|
@@ -49,6 +49,8 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk cron`](#adk-cron) | Manage scheduled tasks |
 | [`adk decide`](#adk-decide) | Decision cards — raise a structured ask, list what is waiting, answer it |
 | [`adk deploy`](#adk-deploy) | Deploy AitherOS components or agents |
+| [`adk desk`](#adk-desk) | Interact with awdesk bridge: send commands, view history |
+| [`adk devices`](#adk-devices) | List, inspect and remove the devices enrolled in your workspace |
 | [`adk disconnect`](#adk-disconnect) | Disconnect from desktop AitherOS mesh |
 | [`adk doc`](#adk-doc) | Manage encrypted documents (upload, list, download, delete) |
 | [`adk doctor`](#adk-doctor) | Check system health (Python, GPU, LLM backends, API keys) |
@@ -89,7 +91,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk platform`](#adk-platform) | Internal platform toolkit (merged from aither-platform) |
 | [`adk publish`](#adk-publish) | Publish agent to Elysium marketplace |
 | [`adk publish-preflight`](#adk-publish-preflight) | Check a package can actually be published: an interpreter that meets requires-python, and a wheel that installs AND imports |
-| [`adk quickstart`](#adk-quickstart) | One-command setup: GPU + auth + shell |
+| [`adk quickstart`](#adk-quickstart) | Sign in, enrol this device and show it in your fleet (--cloud: BYOK provider keys) |
 | [`adk quickstart-local`](#adk-quickstart-local) | Local inference quickstart (no cloud required) |
 | [`adk register`](#adk-register) | Create a new Aitherium account |
 | [`adk relay`](#adk-relay) | Connect this agent to AitherRelay chat (join + serve DMs) |
@@ -243,18 +245,6 @@ Manage LLM backends (list, set, test, switch, status)
 - `adk backend switch` — Switch to a different inference backend
 - `adk backend use` — Switch the RUNNING agent live to a preset (no restart)
 - `adk backend status` — Show current backend configuration and connectivity
-
-**Self-hosted servers are auto-detected.** A Bonsai started by
-`aitherium.com/install-bonsai.sh` (:8080), `adk bonsai-local` (:8090), the
-llamacpp container (:8092) or the selfhost skill (:8889) is found by
-`LLMRouter`, `adk status` (row `Local`), `adk up` and `adk start` with no
-configuration — the ladder is `adk.local_inference.SELFHOST_PORTS`, the same
-ports aitherium.com's local-node probe uses. A port must answer `/v1/models`
-with a model; `/health` alone is not enough. Presets `bonsai-local`
-(`http://127.0.0.1:8090/v1`, model `bonsai-27b`) and `bonsai`
-(`http://127.0.0.1:8080/v1`, model `bonsai-selfhost`) exist for
-`adk backend set` / `adk run --backend`. A user-set backend survives
-`adk login` (the cloud URL goes to `gateway_inference_url`).
 
 ## `adk backup`
 
@@ -436,29 +426,6 @@ Decision cards — raise a structured ask, list what is waiting, answer it
 |---|---|---|---|---|
 | `<decide_args>` | str |  |  | ask \| list \| show \| answer \| cancel \| watch \| sweep |
 
-## `adk desk`
-
-The awdesk bridge (default `http://127.0.0.1:47931`; `AWDESK_URL` overrides). One control
-plane, many surfaces: the awdesk Command/Fleet windows, `awsh /command` and `/fleet`, the
-Desk MCP tools and these verbs all land on the same routes.
-
-| subcommand | description |
-|---|---|
-| `adk desk command "<text>" [--poll] [--json]` | send a sentence to the Command agent (fleet verbs run the fleet; anything else runs an agent) — `--poll` waits for the reply |
-| `adk desk history [-n N] [--json]` | the last N commands and replies |
-| `adk desk fleet <status\|down\|up\|gaming\|resume\|adopt\|panel> [--yes] [--json]` | the MACHINE fleet (containers/GPU). `down`/`gaming` confirm unless `--yes`. Not `adk fleet`, which manages a fleet of AGENTS. `status` also says who holds the VRAM and which doors (tunnel, pulse, grafana, …) answer. |
-| `adk desk desktop [overlay\|app\|status] [--json]` | the two desktop surfaces: `overlay` = the aitherium.com Living Desktop taskbar over the Windows desktop (the same overlay AitherConnect puts over any web page), `app` = the full AitherDesktop window, `status` = which are open |
-
-Mutating verbs (`fleet down|up|gaming|resume|adopt`, `command`) carry a bearer: the adk
-daemon's own token, `AITHER_HARNESS_TOKEN` or `~/.aither/harness_token`, which the daemon
-writes at first start. Without it the bridge answers 401 and adk prints that one-line fix.
-`fleet status`, `fleet panel`, `desktop` and `history` need no bearer.
-
-Exit codes: 0 ok · 1 refused (the verdict says `ok: false`) · 2 could not judge (no desk
-bridge and no `AWDESK_FLEET_FALLBACK` command configured, or the bridge refused the bearer). With the bridge down, fleet
-verbs fall back to `AWDESK_FLEET_FALLBACK` (a command line; the verb's argv and `--json`
-are appended) and the answer says which lane replied.
-
 ## `adk deploy`
 
 Deploy AitherOS components or agents
@@ -477,6 +444,27 @@ Deploy AitherOS components or agents
 - `adk deploy grid` — Deploy grid distributed stack (GPU + Mac + cluster)
 - `adk deploy stop` — Stop a running deployment
 - `adk deploy agent` — Deploy a tenant agent to this machine (or upload to gateway)
+
+## `adk desk`
+
+Interact with awdesk bridge: send commands, view history
+
+**Subcommands**
+
+- `adk desk command` — Send a command to the desktop
+- `adk desk history` — Show recent commands and replies
+- `adk desk fleet` — Machine fleet via the desk bridge: status \| down \| up \| gaming \| resume \| adopt \| panel
+- `adk desk desktop` — Desktop surfaces via awdesk: overlay \| app \| status
+
+## `adk devices`
+
+List, inspect and remove the devices enrolled in your workspace
+
+**Subcommands**
+
+- `adk devices list` — List enrolled devices
+- `adk devices status` — Show one device (default: this one)
+- `adk devices rm` — Remove a device from the workspace
 
 ## `adk disconnect`
 
@@ -515,6 +503,8 @@ Register this workstation with the control plane
 | `--genesis` | str |  |  | Genesis URL (default: localhost:8001) |
 | `--no-heartbeat` | str |  | `false` | Skip background heartbeat |
 | `--force` | str |  | `false` | Re-enroll even if already registered |
+| `--inference-url` | str |  | `auto` | Local inference base URL to advertise (e.g. http://127.0.0.1:8080). 'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), 11434 (Ollama), 8120 (vLLM) in that order |
+| `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
 
 ## `adk eval`
 
@@ -972,12 +962,14 @@ Check a package can actually be published: an interpreter that meets requires-py
 
 ## `adk quickstart`
 
-One-command setup: GPU + auth + shell
+Sign in, enrol this device and show it in your fleet (--cloud: BYOK provider keys)
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `--api-key` | str |  |  | AITHER_API_KEY |
-| `--cloud` | str |  | `false` | Cloud-only setup (no GPU required) |
+| `--api-key` | str |  |  | AITHER_API_KEY (headless sign-in) |
+| `--cloud` | str |  | `false` | Bring-your-own provider keys (OpenAI/Anthropic/DeepSeek) instead of enrolling; no device flow, no fleet registration |
+| `--inference-url` | str |  | `auto` | Passed to `adk enroll` (default: auto-probe the local inference ladder) |
+| `--node-class` | str |  | `laptop` | Passed to `adk enroll` (default: laptop) |
 
 ## `adk quickstart-local`
 

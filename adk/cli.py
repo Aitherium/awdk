@@ -4360,9 +4360,12 @@ def cmd_enroll(args) -> int:
         genesis_url = getattr(args, "genesis", None) or os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
         no_heartbeat = getattr(args, "no_heartbeat", False)
         force = getattr(args, "force", False)
+        inference_url = (getattr(args, "inference_url", None) or "auto").strip()
+        if inference_url.lower() == "auto":
+            inference_url = None
+        node_class = getattr(args, "node_class", None) or "laptop"
 
         from adk.fleet_enroll import enroll_on_boot, _load_node_auth
-        from adk.enrollment import build_registration
 
         # FAIL CLOSED ON IDENTITY. `_extract_tenant_slug()` (fleet_enroll.py:217) falls back
         # to "personal" when ~/.aither/auth.json is absent, so an unauthenticated `adk enroll`
@@ -4403,48 +4406,76 @@ def cmd_enroll(args) -> int:
             print(f"  Tenant: {existing.get('tenant_slug', 'unknown')}")
             print(f"  Hub: {existing.get('hub_url', 'unknown')}")
             print(f"  Mode: {existing.get('mode', 'legacy')}")
+            print(f"  Class: {existing.get('node_class', 'laptop')}")
+            print(f"  Inference: {existing.get('inference_kind', 'none')} "
+                  f"{existing.get('inference_url') or '-'}")
             print()
             print("To re-enroll, use: adk enroll --force")
             return 0
 
-        # Perform enrollment
+        # Perform enrollment. AITHER_FLEET_ENROLL gates the boot-time path; an
+        # operator typing `adk enroll` has already decided.
+        os.environ.setdefault("AITHER_FLEET_ENROLL", "1")
         result = asyncio.run(enroll_on_boot(
             genesis_url=genesis_url,
             portal_url=portal_url,
             enable_heartbeat=not no_heartbeat,
+            inference_url=inference_url,
+            node_class=node_class,
         ))
 
         if not result.get("enrolled"):
+            if result.get("http_status"):
+                # Identity ANSWERED — 402 subscription_required, 403
+                # device_quota_exceeded, 401 — print exactly what it said.
+                print(f"x Enrollment refused: HTTP {result['http_status']} "
+                      f"from {result.get('url') or 'identity'}")
+                print(result.get("body") or "(empty body)")
+                return 1
             error_detail = result.get("error", "unknown error")
             print(f"ERROR: Enrollment failed: {error_detail}")
             return 1
 
-        # Build registration for display
-        node_id = result.get("node_id")
-        reg = build_registration(node_id)
+        # The registration that was actually SENT (already-enrolled re-runs carry
+        # only the persisted fields).
+        reg = result.get("registration") or {}
 
         # Format success response
         print("✓ Enrollment successful")
         print()
         print("Node Information:")
         print(f"  ID: {result.get('node_id', 'unknown')}")
-        print("  Hardware:")
-        print(f"    CPU: {reg.get('cpu_count', 0)} cores")
-        print(f"    RAM: {reg.get('ram_mb', 0)} MB")
-        if reg.get("gpu_name"):
-            print(f"    GPU: {reg['gpu_name']} ({reg.get('gpu_vram_mb', 0)} MB)")
-        else:
-            print("    GPU: none")
+        print(f"  Class: {result.get('node_class', node_class)}")
+        if reg:
+            print("  Hardware:")
+            print(f"    CPU: {reg.get('cpu_count', 0)} cores")
+            print(f"    RAM: {reg.get('ram_mb', 0)} MB")
+            if reg.get("gpu_name"):
+                print(f"    GPU: {reg['gpu_name']} ({reg.get('gpu_vram_mb', 0)} MB)")
+            else:
+                print("    GPU: none")
         models_str = ", ".join(reg.get("available_models", []))[:80]
         print(f"  Available Models: {models_str if models_str else 'none'}")
+        inf_kind = result.get("inference_kind", "none")
+        inf_url = result.get("inference_url") or ""
+        if result.get("inference_ready"):
+            print(f"  Inference: {inf_kind} at {inf_url} (ready)")
+        elif inf_url:
+            print(f"  Inference: {inf_url} did not answer /v1/models (not ready)")
+        else:
+            print("  Inference: none found (not ready) — start llama-server/awnode/"
+                  "Ollama/vLLM and re-run with --force, or pass --inference-url")
         print()
         print("Fleet Status:")
         print(f"  Workspace ID: {result.get('workspace_id', 'N/A')}")
         print(f"  Agents Upserted: {result.get('agents_upserted', 0)}")
+        if result.get("public_url"):
+            print(f"  Public URL: {result['public_url']}")
         if not no_heartbeat:
             print("  Heartbeat: enabled (60s interval)")
         print()
-        print(f"View in portal: {portal_url.rstrip('/')}/portal/workstation")
+        print("See it in your fleet:  adk devices status")
+        print(f"View in portal: {portal_url.rstrip('/')}/settings/connected-devices")
         print()
         return 0
     except Exception as e:
@@ -9198,8 +9229,78 @@ def cmd_sync(args):
     return asyncio.run(_run())
 
 
+def _quickstart_enroll(args) -> int:
+    """``adk quickstart`` with no flag: sign in → enrol this device → show it.
+
+    Three verbs a stranger would otherwise have to discover separately, run in
+    the order the fleet needs them. Each step is the REAL command's function, so
+    the flags and failure modes are the ones `adk login` / `adk enroll` /
+    `adk devices status` document. A failing step ends the run with its exit
+    code — nothing here is best-effort, because a "quickstart" that prints
+    success over a device nobody can see is the phone.sh failure again.
+    """
+    from adk.devices import cmd_devices
+    from adk.fleet_enroll import _load_auth_config
+
+    # Step 1: identity. Skip the browser when a login is already on disk.
+    print("  Step 1: Sign in")
+    print("  " + "-" * 38)
+    auth = _load_auth_config()
+    who = (auth.get("user") or {}).get("username") or auth.get("tenant_slug") or ""
+    if auth.get("access_token") and not getattr(args, "api_key", None):
+        print(f"  Already signed in{' as ' + who if who else ''}.")
+    else:
+        class LoginArgs:
+            email = None
+            password = None
+            api_key = getattr(args, "api_key", None) or None
+            portal_url = ""
+            no_sync = False
+        rc = cmd_login(LoginArgs())
+        if rc != 0:
+            print("  Sign-in failed — stopping. Fix that, then re-run `adk quickstart`.")
+            return rc
+
+    # Step 2: enrol with the probed (or named) inference server.
+    print()
+    print("  Step 2: Enrol this device")
+    print("  " + "-" * 38)
+
+    class EnrollArgs:
+        portal = None
+        genesis = None
+        no_heartbeat = False
+        force = False
+        inference_url = getattr(args, "inference_url", None) or "auto"
+        node_class = getattr(args, "node_class", None) or "laptop"
+    rc = cmd_enroll(EnrollArgs())
+    if rc != 0:
+        return rc
+
+    # Step 3: read it back from the registry, not from what we just printed.
+    print("  Step 3: Your device, as the fleet sees it")
+    print("  " + "-" * 38)
+
+    class StatusArgs:
+        devices_command = "status"
+        node_id = None
+        json = False
+    rc = cmd_devices(StatusArgs())
+    if rc != 0:
+        return rc
+
+    print()
+    print("  Next steps:")
+    print("    adk devices list     Every device in your workspace")
+    print("    adk start            Start chatting with your codebase")
+    print("    adk setup            Local GPU / inference wizard")
+    print("    adk quickstart --cloud   Bring your own provider keys instead")
+    print()
+    return 0
+
+
 def cmd_quickstart(args):
-    """Unified first-run wizard — setup + auth + shell in one command."""
+    """Quickstart: sign in + enrol + show (default), or BYOK provider keys (--cloud)."""
 
     cloud_mode = getattr(args, "cloud", False)
 
@@ -9208,7 +9309,11 @@ def cmd_quickstart(args):
     print("  ====================")
     print()
 
-    # Step 1: Check if already set up
+    if not cloud_mode:
+        return _quickstart_enroll(args)
+
+    # --cloud: bring-your-own provider keys. No device flow, no enrollment —
+    # this configures WHICH cloud models adk calls, not a device in your fleet.
     saved = load_saved_config()
     if saved.get("setup_backend"):
         print(f"  Already configured: {saved.get('setup_backend')} backend")
@@ -9216,7 +9321,7 @@ def cmd_quickstart(args):
         print()
         return 0
 
-    # Step 1.5: Check for brain_pack.yaml in marketplace/local projects
+    # Check for brain_pack.yaml in marketplace/local projects
     brain_pack_path = None
     if Path("brain_pack.yaml").exists():
         brain_pack_path = Path("brain_pack.yaml")
@@ -9402,77 +9507,6 @@ def cmd_quickstart(args):
             cmd_setup(SetupArgs())
 
         return 0
-
-    # ── Standard quickstart (GPU-based) ────────────────────────────────
-
-    # Step 2: Run setup wizard
-    print("  Step 1: GPU + Inference Setup")
-    print("  " + "-" * 38)
-    from adk.setup_cli import cmd_setup
-
-    class SetupArgs:
-        shortcut = None
-        tier = None
-        mode = "auto"
-        reasoning_api = None
-        reasoning_model = ""
-        dgx_spark = None
-        stack = None
-        dry_run = False
-        non_interactive = False
-        hf_token = ""
-        api_key = getattr(args, "api_key", "") or ""
-        output = "docker-compose.vllm.yml"
-        force = False
-
-    setup_result = cmd_setup(SetupArgs())
-    if setup_result != 0:
-        print("  Setup had issues — but you may still be able to use ADK.")
-        print()
-
-    # Step 3: Auth (optional)
-    print()
-    print("  Step 2: Aitherium Account (optional)")
-    print("  " + "-" * 38)
-
-    try:
-        answer = input("  Connect to Aitherium for cloud tools? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = "n"
-
-    if answer in ("y", "yes"):
-        class LoginArgs:
-            email = None
-            password = None
-            api_key = None
-            portal_url = ""
-        cmd_login(LoginArgs())
-
-    # Step 4: Shell
-    print()
-    print("  Step 3: Ready!")
-    print("  " + "-" * 38)
-    print()
-    print("  Your agent system is configured. Next steps:")
-    print("    adk start            Start chatting with your codebase")
-    print("    adk shell            Launch AitherShell interactive terminal")
-    print("    adk run              Start the agent server")
-    print("    adk doctor           Check system health")
-    print()
-
-    if brain_pack_path:
-        print("  Marketplace pack shortcuts:")
-        print("    adk run              Launch your packaged agent")
-        print("    docker compose up -d")
-        print()
-        print("  To register with fleet ($5/mo):")
-        print("    adk deploy --register-fleet")
-        print()
-        print("  To add cloud MCP tools:")
-        print("    adk mcp add mcp.aitherium.com --api-key <your-key>")
-        print()
-
-    return 0
 
 
 def cmd_quickstart_local(args):
@@ -13317,6 +13351,27 @@ def _register_commands(sub):
     enroll_p.add_argument("--genesis", help="Genesis URL (default: localhost:8001)")
     enroll_p.add_argument("--no-heartbeat", action="store_true", help="Skip background heartbeat")
     enroll_p.add_argument("--force", action="store_true", help="Re-enroll even if already registered")
+    enroll_p.add_argument(
+        "--inference-url", default="auto",
+        help="Local inference base URL to advertise (e.g. http://127.0.0.1:8080). "
+             "'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), "
+             "11434 (Ollama), 8120 (vLLM) in that order")
+    enroll_p.add_argument(
+        "--node-class", choices=["phone", "laptop", "sovereign"], default="laptop",
+        help="What this device is (default: laptop)")
+
+    # adk devices — the devices enrolled in your workspace (one registry)
+    devices_p = sub.add_parser(
+        "devices", help="List, inspect and remove the devices enrolled in your workspace")
+    devices_sub = devices_p.add_subparsers(dest="devices_command")
+    devices_list_p = devices_sub.add_parser("list", help="List enrolled devices")
+    devices_list_p.add_argument("--json", action="store_true", help="Print the raw response")
+    devices_status_p = devices_sub.add_parser(
+        "status", help="Show one device (default: this one)")
+    devices_status_p.add_argument("node_id", nargs="?", help="Node id (default: this device)")
+    devices_status_p.add_argument("--json", action="store_true", help="Print the raw response")
+    devices_rm_p = devices_sub.add_parser("rm", help="Remove a device from the workspace")
+    devices_rm_p.add_argument("node_id", help="Node id to remove")
 
     # aither host — one command: serve a self-hosted agent + connect it to your fleet
     host_p = sub.add_parser(
@@ -13992,9 +14047,20 @@ def _register_commands(sub):
     tools_sync_p.add_argument("--verbose", action="store_true", help="Verbose output with version info")
 
     # adk quickstart — unified first-run wizard
-    quickstart_p = sub.add_parser("quickstart", help="One-command setup: GPU + auth + shell")
-    quickstart_p.add_argument("--api-key", help="AITHER_API_KEY")
-    quickstart_p.add_argument("--cloud", action="store_true", help="Cloud-only setup (no GPU required)")
+    quickstart_p = sub.add_parser(
+        "quickstart",
+        help="Sign in, enrol this device and show it in your fleet (--cloud: BYOK provider keys)")
+    quickstart_p.add_argument("--api-key", help="AITHER_API_KEY (headless sign-in)")
+    quickstart_p.add_argument(
+        "--cloud", action="store_true",
+        help="Bring-your-own provider keys (OpenAI/Anthropic/DeepSeek) instead of enrolling; "
+             "no device flow, no fleet registration")
+    quickstart_p.add_argument(
+        "--inference-url", default="auto",
+        help="Passed to `adk enroll` (default: auto-probe the local inference ladder)")
+    quickstart_p.add_argument(
+        "--node-class", choices=["phone", "laptop", "sovereign"], default="laptop",
+        help="Passed to `adk enroll` (default: laptop)")
 
     # adk quickstart-local — local-only inference quickstart
     quickstart_local_p = sub.add_parser(
@@ -15562,6 +15628,9 @@ def main():
         sys.exit(cmd_onboard(args))
     elif args.command == "enroll":
         sys.exit(cmd_enroll(args))
+    elif args.command == "devices":
+        from adk.devices import cmd_devices
+        sys.exit(cmd_devices(args))
     elif args.command == "host":
         sys.exit(cmd_host(args))
     elif args.command == "integrate":
