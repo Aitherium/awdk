@@ -184,8 +184,17 @@
     /* Stage */
     .stage {
       flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: center;
       padding: 12px 24px 28px; position: relative; z-index: 1; min-height: 0;
     }
+    /* The partner mock centres the Ask hero. The WebMock2 port dropped
+       justify-content outright, so the hero sat jammed against the top with a
+       page of empty space under it -- the one visible way the live page still
+       differed from the mock. It cannot come back flat: once a conversation
+       exists the transcript must flow from the TOP, which is what the flat
+       rule broke and why it was removed. #thread gains .visible exactly when
+       there is a transcript, so that is the discriminator. */
+    .stage:has(#thread.visible) { justify-content: flex-start; }
 
     .hero { text-align: center; max-width: 680px; width: 100%; }
     .eyebrow {
@@ -314,6 +323,35 @@
     }
     .q-cancel:hover { color: var(--red); border-color: rgba(252,165,165,.4); }
     .empty { color: var(--faint); font-size: 13px; padding: 10px 2px; }
+
+    .saga-log { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 14px; }
+    .saga-turn { background: rgba(255,255,255,.03); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+    .saga-turn .you { font-size: 12px; color: var(--faint); margin-bottom: 6px; }
+    .saga-turn .prose, .saga-branch .prose { font-family: "Instrument Serif", Georgia, serif; font-size: 18px; line-height: 1.5; color: var(--text); white-space: pre-wrap; }
+    .ent { color: var(--cyan); }
+    .ent.character { color: var(--magenta); }
+    .saga-issues { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .saga-issue { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+    .saga-issue.error { color: var(--red); border-color: rgba(252,165,165,.4); }
+    .saga-issue.warning { color: var(--amber); border-color: rgba(252,211,77,.4); }
+    .saga-tools { display: flex; gap: 8px; margin: -4px 0 12px; }
+    .saga-tools[hidden], .saga-tools [hidden] { display: none; }
+    .saga-branches { display: grid; gap: 8px; margin-bottom: 12px; }
+    .saga-branch { display: block; width: 100%; text-align: left; background: rgba(124,92,255,.06); border: 1px solid rgba(124,92,255,.25); border-radius: 12px; padding: 12px 14px; color: var(--text); font: inherit; cursor: pointer; }
+    .saga-branch:hover, .saga-branch:focus-visible { border-color: rgba(124,92,255,.6); outline: none; }
+    .saga-branch .score { display: block; font-size: 11px; color: var(--faint); margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+    .studio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .studio-grid .card { display: flex; flex-direction: column; gap: 10px; }
+    .comic-page { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .comic-page figure { margin: 0; border: 2px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: rgba(255,255,255,.04); }
+    .comic-page img { width: 100%; display: block; border: 0; border-radius: 0; }
+    .comic-page figcaption { font-size: 12px; line-height: 1.35; color: var(--text); padding: 6px 8px; }
+    .remote-box { margin-top: 22px; }
+    .remote-box h3 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+    .consent-line { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--muted); margin: 4px 0 12px; }
+    .studio-ops h4 { font-size: 12px; color: var(--faint); letter-spacing: .06em; text-transform: uppercase; margin: 12px 0 6px; }
+    .studio-op-list { display: flex; flex-wrap: wrap; gap: 6px; }
 
     .files { display: flex; flex-direction: column; gap: 12px; }
     .dropzone {
@@ -585,6 +623,14 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.4"/><path d="M21 16l-5.5-5.5L7 19"/></svg>
           Visual
         </button>
+        <button class="nav-item" data-view="play" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Play
+        </button>
+        <button class="nav-item" data-view="studio" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><path d="M13 17h8M17 13v8"/></svg>
+          Studio
+        </button>
         <button class="nav-item" data-view="build" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
           Desktop
@@ -641,7 +687,11 @@
         </div>
       </header>
 
-      <div class="stage">
+      <!-- id is load-bearing: switchView() does el("stage").classList... on EVERY
+           nav click, and el() is getElementById. Without it the call throws before
+           the panel is ever shown, so every nav item (To Do / Visual / Desktop /
+           Files / Mail / MCP) silently did nothing on the public demo. -->
+      <div class="stage" id="stage">
         <div class="hero" id="hero">
           <div class="eyebrow"><span class="dot"></span> On-device inference</div>
           <h1>Ask your <em>local</em> mind.</h1>
@@ -717,6 +767,102 @@
             <div class="who">Aitherium · image</div>
             <div class="body" id="imgBody"></div>
             <div class="meta-line" id="imgMeta"></div>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-play">
+          <h2>Play</h2>
+          <p class="sub">A story world that keeps its own state, on this machine.</p>
+          <div class="backends" id="sagaStrip"><span class="empty">Looking for the story engine…</span></div>
+          <div class="row">
+            <div class="field">
+              <label for="sagaStory">Story</label>
+              <input id="sagaStory" type="text" value="default" spellcheck="false" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="sagaWorld">Start from</label>
+              <select id="sagaWorld"><option value="">loading…</option></select>
+            </div>
+            <button class="btn" id="sagaSeed" type="button">Start this world</button>
+          </div>
+          <div class="saga-log" id="sagaLog"></div>
+          <div class="row">
+            <div class="field" style="flex: 4">
+              <label for="sagaMove">Your move</label>
+              <input id="sagaMove" type="text" placeholder="I step into the tavern and look for a friendly face…" />
+            </div>
+            <button class="btn" id="sagaGo" type="button">Take turn</button>
+          </div>
+          <div class="saga-tools" id="sagaTools" hidden>
+            <button class="q-cancel" id="sagaBranches" type="button">Explore branches</button>
+            <button class="q-cancel" id="sagaHandoff" type="button">Illustrate this beat</button>
+          </div>
+          <div class="saga-branches" id="sagaBranchList"></div>
+          <div class="result" id="sagaGlass">
+            <div class="who">Context · what the narrator was given</div>
+            <div class="body" id="sagaGlassBody"></div>
+            <div class="meta-line" id="sagaGlassMeta"></div>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-studio">
+          <h2>Studio</h2>
+          <p class="sub">Sprites and comic pages from your story, made on this machine.</p>
+          <div class="backends" id="studioStrip"><span class="empty">Checking local image backends…</span></div>
+          <div class="studio-grid">
+            <section class="card">
+              <h3>Sprite sheet</h3>
+              <p>One character in several poses from one seed. A shared seed keeps the look close; it does not pin identity.</p>
+              <div class="field">
+                <label for="spritePrompt">Character</label>
+                <input id="spritePrompt" type="text" placeholder="A fox courier in a green cloak, pixel art" />
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label for="spriteFrames">Poses</label>
+                  <select id="spriteFrames"><option>4</option><option>8</option></select>
+                </div>
+                <div class="field">
+                  <label for="spriteSeed">Seed</label>
+                  <input id="spriteSeed" type="number" value="1234" />
+                </div>
+              </div>
+              <button class="btn" id="spriteGo" type="button">Make sheet</button>
+            </section>
+            <section class="card">
+              <h3>Comic page</h3>
+              <p>The latest turns of the story open in Play, one panel each, captioned with the prose.</p>
+              <div class="field">
+                <label for="comicPanels">Panels</label>
+                <select id="comicPanels"><option>4</option><option>6</option></select>
+              </div>
+              <button class="btn" id="comicGo" type="button">Draw page</button>
+            </section>
+          </div>
+          <div class="result" id="studioResult">
+            <div class="who" id="studioWho">Studio</div>
+            <div class="body" id="studioBody"></div>
+            <div class="meta-line" id="studioMeta"></div>
+          </div>
+          <div class="remote-box">
+            <h3>Your Media Forge</h3>
+            <p class="sub" id="remoteNote">Off. Connect a Media Forge you run yourself to see its op catalogue. Nothing is sent anywhere until you do.</p>
+            <div class="row">
+              <div class="field" style="flex: 3">
+                <label for="remoteUrl">Media Forge URL</label>
+                <input id="remoteUrl" type="url" placeholder="http://127.0.0.1:8200" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="remoteKey">Key (optional, kept in this tab only)</label>
+                <input id="remoteKey" type="password" autocomplete="off" />
+              </div>
+            </div>
+            <label class="consent-line" for="remoteConsent"><input type="checkbox" id="remoteConsent" /> Prompts and reference images from this tab will be sent to the Media Forge at the URL above.</label>
+            <div class="row">
+              <button class="btn" id="remoteConnect" type="button">Connect</button>
+              <button class="q-cancel" id="remoteDisconnect" type="button" hidden>Disconnect</button>
+            </div>
+            <div class="studio-ops" id="remoteOps"></div>
           </div>
         </div>
 
@@ -1488,6 +1634,478 @@
       });
     }
 
+    // ── Play: the Saga story engine ──
+    // Saga is its own process. The adk daemon forwards /api/local/saga/* to it and
+    // the aitheros launcher proxies the same prefix, so this tab works from either.
+    // Errors arrive as {detail: {error, fix}} (the engine), {error, reason} (the
+    // launcher's 501) or {detail: "text"}; each is shown as written, because each
+    // was written to be read by a person.
+    var sagaTurnId = null;
+    var sagaCanBranch = false;
+
+    function sagaWorldRef() {
+      var slug = (el("sagaStory").value || "").trim().toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+      return "private/" + (slug || "default");
+    }
+
+    function sagaApi(path, opts) {
+      opts = opts || {};
+      var h = hdrs();
+      h["X-Saga-World"] = sagaWorldRef();
+      return fetch(API_BASE + path, {
+        method: opts.method || "GET",
+        headers: h,
+        body: opts.body ? JSON.stringify(opts.body) : undefined
+      }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (j) {
+          if (r.ok) return j;
+          var d = j && (j.detail !== undefined ? j.detail : j);
+          var msg = (d && d.error === "not_implemented" && d.reason)
+            || (d && d.error) || (typeof d === "string" ? d : "") || ("HTTP " + r.status);
+          if (d && d.fix) msg += " — " + d.fix;
+          var err = new Error(msg);
+          err.status = r.status;
+          throw err;
+        });
+      });
+    }
+
+    function renderProse(target, prose) {
+      target.textContent = "";
+      var re = /<E\s+t='(\w+)'>([^<]+)<\/E>/g, last = 0, m;
+      prose = String(prose || "");
+      while ((m = re.exec(prose))) {
+        if (m.index > last) target.appendChild(document.createTextNode(prose.slice(last, m.index)));
+        var s = document.createElement("span");
+        s.className = "ent " + m[1];
+        s.title = m[1];
+        s.textContent = m[2];
+        target.appendChild(s);
+        last = re.lastIndex;
+      }
+      if (last < prose.length) target.appendChild(document.createTextNode(prose.slice(last)));
+    }
+
+    function sagaPill(strip, text, up, warn) {
+      var pill = document.createElement("span");
+      pill.className = "backend-pill" + (up ? " up" : "") + (warn ? " warn" : "");
+      var dot = document.createElement("span");
+      dot.className = "dot";
+      var label = document.createElement("span");
+      label.textContent = text;
+      pill.appendChild(dot); pill.appendChild(label);
+      strip.appendChild(pill);
+    }
+
+    function loadPlay() {
+      var strip = el("sagaStrip");
+      sagaApi("/api/local/saga/status").then(function (s) {
+        strip.innerHTML = "";
+        var up = (s && s.llm_upstream) || {};
+        sagaCanBranch = !!(s && s.mcts && s.mcts.available);
+        sagaPill(strip, "story engine", true, false);
+        sagaPill(strip, up.configured ? "model: " + (up.model || "local") : "no model configured", !!up.configured, !up.configured);
+        sagaPill(strip, "semantic recall off", false, false);
+        el("sagaGo").disabled = false;
+        return sagaApi("/api/local/saga/worlds").then(function (w) {
+          var sel = el("sagaWorld");
+          sel.innerHTML = "";
+          ((w && w.worlds) || []).forEach(function (meta) {
+            var o = document.createElement("option");
+            o.value = meta.id;
+            o.textContent = meta.name || meta.id;
+            if (meta.id === w.default) o.selected = true;
+            sel.appendChild(o);
+          });
+          return loadTurns();
+        });
+      }).catch(function (e) {
+        strip.innerHTML = "";
+        sagaPill(strip, "story engine not running here", false, true);
+        var note = document.createElement("span");
+        note.className = "empty";
+        note.textContent = e.message;
+        strip.appendChild(note);
+        el("sagaGo").disabled = true;
+      });
+    }
+
+    function appendTurn(message, prose, issues) {
+      var log = el("sagaLog");
+      var empty = log.querySelector(".empty");
+      if (empty) empty.remove();
+      var card = document.createElement("div");
+      card.className = "saga-turn";
+      var you = document.createElement("div");
+      you.className = "you";
+      you.textContent = "You: " + message;
+      var p = document.createElement("div");
+      p.className = "prose";
+      renderProse(p, prose);
+      card.appendChild(you); card.appendChild(p);
+      if (issues && issues.length) {
+        var box = document.createElement("div");
+        box.className = "saga-issues";
+        issues.forEach(function (i) {
+          var s = document.createElement("span");
+          s.className = "saga-issue " + (i.severity || "");
+          s.textContent = i.message;
+          if (i.suggestion) s.title = i.suggestion;
+          box.appendChild(s);
+        });
+        card.appendChild(box);
+      }
+      log.appendChild(card);
+      card.scrollIntoView({ block: "nearest" });
+    }
+
+    function showSagaTools() {
+      el("sagaTools").hidden = !sagaTurnId;
+      el("sagaBranches").hidden = !sagaCanBranch;
+    }
+
+    function loadTurns() {
+      return sagaApi("/api/local/saga/turns?limit=30").then(function (j) {
+        var log = el("sagaLog");
+        log.innerHTML = "";
+        el("sagaBranchList").innerHTML = "";
+        var turns = (j && j.turns) || [];
+        if (!turns.length) {
+          log.innerHTML = '<span class="empty">No turns yet. Start a world, then make a move.</span>';
+          sagaTurnId = null;
+        } else {
+          turns.forEach(function (t) { appendTurn(t.message, t.prose, []); });
+          sagaTurnId = turns[turns.length - 1].turn_id;
+        }
+        showSagaTools();
+      });
+    }
+
+    function showGlass(t) {
+      var c = t.context || {};
+      var lines = [];
+      (c.activated || []).slice(0, 8).forEach(function (n) {
+        lines.push("• " + n.name + " (" + n.type + ") — " + n.reason);
+      });
+      (c.recalled || []).slice(0, 4).forEach(function (r) { lines.push("↺ " + r.summary); });
+      el("sagaGlass").classList.add("visible");
+      el("sagaGlassBody").textContent = lines.join("\n") || "Nothing in the world graph matched this move.";
+      var stages = (c.stages || []).map(function (s) { return s.name.toLowerCase() + " " + s.items_out; }).join(" · ");
+      el("sagaGlassMeta").textContent = "turn " + t.turn_number + " · ~" + (c.token_estimate || 0)
+        + " tokens · " + stages + (t.effort ? " · effort " + t.effort.level : "");
+    }
+
+    function takeTurn() {
+      var move = el("sagaMove").value.trim();
+      if (!move) { toast("Say what you do first.", true); return; }
+      el("sagaGo").disabled = true;
+      el("sagaGo").textContent = "Narrating…";
+      el("sagaBranchList").innerHTML = "";
+      sagaApi("/api/local/saga/turn", { method: "POST", body: { message: move } }).then(function (t) {
+        el("sagaMove").value = "";
+        appendTurn(move, t.prose, t.continuity || []);
+        sagaTurnId = t.turn_id;
+        showSagaTools();
+        showGlass(t);
+      }).catch(function (e) {
+        toast(e.message, true);
+      }).finally(function () {
+        el("sagaGo").disabled = false;
+        el("sagaGo").textContent = "Take turn";
+      });
+    }
+
+    function seedWorld() {
+      var id = el("sagaWorld").value;
+      if (!id) return;
+      sagaApi("/api/local/saga/worlds/" + encodeURIComponent(id) + "/seed", { method: "POST" }).then(function (j) {
+        toast(j.seeded ? "World ready." : (j.reason || "This story has already started."));
+        return loadTurns();
+      }).catch(function (e) { toast(e.message, true); });
+    }
+
+    function exploreBranches() {
+      if (!sagaTurnId) return;
+      var btn = el("sagaBranches");
+      var list = el("sagaBranchList");
+      btn.disabled = true;
+      btn.textContent = "Exploring…";
+      list.innerHTML = '<span class="empty">Writing alternatives and scoring them. On a small local model this takes a while.</span>';
+      sagaApi("/api/local/saga/turn/" + encodeURIComponent(sagaTurnId) + "/branches",
+        { method: "POST", body: { mode: "lightweight" } }).then(function (j) {
+        list.innerHTML = "";
+        (j.branches || []).forEach(function (b) {
+          var card = document.createElement("button");
+          card.type = "button";
+          card.className = "saga-branch";
+          var p = document.createElement("span");
+          p.className = "prose";
+          renderProse(p, b.text);
+          var sc = document.createElement("span");
+          sc.className = "score";
+          sc.textContent = (b.selected ? "engine's pick · " : "") + "score " + Number(b.total_score || 0).toFixed(2);
+          card.appendChild(p); card.appendChild(sc);
+          card.addEventListener("click", function () { chooseBranch(b.id); });
+          list.appendChild(card);
+        });
+      }).catch(function (e) {
+        list.innerHTML = "";
+        toast(e.message, true);
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Explore branches";
+      });
+    }
+
+    function chooseBranch(id) {
+      sagaApi("/api/local/saga/turn/" + encodeURIComponent(sagaTurnId) + "/choose",
+        { method: "POST", body: { branch_id: id } }).then(function () {
+        toast("Branch taken.");
+        return loadTurns();
+      }).catch(function (e) { toast(e.message, true); });
+    }
+
+    function handoffBeat() {
+      if (!sagaTurnId) return;
+      sagaApi("/api/local/saga/turn/" + encodeURIComponent(sagaTurnId) + "/handoff").then(function (h) {
+        var cast = (h.characters || []).map(function (c) {
+          return c.name + (c.description ? " (" + c.description + ")" : "");
+        });
+        var prompt = [h.style_prefix, h.scene_text,
+          cast.length ? "Characters: " + cast.join("; ") : "",
+          h.location ? "Setting: " + h.location.name : ""].filter(Boolean).join(" · ");
+        el("imgPrompt").value = prompt.replace(/\s+/g, " ").slice(0, 1500);
+        switchView("visual");
+        toast(cast.length + " character(s) carried into the image prompt.");
+      }).catch(function (e) { toast(e.message, true); });
+    }
+
+    // ── Studio: sprites and comic pages ──
+    // LOCAL by default, through the same image backends as Visual. The remote lane
+    // reaches only a Media Forge the person connected, after a consent that names
+    // its URL; the key lives in this tab's input and is never stored.
+    var POSES = ["standing, facing forward", "walking, side view", "running, side view",
+      "jumping", "attacking", "hurt, recoiling", "casting, arms raised", "idle, looking back"];
+
+    function studioApi(path, opts) {
+      opts = opts || {};
+      var h = hdrs();
+      var k = el("remoteKey").value.trim();
+      if (k && /^\/api\/local\/studio\/remote\/(ops|op\/)/.test(path)) h["X-Studio-Key"] = k;
+      return fetch(API_BASE + path, {
+        method: opts.method || "GET",
+        headers: h,
+        body: opts.body ? JSON.stringify(opts.body) : undefined
+      }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (j) {
+          if (r.ok) return j;
+          var d = j && (j.detail !== undefined ? j.detail : j);
+          var msg = (d && d.error === "not_implemented" && d.reason)
+            || (d && d.error) || (typeof d === "string" ? d : "") || ("HTTP " + r.status);
+          if (d && d.fix) msg += " — " + d.fix;
+          throw new Error(msg);
+        });
+      });
+    }
+
+    function studioShow(who, body) {
+      el("studioResult").classList.add("visible");
+      el("studioWho").textContent = who;
+      el("studioBody").className = "body";
+      el("studioBody").textContent = body;
+      el("studioMeta").textContent = "";
+    }
+
+    function studioImage(prompt, seed, size) {
+      return studioApi("/api/local/images/generations", { method: "POST", body: {
+        prompt: prompt, size: size, seed: seed, steps: 20, cfg: 6.0
+      } }).then(function (j) {
+        var d = (j && j.data || [])[0] || {};
+        if (!d.b64_json) throw new Error("The image backend returned no image.");
+        return { src: "data:image/png;base64," + d.b64_json, backend: j.backend, model: j.model };
+      });
+    }
+
+    function loadImg(src) {
+      return new Promise(function (resolve, reject) {
+        var im = new Image();
+        im.onload = function () { resolve(im); };
+        im.onerror = reject;
+        im.src = src;
+      });
+    }
+
+    function makeSheet() {
+      var desc = el("spritePrompt").value.trim();
+      if (!desc) { toast("Describe the character first.", true); return; }
+      var n = parseInt(el("spriteFrames").value, 10) || 4;
+      var seed = parseInt(el("spriteSeed").value, 10) || 1234;
+      var btn = el("spriteGo");
+      var frames = [], meta = {}, i = 0;
+      btn.disabled = true;
+      studioShow("Sprite sheet", "Rendering pose 1 of " + n + "…");
+      function next() {
+        if (i >= n) return Promise.resolve();
+        btn.textContent = "Pose " + (i + 1) + " / " + n;
+        el("studioBody").textContent = "Rendering pose " + (i + 1) + " of " + n + " (" + POSES[i] + ")…";
+        return studioImage(desc + ", " + POSES[i] + ", full body, plain background", seed, "512x512")
+          .then(function (r) { frames.push(r.src); meta = r; i++; return next(); });
+      }
+      next().then(function () {
+        return Promise.all(frames.map(loadImg));
+      }).then(function (imgs) {
+        var cols = Math.min(4, imgs.length), cell = 256;
+        var c = document.createElement("canvas");
+        c.width = cols * cell;
+        c.height = Math.ceil(imgs.length / cols) * cell;
+        var g = c.getContext("2d");
+        imgs.forEach(function (im, k) {
+          g.drawImage(im, (k % cols) * cell, Math.floor(k / cols) * cell, cell, cell);
+        });
+        var out = new Image();
+        out.src = c.toDataURL("image/png");
+        out.alt = desc + ", sprite sheet";
+        el("studioBody").textContent = "";
+        el("studioBody").appendChild(out);
+        el("studioMeta").textContent = imgs.length + " poses · seed " + seed + " · backend: "
+          + (meta.backend || "?") + " · model: " + (meta.model || "?");
+      }).catch(function (e) {
+        el("studioBody").textContent = e.message;
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Make sheet";
+      });
+    }
+
+    function drawPage() {
+      var n = parseInt(el("comicPanels").value, 10) || 4;
+      var seed = parseInt(el("spriteSeed").value, 10) || 1234;
+      var btn = el("comicGo");
+      btn.disabled = true;
+      studioShow("Comic page", "Reading the story…");
+      sagaApi("/api/local/saga/turns?limit=" + n).then(function (j) {
+        var turns = (j && j.turns) || [];
+        if (!turns.length) throw new Error("No story turns yet. Play a few turns first.");
+        var panels = [], meta = {}, i = 0;
+        function next() {
+          if (i >= turns.length) return Promise.resolve();
+          btn.textContent = "Panel " + (i + 1) + " / " + turns.length;
+          el("studioBody").textContent = "Drawing panel " + (i + 1) + " of " + turns.length + "…";
+          var t = turns[i];
+          return studioImage("comic book panel, inked lines, " + String(t.text || "").slice(0, 300),
+            seed + i, "768x512").then(function (r) {
+            panels.push({ src: r.src, caption: t.text }); meta = r; i++; return next();
+          });
+        }
+        return next().then(function () {
+          var page = document.createElement("div");
+          page.className = "comic-page";
+          panels.forEach(function (p) {
+            var fig = document.createElement("figure");
+            var im = document.createElement("img");
+            im.src = p.src;
+            im.alt = "";
+            var cap = document.createElement("figcaption");
+            cap.textContent = String(p.caption || "").slice(0, 180);
+            fig.appendChild(im); fig.appendChild(cap);
+            page.appendChild(fig);
+          });
+          el("studioBody").textContent = "";
+          el("studioBody").appendChild(page);
+          el("studioMeta").textContent = panels.length + " panels · story " + sagaWorldRef().slice(8)
+            + " · backend: " + (meta.backend || "?");
+        });
+      }).catch(function (e) {
+        el("studioBody").textContent = e.message;
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Draw page";
+      });
+    }
+
+    function renderRemote(s) {
+      var r = (s && s.remote) || {};
+      el("remoteDisconnect").hidden = !r.enabled;
+      el("remoteConnect").hidden = !!r.enabled;
+      if (r.enabled) {
+        el("remoteNote").textContent = "Connected to " + r.url + ". Only its curated ops are listed.";
+        el("remoteUrl").value = r.url || "";
+        loadRemoteOps();
+      } else {
+        el("remoteNote").textContent = "Off. Connect a Media Forge you run yourself to see its op catalogue. Nothing is sent anywhere until you do.";
+        el("remoteOps").innerHTML = "";
+      }
+    }
+
+    function loadStudio() {
+      var strip = el("studioStrip");
+      studioApi("/api/local/images/backends").then(function (j) {
+        var lanes = (j && j.backends) || [];
+        strip.innerHTML = "";
+        if (!lanes.length) sagaPill(strip, "no local image backend found", false, true);
+        lanes.forEach(function (ln) { sagaPill(strip, ln.label || ln.id, !!ln.up, false); });
+      }).catch(function (e) {
+        strip.innerHTML = "";
+        sagaPill(strip, "image backends unavailable", false, true);
+        toast(e.message, true);
+      });
+      studioApi("/api/local/studio/status").then(renderRemote).catch(function (e) {
+        el("remoteNote").textContent = e.message;
+      });
+    }
+
+    function connectRemote() {
+      if (!el("remoteConsent").checked) {
+        toast("Tick the consent line first. It says what will be sent.", true);
+        return;
+      }
+      studioApi("/api/local/studio/remote/consent", { method: "POST", body: {
+        url: el("remoteUrl").value.trim(), confirm: true
+      } }).then(function () {
+        return studioApi("/api/local/studio/status");
+      }).then(renderRemote).catch(function (e) { toast(e.message, true); });
+    }
+
+    function disconnectRemote() {
+      studioApi("/api/local/studio/remote/consent", { method: "DELETE" }).then(function () {
+        el("remoteConsent").checked = false;
+        return studioApi("/api/local/studio/status");
+      }).then(renderRemote).catch(function (e) { toast(e.message, true); });
+    }
+
+    function loadRemoteOps() {
+      var box = el("remoteOps");
+      box.innerHTML = '<span class="empty">Reading its op catalogue…</span>';
+      studioApi("/api/local/studio/remote/ops").then(function (j) {
+        var ops = (j && j.ops) || [];
+        var groups = {};
+        box.innerHTML = "";
+        if (!ops.length) { box.innerHTML = '<span class="empty">It answered with no ops.</span>'; return; }
+        ops.forEach(function (op) { var g = op.group || "other"; (groups[g] = groups[g] || []).push(op); });
+        Object.keys(groups).sort().forEach(function (g) {
+          var h = document.createElement("h4");
+          h.textContent = g + " · " + groups[g].length;
+          var list = document.createElement("div");
+          list.className = "studio-op-list";
+          groups[g].forEach(function (op) {
+            var chip = document.createElement("span");
+            chip.className = "chip";
+            chip.textContent = op.label || op.name;
+            chip.title = (op.summary || "") + (op.cost ? " · cost " + op.cost : "");
+            list.appendChild(chip);
+          });
+          box.appendChild(h); box.appendChild(list);
+        });
+      }).catch(function (e) {
+        box.innerHTML = "";
+        var s = document.createElement("span");
+        s.className = "empty";
+        s.textContent = e.message;
+        box.appendChild(s);
+      });
+    }
+
     // ── Build: AgentForge dispatch ──
     function dispatchBuild(template, text) {
       var task = template.replace("{text}", (text || "").trim() || "see prompt");
@@ -1934,6 +2552,8 @@
       if (view === "tasks") { loadQueue(); taskTimer = setInterval(loadQueue, 6000); }
       else if (taskTimer) { clearInterval(taskTimer); taskTimer = null; }
       if (view === "visual") loadBackends();
+      if (view === "play") loadPlay();
+      if (view === "studio") loadStudio();
       if (view === "mail") mailStatus();
       if (view === "mcp") loadMcp();
       if (view === "build") { tickClock(); fillTerminal(); }
@@ -1965,6 +2585,23 @@
 
     document.querySelectorAll(".nav-item").forEach(function (btn) {
       btn.addEventListener("click", function () { switchView(btn.dataset.view); });
+    });
+
+    el("sagaGo").addEventListener("click", takeTurn);
+    el("sagaMove").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); takeTurn(); }
+    });
+    el("sagaSeed").addEventListener("click", seedWorld);
+    el("sagaBranches").addEventListener("click", exploreBranches);
+    el("sagaHandoff").addEventListener("click", handoffBeat);
+    el("spriteGo").addEventListener("click", makeSheet);
+    el("comicGo").addEventListener("click", drawPage);
+    el("remoteConnect").addEventListener("click", connectRemote);
+    el("remoteDisconnect").addEventListener("click", disconnectRemote);
+    el("sagaStory").addEventListener("change", function () {
+      if (el("panel-play").classList.contains("visible")) {
+        loadTurns().catch(function (e) { toast(e.message, true); });
+      }
     });
 
     // Task cards + To Do quick chips (chips have no .card parent)

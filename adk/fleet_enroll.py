@@ -121,7 +121,7 @@ async def _register_node_with_federation(
     """Register node with federation hub (portal or local Genesis).
 
     Args:
-        hub_url: Portal or Genesis URL (e.g., https://portal.aitherium.com or http://localhost:8001)
+        hub_url: Portal or Genesis URL (e.g., https://api.aitherium.com or http://localhost:8001)
         api_key: API key or token for authentication
         node_id: Optional pre-assigned node ID
 
@@ -511,7 +511,7 @@ async def enroll_on_boot(
 
     Args:
         genesis_url: Local Genesis URL (default http://localhost:8001)
-        portal_url: Portal hub URL (default https://portal.aitherium.com)
+        portal_url: Portal hub URL (default https://api.aitherium.com)
         enable_heartbeat: Start background heartbeat loop (default True)
 
     Returns:
@@ -531,7 +531,7 @@ async def enroll_on_boot(
 
     # Defaults
     genesis_url = genesis_url or os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
-    portal_url = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+    portal_url = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
 
     # Resolve Identity service URL for rich enrollment (node registration)
     enroll_base = (

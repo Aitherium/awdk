@@ -3,143 +3,915 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aitherium — Local AI</title>
+<title>Demo Hall &mdash; Aitherium</title>
+<meta name="description" content="Every Aitherium surface you can open right now, and the community projects we point at. One system underneath.">
+<meta property="og:title" content="Demo Hall &mdash; Aitherium">
+<meta property="og:description" content="Every Aitherium surface you can open right now, and the community projects we point at.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0A0F1E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='Georgia,serif' font-weight='700' fill='%237FDBEA'>Ai</text></svg>">
+<style>/* ═══════════════════════════════════════════════════════════════════════════
+   AITHERIUM WEB DESIGN LANGUAGE — canonical static-page stylesheet
+   @element-tokens v2
+
+   Source of truth for every public-facing STATIC page (GitHub Pages landing
+   sites, generated docs). Tokens are extracted from the live aitherium.com
+   design system (the dark-glass OKLch theme) so static pages match the estate
+   instead of inventing a look. NOTE: this file is INLINED VERBATIM into public
+   pages, so it must name no internal path — publish_gate scans for them.
+
+   Consumed by tools/gen_public_pages.py, which INLINES this file verbatim into
+   each generated page and fails loudly if it is missing. Edit HERE, then
+   regenerate; never restyle a generated docs/index.html by hand.
+
+   Class contract (the generator's template depends on these):
+     .wrap nav .brand .eyebrow .lede .cta .btn .btn-p .btn-s
+     .code .grid .card .stats .stat .note footer .el h1 .g
+   v2 adds:
+     --accent (+ -a04/-a10/-a30/-a50/-glow) .... per-experience accent, set per repo
+     .uni .uni-stage .uni-canvas .uni-nodes .orb .orb.here ... the universe strip
+     .exp .exp .glyph ......................... the experience badge
+     .panel .panel-hd .field .field-row .chips .chip
+     .rows .row-item .empty .kv .bar-cmp .steps  live artifacts
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*,*::before,*::after{box-sizing:border-box}
+
+:root{
+  /* ─── core surfaces (dark glass, OKLch — verbatim from Veil) ─── */
+  --background:oklch(0.07 0.015 250);
+  --surface:oklch(0.12 0.02 250);
+  --surface-2:oklch(0.15 0.025 250);
+  --foreground:oklch(0.95 0 0);
+  --tx-2:oklch(0.72 0.02 250);
+  --tx-muted:oklch(0.55 0.02 250);
+  --border:oklch(0.25 0.03 250);
+
+  /* ─── accents ─── */
+  --primary:oklch(0.50 0.16 250);
+  --cyan:oklch(0.80 0.13 195);
+  --accent-warm:oklch(0.75 0.16 45);
+  --lavender:oklch(0.78 0.12 290);
+  --mint:oklch(0.82 0.12 165);
+  --coral:oklch(0.78 0.14 25);
+  --ok:var(--mint);
+  --warn:oklch(0.80 0.15 85);
+
+  /* ─── per-experience accent ───────────────────────────────────────────
+     Each public repo is a named EXPERIENCE with its own accent, the same way
+     every sovereign agent on aitherium.com has one (agent-theme.ts: demiurge
+     is "The Forge", #f97316). The generator overrides this whole block per
+     repo; everything below themes off it, so a repo's identity is one edit
+     rather than a forked stylesheet. Defaults are the cyan house colour, so
+     an un-themed page still looks correct. */
+  --accent:oklch(0.80 0.13 195);
+  --accent-a04:oklch(0.80 0.13 195 / 4%);
+  --accent-a10:oklch(0.80 0.13 195 / 10%);
+  --accent-a30:oklch(0.80 0.13 195 / 30%);
+  --accent-a50:oklch(0.80 0.13 195 / 50%);
+  --accent-glow:oklch(0.80 0.13 195 / 18%);
+
+  /* ─── signature gradients (cyan → blue → purple) ─── */
+  --creation:linear-gradient(135deg,oklch(0.75 0.14 195),oklch(0.60 0.16 250),oklch(0.65 0.16 290));
+  --cta-gradient:linear-gradient(to right,oklch(0.55 0.15 200),oklch(0.45 0.18 240));
+
+  /* ─── type ─── */
+  --font-display:'Cinzel',Georgia,serif;
+  --font:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+
+  /* ─── shape & layout ─── */
+  --radius:14px;
+  --radius-xl:0.75rem;
+  --maxw:1080px;
+}
+
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;color-scheme:dark}
+body{
+  margin:0;background:var(--background);color:var(--foreground);
+  font-family:var(--font);font-weight:400;line-height:1.65;letter-spacing:-0.011em;
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;
+}
+
+/* ─── ambient field: cyan grid + blurred glow orbs (aitherium.com hero) ─── */
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(var(--accent-a04) 1px,transparent 1px),
+    linear-gradient(90deg,var(--accent-a04) 1px,transparent 1px);
+  background-size:80px 80px;
+  -webkit-mask-image:radial-gradient(ellipse 60% 40% at 50% 12%,black 20%,transparent 70%);
+  mask-image:radial-gradient(ellipse 60% 40% at 50% 12%,black 20%,transparent 70%);
+}
+body::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(900px 600px at 50% -10%,oklch(0.55 0.15 200 / 6%),transparent 60%),
+    radial-gradient(400px 400px at 18% 45%,oklch(0.50 0.18 280 / 4%),transparent 65%),
+    radial-gradient(300px 300px at 88% 70%,oklch(0.45 0.18 240 / 4%),transparent 65%);
+}
+
+.wrap{position:relative;z-index:1;max-width:var(--maxw);margin:0 auto;padding:0 24px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* ─── nav: sticky glass panel ─── */
+nav{
+  position:sticky;top:0;z-index:20;
+  background:oklch(0.06 0.015 250 / 65%);
+  backdrop-filter:blur(24px) saturate(180%);
+  -webkit-backdrop-filter:blur(24px) saturate(180%);
+  border-bottom:1px solid oklch(1 0 0 / 8%);
+}
+nav .wrap{display:flex;align-items:center;gap:18px;height:60px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:500;color:var(--foreground)}
+.brand:hover{text-decoration:none}
+.brand .ai{
+  font-family:var(--font-display);font-weight:700;font-size:1.35rem;line-height:1;
+  background:var(--creation);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+nav .sp{flex:1}
+nav a.nl{color:var(--tx-2);font-size:.9rem;font-weight:500}
+nav a.nl:hover{color:var(--accent);text-decoration:none}
+@media(max-width:640px){nav a.nl.hide-sm{display:none}}
+
+/* ─── hero ─── */
+header{padding:88px 0 64px;position:relative}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);
+  font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);
+  border:1px solid var(--accent-a30);border-radius:999px;padding:5px 12px;
+  margin-bottom:22px;
+  background:oklch(0.12 0.02 250 / 60%);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+}
+.eyebrow .dot{
+  width:6px;height:6px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 8px var(--accent);
+  animation:pulse-dot 2.4s ease-in-out infinite;
+}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.45}}
+h1{
+  font-family:var(--font-display);
+  font-size:clamp(2.4rem,6vw,4rem);font-weight:700;line-height:1.08;
+  letter-spacing:-0.01em;margin:0 0 18px;
+}
+h1 .g{
+  background:var(--creation);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.lede{font-size:clamp(1.03rem,2.1vw,1.22rem);color:var(--tx-2);max-width:62ch;margin:0 0 30px;line-height:1.8}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:34px}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;padding:12px 22px;
+  border-radius:var(--radius-xl);font-weight:600;font-size:.94rem;
+  border:1px solid transparent;cursor:pointer;
+  transition:all .25s cubic-bezier(0.16,1,0.3,1);
+}
+.btn:hover{text-decoration:none;transform:translateY(-2px)}
+.btn-p{
+  background:var(--cta-gradient);color:#fff;
+  box-shadow:0 8px 24px oklch(0.55 0.15 200 / 25%);
+}
+.btn-p:hover{box-shadow:0 8px 32px oklch(0.55 0.15 200 / 40%)}
+.btn-s{
+  background:oklch(1 0 0 / 5%);color:var(--foreground);
+  border-color:oklch(1 0 0 / 8%);
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+}
+.btn-s:hover{background:oklch(1 0 0 / 10%);border-color:var(--accent-a50);color:var(--accent)}
+
+/* ─── code blocks: glass with gradient hairline ─── */
+.code{
+  position:relative;
+  background:oklch(0.06 0.015 250 / 65%);
+  backdrop-filter:blur(20px) saturate(180%);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
+  border:1px solid oklch(1 0 0 / 8%);
+  border-radius:var(--radius);overflow:hidden;
+  box-shadow:0 8px 32px oklch(0 0 0 / 40%),inset 0 1px 0 oklch(1 0 0 / 5%);
+}
+.code::before{content:"";position:absolute;inset:0 0 auto;height:1px;background:var(--creation)}
+.code .bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid oklch(1 0 0 / 8%)}
+.code .bar > span:not(.t){width:9px;height:9px;flex:none;border-radius:50%;background:var(--border)}
+.code .bar .t{
+  line-height:1;margin-left:6px;font-family:var(--mono);font-size:.73rem;
+  color:var(--tx-muted);letter-spacing:.04em;
+}
+.code pre{
+  margin:0;padding:16px 18px;overflow-x:auto;font-family:var(--mono);
+  font-size:.845rem;line-height:1.75;color:var(--foreground);
+}
+.code .c{color:var(--tx-muted)}
+.code .k{color:var(--accent)}
+.code .s{color:var(--mint)}
+.copy{
+  position:absolute;top:8px;right:10px;background:transparent;
+  border:1px solid oklch(1 0 0 / 12%);color:var(--tx-muted);border-radius:7px;
+  padding:4px 9px;font-size:.7rem;cursor:pointer;font-family:var(--mono);transition:.16s;
+}
+.copy:hover{color:var(--accent);border-color:var(--accent-a50)}
+
+/* ─── sections ─── */
+section{padding:64px 0;border-top:1px solid oklch(1 0 0 / 6%)}
+h2{
+  font-family:var(--font-display);
+  font-size:clamp(1.55rem,3vw,2.1rem);font-weight:700;letter-spacing:-0.01em;
+  margin:0 0 10px;
+}
+.sub{color:var(--tx-2);margin:0 0 30px;max-width:64ch;line-height:1.8}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(258px,1fr))}
+
+/* ─── cards: glass surface, glow on hover ─── */
+.card{
+  background:oklch(0.12 0.02 250 / 60%);
+  backdrop-filter:blur(20px) saturate(180%);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
+  border:1px solid oklch(0.40 0.05 250 / 20%);
+  border-radius:var(--radius);padding:22px;position:relative;overflow:hidden;
+  box-shadow:0 8px 32px oklch(0 0 0 / 30%),inset 0 1px 0 oklch(1 0 0 / 5%);
+  transition:all .25s cubic-bezier(0.16,1,0.3,1);
+}
+.card:hover{
+  transform:translateY(-2px);
+  border-color:var(--accent-a30);
+  box-shadow:0 8px 32px oklch(0 0 0 / 40%),0 0 20px var(--accent-glow),
+    inset 0 1px 0 oklch(1 0 0 / 8%);
+}
+.card h3{margin:0 0 8px;font-size:1.03rem;font-weight:600;letter-spacing:-0.012em}
+.card p{margin:0;color:var(--tx-2);font-size:.92rem;line-height:1.7}
+.card .ico{
+  font-family:var(--mono);font-size:.7rem;color:var(--accent);letter-spacing:.14em;
+  text-transform:uppercase;display:block;margin-bottom:10px;
+}
+
+/* ─── stat tiles ─── */
+.stats{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:30px}
+.stat{
+  background:oklch(0.12 0.02 250 / 60%);
+  backdrop-filter:blur(12px) saturate(150%);
+  -webkit-backdrop-filter:blur(12px) saturate(150%);
+  border:1px solid oklch(1 0 0 / 8%);
+  border-radius:var(--radius);padding:18px;text-align:center;
+}
+.stat .v{
+  font-family:var(--mono);font-size:1.55rem;font-weight:700;display:block;line-height:1.2;
+  background:var(--creation);-webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.stat .l{font-size:.76rem;color:var(--tx-muted);text-transform:uppercase;letter-spacing:.1em;margin-top:5px;display:block}
+
+/* ─── callout note ─── */
+.note{
+  background:oklch(0.12 0.02 250 / 60%);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  border:1px solid oklch(1 0 0 / 8%);border-left:3px solid var(--warn);
+  border-radius:10px;padding:16px 18px;color:var(--tx-2);font-size:.92rem;line-height:1.7;
+}
+.note strong{color:var(--foreground)}
+
+/* ─── footer ─── */
+footer{border-top:1px solid oklch(1 0 0 / 6%);padding:34px 0 46px;color:var(--tx-muted);font-size:.86rem}
+footer .row{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
+footer .sp{flex:1}
+footer a{color:var(--tx-2)}
+.el{
+  display:inline-flex;flex-direction:column;align-items:center;justify-content:center;
+  width:56px;height:56px;border-radius:10px;
+  border:1px solid oklch(1 0 0 / 8%);
+  background:oklch(0.12 0.02 250 / 60%);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  position:relative;overflow:hidden;
+}
+.el::before{content:"";position:absolute;inset:0 0 auto;height:1px;background:var(--creation)}
+.el .n{font-family:var(--mono);font-size:.56rem;color:var(--tx-muted);line-height:1}
+.el .s{
+  font-family:var(--font-display);font-weight:700;font-size:1.2rem;line-height:1.2;
+  background:var(--creation);-webkit-background-clip:text;background-clip:text;color:transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE UNIVERSE STRIP
+   The four public repos are organs of one system, and until now nothing on
+   the pages said so — the nav linked Features / Quick start / GitHub and
+   stopped. This renders the constellation on EVERY page: the current repo lit
+   and centred, its siblings dimmed but reachable. The links are real anchors
+   in the HTML, so it works with JS off; universe.js only adds the drifting
+   flight paths behind them.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.uni{position:relative;padding:38px 0 30px;border-top:1px solid oklch(1 0 0 / 6%)}
+.uni h2{font-size:clamp(1.15rem,2.2vw,1.4rem);margin-bottom:4px}
+.uni .sub{margin-bottom:22px;font-size:.92rem}
+/* The top band is deliberate empty room: the flight paths arc UP out of the orb
+   row into it. Without it the curves are drawn underneath the cards and are
+   invisible except in the 12px gutters, which looked like the canvas was dead. */
+.uni-stage{position:relative;min-height:190px;padding-top:52px}
+.uni-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}
+.uni-nodes{
+  position:relative;z-index:1;display:grid;gap:12px;
+  grid-template-columns:repeat(auto-fit,minmax(146px,1fr));
+}
+.orb{
+  position:relative;
+  display:flex;flex-direction:column;gap:6px;padding:15px 14px;
+  border-radius:var(--radius);text-align:left;
+  background:oklch(0.12 0.02 250 / 55%);
+  backdrop-filter:blur(14px) saturate(160%);
+  -webkit-backdrop-filter:blur(14px) saturate(160%);
+  border:1px solid oklch(1 0 0 / 7%);
+  transition:all .28s cubic-bezier(0.16,1,0.3,1);
+}
+.orb:hover{
+  text-decoration:none;transform:translateY(-3px);
+  border-color:var(--accent-a30);
+  box-shadow:0 10px 30px oklch(0 0 0 / 40%),0 0 22px var(--accent-glow);
+}
+.orb .k{
+  font-family:var(--mono);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--tx-muted);display:flex;align-items:center;gap:7px;
+}
+.orb .k::before{
+  content:"";width:7px;height:7px;border-radius:50%;flex:none;
+  background:var(--orb,var(--tx-muted));box-shadow:0 0 9px var(--orb,transparent);
+}
+.orb .n{font-weight:600;font-size:.96rem;color:var(--foreground);letter-spacing:-0.01em}
+.orb .d{font-size:.79rem;color:var(--tx-muted);line-height:1.5}
+/* you are here */
+.orb.here{
+  border-color:var(--accent-a50);
+  background:oklch(0.14 0.03 250 / 70%);
+  box-shadow:0 0 0 1px var(--accent-a30),0 10px 34px var(--accent-glow);
+}
+.orb.here .n{color:var(--accent)}
+/* A pill on the top edge, not an ::after inside .k — inline it wrapped onto
+   three lines and made the lit card taller than every sibling. */
+.orb.here::after{
+  content:"you are here";position:absolute;top:-8px;left:14px;
+  font-family:var(--mono);font-size:.56rem;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--background);background:var(--accent);
+  padding:3px 8px;border-radius:999px;white-space:nowrap;
+}
+
+/* ─── experience badge: this repo's name in the estate ─── */
+/* display:flex, not inline-flex — inline it sat on the same line as .eyebrow
+   and the two badges read as one run-on chip. */
+.exp{
+  display:flex;align-items:center;gap:10px;margin-bottom:16px;
+  font-family:var(--font-display);font-size:.9rem;letter-spacing:.04em;
+  color:var(--tx-2);
+}
+.exp .glyph{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:30px;height:30px;border-radius:9px;font-size:.95rem;
+  background:var(--accent-a10);border:1px solid var(--accent-a30);
+}
+.exp b{color:var(--accent);font-weight:700}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIVE ARTIFACTS
+   Each repo's page carries one real, interactive thing built from the payload
+   being published — a browsable catalogue, a composer, a calculator — instead
+   of six paragraphs of feature copy telling you to go and run `ls`.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.panel{
+  background:oklch(0.10 0.02 250 / 60%);
+  backdrop-filter:blur(20px) saturate(170%);
+  -webkit-backdrop-filter:blur(20px) saturate(170%);
+  border:1px solid oklch(1 0 0 / 8%);
+  border-radius:var(--radius);overflow:hidden;
+  box-shadow:0 8px 32px oklch(0 0 0 / 30%);
+}
+.panel-hd{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:13px 16px;border-bottom:1px solid oklch(1 0 0 / 8%);
+  background:oklch(0.08 0.02 250 / 50%);
+}
+.panel-hd .t{font-family:var(--mono);font-size:.74rem;color:var(--tx-muted);letter-spacing:.06em}
+.panel-hd .sp{flex:1}
+.count{font-family:var(--mono);font-size:.74rem;color:var(--accent)}
+
+.field{
+  width:100%;padding:10px 13px;border-radius:9px;font-family:var(--font);font-size:.9rem;
+  background:oklch(0.06 0.015 250 / 70%);color:var(--foreground);
+  border:1px solid oklch(1 0 0 / 10%);
+}
+.field::placeholder{color:var(--tx-muted)}
+.field:focus{outline:none;border-color:var(--accent-a50);box-shadow:0 0 0 3px var(--accent-a10)}
+.field-row{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));padding:16px}
+.field-row label{display:block;font-size:.74rem;color:var(--tx-muted);margin-bottom:6px;
+  text-transform:uppercase;letter-spacing:.09em;font-family:var(--mono)}
+
+.chips{display:flex;flex-wrap:wrap;gap:7px;padding:12px 16px;border-bottom:1px solid oklch(1 0 0 / 6%)}
+.chip{
+  font-family:var(--mono);font-size:.71rem;padding:5px 11px;border-radius:999px;cursor:pointer;
+  background:oklch(1 0 0 / 4%);border:1px solid oklch(1 0 0 / 9%);color:var(--tx-2);
+  transition:.18s;
+}
+.chip:hover{border-color:var(--accent-a30);color:var(--accent)}
+.chip[aria-pressed="true"]{background:var(--accent-a10);border-color:var(--accent-a50);color:var(--accent)}
+
+.rows{max-height:432px;overflow-y:auto}
+.row-item{
+  display:block;width:100%;text-align:left;padding:13px 16px;cursor:pointer;
+  border:0;border-bottom:1px solid oklch(1 0 0 / 5%);
+  background:transparent;color:inherit;font-family:var(--font);transition:.16s;
+}
+.row-item:hover{background:var(--accent-a10);text-decoration:none}
+.row-item .n{display:block;font-weight:600;font-size:.9rem;color:var(--foreground)}
+.row-item .d{display:block;font-size:.8rem;color:var(--tx-muted);line-height:1.55;margin-top:3px}
+.row-item .tag{
+  font-family:var(--mono);font-size:.65rem;color:var(--accent);
+  letter-spacing:.1em;text-transform:uppercase;
+}
+.empty{padding:34px 16px;text-align:center;color:var(--tx-muted);font-size:.88rem}
+
+/* key→value readout (calculator results, composed manifests) */
+.kv{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));padding:16px}
+.kv .cell{padding:13px;border-radius:10px;background:oklch(1 0 0 / 3%);border:1px solid oklch(1 0 0 / 7%)}
+.kv .cell .l{display:block;font-size:.68rem;color:var(--tx-muted);text-transform:uppercase;
+  letter-spacing:.1em;font-family:var(--mono)}
+.kv .cell .v{display:block;font-family:var(--mono);font-size:1.22rem;font-weight:700;margin-top:5px;
+  background:var(--creation);-webkit-background-clip:text;background-clip:text;color:transparent}
+.kv .cell.flat .v{background:none;color:var(--foreground);-webkit-text-fill-color:currentColor}
+
+/* compression / ratio bar */
+.bar-cmp{padding:0 16px 16px}
+.bar-cmp .track{height:9px;border-radius:99px;background:oklch(1 0 0 / 6%);overflow:hidden;margin-bottom:7px}
+.bar-cmp .fill{height:100%;background:var(--creation);border-radius:99px;transition:width .35s ease}
+.bar-cmp .lbl{display:flex;justify-content:space-between;font-family:var(--mono);
+  font-size:.71rem;color:var(--tx-muted)}
+
+/* ordered step sequence (playbooks) */
+.steps{list-style:none;margin:0;padding:16px;display:flex;flex-direction:column;gap:0}
+.steps li{position:relative;padding:0 0 16px 26px;font-size:.87rem;color:var(--tx-2)}
+.steps li:last-child{padding-bottom:0}
+.steps li::before{
+  content:"";position:absolute;left:0;top:5px;width:9px;height:9px;border-radius:50%;
+  background:var(--accent);box-shadow:0 0 8px var(--accent-glow);
+}
+.steps li:not(:last-child)::after{
+  content:"";position:absolute;left:4px;top:16px;bottom:2px;width:1px;background:oklch(1 0 0 / 12%);
+}
+.steps li b{color:var(--foreground);font-weight:600}
+
+/* ─── motion ─── */
+@keyframes fade-in-up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+header .wrap>*{animation:fade-in-up .6s ease-out both}
+header .wrap>*:nth-child(2){animation-delay:.05s}
+header .wrap>*:nth-child(3){animation-delay:.1s}
+header .wrap>*:nth-child(4){animation-delay:.15s}
+header .wrap>*:nth-child(5){animation-delay:.2s}
+header .wrap>*:nth-child(6){animation-delay:.25s}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ─── scrollbar ─── */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:oklch(0.08 0.015 250)}
+::-webkit-scrollbar-thumb{background:oklch(0.25 0.03 250);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:oklch(0.35 0.05 260)}
+</style>
 <style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    background: #0b0d10; color: #e6e8eb; min-height: 100vh;
-    display: flex; flex-direction: column;
-  }
-  @media (prefers-color-scheme: light) {
-    body { background: #f6f7f9; color: #12141a; }
-    .card { background: #fff; border-color: #e2e5ea; }
-    .card:hover { border-color: #c9ced6; }
-    .tag { color: #5a6472; }
-    .head { color: #5a6472; }
-  }
-  header {
-    padding: 28px 24px 10px; max-width: 1080px; width: 100%; margin: 0 auto;
-  }
-  header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
-  header h1 .dot { color: #3ba55d; }
-  .head { color: #8b94a1; font-size: 14px; margin-top: 4px; }
-  main {
-    max-width: 1080px; width: 100%; margin: 0 auto; padding: 18px 24px 48px;
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 14px; flex: 1;
-  }
-  a.card {
-    text-decoration: none; color: inherit; display: flex; flex-direction: column;
-    background: rgba(255,255,255,.03); border: 1px solid #23272e; border-radius: 14px;
-    padding: 16px 16px 14px; transition: border-color .15s, transform .15s;
-  }
-  a.card:hover { border-color: #3b4048; transform: translateY(-1px); }
-  .card .name { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
-  .card .name .ico { font-size: 17px; }
-  .card .desc { color: #8b94a1; font-size: 12.5px; margin-top: 6px; flex: 1; }
-  .card .row { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
-  .pill {
-    font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
-    border: 1px solid #2c3138; color: #8b94a1; letter-spacing: .04em;
-  }
-  .pill.live { color: #86e5ac; border-color: rgba(134,229,172,.3); }
-  .pill.up   { color: #fcd34d; border-color: rgba(252,211,77,.35); }
-  .pill.soon { color: #7d8590; border-color: #2c3138; }
-  footer {
-    max-width: 1080px; width: 100%; margin: 0 auto; padding: 0 24px 28px;
-    color: #5a6472; font-size: 12px;
-  }
-  footer code { background: rgba(255,255,255,.05); padding: 1px 6px; border-radius: 6px; }
+:root{
+  --accent:oklch(0.80 0.13 195);
+  --accent-a04:oklch(0.80 0.13 195 / 4%);
+  --accent-a10:oklch(0.80 0.13 195 / 10%);
+  --accent-a30:oklch(0.80 0.13 195 / 30%);
+  --accent-a50:oklch(0.80 0.13 195 / 50%);
+  --accent-glow:oklch(0.80 0.13 195 / 18%);
+}
+/* auto-FILL, not auto-fit. The sheet's .grid is auto-fit, which collapses empty
+   tracks and stretches a lone card across the whole row - which is exactly what
+   the community shelf looks like on the day it has one entry, and it reads as a
+   broken banner rather than a card. auto-fill keeps the column. */
+section .grid{grid-template-columns:repeat(auto-fill,minmax(258px,1fr))}
+a.card{display:flex;flex-direction:column;color:inherit;text-decoration:none}
+a.card:hover{text-decoration:none}
+.card p{flex:1}
+.card .by{font-size:.79rem;color:var(--tx-muted);margin:0 0 9px}
+.card .by b{color:var(--tx-2);font-weight:600}
+.card .foot{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:15px;
+  font-family:var(--mono);font-size:.67rem;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--tx-muted);
+}
+.st{display:inline-flex;align-items:center;gap:6px}
+.st::before{
+  content:"";width:7px;height:7px;border-radius:50%;flex:none;background:var(--tx-muted);
+}
+.st.live::before{background:var(--mint);box-shadow:0 0 8px var(--mint)}
+.st.waking::before{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+.card .foot .sp{flex:1}
+.card .foot .src{color:var(--accent)}
+.hall-hd{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+.hall-hd h2{margin:0}
+.hall-hd .count{font-family:var(--mono);font-size:.78rem;color:var(--accent)}
+.filter-bar{padding:26px 0 0;border-top:0}
+.filters{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.filters .chips{padding:0;border:0}
+.filters .field{max-width:290px}
+.hidden{display:none!important}
+.submit{
+  display:flex;gap:20px;flex-wrap:wrap;align-items:center;
+  background:oklch(0.12 0.02 250 / 60%);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border:1px solid oklch(1 0 0 / 8%);border-left:3px solid var(--accent);
+  border-radius:10px;padding:20px 22px;margin-top:22px;
+}
+.submit .t{flex:1;min-width:270px;color:var(--tx-2);font-size:.92rem;line-height:1.75}
+.submit .t b{color:var(--foreground)}
 </style>
 </head>
 <body>
-<header>
-  <h1>Aitherium <span class="dot">●</span> Local AI</h1>
-  <p class="head">One stack, every surface — pick where you want to work. Local AI runs on your own hardware; the rest are the same platform, served from the fleet.</p>
-</header>
-<main>
-  <a class="card" href="/local">
-    <span class="name"><span class="ico">⚡</span> Local AI</span>
-    <span class="desc">The full local console — Ask, Tasks, Visual, Build, Files, Mail, MCP. Runs on this box's own GPU. Ask it anything; it suggests options instead of assuming.</span>
-    <span class="row"><span class="pill live">LIVE</span><span class="pill">awdk pack</span></span>
-  </a>
-  <a class="card" href="https://awsh.aitherium.com/">
-    <span class="name"><span class="ico">🖥️</span> AitherShell</span>
-    <span class="desc">The desktop-grade shell — your agents, your routines, one pane over the whole platform. (awsh — renamed from aithershell 2026-08-29.)</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://gobbonet.aitherium.com/">
-    <span class="name"><span class="ico">🧌</span> GobboNet</span>
-    <span class="desc">On-device chat companions with a real in-browser brain — WebGPU, private, no server in the loop.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://garg.aitherium.com/">
-    <span class="name"><span class="ico">🧠</span> Garg</span>
-    <span class="desc">Bespoke company knowledge brain — ingests resumes, projects and proposals, matches staff to opportunities.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://jgames.aitherium.com/">
-    <span class="name"><span class="ico">🕹️</span> J Games &amp; Repair</span>
-    <span class="desc">Tenant storefront — repair quotes, tickets and billing on the shared platform.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://dgg.aitherium.com/">
-    <span class="name"><span class="ico">🎯</span> Digital Ground Game</span>
-    <span class="desc">The DGG tenant portal — tug-of-war, kick/keep and the arcade on the shared platform.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://vibe.aitherium.com/">
-    <span class="name"><span class="ico">💬</span> Vibe</span>
-    <span class="desc">The Vibe workspace — Discord-connected team space on the shared platform.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://studio.aitherium.com/">
-    <span class="name"><span class="ico">🎨</span> Design Studio</span>
-    <span class="desc">MCP in the browser — 14 tools for design + design memory, on-device when available, hosted otherwise.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://create.aitherium.com/">
-    <span class="name"><span class="ico">🪄</span> AitherCreate</span>
-    <span class="desc">Coming soon — the create surface.</span>
-    <span class="row"><span class="pill soon">SOON</span></span>
-  </a>
-  <a class="card" href="https://launch.aitherium.com/">
-    <span class="name"><span class="ico">🚀</span> Command Center</span>
-    <span class="desc">The full platform portal — every agent, every surface, one sign-in.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://saga.aitherium.com/">
-    <span class="name"><span class="ico">📖</span> Saga</span>
-    <span class="desc">Story worlds, characters and manuscripts — built with the platform.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://playground.aitherium.com/">
-    <span class="name"><span class="ico">🧪</span> Playground</span>
-    <span class="desc">Try the agents and tools without any setup.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-  <a class="card" href="https://chelle.aitherium.com/">
-    <span class="name"><span class="ico">🏢</span> CheLLE</span>
-    <span class="desc">Tenant workspace — waking up.</span>
-    <span class="row"><span class="pill soon">WAKING</span></span>
-  </a>
-  <a class="card" href="https://shop.aitherium.com/">
-    <span class="name"><span class="ico">🛍️</span> Shop</span>
-    <span class="desc">Storefront on the shared commerce plane — waking up.</span>
-    <span class="row"><span class="pill soon">WAKING</span></span>
-  </a>
-  <a class="card" href="https://desktop.aitherium.com/">
-    <span class="name"><span class="ico">💾</span> AitherOS Desktop</span>
-    <span class="desc">The real Living Desktop — the OS shell in your browser: apps, widgets, agents. Running now.</span>
-    <span class="row"><span class="pill live">LIVE</span></span>
-  </a>
-</main>
-<footer>
-  Everything here is the same Aitherium platform — <code>lib/</code>, the agent core, the model
-  plane. The surfaces differ; the stack doesn't. Local AI is the only one that keeps your
-  prompts on your hardware.
-</footer>
+<nav><div class="wrap">
+  <a class="brand" href="https://aitherium.com"><span class="ai">Ai</span><span>Aitherium</span></a>
+  <span class="sp"></span>
+  <a class="nl hide-sm" href="#first_party">Built here</a>
+  <a class="nl hide-sm" href="#community">Built by others</a>
+  <a class="nl" href="/local">Local AI</a>
+</div></nav>
+
+<header><div class="wrap">
+  <div class="eyebrow"><span class="dot"></span>Demo Hall</div>
+  <h1>Every surface, <span class="g">one system</span>.</h1>
+  <p class="lede">Everything on the first shelf runs on the same platform &mdash; the agent
+  core, the model plane, one sign-in. Open any of it. The second shelf is other people's
+  work: their repos, their releases, their names on it.</p>
+  <div class="cta">
+    <a class="btn btn-p" href="/local">Open Local AI</a>
+    <a class="btn btn-s" href="#community">See community projects</a>
+  </div>
+  <div class="stats">
+    <div class="stat"><span class="v">17</span><span class="l">Projects</span></div>
+    <div class="stat"><span class="v">14</span><span class="l">Live now</span></div>
+    <div class="stat"><span class="v">2</span><span class="l">Shelves</span></div>
+  </div>
+</div></header>
+
+<section class="filter-bar"><div class="wrap">
+  <div class="filters">
+    <div class="chips">
+      <button class="chip" data-filter="all" aria-pressed="true">Everything</button>
+      <button class="chip" data-filter="first_party" aria-pressed="false">Built here</button>
+      <button class="chip" data-filter="community" aria-pressed="false">Built by others</button>
+    </div>
+    <input class="field" id="q" type="search" placeholder="Filter by name or what it does"
+           aria-label="Filter projects">
+  </div>
+</div></section>
+
+<section id="first_party" data-collection="first_party"><div class="wrap">
+    <div class="hall-hd">
+      <h2>Built here</h2>
+      <span class="count">16 projects</span>
+    </div>
+    <p class="sub">Surfaces we build and run. Same platform underneath — the agent core, the model plane, one sign-in. The surfaces differ; the stack does not.</p>
+    <div class="grid">
+      <a class="card" href="/local" data-hay="local-ai local ai the full local console — ask, tasks, visual, build, files, mail, mcp. runs on this box&#x27;s own gpu. the only surface here that keeps your prompts on your hardware.  console " data-col="first_party">
+        <span class="ico">CONSOLE</span>
+        <h3>Local AI</h3>
+        
+        <p>The full local console — Ask, Tasks, Visual, Build, Files, Mail, MCP. Runs on this box&#x27;s own GPU. The only surface here that keeps your prompts on your hardware.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://desktop.aitherium.com/" data-hay="desktop aitheros desktop the living desktop — the os shell in your browser. apps, widgets, agents, windows.  shell " data-col="first_party">
+        <span class="ico">SHELL</span>
+        <h3>AitherOS Desktop</h3>
+        
+        <p>The Living Desktop — the OS shell in your browser. Apps, widgets, agents, windows.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://awsh.aitherium.com/" data-hay="awsh aithershell the desktop-grade shell — your agents, your routines, one pane over the whole platform.  shell " data-col="first_party">
+        <span class="ico">SHELL</span>
+        <h3>AitherShell</h3>
+        
+        <p>The desktop-grade shell — your agents, your routines, one pane over the whole platform.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://launch.aitherium.com/" data-hay="launch command center the full platform portal — every agent, every surface, one sign-in.  platform " data-col="first_party">
+        <span class="ico">PLATFORM</span>
+        <h3>Command Center</h3>
+        
+        <p>The full platform portal — every agent, every surface, one sign-in.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://playground.aitherium.com/" data-hay="playground playground try the agents and the tools with no setup and no account.  platform " data-col="first_party">
+        <span class="ico">PLATFORM</span>
+        <h3>Playground</h3>
+        
+        <p>Try the agents and the tools with no setup and no account.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://studio.aitherium.com/" data-hay="studio design studio mcp in the browser — design tools plus design memory, on-device when the machine can carry it, hosted when it cannot.  tool " data-col="first_party">
+        <span class="ico">TOOL</span>
+        <h3>Design Studio</h3>
+        
+        <p>MCP in the browser — design tools plus design memory, on-device when the machine can carry it, hosted when it cannot.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://elysium.aitherium.com/" data-hay="elysium elysium the chat-companion hub — on-device companions with a real in-browser brain, no account and nothing leaving the tab.  lab " data-col="first_party">
+        <span class="ico">LAB</span>
+        <h3>Elysium</h3>
+        
+        <p>The chat-companion hub — on-device companions with a real in-browser brain, no account and nothing leaving the tab.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://saga.aitherium.com/" data-hay="saga saga story worlds, characters and manuscripts — a long-form writing surface built on the platform.  lab " data-col="first_party">
+        <span class="ico">LAB</span>
+        <h3>Saga</h3>
+        
+        <p>Story worlds, characters and manuscripts — a long-form writing surface built on the platform.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://garg.aitherium.com/" data-hay="garg garg a bespoke company knowledge brain — ingests resumes, projects and proposals, then matches staff to opportunities.  tenant " data-col="first_party">
+        <span class="ico">TENANT</span>
+        <h3>Garg</h3>
+        
+        <p>A bespoke company knowledge brain — ingests resumes, projects and proposals, then matches staff to opportunities.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://jgames.aitherium.com/" data-hay="jgames j games &amp; repair a tenant storefront — repair quotes, tickets and billing on the shared platform.  tenant " data-col="first_party">
+        <span class="ico">TENANT</span>
+        <h3>J Games &amp; Repair</h3>
+        
+        <p>A tenant storefront — repair quotes, tickets and billing on the shared platform.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://dgg.aitherium.com/" data-hay="dgg digital ground game the dgg portal — tug-of-war, kick/keep and the arcade, on the shared platform.  tenant " data-col="first_party">
+        <span class="ico">TENANT</span>
+        <h3>Digital Ground Game</h3>
+        
+        <p>The DGG portal — tug-of-war, kick/keep and the arcade, on the shared platform.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://vibe.aitherium.com/" data-hay="vibe vibe the shared workspace — discord-connected team space, and where community projects on this page are registered and kept current.  tenant " data-col="first_party">
+        <span class="ico">TENANT</span>
+        <h3>Vibe</h3>
+        
+        <p>The shared workspace — Discord-connected team space, and where community projects on this page are registered and kept current.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://chelle.aitherium.com/" data-hay="chelle chelle a tenant workspace on the shared platform.  tenant " data-col="first_party">
+        <span class="ico">TENANT</span>
+        <h3>CheLLE</h3>
+        
+        <p>A tenant workspace on the shared platform.</p>
+        <span class="foot">
+          <span class="st waking">Waking</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://shop.aitherium.com/" data-hay="shop shop a storefront on the shared commerce plane.  tenant " data-col="first_party">
+        <span class="ico">TENANT</span>
+        <h3>Shop</h3>
+        
+        <p>A storefront on the shared commerce plane.</p>
+        <span class="foot">
+          <span class="st waking">Waking</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://create.aitherium.com/" data-hay="create aithercreate the create surface — announced, not serving yet.  tool " data-col="first_party">
+        <span class="ico">TOOL</span>
+        <h3>AitherCreate</h3>
+        
+        <p>The create surface — announced, not serving yet.</p>
+        <span class="foot">
+          <span class="st soon">Soon</span>
+          <span class="sp"></span>
+        </span>
+      </a>
+      <a class="card" href="https://digitalgroundgame.github.io/TBAT-Kick-or-Keep/" data-hay="kick-or-keep kick or keep the donation tug-of-war for tbat&#x27;s stream: kick money fills the pot, keep money pushes the goal away, and the kicked card holds until the operator starts the next guest. runs off a usb stick with no account and no network.  tool " data-col="first_party">
+        <span class="ico">TOOL</span>
+        <h3>Kick or Keep</h3>
+        
+        <p>The donation tug-of-war for TBAT&#x27;s stream: kick money fills the pot, keep money pushes the goal away, and the KICKED card holds until the operator starts the next guest. Runs off a USB stick with no account and no network.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span><span class="src">Source</span>
+        </span>
+      </a>
+      <a class="card" href="https://aitherium.github.io/forgepilot/" data-hay="forgepilot forgepilot forgepilot — the agent integration architect. a static control room for self-hosted mcp nodes: point it at an awdk node, describe the integration you want, and it researches, plans and hands back a report you can open in codex or claude. built at the ai tinkerers hackathon.  app " data-col="first_party">
+        <span class="ico">APP</span>
+        <h3>ForgePilot</h3>
+        
+        <p>ForgePilot — the Agent Integration Architect. A static control room for self-hosted MCP nodes: point it at an awdk node, describe the integration you want, and it researches, plans and hands back a report you can open in Codex or Claude. Built at the AI Tinkerers hackathon.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span class="sp"></span><span class="src">Source</span>
+        </span>
+      </a>
+    </div>
+
+  </div></section>
+
+<section id="community" data-collection="community" data-hydrate="/api/demos/community.json"><div class="wrap">
+    <div class="hall-hd">
+      <h2>Built by others</h2>
+      <span class="count">1 project</span>
+    </div>
+    <p class="sub">Other people&#x27;s repos and projects. We credit the author and link their work; we do not claim their uptime. Want yours here? The submit path is below.</p>
+    <div class="grid">
+      <a class="card" href="https://wizzense.github.io/GobboNet/" data-hay="gobbonet gobbonet your own private ai front end — no accounts, no fees, nothing leaves your machine. the neon &quot;goblin_bios&quot; chat client elysium is built on. elodine / goblincorps app mit" data-col="community">
+        <span class="ico">APP &middot; MIT</span>
+        <h3>GobboNet</h3>
+        <p class="by">by <b>Elodine / GoblinCorps</b></p>
+        <p>Your own private AI front end — no accounts, no fees, nothing leaves your machine. The neon &quot;GOBLIN_BIOS&quot; chat client Elysium is built on.</p>
+        <span class="foot">
+          <span class="st live">Live</span>
+          <span>Integrated</span><span class="sp"></span><span class="src">Source</span>
+        </span>
+      </a>
+    </div>
+    <p class="note hidden" data-hydrate-status></p>
+    <p class="empty hidden">Nothing matches that filter.</p>
+
+    <div class="submit">
+      <span class="t"><b>Built something?</b> Register it from the shared workspace and it
+      appears here with your name on it &mdash; you keep the entry current, and releases
+      sync from your own repo. We credit the author and link the work; we do not claim
+      anyone else's uptime.</span>
+      <a class="btn btn-p" href="https://vibe.aitherium.com/">Add your project</a>
+    </div>
+  </div></section>
+
+<footer><div class="wrap">
+  <div class="row">
+    <span class="el"><span class="n">47</span><span class="s">Ai</span></span>
+    <span>The Element of Creation. Local AI is the only surface here that keeps your
+    prompts on your own hardware &mdash; the rest are served from the fleet.</span>
+    <span class="sp"></span>
+    <a href="https://aitherium.com">aitherium.com</a>
+  </div>
+</div></footer>
+<script>
+(function(){
+  var chips = Array.prototype.slice.call(document.querySelectorAll('[data-filter]'));
+  var q = document.getElementById('q');
+  var cards = Array.prototype.slice.call(document.querySelectorAll('[data-hay]'));
+  var sections = Array.prototype.slice.call(document.querySelectorAll('[data-collection]'));
+  var active = 'all';
+
+  function apply(){
+    var needle = (q && q.value ? q.value : '').toLowerCase().trim();
+    var shown = {};
+    cards.forEach(function(c){
+      var col = c.getAttribute('data-col');
+      var on = (active === 'all' || col === active) &&
+               (!needle || c.getAttribute('data-hay').indexOf(needle) !== -1);
+      c.classList.toggle('hidden', !on);
+      if (on) { shown[col] = (shown[col] || 0) + 1; }
+    });
+    sections.forEach(function(s){
+      var id = s.getAttribute('data-collection');
+      var n = shown[id] || 0;
+      s.classList.toggle('hidden', active !== 'all' && active !== id);
+      var badge = s.querySelector('.count');
+      if (badge) { badge.textContent = n + (n === 1 ? ' project' : ' projects'); }
+      var empty = s.querySelector('.empty');
+      if (empty) { empty.classList.toggle('hidden', n !== 0); }
+    });
+  }
+
+  chips.forEach(function(chip){
+    chip.addEventListener('click', function(){
+      active = chip.getAttribute('data-filter');
+      chips.forEach(function(o){ o.setAttribute('aria-pressed', String(o === chip)); });
+      apply();
+    });
+  });
+  if (q) { q.addEventListener('input', apply); }
+  apply();
+
+  // ── the community shelf hydrates ──────────────────────────────────────────
+  // Entries here are written by OTHER PEOPLE. Every value below therefore goes in
+  // through textContent or setAttribute after validation, and never through
+  // innerHTML: this page is on our own domain, so someone else's tagline becoming
+  // markup would be our XSS, not theirs. An href that is not absolute https is
+  // dropped and the card renders unlinked rather than carrying javascript: or data:.
+  var host = document.querySelector('[data-hydrate]');
+  if (!host) { return; }
+  var src = host.getAttribute('data-hydrate');
+  var grid = host.querySelector('.grid');
+  var status = host.querySelector('[data-hydrate-status]');
+  if (!src || !grid) { return; }
+
+  function txt(tag, cls, value){
+    var el = document.createElement(tag);
+    if (cls) { el.className = cls; }
+    if (value !== undefined && value !== null) { el.textContent = String(value); }
+    return el;
+  }
+  function safeHttps(v){
+    return (typeof v === 'string' && v.slice(0, 8) === 'https://') ? v : null;
+  }
+  var STATUSES = { live: 'Live', waking: 'Waking', soon: 'Soon' };
+
+  function build(p){
+    var st = STATUSES[p.status] ? p.status : 'soon';
+    var href = safeHttps(p.url);
+    var el = document.createElement(href ? 'a' : 'div');
+    el.className = 'card';
+    if (href) { el.setAttribute('href', href); el.setAttribute('rel', 'noopener nofollow'); }
+    el.setAttribute('data-col', 'community');
+    el.setAttribute('data-hay', [p.id, p.name, p.tagline, p.by].join(' ').toLowerCase());
+
+    var kind = ['app'];
+    if (p.license) { kind.push(p.license); }
+    el.appendChild(txt('span', 'ico', kind.join(' \u00b7 ').toUpperCase()));
+    el.appendChild(txt('h3', null, p.name || p.id));
+
+    var by = txt('p', 'by', 'by ');
+    by.appendChild(txt('b', null, p.by || 'unattributed'));
+    el.appendChild(by);
+
+    el.appendChild(txt('p', null, p.tagline || ''));
+
+    var foot = txt('span', 'foot');
+    foot.appendChild(txt('span', 'st ' + st, STATUSES[st]));
+    if (p.release && p.release.tag) { foot.appendChild(txt('span', null, p.release.tag)); }
+    foot.appendChild(txt('span', 'sp'));
+    if (safeHttps(p.repo)) { foot.appendChild(txt('span', 'src', 'Source')); }
+    el.appendChild(foot);
+    return el;
+  }
+
+  function note(message){
+    if (status) { status.textContent = message; status.classList.remove('hidden'); }
+  }
+
+  fetch(src, { credentials: 'omit', mode: 'cors' })
+    .then(function(r){
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
+      return r.json();
+    })
+    .then(function(data){
+      var list = (data && Array.isArray(data.projects)) ? data.projects : null;
+      if (!list) { throw new Error('unexpected shape'); }
+      var seen = {};
+      Array.prototype.forEach.call(grid.querySelectorAll('[data-hay]'), function(c){
+        seen[c.getAttribute('data-hay').split(' ')[0]] = true;
+      });
+      var added = 0;
+      list.forEach(function(p){
+        if (!p || !p.id || seen[String(p.id).toLowerCase()]) { return; }
+        grid.appendChild(build(p));
+        added += 1;
+      });
+      if (added) {
+        cards = Array.prototype.slice.call(document.querySelectorAll('[data-hay]'));
+        apply();
+      }
+    })
+    .catch(function(err){
+      // A short shelf presented as the whole shelf is the failure this says out loud.
+      note('The live project registry could not be reached (' + err.message +
+           '), so only the entries built into this page are shown.');
+    });
+})();
+</script>
 </body>
 </html>

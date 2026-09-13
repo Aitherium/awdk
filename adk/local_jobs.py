@@ -10,7 +10,7 @@ Design goals (owner posture: "local-only by default, opt-in portal sync"):
   ``list`` / ``status`` / ``cancel`` / ``steer`` all read & write the shared
   SQLite store, so any later ``adk`` invocation sees live state.
 * **Opt-in portal sync.** ``push`` mirrors a local job to
-  ``portal.aitherium.com`` as a durable expedition scoped to your workspace;
+  ``api.aitherium.com`` as a durable expedition scoped to your workspace;
   ``pull`` refreshes local rows from their remote counterparts. Sync is never
   automatic — you connect explicitly.
 
@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 _DATA_DIR = Path(os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither")))
 _DB_PATH = _DATA_DIR / "jobs.db"
 
-_PORTAL_URL = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+_PORTAL_URL = os.getenv("AITHER_PORTAL_URL", "https://api.aitherium.com")
 
 _VALID_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
 

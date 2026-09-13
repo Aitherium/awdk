@@ -117,7 +117,7 @@ async def _run(cmd: List[str], cwd: Optional[str] = None, timeout: int = 120) ->
 CLOUD_API_URL = "https://mcp.aitherium.com"
 CLOUD_MCP_URL = "https://mcp.aitherium.com/mcp"
 CLOUD_IDENTITY_URL = "https://idp.aitherium.com"
-CLOUD_PORTAL_URL = "https://portal.aitherium.com"
+CLOUD_PORTAL_URL = "https://api.aitherium.com"
 
 
 def _write_cloud_shell_config() -> Path:

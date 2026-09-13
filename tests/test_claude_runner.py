@@ -344,6 +344,28 @@ class TestViewsAndToken:
         assert first not in capsys.readouterr().out  # token value never echoed
         assert resolve_token() == first  # stable across calls
 
+    def test_sync_runner_token_converges_tokenless_client(
+        self, runner_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A daemon that boots from the shared secret must sync the file so a
+        # client in a fresh shell (no env) resolves the SAME token, not a stale
+        # self-generated one. This is the 403 the sync exists to prevent.
+        from adk.claude_runner import sync_runner_token
+
+        token_file = runner_root / "token"
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text("stale-self-generated", encoding="utf-8")
+
+        monkeypatch.setenv("AITHER_INTERNAL_SECRET", "shared-secret-value")
+        daemon_token = resolve_token()
+        assert daemon_token == "shared-secret-value"
+        sync_runner_token(daemon_token)
+        assert token_file.read_text(encoding="utf-8").strip() == "shared-secret-value"
+
+        monkeypatch.delenv("AITHER_INTERNAL_SECRET", raising=False)
+        monkeypatch.delenv("AITHER_CLAUDE_RUNNER_TOKEN", raising=False)
+        assert resolve_token() == "shared-secret-value"  # tokenless client matches
+
     def test_subprocess_env_strips_sensitive_vars(self):
         base = {
             "PATH": "/usr/bin",

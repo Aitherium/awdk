@@ -18,7 +18,7 @@ class EnrollPlugin(SlashCommand):
     Persists node_id to ~/.aither/node_auth.json for future heartbeats.
 
     Subcommands:
-      /enroll                          Enroll with defaults (portal.aitherium.com)
+      /enroll                          Enroll with defaults (api.aitherium.com)
       /enroll --portal https://...     Custom portal URL
       /enroll --genesis http://...     Custom Genesis URL
       /enroll --no-heartbeat           Skip background heartbeat
@@ -96,7 +96,7 @@ class EnrollPlugin(SlashCommand):
             return "\n".join(lines)
 
         # Defaults
-        portal_url = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+        portal_url = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
         genesis_url = genesis_url or os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
 
         # Generate node ID if needed

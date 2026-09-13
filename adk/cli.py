@@ -30,7 +30,7 @@ def _control_plane() -> str:
     Measured 2026-09-04:
 
         veil.aitherium.com   /api/genesis/v1/agent/agents -> 404  (Server: GitHub.com)
-        portal.aitherium.com /api/genesis/v1/agent/agents -> 401  (route exists, wants auth)
+        api.aitherium.com /api/genesis/v1/agent/agents -> 401  (route exists, wants auth)
 
     The visible symptom was NOT a 404. `adk agents ls` folded it into
     "Cloud registry unreachable" and then listed only the local agents, so a
@@ -45,7 +45,7 @@ def _control_plane() -> str:
     return (
         _os.environ.get("AITHER_PORTAL_URL")
         or _os.environ.get("AITHER_ELYSIUM_URL")
-        or "https://portal.aitherium.com"
+        or "https://api.aitherium.com"
     ).rstrip("/")
 
 def _fix_ollama_host(raw: str) -> str:
@@ -392,57 +392,17 @@ def cmd_ssh(args):
 
     cfg = load_saved_config()
     # Prefer the device-flow access_token (a real JWT the tunnel validates at
-    # /identity/auth/me); fall back to an API key / env. The auto-provisioned
-    # local root key (`aither_root_local`) is NOT a login the tunnel accepts —
-    # it closes 4001 — so when config.json still carries it, look past it to
-    # the active auth.json profile (where `adk login` / `aither login` write).
-    from adk.config import _active_profile_creds
+    # /identity/auth/me); fall back to an API key / env.
     token = (cfg.get("access_token") or cfg.get("api_key")
              or os.environ.get("AITHER_API_KEY", ""))
-    if not token or token.startswith("aither_root_"):
-        token = _active_profile_creds().get("access_token") or token
-    if not token or token.startswith("aither_root_"):
+    if not token:
         print("Not authenticated. Run: adk login")
         return 1
-
-    # ── Headless one-shot: `adk ssh -x "<cmd>"` / `adk ssh [container] -- <cmd…>` ──
-    # No TTY, no termios, works on Windows: CI, cron, PowerShell, Claude Code/Codex.
-    commands = list(getattr(args, "exec_cmd", None) or [])
-    trailing = [t for t in (getattr(args, "trailing", None) or []) if t != "--"]
-    if "--" in sys.argv:
-        # argparse hands the first word after `--` to the optional `container`
-        # positional (nargs="?") and only the rest to REMAINDER. Rebuild the
-        # command from argv, and drop `container` if it came from after `--`.
-        dash = sys.argv.index("--")
-        trailing = sys.argv[dash + 1:]
-        if container and container not in sys.argv[:dash]:
-            container = None
-    if trailing:
-        commands.append(" ".join(trailing))
-    if commands:
-        from adk.tunnel_exec import exec_remote_sync
-        as_json = bool(getattr(args, "json", False))
-        sink = None if as_json else (lambda chunk: (sys.stdout.write(chunk), sys.stdout.flush()))
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # the banner has a ⚠
-        except Exception:
-            pass
-        result = exec_remote_sync(
-            commands, token=token, container=container, host=host,
-            timeout_s=float(getattr(args, "timeout", 120) or 120), sink=sink,
-        )
-        if as_json:
-            print(json.dumps({"code": result.code, "output": result.output, "reason": result.reason}))
-        elif result.reason in ("error", "timeout"):
-            last = result.output.strip().splitlines()[-1:] or [""]
-            print(f"{result.reason}: {last[0]}", file=sys.stderr)
-        return result.code
-
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print("adk ssh needs an interactive terminal (TTY) — or pass -x \"<cmd>\" to run headless.")
+        print("adk shell needs an interactive terminal (TTY).")
         return 1
     if os.name != "posix":
-        print("adk ssh raw mode is POSIX-only. On Windows use `aither connect`, or `adk ssh -x \"<cmd>\"`.")
+        print("adk shell raw mode is POSIX-only. On Windows use: aither connect")
         return 1
     try:
         import signal
@@ -733,7 +693,7 @@ def _sync_entitled_packs_quiet() -> None:
     portal = (
         os.environ.get("AITHER_PORTAL_URL")
         or os.environ.get("AITHER_ELYSIUM_URL")
-        or "https://portal.aitherium.com"
+        or "https://api.aitherium.com"
     ).rstrip("/")
     plugin._base_url = portal
     cfg = load_saved_config()
@@ -977,6 +937,24 @@ def cmd_up(args):
     name = (getattr(args, "name", "") or "").strip() or re.sub(
         r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-adk".lower())
     port = getattr(args, "port", None) or 8080
+    # :8080 is also where install-bonsai.sh / phone.sh put llama-server, and its
+    # /health answered our poll — so `adk up` on such a box reported "healthy"
+    # for a child that died on EADDRINUSE (2026-09-12). If someone ELSE owns the
+    # requested port and the user did not pin it explicitly, step to the next
+    # free one and say so; an explicit --port that is taken is an error.
+    _owner = daemon.port_owner(port)
+    if _owner == "other":
+        if getattr(args, "port", None):
+            print(f"  [x] :{port} is already served by another process "
+                  f"(a llama-server / Bonsai answers /health there). Pick another --port.")
+            return 3
+        _orig = port
+        for _cand in range(port + 1, port + 20):
+            if daemon.port_owner(_cand) is None:
+                port = _cand
+                break
+        print(f"  [i] :{_orig} is in use by another server (your local Bonsai?); "
+              f"starting the agent on :{port} instead")
     foreground = bool(getattr(args, "foreground", False))
     persist = not getattr(args, "no_persist", False)
     force = bool(getattr(args, "force", False))
@@ -1443,7 +1421,14 @@ def _cmd_sandbox_up(args) -> int:
     port = getattr(args, "port", None) or 8131
     image = os.environ.get("AITHER_SANDBOX_IMAGE", "aitheros-sandbox:latest")
     portal = getattr(args, "portal", _control_plane())
-    portal_token = getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
+    # DS8: Read portal token from ~/.aither/ (device-flow login), then env, then CLI arg
+    _aither_dir = Path(os.path.expanduser("~/.aither"))
+    _portal_token_file = _aither_dir / "portal-token"
+    portal_token = (
+        getattr(args, "token", "")
+        or os.environ.get("AITHER_PORTAL_TOKEN", "")
+        or (_portal_token_file.read_text().strip() if _portal_token_file.exists() else "")
+    )
     name = (getattr(args, "name", "") or "").strip() or re.sub(
         r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-sandbox".lower())
 
@@ -1494,8 +1479,19 @@ def _cmd_sandbox_up(args) -> int:
                 hdrs["Authorization"] = f"Bearer {portal_token}"
             rr = httpx.post(f"{portal}/api/genesis/v1/agent/fleet/register",
                             json=body, headers=hdrs, timeout=20)
-            registered = rr.status_code < 300
-        except (httpx.HTTPError, OSError):
+            if rr.status_code < 300:
+                registered = True
+            elif rr.status_code in (401, 403):
+                # DS8: Distinguish auth errors from transport errors
+                if rr.status_code == 401:
+                    print("portal: authorization failed (401) — check AITHER_PORTAL_TOKEN "
+                          "or run 'adk login'")
+                else:
+                    print("portal: access denied (403) — check your permissions")
+                registered = False
+        except (httpx.HTTPError, OSError) as _e:
+            print(f"portal: NOT registered (transport error: {type(_e).__name__}) — "
+                     f"sandbox is local-only")
             registered = False
 
     try:
@@ -1596,9 +1592,9 @@ def cmd_bonsai_local(args) -> int:
         print("    gpu        :", "yes (nvidia runtime)" if gpu_args else "no — CPU (AVX) fallback")
         print("    command    :", " ".join(run_cmd))
         print("  Then the Living OS at aitherium.com auto-detects it and chats on your box.")
-        print("    agents via : adk --backend bonsai-local"
+        print(f"    agents via : auto-detected (adk status / adk start), or adk run --backend bonsai-local"
               if port == BONSAI_LOCAL_PORT else
-              f"    agents via : adk --backend openai --base-url http://localhost:{port}/v1")
+              f"    agents via : adk backend set bonsai-local --base-url http://localhost:{port}/v1")
         return 0
 
     # Reuse an existing container if already up.
@@ -1633,11 +1629,20 @@ def cmd_bonsai_local(args) -> int:
             time.sleep(2)
     if healthy:
         print(f"  [+] Bonsai-27B live on http://localhost:{port} — open aitherium.com; it'll chat on your hardware.")
-        if port == BONSAI_LOCAL_PORT:
-            print("  [+] Point agents at it with:  adk --backend bonsai-local")
-        else:
-            print(f"  [!] Non-default port {port}: no preset targets it. Use "
-                  f"`adk --backend openai --base-url http://localhost:{port}/v1`.")
+        # Persist it as THE configured backend so `adk start`, `adk up`, the SDK
+        # and awsh use it without a flag. The old hint, `adk --backend
+        # bonsai-local`, was not a real flag (2026-09-12).
+        try:
+            save_saved_config({
+                "default_backend": "bonsai-local",
+                "inference_url": f"http://127.0.0.1:{port}/v1",
+                "default_model": "bonsai-27b",
+            })
+            print(f"  [+] Configured as your backend: bonsai-local http://127.0.0.1:{port}/v1")
+            print("      adk status / adk start / awsh now use it. Undo: adk backend set gateway")
+        except Exception as e:  # noqa: BLE001 — the server is up either way
+            print(f"  [!] Could not save backend config ({e}); run: "
+                  f"adk backend set bonsai-local --base-url http://127.0.0.1:{port}/v1")
         return 0
     print(f"  [!] Container started but :{port}/health didn't come up in ~60s. Check `docker logs {name}`.")
     return 1
@@ -1898,7 +1903,7 @@ def cmd_register(args):
 # adk login / whoami / logout — device flow auth (RFC 8628)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_IDENTITY_URL = "https://portal.aitherium.com"
+_DEFAULT_IDENTITY_URL = "https://api.aitherium.com"
 
 
 def _derive_cloud_endpoints(identity_url: str) -> dict | None:
@@ -1936,7 +1941,20 @@ def _persist_workspace_endpoints(identity_url: str) -> dict | None:
         return None
 
     # 1) config.json — Python SDK + `adk whoami`.
-    save_saved_config(eps)
+    # A user who ran `adk backend set vllm --base-url http://127.0.0.1:8080/v1`
+    # (what install-bonsai.sh --with-adk does) and then logs in again must NOT
+    # have inference_url rewritten to the cloud: default_backend stays "vllm",
+    # the router dials mcp.aitherium.com/v1 with no key, and every chat 401s
+    # (measured 2026-09-12). Keep the local endpoint; the cloud one still lands
+    # in api_url/mcp_url/identity_url and in gateway_inference_url.
+    to_save = dict(eps)
+    try:
+        saved = load_saved_config()
+    except Exception:  # noqa: BLE001 — a config read failure must not block login
+        saved = {}
+    if saved.get("default_backend") and saved.get("inference_url"):
+        to_save["gateway_inference_url"] = to_save.pop("inference_url")
+    save_saved_config(to_save)
 
     # 2) shell.yaml — the TS `aither` shell reads api_url/mcp_url/identity_url.
     try:
@@ -2997,12 +3015,21 @@ def cmd_connect(args):
         if args.save:
             save_data = {
                 "gateway_url": "https://gateway.aitherium.com",
-                "inference_url": "https://mcp.aitherium.com/v1",
+                "gateway_inference_url": "https://mcp.aitherium.com/v1",
             }
+            # Same rule as _persist_workspace_endpoints: a user-set local backend
+            # (adk backend set vllm --base-url http://127.0.0.1:8080/v1) keeps its
+            # inference_url; only an unconfigured box adopts the cloud one.
+            try:
+                _prior = load_saved_config()
+            except Exception:  # noqa: BLE001
+                _prior = {}
+            if not (_prior.get("default_backend") and _prior.get("inference_url")):
+                save_data["inference_url"] = "https://mcp.aitherium.com/v1"
+                if backends_found:
+                    save_data["default_backend"] = backends_found[0][0]
             if api_key:
                 save_data["api_key"] = api_key
-            if backends_found:
-                save_data["default_backend"] = backends_found[0][0]
             if tenant_info.get("tenant_id"):
                 save_data["tenant_id"] = tenant_info["tenant_id"]
 
@@ -3772,7 +3799,7 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
 
         # 3. Register with portal
         portal_url = saved.get("portal_url", "") or os.environ.get(
-            "AITHER_PORTAL_URL", "https://portal.aitherium.com"
+            "AITHER_PORTAL_URL", "https://api.aitherium.com"
         )
         invoke_url = os.environ.get("AITHER_INVOKE_URL", agent_url)
 
@@ -3815,7 +3842,7 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
 
         # 4. Print fleet URL
         print()
-        print("  Fleet dashboard: https://portal.aitherium.com/portal/fleet")
+        print("  Fleet dashboard: https://api.aitherium.com/portal/fleet")
         if instance_id:
             print(f"  Instance ID:     {instance_id}")
         print()
@@ -4328,7 +4355,8 @@ def cmd_enroll(args) -> int:
     import asyncio
 
     try:
-        portal_url = getattr(args, "portal", None) or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+        portal_url = getattr(args, "portal", None) or os.environ.get(
+            "AITHER_PORTAL_URL", "https://api.aitherium.com")
         genesis_url = getattr(args, "genesis", None) or os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
         no_heartbeat = getattr(args, "no_heartbeat", False)
         force = getattr(args, "force", False)
@@ -6032,9 +6060,9 @@ def cmd_backend(args):
             # Show available providers
             print()
             print("Available:")
-            for name in ("ollama", "vllm", "openai", "anthropic", "deepseek",
-                         "moonshot", "groq", "together", "gateway", "lmstudio",
-                         "genesis", "picolm"):
+            for name in ("ollama", "vllm", "llamacpp", "bonsai-local", "bonsai", "openai",
+                         "anthropic", "deepseek", "moonshot", "groq", "together",
+                         "gateway", "lmstudio", "genesis", "picolm"):
                 print(f"  - {name}")
         asyncio.run(_list())
         return 0
@@ -6059,6 +6087,11 @@ def cmd_backend(args):
                 data["api_key"] = api_key
         if base_url:
             data["inference_url"] = base_url
+        elif provider in ("bonsai-local", "bonsai"):
+            # Presets carry their own loopback URL; persist it so `adk status`
+            # and the preflight (which read inference_url) see it too.
+            data["inference_url"] = {"bonsai-local": "http://127.0.0.1:8090/v1",
+                                     "bonsai": "http://127.0.0.1:8080/v1"}[provider]
         if model:
             data["default_model"] = model
         save_saved_config(data)
@@ -6112,12 +6145,15 @@ def cmd_backend(args):
     elif sub == "status":
         """Show current backend configuration and connectivity."""
         cfg_dict = load_saved_config()
-        current_backend = cfg_dict.get("setup_backend", "unknown")
+        # `adk backend set` writes default_backend; setup/quickstart write
+        # setup_backend. Show whichever is set instead of "unknown" after a
+        # perfectly good `backend set vllm --base-url ...` (2026-09-12).
+        current_backend = (cfg_dict.get("default_backend")
+                           or cfg_dict.get("setup_backend") or "unknown")
         inference_url = cfg_dict.get("inference_url", "not configured")
-        inference_model = cfg_dict.get(
-            "inference_model",
-            cfg_dict.get("ollama_model", "not configured"),
-        )
+        inference_model = (cfg_dict.get("default_model")
+                           or cfg_dict.get("inference_model")
+                           or cfg_dict.get("ollama_model") or "not configured")
 
         print("\n  Backend Status")
         print("  " + "=" * 50)
@@ -6618,7 +6654,7 @@ def _push_key_to_vault(provider: str, key: str) -> bool:
     back to raw AitherSecrets (platform-level, owner/fleet boxes with the
     internal secret in env). NEVER fails silently — prints why sync didn't
     happen and how to enable it (owner directive: keys set locally must sync
-    to the workspace/tenant in portal.aitherium.com, and errors must guide).
+    to the workspace/tenant in api.aitherium.com, and errors must guide).
     """
     import httpx
 
@@ -6670,7 +6706,7 @@ def _push_key_to_vault(provider: str, key: str) -> bool:
 
     print("  NOT synced to AitherOS: " + "; ".join(reasons))
     print("  Key works locally. To sync it to your workspace "
-          "(portal.aitherium.com -> Settings -> keys): log in first, then re-run "
+          "(api.aitherium.com -> Settings -> keys): log in first, then re-run "
           f"`adk keys set {provider} <key>`.")
     return False
 
@@ -7657,6 +7693,45 @@ def cmd_mesh(args) -> int:
         return 1
 
 
+def cmd_volunteer(args) -> int:
+    """Volunteer embedding compute for DGG community."""
+    import asyncio
+
+    sub = getattr(args, "volunteer_command", None)
+
+    if sub == "enroll":
+        async def _enroll():
+            from adk.commands.volunteer import enroll
+            await enroll(args)
+            return 0
+        return asyncio.run(_enroll())
+
+    elif sub == "serve":
+        async def _serve():
+            from adk.commands.volunteer import serve
+            await serve(args)
+            return 0
+        return asyncio.run(_serve())
+
+    elif sub == "start":
+        async def _start():
+            from adk.commands.volunteer import start
+            await start(args)
+            return 0
+        return asyncio.run(_start())
+
+    elif sub == "status":
+        async def _status():
+            from adk.commands.volunteer import status
+            await status(args)
+            return 0
+        return asyncio.run(_status())
+
+    else:
+        print("Usage: adk volunteer [enroll|serve|start|status]")
+        return 1
+
+
 def cmd_routing(args):
     """Manage per-intent model routing."""
     sub = getattr(args, "routing_command", None)
@@ -7844,11 +7919,11 @@ def cmd_grid(args) -> int:
         username = saved.get("username", "")
         if api_key:
             print(f"  Auth:     {username or 'logged in'} (tenant: {tenant or 'default'})")
-            print("  Sync:     adk grid sync → portal.aitherium.com")
+            print("  Sync:     adk grid sync → api.aitherium.com")
         else:
             print("  Account:  none (everything works locally without one)")
             print("  Optional: adk login → free account, enables config sync across machines")
-            print("            https://portal.aitherium.com/signup")
+            print("            https://api.aitherium.com/signup")
 
         # Health check all nodes
         print()
@@ -8067,7 +8142,7 @@ def cmd_grid(args) -> int:
         # line ships to PyPI, so the fallback was handing strangers a command
         # that cannot work. Point it at the maintained bootstrap instead — the
         # same command `POST /nodes/enroll-command` emits.
-        base = (getattr(args, "url", "") or "https://portal.aitherium.com").rstrip("/")
+        base = (getattr(args, "url", "") or "https://api.aitherium.com").rstrip("/")
         install = data.get("install") or (
             f'curl -fsSL {base}/bootstrap/join.sh | '
             f'AITHER_NODE_NAME=$(hostname) AITHER_ENROLL_TOKEN={tok} '
@@ -8171,7 +8246,7 @@ def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_ke
         # portal route /api/nodes/enroll-token forwards the caller to the
         # gateway in-network; the mint is the security boundary.
         gateway = (_os.environ.get("AITHER_NODE_GATEWAY_URL")
-                   or "https://portal.aitherium.com/api").rstrip("/")
+                   or "https://api.aitherium.com/api").rstrip("/")
     else:
         # Admin-key lanes stay OFF the public surface — the X-API-Key IS the
         # internal secret, so only an operator-set in-network URL may carry
@@ -8386,7 +8461,7 @@ def cmd_explore(args) -> int:
     print("    adk pack install <id>       Install a pack")
     print("    adk upgrade <id>            Open checkout page")
     print()
-    print("  Full catalog: https://portal.aitherium.com/marketplace")
+    print("  Full catalog: https://api.aitherium.com/marketplace")
     print()
     return 0
 
@@ -8401,14 +8476,18 @@ _UPGRADE_URLS: dict[str, tuple[str, str]] = {
     # login gate and then 404 — measured 2026-08-31, gate RSU001. The id
     # slug is catalog data; if a slug ever stops resolving, the detail page
     # renders its own not-found state instead of a route-level 404.
-    "managed": ("https://portal.aitherium.com/marketplace/app/grid?sku=grid_managed_monthly", "Grid Managed ($49/mo)"),
-    "setup": ("https://portal.aitherium.com/marketplace/app/grid?sku=grid_setup_onetime", "Grid Setup Call ($199)"),
-    "grid": ("https://portal.aitherium.com/marketplace/app/grid", "Grid Distributed Inference"),
-    "demiurge": ("https://portal.aitherium.com/marketplace/app/agent.demiurge", "Demiurge — Code Architect"),
-    "hydra": ("https://portal.aitherium.com/marketplace/app/agent.hydra", "Hydra — Code Guardian"),
-    "athena": ("https://portal.aitherium.com/marketplace/app/agent.athena", "Athena — Security Oracle"),
-    "lyra": ("https://portal.aitherium.com/marketplace/app/agent.lyra", "Lyra — Research Muse"),
-    "pro": ("https://portal.aitherium.com/pricing", "Professional Plan"),
+    "managed": ("https://api.aitherium.com/marketplace/app/grid?sku=grid_managed_monthly",
+        "Grid Managed ($49/mo)"),
+    "setup": ("https://api.aitherium.com/marketplace/app/grid?sku=grid_setup_onetime",
+        "Grid Setup Call ($199)"),
+    "grid": ("https://api.aitherium.com/marketplace/app/grid", "Grid Distributed Inference"),
+    "demiurge": (
+        "https://api.aitherium.com/marketplace/app/agent.demiurge", "Demiurge — Code Architect"),
+    "hydra": ("https://api.aitherium.com/marketplace/app/agent.hydra", "Hydra — Code Guardian"),
+    "athena": (
+        "https://api.aitherium.com/marketplace/app/agent.athena", "Athena — Security Oracle"),
+    "lyra": ("https://api.aitherium.com/marketplace/app/agent.lyra", "Lyra — Research Muse"),
+    "pro": ("https://api.aitherium.com/pricing", "Professional Plan"),
 }
 
 
@@ -8430,7 +8509,7 @@ def cmd_upgrade(args) -> int:
     if target in _UPGRADE_URLS:
         url, label = _UPGRADE_URLS[target]
     else:
-        url = f"https://portal.aitherium.com/marketplace/{target}"
+        url = f"https://api.aitherium.com/marketplace/{target}"
         label = target
 
     print(f"\n  Opening: {label}")
@@ -8703,7 +8782,7 @@ def cmd_tools(args):
                     print(f"  {name:30s} {desc}{marker}")
                 print(f"\n  Total: {len(mcp_tools)} MCP tools")
                 if getattr(args, "upgrade", False):
-                    print("\n  Upgrade at: https://portal.aitherium.com/pricing")
+                    print("\n  Upgrade at: https://api.aitherium.com/pricing")
             except Exception as e:
                 print(f"\n  MCP: not available ({e})")
         else:
@@ -9509,6 +9588,22 @@ def cmd_quickstart_local(args):
             return 1
         endpoint = "http://localhost:8209/v1"
         model_name = "auto"
+    elif backend == "bonsai":
+        # pick_backend returns "bonsai" on a CPU-only box with Docker; this
+        # branch did not exist, so quickstart-local printed "unknown backend
+        # bonsai" for the very backend it had just chosen (2026-09-12).
+        class _BArgs:
+            port = getattr(args, "port", None) or BONSAI_LOCAL_PORT
+            dry_run = getattr(args, "dry_run", False)
+            stop = False
+        rc = cmd_bonsai_local(_BArgs())
+        if rc != 0:
+            print("  ERROR: adk bonsai-local failed (see above). Without the Docker image, "
+                  "run:  curl -fsSL https://aitherium.com/install-bonsai.sh | sh -s -- --with-adk",
+                  file=sys.stderr)
+            return 1
+        endpoint = f"http://127.0.0.1:{_BArgs.port}/v1"
+        model_name = "bonsai-27b"
     else:
         print(f"  ERROR: unknown backend {backend}", file=sys.stderr)
         return 1
@@ -9530,6 +9625,8 @@ def cmd_quickstart_local(args):
                     break
                 time.sleep(2)
             ok = llamacpp_setup.smoke_test(port=verify_port)
+        elif backend == "bonsai":
+            ok = llamacpp_setup.smoke_test(port=int(endpoint.rsplit(":", 1)[1].split("/")[0]))
         else:  # ollama
             ok = ollama_smoke_test(model)
         if not ok:
@@ -9545,11 +9642,17 @@ def cmd_quickstart_local(args):
     # Step 5: Persist config
     print()
     print("  [5/5] Saving configuration...")
-    save_saved_config({
+    _persist = {
         "setup_backend": backend,
         "inference_url": endpoint,
         "inference_model": model_name,
-    })
+    }
+    if backend == "bonsai":
+        # Make it the explicit backend too, so the router's explicit branch
+        # (not just the desktop/inference_url sniff) selects it.
+        _persist["default_backend"] = "bonsai-local"
+        _persist["default_model"] = model_name
+    save_saved_config(_persist)
     print("  Config saved to ~/.aither/config.json")
 
     # Banner
@@ -9632,6 +9735,42 @@ def cmd_status(args):
 
         print("AitherADK Backend Status")
         print("=" * 50)
+
+        # The backend the user CONFIGURED (adk backend set / install-bonsai.sh
+        # --with-adk) comes first. Until 2026-09-12 this command never read it,
+        # so a working Bonsai on :8080 printed nothing but DOWN rows and
+        # "No API key", and users concluded the install had failed.
+        try:
+            _cfg = load_saved_config()
+        except Exception:
+            _cfg = {}
+        cfg_backend = (_cfg.get("default_backend") or "").strip()
+        cfg_url = (_cfg.get("inference_url") or "").strip()
+        if cfg_backend and cfg_url:
+            cfg_status = "DOWN"
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as c:
+                    _base = cfg_url.rstrip("/")
+                    r = await c.get(f"{_base}/models" if _base.endswith("/v1") else f"{_base}/v1/models")
+                    cfg_status = "UP" if r.status_code == 200 else f"HTTP {r.status_code}"
+            except Exception:
+                pass
+            _model = _cfg.get("default_model") or ""
+            print(f"  [{'+' if cfg_status == 'UP' else '-'}] {'Configured':12s} "
+                  f"{(cfg_backend + ' ' + cfg_url):45s} {cfg_status}"
+                  + (f"  ({_model})" if _model else ""))
+
+        # Self-hosted servers the user started (install-bonsai.sh :8080,
+        # `adk bonsai-local` :8090, ...): the same ladder LLMRouter uses.
+        try:
+            from adk.local_inference import discover_local_endpoint
+            found = await discover_local_endpoint()
+            if found.found and found.source in ("env", "port"):
+                print(f"  [+] {'Local':12s} {found.endpoint_url:45s} UP"
+                      + (f"  ({found.model})" if found.model else ""))
+        except Exception:
+            pass
+
         for name, url in checks.items():
             try:
                 async with httpx.AsyncClient(timeout=3.0) as c:
@@ -9949,9 +10088,12 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
 
     # Shortcut names
     shortcuts = {
-        "deepseek-flash": ("deepseek", "deepseek-v4-flash"),
-        "deepseek-pro": ("deepseek", "deepseek-v4-pro"),
-        "deepseek": ("deepseek", "deepseek-v4-flash"),
+        # 2026-09-10: vendor ids are `deepseek-flash` (V4.1 Flash) + `deepseek-v4-pro`;
+        # `deepseek-v4-flash` is a temporary alias and `deepseek-v4-pro` is routed to
+        # V4.1 Flash from 2026-09-14 (vendor changelog) — both shortcuts land on it.
+        "deepseek-flash": ("deepseek", "deepseek-flash"),
+        "deepseek-pro": ("deepseek", "deepseek-flash"),
+        "deepseek": ("deepseek", "deepseek-flash"),
         "openrouter": ("openrouter", "deepseek/deepseek-v4-flash"),
         "ollama": ("ollama", "llama3.2:latest"),
     }
@@ -9966,8 +10108,8 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
             "provider": "openai",
             "base_url": "https://api.deepseek.com/v1",
             "api_key": keys.get("deepseek", os.environ.get("DEEPSEEK_API_KEY", "")),
-            "model": model or "deepseek-v4-flash",
-            "display": f"DeepSeek ({model or 'deepseek-v4-flash'})",
+            "model": model or "deepseek-flash",
+            "display": f"DeepSeek ({model or 'deepseek-flash'})",
         },
         "openrouter": {
             "provider": "openai",
@@ -10004,6 +10146,53 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
 def _detect_llm_backend():
     """Detect available LLM backend. Returns dict with provider info."""
     import shutil
+
+    # 0. What the user configured (adk backend set / install-bonsai.sh --with-adk)
+    # wins over anything sniffed: until 2026-09-12 `adk start` ignored saved
+    # config and grabbed Ollama or the cloud key instead of the Bonsai the user
+    # had just installed, while printing "LLM: None detected!" for it.
+    try:
+        from adk.config import load_saved_config
+        _cfg = load_saved_config()
+        _b = (_cfg.get("default_backend") or "").strip()
+        _u = (_cfg.get("inference_url") or "").strip()
+        if _b and _u and _b not in ("gateway", "auto"):
+            import httpx
+            _base = _u.rstrip("/")
+            _models_url = f"{_base}/models" if _base.endswith("/v1") else f"{_base}/v1/models"
+            resp = httpx.get(_models_url, timeout=2.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                model_id = (_cfg.get("default_model")
+                            or (data["data"][0]["id"] if data.get("data") else "")
+                            or "default")
+                return {
+                    "provider": "openai" if _b in ("vllm", "llamacpp", "lmstudio", "bonsai", "bonsai-local") else _b,
+                    "base_url": _base if _base.endswith("/v1") else f"{_base}/v1",
+                    "model": model_id,
+                    "api_key": "not-needed",
+                    "display": f"{_b} ({model_id}) — configured",
+                }
+    except Exception:
+        pass
+
+    # 0b. A self-hosted server on a known loopback port (same ladder as
+    # LLMRouter and aitherium.com): install-bonsai.sh :8080, bonsai-local :8090 ...
+    try:
+        import asyncio as _aio
+        from adk.local_inference import discover_local_endpoint
+        found = _aio.run(discover_local_endpoint())
+        if found.found and found.source in ("env", "port") and found.endpoint_url:
+            _base = found.endpoint_url.rstrip("/")
+            return {
+                "provider": "openai",
+                "base_url": _base if _base.endswith("/v1") else f"{_base}/v1",
+                "model": found.model or "default",
+                "api_key": "not-needed",
+                "display": f"Local ({found.model or _base})",
+            }
+    except Exception:
+        pass
 
     # 1. Check for Ollama
     ollama_bin = shutil.which("ollama")
@@ -10092,8 +10281,8 @@ def _detect_llm_backend():
                     "provider": "openai",
                     "base_url": "https://api.deepseek.com/v1",
                     "api_key": pkeys["deepseek"],
-                    "model": "deepseek-v4-flash",
-                    "display": "DeepSeek V4 Flash (1M context)",
+                    "model": "deepseek-flash",
+                    "display": "DeepSeek V4.1 Flash (1M context, multimodal)",
                 }
             if pkeys.get("openrouter"):
                 return {
@@ -11271,7 +11460,7 @@ def _cmd_pack(args) -> int:
             os.environ.get("AITHER_PORTAL_URL")
             or os.environ.get("AITHER_ELYSIUM_URL")
             or genesis_url
-            or "https://portal.aitherium.com"
+            or "https://api.aitherium.com"
         ).rstrip("/")
         plugin._base_url = portal
         cfg = load_saved_config()
@@ -11288,7 +11477,7 @@ def _cmd_pack(args) -> int:
             os.environ.get("AITHER_PORTAL_URL")
             or os.environ.get("AITHER_ELYSIUM_URL")
             or genesis_url
-            or "https://portal.aitherium.com"
+            or "https://api.aitherium.com"
         ).rstrip("/")
         cfg = load_saved_config()
         token = cfg.get("api_key") or cfg.get("access_token") or os.environ.get("AITHER_API_KEY", "")
@@ -11365,7 +11554,7 @@ def _cmd_pack(args) -> int:
                 if isinstance(detail, dict):
                     detail = detail.get("message", "License required")
                 print(f"License required: {detail}")
-                print("Purchase at: https://portal.aitherium.com/marketplace")
+                print("Purchase at: https://api.aitherium.com/marketplace")
                 return 2
 
             if resp.status_code == 404:
@@ -12503,7 +12692,7 @@ def _register_commands(sub):
     login_p.add_argument("--no-sync", action="store_true",
                          help="Skip auto-syncing your secrets vault after login")
     login_p.add_argument("--portal-url", default="",
-                         help="Portal/Identity URL (default: portal.aitherium.com)")
+                         help="Portal/Identity URL (default: api.aitherium.com)")
 
     # adk pair — node-initiated pairing (the code IS the credential; no login here)
     pair_p = sub.add_parser(
@@ -12511,7 +12700,7 @@ def _register_commands(sub):
         help="Pair this machine with the portal as an inference node (6-char code from the portal)")
     pair_p.add_argument("code", help="Pairing code shown in the signed-in portal tab")
     pair_p.add_argument("--portal", default="",
-                        help="Portal base URL (default: https://portal.aitherium.com)")
+                        help="Portal base URL (default: https://api.aitherium.com)")
 
     # adk whoami
     _whoami = sub.add_parser(
@@ -12953,13 +13142,13 @@ def _register_commands(sub):
     d_node.add_argument("--dry-run", action="store_true", help="Show what would happen")
     d_node.add_argument("--sovereign", action="store_true",
                          help="Register with Aitherium hub after deployment (federation)")
-    d_node.add_argument("--hub", default="https://portal.aitherium.com",
-                         help="Hub URL for federation (default: portal.aitherium.com)")
+    d_node.add_argument("--hub", default="https://api.aitherium.com",
+                         help="Hub URL for federation (default: api.aitherium.com)")
     d_node.add_argument("--tenant", help="Tenant slug for federation registration")
     d_node.add_argument("--federate", action="store_true",
                          help="Also start AitherFederate (port 8094) — agent-fleet "
                               "registration, product-catalog sync, and knowledge "
-                              "ingestion routing to portal.aitherium.com. Requires "
+                              "ingestion routing to api.aitherium.com. Requires "
                               "--portal-token or AITHER_PORTAL_TOKEN.")
     d_node.add_argument("--portal-token", help="AITHER_PORTAL_TOKEN for --federate (or set env var)")
 
@@ -12998,7 +13187,7 @@ def _register_commands(sub):
     d_addons.add_argument("--dry-run", action="store_true", help="Show what would happen")
     d_addons.add_argument("--sovereign", action="store_true",
                           help="Register with federation hub after deployment")
-    d_addons.add_argument("--hub", default="https://portal.aitherium.com",
+    d_addons.add_argument("--hub", default="https://api.aitherium.com",
                           help="Hub URL for federation")
     d_addons.add_argument("--tenant", help="Tenant slug for federation registration")
 
@@ -13056,14 +13245,6 @@ def _register_commands(sub):
                        help="Dev-workspace container (alternative to positional)")
     ssh_p.add_argument("--tunnel-url", default="tunnel.aitherium.com",
                        help="Tunnel host (default: tunnel.aitherium.com)")
-    ssh_p.add_argument("-x", "--exec", dest="exec_cmd", action="append", metavar="CMD",
-                       help="Run CMD headlessly (no TTY) and exit with its code; repeatable")
-    ssh_p.add_argument("--timeout", type=float, default=120,
-                       help="Headless run cap in seconds (default 120)")
-    ssh_p.add_argument("--json", action="store_true",
-                       help="Headless: print {code, output, reason} as JSON instead of streaming")
-    ssh_p.add_argument("trailing", nargs=argparse.REMAINDER,
-                       help="After `--`: one command line to run headlessly")
 
     sshcert_p = sub.add_parser(
         "ssh-cert",
@@ -13132,7 +13313,7 @@ def _register_commands(sub):
 
     # adk enroll — register workstation with control plane
     enroll_p = sub.add_parser("enroll", help="Register this workstation with the control plane")
-    enroll_p.add_argument("--portal", help="Portal URL (default: portal.aitherium.com)")
+    enroll_p.add_argument("--portal", help="Portal URL (default: api.aitherium.com)")
     enroll_p.add_argument("--genesis", help="Genesis URL (default: localhost:8001)")
     enroll_p.add_argument("--no-heartbeat", action="store_true", help="Skip background heartbeat")
     enroll_p.add_argument("--force", action="store_true", help="Re-enroll even if already registered")
@@ -13151,7 +13332,8 @@ def _register_commands(sub):
     host_p.add_argument("--token", help="Control-plane token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN)")
     host_p.add_argument("--auth-token", help="Callback bearer the control plane presents back to your agent (minted if omitted)")
     host_p.add_argument("--portal", default=_control_plane(), help="Control-plane base URL")
-    host_p.add_argument("--login-url", help="Device-flow login base URL (default: --portal, then portal.aitherium.com)")
+    host_p.add_argument("--login-url", help="Device-flow login base URL (default: --portal, then "
+        "api.aitherium.com)")
     host_p.add_argument("--register-url", help="Full fleet-register URL (overrides --portal; e.g. http://localhost:8001/v1/agent/fleet/register)")
     host_p.add_argument("--no-register", action="store_true", help="Run locally only — no tunnel, no fleet registration")
     host_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
@@ -13746,6 +13928,36 @@ def _register_commands(sub):
         if _act in ("approve", "revoke"):
             _p.add_argument("--link-id", required=True, help="The link_id to act on")
 
+    # adk volunteer — volunteer embedding compute for DGG
+    volunteer_p = sub.add_parser(
+        "volunteer", help="Volunteer embedding compute for DGG (enroll, serve, start)")
+    volunteer_sub = volunteer_p.add_subparsers(dest="volunteer_command")
+
+    volunteer_enroll_p = volunteer_sub.add_parser(
+        "enroll", help="Enroll as a volunteer (mesh onboard + consent + trust)")
+    volunteer_enroll_p.add_argument(
+        "--tenant", default=None,
+        help="Owner tenant id (default: the tenant saved by 'adk login', e.g. tnt_dgg)")
+
+    volunteer_serve_p = volunteer_sub.add_parser(
+        "serve", help="Download model and start llama-server")
+    volunteer_serve_p.add_argument(
+        "--model", default="aither-code-embed-0.6b",
+        help="Model name (default: aither-code-embed-0.6b)")
+    volunteer_serve_p.add_argument(
+        "--device", default="auto", choices=["auto", "cpu", "gpu"],
+        help="Device (default: auto)")
+
+    volunteer_start_p = volunteer_sub.add_parser(
+        "start", help="Claim batches, embed, and submit results")
+    volunteer_start_p.add_argument(
+        "--batch-size", type=int, default=64, help="Batch size (default: 64)")
+
+    volunteer_status_p = volunteer_sub.add_parser(
+        "status", help="Show volunteer status (reputation, tokens, batches)")
+    volunteer_status_p.add_argument(
+        "--peer-id", help="Peer ID (default: auto-resolved)")
+
     # adk routing — per-intent model routing
     routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
     routing_sub = routing_p.add_subparsers(dest="routing_command")
@@ -14041,6 +14253,32 @@ def _register_commands(sub):
         vp.add_argument("instance_id", help="Instance id (inst-...)")
         vp.add_argument("--json", dest="json_output", action="store_true")
 
+    # adk desk — interact with awdesk bridge (127.0.0.1:47931)
+    desk_p = sub.add_parser("desk", help="Interact with awdesk bridge: send commands, view history")
+    desk_sub = desk_p.add_subparsers(dest="desk_command")
+    desk_cmd_p = desk_sub.add_parser("command", help="Send a command to the desktop")
+    desk_cmd_p.add_argument("text", help="Command text to send")
+    desk_cmd_p.add_argument("--poll", action="store_true", help="Wait for the reply (default: return immediately)")
+    desk_cmd_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    desk_hist_p = desk_sub.add_parser("history", help="Show recent commands and replies")
+    desk_hist_p.add_argument("-n", "--limit", type=int, default=20, help="Number of items to show (default: 20)")
+    desk_hist_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    # `adk desk fleet <verb>` -- the machine fleet (containers/GPU), NOT `adk fleet`,
+    # which manages a fleet of AGENTS and already owns `status`/`list`/`rm`.
+    desk_fleet_p = desk_sub.add_parser(
+        "fleet", help="Machine fleet via the desk bridge: status | down | up | gaming | resume | adopt | panel")
+    desk_fleet_p.add_argument("verb", choices=("status", "down", "up", "gaming", "resume", "adopt", "panel"))
+    desk_fleet_p.add_argument("--yes", "-y", action="store_true", help="skip the confirm on down/gaming")
+    desk_fleet_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    # `adk desk desktop <surface>` -- the two desktop surfaces awdesk can raise:
+    # overlay = the aitherium.com Living Desktop over the Windows desktop,
+    # app = the full AitherDesktop window, status = which are open.
+    desk_desktop_p = desk_sub.add_parser(
+        "desktop", help="Desktop surfaces via awdesk: overlay | app | status")
+    desk_desktop_p.add_argument("surface", nargs="?", default="status",
+                                choices=("overlay", "app", "status"))
+    desk_desktop_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+
     # adk support — help and community links
     sub.add_parser("support", help="Get help — Discord, GitHub, docs")
 
@@ -14306,6 +14544,10 @@ def _register_commands(sub):
     train_register_gpu_p.add_argument("--port", type=int, default=22, help="SSH port (default: 22)")
     train_register_gpu_p.add_argument("--gpu-model", help="GPU model name (auto-detected if omitted)")
     train_register_gpu_p.add_argument("--vram", type=int, help="GPU VRAM in GB (auto-detected if omitted)")
+
+    # adk workflow — Claude Code Workflow runs mirrored as expeditions
+    from adk.cli_workflow_mirror import add_workflow_parser
+    add_workflow_parser(sub)
 
     # adk jobs — manage background jobs and expeditions
     jobs_p = sub.add_parser(
@@ -14970,6 +15212,180 @@ def _cmd_mcp_status(args) -> int:
     return 0
 
 
+def _fleet_summary(doc: dict) -> str:
+    """One line from a fleet verdict: state, counts, GPU, HOLD, which lane answered."""
+    fl = doc.get("fleet") or {}
+    running, masked, units = fl.get("running"), fl.get("masked"), fl.get("units")
+    if doc.get("cannotJudge"):
+        state = "CANNOT JUDGE"
+    elif running == 0 and (masked or 0) > 0:
+        state = "DOWN"
+    elif doc.get("held"):
+        state = "GPU QUIET"
+    elif (masked or 0) > 0:
+        state = "MIXED"
+    elif (running or 0) > 0:
+        state = "UP"
+    else:
+        state = "UNKNOWN"
+    v = doc.get("vram") or {}
+    gpu = (f"GPU {v['used_mib'] / 1024:.1f}/{v['total_mib'] / 1024:.0f} GiB"
+           if v.get("total_mib") else "GPU ?")
+    # Who holds the VRAM and which control-plane doors answer -- the desk bridge
+    # attaches both from the Windows host; a distro-side fallback has neither.
+    holders = [h for h in (doc.get("gpu_holders") or []) if isinstance(h, dict)][:2]
+    if holders:
+        gpu += " (" + ", ".join(
+            f"{('ComfyUI' if 'ComfyUI' in str(h.get('hint', '')) else h.get('name', '?'))} "
+            f"{float(h.get('gib') or 0):.1f}" for h in holders) + ")"
+    surfaces = [s for s in (doc.get("surfaces") or []) if isinstance(s, dict)]
+    doors = ""
+    if surfaces:
+        down = [str(s.get("id")) for s in surfaces if not s.get("up")]
+        doors = (f", doors {len(surfaces) - len(down)}/{len(surfaces)} up"
+                 + (f" (down: {', '.join(down)})" if down else ""))
+    return (f"{state} -- {running if running is not None else '?'} container(s) running, "
+            f"{masked if masked is not None else '?'}/{units if units is not None else '?'} units "
+            f"masked, {gpu}, HOLD {'yes' if doc.get('held') else 'no'}{doors} "
+            f"(via {doc.get('source', '?')})")
+
+
+def _cmd_desk_fleet(args) -> int:
+    """`adk desk fleet <verb>` -- the machine fleet through the desk bridge (fallback:
+    the distro script named by AWDESK_FLEET_FALLBACK). Same verdicts as the Fleet window."""
+    import json as _json
+
+    from adk.desk_bridge import DeskBridgeClient
+
+    verb = args.verb
+    if verb in ("down", "gaming") and not getattr(args, "yes", False):
+        what = "the WHOLE fleet" if verb == "down" else "the GPU models and routine runners"
+        try:
+            ans = input(f"Take {what} down and hold it? [y/N] ").strip().lower()
+        except EOFError:
+            ans = ""
+        if ans not in ("y", "yes"):
+            print("aborted")
+            return 1
+    exit_code, result = DeskBridgeClient().call_fleet(verb)
+    if getattr(args, "json_output", False):
+        print(_json.dumps(result, indent=2))
+        return exit_code
+    if verb == "panel":
+        print("Fleet window opened" if exit_code == 0 else f"could not open: {result.get('error')}")
+        return exit_code
+    if verb == "status" or exit_code == 0:
+        print(_fleet_summary(result))
+        for f in result.get("failed") or []:
+            print(f"  FAILED {f.get('name') or f.get('unit')}: {f.get('error') or f.get('reason')}")
+    elif exit_code == 1:
+        print(f"fleet {verb} refused: {result.get('error', 'refused')}")
+    else:
+        print(f"fleet {verb}: CANNOT JUDGE -- {result.get('error', 'no verdict')}")
+    return exit_code
+
+
+def _cmd_desk_desktop(args) -> int:
+    """`adk desk desktop overlay|app|status` -- raise one of awdesk's two desktop
+    surfaces (the aitherium.com Living Desktop over the Windows desktop, or the
+    full AitherDesktop window), or report which are open."""
+    import json as _json
+
+    from adk.desk_bridge import DeskBridgeClient
+
+    surface = getattr(args, "surface", "status") or "status"
+    exit_code, result = DeskBridgeClient().call_desktop(surface)
+    if getattr(args, "json_output", False):
+        print(_json.dumps(result, indent=2))
+        return exit_code
+    if exit_code != 0:
+        print(f"desktop {surface}: {result.get('error', 'cannot judge')}")
+        return exit_code
+    overlay = result.get("overlay") or {}
+    app = result.get("app") or {}
+    opened = result.get("opened")
+    if opened:
+        print(f"opened the {'AitherOS overlay' if opened == 'overlay' else 'AitherDesktop app'}")
+    print(f"overlay: {'open' if overlay.get('open') else 'closed'}"
+          f"{' (hidden)' if overlay.get('open') and not overlay.get('visible') else ''}"
+          f" -- shell {overlay.get('shell') or 'Aitheros Online'}")
+    print(f"app:     {'open' if app.get('open') else 'closed'} -- shell {app.get('shell')}")
+    print(f"url:     {result.get('url', '')}")
+    return 0
+
+
+def _cmd_desk(args) -> int:
+    """Handle awdesk bridge commands (command, history, fleet, desktop)."""
+    import json as _json
+
+    from adk.desk_bridge import DeskBridgeClient
+
+    cmd = getattr(args, "desk_command", None)
+    if cmd == "fleet":
+        return _cmd_desk_fleet(args)
+    if cmd == "desktop":
+        return _cmd_desk_desktop(args)
+    client = DeskBridgeClient()
+
+    if cmd == "command":
+        exit_code, result = client.call_command(args.text)
+
+        if exit_code != 0:
+            if getattr(args, "json_output", False):
+                print(_json.dumps(result, indent=2))
+            else:
+                print(f"✗ Command failed: {result.get('error', 'unknown error')}")
+            return exit_code
+
+        cmd_id = result.get("id")
+        if getattr(args, "json_output", False):
+            print(_json.dumps(result, indent=2))
+        else:
+            print(f"✓ Command sent: {cmd_id}")
+
+        # Poll for reply if requested
+        if getattr(args, "poll", False):
+            exit_code, item = client.poll_command_reply(cmd_id)
+            if exit_code == 0:
+                reply = item.get("reply", "")
+                if getattr(args, "json_output", False):
+                    print(_json.dumps(item, indent=2))
+                else:
+                    print(f"  Reply: {reply}")
+            else:
+                if not getattr(args, "json_output", False):
+                    print(f"✗ {item.get('error', 'timeout waiting for reply')}")
+            return exit_code
+
+        return 0
+
+    elif cmd == "history":
+        exit_code, items = client.get_history(args.limit)
+
+        if exit_code != 0:
+            if not getattr(args, "json_output", False):
+                print("✗ Could not fetch history")
+            return exit_code
+
+        if getattr(args, "json_output", False):
+            print(_json.dumps({"items": items}, indent=2))
+        else:
+            if not items:
+                print("No recent commands")
+            else:
+                for item in items:
+                    cmd_id = item.get("id", "?")
+                    text = item.get("text", "?")
+                    reply = item.get("reply", "")
+                    reply_str = f" -> {reply}" if reply else " (pending)"
+                    print(f"  {cmd_id}: {text}{reply_str}")
+
+        return 0
+
+    print("Usage: adk desk {command|history}")
+    return 1
+
+
 def main():
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
     _dv = locals().get("argv")
@@ -15183,6 +15599,8 @@ def main():
         sys.exit(cmd_approvals(args))
     elif args.command == "mesh":
         sys.exit(cmd_mesh(args))
+    elif args.command == "volunteer":
+        sys.exit(cmd_volunteer(args))
     elif args.command == "costs":
         sys.exit(cmd_costs(args))
     elif args.command == "tools":
@@ -15197,6 +15615,9 @@ def main():
         sys.exit(cmd_ingest(args))
     elif args.command == "disconnect":
         sys.exit(cmd_disconnect(args))
+    elif args.command == "workflow":
+        from adk.cli_workflow_mirror import cmd_workflow
+        sys.exit(cmd_workflow(args))
     elif args.command == "jobs":
         sys.exit(cmd_jobs(args))
     elif args.command == "doctor":
@@ -15222,6 +15643,8 @@ def main():
         sys.exit(_cmd_pack(args))
     elif args.command == "fleet":
         sys.exit(_cmd_fleet(args))
+    elif args.command == "desk":
+        sys.exit(_cmd_desk(args))
     elif args.command == "instance":
         sys.exit(_cmd_instance(args))
     elif args.command == "skills":
@@ -15326,7 +15749,7 @@ def main():
         print("  Docs:      https://github.com/Aitherium/awdk")
         print("  Discord:   https://discord.gg/aitherium")
         print("  Issues:    https://github.com/Aitherium/awdk/issues")
-        print("  Portal:    https://portal.aitherium.com")
+        print("  Portal:    https://api.aitherium.com")
         print("  Email:     support@aitherium.com")
         print()
         sys.exit(0)

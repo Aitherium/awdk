@@ -161,8 +161,39 @@ def tail_for_pattern(log_path: Path, pattern: str, timeout: float = 45.0) -> Opt
     return None
 
 
+def is_adk_health(body) -> bool:
+    """True only for OUR server's /health body.
+
+    llama-server (install-bonsai.sh, :8080) answers ``{"status":"ok"}`` on
+    /health too. Until 2026-09-12 `adk up --port 8080` on such a box polled
+    that, got 200, printed "Agent healthy on :8080" — and the uvicorn child
+    had already died on EADDRINUSE. Our body carries ``"agent"`` and
+    ``"version"`` (adk/server.py health()); require them.
+    """
+    return isinstance(body, dict) and "agent" in body and "version" in body
+
+
+def port_owner(port: int) -> Optional[str]:
+    """Who answers ``/health`` on this loopback port: 'adk', 'other', or None (free)."""
+    import httpx
+
+    try:
+        r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2)
+    except (httpx.HTTPError, OSError):
+        return None
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    return "adk" if is_adk_health(body) else "other"
+
+
 def wait_for_health(port: int, timeout: float = 60.0) -> bool:
-    """Poll ``http://127.0.0.1:<port>/health`` until 200 or timeout."""
+    """Poll ``http://127.0.0.1:<port>/health`` until OUR server answers, or timeout.
+
+    A 200 from a different process on the same port (a llama-server, a dev web
+    app) is not health — see is_adk_health.
+    """
     import httpx
 
     deadline = time.time() + timeout
@@ -170,7 +201,11 @@ def wait_for_health(port: int, timeout: float = 60.0) -> bool:
         try:
             r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=3)
             if r.status_code == 200:
-                return True
+                try:
+                    if is_adk_health(r.json()):
+                        return True
+                except ValueError:
+                    pass
         except (httpx.HTTPError, OSError):
             pass
         time.sleep(2.0)

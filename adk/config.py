@@ -42,7 +42,7 @@ logger = logging.getLogger("adk.config")
 #: 200, so a wrong URL here pipes a web page straight into a shell.
 SELF_HOST_INSTALL_URL = "https://aitherium.com/install.sh"
 SELF_HOST_INSTALL_PS1 = "https://aitherium.com/install.ps1"
-SELF_HOST_DOCS_URL = "https://portal.aitherium.com/get"
+SELF_HOST_DOCS_URL = "https://api.aitherium.com/get"
 
 
 def self_host_hint(windows: bool | None = None) -> str:

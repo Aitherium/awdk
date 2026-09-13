@@ -7,11 +7,21 @@ without manual configuration.
 Discovery priority:
   1. AITHER_LOCAL_LLM_URL environment variable
   2. MicroScheduler at 127.0.0.1:8150 (if reachable)
-  3. Common llama-server ports (8080, 8081, 8000) on loopback
+  3. Self-hosted loopback ports (SELFHOST_PORTS below)
   4. None found
 
 Each source is verified with a REAL /v1/models or /health call to confirm
-the endpoint is actually serving, not just accepting TCP connections.
+the endpoint is actually serving, not just accepting TCP connections. The
+port scan additionally REQUIRES a model in /v1/models: a bare /health 200 is
+what every dev web server on :8080 answers, and a router that adopted one of
+those as its brain would fail every chat.
+
+Until 2026-09-12 this module was dead code: nothing on the agent path called
+discover_local_endpoint(), so a Bonsai started by aitherium.com/install-bonsai.sh
+(:8080) or `adk bonsai-local` (:8090) was invisible to LLMRouter, `adk status`,
+`adk up` and `adk start` unless the user ran `adk backend set` by hand. It is
+now the ONE place the self-host ladder lives; LLMRouter._try_local_selfhost,
+`adk status`, the `adk up` preflight and `adk start` all call it.
 """
 
 from __future__ import annotations
@@ -30,6 +40,19 @@ except ImportError:
     AsyncClient = None  # type: ignore
 
 logger = logging.getLogger("adk.local_inference")
+
+# Loopback ports a self-hosted OpenAI-compatible server is known to bind, in
+# probe order. Same ladder aitherium.com's local-node probe uses
+# (AitherVeil use-local-node.ts), so the browser and the agent agree on what
+# "your local node" means:
+#   8080  aitherium.com/install-bonsai.sh, phone.sh (llama-server --alias bonsai-selfhost)
+#   8090  `adk bonsai-local` (Docker), awnode gateway
+#   8092  aither-llamacpp-bonsai container
+#   8889  selfhost-bonsai skill
+#   8081  install-bonsai.sh --port 8081 (the port it suggests when 8080 is taken)
+#   8000  bare vllm / adk server
+# Edit this tuple, not the callers.
+SELFHOST_PORTS: tuple[int, ...] = (8080, 8090, 8092, 8889, 8081, 8000)
 
 
 @dataclass
@@ -61,13 +84,17 @@ class LocalInferenceDiscovery:
 
 
 async def _probe_endpoint(
-    url: str, timeout: float = 3.0
+    url: str, timeout: float = 3.0, require_model: bool = False
 ) -> tuple[bool, Optional[str]]:
     """Probe an endpoint to verify it's actually serving.
 
     Returns (healthy, model_name) where:
       - healthy=True if /v1/models or /health succeeded
       - model_name is the first model ID from /v1/models, or None
+
+    With require_model=True a /health-only answer is NOT healthy: the caller
+    is scanning ports it does not own, and only a server that lists a model
+    can be assumed to complete a chat.
 
     Never raises; returns (False, None) on any probe failure.
     """
@@ -102,6 +129,9 @@ async def _probe_endpoint(
                     )
             except (HTTPError, ReadTimeout) as e:
                 logger.debug(f"Probed {url}/v1/models: {type(e).__name__}")
+
+            if require_model:
+                return False, None
 
             # Fallback to /health
             try:
@@ -191,13 +221,13 @@ async def discover_local_endpoint() -> LocalInferenceDiscovery:
             f"{str(e)[:60]}"
         )
 
-    # 3. Check common llama-server ports on loopback
-    common_ports = [8080, 8081, 8000]
-    for port in common_ports:
+    # 3. Self-hosted loopback ports (SELFHOST_PORTS). /v1/models must list a
+    # model — see _probe_endpoint(require_model=True).
+    for port in SELFHOST_PORTS:
         url = f"http://127.0.0.1:{port}"
         probed_urls.append(url)
-        logger.debug(f"Probing common port {port}")
-        healthy, model = await _probe_endpoint(url)
+        logger.debug(f"Probing self-host port {port}")
+        healthy, model = await _probe_endpoint(url, timeout=1.5, require_model=True)
         if healthy:
             logger.info(f"Found healthy endpoint at {url}")
             return LocalInferenceDiscovery(

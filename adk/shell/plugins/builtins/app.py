@@ -2,7 +2,7 @@
 App Plugin for AitherShell
 ============================
 
-Manage workspace apps created via portal.aitherium.com.
+Manage workspace apps created via api.aitherium.com.
 
 For non-technical users: create an app via the portal wizard, then run
 ``aither app pull <slug>`` to get it running locally with one command.
@@ -48,7 +48,7 @@ APPS_STATE_FILE = AITHER_DIR / "apps-state.json"
 
 # ── Portal / Genesis URLs ─────────────────────────────────────────────────
 
-PORTAL_URL = os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+PORTAL_URL = os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
 GENESIS_URL = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
 
 
@@ -152,7 +152,7 @@ class AppPlugin(SlashCommand):
 
     name: str = "app"
     aliases: List[str] = ["apps", "workspace-app"]
-    description: str = "Pull and manage workspace apps from portal.aitherium.com"
+    description: str = "Pull and manage workspace apps from api.aitherium.com"
     category: str = "workspace"
 
     def __init__(self) -> None:
@@ -162,7 +162,7 @@ class AppPlugin(SlashCommand):
         # overwritten by the next plugin to do the same.
         super().__init__(
             name='app',
-            description='Pull and manage workspace apps from portal.aitherium.com',
+            description='Pull and manage workspace apps from api.aitherium.com',
             aliases=['apps', 'workspace-app'],
         )
 
@@ -246,7 +246,7 @@ class AppPlugin(SlashCommand):
         if not apps_found:
             return (
                 "No apps found in your workspace.\n\n"
-                "  Create one at portal.aitherium.com/portal/agents/create\n"
+                "  Create one at api.aitherium.com/portal/agents/create\n"
                 "  Then run: `/app pull <slug>`"
             )
 
@@ -279,7 +279,7 @@ class AppPlugin(SlashCommand):
                 f"{remote}\n\n"
                 f"Usage: `/app pull <slug>`\n"
                 f"  Pick a slug from the list above, or create a new app at\n"
-                f"  portal.aitherium.com/portal/agents/create"
+                f"  api.aitherium.com/portal/agents/create"
             )
 
         slug = args[0].lower().strip()
@@ -323,7 +323,7 @@ class AppPlugin(SlashCommand):
         if not spec:
             _err(f"App '{slug}' not found.")
             print()
-            print("  Make sure you've created this app at portal.aitherium.com/portal/agents/create")
+            print("  Make sure you've created this app at api.aitherium.com/portal/agents/create")
             print("  The slug is shown in the wizard (e.g., 'acme-hub')")
             return ""
         _ok(f"Found: {spec.get('name', slug)}")
@@ -569,7 +569,7 @@ volumes:
         if not apps:
             return (
                 "No workspace apps installed.\n\n"
-                "  Create one at portal.aitherium.com/portal/agents/create\n"
+                "  Create one at api.aitherium.com/portal/agents/create\n"
                 "  Then run: `/app pull <slug>`"
             )
 
@@ -825,7 +825,7 @@ volumes:
 | `/app delete <slug>` | Stop and remove all data |
 
 **Getting Started:**
-  1. Create an app at portal.aitherium.com/portal/agents/create
+  1. Create an app at api.aitherium.com/portal/agents/create
   2. Run: `/app pull` to see available apps
   3. Run: `/app pull acme-hub` to install
   4. Your app starts at http://localhost:8900

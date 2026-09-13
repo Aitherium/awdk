@@ -49,7 +49,7 @@ def build_app(agent: Agent) -> Any:
     # allow_origins is an explicit ALLOWLIST (never "*") — this server listens on
     # loopback, so without a list any site the user visits could reach their agent.
     # The aitherium origins must be present: the whole point is a probe from
-    # https://portal.aitherium.com to http://127.0.0.1:8000, which is cross-origin.
+    # https://api.aitherium.com to http://127.0.0.1:8000, which is cross-origin.
     # POST is included because /chat is the endpoint the web app calls once it has
     # detected the node; GET/OPTIONS alone made the feature dead on arrival.
     # Override with AITHER_ADK_CORS_ORIGINS (comma-separated) for a custom portal.
@@ -61,7 +61,7 @@ def build_app(agent: Agent) -> Any:
     _allowed_origins = [
         "https://aitherium.com",
         "https://www.aitherium.com",
-        "https://portal.aitherium.com",
+        "https://api.aitherium.com",
         "http://localhost",
         "http://127.0.0.1",
         "http://localhost:3000",
@@ -79,7 +79,7 @@ def build_app(agent: Agent) -> Any:
     )
 
     # Private Network Access (PNA) support for Chrome.
-    # When an HTTPS page (e.g., https://portal.aitherium.com) probes a private/loopback
+    # When an HTTPS page (e.g., https://api.aitherium.com) probes a private/loopback
     # HTTP endpoint (e.g., http://127.0.0.1:8000/health), Chrome requires a preflight
     # OPTIONS response with 'Access-Control-Allow-Private-Network: true' to allow the
     # health check. This middleware adds that header ONLY for /health and /info routes,

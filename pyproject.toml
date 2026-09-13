@@ -12,8 +12,20 @@ name = "awdk"
 # PyPI already served aither-adk 3.6.0 while this file said 3.5.0, so shipping
 # the tree version as awdk would hand every user moving across a DOWNGRADE and
 # a silently older package. Continue the existing line instead of restarting it.
-version = "3.8.3"
-description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
+# 3.8.16, not 3.8.4. The tree was BEHIND the registry AGAIN: PyPI served
+# awdk 3.8.15 while this line said 3.8.3, so every value the auto-release lane
+# could cut was a DOWNGRADE and no awdk release shipped for 14 days.
+#
+# Cause, measured 2026-09-09: commit 7061518f17 ("restore: working-tree
+# snapshot after .git metadata destruction", 2026-08-26) restored this line to
+# an older value, and nothing noticed -- PVR001 exists for exactly this and
+# reads the WORKING TREE, where a stale local copy carrying 3.8.16 made it
+# green. Second occurrence of the class 1648a5efe6 fixed on 2026-08-15.
+#
+# Continue the existing line, never restart it: a user moving across a
+# downgrade gets a silently older package.
+version = "3.8.17"
+description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"

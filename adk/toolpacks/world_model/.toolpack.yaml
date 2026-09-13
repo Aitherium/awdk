@@ -1,3 +1,13 @@
+# MOVED HERE 2026-09-07. This manifest sat in adk/packs/, which the tool-pack
+# loader never scans (_default_dirs reads lib/agents/packs, adk/toolpacks/ and
+# ~/.aitheros/packs), so world-model discovered as NOTHING and its wm_* tools
+# were absent from every agent -- indistinguishable from the feature being
+# switched off. Caught by PTB005.
+#
+# The CODE deliberately stays at adk/packs/world_model/: five call sites import
+# `adk.packs.world_model.env_enroll` / `.tools` (arc-brainpack, tool_readiness,
+# the tests), and moving the package to fix a manifest location would break all
+# of them. tool_modules below points the loader at the package where it lives.
 id: world-model
 name: World Model — Learn-Safely Explore & Surprise-Driven Sandbox Bootstrap
 version: 1.0.0
@@ -19,7 +29,8 @@ tags: [world-model, world_model, learning, sandbox, curiosity, surprise, anomaly
 mcp_tools:
   - "wm_*"
 
-tool_modules: []
+tool_modules:
+  - adk.packs.world_model   # register() lives in its __init__
 
 entitlements: []
 

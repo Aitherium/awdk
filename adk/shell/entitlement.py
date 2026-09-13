@@ -379,25 +379,25 @@ async def require(feature: str, *, debit: int = 0) -> Entitlement:
         raise EntitlementError(
             "Your AitherOS subscription has been revoked.",
             code="revoked",
-            hint="Visit https://portal.aitherium.com/billing to re-activate.",
+            hint="Visit https://api.aitherium.com/billing to re-activate.",
         )
     if ent.status == "lapsed" or ent.is_expired():
         raise EntitlementError(
             "Your AitherOS subscription has lapsed.",
             code="lapsed",
-            hint="Run `aither login` then renew at portal.aitherium.com/billing.",
+            hint="Run `aither login` then renew at api.aitherium.com/billing.",
         )
     if not ent.feature_enabled(feature):
         raise EntitlementError(
             f"Feature '{feature}' is not included in your plan ({ent.plan}).",
             code="feature_locked",
-            hint="Upgrade at https://portal.aitherium.com/billing",
+            hint="Upgrade at https://api.aitherium.com/billing",
         )
     if debit > 0 and ent.tokens_remaining < debit:
         raise EntitlementError(
             f"Insufficient tokens for '{feature}': need {debit}, have {ent.tokens_remaining}.",
             code="quota_exhausted",
-            hint="Top up tokens at https://portal.aitherium.com/billing",
+            hint="Top up tokens at https://api.aitherium.com/billing",
         )
     return ent
 

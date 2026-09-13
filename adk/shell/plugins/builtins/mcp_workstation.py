@@ -138,7 +138,7 @@ class MCPWorkstationPlugin(SlashCommand):
             endpoint_name = f"{hostname}-mcp"
 
             # Register endpoint
-            portal_url = os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            portal_url = os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
             try:

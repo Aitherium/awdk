@@ -4,7 +4,7 @@ id: awdaemons
 brick: awdaemons
 name: awdaemons
 type: process
-command: aither up
+command: awdaemons up
 default_port: 18080
 description: The AitherOS daemons as one file -- no Python, no signing, no install.
 requires_plan: free
@@ -18,3 +18,4 @@ surfaces:
     path: /mcp
 provides_env:
   AITHER_ADK_URL: http://127.0.0.1:{port}
+  AITHER_SAGA_URL: http://127.0.0.1:18770

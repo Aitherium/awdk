@@ -343,6 +343,29 @@ class TestWebSearch:
             assert data["query"] == "test query"
 
     @pytest.mark.asyncio
+    async def test_web_search_tolerates_alias_and_stray_kwargs(self):
+        # A small local model emits max_results= or an invented kwarg instead of
+        # limit=. The tool must degrade to a real search, never raise TypeError
+        # (which the agent loop surfaces as "no answer from the agent").
+        mock_html = (
+            '<a class="result__a" href="https://e.com/1">One</a>'
+            '<span class="result__snippet">snip one</a>'
+        )
+        mock_resp = MagicMock()
+        mock_resp.text = mock_html
+        mock_resp.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            # alias, string limit, and an entirely unknown kwarg all succeed
+            for kwargs in ({"max_results": 3}, {"limit": "4"}, {"count": 7, "n": 2}):
+                result = await bt.web_search("today's news", **kwargs)
+                assert json.loads(result)["query"] == "today's news"
+
+    @pytest.mark.asyncio
     async def test_web_search_handles_error(self):
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))

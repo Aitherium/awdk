@@ -30,7 +30,7 @@ DISCORD_API = "https://discord.com/api/v10"
 INVITE = "https://discord.com/oauth2/authorize"
 LIMIT = 2000  # Discord message length cap
 
-_LICENSE_HINT = "Upgrade at portal.aitherium.com/portal/marketplace/packs"
+_LICENSE_HINT = "Upgrade at api.aitherium.com/portal/marketplace/packs"
 
 
 # ── Token helpers ───────────────────────────────────────────────────────────

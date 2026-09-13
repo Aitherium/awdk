@@ -65,14 +65,14 @@ def gate_startup(product: str = "aither", require_license: bool = False):
         # Case (a): no license provided anywhere
         logger.info(
             "%s startup (no license): tier=%s, limited to 100k tokens/month on our cloud. "
-            "For local/BYO-key unlimited, upgrade at portal.aitherium.com (sovereign=$1000/perpetual).",
+            "For local/BYO-key unlimited, upgrade at api.aitherium.com (sovereign=$1000/perpetual).",
             product, tier,
         )
     elif lic.source in ("env", "file") and lic.tier == Tier.COMMUNITY:
         # Case (b): key/file was provided but signature failed or key placeholder not set
         logger.warning(
             "%s: license signature INVALID (source=%s) — falling back to free tier. "
-            "If the key is correct, check https://portal.aitherium.com/status for platform issues. "
+            "If the key is correct, check https://api.aitherium.com/status for platform issues. "
             "For offline testing, set AITHER_LICENSE_PUBLIC_KEY=<your-hex-key>.",
             product, lic.source,
         )
@@ -88,7 +88,7 @@ def gate_startup(product: str = "aither", require_license: bool = False):
     if require and tier == "community":
         raise LicenseError(
             f"Product '{product}' requires a paid Aitherium license; the free tier is "
-            f"not permitted for this deployment. Get a key at portal.aitherium.com."
+            f"not permitted for this deployment. Get a key at api.aitherium.com."
         )
 
     _wire_metering(product, tier, ent)

@@ -23,11 +23,189 @@ passed through verbatim rather than re-wrapped.
 from __future__ import annotations
 
 import json
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 
 router = APIRouter(prefix="/api/local", tags=["local"])
+
+
+# ── saga (Play tab) ───────────────────────────────────────────────────────
+# Forwarded, never reimplemented: the story engine is its own process
+# (`awdaemons saga serve`), and whoever started it publishes where it bound as
+# AITHER_SAGA_URL. Refusals are written to be shown to a person:
+#   * unset -> 503 "not running on this machine". A host with no Saga (a demo
+#     host) must not answer 404, which reads as a broken page.
+#   * anything but loopback -> 503. This router sits behind the daemon's own
+#     auth; an env value must not turn it into a proxy to another host.
+#   * a `.` or `..` path segment -> 404, so the forwarder reaches only the Play
+#     routes and never the rest of the engine.
+# The caller's Authorization header is NOT forwarded: it authenticates this
+# daemon, and handing it to a second process would spread a bearer for nothing.
+
+_SAGA_FORWARD_HEADERS = ("content-type", "accept", "x-saga-world")
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _saga_base() -> str:
+    base = os.environ.get("AITHER_SAGA_URL", "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(503, {
+            "error": "Saga is not running on this machine",
+            "fix": "start the story engine (`awdaemons saga serve`; the aitheros launcher "
+                   "does this) and set AITHER_SAGA_URL",
+        })
+    if (urlsplit(base).hostname or "").lower() not in _LOOPBACK_HOSTS:
+        raise HTTPException(503, {
+            "error": "AITHER_SAGA_URL must point at this machine",
+            "fix": "set AITHER_SAGA_URL to http://127.0.0.1:<port>",
+        })
+    return base
+
+
+@router.api_route("/saga/{path:path}", methods=["GET", "POST", "PUT"])
+async def local_saga_forward(path: str, request: Request) -> Response:
+    if any(seg in (".", "..") for seg in path.split("/")):
+        raise HTTPException(404, "not found")
+    base = _saga_base()
+    import httpx
+
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() in _SAGA_FORWARD_HEADERS}
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            upstream = await client.request(
+                request.method, f"{base}/api/local/saga/{path}",
+                params=list(request.query_params.multi_items()),
+                content=await request.body(), headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, {
+            "error": "Saga did not answer",
+            "reason": type(exc).__name__,
+            "fix": "check that the story engine is still running",
+        }) from exc
+    return Response(content=upstream.content, status_code=upstream.status_code,
+                    media_type=upstream.headers.get("content-type"))
+
+
+# ── studio (Studio tab) ───────────────────────────────────────────────────
+# Two lanes. LOCAL is the default and needs nothing here: the tab composes
+# sprite sheets and comic pages from /api/local/images/generations. REMOTE is a
+# Media Forge the USER runs (their own GPU box, on loopback or their LAN), reached
+# ONLY after an explicit consent that names its URL:
+#   * no consent record -> 403 remote_disabled with the fix. No env default turns
+#     it on; the consent route is the one writer.
+#   * the target is the URL in the consent record, never one from the request, so
+#     this lane cannot be steered at an arbitrary host.
+#   * the consent read happens BEFORE any HTTP client exists (position is the rule).
+#   * a key the user pastes rides per request as X-Studio-Key and goes on as a
+#     bearer; it is never written, logged or echoed.
+#   * Media Forge reports op errors as HTTP 200 {"ok": false, "error": ...}; that
+#     body is passed through unchanged, never re-wrapped as success.
+# Curated twins only (/ops, /op/{name}): the owner's private /api/* surface is not
+# reachable through this lane.
+
+_STUDIO_CONSENT_FILE = "studio-remote.json"
+_OP_NAME = re.compile(r"^[a-z0-9_]{1,64}$")
+
+
+def _aither_home() -> Path:
+    return Path(os.environ.get("AITHER_HOME") or (Path.home() / ".aither"))
+
+
+def _studio_consent() -> dict[str, Any] | None:
+    """The consent record, or None. Absent, unreadable or malformed is OFF."""
+    try:
+        rec = json.loads((_aither_home() / _STUDIO_CONSENT_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict):
+        return None
+    url = str(rec.get("url") or "")
+    if not url.startswith(("http://", "https://")) or not urlsplit(url).hostname:
+        return None
+    return rec
+
+
+@router.get("/studio/status")
+def local_studio_status() -> dict[str, Any]:
+    rec = _studio_consent()
+    return {
+        "local": {"endpoint": "/api/local/images/generations"},
+        "remote": {
+            "enabled": rec is not None,
+            "url": rec.get("url") if rec else None,
+            "granted_at": rec.get("granted_at") if rec else None,
+        },
+    }
+
+
+@router.post("/studio/remote/consent")
+def local_studio_consent(body: dict[str, Any]) -> dict[str, Any]:
+    url = str(body.get("url") or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")) or not urlsplit(url).hostname:
+        raise HTTPException(400, {"error": "a Media Forge URL is required",
+                                  "fix": "for example http://127.0.0.1:8200"})
+    if body.get("confirm") is not True:
+        raise HTTPException(400, {
+            "error": "consent must be explicit",
+            "fix": f"send confirm: true once the person agreed prompts and references go to {url}",
+        })
+    rec = {"version": 1, "url": url, "auto": False,
+           "granted_at": datetime.now(timezone.utc).isoformat()}
+    home = _aither_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / _STUDIO_CONSENT_FILE).write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    return {"enabled": True, "url": url, "granted_at": rec["granted_at"]}
+
+
+@router.delete("/studio/remote/consent")
+def local_studio_revoke() -> dict[str, Any]:
+    (_aither_home() / _STUDIO_CONSENT_FILE).unlink(missing_ok=True)
+    return {"enabled": False}
+
+
+async def _studio_forward(method: str, path: str, request: Request,
+                          content: bytes | None = None) -> Response:
+    rec = _studio_consent()
+    if rec is None:
+        raise HTTPException(403, {
+            "error": "remote_disabled",
+            "fix": "connect your own Media Forge in Studio and confirm what will be sent",
+        })
+    import httpx
+
+    headers = {"content-type": "application/json"}
+    key = request.headers.get("x-studio-key", "").strip()
+    if key:
+        headers["authorization"] = f"Bearer {key}"
+    try:
+        async with httpx.AsyncClient(timeout=900.0) as client:
+            upstream = await client.request(method, f"{rec['url']}{path}",
+                                            headers=headers, content=content)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, {"error": "your Media Forge did not answer",
+                                  "reason": type(exc).__name__, "url": rec["url"]}) from exc
+    return Response(content=upstream.content, status_code=upstream.status_code,
+                    media_type=upstream.headers.get("content-type"))
+
+
+@router.get("/studio/remote/ops")
+async def local_studio_ops(request: Request) -> Response:
+    return await _studio_forward("GET", "/ops", request)
+
+
+@router.post("/studio/remote/op/{name}")
+async def local_studio_op(name: str, request: Request) -> Response:
+    if not _OP_NAME.fullmatch(name):
+        raise HTTPException(404, "unknown op")
+    return await _studio_forward("POST", f"/op/{name}", request, await request.body())
 
 
 # ── awrun queue (Tasks tab) ────────────────────────────────────────────────

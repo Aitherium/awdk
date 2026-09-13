@@ -85,7 +85,7 @@ class SecretsSync:
         self.gateway_url = (
             gateway_url
             or os.environ.get("AITHER_GATEWAY_URL", "")
-            or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            or os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
         ).rstrip("/")
 
     async def pull(self) -> Dict[str, str]:

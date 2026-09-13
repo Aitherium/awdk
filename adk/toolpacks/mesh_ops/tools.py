@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 
 _GENESIS = os.getenv("AITHER_GENESIS_URL", "https://aitheros-genesis:8001").rstrip("/")
-_PORTAL = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com").rstrip("/")
+_PORTAL = os.getenv("AITHER_PORTAL_URL", "https://api.aitherium.com").rstrip("/")
 
 
 def _verify() -> Any:

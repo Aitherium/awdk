@@ -80,12 +80,68 @@ def _handle_setup(args) -> dict:
     )
 
 
+def self_test() -> int:
+    """Offline self-test: every recipe plans, every target renders, the
+    refusal arm fires, and no arm is vacuous."""
+    bad = 0
+
+    def check(label, cond):
+        nonlocal bad
+        print(f"  {'ok' if cond else 'FAIL'}  {label}")
+        if not cond:
+            bad += 1
+
+    from . import tools
+    from .recipes import RECIPE_IDS
+
+    # Offline: model-download resolution can reach the fleet vault and
+    # HANG on an off-fleet box (measured >110s on the fleet box itself,
+    # before the bounded resolver landed) -- stub it so the self-test
+    # stays fast and deterministic. The production path is untouched.
+    tools._resolve_model_downloads = lambda *_a, **_k: ([], "")
+
+    check("webgpu-browser is registered", "webgpu-browser" in RECIPE_IDS)
+    check("mesh-spark is registered", "mesh-spark" in RECIPE_IDS)
+
+    for rid in RECIPE_IDS:
+        plan = tools.imagegen_plan_deployment(rid)
+        check(f"plan({rid})", "error" not in plan)
+
+    p = tools.imagegen_plan_deployment("webgpu-browser")
+    check("browser lane plans mode browser with a URL",
+          p.get("mode") == "browser" and bool(p.get("browser_url")))
+
+    q = tools.imagegen_plan_deployment("cuda-comfyui-12gb", target="podman-quadlet")
+    check("quadlet target renders a .container unit",
+          q.get("mode") == "podman-quadlet"
+          and "[Container]" in q.get("quadlet_unit", ""))
+
+    r = tools.imagegen_plan_deployment("cuda-comfyui-12gb", free_vram_gb=3.5)
+    check("refusal arm fires when free VRAM is below the recipe's need",
+          "refused" in r.get("error", ""))
+    r2 = tools.imagegen_plan_deployment("cuda-comfyui-12gb")
+    check("refusal arm stays silent when free VRAM is not judged",
+          "error" not in r2)
+
+    a = tools.imagegen_apply("webgpu-browser", dry_run=True)
+    check("apply dry-run handles the browser lane",
+          "error" not in a and a.get("mode") == "browser")
+    b = tools.imagegen_apply("cuda-comfyui-12gb", target="podman-quadlet", dry_run=True)
+    check("apply dry-run handles the quadlet target",
+          "error" not in b and b.get("mode") == "podman-quadlet")
+
+    print("self-test ok" if not bad else "self-test FAILED")
+    return 1 if bad else 0
+
+
 def main() -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         description="Image bootstrap — hardware-aware image-generation deployment",
         prog="python -m adk.toolpacks.image_bootstrap",
     )
+    parser.add_argument("--self-test", action="store_true",
+                        help="offline self-test (no network, no side effects)")
     subparsers = parser.add_subparsers(dest="command", help="subcommand")
 
     detect_p = subparsers.add_parser("detect", help="detect hardware + VRAM capability band")
@@ -166,6 +222,9 @@ def main() -> int:
     setup_p.set_defaults(handler=_handle_setup)
 
     args = parser.parse_args()
+
+    if getattr(args, "self_test", False):
+        return self_test()
 
     if not hasattr(args, "handler"):
         parser.print_help()

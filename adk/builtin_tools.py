@@ -532,12 +532,28 @@ def python_exec(code: str) -> str:
 # Web Tools
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def web_search(query: str, limit: int = 5) -> str:
+async def web_search(query: str, limit: int = 5, max_results: int = 0, **_extra: object) -> str:
     """Search the web using DuckDuckGo. Returns search results.
 
     query: Search query string
     limit: Maximum number of results (default 5)
+    max_results: alias for `limit` (the other convention in this codebase)
     """
+
+    # A small local model (e.g. the offline orchestrator) frequently emits
+    # `max_results=` or an invented kwarg instead of `limit=`. A bare
+    # `web_search(query, limit=5)` then raises TypeError, which the agent loop
+    # surfaces as "no answer from the agent" after a long stall — the exact
+    # symptom of a broken tool. Tolerate the alias and swallow stray kwargs so an
+    # unknown argument degrades to a real search, never a crash.
+    if max_results and max_results > 0:
+        limit = max_results
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 5
+    if limit < 1:
+        limit = 5
 
     # USE awfind -- the search client that already exists.
     #
@@ -1254,7 +1270,7 @@ def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
                 "status": "failed",
                 "error": (
                     "Swarm coding requires a Professional tier. Upgrade at "
-                    "portal.aitherium.com/portal/marketplace/packs"
+                    "api.aitherium.com/portal/marketplace/packs"
                 ),
             })
     except ImportError:

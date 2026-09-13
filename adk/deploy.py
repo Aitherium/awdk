@@ -861,7 +861,7 @@ def deploy_adk_node(
     memory: bool = False,
     api_key_arg: Optional[str] = None,
     sovereign: bool = False,
-    hub_url: str = "https://portal.aitherium.com",
+    hub_url: str = "https://api.aitherium.com",
     tenant: Optional[str] = None,
     federate: bool = False,
     portal_token: Optional[str] = None,
@@ -939,7 +939,7 @@ def deploy_adk_node(
         info("Profile: dashboard (workspace app on port 3000)")
     if federate:
         profiles.append("federate")
-        info("Profile: federate (AitherFederate bridge to portal.aitherium.com on :8094)")
+        info("Profile: federate (AitherFederate bridge to api.aitherium.com on :8094)")
 
     if not profiles:
         info("Profile: default (ADK server + Ollama)")
@@ -1059,7 +1059,7 @@ def deploy_node(
     memory: bool = False,
     api_key_arg: Optional[str] = None,
     sovereign: bool = False,
-    hub_url: str = "https://portal.aitherium.com",
+    hub_url: str = "https://api.aitherium.com",
     tenant: Optional[str] = None,
     storefront: bool = False,
     federate: bool = False,
@@ -1154,7 +1154,7 @@ def deploy_node(
         info("Profile: storefront (public storefront + landing pages)")
     if federate:
         profiles.append("federate")
-        info("Profile: federate (AitherFederate bridge to portal.aitherium.com on :8094)")
+        info("Profile: federate (AitherFederate bridge to api.aitherium.com on :8094)")
 
     if not profiles:
         info("Profile: default (Node + Genesis)")
@@ -1588,7 +1588,7 @@ def deploy_addons(
     tag: str = "latest",
     api_key_arg: Optional[str] = None,
     sovereign: bool = False,
-    hub_url: str = "https://portal.aitherium.com",
+    hub_url: str = "https://api.aitherium.com",
     tenant: Optional[str] = None,
 ) -> int:
     """Deploy self-hosted addon services via Docker Compose.
@@ -2017,7 +2017,7 @@ def _generate_sovereign_config(
         "",
         "federation:",
         f"  enabled: {federation}",
-        f"  platform_url: https://portal.aitherium.com",
+        f"  platform_url: https://api.aitherium.com",
         "",
         "services:",
         "  preset: minimal",
@@ -2138,7 +2138,7 @@ def deploy_sovereign(
     if not ent["offline"] and current_tier not in _SOVEREIGN_TIERS:
         err(f"Sovereign deployment requires a Self-Host or Enterprise plan (current: '{current_tier}')")
         print()
-        print(f"  Upgrade at: {cyan('https://portal.aitherium.com/billing')}")
+        print(f"  Upgrade at: {cyan('https://api.aitherium.com/billing')}")
         print(f"  Or contact: {cyan('sales@aitherium.com')} for enterprise pricing")
         print()
         return 1
@@ -2184,7 +2184,7 @@ def deploy_sovereign(
                     and _PLAN_HIERARCHY.index(current_tier) < _PLAN_HIERARCHY.index(required_plan)):
                 err(f"App '{app_slug}' requires '{required_plan}' plan (current: '{current_tier}')")
                 print()
-                print(f"  Upgrade at: {cyan('https://portal.aitherium.com/billing')}")
+                print(f"  Upgrade at: {cyan('https://api.aitherium.com/billing')}")
                 print()
                 return 1
 
@@ -2233,7 +2233,7 @@ def deploy_sovereign(
         f"AITHER_ADMIN_EMAIL={admin_email or 'admin@localhost'}\n"
         f"AITHER_ADMIN_PASSWORD={admin_pass}\n"
         f"JWT_SECRET={jwt_secret}\n"
-        f"AITHER_PLATFORM_URL=https://portal.aitherium.com\n"
+        f"AITHER_PLATFORM_URL=https://api.aitherium.com\n"
     )
 
     if gpu:
@@ -2857,7 +2857,7 @@ def cmd_deploy_tenant_agent(args) -> int:
     This is the customer-facing deploy flow:
         adk deploy agent myapp --tenant customer-acme
         adk deploy agent myapp --tenant customer-acme --inference cloud
-        adk deploy agent myapp --from https://portal.aitherium.com/api/...
+        adk deploy agent myapp --from https://api.aitherium.com/api/...
 
     Steps:
         1. Authenticate (verify tenant credentials from ~/.aither/config.json)
@@ -2906,7 +2906,7 @@ def cmd_deploy_tenant_agent(args) -> int:
         download_url = from_url
     else:
         portal_url = saved.get("portal_url", "") or os.environ.get(
-            "AITHER_PORTAL_URL", "https://portal.aitherium.com"
+            "AITHER_PORTAL_URL", "https://api.aitherium.com"
         )
         # Use Genesis bridge — portal proxies to Genesis /apps/catalog/{slug}/download
         download_url = f"{portal_url}/api/bridge/genesis/apps/catalog/{agent_slug}/download"
@@ -3056,7 +3056,7 @@ def cmd_deploy_tenant_agent(args) -> int:
 
     try:
         portal_url = saved.get("portal_url", "") or os.environ.get(
-            "AITHER_PORTAL_URL", "https://portal.aitherium.com"
+            "AITHER_PORTAL_URL", "https://api.aitherium.com"
         )
         invoke_url = os.environ.get("AITHER_INVOKE_URL", f"http://localhost:{port}")
         import urllib.request
@@ -3094,7 +3094,7 @@ def cmd_deploy_tenant_agent(args) -> int:
     print()
     print(f"  Check status:  {cyan('adk status')}")
     print(f"  View logs:     {cyan(f'docker compose -f {compose_file} logs -f') if use_docker else cyan('adk run --identity ' + agent_slug)}")
-    print(f"  Fleet UI:      {cyan('https://portal.aitherium.com/portal/fleet')}")
+    print(f"  Fleet UI:      {cyan('https://api.aitherium.com/portal/fleet')}")
     print()
     return 0
 
@@ -3553,7 +3553,7 @@ def deploy_grid(
         print("  " + "-" * 50)
         print(f"    {cyan('adk login')}                          # Free account — sync config across machines")
         print(f"    {cyan('adk grid sync')}                      # Backup your grid config to the cloud")
-        print(f"    {dim('Upgrade: https://portal.aitherium.com/marketplace/grid')}")
+        print(f"    {dim('Upgrade: https://api.aitherium.com/marketplace/grid')}")
 
     print()
     return 0
@@ -3723,7 +3723,7 @@ def cmd_deploy_component(args) -> int:
         memory_flag = getattr(args, "memory", False)
         api_key = getattr(args, "api_key", None)
         sovereign = getattr(args, "sovereign", False)
-        hub_url = getattr(args, "hub", "https://portal.aitherium.com")
+        hub_url = getattr(args, "hub", "https://api.aitherium.com")
         tenant_arg = getattr(args, "tenant", None)
         federate_flag = getattr(args, "federate", False)
         portal_token_arg = getattr(args, "portal_token", None)
@@ -3774,7 +3774,7 @@ def cmd_deploy_component(args) -> int:
         tag = getattr(args, "tag", "latest") or "latest"
         api_key = getattr(args, "api_key", None)
         sovereign = getattr(args, "sovereign", False)
-        hub_url = getattr(args, "hub", "https://portal.aitherium.com")
+        hub_url = getattr(args, "hub", "https://api.aitherium.com")
         tenant_arg = getattr(args, "tenant", None)
         list_only = getattr(args, "list_addons", False)
         if list_only:

@@ -32,8 +32,11 @@ RECIPE_IDS = [
     "cuda-comfyui-12gb",
     "cuda-comfyui-24gb",
     "cuda-sana-sprint",
+    "cuda-bonsai-image",
     "metal-comfyui",
     "cloud-burst-vast",
+    "webgpu-browser",
+    "mesh-spark",
 ]
 
 # The always-available fallback: it needs no local hardware at all.
@@ -41,6 +44,7 @@ FALLBACK_RECIPE_ID = "cloud-burst-vast"
 
 TIER_RANKS = {
     "cloud": 0,
+    "browser": 0.5,
     "cpu": 1,
     "gpu-small": 2,
     "gpu-medium": 3,

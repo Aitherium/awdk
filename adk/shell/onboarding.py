@@ -43,7 +43,7 @@ from adk.shell.config import AitherConfig, CONFIG_DIR, CONFIG_FILE, load_config,
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://gateway.aitherium.com"
-PORTAL_URL = "https://portal.aitherium.com"
+PORTAL_URL = "https://api.aitherium.com"
 CLAUDE_CODE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
 
@@ -522,11 +522,11 @@ async def run_onboarding(
         _print(f"    aither \"hello\"                    # chat with AitherOS")
         _print(f"    aither mcp serve                  # start MCP server for Claude Code")
         _print(f"    aither --status                   # check connection")
-        _print(f"    portal.aitherium.com/downloads    # get the desktop app")
+        _print(f"    api.aitherium.com/downloads    # get the desktop app")
         _print("")
         if result.api_key:
             _print(f"  Your API key: {result.api_key[:25]}...")
-            _print(f"  Keep it safe. Regenerate at: portal.aitherium.com/account/api-keys")
+            _print(f"  Keep it safe. Regenerate at: api.aitherium.com/account/api-keys")
         _print("")
 
     return result
@@ -673,7 +673,7 @@ def plan_onboarding(
     steps = [
         {
             "id": "auth",
-            "title": "Register or login at portal.aitherium.com",
+            "title": "Register or login at api.aitherium.com",
             "cmd": "aither login",
             "optional": False,
             "skipped_if": "already-authenticated",

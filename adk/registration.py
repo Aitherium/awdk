@@ -1,4 +1,4 @@
-"""Portal registration — makes an ADK agent a citizen of portal.aitherium.com.
+"""Portal registration — makes an ADK agent a citizen of api.aitherium.com.
 
 On startup in workspace mode:
 1. Reads agent.yaml for portal configuration
@@ -45,7 +45,7 @@ def _get_portal_url() -> str:
     """Get the portal gateway URL."""
     return os.getenv(
         "AITHER_PORTAL_URL",
-        "https://portal.aitherium.com",
+        "https://api.aitherium.com",
     )
 
 

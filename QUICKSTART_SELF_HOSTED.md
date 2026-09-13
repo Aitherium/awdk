@@ -1,7 +1,7 @@
 # Self-Hosted Agent Quickstart
 
 Run your own AI agent **on your machine** — your model, your loop, your data — and manage it
-from `portal.aitherium.com`. Aitherium hosts only the control plane; inference, the agent loop,
+from `api.aitherium.com`. Aitherium hosts only the control plane; inference, the agent loop,
 memory, and your data never leave your box.
 
 ## TL;DR
@@ -12,7 +12,7 @@ adk onboard --quick             # 2. one command: inference + a pack + enroll
 adk run --agents openclaw       # 3. run your agent locally
 ```
 
-Then open **portal.aitherium.com → Workstation** to see your node and connect your own tools.
+Then open **api.aitherium.com → Workstation** to see your node and connect your own tools.
 
 ## What each step does
 
@@ -55,7 +55,7 @@ device in **AitherDirectory**, scoped to your tenant. A lightweight heartbeat ke
 "last seen" fresh. Genesis and the chat brain are never in this path.
 
 ### 5. Manage it from the portal
-**portal.aitherium.com → Workstation** shows your enrolled node(s): GPU, VRAM, available models,
+**api.aitherium.com → Workstation** shows your enrolled node(s): GPU, VRAM, available models,
 and liveness. From there you can also **connect your own MCP tool servers** (the bearer token is
 held in the vault and never shown again), so your local agent can use your tools.
 
@@ -74,7 +74,7 @@ adk start                            # or: zero-config chat in the current proje
 ## How it fits together
 
 ```
-your machine                                portal.aitherium.com (control plane only)
+your machine                                api.aitherium.com (control plane only)
 ┌────────────────────────────┐              ┌───────────────────────────────────────┐
 │ awdk                  │  device-flow │ AitherIdentity (idp) — verifies you     │
 │  • local LLM / BYO key      │ ───login───▶ │ AitherDirectory      — your node entry  │

@@ -1,4 +1,4 @@
-"""Tiny client for portal.aitherium.com — pull agent specs, push telemetry.
+"""Tiny client for api.aitherium.com — pull agent specs, push telemetry.
 
 Designed for the binary-install path: a single ``aither`` binary on a
 laptop can fetch an agent spec from the portal, run it locally with a
@@ -135,7 +135,7 @@ class PortalClient:
         finish_reason: str,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        """Push a single agent run as telemetry to portal.aitherium.com."""
+        """Push a single agent run as telemetry to api.aitherium.com."""
         payload = {
             "agent": agent_name,
             "prompt": prompt,
@@ -170,7 +170,7 @@ class PortalClient:
         return (
             os.environ.get("AITHER_PORTAL_URL")
             or os.environ.get("AITHER_ELYSIUM_URL")
-            or "https://portal.aitherium.com"
+            or "https://api.aitherium.com"
         ).rstrip("/")
 
     async def list_packs(self) -> list[dict[str, Any]]:

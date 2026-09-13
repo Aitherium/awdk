@@ -27,6 +27,7 @@ treated as a privileged surface:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import os
@@ -40,6 +41,7 @@ from typing import Any, Optional
 
 from adk.harnesses.manager import ManagerError, SessionManager, default_manager
 from adk.harnesses.models import ProfileError, list_profiles
+from adk.harnesses.registry import get as get_harness
 from adk.harnesses.rooms import DEFAULT_ROOM, RoomError, default_registry
 from adk.harnesses.session import SessionConfig
 from adk.harnesses.spool import default_tailer
@@ -74,6 +76,27 @@ DEFAULT_BIND_HOST = os.environ.get(
 )  # noqa: S104
 DEFAULT_PORT = int(os.environ.get("AITHER_HARNESS_PORT", "8362"))
 TOKEN_PATH = Path.home() / ".aither" / "harness_token"
+
+#: OPTIONAL token->principal registry. Absent on every existing install, and its
+#: absence is the pre-2026-09-06 behaviour exactly: one shared bearer, one
+#: implicit owner. Present, it lets ONE daemon serve several callers and still
+#: answer "who is this" -- which /workforce, per-tenant rooms and any
+#: licensed-for-<agent> check need before they can mean anything.
+#:
+#: Shape (token is stored HASHED; the daemon never holds the plaintext):
+#:   {"<sha256 hex of the bearer token>": {
+#:       "principal":    "tenant:user",
+#:       "plan":         "pro",
+#:       "entitlements": ["atlas", "fleet"],
+#:       "expires_at":   1788999999      # epoch seconds; 0/absent = no expiry
+#:   }}
+#: Overridable via AITHER_HARNESS_PRINCIPALS, like the host/port/token above.
+#: Needed to exercise the registry without writing to a live ~/.aither, and it
+#: lets an operator keep the file on a mounted secret volume instead of $HOME.
+PRINCIPALS_PATH = Path(
+    os.environ.get("AITHER_HARNESS_PRINCIPALS", "").strip()
+    or (Path.home() / ".aither" / "harness_tokens.json")
+)
 
 #: Browser origins allowed to call this daemon. AitherShell-in-the-browser is
 #: served from these; anything else is refused.
@@ -138,6 +161,99 @@ def resolve_token(explicit: str = "") -> str:
     except OSError as exc:
         sys.stderr.write(f"[harness] could not restrict {TOKEN_PATH}: {exc}\n")
     return token
+
+
+class Principal:
+    """Who is calling, and what they are allowed to reach.
+
+    The daemon authenticated with ONE shared bearer, so it could prove a caller
+    knew the secret and nothing else. That is why daemon.py refuses to relay
+    comet-deploy over HTTP ("the daemon cannot tell which tenant queued this
+    work") and why requires_plan: sits in every addon manifest unread -- there
+    was no subject to check a plan against.
+
+    OWNER IS NOT A BYPASS THAT GREW BY ACCIDENT. With no registry the daemon is
+    single-user by construction: whoever holds the bearer already owns the box,
+    the sessions and the filesystem those sessions can write to. Modelling that
+    caller as a principal with "*" keeps ONE authorization path instead of
+    sprinkling `if no_registry: allow` through the routes -- the shape where an
+    unrelated later edit silently turns a check off for everyone.
+    """
+
+    __slots__ = ("id", "plan", "entitlements")
+
+    def __init__(self, id: str, plan: str = "free", entitlements: frozenset = frozenset()):
+        self.id = id
+        self.plan = plan
+        self.entitlements = entitlements
+
+    def has(self, entitlement: str) -> bool:
+        return "*" in self.entitlements or entitlement in self.entitlements
+
+    def __repr__(self) -> str:  # never render the token, only the subject
+        return f"Principal(id={self.id!r}, plan={self.plan!r})"
+
+
+#: The caller when no registry exists: the box's owner, everything allowed.
+OWNER_PRINCIPAL = Principal(id="owner", plan="owner", entitlements=frozenset({"*"}))
+
+
+def load_principals(path: Path = None) -> dict:
+    """Read the token->principal registry. Unreadable or malformed = empty.
+
+    A registry that fails to parse must NOT be treated as "deny everyone": that
+    turns one typo into a daemon nobody can reach, including the owner holding
+    the real bearer. It degrades to the single-bearer behaviour instead, and says
+    so on stderr, because a loud downgrade is recoverable and a silent lockout is
+    a support call.
+    """
+    p = path or PRINCIPALS_PATH
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(
+            f"[harness] {p} is unreadable ({exc}); falling back to the single "
+            f"shared bearer. Per-client identity is OFF until this parses.\n"
+        )
+        return {}
+
+
+def resolve_principal(value: str, bearer: str, registry: dict = None) -> Optional[Principal]:
+    """Map a presented bearer token to a Principal, or None if it is not valid.
+
+    Registry entries are matched on sha256 of the presented token, so the file
+    holds no usable secret: someone who reads it learns who exists, not how to
+    authenticate as them.
+
+    The owner bearer is checked SECOND but is never removed. Locking the operator
+    out of their own daemon by adding a registry would make the feature something
+    people avoid, and the owner already holds the box.
+    """
+    presented = (value or "").strip()
+    if not presented:
+        return None
+
+    reg = load_principals() if registry is None else registry
+    if reg:
+        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
+        entry = reg.get(digest)
+        if isinstance(entry, dict):
+            expires = entry.get("expires_at") or 0
+            if expires and float(expires) <= time.time():
+                return None                      # expired: not "fall through to owner"
+            return Principal(
+                id=str(entry.get("principal") or "unknown"),
+                plan=str(entry.get("plan") or "free"),
+                entitlements=frozenset(entry.get("entitlements") or ()),
+            )
+
+    # constant-time: a wrong token must not reveal how much of it was right
+    if hmac.compare_digest(presented, bearer):
+        return OWNER_PRINCIPAL
+    return None
 
 
 def validate_cwd(cwd: str) -> str:
@@ -416,14 +532,47 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         allow_headers=["Authorization", "Content-Type"],
     )
 
-    def auth(authorization: str = Header(default="")) -> None:
+    def auth(authorization: str = Header(default="")) -> Principal:
+        """Authenticate, and RETURN who it was.
+
+        Returns a Principal rather than None so a route can ask "who is this"
+        without a second lookup. Existing routes use
+        ``dependencies=[Depends(auth)]``, which discards the return value, so
+        every one of them keeps its current behaviour untouched; a route that
+        wants the subject declares ``principal: Principal = Depends(auth)``.
+
+        Status codes are deliberately unchanged: 401 for missing/malformed
+        credentials, 403 for a token that is well-formed but not accepted. The
+        browser client refreshes on 401 (see the hub token comment below), so
+        turning a rejected token into a 401 would put it into a refresh loop
+        against a token that will never work.
+        """
         if not authorization:
             raise HTTPException(status_code=401, detail="missing bearer token")
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() != "bearer" or not value:
             raise HTTPException(status_code=401, detail="malformed Authorization header")
-        if not hmac.compare_digest(value.strip(), bearer):
+        principal = resolve_principal(value, bearer)
+        if principal is None:
             raise HTTPException(status_code=403, detail="invalid token")
+        return principal
+
+    def require_entitlement(name: str):
+        """Dependency factory gating a route on an entitlement.
+
+        Unused by default: with no registry every caller is OWNER_PRINCIPAL and
+        holds "*", so adding this to a route changes nothing until an operator
+        actually writes harness_tokens.json. That ordering is the point -- the
+        gate ships and proves itself before anyone's access depends on it.
+        """
+        def check(principal: Principal = Depends(auth)) -> Principal:
+            if not principal.has(name):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"principal {principal.id!r} lacks entitlement {name!r}",
+                )
+            return principal
+        return check
 
     class CreateSession(BaseModel):
         harness: str = "claude"
@@ -535,9 +684,31 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     # ── discovery ───────────────────────────────────────────────────────────
 
-    @app.get("/harnesses", dependencies=[Depends(auth)])
-    def harnesses(versions: bool = Query(default=False)) -> dict[str, Any]:
-        return {"harnesses": mgr.harnesses(with_version=versions)}
+    @app.get("/harnesses")
+    def harnesses(
+        versions: bool = Query(default=False),
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """List harnesses this CALLER may drive.
+
+        Filtered, not annotated: a harness the caller cannot start should not
+        appear in the picker at all, because an entry that 403s on click reads
+        as a broken product rather than an unlicensed one. ``install_hint``
+        already covers the other kind of absence -- "you do not have it" -- and
+        the two are different problems with different fixes.
+
+        With no principals registry every caller is OWNER_PRINCIPAL holding "*",
+        and every shipped harness declares no entitlement, so this returns the
+        same list it always did.
+        """
+        rows = mgr.harnesses(with_version=versions)
+        return {
+            "harnesses": [
+                r for r in rows
+                if not r.get("requires_entitlement")
+                or principal.has(r["requires_entitlement"])
+            ]
+        }
 
     @app.get("/profiles", dependencies=[Depends(auth)])
     def profiles() -> dict[str, Any]:
@@ -560,8 +731,28 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     # ── sessions ────────────────────────────────────────────────────────────
 
-    @app.post("/sessions", dependencies=[Depends(auth)])
-    def create_session(body: CreateSession) -> dict[str, Any]:
+    @app.post("/sessions")
+    def create_session(
+        body: CreateSession,
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        # Enforce here as well as in the listing. Filtering /harnesses shapes the
+        # PICKER; it is not access control, because the harness id arrives in this
+        # body and a caller can name one the list never offered. A gate that only
+        # runs where the UI happens to look is decoration.
+        try:
+            spec = get_harness(body.harness)
+        except Exception:
+            spec = None
+        needed = getattr(spec, "requires_entitlement", "") if spec else ""
+        if needed and not principal.has(needed):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"principal {principal.id!r} is not licensed for harness "
+                    f"{body.harness!r} (requires entitlement {needed!r})"
+                ),
+            )
         try:
             cwd = validate_cwd(body.cwd)
             config = SessionConfig(**{**body.model_dump(), "cwd": cwd})
@@ -951,6 +1142,88 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "urgent": len(urgent),
             "oldest_age_seconds": round(oldest, 1),
         }
+
+    @app.get("/decisions/needs-human", dependencies=[Depends(auth)])
+    def needs_human_decisions() -> dict[str, Any]:
+        """Filter: only cards that need an active human decision.
+
+        Uses triage classification: a DECISION has options, a deadline, or is a
+        credential/blocked card. CONTEXT cards are info-only (hourly digests,
+        status updates, etc.) and are auto-acknowledged after 24 hours.
+
+        Returns the same shape as /decisions but filtered to decisions only.
+        """
+        from adk.decisions.store import get_store
+        from adk.decisions.triage import triage
+
+        cards = get_store().list()
+        decisions = []
+        for card in cards:
+            classification, reason = triage(card.to_dict())
+            if classification == "decision":
+                decisions.append(card.to_dict())
+        return {
+            "decisions": decisions,
+            "count": len(decisions),
+            "triage_reason": "filtered to decision-only (options, deadline, credential, or blocked)",
+        }
+
+    @app.get("/decisions/triage-patterns", dependencies=[Depends(auth)])
+    def get_triage_patterns() -> dict[str, Any]:
+        """Export triage patterns for desk-side classification.
+
+        The desk reads this at runtime and classifies cards using the same rules
+        as the daemon, without re-running Python. This keeps the two in sync.
+        """
+        from adk.decisions.triage import is_decision_pattern_json
+
+        return is_decision_pattern_json()
+
+    @app.get("/decisions/{card_id}/wait", dependencies=[Depends(auth)])
+    async def wait_for_decision(
+        card_id: str,
+        timeout: int = Query(default=30, ge=1, le=300),  # 1–300 seconds
+    ) -> dict[str, Any]:
+        """Long-poll for a decision to be answered.
+
+        Blocks for up to `timeout` seconds waiting for the card to be answered,
+        cancelled, or expired. Returns immediately if the card is already closed.
+
+        Useful for headless runs that need to wait on their own card.
+        Returns 408 (Request Timeout) if the timeout expires with no answer.
+        """
+        from adk.decisions.store import DecisionError, get_store
+
+        store = get_store()
+        start = time.time()
+
+        while True:
+            try:
+                card = store.get(card_id)
+            except DecisionError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            if card is None:
+                raise HTTPException(status_code=404, detail=f"no such card: {card_id}")
+
+            # Card is closed (answered, expired, cancelled).
+            if card.status != "open":
+                return {
+                    "card": card.to_dict(),
+                    "waited_seconds": round(time.time() - start, 2),
+                }
+
+            # Timeout reached.
+            elapsed = time.time() - start
+            if elapsed >= timeout:
+                raise HTTPException(
+                    status_code=408,
+                    detail=f"timeout waiting for {card_id} after {timeout}s",
+                )
+
+            # Wait a bit and retry. 0.5s polling is cheap and gives sub-second
+            # responsiveness without hammering the store.
+            await asyncio.sleep(0.5)
 
     # Shared across requests so the bridge's last-sent disambiguation survives
     # between two messages of one conversation. Lazy: the daemon must come up

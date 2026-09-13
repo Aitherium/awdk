@@ -12,3 +12,18 @@ build/
 
 # Stray pytest output — was committed once and published with a username in it
 test_results.txt
+
+# PyInstaller writes a .spec next to the build whenever build_executable.py runs,
+# baking in THAT machine's absolute entry-point path. Two of them (awdaemons.spec,
+# aither-daemons.spec) sat here untracked long enough to be mistaken for build
+# CONFIG and analysed as "duplicated, non-portable build files needing
+# consolidation" — they were neither config nor duplicated, just the same
+# generated artifact from a Windows run and a WSL run (C:\... vs /mnt/c/...).
+# build_executable.py passes the entry point to PyInstaller directly and never
+# reads a spec, so these are pure output. Ignore them so they cannot be
+# misread as source again.
+#
+# NOT a blanket *.spec: awdk/aither.spec and awdk/packaging/pyinstaller.spec are
+# tracked, hand-maintained, and must stay visible.
+/awdaemons.spec
+/aither-daemons.spec

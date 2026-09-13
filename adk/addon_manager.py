@@ -322,6 +322,7 @@ class AddonManager:
         ``port`` override in ``config``), so what the manifest says is what binds.
         """
         import shlex
+        import shutil
         import subprocess
         import sys
 
@@ -332,6 +333,36 @@ class AddonManager:
             instance.status = "running"          # assumed already running (legacy shape)
             return instance
         argv = shlex.split(command.format(port=port), posix=(sys.platform != "win32"))
+
+        # RESOLVE THE BINARY BEFORE SPAWNING, and say so in the manifest's own terms.
+        #
+        # Popen already raises OSError for a missing program and the handler below
+        # records it, so this is not about crashing -- it is about WHICH sentence the
+        # operator reads. "could not start 'electron': [WinError 2] The system cannot
+        # find the file specified" describes a syscall. It does not say that
+        # addon_manifests/awdesk.yaml asks for a runtime this machine has never had,
+        # which is the actual repair.
+        #
+        # Measured 2026-09-06: awdesk declares `command: electron .`, `electron` is not
+        # on PATH, and no Electron entry point exists anywhere in AitherOS/apps -- the
+        # desktop app that ships is PyQt6 (AitherOS/apps/AitherDesktop, "Native PyQt6
+        # overlay"). So the manifest names a runtime nothing here provides, and the
+        # only way to find that out was to try to start it and read a WinError.
+        #
+        # Same failure class as the awnix unit whose ExecStart pointed at
+        # /usr/local/bin/awdk-daemon, a binary no console script installs: declared,
+        # enabled, and unrunnable, with nothing checking the gap between the
+        # declaration and the machine. Resolve first, and name the manifest.
+        exe = shutil.which(argv[0]) if argv else None
+        if exe is None:
+            instance.status = "error"
+            instance.error_message = (
+                f"addon {manifest.get('id')!r}: command {argv[0]!r} is not on PATH "
+                f"(manifest command: {command!r}). Install it, or correct "
+                f"`command:` in this addon's manifest -- nothing was spawned."
+            )
+            return instance
+
         log_dir = Path(os.environ.get("AITHER_HOME", str(Path.home() / ".aither"))) / "logs"
         try:
             log_dir.mkdir(parents=True, exist_ok=True)

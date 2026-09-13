@@ -1253,6 +1253,37 @@ class ClaudeRunner:
 # ---------------------------------------------------------------------------
 
 
+def _runner_token_path() -> Path:
+    """The shared token file both the daemon and a tokenless client read."""
+    env_root = os.environ.get("AITHER_CLAUDE_RUNNER_ROOT", "")
+    root = Path(env_root) if env_root else Path.home() / ".aither" / "claude-runner"
+    return root / "token"
+
+
+def sync_runner_token(token: str) -> None:
+    """Write the daemon's resolved token to the shared file so a tokenless client
+    (a plain shell with no AITHER_CLAUDE_RUNNER_TOKEN / AITHER_INTERNAL_SECRET)
+    resolves the SAME value and authenticates.
+
+    Called once when the daemon starts. Without it, a daemon that booted from the
+    shared secret never syncs the file, and a client in a fresh shell falls back to
+    whatever stale token the file already held — a 403 with no named cause. The
+    value is never echoed; the file is owner-only.
+    """
+    if not token:
+        return
+    token_path = _runner_token_path()
+    try:
+        if token_path.exists() and token_path.read_text(encoding="utf-8").strip() == token:
+            return
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token, encoding="utf-8")
+        restrict_file(token_path)
+    except OSError:
+        # Best-effort sync; the daemon still serves with the resolved token.
+        return
+
+
 def resolve_token(explicit: str = "") -> str:
     """Resolve the daemon Bearer token; generate + persist one if none exists.
 
@@ -1267,14 +1298,12 @@ def resolve_token(explicit: str = "") -> str:
     )
     if token:
         return token
-    env_root = os.environ.get("AITHER_CLAUDE_RUNNER_ROOT", "")
-    root = Path(env_root) if env_root else Path.home() / ".aither" / "claude-runner"
-    token_path = root / "token"
+    token_path = _runner_token_path()
     if token_path.exists():
         token = token_path.read_text(encoding="utf-8").strip()
         if token:
             return token
-    root.mkdir(parents=True, exist_ok=True)
+    token_path.parent.mkdir(parents=True, exist_ok=True)
     token = std_secrets.token_urlsafe(32)
     token_path.write_text(token, encoding="utf-8")
     restrict_file(token_path)
@@ -1428,6 +1457,7 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     host = host or os.environ.get("AITHER_CLAUDE_RUNNER_HOST", DEFAULT_HOST)
     port = port or int(os.environ.get("AITHER_CLAUDE_RUNNER_PORT", DEFAULT_PORT))
     resolved = resolve_token(token)
+    sync_runner_token(resolved)
     runner = ClaudeRunner()
     app = create_app(runner, resolved)
     _log.info("claude-runner serving", extra={"host": host, "port": port})

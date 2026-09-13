@@ -36,8 +36,8 @@ REM at that CA bundle rather than disabling verification.
 set "AITHER_LLM_BACKEND=vllm"
 set "AITHER_LLM_BASE_URL=https://127.0.0.1:8150/v1"
 set "AITHER_MODEL=aither-orchestrator"
-set "SSL_CERT_FILE=D:\AitherOS-Fresh\AitherOS\config\certs\aithernet-ca-bundle.pem"
-set "REQUESTS_CA_BUNDLE=D:\AitherOS-Fresh\AitherOS\config\certs\aithernet-ca-bundle.pem"
+set "SSL_CERT_FILE=C:\AitherOS-Fresh\AitherOS\config\certs\aithernet-ca-bundle.pem"
+set "REQUESTS_CA_BUNDLE=C:\AitherOS-Fresh\AitherOS\config\certs\aithernet-ca-bundle.pem"
 REM Sovereign mode (adk/server.py:377): skip ALL cloud registration at startup — gateway
 REM MCP, secrets sync, AitherNet mesh join, IdP enrolment, relays. Without this the
 REM "local sovereign" daemon phones gateway.aitherium.com / idp.aitherium.com BEFORE it

@@ -54,7 +54,9 @@ NARROW_EXCLUDES = (
 )
 
 
-def build(onedir: bool = False, narrow: bool = False):
+def build(onedir: bool = False, narrow: bool = False, entry: str = "",
+          name: str = "", add_data: list[str] | None = None,
+          paths: list[str] | None = None):
     """Build the executable.
 
     ``narrow`` roots the freeze at packaging/daemon_entry.py -- the two daemons
@@ -68,10 +70,31 @@ def build(onedir: bool = False, narrow: bool = False):
     """
     if narrow:
         entry_point = str(ROOT / "packaging" / "daemon_entry.py")
-        name = "aither-daemons"
+        # `awdaemons`, not `aither-daemons`. THREE names for one artifact is a
+        # measured defect, not a nit: build_executable.py emitted
+        # `aither-daemons`, daemon_entry.py's prog said `awdaemons`, and
+        # surfaces.ts looked for `bin/aither` -- so the launcher could not find
+        # the narrow build without a human renaming it, and `--help` announced a
+        # different program than the one you ran. The registered brick is
+        # `awdaemons` (AitherOS/config/addon_manifests/awdaemons.yaml,
+        # ecosystem.yaml), so that is the name everything else moves to.
+        default_name = "awdaemons"
     else:
         entry_point = str(ROOT / "adk" / "cli.py")
-        name = "aither"
+        default_name = "aither"
+
+    # An EXTERNAL entry point may root the freeze instead. A product-side
+    # entry point (the first one adds a `saga serve` verb) extends
+    # daemon_entry's parser; it cannot live in this tree, which is
+    # public-mirrored and may not name private product paths
+    # (tools/check_public_paths.py awdk). Passing the entry in keeps ONE freeze
+    # recipe rather than a second copy of NARROW_EXCLUDES that drifts.
+    if entry:
+        entry_point = str(Path(entry).resolve())
+        if not Path(entry_point).is_file():
+            print(f"Entry point not found: {entry_point}")
+            sys.exit(2)
+    name = name or default_name
 
     args = [
         sys.executable, "-m", "PyInstaller",
@@ -86,6 +109,13 @@ def build(onedir: bool = False, narrow: bool = False):
     else:
         args.append("--onefile")
 
+    # An external entry imports its siblings by bare name after a runtime
+    # sys.path insert, which PyInstaller's static analysis never executes -- so
+    # the freeze builds, and the binary dies on its first import. Search roots
+    # the analysis needs are named here, the same way data is.
+    for extra in paths or []:
+        args.extend(["--paths", str(Path(extra).resolve())])
+
     if narrow:
         for mod in NARROW_EXCLUDES:
             args.extend(["--exclude-module", mod])
@@ -97,6 +127,23 @@ def build(onedir: bool = False, narrow: bool = False):
     compose = ROOT / "docker-compose.adk-vllm.yml"
     if compose.exists():
         args.extend(["--add-data", f"{compose}{data_sep}adk"])
+
+    # Caller-supplied data, written `src:dst` and translated to the platform
+    # separator here so one recipe works on both. 🚨 The narrow build shipped
+    # NO identities: adk/identity.py resolves `identities/` package-relative, so
+    # `create_app(identity="saga")` inside a onefile freeze finds no saga.yaml
+    # and the daemon starts as a different agent -- a binary that runs and is
+    # the wrong program. Whatever a verb reads from disk has to be named here.
+    for item in add_data or []:
+        src, _, dst = item.partition(":")
+        if not dst:
+            print(f"--add-data needs src:dst, got {item!r}")
+            sys.exit(2)
+        resolved = Path(src).resolve()
+        if not resolved.exists():
+            print(f"--add-data source not found: {resolved}")
+            sys.exit(2)
+        args.extend(["--add-data", f"{resolved}{data_sep}{dst}"])
 
     # Hidden imports that PyInstaller misses
     hidden = [
@@ -177,5 +224,21 @@ if __name__ == "__main__":
                         help="freeze ONLY the daemons the AitherOS launcher "
                              "starts (packaging/daemon_entry.py) and exclude "
                              "the ML stack -- the wide build is 694 MiB")
+    parser.add_argument("--entry", default="",
+                        help="root the freeze at THIS entry point instead "
+                             "(it must extend packaging/daemon_entry.py's "
+                             "parser, not fork it)")
+    parser.add_argument("--name", default="",
+                        help="output name (default awdaemons for --narrow, "
+                             "aither otherwise)")
+    parser.add_argument("--add-data", action="append", default=[],
+                        metavar="SRC:DST",
+                        help="extra data to bundle, repeatable; the platform "
+                             "path separator is applied here")
+    parser.add_argument("--paths", action="append", default=[],
+                        metavar="DIR",
+                        help="extra import search root for the analysis, "
+                             "repeatable (an --entry's bare-name siblings)")
     args = parser.parse_args()
-    build(onedir=args.onedir, narrow=args.narrow)
+    build(onedir=args.onedir, narrow=args.narrow, entry=args.entry,
+          name=args.name, add_data=args.add_data, paths=args.paths)

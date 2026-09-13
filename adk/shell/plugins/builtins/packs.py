@@ -128,7 +128,7 @@ class PacksPlugin(SlashCommand):
         if portal_url:
             return portal_url.rstrip("/")
 
-        return "https://portal.aitherium.com"
+        return "https://api.aitherium.com"
 
     def _get_adk_server_url(self) -> str:
         """Resolve ADK agent server URL for hot-apply.
@@ -486,7 +486,7 @@ class PacksPlugin(SlashCommand):
             if lic.get("status") == "active" and lic.get("listing_id")
         })
         if not entitled:
-            return "No entitled packs. Buy packs at portal.aitherium.com/portal/marketplace/packs"
+            return "No entitled packs. Buy packs at api.aitherium.com/portal/marketplace/packs"
 
         installed, skipped, failed = [], [], []
         for pack_id in entitled:
@@ -773,7 +773,7 @@ EXAMPLES:
 async def sync_entitled_packs(
     auth_token: str,
     tenant_id: Optional[str] = None,
-    base_url: str = "https://portal.aitherium.com",
+    base_url: str = "https://api.aitherium.com",
 ) -> Tuple[int, int]:
     """Sync entitled packs for a newly enrolled node (best-effort).
 
@@ -783,7 +783,7 @@ async def sync_entitled_packs(
     Args:
         auth_token: Bearer token for authentication
         tenant_id: Optional tenant ID header
-        base_url: Portal URL (default portal.aitherium.com)
+        base_url: Portal URL (default api.aitherium.com)
 
     Returns:
         (installed_count, failed_count) tuple; never raises.

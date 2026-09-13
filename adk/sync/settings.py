@@ -3,7 +3,7 @@
 Sibling of :mod:`adk.session_sync`. Where session-sync pushes conversation
 history, settings-sync keeps the agent's *configuration* (LLM backend choice,
 enabled packs, safe config prefs, external MCP servers) in step with the user's
-profile on portal.aitherium.com — so the same settings follow the user across
+profile on api.aitherium.com — so the same settings follow the user across
 devices and into the Awconnect browser extension.
 
 Decision (locked with the owner): **the portal profile is the source of truth.**
@@ -27,7 +27,7 @@ and are NEVER included in the pushed snapshot.
 Environment:
   * ``AITHER_SETTINGS_SYNC``   — ``true`` / ``false`` / ``auto`` (default ``auto``:
     on when a portal token is resolvable, off otherwise).
-  * ``AITHER_PORTAL_URL``      — portal base (default ``https://portal.aitherium.com``).
+  * ``AITHER_PORTAL_URL``      — portal base (default ``https://api.aitherium.com``).
   * ``AITHER_SETTINGS_SYNC_DEBOUNCE`` — push debounce seconds (default ``3.0``).
   * ``AITHER_SETTINGS_SYNC_TIMEOUT``  — HTTP timeout seconds (default ``15.0``).
 """
@@ -59,7 +59,7 @@ def _default_portal_url() -> str:
     return (
         os.environ.get("AITHER_PORTAL_URL")
         or os.environ.get("AITHER_ELYSIUM_URL")
-        or "https://portal.aitherium.com"
+        or "https://api.aitherium.com"
     ).rstrip("/")
 
 

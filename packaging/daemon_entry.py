@@ -62,6 +62,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Any, Callable
 
 
 def _port(explicit: int) -> int:
@@ -105,9 +106,27 @@ def _cmd_up(args: argparse.Namespace) -> int:
     return int(result) if isinstance(result, int) else 0
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(extra: Callable[[Any], None] | None = None) -> argparse.ArgumentParser:
+    """The daemons' argv contract, optionally EXTENDED by the caller.
+
+    `extra` is handed the subparsers action so a downstream entry point can add
+    a verb without this file importing it. That direction is not stylistic: this
+    tree is public-mirrored and `tools/check_public_paths.py awdk` forbids
+    private product paths here, so the only way a product-side daemon can share
+    this parser is for the product to reach IN. The first caller adds a
+    `saga serve` verb and reuses `_host`/`_port`, so its host/port precedence
+    cannot drift from the two verbs the launcher already spawns.
+    """
     ap = argparse.ArgumentParser(
-        prog="aither",
+        # `awdaemons`, matching what build_executable.py actually names this
+        # freeze (its `--narrow` output name) and the aw-family rule it cites
+        # (.claude/rules/aw-family.md) — every name in the family reads as
+        # "Aither World <thing>". This said `aither` while the binary on disk
+        # was `awdaemons`, so `awdaemons --help` announced a different program
+        # than the one you ran. Usage text is the only identity a frozen binary
+        # can show, and the wide build genuinely IS `aither` — two programs
+        # claiming one name is how you debug the wrong one.
+        prog="awdaemons",
         description="AitherOS daemons (narrow build: harness serve, up).",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -123,11 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
     up = sub.add_parser("up", help="run the agent server")
     up.add_argument("rest", nargs=argparse.REMAINDER)
     up.set_defaults(func=_cmd_up)
+
+    if extra is not None:
+        extra(sub)
     return ap
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv if argv is not None else sys.argv[1:])
+def main(argv: list[str] | None = None,
+         extra: Callable[[Any], None] | None = None) -> int:
+    args = build_parser(extra).parse_args(argv if argv is not None else sys.argv[1:])
     return args.func(args)
 
 

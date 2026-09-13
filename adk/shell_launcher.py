@@ -315,17 +315,43 @@ def _preflight_check() -> tuple[bool, str]:
     import urllib.request
     import urllib.error
 
-    # Check custom LLM base URL (e.g., AITHER_LLM_BASE_URL for DGX Spark :8124)
-    custom_url = os.environ.get("AITHER_LLM_BASE_URL", "").strip()
-    if custom_url:
-        url = f"{custom_url.rstrip('/')}/v1/models"
+    def _models_ok(base: str) -> bool:
+        base = base.rstrip("/")
+        url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
         try:
             req = urllib.request.Request(url)
             with urllib.request.urlopen(req, timeout=2) as resp:
-                if resp.status == 200:
-                    return True, f"custom:{custom_url}"
+                return resp.status == 200
         except (urllib.error.URLError, ConnectionError, OSError):
-            pass
+            return False
+
+    # Check custom LLM base URL (e.g., AITHER_LLM_BASE_URL for DGX Spark :8124).
+    # Accepts the value with or without a trailing /v1 — Config.llm_base_url
+    # wants it WITH, and the same env var feeds both (2026-09-12).
+    custom_url = os.environ.get("AITHER_LLM_BASE_URL", "").strip()
+    if custom_url and _models_ok(custom_url):
+        return True, f"custom:{custom_url}"
+
+    # The backend the user configured (adk backend set / install-bonsai.sh
+    # --with-adk). Until 2026-09-12 this preflight never read it, so `adk up`
+    # refused with "no backend" on a box whose Bonsai answered on :8080.
+    try:
+        from adk.config import load_saved_config as _lsc
+        _saved = _lsc()
+        _u = (_saved.get("inference_url") or "").strip()
+        if _saved.get("default_backend") and _u and _models_ok(_u):
+            return True, f"configured:{_saved.get('default_backend')} {_u}"
+    except Exception:  # noqa: BLE001 — preflight is best-effort
+        pass
+
+    # Self-hosted loopback servers (same ladder as LLMRouter / adk status).
+    try:
+        from adk.local_inference import SELFHOST_PORTS
+    except ImportError:
+        SELFHOST_PORTS = (8080, 8090, 8092, 8889, 8081, 8000)
+    for port in SELFHOST_PORTS:
+        if _models_ok(f"http://127.0.0.1:{port}"):
+            return True, f"local on :{port}"
 
     # Check vLLM ports
     for port in (8200, 8201, 8000):

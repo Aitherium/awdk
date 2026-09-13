@@ -44,7 +44,7 @@ import logging
 
 logger = logging.getLogger("adk.gui_wizard")
 
-_PORTAL_URL = "https://portal.aitherium.com"
+_PORTAL_URL = "https://api.aitherium.com"
 _ART_URL = "https://aitherium.com"
 
 

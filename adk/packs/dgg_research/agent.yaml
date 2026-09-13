@@ -1,0 +1,76 @@
+# ============================================================================
+# DGG Research — the documentary-record agent
+# ============================================================================
+# A research agent for a corpus that has to survive a hostile reader. It works
+# the Digital Ground Game election-interference record: resolving actors,
+# grading sources, and pushing evidence to the timeline through the API rather
+# than editing tables by hand.
+#
+# It runs on a backend the operator already has. There is no hosted-model
+# assumption anywhere in this pack: llama.cpp with Bonsai-4B on a CPU is the
+# floor, Bonsai-27B on a GPU is the same pack with a bigger brain, and the
+# choice is made from the machine rather than from a config a human has to
+# remember to change (model-stacks.yaml `requires_gpu` / `vram_estimate_gb`).
+
+name: dgg-research
+identity: dgg_research
+version: "0.1.0"
+description: >
+  A research agent for a documentary record. It resolves people to actors
+  before asserting anything about them, grades every source, quotes verbatim
+  before interpreting, and records what it could NOT find as carefully as what
+  it could. Built for the 2026 election-interference corpus; useful for any
+  evidence base where being wrong in public is the failure that matters.
+
+brain_pack: dgg_research
+
+capabilities:
+  - LLM_INFERENCE
+  - WEB_FETCH          # a documented API first; search only when nothing else reaches it
+  - FILE_IO            # read captures, write findings
+  - MEMORY_READ
+  - MEMORY_WRITE
+  - SCHEDULE           # the standing sweeps, once the operator opts in
+
+enabled_domains:
+  - research
+  - memory
+  - code
+
+# The floor is a CPU. Everything above it is an upgrade the pack detects, not a
+# different pack. Ordered worst-acceptable first so the resolver can walk down.
+inference:
+  floor:
+    backend: llamacpp
+    model: Bonsai-4B-Q1
+    requires_gpu: false
+    ram_estimate_gb: 2
+    note: >-
+      Runs on any laptop. Slower, and honest about it -- a research agent that
+      needs a datacentre is not available to the people doing the research.
+  preferred:
+    backend: llamacpp
+    model: Bonsai-27B
+    requires_gpu: true
+    vram_estimate_gb: 13
+    note: >-
+      Selected automatically when the host has the VRAM. Same pack, same tools,
+      same method -- only the reasoning gets better.
+  byo:
+    note: >-
+      Any OpenAI-shaped endpoint the operator already pays for. The pack asserts
+      nothing about who serves the tokens.
+
+# The callable half ships as a TOOL PACK, because adk/packs/ is not a toolpack
+# scan dir -- the loader reads adk/toolpacks/, lib/agents/packs and
+# ~/.aitheros/packs. A .toolpack.yaml placed here discovers as nothing, which
+# is indistinguishable from the feature being switched off.
+toolpacks:
+  - dgg-research
+
+tools:
+  - actor_resolve         # is this person already in the record?
+  - actor_references      # everywhere an actor appears
+  - evidence_push         # an action, against the artifact it came from
+  - mention_verify        # a human confirms a proposed match
+  - corpus_null           # record a null WITH the corpus and window searched

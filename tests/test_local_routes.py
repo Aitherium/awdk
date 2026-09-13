@@ -242,3 +242,128 @@ def test_mail_send_maps_accepted_and_refused(client, monkeypatch):
     body = r.json()
     assert body["ok"] is False
     assert "not allowed" in body["message"]
+
+
+# ── saga forwarder (Play tab) ─────────────────────────────────────────────
+
+
+def test_saga_unset_is_503_with_a_fix(client, monkeypatch):
+    monkeypatch.delenv("AITHER_SAGA_URL", raising=False)
+    r = client.get("/api/local/saga/status")
+    assert r.status_code == 503, "a host with no Saga answers 'not here', never a 404"
+    assert "fix" in r.json()["detail"]
+
+
+def test_saga_non_loopback_is_refused(client, monkeypatch):
+    monkeypatch.setenv("AITHER_SAGA_URL", "http://saga.example.com:18770")
+    r = client.get("/api/local/saga/status")
+    assert r.status_code == 503
+    assert "this machine" in r.json()["detail"]["error"]
+
+
+def test_saga_dot_segments_are_refused(client, monkeypatch):
+    monkeypatch.setenv("AITHER_SAGA_URL", "http://127.0.0.1:18770")
+    r = client.get("/api/local/saga/..%2Fstorygraph%2Fstats")
+    assert r.status_code == 404
+
+
+def test_saga_forwards_method_query_body_and_world_but_not_the_bearer(client, monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("AITHER_SAGA_URL", "http://127.0.0.1:18770")
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(method=request.method, url=str(request.url), body=request.content,
+                    world=request.headers.get("x-saga-world"),
+                    auth=request.headers.get("authorization"))
+        return httpx.Response(201, json={"turn_id": "mem-1"})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    r = client.post("/api/local/saga/turn?world=x", json={"message": "hi"},
+                    headers={"X-Saga-World": "private/alpha", "Authorization": "Bearer t"})
+    assert r.status_code == 201
+    assert r.json() == {"turn_id": "mem-1"}
+    assert seen["method"] == "POST"
+    assert seen["url"] == "http://127.0.0.1:18770/api/local/saga/turn?world=x"
+    assert seen["world"] == "private/alpha"
+    assert b"hi" in seen["body"]
+    assert seen["auth"] is None, "the daemon's bearer must not travel to another process"
+
+
+# ── studio remote lane (Studio tab) ───────────────────────────────────────
+
+
+@pytest.fixture()
+def studio_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+    return tmp_path
+
+
+def test_studio_remote_is_off_by_default(client, studio_home):
+    assert client.get("/api/local/studio/status").json()["remote"]["enabled"] is False
+
+
+def test_studio_refuses_before_building_any_client(client, studio_home, monkeypatch):
+    import httpx
+
+    def boom(**_kw):
+        raise AssertionError("an HTTP client was built before consent was read")
+
+    monkeypatch.setattr(httpx, "AsyncClient", boom)
+    r = client.post("/api/local/studio/remote/op/remove_bg", json={})
+    assert r.status_code == 403
+    assert r.json()["detail"]["error"] == "remote_disabled"
+
+
+def test_studio_consent_must_be_explicit_and_stores_no_key(client, studio_home):
+    r = client.post("/api/local/studio/remote/consent", json={"url": "http://127.0.0.1:8200"})
+    assert r.status_code == 400
+    r = client.post("/api/local/studio/remote/consent",
+                    json={"url": "http://127.0.0.1:8200", "confirm": True},
+                    headers={"X-Studio-Key": "sk-should-never-land"})
+    assert r.status_code == 200
+    stored = (studio_home / "studio-remote.json").read_text(encoding="utf-8")
+    assert json.loads(stored)["auto"] is False
+    assert "sk-should-never-land" not in stored
+
+
+def test_studio_malformed_consent_is_off(client, studio_home):
+    (studio_home / "studio-remote.json").write_text("{not json", encoding="utf-8")
+    assert client.get("/api/local/studio/remote/ops").status_code == 403
+
+
+def test_studio_forwards_to_the_consented_url_only_and_passes_ok_false_through(
+        client, studio_home, monkeypatch):
+    import httpx
+
+    client.post("/api/local/studio/remote/consent",
+                json={"url": "http://127.0.0.1:8200", "confirm": True})
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(url=str(request.url), auth=request.headers.get("authorization"),
+                    body=request.content)
+        return httpx.Response(200, json={"ok": False, "error": "restricted op"})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    r = client.post("/api/local/studio/remote/op/remove_bg?url=http://evil.example",
+                    json={"media_id": "m1"}, headers={"X-Studio-Key": "k-123"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "restricted op"}, "ok:false is not a success"
+    assert seen["url"] == "http://127.0.0.1:8200/op/remove_bg"
+    assert seen["auth"] == "Bearer k-123"
+    assert b"m1" in seen["body"]
+    bad = client.post("/api/local/studio/remote/op/..%2Fapi%2Fconfig", json={})
+    assert bad.status_code == 404
+
+
+def test_studio_revoke_turns_it_off(client, studio_home):
+    client.post("/api/local/studio/remote/consent",
+                json={"url": "http://127.0.0.1:8200", "confirm": True})
+    assert client.delete("/api/local/studio/remote/consent").json() == {"enabled": False}
+    assert client.get("/api/local/studio/status").json()["remote"]["enabled"] is False

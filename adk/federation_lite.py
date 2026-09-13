@@ -7,7 +7,7 @@ optionally ``cryptography`` for Ed25519 request signing.
 Usage::
 
     client = FederationLiteClient(
-        hub_url="https://portal.aitherium.com",
+        hub_url="https://api.aitherium.com",
         api_key="...",
         node_id="acme-a3f8b2c1-7x9k",
         node_id="node-a3f8b2c1-7x9k",
@@ -80,7 +80,7 @@ class FederationLiteClient:
 
     def __init__(
         self,
-        hub_url: str = "https://portal.aitherium.com",
+        hub_url: str = "https://api.aitherium.com",
         api_key: Optional[str] = None,
         node_id: Optional[str] = None,
         key_dir: Optional[Path] = None,

@@ -159,7 +159,7 @@ adk grid test                                 # All nodes
 adk grid test 192.168.1.100                   # Specific node
 ```
 
-## Cloud Sync (portal.aitherium.com)
+## Cloud Sync (api.aitherium.com)
 
 Grid config can be synced to your Aitherium workspace so you can pull it on another machine:
 

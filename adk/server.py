@@ -48,6 +48,16 @@ from adk.llm import LLMRouter, Message
 from adk.metrics import get_metrics
 from adk.trace import TraceMiddleware, get_trace_id, new_trace
 
+# The daemon fingerprints its OWN package at launch so a probe can tell whether the code
+# on disk is the code that is running. A long-lived process that imported before an edit
+# keeps serving old code while every file-level read shows the fix; the watchdog's
+# capability check compares this against a fresh compute and replaces a stale daemon.
+try:
+    from adk.code_fingerprint import STARTUP as _CODE_FINGERPRINT
+except Exception as _fp_exc:  # noqa: BLE001 — fingerprinting must never stop the daemon
+    _CODE_FINGERPRINT = f"unavailable:{type(_fp_exc).__name__}"
+_STARTED_AT = time.time()
+
 logger = logging.getLogger("adk.server")
 
 _WEBUI_CACHE: str | None = None
@@ -530,15 +540,22 @@ def create_app(
             _heartbeat_task = asyncio.create_task(_fleet_heartbeat_loop())
             _state["heartbeat_task"] = _heartbeat_task
 
+            # ── Workflow -> expedition mirror tailer (host-side half) ──
+            if os.environ.get("AITHER_WORKFLOW_MIRROR", "1") != "0":
+                _state["workflow_mirror_task"] = asyncio.create_task(_workflow_mirror_loop())
+
         yield
         # ── Shutdown cleanup ──
-        hb_task = _state.get("heartbeat_task")
-        if hb_task and not hb_task.done():
-            hb_task.cancel()
-            try:
-                await hb_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for _task_key in ("heartbeat_task", "workflow_mirror_task"):
+            _bg_task = _state.get(_task_key)
+            if _bg_task and not _bg_task.done():
+                _bg_task.cancel()
+                try:
+                    await _bg_task
+                except asyncio.CancelledError:
+                    logger.debug("%s cancelled on shutdown", _task_key)
+                except Exception as exc:  # noqa: BLE001 -- shutdown must finish
+                    logger.debug("%s ended with %s on shutdown", _task_key, exc)
         await _deregister_fleet_endpoint()
         _elysium_relay = _state.get("elysium_relay")
         if _elysium_relay:
@@ -609,7 +626,7 @@ def create_app(
     _aitherium_origins = [
         "https://aitherium.com",
         "https://www.aitherium.com",
-        "https://portal.aitherium.com",
+        "https://api.aitherium.com",
         "https://veil.aitherium.com",
         # GobboNet surfaces. The adapter's ALLOWED_HOSTS is the authority for this set.
         "https://desktop.aitherium.com",
@@ -953,6 +970,9 @@ def create_app(
             "version": __version__,
             "gateway_connected": _state.get("gateway_connected", False),
             "gateway_mcp_connected": _state.get("gateway_mcp_connected", False),
+            # Code currency: what is RUNNING, not what is on disk (see code_fingerprint).
+            "code_fingerprint": _CODE_FINGERPRINT,
+            "started_at": _STARTED_AT,
         }
 
         # Capability, not liveness. `status: healthy` is TRUE of a daemon serving
@@ -2723,6 +2743,22 @@ def create_app(
 
     # ─── Built-in streaming chat page (so a human has somewhere to talk) ───
 
+    def _pack_html(name: str | None = None) -> HTMLResponse:
+        """A pack page, served so a browser can never hold a stale copy.
+
+        load_ui_pack() re-reads the file on every request, so the ORIGIN is
+        always current -- but these routes sent no Cache-Control, ETag or
+        Last-Modified, which lets a browser heuristically cache the HTML and
+        keep showing an older build of the page long after the file changed.
+        That is indistinguishable, to whoever is looking at it, from the demo
+        having reverted. no-cache still permits a cached copy; it forbids
+        using one without revalidating.
+        """
+        return HTMLResponse(
+            load_ui_pack(name),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
+
     @app.get("/", response_class=HTMLResponse)
     async def console_page():
         # The LANDPAGE is the "switcher" pack — one grid over every surface of
@@ -2730,14 +2766,14 @@ def create_app(
         # visitor lands somewhere instead of a blank console. The selected UI
         # pack (the app itself) lives at /local; `adk ui set <pack>` still
         # chooses it. Never blank — falls back console -> minimal.
-        return HTMLResponse(load_ui_pack("switcher"))
+        return _pack_html("switcher")
 
     @app.get("/local", response_class=HTMLResponse)
     async def console_page_local():
         # The SELECTED UI pack ($AITHER_AGENT_UI, default "console" = the full
         # admin SPA). Swap it with `adk ui set <pack>` or drop a folder in
         # ~/.aither/ui-packs/. Never blank — falls back console -> minimal.
-        return HTMLResponse(load_ui_pack())
+        return _pack_html()
 
     @app.get("/packs/{pack_name}/{asset_path:path}", response_class=FileResponse)
     async def pack_asset(pack_name: str, asset_path: str):
@@ -2761,18 +2797,18 @@ def create_app(
 
     @app.get("/ui", response_class=HTMLResponse)
     async def console_page_alias():
-        return HTMLResponse(load_ui_pack())
+        return _pack_html()
 
     @app.get("/chat", response_class=HTMLResponse)
     async def chat_page_minimal():
         # Back-compat: the original lightweight streaming chat page (the
         # "minimal" pack), regardless of the selected pack.
-        return HTMLResponse(load_ui_pack("minimal"))
+        return _pack_html("minimal")
 
     @app.get("/aeon", response_class=HTMLResponse)
     async def aeon_page():
         # Aeon group-chat UI pack — multi-agent discussion.
-        return HTMLResponse(load_ui_pack("aeon"))
+        return _pack_html("aeon")
 
     # ─── Pack UI assets + bridge SDK (sandboxed-iframe plugin system) ───
     # A pack may declare a `ui:` block in its .toolpack.yaml; the console then
@@ -2873,18 +2909,18 @@ def create_app(
 
     @app.get("/ui", response_class=HTMLResponse)
     async def console_page_alias():
-        return HTMLResponse(load_ui_pack())
+        return _pack_html()
 
     @app.get("/chat", response_class=HTMLResponse)
     async def chat_page_minimal():
         # Back-compat: the original lightweight streaming chat page (the
         # "minimal" pack), regardless of the selected pack.
-        return HTMLResponse(load_ui_pack("minimal"))
+        return _pack_html("minimal")
 
     @app.get("/aeon", response_class=HTMLResponse)
     async def aeon_page():
         # Aeon group-chat UI pack — multi-agent discussion.
-        return HTMLResponse(load_ui_pack("aeon"))
+        return _pack_html("aeon")
 
 
     # ─── Admin/settings console API (all under /admin/*, bearer-gated) ───
@@ -4110,6 +4146,29 @@ def create_app(
                 logger.info("Deregistered fleet API endpoint: %s (id=%s)", agent_name, fleet_endpoint_id)
             except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
                 logger.debug("Fleet API deregistration failed (non-fatal): %s", exc)
+
+    async def _workflow_mirror_loop():
+        """Stream Claude Code Workflow journals into expeditions every 15s.
+
+        The host half of the workflow -> expedition mirror (adk.workflow_mirror):
+        the hooks record and bind each run, this loop tails the journals. One
+        bad pass never ends the loop; errors are in the pass summary.
+        """
+        from adk.workflow_mirror import scan_and_mirror
+        interval = max(5, int(os.environ.get("AITHER_WORKFLOW_MIRROR_INTERVAL", "15") or 15))
+        while True:
+            try:
+                summary = await asyncio.to_thread(scan_and_mirror)
+                if summary.get("errors"):
+                    logger.debug("workflow mirror: %s", summary["errors"])
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001 -- the loop must outlive one bad pass
+                logger.debug("workflow mirror pass failed: %s", exc)
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
 
     async def _fleet_heartbeat_loop():
         """Continuously heartbeat to portal every 60s using FederationLiteClient.

@@ -94,6 +94,7 @@ If you only remember one thing: **`agent.chat()` is the agent.** Everything else
 
 | I want to… | Read this |
 |---|---|
+| **Drive Claude Code / Codex / OpenCode / Aider from one shell** | **[AWSH-OMNISHELL-PLAYBOOK.md](AWSH-OMNISHELL-PLAYBOOK.md)** — install → detect → daemon → UI, verified end to end |
 | Build a real agent or publish a pack | **[docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md)** — the golden path + gotcha checklist |
 | Self-host the full managed-agent experience | [QUICKSTART_SELF_HOSTED.md](QUICKSTART_SELF_HOSTED.md) — `adk onboard --quick` |
 | Operate a self-hosted node long-term | [docs/SELF_HOSTING_RUNBOOK.md](docs/SELF_HOSTING_RUNBOOK.md) |
@@ -194,6 +195,12 @@ as unknown rather than silently disappearing:
 ---
 
 ## Subagents — drive Claude Code, Codex, and eight more
+
+> **Just want it working?** → **[AWSH-OMNISHELL-PLAYBOOK.md](AWSH-OMNISHELL-PLAYBOOK.md)**.
+> Install → detect → start the daemon → use it, with verified output at each step.
+> The step people miss is that **the harness daemon has to be running**: without it the
+> desktop app reports "No harnesses reported by the daemon yet", which reads as a missing
+> feature rather than a stopped process.
 
 Your agent can delegate a task to **another coding agent's real product** — not a
 reimplementation of it against the raw API.
@@ -339,6 +346,19 @@ agents:
 YAML
 adk-serve --fleet fleet.yaml --port 8080
 ```
+
+### 4. Earn tokens by volunteering
+
+Earn Aitherium tokens by contributing compute to the community embedding pool:
+
+```bash
+adk volunteer enroll                   # register as a volunteer (tenant from adk login)
+adk volunteer serve                    # download the embedding model & start llama-server
+adk volunteer start                    # loop: claim batches → embed → submit → earn tokens
+```
+
+Reputation, verified batches and earnings show in the Volunteer Compute panel of
+the tenant workspace (dgg.aitherium.com) and in `adk volunteer status`.
 
 ### Why Aither?
 

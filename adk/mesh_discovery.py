@@ -85,7 +85,7 @@ def _portal_base() -> str:
     # _owner_token), not an endpoint one. Env override wins; veil is the default.
     return os.getenv(
         "AITHER_PORTAL_URL",
-        load_saved_config().get("portal_url", "") or "https://portal.aitherium.com",
+        load_saved_config().get("portal_url", "") or "https://api.aitherium.com",
     ).rstrip("/")
 
 

@@ -213,7 +213,7 @@ class ExpeditionPlugin(SlashCommand):
         """The portal URL for an expedition."""
         if not args:
             return "Usage: /expedition open <id>"
-        return f"https://portal.aitherium.com/workspace/expeditions/{args[0]}"
+        return f"https://api.aitherium.com/workspace/expeditions/{args[0]}"
 
     async def _tasks(self, args: List[str], ctx: Dict[str, Any]) -> str:
         if not args:

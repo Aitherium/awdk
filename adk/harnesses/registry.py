@@ -89,6 +89,20 @@ class HarnessSpec:
     build_argv: Optional[Callable[["HarnessSpec", LaunchSpec], list[str]]] = None
     #: Encodes a user turn for STRUCTURED_BIDI stdin. Returns a line WITHOUT "\n".
     encode_input: Optional[Callable[[str], str]] = None
+    #: Entitlement a caller must hold to SEE or START this harness. Empty = free
+    #: to anyone the daemon authenticates, which is every harness shipped today.
+    #:
+    #: This is the missing half of licensing. `requires_plan:` has sat in every
+    #: addon manifest unread because the daemon had one shared bearer and so no
+    #: subject to check a plan against; per-client identity supplied the caller,
+    #: and this supplies the thing being licensed. It lives on the spec rather
+    #: than in a side table so a harness cannot be added without the question
+    #: "who may drive this" having an answer -- even when the answer is "anyone".
+    #:
+    #: Deliberately an ENTITLEMENT, not a plan tier. A tier is a billing
+    #: arrangement that gets renamed; "may this caller drive Atlas" is what the
+    #: daemon actually has to decide, and it survives the renames.
+    requires_entitlement: str = ""
 
     def translate(self, obj: Any) -> list[HarnessEvent]:
         return ADAPTERS[self.adapter](obj)
@@ -108,6 +122,9 @@ class HarnessSpec:
             "install_hint": self.install_hint,
             "supports_model_binding": self.supports_model_binding,
             "supports_resume": self.supports_resume,
+            # Surfaced so a client can explain WHY a harness it once saw is gone,
+            # rather than showing a list that silently shrank.
+            "requires_entitlement": self.requires_entitlement,
         }
 
 

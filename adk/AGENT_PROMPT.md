@@ -68,7 +68,7 @@ adk login --email you@example.com  # Email/password flow
 adk login --api-key aither_pat_... # Direct API key (from portal)
 ```
 
-To generate a key manually: portal.aitherium.com → Settings → API Keys → "+ New Token".
+To generate a key manually: api.aitherium.com → Settings → API Keys → "+ New Token".
 
 Auth is optional for local-only usage. Required for cloud inference, sovereign deploy, and fleet sync.
 
@@ -185,14 +185,14 @@ adk deploy node --gpu --dashboard --mesh --sovereign
 adk deploy core --sovereign
 
 # Specify tenant and hub URL
-adk deploy node --sovereign --tenant my-org --hub https://portal.aitherium.com
+adk deploy node --sovereign --tenant my-org --hub https://api.aitherium.com
 
 # Dry run (show what would happen)
 adk deploy node --sovereign --dry-run
 ```
 
 After deployment:
-- Node auto-registers with `portal.aitherium.com/federation/register`
+- Node auto-registers with `api.aitherium.com/federation/register`
 - Federation credentials saved to `~/.aither/.env.federation`
 - Node appears in your fleet dashboard at `/workspace/fleet`
 - Heartbeats keep the hub updated with status and metrics

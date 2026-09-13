@@ -359,7 +359,7 @@ api_key: sk-ant-...
 qdrant_url: http://localhost:6333
 qdrant_api_key: ...
 cloud_mode: cloud_first
-identity_url: https://portal.aitherium.com
+identity_url: https://api.aitherium.com
 ```
 
 ---

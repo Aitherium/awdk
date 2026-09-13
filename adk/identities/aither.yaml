@@ -15,6 +15,10 @@ tools:
   packs:
     - arc-brainpack
     - deep_research
+    # mediaforge (2026-09-07): the studio's mediaforge_* tools were on the MCP gateway
+    # but NOT in the awsh/awdk local lane — the aither identity never loaded the pack,
+    # so `awsh` could not drive MediaForge at all. availability:local, no entitlement.
+    - mediaforge
 
 system_prompt: |
   You are Aither, an AI orchestrator managing complex technical and operational systems.

@@ -193,8 +193,8 @@ def _relay_card_if_configured(card: DecisionCard) -> None:
     ``/api/v1/decisions/raise`` endpoint; genesis proxies to the owner-host
     harness daemon. Runs on a DAEMON THREAD, never the caller's: ``raise_card``
     is the synchronous core of tools an async chat loop calls, and a sync
-    ``httpx.post`` there would stall every concurrent turn (PQ010, measured
-    class). Never raises and never blocks — the card is already durable locally
+    ``httpx.post`` there would stall every concurrent turn -- a measured class, not a
+    theoretical one. Never raises and never blocks — the card is already durable locally
     by the time this runs (same contract as notify()).
     """
     if not DECISIONS_RELAY_URL:

@@ -719,7 +719,7 @@ class AitherAgent:
         if not lm.is_agent_licensed(self.name):
             raise RuntimeError(
                 f"Agent '{self.name}' requires a pack subscription. "
-                f"Visit portal.aitherium.com/portal/marketplace/packs "
+                f"Visit api.aitherium.com/portal/marketplace/packs "
                 f"or use 'aither' (included in all tiers)."
             )
 
@@ -731,7 +731,7 @@ class AitherAgent:
                 raise RuntimeError(
                     f"Custom agent creation requires a Creator subscription ($999/mo). "
                     f"Current tier: {lm.license.tier.value}. "
-                    f"Visit portal.aitherium.com/portal/marketplace/packs"
+                    f"Visit api.aitherium.com/portal/marketplace/packs"
                 )
 
     def _filter_unavailable_tools(self):
@@ -1554,7 +1554,7 @@ class AitherAgent:
                     raise LicenseError(
                         f"Reasoning effort {_effort} requires a paid tier "
                         f"(current: {self._license.license.tier.value}). "
-                        f"Upgrade at portal.aitherium.com/portal/marketplace/packs"
+                        f"Upgrade at api.aitherium.com/portal/marketplace/packs"
                     )
             # If we didn't raise, clamp to the max and log (defensive fallback)
             _effort, _capped = self._license.clamp_effort(_effort)
@@ -1563,7 +1563,7 @@ class AitherAgent:
                     "Effort capped to %s for agent '%s' (tier=%s). "
                     "Higher reasoning effort requires a paid tier: %s",
                     _effort, self.name, self._license.license.tier.value,
-                    "portal.aitherium.com/portal/marketplace/packs",
+                    "api.aitherium.com/portal/marketplace/packs",
                 )
         _effort_int = _effort if isinstance(_effort, int) else 5
 
@@ -3097,7 +3097,7 @@ class AitherAgent:
                 "status": "failed",
                 "error": (
                     "Swarm coding requires a Professional tier. Upgrade at "
-                    "portal.aitherium.com/portal/marketplace/packs"
+                    "api.aitherium.com/portal/marketplace/packs"
                 ),
             }
 

@@ -175,7 +175,7 @@ def cmd_use(args: Any) -> int:
     extra = []
     if getattr(args, "project", False):
         extra.append("--project")
-    rc = _run_tool(["use", profile] + extra)
+    rc = _run_tool(["use", profile, "--persist"] + extra)  # explicit operator action -> allowed to persist
     if rc == 0:
         print()
         print("  Next: restart Claude Code for the switch to take effect.")
@@ -258,7 +258,7 @@ def cmd_auto(args: Any) -> int:
     step = 2 if not is_native else 1
     total = 3 if not is_native else 2
     print(f"[{step}/{total}] Switching to '{profile}'...")
-    rc = _run_tool(["use", profile])
+    rc = _run_tool(["use", profile, "--persist"])  # explicit operator action -> allowed to persist
     if rc != 0:
         return rc
 
@@ -315,7 +315,41 @@ _FAILOVER_CHAIN = [
 
 
 def cmd_failover(args: Any) -> int:
-    """Test the current profile; if broken, walk the chain until one works."""
+    """Test the current profile; if broken, walk the chain until one works.
+
+    DISABLED BY DEFAULT (2026-09-06). Each candidate in _FAILOVER_CHAIN is applied
+    by shelling out to claude_model_profile.py, which persists the switch into
+    settings.json. Run from the `watch --daemon` logon task, that meant the
+    machine could silently repoint itself at kimi-k3 between sessions; the owner
+    then launched the session-scoped switcher (cds), settings.json outranked it,
+    and Claude Code came up as `deepseek-v4-flash[1m]@api.moonshot.ai` -- a model
+    name that does not exist at that endpoint. Every turn failed, and the only
+    way out was a full Claude Code reset.
+
+    Automatic backend switching is not worth that trade: the failure it prevents
+    (one provider being down) is loud and obvious, while the failure it CAUSES is
+    silent and looks like Claude Code itself is broken. The daemon has been
+    removed from the logon task; this is the second lock, so re-enabling that task
+    cannot bring the behaviour back on its own.
+    """
+    if not (getattr(args, "yes", False) or os.environ.get("AITHER_ALLOW_AUTO_FAILOVER")):
+        print(
+            "REFUSING: automatic backend failover is disabled.\n"
+            "\n"
+            "It switches by writing a PERSISTENT override into settings.json, which\n"
+            "outranks the session-scoped switcher and survives closing the terminal.\n"
+            "Done in the background it silently repoints your backend, and the next\n"
+            "`cds` comes up as a MIXED backend that fails every turn.\n"
+            "\n"
+            "Switch explicitly instead (session-scoped, dies with the terminal):\n"
+            "    cds    DeepSeek      cks    Kimi K3      cas    Anthropic\n"
+            "\n"
+            "Override for a one-off, deliberate run:\n"
+            "    adk claude-model failover --yes\n"
+            "    (or AITHER_ALLOW_AUTO_FAILOVER=1)",
+            file=sys.stderr,
+        )
+        return 3
     print("Failover: testing current profile...")
     rc = _run_tool(["check", "--timeout", "30"])
     if rc == 0:
@@ -326,7 +360,7 @@ def cmd_failover(args: Any) -> int:
     for profile in _FAILOVER_CHAIN:
         print(f"  Trying '{profile}'...", end=" ", flush=True)
         # Switch
-        switch_rc = _run_tool(["use", profile])
+        switch_rc = _run_tool(["use", profile, "--persist"])  # explicit operator action -> allowed to persist
         if switch_rc != 0:
             print("skip (can't switch)")
             continue
@@ -384,7 +418,7 @@ def cmd_workflow(alias: str, args: Any) -> int:
         if rc != 0:
             return rc
 
-    rc = _run_tool(["use", profile])
+    rc = _run_tool(["use", profile, "--persist"])  # explicit operator action -> allowed to persist
     if rc == 0:
         print()
         print(f"  SWITCHED: {alias} → {profile}")

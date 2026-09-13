@@ -55,7 +55,7 @@ def test_require_raises_on_unlicensed_capability():
     lm = get_license_manager()
     with pytest.raises(LicenseError) as exc:
         lm.require("fleet", friendly="Fleet mode")
-    assert "portal.aitherium.com" in str(exc.value)
+    assert "api.aitherium.com" in str(exc.value)
 
 
 def test_effort_is_clamped_for_free_tier():

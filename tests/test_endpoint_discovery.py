@@ -4,7 +4,7 @@ from adk.cli import _derive_cloud_endpoints
 
 
 def test_aitherium_cloud_portal():
-    eps = _derive_cloud_endpoints("https://portal.aitherium.com")
+    eps = _derive_cloud_endpoints("https://api.aitherium.com")
     assert eps == {
         "api_url": "https://mcp.aitherium.com",
         "mcp_url": "https://mcp.aitherium.com/mcp",

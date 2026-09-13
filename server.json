@@ -3,7 +3,7 @@
   "name": "io.github.Aitherium/awdk",
   "title": "AitherOS ADK",
   "description": "Agent runtime with typed memory, knowledge and code graphs, plus file and web tools",
-  "version": "3.8.3",
+  "version": "3.8.17",
   "websiteUrl": "https://aitherium.com",
   "repository": {
     "url": "https://github.com/Aitherium/awdk",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "aither-adk",
-      "version": "3.8.3",
+      "version": "3.8.17",
       "transport": {
         "type": "stdio"
       },

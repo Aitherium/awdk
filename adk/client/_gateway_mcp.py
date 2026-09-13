@@ -22,6 +22,41 @@ import httpx
 
 logger = logging.getLogger("adk.client.gateway_mcp")
 
+# The device-flow bearer the local MCP stdio bridge re-reads on EVERY reconnect
+# (CLAUDE.md, dispatch rung 1). mint_session_bearer.py rewrites it, so reading the file
+# rather than caching an env var is what lets a re-mint reach a running daemon.
+SESSION_BEARER_FILE = os.path.join(os.path.expanduser("~"), ".aither", "session-bearer")
+
+
+def _read_session_bearer() -> str:
+    try:
+        with open(SESSION_BEARER_FILE, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _resolve_gateway_token() -> str:
+    """Pick the credential the gateway will actually accept.
+
+    Measured 2026-09-10: the daemon was launched with AITHER_API_KEY set to an
+    `aither_sk_live_*` ACTA key. The LOCAL gateway (127.0.0.1:8182) answered that key
+    with 401 invalid_token on every single connect, so the daemon came up with
+    `tools.mode=builtin-only, registered=0` -- which check_adk_daemon_capability.py
+    correctly calls inert, so the watchdog killed and relaunched it, and the replacement
+    got the same 401. That is a kill loop: :9001 was destroyed every ~3 minutes for hours
+    and `awsh` was dead in the terminal every time the owner reached for it. The token
+    that DID work (200) was sitting unread in ~/.aither/session-bearer the whole time.
+
+    So the device-flow bearer file outranks the static key here. A static gateway key is
+    break-glass (CLAUDE.md, secrets-access.md) and goes last, not first.
+    """
+    return (
+        os.getenv("AITHER_MCP_KEY", "").strip()
+        or _read_session_bearer()
+        or os.getenv("AITHER_API_KEY", "").strip()
+    )
+
 
 class GatewayMCPClient:
     """Connects self-hosted agent to gateway MCP endpoint.
@@ -52,11 +87,7 @@ class GatewayMCPClient:
         self.gateway_url = (
             gateway_url or os.getenv("AITHER_GATEWAY_URL", "https://mcp.aitherium.com")
         ).rstrip("/")
-        self.api_key = (
-            api_key
-            or os.getenv("AITHER_API_KEY", "")
-            or os.getenv("AITHER_MCP_KEY", "")
-        )
+        self.api_key = api_key or _resolve_gateway_token()
         self._timeout = timeout
         self._connected = False
         self._request_id = 0
@@ -115,6 +146,23 @@ class GatewayMCPClient:
                         },
                     },
                 )
+                if resp.status_code == 401:
+                    # A 401 here is usually a bearer that was re-minted under a
+                    # long-lived daemon, so re-read the file before giving up. Without
+                    # this the ONLY way to pick up a fresh token is a restart -- and the
+                    # watchdog's restart is exactly what turned one stale token into a
+                    # kill loop (see _resolve_gateway_token).
+                    fresh = _read_session_bearer()
+                    if fresh and fresh != self.api_key:
+                        logger.info("MCP initialize 401 - retrying with the re-minted session bearer")
+                        self.api_key = fresh
+                        return await self._ensure_session()
+                    logger.warning(
+                        "MCP initialize failed (401): %s -- the gateway rejected this "
+                        "credential. Re-mint with: python AitherOS/dev/tools/mint_session_bearer.py",
+                        resp.text[:160],
+                    )
+                    return False
                 if resp.status_code >= 400:
                     logger.warning(
                         "MCP initialize failed (%d): %s", resp.status_code, resp.text[:160]
@@ -350,12 +398,13 @@ async def create_gateway_mcp_client(
         Connected client, or None if no token available or connection failed.
         Never raises — fails soft.
     """
-    # Resolve API key in order of preference
-    key = (
-        api_key
-        or os.getenv("AITHER_API_KEY", "")
-        or os.getenv("AITHER_MCP_KEY", "")
-    )
+    # Resolve API key in order of preference. The session-bearer file is in the chain
+    # (see _resolve_gateway_token) because a caller-supplied key can be the WRONG kind:
+    # server.py passes config.aither_api_key, an `aither_sk_live_*` ACTA key, which the
+    # LOCAL gateway rejects with 401 while the device-flow bearer in
+    # ~/.aither/session-bearer answers 200. _ensure_session retries once with the file
+    # on a 401 for exactly that case; this covers the case where there is no key at all.
+    key = api_key or _resolve_gateway_token()
 
     if not key:
         logger.debug("Gateway MCP: no API key configured (not an error)")

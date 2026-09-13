@@ -14,7 +14,7 @@ METRICS:
 
 from typing import List, Tuple
 
-from smart_policy import analyze_grid
+from adk.packs.arc_world.smart_policy import analyze_grid  # package path, like verify_integration.py
 
 
 def create_test_grids() -> List[List[List[int]]]:

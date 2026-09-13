@@ -2,7 +2,7 @@
 Tunnel Plugin for AitherShell
 ===============================
 
-Set up a secure Cloudflare tunnel so portal.aitherium.com can reach your
+Set up a secure Cloudflare tunnel so api.aitherium.com can reach your
 local AitherOS node for remote management, inference routing, and sync.
 
 Usage:
@@ -262,7 +262,7 @@ class TunnelPlugin(SlashCommand):
     async def _help(self, args: List[str], ctx: Dict[str, Any]) -> str:
         return (
             "**Tunnel Management**\n\n"
-            "Expose your local AitherOS node to portal.aitherium.com:\n"
+            "Expose your local AitherOS node to api.aitherium.com:\n"
             "  `/tunnel setup` — Start a Cloudflare quick tunnel\n"
             "  `/tunnel setup --port 8001` — Tunnel a specific port\n"
             "  `/tunnel status` — Show tunnel status and URL\n"
@@ -270,7 +270,7 @@ class TunnelPlugin(SlashCommand):
             "  `/tunnel register` — Register URL with your portal account\n"
             "  `/tunnel stop` — Stop the tunnel\n\n"
             "The tunnel lets you:\n"
-            "  - Manage agents from portal.aitherium.com remotely\n"
+            "  - Manage agents from api.aitherium.com remotely\n"
             "  - Route portal inference to your local GPU\n"
             "  - Sync local Strata data with the cloud"
         )

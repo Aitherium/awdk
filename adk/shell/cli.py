@@ -572,7 +572,7 @@ def _device_flow_login(identity_url: str, client_name: str = "AitherShell") -> d
 
 
 @cli.command()
-@click.option("--portal-url", default="https://portal.aitherium.com",
+@click.option("--portal-url", default="https://api.aitherium.com",
               envvar="AITHER_PORTAL_URL", help="Portal base URL")
 @click.option("--browser", is_flag=True, help="Use device flow — open browser to approve (like gh auth login)")
 @click.option("--email", help="Account email (prompted if omitted)")
@@ -593,7 +593,7 @@ def login(portal_url, browser, email, password, tenant, workspace, explicit_toke
     Writes the bearer token to ``~/.aither/portal.token`` (chmod 600) and
     optional scope hints to ``~/.aither/scope.env`` so the ADK CLI
     (``aither_adk``), Genesis, and downstream tools can federate agents up
-    to ``portal.aitherium.com`` for fleet discovery.
+    to ``api.aitherium.com`` for fleet discovery.
 
     \b
     aither login                                  # Interactive (email/password)
@@ -737,7 +737,7 @@ def login(portal_url, browser, email, password, tenant, workspace, explicit_toke
             auth_data = {"version": 1, "active_profile": "local", "profiles": {}}
         auth_data["profiles"]["local"] = {
             "endpoint": portal_url,
-            "genesis_url": portal_url.replace("portal.aitherium.com", "localhost:8001"),
+            "genesis_url": portal_url.replace("api.aitherium.com", "localhost:8001"),
             "token_type": "portal",
             "access_token": token,
             "expires_at": "",
@@ -1150,7 +1150,7 @@ def deploy(subcommand, profile, ver, gpu, data_dir, offline, dry_run, output_jso
                 except Exception:
                     pass
 
-                portal_url = os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+                portal_url = os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
                 headers = {"Content-Type": "application/json"}
                 if token:
                     headers["Authorization"] = f"Bearer {token}"
@@ -1195,7 +1195,7 @@ def download(pack_id, output_dir, extract, portal_url):
     import httpx
     from pathlib import Path as P
 
-    base = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+    base = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
     headers = {"Content-Type": "application/json"}
 
     # Try to get auth token if available
@@ -1865,7 +1865,7 @@ def agents(ctx):
 
     \b
     aither agents keygen NAME            # generate / rotate Ed25519 keypair
-    aither agents integrate --only portal  # push identity to portal.aitherium.com
+    aither agents integrate --only portal  # push identity to api.aitherium.com
     aither agents fleet [--tenant T]     # list visible fleet
     aither agents whoami                 # show active portal identity + scope
     aither agents unregister NAME        # remove identity from portal directory
@@ -2484,11 +2484,11 @@ def setup(mode, ide, project_dir, bake_token):
             if click.confirm("  Log in now via browser? (device flow)", default=True):
                 try:
                     if mode == "remote":
-                        identity_url = "https://portal.aitherium.com"
+                        identity_url = "https://api.aitherium.com"
                     else:
                         identity_url = os.environ.get(
                             "AITHER_PORTAL_URL",
-                            "https://portal.aitherium.com",
+                            "https://api.aitherium.com",
                         )
                     token_result = _device_flow_login(identity_url, client_name=f"MCP-{ide}")
                     token = token_result.get("access_token", "")
@@ -3257,7 +3257,7 @@ def install(ctx):
 @click.option("--local-llm", is_flag=True,
               help="Use the local vLLM endpoint configured via `aither llm install`")
 @click.option("--portal-inference", is_flag=True,
-              help="Force portal.aitherium.com inference (overrides --local-llm)")
+              help="Force api.aitherium.com inference (overrides --local-llm)")
 @click.option("--model", default=None, help="Model name to wire into config")
 @click.option("--force", is_flag=True, help="Reinstall (rm -rf the install dir first)")
 @click.option("--no-onboard", is_flag=True, help="Skip the portal onboard step")
@@ -3510,7 +3510,7 @@ def _shell_step(label, argv):
 @click.option("--skip-keygen", is_flag=True,
               help="Don't auto-generate Ed25519 keypairs.")
 @click.option("--skip-portal", is_flag=True,
-              help="Don't sync new agents up to portal.aitherium.com.")
+              help="Don't sync new agents up to api.aitherium.com.")
 @click.option("--license-key", default=None, envvar="AITHER_LICENSE_KEY",
               help="License key to bind to the install (writes license.slot).")
 @click.option("--yes", is_flag=True, help="Don't prompt for confirmation.")
@@ -3529,7 +3529,7 @@ def install(package_path, scope, require_signed, skip_digests, skip_keygen,
     1. Verifies the signature (if present) and file digests.
     2. Extracts identity YAMLs and souls into the chosen scope.
     3. Generates Ed25519 keypairs (unless ``--skip-keygen``).
-    4. Upserts each identity to ``portal.aitherium.com`` (unless ``--skip-portal``).
+    4. Upserts each identity to ``api.aitherium.com`` (unless ``--skip-portal``).
     """
     from pathlib import Path as _Path
 
@@ -3634,7 +3634,7 @@ def install(package_path, scope, require_signed, skip_digests, skip_keygen,
 @click.argument("identity_name")
 @click.option("--scope", type=click.Choice(["workspace", "user"]), default="workspace")
 @click.option("--keep-portal", is_flag=True,
-              help="Don't remove the identity from portal.aitherium.com.")
+              help="Don't remove the identity from api.aitherium.com.")
 @click.option("--yes", is_flag=True, help="Skip confirmation.")
 def uninstall_agent(identity_name, scope, keep_portal, yes):
     """Remove an installed identity (and optionally unregister from portal)."""
@@ -3931,7 +3931,7 @@ def pack_install(pack_id, output_json):
                 print(json.dumps({"ok": False, "error": msg, "pack_id": pack_id}))
             else:
                 click.echo(f"License required: {msg}", err=True)
-                click.echo("Purchase at: https://portal.aitherium.com/marketplace", err=True)
+                click.echo("Purchase at: https://api.aitherium.com/marketplace", err=True)
             sys.exit(2)
 
         if resp.status_code == 404:

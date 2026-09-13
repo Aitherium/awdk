@@ -403,6 +403,8 @@ def imagegen_plan_deployment(
     host_port: int = 0,
     network: str = "",
     _include_secrets: bool = False,
+    target: str = "",
+    free_vram_gb: float = 0,
 ) -> dict:
     """Render an image-gen deployment plan (pure, no side effects).
 
@@ -428,13 +430,40 @@ def imagegen_plan_deployment(
         cfg = recipe.get("imagegen_config", {})
         deployment = recipe.get("deployment", {})
         backend_cfg = recipe.get("backend_config", {})
-        target = deployment.get("target", "docker-compose")
+        # An explicit target overrides the recipe's default: the fleet
+        # plans podman-quadlet where a customer's box plans docker-compose,
+        # from the SAME recipe.
+        target = target or deployment.get("target", "docker-compose")
         delegate = deployment.get("delegate", "")
         port = deployment.get("port", 8188)
         profile = cfg.get("model_profile", "")
 
         models = cfg.get("models", []) or []
         dl_size = sum(m.get("size_gb", 0) for m in models)
+
+        # REFUSAL ARM: never place a recipe on a box whose FREE VRAM is
+        # smaller than the recipe's need. The resolver sees TOTAL VRAM
+        # only, so a 32GB card with 3.5GB free resolves to the 24GB band
+        # and an eager placement is exactly what crash-looped the fleet
+        # orchestrator 17+ times (measured 2026-08-25). Opt-in: 0 means
+        # 'not judged', so nothing already working changes behaviour.
+        min_vram = recipe.get("hardware_requirements", {}).get("min_vram_gb", 0) or 0
+        if free_vram_gb > 0 and min_vram > free_vram_gb:
+            return {
+                "error": (
+                    f"refused: {recipe_id} needs {min_vram}GB VRAM, "
+                    f"this box has {free_vram_gb:.1f}GB free"
+                ),
+                "refusal": {
+                    "recipe_id": recipe_id,
+                    "needs_vram_gb": min_vram,
+                    "free_vram_gb": free_vram_gb,
+                },
+                "alternative": (
+                    "mesh-spark (place on the DGX Spark), webgpu-browser "
+                    "(the visitor's own GPU), or cloud-burst-vast (rented)"
+                ),
+            }
 
         notes: list[str] = []
         downloads_json, note = _resolve_model_downloads(profile, tenant)
@@ -483,6 +512,19 @@ def imagegen_plan_deployment(
             ]
         elif target == "delegate":
             steps += [f"Delegate to: {delegate}", "Verify models loaded on the burst instance"]
+        elif target == "browser":
+            steps += [
+                "Open the image panel in the visitor's browser",
+                "The WebGPU model downloads once and runs on THEIR GPU",
+                "Nothing to install or verify on this box",
+            ]
+        elif target == "podman-quadlet":
+            steps += [
+                f"Write {recipe_id}.container to the quadlet dir",
+                "systemctl daemon-reload",
+                f"Start the {recipe_id} unit",
+                f"Verify models loaded on :{port} (imagegen_verify)",
+            ]
 
         result = {
             "recipe_id": recipe_id,
@@ -552,6 +594,23 @@ def imagegen_plan_deployment(
         elif target == "delegate":
             result["delegate"] = delegate
             result["mode"] = "delegate"
+        elif target == "browser":
+            result["mode"] = "browser"
+            result["browser_url"] = deployment.get("browser_url", "https://aitherium.com")
+        elif target == "podman-quadlet":
+            if not cfg.get("image"):
+                return {
+                    "error": f"recipe {recipe_id} has no image but targets podman-quadlet",
+                    "fix": "set imagegen_config.image in the recipe",
+                }
+            result["quadlet_unit"] = _render_quadlet(recipe_id, recipe, env)
+            result["quadlet_dir"] = str(
+                Path.home() / ".config" / "containers" / "systemd")
+            result["mode"] = "podman-quadlet"
+            if secret_env:
+                result["env_file"] = _env_file_name(recipe_id)
+                if _include_secrets:
+                    result["_secret_env"] = secret_env
 
         return result
     except Exception as e:  # noqa: BLE001
@@ -560,6 +619,35 @@ def imagegen_plan_deployment(
             "error": f"deployment planning failed: {e}",
             "fix": "check recipe structure and system permissions",
         }
+
+
+def _render_quadlet(recipe_id: str, recipe: dict, env: dict) -> str:
+    """Render a podman quadlet .container unit from the recipe.
+
+    The docker-compose target is correct on a customer's box; the FLEET
+    runs rootful podman quadlets in WSL2 where `docker compose` cannot
+    run at all -- the old pack failed naming docker. A .container unit
+    is the same deployment expressed in the engine the fleet runs.
+    Env values are rendered INLINE (no EnvironmentFile): the presigned
+    model URLs are written to a 0600 env file by apply, exactly like
+    the compose path, so the unit itself carries no credentials.
+    """
+    cfg = recipe.get("imagegen_config", {})
+    image = cfg.get("image", "")
+    port = recipe.get("deployment", {}).get("port", 8188)
+    lines = [
+        "[Unit]",
+        f"Description=Image bootstrap: {recipe_id}",
+        "After=network-online.target",
+        "",
+        "[Container]",
+        f"Image={image}",
+        f"PublishPort={port}:{port}",
+    ]
+    for key in sorted(env):
+        lines.append(f"Environment={key}={env[key]}")
+    lines += ["", "[Install]", "WantedBy=default.target", ""]
+    return "\n".join(lines)
 
 
 # ── 4. DEPLOYMENT APPLICATION ──────────────────────────────────────────
@@ -592,6 +680,8 @@ def imagegen_apply(
     host_port: int = 0,
     network: str = "",
     dry_run: bool = False,
+    target: str = "",
+    free_vram_gb: float = 0,
 ) -> dict:
     """Apply an image-gen deployment plan.
 
@@ -606,7 +696,7 @@ def imagegen_apply(
     try:
         plan = imagegen_plan_deployment(
             recipe_id, tenant=tenant, host_port=host_port, network=network,
-            _include_secrets=True,
+            _include_secrets=True, target=target, free_vram_gb=free_vram_gb,
         )
         if "error" in plan:
             return plan
@@ -630,6 +720,16 @@ def imagegen_apply(
                 commands.extend(plan.get("native_commands", []))
             elif mode == "delegate":
                 commands.append(f"# run the fleet delegate: {plan.get('delegate', '')}")
+            elif mode == "browser":
+                commands.append(
+                    "# nothing to install -- open "
+                    f"{plan.get('browser_url', '')} in the visitor's browser")
+            elif mode == "podman-quadlet":
+                unit = plan.get('quadlet_unit', '')
+                quadlet_dir = plan.get('quadlet_dir', '')
+                commands.append(f"# write unit: {quadlet_dir}/{recipe_id}.container")
+                commands.append("systemctl --user daemon-reload")
+                commands.append(f"systemctl --user start {recipe_id}")
             return {
                 "planned": True,
                 "dry_run": True,
@@ -692,6 +792,56 @@ def imagegen_apply(
                 "mode": "delegate",
                 "delegate": plan.get("delegate", ""),
                 "fix": f"run the fleet delegate: {plan.get('delegate', '')}",
+            }
+
+        if mode == "browser":
+            return {
+                "planned": True,
+                "recipe_id": recipe_id,
+                "mode": "browser",
+                "browser_url": plan.get("browser_url", ""),
+                "fix": "open the image panel in the visitor's browser — "
+                        "the WebGPU model runs on THEIR GPU, nothing installs here",
+            }
+
+        if mode == "podman-quadlet":
+            unit = plan.get("quadlet_unit", "")
+            if not unit:
+                return {
+                    "error": "plan has no quadlet_unit",
+                    "fix": "re-run imagegen_plan_deployment",
+                }
+            quadlet_dir = Path(plan.get("quadlet_dir") or
+                               (Path.home() / ".config" / "containers" / "systemd"))
+            quadlet_dir.mkdir(parents=True, exist_ok=True)
+            unit_file = quadlet_dir / f"{recipe_id}.container"
+            if secret_env:
+                _write_env_file(_BOOTSTRAP_DIR / _env_file_name(recipe_id), secret_env)
+                unit_file.write_text(unit.replace(
+                    "[Container]",
+                    f"[Container]\nEnvironmentFile={_BOOTSTRAP_DIR / _env_file_name(recipe_id)}",
+                    1), encoding="utf-8")
+            else:
+                unit_file.write_text(unit, encoding="utf-8")
+            rc, out = _run(["systemctl", "--user", "daemon-reload"])
+            if rc == 0:
+                rc, out = _run(["systemctl", "--user", "start", recipe_id])
+            if rc != 0:
+                return {
+                    "error": f"quadlet start failed (rc={rc})",
+                    "output": out,
+                    "unit_file": str(unit_file),
+                    "fix": "inspect the unit file and run systemctl --user "
+                            "daemon-reload; fleet (root) placement uses "
+                            "/etc/containers/systemd instead of the user dir",
+                }
+            return {
+                "applied": True,
+                "recipe_id": recipe_id,
+                "mode": "podman-quadlet",
+                "unit_file": str(unit_file),
+                "notes": plan.get("notes", []),
+                "next": f"imagegen_verify(base_url='http://localhost:{plan.get('port', 8188)}')",
             }
 
         return {"error": f"unsupported deployment mode: {mode}"}

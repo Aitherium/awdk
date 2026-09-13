@@ -18,12 +18,12 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**97 commands.**
+**103 commands.**
 
 | command | what it does |
 |---|---|
 | [`adk acp`](#adk-acp) | Agent Client Protocol: serve an agent to ACP editors, or drive an external ACP agent |
-| [`adk addon`](#adk-addon) | Manage self-hosted service addons (Qdrant, RAG, CodeGraph, etc.) |
+| [`adk addon`](#adk-addon) | Manage self-hosted addons / components (Qdrant, RAG, awgym, awdesk, ...) |
 | [`adk admin`](#adk-admin) | Administration commands |
 | [`adk aeon`](#adk-aeon) | Multi-agent group chat |
 | [`adk agent`](#adk-agent) | Run/manage host-tier agent loops (run, list, status, stop) |
@@ -35,10 +35,13 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
 | [`adk balance`](#adk-balance) | Show your Aitherium credit balance and earnings |
 | [`adk bonsai-local`](#adk-bonsai-local) | Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally |
+| [`adk briefs`](#adk-briefs) | List and read executive briefs |
 | [`adk chat`](#adk-chat) | Chat with a mesh agent by name (adk chat <agent> [msg]) |
 | [`adk claude`](#adk-claude) | Run scoped headless Claude Code subagents (serve/spawn/runs/kill) |
 | [`adk claude-account`](#adk-claude-account) | Manage multiple Claude Code (Anthropic) account profiles |
 | [`adk claude-model`](#adk-claude-model) | Switch Claude Code between DeepSeek, Kimi, local AitherOS models, and Anthropic |
+| [`adk component`](#adk-component) |  |
+| [`adk components`](#adk-components) |  |
 | [`adk connect`](#adk-connect) | Connect to AitherOS — detect LLMs, set up gateway, or join desktop mesh |
 | [`adk contribute`](#adk-contribute) | Teach Aither's ARC world model — enroll, then play & stream transitions (free) |
 | [`adk costs`](#adk-costs) | Show cloud inference costs, savings, and budget |
@@ -53,7 +56,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk enroll`](#adk-enroll) | Register this workstation with the control plane |
 | [`adk eval`](#adk-eval) | Evaluate MCP tools and packs on a connected gateway |
 | [`adk explore`](#adk-explore) | Browse packs, agents, and skills in the Aitherium marketplace |
-| [`adk fleet`](#adk-fleet) | Create & manage a fleet of agents (local \| managed \| cloud-run) |
+| [`adk fleet`](#adk-fleet) | Create & manage a fleet of agents (local \| managed \| hosted \| cloud-run) |
 | [`adk forge`](#adk-forge) | Dispatch tasks to agent forge (Genesis) |
 | [`adk gateway`](#adk-gateway) | Run agent across messaging platforms |
 | [`adk gobbonet`](#adk-gobbonet) | Run GobboNet with keyless web search (clones the UI if needed) |
@@ -66,6 +69,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk ingest`](#adk-ingest) | Ingest files into the agent's knowledge graph |
 | [`adk init`](#adk-init) | Scaffold a new agent project |
 | [`adk install`](#adk-install) | Install an agent pack (e.g. adk install pack:openclaw) |
+| [`adk instance`](#adk-instance) | Create & manage Aitherium Instances (always-on agent with a stable URL) |
 | [`adk integrate`](#adk-integrate) | Connect external tools (OpenClaw, etc.) |
 | [`adk invoke`](#adk-invoke) | Invoke a tool on a mesh agent over signed A2A (adk invoke <agent> <skill>) |
 | [`adk jobs`](#adk-jobs) | Manage background jobs — LOCAL by default, --remote for the portal/cloud |
@@ -104,6 +108,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk stack`](#adk-stack) | Start the consumer stack (Room + Ollama) as native processes |
 | [`adk start`](#adk-start) | Start chatting with your codebase (zero config) |
 | [`adk status`](#adk-status) | Show backend and service status |
+| [`adk storage`](#adk-storage) | Storage inventory — scan a drive, rank what fills it, diff, propose, apply |
 | [`adk support`](#adk-support) | Get help — Discord, GitHub, docs |
 | [`adk sync`](#adk-sync) | Sync local directory with AitherOS platform |
 | [`adk test`](#adk-test) | Run agent tests |
@@ -114,9 +119,11 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk upgrade`](#adk-upgrade) | Open upgrade/checkout page for a pack or plan |
 | [`adk vault`](#adk-vault) | Lockbox for the live secrets vault (setup, ls, get, search, rotate, lock) |
 | [`adk voice`](#adk-voice) | Voice services (serve standalone HTTP server) |
+| [`adk volunteer`](#adk-volunteer) | Volunteer embedding compute for DGG (enroll, serve, start) |
 | [`adk whoami`](#adk-whoami) | Show current auth status, config and entitlement tier |
 | [`adk wizard`](#adk-wizard) | First-run wizard — hardware detection, setup recommendations, auth token |
 | [`adk wm`](#adk-wm) | World model management (status, inspect, train, reset) |
+| [`adk workflow`](#adk-workflow) | Claude Code Workflow runs mirrored as expeditions |
 | [`adk workspace`](#adk-workspace) | Manage dev workspaces on AitherOS tunnel |
 | [`adk x-session`](#adk-x-session) | Bootstrap the autonomous X poster's logged-in session |
 
@@ -137,7 +144,7 @@ Agent Client Protocol: serve an agent to ACP editors, or drive an external ACP a
 
 ## `adk addon`
 
-Manage self-hosted service addons (Qdrant, RAG, CodeGraph, etc.)
+Manage self-hosted addons / components (Qdrant, RAG, awgym, awdesk, ...)
 
 **Subcommands**
 
@@ -237,6 +244,18 @@ Manage LLM backends (list, set, test, switch, status)
 - `adk backend use` — Switch the RUNNING agent live to a preset (no restart)
 - `adk backend status` — Show current backend configuration and connectivity
 
+**Self-hosted servers are auto-detected.** A Bonsai started by
+`aitherium.com/install-bonsai.sh` (:8080), `adk bonsai-local` (:8090), the
+llamacpp container (:8092) or the selfhost skill (:8889) is found by
+`LLMRouter`, `adk status` (row `Local`), `adk up` and `adk start` with no
+configuration — the ladder is `adk.local_inference.SELFHOST_PORTS`, the same
+ports aitherium.com's local-node probe uses. A port must answer `/v1/models`
+with a model; `/health` alone is not enough. Presets `bonsai-local`
+(`http://127.0.0.1:8090/v1`, model `bonsai-27b`) and `bonsai`
+(`http://127.0.0.1:8080/v1`, model `bonsai-selfhost`) exist for
+`adk backend set` / `adk run --backend`. A user-set backend survives
+`adk login` (the cloud URL goes to `gateway_inference_url`).
+
 ## `adk backup`
 
 Backup all agent data (memory, graphs, config)
@@ -258,6 +277,15 @@ Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then c
 | `--port` | int |  | `8090` | Host port to serve on (default: 8090) |
 | `--dry-run` | str |  | `false` | Show what would run without starting anything |
 | `--stop` | str |  | `false` | Stop and remove the local Bonsai container |
+
+## `adk briefs`
+
+List and read executive briefs
+
+**Subcommands**
+
+- `adk briefs list` — List recorded briefs
+- `adk briefs show` — Print one brief in full
 
 ## `adk chat`
 
@@ -312,6 +340,28 @@ Switch Claude Code between DeepSeek, Kimi, local AitherOS models, and Anthropic
 - `adk claude-model kimi` — → Kimi K3 (1M context, thinking always on)
 - `adk claude-model local` — → qwen3.6-27b on DGX
 - `adk claude-model fast` — → gemma4-12b for trivial tasks
+
+## `adk component`
+
+**Subcommands**
+
+- `adk component list` — Show available addons + status
+- `adk component enable` — Pull image, start container, register with portal
+- `adk component disable` — Stop container, deregister
+- `adk component status` — Health + metrics for addons
+- `adk component logs` — Tail container logs
+- `adk component update` — Pull latest images for all enabled addons
+
+## `adk components`
+
+**Subcommands**
+
+- `adk components list` — Show available addons + status
+- `adk components enable` — Pull image, start container, register with portal
+- `adk components disable` — Stop container, deregister
+- `adk components status` — Health + metrics for addons
+- `adk components logs` — Tail container logs
+- `adk components update` — Pull latest images for all enabled addons
 
 ## `adk connect`
 
@@ -386,6 +436,29 @@ Decision cards — raise a structured ask, list what is waiting, answer it
 |---|---|---|---|---|
 | `<decide_args>` | str |  |  | ask \| list \| show \| answer \| cancel \| watch \| sweep |
 
+## `adk desk`
+
+The awdesk bridge (default `http://127.0.0.1:47931`; `AWDESK_URL` overrides). One control
+plane, many surfaces: the awdesk Command/Fleet windows, `awsh /command` and `/fleet`, the
+Desk MCP tools and these verbs all land on the same routes.
+
+| subcommand | description |
+|---|---|
+| `adk desk command "<text>" [--poll] [--json]` | send a sentence to the Command agent (fleet verbs run the fleet; anything else runs an agent) — `--poll` waits for the reply |
+| `adk desk history [-n N] [--json]` | the last N commands and replies |
+| `adk desk fleet <status\|down\|up\|gaming\|resume\|adopt\|panel> [--yes] [--json]` | the MACHINE fleet (containers/GPU). `down`/`gaming` confirm unless `--yes`. Not `adk fleet`, which manages a fleet of AGENTS. `status` also says who holds the VRAM and which doors (tunnel, pulse, grafana, …) answer. |
+| `adk desk desktop [overlay\|app\|status] [--json]` | the two desktop surfaces: `overlay` = the aitherium.com Living Desktop taskbar over the Windows desktop (the same overlay AitherConnect puts over any web page), `app` = the full AitherDesktop window, `status` = which are open |
+
+Mutating verbs (`fleet down|up|gaming|resume|adopt`, `command`) carry a bearer: the adk
+daemon's own token, `AITHER_HARNESS_TOKEN` or `~/.aither/harness_token`, which the daemon
+writes at first start. Without it the bridge answers 401 and adk prints that one-line fix.
+`fleet status`, `fleet panel`, `desktop` and `history` need no bearer.
+
+Exit codes: 0 ok · 1 refused (the verdict says `ok: false`) · 2 could not judge (no desk
+bridge and no `AWDESK_FLEET_FALLBACK` command configured, or the bridge refused the bearer). With the bridge down, fleet
+verbs fall back to `AWDESK_FLEET_FALLBACK` (a command line; the verb's argv and `--json`
+are appended) and the answer says which lane replied.
+
 ## `adk deploy`
 
 Deploy AitherOS components or agents
@@ -438,7 +511,7 @@ Register this workstation with the control plane
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `--portal` | str |  |  | Portal URL (default: portal.aitherium.com) |
+| `--portal` | str |  |  | Portal URL (default: api.aitherium.com) |
 | `--genesis` | str |  |  | Genesis URL (default: localhost:8001) |
 | `--no-heartbeat` | str |  | `false` | Skip background heartbeat |
 | `--force` | str |  | `false` | Re-enroll even if already registered |
@@ -464,7 +537,7 @@ Browse packs, agents, and skills in the Aitherium marketplace
 
 ## `adk fleet`
 
-Create & manage a fleet of agents (local | managed | cloud-run)
+Create & manage a fleet of agents (local | managed | hosted | cloud-run)
 
 **Subcommands**
 
@@ -583,8 +656,8 @@ Host a self-hosted agent (your model key) + connect it to your fleet — one com
 | `--approve` | str |  |  | Comma-list of tools that pause for approval, or '*' (default: file_write,shell_exec,shell) |
 | `--token` | str |  |  | Control-plane token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN) |
 | `--auth-token` | str |  |  | Callback bearer the control plane presents back to your agent (minted if omitted) |
-| `--portal` | str |  | `https://veil.aitherium.com` | Control-plane base URL |
-| `--login-url` | str |  |  | Device-flow login base URL (default: --portal, then portal.aitherium.com) |
+| `--portal` | str |  | `https://api.aitherium.com` | Control-plane base URL |
+| `--login-url` | str |  |  | Device-flow login base URL (default: --portal, then api.aitherium.com) |
 | `--register-url` | str |  |  | Full fleet-register URL (overrides --portal; e.g. http://localhost:8001/v1/agent/fleet/register) |
 | `--no-register` | str |  | `false` | Run locally only — no tunnel, no fleet registration |
 | `--dry-run` | str |  | `false` | Show what would happen without starting anything |
@@ -650,6 +723,20 @@ Install an agent pack (e.g. adk install pack:openclaw)
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `<target>` | str |  |  | 'list', 'pack:<name>', or a pack name (openclaw, hermes, claude-code) |
+
+## `adk instance`
+
+Create & manage Aitherium Instances (always-on agent with a stable URL)
+
+**Subcommands**
+
+- `adk instance create` — Create an instance (admin of your tenant)
+- `adk instance list` — List your tenant's instances
+- `adk instance status` — Show one instance
+- `adk instance connect` — Print how to reach an instance
+- `adk instance stop` — Stop the loop (hostname + record kept; meter stops)
+- `adk instance start` — Re-create the loop of a stopped instance
+- `adk instance rm` — Destroy: loop, hostname, meter
 
 ## `adk integrate`
 
@@ -739,7 +826,7 @@ Authenticate with Aitherium (browser device flow)
 | `--github` | str |  | `false` | Sign in with your GitHub identity (device flow) |
 | `--api-key` | str |  |  | Save an API key directly (no login flow) |
 | `--no-sync` | str |  | `false` | Skip auto-syncing your secrets vault after login |
-| `--portal-url` | str |  |  | Portal/Identity URL (default: portal.aitherium.com) |
+| `--portal-url` | str |  |  | Portal/Identity URL (default: api.aitherium.com) |
 
 ## `adk logout`
 
@@ -845,7 +932,7 @@ Pair this machine with the portal as an inference node (6-char code from the por
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab |
-| `--portal` | str |  |  | Portal base URL (default: https://portal.aitherium.com) |
+| `--portal` | str |  |  | Portal base URL (default: https://api.aitherium.com) |
 
 ## `adk platform`
 
@@ -933,7 +1020,7 @@ Re-register endpoint(s) with A2A public keys (backfill for existing endpoints)
 | `--name` | str |  |  | Re-register one endpoint by name |
 | `--all` | str |  | `false` | Re-register all endpoints for this agent |
 | `--token` | str |  |  | Portal token (or $AITHER_PORTAL_TOKEN / 'adk login') |
-| `--portal` | str |  | `https://veil.aitherium.com` | Portal URL (default: veil.aitherium.com) |
+| `--portal` | str |  | `https://api.aitherium.com` | Portal URL (default: veil.aitherium.com) |
 
 ## `adk routing`
 
@@ -1060,22 +1147,6 @@ Open a remote terminal into a prod/dev environment via the tunnel
 | `<container>` | str |  |  | Dev-workspace container to attach to (optional) |
 | `--container` | str |  |  | Dev-workspace container (alternative to positional) |
 | `--tunnel-url` | str |  | `tunnel.aitherium.com` | Tunnel host (default: tunnel.aitherium.com) |
-| `-x`, `--exec` | str |  |  | Run CMD headlessly (no TTY) and exit with its code; repeatable |
-| `--timeout` | float |  | `120` | Headless run cap in seconds |
-| `--json` | flag |  |  | Headless: print `{code, output, reason}` as JSON instead of streaming |
-| `-- <cmd…>` | — |  |  | Everything after `--` is one command line to run headlessly |
-
-Headless mode works on Windows and without a TTY (CI, cron, PowerShell, Claude
-Code / Codex). Without a container you get the tunnel's restricted allow-listed
-shell (`docker`, `curl`, `cat`, `grep`, `ps`, `git`, … — one command per line,
-no `;`); with one, the workspace's tmux-backed bash and the real `$?`:
-
-```bash
-adk ssh -x "docker ps"
-adk ssh -x "docker logs --tail 50 aitheros-arc-solver"
-adk ssh devws-you -- make test          # exit code is the remote $?
-adk ssh --json -x "docker ps"           # for scripts
-```
 
 ## `adk ssh-cert`
 
@@ -1116,6 +1187,14 @@ Show backend and service status
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `--json` | str |  | `false` | Machine-readable JSON (agent state) for AI agents/CI |
+
+## `adk storage`
+
+Storage inventory — scan a drive, rank what fills it, diff, propose, apply
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<storage_args>` | str |  |  | scan \| inventory \| diff \| propose \| approve \| apply \| quarantine \| revert \| graph |
 
 ## `adk support`
 
@@ -1201,7 +1280,7 @@ Run a persistent agent connected to your AitherOS fleet (one command)
 | `--passphrase`, `--pin` | str |  |  | Memorable secret to authenticate remote chat (else a random token is minted). Enter it on the chat page's access gate from your phone. |
 | `--email` | str |  |  | Email the phone-ready access link to this address once the tunnel is up (uses configured SMTP; else saved notify_email). |
 | `--approve` | str |  |  | Comma-list of tools that pause for approval (default: file_write,shell_exec,shell) |
-| `--portal` | str |  | `https://veil.aitherium.com` | Control-plane base URL |
+| `--portal` | str |  | `https://api.aitherium.com` | Control-plane base URL |
 | `--login-url` | str |  |  | Device-flow login base URL |
 | `--register-url` | str |  |  | Full fleet-register URL (overrides --portal) |
 | `--reach` | str |  | `tunnel` | Connectivity mode: tunnel (Cloudflare, default) or mesh (overlay IP) |
@@ -1239,6 +1318,17 @@ Voice services (serve standalone HTTP server)
 
 - `adk voice serve` — Start the HTTP voice server (default port 8085)
 
+## `adk volunteer`
+
+Volunteer embedding compute for DGG (enroll, serve, start)
+
+**Subcommands**
+
+- `adk volunteer enroll` — Enroll as a volunteer (mesh onboard + consent + trust)
+- `adk volunteer serve` — Download model and start llama-server
+- `adk volunteer start` — Claim batches, embed, and submit results
+- `adk volunteer status` — Show volunteer status (reputation, tokens, batches)
+
 ## `adk whoami`
 
 Show current auth status, config and entitlement tier
@@ -1266,6 +1356,15 @@ World model management (status, inspect, train, reset)
 - `adk wm inspect` — Show learned effects for an agent
 - `adk wm train` — Force a bootstrap/refit now
 - `adk wm reset` — Delete checkpoint + transitions
+
+## `adk workflow`
+
+Claude Code Workflow runs mirrored as expeditions
+
+**Subcommands**
+
+- `adk workflow mirror` — Stream workflow journals into the expedition mirror
+- `adk workflow status` — Show the mirrored expedition for a run
 
 ## `adk workspace`
 

@@ -46,7 +46,7 @@ from typing import Any
 
 logger = logging.getLogger("adk.licensing")
 
-PORTAL_PACKS_URL = "portal.aitherium.com/portal/marketplace/packs"
+PORTAL_PACKS_URL = "api.aitherium.com/portal/marketplace/packs"
 
 # Ed25519 public key (hex, 32 bytes) used to verify portal-signed licenses.
 # The matching PRIVATE key lives only in the Aitherium platform vault

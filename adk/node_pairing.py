@@ -97,7 +97,7 @@ def cmd_pair(args: Any) -> int:
     import os
 
     portal_url = getattr(args, "portal", None) or os.environ.get(
-        "AITHER_PORTAL_URL", "https://portal.aitherium.com"
+        "AITHER_PORTAL_URL", "https://api.aitherium.com"
     )
     code = getattr(args, "code", "")
 

@@ -198,6 +198,13 @@ class LLMRouter:
         "groq": "https://api.groq.com/openai/v1",
         "together": "https://api.together.xyz/v1",
         "genesis": "https://localhost:8001/v1",  # Local AitherOS Genesis (HTTPS, internal AitherNet CA)
+        # `adk bonsai-local` (Docker, :8090) and aitherium.com/install-bonsai.sh
+        # (llama-server, :8080). Both are plain-http OpenAI-compatible servers;
+        # the alias exists so `--backend bonsai-local` and `adk backend set
+        # bonsai-local` resolve instead of raising "Unknown provider" and
+        # silently falling back to auto-detect (measured 2026-09-12).
+        "bonsai-local": "http://127.0.0.1:8090/v1",
+        "bonsai": "http://127.0.0.1:8080/v1",
     }
 
     # Default models per named provider
@@ -208,6 +215,8 @@ class LLMRouter:
         "groq": "llama-3.3-70b-versatile",
         "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "genesis": "workflow",  # Genesis routes by priority; "workflow" = default fleet model
+        "bonsai-local": "bonsai-27b",
+        "bonsai": "bonsai-selfhost",  # the --alias install-bonsai.sh gives llama-server
     }
 
     def _create_provider(
@@ -228,7 +237,7 @@ class LLMRouter:
                 host=base_url or "http://localhost:11434",
                 default_model=self._model or "gemma4:4b",
             )
-        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek", "moonshot", "genesis"):
+        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek", "moonshot", "genesis", "bonsai-local", "bonsai"):
             from .openai_compat import OpenAIProvider
             default_url = self._COMPAT_URLS.get(name, "https://api.openai.com/v1")
             default_model = self._COMPAT_MODELS.get(name, "gpt-4o-mini")
@@ -238,7 +247,7 @@ class LLMRouter:
             # (None), since the internal CA bundle would REPLACE system roots and
             # break their public certs. Harmless on plain-http local endpoints.
             verify = None
-            if name in ("genesis", "vllm", "llamacpp", "lmstudio"):
+            if name in ("genesis", "vllm", "llamacpp", "lmstudio", "bonsai-local", "bonsai"):
                 from .._tls import tls_verify
                 verify = tls_verify()
             return OpenAIProvider(
@@ -296,8 +305,49 @@ class LLMRouter:
                 f"Unknown provider: {name}. "
                 "Use 'gateway', 'ollama', 'openai', 'anthropic', 'gemini', 'deepseek', "
                 "'moonshot', 'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', "
-                "'genesis', 'picolm', or 'acp'."
+                "'genesis', 'bonsai-local', 'bonsai', 'picolm', or 'acp'."
             )
+
+    async def _try_local_selfhost(self) -> LLMProvider | None:
+        """A Bonsai (or any OpenAI-compatible server) the user started themselves.
+
+        aitherium.com/install-bonsai.sh serves on :8080, `adk bonsai-local` on
+        :8090, the llamacpp container on :8092 — none of which the vLLM scan
+        below ever probed, so a freshly installed Bonsai was invisible until the
+        user typed `adk backend set` by hand (2026-09-12). The ladder lives in
+        adk.local_inference.SELFHOST_PORTS; this only adopts an endpoint that
+        lists a model (source env|port) and leaves MicroScheduler (:8150) to
+        _try_desktop, which requires explicit config on purpose.
+        """
+        try:
+            from ..local_inference import discover_local_endpoint
+            found = await discover_local_endpoint()
+        except Exception as e:  # noqa: BLE001 — detection is best-effort
+            logger.debug("Self-host discovery failed: %s", e)
+            return None
+        if not found.found or found.source not in ("env", "port") or not found.endpoint_url:
+            return None
+        try:
+            from .openai_compat import OpenAIProvider
+            base = found.endpoint_url.rstrip("/")
+            if not base.endswith("/v1"):
+                base = f"{base}/v1"
+            p = OpenAIProvider(
+                base_url=base,
+                api_key="not-needed",
+                default_model=self._model or found.model or "",
+                ctk_by_model=_DEFAULT_CTK_BY_MODEL,
+            )
+            if await p.health_check():
+                self._provider_name = "local"
+                logger.info(
+                    "Auto-detected self-hosted inference at %s (model: %s, via %s)",
+                    base, p.default_model, found.source,
+                )
+                return p
+        except Exception as e:  # noqa: BLE001 — detection is best-effort
+            logger.debug("Self-host endpoint %s rejected: %s", found.endpoint_url, e)
+        return None
 
     async def _try_ollama(self) -> LLMProvider | None:
         """Try Ollama on localhost. Returns provider or None."""
@@ -339,8 +389,16 @@ class LLMRouter:
         import os
         from .openai_compat import OpenAIProvider
 
-        # Check explicit env var first
-        vllm_env = os.environ.get("AITHER_VLLM_URL") or os.environ.get("VLLM_URL", "")
+        # Check explicit env var first. AITHER_LLM_BASE_URL is what the daemon
+        # launchers (adk-daemon-start.cmd/.ps1) actually set; until 2026-09-10 it
+        # was read only by the explicit-backend branch, so a launcher that named
+        # MicroScheduler still landed in the port scan below.
+        vllm_env = (
+            os.environ.get("AITHER_VLLM_URL")
+            or os.environ.get("VLLM_URL", "")
+            or (getattr(self._config, "llm_base_url", "") if self._config else "")
+            or os.environ.get("AITHER_LLM_BASE_URL", "")
+        )
         if vllm_env:
             try:
                 url = vllm_env.rstrip("/")
@@ -381,12 +439,25 @@ class LLMRouter:
                 )
                 if await p.health_check():
                     # Discover what model is loaded
+                    models: list[str] = []
                     try:
                         models = await p.list_models()
                         if models and not self._model:
                             p.default_model = models[0]
                     except Exception:
                         pass
+                    # A port that answers /v1/models is not thereby the server we
+                    # want. localhost:8200 is Media Forge (xybrid local models):
+                    # it health-checks, lists models, and 503s every chat for
+                    # the requested model - so with the real backend down the daemon
+                    # "auto-detected vLLM" there and every turn failed (2026-09-10).
+                    # When a model was asked for, the port must actually serve it.
+                    if self._model and models and self._model not in models:
+                        logger.info(
+                            "Skipping localhost:%d: serves %s, not %s",
+                            port, ", ".join(models[:4]), self._model,
+                        )
+                        continue
                     self._provider_name = "vllm"
                     logger.info("Auto-detected vLLM at localhost:%d (model: %s)", port, p.default_model)
                     return p
@@ -665,11 +736,13 @@ class LLMRouter:
         return None
 
     async def _auto_detect(self) -> LLMProvider:
-        """Try backends in priority order: vLLM → desktop → Ollama → gateway → cloud APIs → demo.
+        """Try backends in priority order:
+        explicit → desktop (configured spine) → self-hosted (install-bonsai.sh :8080,
+        `adk bonsai-local` :8090, ...) → vLLM scan → Ollama → gateway → cloud APIs → demo.
 
-        LOCAL GPU FIRST. vLLM containers are the primary backend — they use the GPU
-        efficiently with batching and paged attention. Desktop MicroScheduler is tried
-        before Ollama for dual-mode setups. Ollama is the fallback for AMD/Apple/no-Docker.
+        LOCAL FIRST. Desktop MicroScheduler is tried before anything blind because it
+        requires explicit config. A self-hosted server the user started comes next —
+        see _try_local_selfhost. vLLM containers, then Ollama for AMD/Apple/no-Docker.
         Gateway is cloud fallback when no local GPU.
 
         When cloud_mode is "cloud_first" or "cloud_only" (set by `adk setup --mode cloud`),
@@ -715,6 +788,8 @@ class LLMRouter:
                 "llamacpp": _generic_base,
                 "vllm": _generic_base,
                 "lmstudio": _generic_base,
+                "bonsai-local": _generic_base,
+                "bonsai": _generic_base,
             }
             explicit_base_url = base_url_for.get(explicit, "") or None
             try:
@@ -780,7 +855,15 @@ class LLMRouter:
             # routed in chat().
             return desktop
 
-        # 2. vLLM containers — standalone local backend (best GPU utilization)
+        # 2. A self-hosted server the user started (install-bonsai.sh :8080,
+        # `adk bonsai-local` :8090, ...). Before the vLLM scan: those ports are
+        # not in it, and a person who just ran the installer expects the agent
+        # to use what they installed.
+        selfhost = await self._try_local_selfhost()
+        if selfhost:
+            return selfhost
+
+        # 3. vLLM containers — standalone local backend (best GPU utilization)
         vllm = await self._try_vllm()
         if vllm:
             return vllm

@@ -4,7 +4,52 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A self-hosted Bonsai is now found without `adk backend set`.** A server
+  started by aitherium.com/install-bonsai.sh (:8080), `adk bonsai-local` (:8090),
+  the llamacpp container (:8092) or the selfhost skill (:8889) was invisible to
+  every agent path: `LLMRouter` scanned 8120/8200-8203/8000, `adk status` probed
+  8209, `adk up`'s preflight and `adk start`'s detector had their own lists, and
+  `adk.local_inference.discover_local_endpoint()` — the one function that would
+  have found it — was called by nothing (measured 2026-09-12). One ladder now
+  lives in `adk.local_inference.SELFHOST_PORTS` (the same ports aitherium.com's
+  local-node probe uses) and is honored by `LLMRouter._try_local_selfhost`
+  (before the vLLM scan), `adk status` (new `Configured` and `Local` rows),
+  `adk up`, and `adk start`. The port scan requires a model in `/v1/models`;
+  a bare `/health` 200 no longer counts.
+- `adk up --port 8080` on a Bonsai box reported "Agent healthy on :8080" for a
+  child that had died on EADDRINUSE, because llama-server's `/health` satisfied
+  the poll. The daemon health check now requires OUR body (`agent` + `version`),
+  and `adk up` steps past a port another server owns (explicit `--port` on a
+  taken port is an error).
+- `adk login` / `adk connect --save` overwrote `inference_url` with the cloud
+  URL while leaving `default_backend=vllm`, so a re-login after `adk backend
+  set vllm --base-url http://127.0.0.1:8080/v1` made every chat 401. A user-set
+  backend keeps its URL; the cloud one lands in `gateway_inference_url`.
+- `bonsai-local` and `bonsai` are real backend presets (`adk backend set
+  bonsai-local`, `adk run --backend bonsai-local`). The old hint from
+  `adk bonsai-local`, `adk --backend bonsai-local`, was not a flag; the command
+  now persists itself as the configured backend instead.
+- `adk quickstart-local` handled `llamacpp|ollama|vllm` but its own picker
+  returns `bonsai` on a CPU-only box with Docker → "unknown backend bonsai".
+- `adk backend status` printed `Backend: unknown` after a successful
+  `adk backend set` (it read only `setup_backend`).
+
 ### Added
+
+- `dgg-research` tool pack (`adk/toolpacks/dgg_research/`): five tools for
+  working a documentary record — `actor_resolve` (never writes),
+  `actor_references`, `evidence_push`, `mention_verify`, `corpus_null`. A thin
+  client over the record's own API on purpose: the resolution policy (which
+  role may auto-link a fuzzy match, at what score, with what margin) lives
+  server-side, so an owner moves the bar without touching an agent. A refusal
+  comes back as a RESULT, not an exception — a 400 there carries the reason and
+  the fix, and raising it teaches an agent to retry blindly.
+- `adk.toolpacks.dgg_research.onboard`: picks the model tier from the host — a
+  declared endpoint wins, else Bonsai-27B on a GPU with >=13 GB usable at 85%
+  headroom, else Bonsai-4B-Q1 on any CPU. Never falls back to a hosted API; an
+  unreadable GPU reports `unknown`, never `absent`.
 
 - `adk briefs list|show`: the executive-brief delivery plane as a command —
   reads the same host store (~/.aither/briefs) the stop hook writes, so an
@@ -1530,7 +1575,7 @@ Agents now improve the second time they do a task instead of starting from scrat
 
 This release draws a single, enforced free/paid line. The free tier stays
 genuinely useful (real agent, typed + graph + code memory, ReAct, ~essential
-tools); paid tiers unlock the *scale* capabilities via portal.aitherium.com.
+tools); paid tiers unlock the *scale* capabilities via api.aitherium.com.
 
 ### Added
 - **`adk/licensing.py`** — the entitlement keystone. Resolves a tier
