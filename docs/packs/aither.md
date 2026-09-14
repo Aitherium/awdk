@@ -39,5 +39,5 @@ skills/memory-recall.md
 
 ---
 
-sha256 `cf69a1bb959173fc39f37c9ffc901202544085fa9b187c88f15e76ad5c75ad7e`  
+sha256 `c8895d158ec729fa6d9f06bc50cd7a50adeb615f3557a2d5252667543c1c24ec`  
 Built from `v3.8.18` (adk 3.8.18). [All packs](../packs.md)
