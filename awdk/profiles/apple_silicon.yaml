@@ -1,0 +1,29 @@
+# AitherADK Hardware Profile: Apple Silicon
+# For M1, M2, M3, M4 series Macs (unified memory)
+
+name: apple_silicon
+description: Apple Silicon — leverages Metal acceleration with unified memory
+
+gpu:
+  vendor: apple
+
+models:
+  default: "nemotron-orchestrator-8b"
+  small: "llama3.2:3b"
+  large: "deepseek-r1:8b"
+  embedding: "nomic-embed-text"
+
+recommended_models:
+  - "llama3.2:3b"
+  - "nemotron-orchestrator-8b"
+  - "nomic-embed-text"
+  - "deepseek-r1:8b"
+
+limits:
+  max_context: 16384
+  max_concurrent: 1
+
+notes: >
+  Apple Silicon profile. Ollama uses Metal for GPU acceleration.
+  M1 Pro/Max/Ultra and M2/M3/M4 variants with more unified memory
+  can handle larger models — adjust manually if you have 32+ GB RAM.

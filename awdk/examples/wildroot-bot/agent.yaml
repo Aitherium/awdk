@@ -1,0 +1,27 @@
+name: wildroot-bot
+version: "1.0.0"
+description: Wildroot Alchemy e-commerce assistant — product search, inventory, and customer support.
+
+identity: identity.yaml
+
+llm:
+  provider: vllm
+  base_url: http://localhost:8000/v1
+  model: aither-orchestrator
+
+cognitive:
+  sase: true
+  mcts: false
+  prism: true
+  council: false
+  goals: true
+  intent: true
+  crystallization: true
+
+tools:
+  - tools/search_products.py
+  - tools/check_inventory.py
+
+deployment:
+  port: 8080
+  sovereign: false

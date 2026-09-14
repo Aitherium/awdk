@@ -1,0 +1,76 @@
+id: cuda-sana-sprint
+name: NVIDIA CUDA SANA Sprint (fast one-step)
+tier: gpu-small
+description: >-
+  NVIDIA GPUs with 8GB+ VRAM running AitherSana — NVIDIA's efficient linear-attention
+  diffusion. Sprint 0.6B is one-step and generates in ~1s; the 1600M MultiLing model
+  gives higher quality at ~4s. Far cheaper per image than SDXL, but no ControlNet /
+  LoRA / custom-workflow ecosystem — use ComfyUI when you need control.
+
+hardware_requirements:
+  min_ram_gb: 12
+  min_cpu_cores: 4
+  gpu_vendor: nvidia
+  min_vram_gb: 8
+  unified_memory: false
+  notes: >-
+    Sprint 0.6B is ~1.5GB in bf16. The 1600M MultiLing model stays fully resident
+    at ~10GB — do NOT enable CPU offload, it is unusable under WSL2 (~66s/gen from
+    slow host<->device bandwidth) versus ~4s resident.
+
+imagegen_config:
+  engine: sana
+  model_profile: ""
+  models:
+    - name: Sana_Sprint_0.6B_1024px_diffusers
+      source: hf://Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers
+      size_gb: 1.5
+      note: one-step, ~1s/image
+    - name: Sana_1600M_1024px_MultiLing_diffusers
+      source: hf://Efficient-Large-Model/Sana_1600M_1024px_MultiLing_diffusers
+      size_gb: 10.0
+      note: higher quality, ~4s/image, stays fully resident
+  serve_args:
+    - AITHER_SERVICE=sana
+    - SANA_PORT=8796
+    - SANA_CPU_OFFLOAD=false
+    - SANA_QUANTIZE=none
+  image: ghcr.io/aitherium/perception:latest
+  platform_traps:
+    - "SANA_CPU_OFFLOAD=true is a trap under WSL2: ~66s/gen vs ~4s resident. Leave it false."
+    - "SANA has NO image of its own: it ships inside the multi-service perception
+       image and AITHER_SERVICE=sana selects it. Dropping that env var silently
+       starts a different service on port 8796."
+    - "In the AitherOS fleet this service is currently profiles:[disabled] (2026-07-05,
+       to free 5090 VRAM for ComfyUI). That is a fleet capacity choice, not a defect —
+       a self-hosted node is unaffected."
+
+deployment:
+  target: docker-compose
+  compose_template: ""
+  delegate: ""
+  port: 8796
+
+backend_config:
+  backend_type: sana
+  health_path: /health
+  capability_path: /v1/backends
+  generate_path: /v1/generate/sprint
+
+verify:
+  health_timeout_s: 240
+  capability:
+    expect_min_models: 1
+    description: >-
+      GET /v1/backends lists the models SANA actually loaded. A SANA container that
+      started with an empty HF cache answers /health but serves nothing.
+
+fleet_wiring:
+  catalog_entry:
+    backend: sana
+    category: image
+    vram_gb: 8
+    max_resolution: 1024
+    speed: 10
+    quality: 7
+  url_env_var: SANA_URL

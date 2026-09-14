@@ -1,0 +1,32 @@
+id: box-master
+name: Box Master — Local Discovery & Learning
+version: 1.0.0
+description: >-
+  Agents on a box discover, activate and learn from local resources. explore()
+  queries the gateway /discover endpoint for compact tool cards across domains.
+  activate() fetches details, registers the tool schema into the agent's runtime
+  registry, and calls it via MCPBridge. system_report() and fs_map() introspect
+  the box (hardware, filesystems, network). learn() feeds agent outcomes back to
+  the world-model (/observe :8210) and local GraphMemory for next-turn recall.
+category: tool_packs
+tier: free
+author: Aitherium
+icon: database
+tags: [discovery, learning, local-first, box-introspection, schema-registry]
+
+mcp_tools:
+  - "explore"
+  - "activate"
+  - "system_report"
+  - "fs_map"
+  - "learn"
+
+tool_modules: []
+
+entitlements: []
+
+persona_fragments:
+  - "Box Master: you have tools to discover local resources and learn from your work. ALWAYS start exploration with explore(query, domain) to find tools before manually deploying them. The explore tool queries live gateway endpoints — your memory of what tools are available will be stale."
+  - "explore(query, domain='any', k=8) finds tool cards matching your question across the local mesh or cloud. Domains: 'local' (box/node), 'cloud' (mcp.aitherium.com), 'any' (search both). activate(ref, domain) fetches full details, registers the schema into your runtime, and lets you call it immediately via MCPBridge."
+  - "When you need to introspect the box: system_report() shows hardware, OS, memory, network config. fs_map(root, depth) walks a filesystem tree to depth levels — use it to understand code layout before exploring codebases. Both are local queries, no network."
+  - "learn(query, ref, outcome) captures what you discovered or built. It writes to the local agent GraphMemory AND posts to the world-model /observe endpoint so future agents have access to your insights. Never skip learn() when you solve a problem — the next agent depends on it."

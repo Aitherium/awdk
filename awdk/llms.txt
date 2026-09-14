@@ -1,0 +1,110 @@
+# Aither ADK (Agent Development Kit)
+
+> Build AI agent fleets with any LLM backend. Local-first with vLLM/Ollama, cloud via Elysium. One `pip install`, one line to connect.
+
+## Install
+
+```
+pip install awdk
+```
+
+## Quick Start — Local Agent
+
+```python
+import asyncio
+from adk import AitherAgent
+
+async def main():
+    agent = AitherAgent("my-agent")  # Auto-detects vLLM/Ollama
+    response = await agent.chat("Hello!")
+    print(response.content)
+
+asyncio.run(main())
+```
+
+## Quick Start — Cloud Inference via Elysium
+
+```python
+import asyncio
+from adk import AitherAgent
+from adk.elysium import Elysium
+
+async def main():
+    ely = await Elysium.connect(api_key="aither_sk_live_...")
+    agent = AitherAgent("my-agent", llm=ely.router)
+    response = await agent.chat("Hello from cloud!")
+    print(response.content)
+
+asyncio.run(main())
+```
+
+## Serve as API
+
+```bash
+aither-serve --identity aither --port 8080
+```
+
+Exposes OpenAI-compatible endpoints:
+- `POST /v1/chat/completions`
+- `GET /v1/models`
+- `GET /health`
+
+## Features
+
+- **Multi-backend LLM**: vLLM (GPU), Ollama (CPU/Mac), OpenAI, Anthropic, Elysium cloud
+- **@tool decorator**: Register Python functions as agent tools
+- **16 agent identities**: aither, lyra, demiurge, hydra, athena, apollo, etc.
+- **Fleet mode**: Multi-agent orchestration with inter-agent delegation
+- **Graph memory**: SQLite-backed persistent memory with semantic search
+- **MCP bridge**: Connect to mcp.aitherium.com for 200+ tools
+- **OpenAI-compatible API**: Drop-in replacement for any OpenAI client
+
+## Elysium Cloud Inference
+
+Register at https://demo.aitherium.com or via API:
+
+```python
+ely = Elysium()
+await ely.register(email="you@example.com", password="...")
+await ely.login(email="you@example.com", password="...")
+```
+
+Models available by tier:
+- **Free**: aither-small (llama3.2:3b)
+- **Pro** ($9/mo): + aither-orchestrator (nemotron-8b)
+- **Enterprise**: + aither-reasoning, aither-vision, aither-coding
+
+## Agent Registration
+
+Register your custom agent with the Aitherium network:
+
+```python
+ely = await Elysium.connect(api_key="aither_sk_live_...")
+await ely.register_agent("my-agent", capabilities=["code", "search"])
+agents = await ely.discover_agents(capability="code")
+```
+
+## CLI
+
+`adk` has 95 top-level commands. The full reference is generated from the
+parser itself, so it never describes a command that does not exist:
+docs/CLI-REFERENCE.md in the repo.
+
+A few worth knowing:
+
+```
+adk quickstart                 # inference + auth + shell, one command
+adk gobbonet                   # serve the GobboNet chat UI locally (any OS)
+adk gobbonet --setup-model     # ...and fetch llama.cpp + a model that fits
+adk run                        # start the agent server
+adk chat                       # talk to your agent
+adk packs                      # list installed agent packs
+adk doctor                     # diagnose a broken install
+```
+
+## Links
+
+- PyPI: https://pypi.org/project/awdk/
+- GitHub: https://github.com/Aitherium/aither
+- Full docs: https://demo.aitherium.com/llms-full.txt
+- MCP tools: https://demo.aitherium.com/llms.txt

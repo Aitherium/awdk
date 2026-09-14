@@ -1,0 +1,40 @@
+{
+  "name": "aither-adk",
+  "version": "3.8.18",
+  "description": "AitherADK CLI \u2014 build AI agent fleets with any LLM backend",
+  "bin": {
+    "aither": "bin/aither.js"
+  },
+  "scripts": {
+    "postinstall": "node ./scripts/postinstall.js"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "llm",
+    "aitheros",
+    "ollama",
+    "openai",
+    "anthropic",
+    "mcp"
+  ],
+  "author": "Aitherium <hello@aitherium.com>",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://aitherium.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aitherium/awdk.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "files": [
+    "bin/",
+    "scripts/"
+  ]
+}

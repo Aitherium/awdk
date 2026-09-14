@@ -1,0 +1,3 @@
+{
+  "_comment": "Bundled default scope/owner overrides. User overrides live in ~/.aither/vault-scope.json (written by `adk vault scope` and the panel's re-file control). Shape: {\"SECRET_NAME\": {\"scope\": \"mine|workspace|tenant|provider|platform|host\", \"owner\": \"optional\"}}. The lockbox falls back to name-based heuristics for anything not listed. Secrets are NEVER renamed — this only changes how they are grouped."
+}

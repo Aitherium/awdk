@@ -1,0 +1,72 @@
+id: cloud-api
+name: Cloud API (Anthropic, OpenAI, DeepSeek)
+tier: cloud
+description: >-
+  Cloud-only inference fallback. Routes requests to Anthropic Claude, OpenAI
+  GPT, or DeepSeek API. No local hardware requirements. Requires API key from
+  provider.
+
+hardware_requirements:
+  min_ram_gb: 0
+  min_cpu_cores: 1
+  gpu_vendor: none
+  min_vram_gb: 0
+  unified_memory: false
+  notes: >-
+    Works on any system with internet connectivity. Requires explicit API key
+    configuration (environment variable, ~/.aither config, or AitherSecrets
+    vault). Typical fallback when local models don't fit hardware constraints.
+
+inference_config:
+  engine: cloud
+  models:
+    - name: claude-3-5-sonnet
+      source: anthropic://claude-3-5-sonnet-20241022
+      size_gb: 0
+      quantization: cloud
+      context_window: 200000
+      served_name: claude
+    - name: gpt-4o
+      source: openai://gpt-4o-2024-11-20
+      size_gb: 0
+      quantization: cloud
+      context_window: 128000
+      served_name: gpt4o
+    - name: deepseek-reasoner
+      source: deepseek://deepseek-reasoner
+      size_gb: 0
+      quantization: cloud
+      context_window: 64000
+      served_name: deepseek-r1
+  serve_args: []
+  image: ""
+  platform_traps: []
+
+deployment:
+  target: none
+  compose_template: ""
+  delegate: ""
+  port: 0
+
+backend_config:
+  backend_type: cloud
+  health_path: ""
+  completion_path: ""
+
+verify:
+  health_timeout_s: 0
+  completion:
+    model: claude
+    prompt: ""
+    min_tokens: 0
+    timeout_s: 0
+
+fleet_wiring:
+  catalog_entry:
+    backend: cloud
+    category: cloud
+    context_window: 200000
+    vram_gb: 0
+    speed: 0
+    quality: 10
+  ms_env_var: ""

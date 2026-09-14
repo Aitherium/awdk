@@ -1,0 +1,104 @@
+id: kimi-k3-mesh-rpc
+name: Kimi-K3 split across AitherNet mesh (llama.cpp RPC)
+tier: multi-node-gpu
+description: >-
+  Shards Kimi-K3 (141B multimodal LLM) across AitherNet mesh nodes via llama.cpp RPC.
+  The coordinator runs on the largest contributing node; RPC backends run on peers
+  with RFC1918 or overlay addresses. Kimi-K3's vision tower is loaded on the
+  coordinator. Unsloth fork + GGML_RPC=ON required. Quant auto-selected based on
+  combined mesh RAM+VRAM pool.
+
+hardware_requirements:
+  min_ram_gb: 32
+  min_cpu_cores: 8
+  gpu_vendor: nvidia
+  min_local_vram_gb: 8
+  min_combined_vram_gb: 610
+  min_rpc_backends: 1
+  notes: >-
+    Kimi-K3-UD-IQ1_S (smallest quant) requires 610GB pool floor. Larger quants scale
+    to 1600GB for UD-Q8_K_XL. Coordinator = largest total_gb node; backends must
+    each have >32GB (RAM+VRAM combined) to avoid thrashing. Quant is auto-selected
+    from the KIMI_K3_QUANTS ladder; pass quant="auto" to plan_kimi_split() or
+    explicit quant name to override. Mesh overlay (RFC1918) binds only — rpc-server
+    is UNAUTHENTICATED.
+
+build:
+  source_dir: /work
+  build_dir: /work/build-rpc
+  fork_repo: https://github.com/unslothai/llama.cpp
+  fork_branch_ref: pull/48/head
+  fork_local_branch: kimi-k3-fullsize-vision
+  cmake_configure:
+    - cmake -B build-rpc -DGGML_CUDA=ON -DGGML_RPC=ON
+      -DCMAKE_BUILD_TYPE=Release
+  cmake_build:
+    - cmake --build build-rpc --config Release -j
+  produces:
+    - build-rpc/bin/rpc-server
+    - build-rpc/bin/llama-server
+  est_duration_min: 35
+
+topology:
+  main:
+    host: auto
+    device: CUDA0
+    vram_gb: 0
+  rpc_backends: []
+
+model:
+  name: kimi-k3
+  path: ""
+  size_gb: 0
+  quant: auto
+
+serve:
+  main_args:
+    - --gpu-layers 99
+    - --temp 1.0
+    - --top-p 0.95
+    - --host 0.0.0.0
+    - --port 8080
+  rpc_server_args:
+    - --host 0.0.0.0
+    - --port 50052
+  port: 8080
+  platform_traps:
+    - "EVERY backend must run a rpc-server built from the SAME unsloth fork branch
+       (pull/48) as the coordinator. Protocol mismatch fails at connect with
+       'Failed to connect' and you get LOCAL-ONLY inference."
+    - "rpc-server is UNAUTHENTICATED and executes tensor ops from any client. Bind
+       to RFC1918 (10.x, 172.16-31.x, 192.168.x) or CGNAT (100.64-127.x) ONLY —
+       never public IPs, never 0.0.0.0 on a public interface. The mesh overlay ACL
+       is its only security boundary."
+    - "Backends with ≤32GB total (RAM+VRAM) are skipped to avoid memory
+       thrashing. plan_kimi_split() reports skipped nodes."
+    - "Kimi-K3's vision tower loads on the coordinator; text layers shard across
+       the pool. An unreachable backend or silent protocol mismatch leaves you with
+       a healthy LOCAL-ONLY server if the model partially fits — split_verify is
+       mandatory."
+    - "Mesh nodes must have durable GGUF shards (reused across coordinator runs);
+       do not delete model files between split_verify and serving. RPC backends
+       serve ONE client per run — the coordinator must restart them between attempts."
+
+verify:
+  health_timeout_s: 240
+  require_rpc_device: true
+  expect_min_rpc_devices: 1
+  completion:
+    prompt: "Explain what distributed inference is, in one sentence."
+    max_tokens: 64
+    timeout_s: 300
+  description: >-
+    All participating RPC backends must appear in --list-devices as RPC0, RPC1, …
+    A coordinator without any RPC devices attached is LOCAL-ONLY (a silent fallback
+    if the model partially fits). split_verify checks for min_rpc_devices and
+    round-trips a completion.
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp-rpc
+    category: reasoning
+    model: kimi-k3
+    nodes: 0
+  url_env_var: AITHER_KIMI_K3_RPC_URL

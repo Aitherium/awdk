@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deep Research</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#f6f7f9; --panel:#fff; --ink:#1b2027; --muted:#6b7280; --line:#e3e6ea;
+    --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626; --chip:#eceef2; }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#0f1216; --panel:#171b21; --ink:#e8eaed; --muted:#9aa4b2; --line:#262c34;
+    --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --err:#f87171; --chip:#232830; } }
+  * { box-sizing:border-box }
+  body { margin:0; padding:14px; background:var(--bg); color:var(--ink);
+    font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:14px; margin-bottom:12px }
+  h2 { margin:0 0 4px; font-size:17px } h3 { margin:0 0 8px; font-size:14px }
+  .muted { color:var(--muted) } .mono { font-family:ui-monospace,Menlo,monospace; font-size:12.5px }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+  input, textarea { flex:1; background:var(--bg); color:var(--ink); border:1px solid var(--line);
+    border-radius:7px; padding:8px 10px; font:inherit; min-width:120px }
+  button { background:var(--accent); color:#fff; border:none; border-radius:7px;
+    padding:8px 14px; font:inherit; cursor:pointer }
+  button.ghost { background:var(--chip); color:var(--ink) }
+  button:disabled { opacity:.55; cursor:default }
+  .item { border:1px solid var(--line); border-radius:8px; padding:8px 11px; margin:6px 0 }
+  .item .t { font-weight:500 } .item a { color:var(--accent); word-break:break-all }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:9px;
+    white-space:pre-wrap; word-break:break-word; margin:8px 0 0; max-height:300px; overflow:auto }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--muted);
+    border-top-color:transparent; border-radius:50%; animation:sp .7s linear infinite; vertical-align:-2px }
+  @keyframes sp { to { transform:rotate(360deg) } }
+  .stat { display:inline-block; background:var(--chip); border-radius:20px; padding:2px 10px;
+    font-size:12px; margin:2px 4px 2px 0 }
+</style>
+</head>
+<body>
+<h2>Deep Research</h2>
+<p class="muted" style="margin-top:0">Multi-engine research with a citable findings graph.
+  Runs entirely through this pack's <span class="mono">dr_*</span> tools — data stays in the
+  pack's own scope.</p>
+
+<div class="card">
+  <h3>Research a topic</h3>
+  <div class="row">
+    <input id="topic" placeholder="Topic — e.g. small-scale LoRA fine-tuning economics">
+    <input id="angles" type="number" min="1" max="5" value="3" style="max-width:80px" title="angles">
+    <button id="btnResearch">Deep research</button>
+    <button id="btnSearch" class="ghost">Quick search</button>
+  </div>
+  <div id="researchOut"></div>
+</div>
+
+<div class="card">
+  <h3>Findings graph</h3>
+  <div id="graphStats" class="muted">Loading…</div>
+  <div class="row" style="margin-top:8px">
+    <input id="recallQ" placeholder="Recall what's already known about…">
+    <button id="btnRecall" class="ghost">Recall</button>
+  </div>
+  <div id="recallOut"></div>
+  <div class="row" style="margin-top:10px">
+    <input id="findClaim" placeholder="Save a finding — one-sentence fact">
+    <input id="findUrl" placeholder="source URL" style="max-width:220px">
+    <button id="btnSave" class="ghost">Save</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Generate report</h3>
+  <div class="row"><input id="repTitle" placeholder="Report title"></div>
+  <textarea id="repBody" rows="5" placeholder="Report body in Markdown — use [1], [2] citations. Sources are appended automatically." style="width:100%;margin-top:8px"></textarea>
+  <div class="row" style="margin-top:8px"><button id="btnReport">Write Markdown report</button></div>
+  <div id="reportOut"></div>
+</div>
+
+<script src="/packs/_sdk.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+function busy(el, on) { el.disabled = on; }
+function showJson(el, v) { el.innerHTML = "<pre>" + esc(typeof v === "string" ? v : JSON.stringify(v, null, 2)) + "</pre>"; }
+
+function renderResults(el, res) {
+  const items = (res && (res.results || res.hits || res.merged)) || null;
+  if (Array.isArray(items) && items.length) {
+    el.innerHTML = items.map((r) =>
+      `<div class="item"><div class="t">${esc(r.title || r.url || "?")}</div>` +
+      (r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a>` : "") +
+      (r.snippet || r.body ? `<div class="muted">${esc((r.snippet || r.body)).slice(0, 300)}</div>` : "") +
+      `</div>`).join("");
+  } else showJson(el, res);
+}
+
+$("btnResearch").onclick = async () => {
+  const topic = $("topic").value.trim(); if (!topic) return;
+  busy($("btnResearch"), true);
+  $("researchOut").innerHTML = '<p class="muted"><span class="spin"></span> sweeping (this can take a while)…</p>';
+  try {
+    const r = await aither.invokeTool("dr_deep_research",
+      { topic, angles: Number($("angles").value) || 3 },
+      { timeoutSec: 300, timeoutMs: 310000 });
+    renderResults($("researchOut"), r);
+    loadStats();
+  } catch (e) { $("researchOut").innerHTML = `<pre>⚠ ${esc(e.message)}</pre>`; }
+  busy($("btnResearch"), false);
+};
+$("btnSearch").onclick = async () => {
+  const topic = $("topic").value.trim(); if (!topic) return;
+  busy($("btnSearch"), true);
+  $("researchOut").innerHTML = '<p class="muted"><span class="spin"></span> searching…</p>';
+  try { renderResults($("researchOut"), await aither.invokeTool("dr_web_search", { query: topic, limit: 8 })); }
+  catch (e) { $("researchOut").innerHTML = `<pre>⚠ ${esc(e.message)}</pre>`; }
+  busy($("btnSearch"), false);
+};
+$("btnRecall").onclick = async () => {
+  const q = $("recallQ").value.trim(); if (!q) return;
+  $("recallOut").innerHTML = '<p class="muted"><span class="spin"></span></p>';
+  try { showJson($("recallOut"), await aither.invokeTool("dr_recall", { query: q, limit: 6 })); }
+  catch (e) { $("recallOut").innerHTML = `<pre>⚠ ${esc(e.message)}</pre>`; }
+};
+$("btnSave").onclick = async () => {
+  const claim = $("findClaim").value.trim(); if (!claim) return;
+  try {
+    await aither.invokeTool("dr_save_finding", { claim, source_url: $("findUrl").value.trim() });
+    aither.notify("Finding saved", "ok");
+    $("findClaim").value = ""; $("findUrl").value = "";
+    loadStats();
+  } catch (e) { aither.notify("Save failed: " + e.message, "error"); }
+};
+$("btnReport").onclick = async () => {
+  const title = $("repTitle").value.trim(), content = $("repBody").value.trim();
+  if (!title || !content) return aither.notify("Title and body required", "warn");
+  busy($("btnReport"), true);
+  try {
+    const r = await aither.invokeTool("dr_generate_markdown", { title, content });
+    $("reportOut").innerHTML = `<pre>✓ saved: ${esc((r && (r.path || r.file)) || JSON.stringify(r))}</pre>`;
+  } catch (e) { $("reportOut").innerHTML = `<pre>⚠ ${esc(e.message)}</pre>`; }
+  busy($("btnReport"), false);
+};
+async function loadStats() {
+  try {
+    const s = await aither.invokeTool("dr_knowledge_graph", {});
+    const g = (s && s.graph) || {};
+    $("graphStats").innerHTML =
+      Object.entries(g).slice(0, 6).map(([k, v]) =>
+        `<span class="stat">${esc(k)}: ${esc(typeof v === "object" ? JSON.stringify(v) : v)}</span>`).join("") +
+      `<span class="stat">sources cited: ${esc(s && s.sources_cited)}</span>`;
+  } catch (e) { $("graphStats").textContent = "graph unavailable: " + e.message; }
+}
+loadStats();
+</script>
+</body>
+</html>

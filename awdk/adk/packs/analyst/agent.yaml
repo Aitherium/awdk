@@ -1,0 +1,33 @@
+# ============================================================================
+# Analyst — Data & Structured-ML Agent
+# ============================================================================
+# A data-analysis agent that classifies, regresses, and forecasts over
+# structured data using zero-shot foundation models (TabFM + TimesFM), and
+# reasons about the results. Adapts to new labeled data in-context (support
+# set) instead of getting stuck — no gradient training required.
+
+name: analyst
+identity: analyst
+version: "1.0.0"
+description: >
+  Analyst is a data agent that runs zero-shot tabular classification/regression
+  (TabFM) and time-series forecasting (TimesFM) over structured data, curates the
+  labeled support set, and interprets the results. Ideal for triage, scoring,
+  anomaly spotting, and forecasting on tables and metrics.
+
+# Brain pack identity
+brain_pack: analyst
+
+# Capabilities this agent exercises (what it's allowed to do)
+capabilities:
+  - LLM_INFERENCE          # reason about / narrate the structured-ML results
+  - STRUCTURED_INFERENCE   # TabFM + TimesFM zero-shot inference
+  - FILE_IO                # read datasets (CSV/JSON) and write reports
+  - MEMORY_READ            # recall prior support sets and analyses
+  - MEMORY_WRITE           # record findings and curated support sets
+
+# Tool domains this pack enables
+enabled_domains:
+  - structured_ml
+  - code
+  - memory

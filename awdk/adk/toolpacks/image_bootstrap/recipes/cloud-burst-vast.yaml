@@ -1,0 +1,76 @@
+id: cloud-burst-vast
+name: Cloud burst — rented GPU ComfyUI (vast.ai)
+tier: cloud
+description: >-
+  No local GPU big enough, or a job too large for the local card. Bursts a ComfyUI
+  worker onto a rented vast.ai GPU using the fleet's proven burst path, pulls the
+  model profile from the fleet object store via presigned URLs, and tears down after.
+  Always available as the fallback when nothing local fits.
+
+hardware_requirements:
+  min_ram_gb: 0
+  min_cpu_cores: 0
+  gpu_vendor: none
+  min_vram_gb: 0
+  unified_memory: false
+  notes: >-
+    No local hardware requirement — the work happens on the rented instance. The
+    local box only needs network and credentials.
+
+imagegen_config:
+  engine: comfyui-burst
+  model_profile: studio
+  models:
+    - name: studio SDXL stack (fetched on the rented GPU)
+      source: profile://studio
+      size_gb: 18.5
+      note: >-
+        Pulled by the cloud entrypoint from AITHER_MODEL_DOWNLOADS. minio/strata
+        sources resolve to time-limited presigned https URLs so the rented GPU
+        fetches with plain curl and never holds fleet credentials.
+  serve_args: []
+  image: ""
+  platform_traps:
+    - "The rented GPU never receives fleet credentials — model URLs are presigned and
+       time-limited. Do not 'simplify' this by shipping MinIO keys to the instance."
+    - "Burst instances are billed per hour and do NOT self-terminate on idle by
+       default. Tear down explicitly with forge_burst_down or you will pay for an
+       idle GPU overnight."
+    - "The delegate is an MCP TOOL (forge_burst_up), not a shell command — this pack
+       reports it rather than shelling out, because fleet MCP tooling does not ship
+       in the public wheel."
+
+deployment:
+  target: delegate
+  compose_template: ""
+  # The real interface is the forge_burst_up MCP tool
+  # (AitherOS/apps/awnode/tools/mcp/mcp_character_forge.py), NOT a CLI
+  # subcommand. Args: max_price_per_hour (default 0.60), min_gpu_vram_gb
+  # (default 24). Paired teardown: forge_burst_down.
+  delegate: "forge_burst_up(max_price_per_hour=0.60, min_gpu_vram_gb=24)  # MCP tool"
+  port: 8188
+
+backend_config:
+  backend_type: comfyui
+  health_path: /system_stats
+  capability_path: /object_info/CheckpointLoaderSimple
+  generate_path: /prompt
+
+verify:
+  health_timeout_s: 600
+  capability:
+    expect_min_models: 1
+    description: >-
+      Same probe as the local recipes, pointed at the burst instance URL. Cold-start
+      on a rented GPU includes the full profile download — allow several minutes
+      before treating an empty checkpoint list as a failure.
+
+fleet_wiring:
+  catalog_entry:
+    backend: comfyui
+    category: image
+    vram_gb: 0
+    max_resolution: 1536
+    speed: 7
+    quality: 10
+  url_env_var: COMFYUI_URL

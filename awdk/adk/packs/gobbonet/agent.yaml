@@ -1,0 +1,44 @@
+# ============================================================================
+# GobboNet Companion — agent definition
+# ============================================================================
+# Pairs with brain_pack.yaml. Kept deliberately small: the point of this pack is
+# the TURN LOOP, not a large tool surface. A local-first chat client does not
+# want a hundred capabilities it cannot run.
+
+name: gobbonet
+identity: gobbonet
+version: "0.1.0"
+description: >
+  A task companion for GobboNet, the local-first chat client. Carries work
+  across turns without needing it all in one context window, writes real files,
+  and — where a runtime is available — produces spreadsheets, slides and spoken
+  audio, or splits a task across several agents. Runs against the user's own
+  local model; the core loop needs no network.
+
+brain_pack: gobbonet
+
+capabilities:
+  - LLM_INFERENCE   # the user's OWN model; this pack does not choose one
+  - FILE_IO         # read and write the user's files
+
+# Deliberately absent: NETWORK_EGRESS. GobboNet's promise is that nothing leaves
+# the machine, so reaching the network is an explicit per-task decision by the
+# user, never a standing capability of the agent.
+
+optional_capabilities:
+  - DOCUMENT_GENERATION   # xlsx / pptx / docx
+  - SPEECH_SYNTHESIS      # read generated text back
+  - SUBAGENT_DISPATCH     # several agents on one task
+
+# Sized for what a hobbyist actually runs. A 1-8B local model cannot hold a long
+# task in one window, which is exactly why the loop keeps a working set instead.
+model_requirements:
+  minimum_context: 4096
+  recommended_context: 16384
+  works_on_small_models: true
+
+defaults:
+  # Low temperature because the failure mode of a small model on a long task is
+  # confident drift, not dullness.
+  temperature: 0.3
+  max_turns_per_task: 40

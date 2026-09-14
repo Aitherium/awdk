@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "1",
+  "name": "awdk",
+  "description": "Build AI agent fleets — 3 lines, any backend, local or cloud.",
+  "url": "https://aitherium.github.io/awdk/",
+  "repository": "https://github.com/Aitherium/awdk",
+  "kind": "runtime",
+  "status": "public",
+  "adopt": "Point it at a backend you already pay for and run one agent loop.",
+  "pairs_with": [
+    "aitheros",
+    "awskills",
+    "awm",
+    "awnode",
+    "awrun",
+    "awask",
+    "AitherConnect",
+    "awpack",
+    "awembed",
+    "awflow",
+    "awdaemons"
+  ],
+  "includes": [],
+  "metrics": {
+    "files": {
+      "value": 1316,
+      "as_of": "2026-09-12T08:36:19-07:00"
+    },
+    "tests": {
+      "value": 300,
+      "as_of": "2026-09-12T08:36:19-07:00"
+    }
+  }
+}

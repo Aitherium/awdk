@@ -1,0 +1,299 @@
+# =============================================================================
+# ADK Node — Lightweight Agent Deployment (Tier 2)
+# =============================================================================
+#
+# ADK-native deployment: the ADK server IS the brain. No Genesis, no Redis,
+# no PostgreSQL, no MicroScheduler. Just agents + Ollama + optional profiles.
+#
+# This is for self-hosters who want to run local agents without the full
+# AitherOS platform stack. For enterprise/multi-tenant, use docker-compose.node.yml.
+#
+# Usage:
+#   # Basic (ADK server + Ollama):
+#   docker compose -f docker-compose.node-adk.yml up -d
+#
+#   # With persistent vector memory:
+#   docker compose -f docker-compose.node-adk.yml --profile memory up -d
+#
+#   # With GPU-accelerated vLLM:
+#   docker compose -f docker-compose.node-adk.yml --profile gpu up -d
+#
+#   # With web dashboard:
+#   docker compose -f docker-compose.node-adk.yml --profile dashboard up -d
+#
+#   # Kitchen sink:
+#   docker compose -f docker-compose.node-adk.yml --profile gpu --profile memory --profile dashboard up -d
+#
+# =============================================================================
+
+x-common-restart: &common-restart
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════
+  #  ADK SERVER — The agent brain (ReAct loop, tools, fleet, forge)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  adk-server:
+    image: ${AITHEROS_REGISTRY:-ghcr.io/aitherium}/adk-server:${ADK_IMAGE_TAG:-latest}
+    build:
+      context: ./awdk
+      dockerfile: Dockerfile
+    container_name: adk-server
+    <<: *common-restart
+    ports:
+      - "${ADK_PORT:-8080}:8080"
+    environment:
+      AITHER_IDENTITY: ${AITHER_IDENTITY:-aither}
+      OLLAMA_HOST: http://ollama:11434
+      VLLM_URL: ${VLLM_URL:-}
+      AITHER_SPIRIT_URL: ${AITHER_SPIRIT_URL:-}
+      AITHER_LLM_BACKEND: ${AITHER_LLM_BACKEND:-ollama}
+      AITHER_MODEL: ${AITHER_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      ADK_BUILTIN_TOOLS: ${ADK_BUILTIN_TOOLS:-true}
+      ADK_SAFETY: ${ADK_SAFETY:-true}
+    volumes:
+      - adk-data:/home/adk/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/health', timeout=4).raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '2.0'
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  OLLAMA — Local LLM inference (always included)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: adk-ollama
+    <<: *common-restart
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  PROFILE: federate — AitherFederate bridge to portal.aitherium.com
+  # ═══════════════════════════════════════════════════════════════════════
+  #  Optional: agent-fleet registration, product-catalog federation, and
+  #  knowledge ingestion routing. Requires AITHER_PORTAL_TOKEN (get one from
+  #  your Aitherium portal account) — `adk deploy node --federate` enforces
+  #  this before attempting to start the container. Runs standalone here (no
+  #  local Genesis in this lightweight deployment — AITHER_GENESIS_URL is
+  #  left unset, which AitherFederate's own config loader treats as optional).
+
+  aither-federate:
+    image: ${AITHEROS_REGISTRY:-ghcr.io/aitherium}/aither-connect:${AITHEROS_IMAGE_TAG:-latest}
+    container_name: adk-federate
+    profiles: ["federate"]
+    <<: *common-restart
+    environment:
+      AITHER_SERVICE: connect
+      AITHERFEDERATE_PORT: "8094"
+      AITHER_MODULE: services.communication.AitherFederate
+      AITHER_PORTAL_URL: "${AITHER_PORTAL_URL:-https://api.aitherium.com}"
+      AITHER_PORTAL_TOKEN: "${AITHER_PORTAL_TOKEN:?AITHER_PORTAL_TOKEN must be set — get one from your Aitherium portal account}"
+      AITHER_NODE_ID: "${AITHER_NODE_ID:-}"
+      AITHER_TENANT_ID: "${AITHER_TENANT_ID:-}"
+    ports:
+      - "${AITHERFEDERATE_PORT:-8094}:8094"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8094/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  PROFILE: gpu — GPU-accelerated vLLM backend
+  # ═══════════════════════════════════════════════════════════════════════
+
+  vllm:
+    image: vllm/vllm-openai:${AITHER_VLLM_IMAGE_TAG:-latest}
+    container_name: adk-vllm
+    profiles: ["gpu"]
+    <<: *common-restart
+    shm_size: '4gb'
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      VLLM_NO_USAGE_STATS: '1'
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    command: >
+      --model ${AITHER_VLLM_MODEL:-nvidia/Nemotron-Orchestrator-8B}
+      --served-model-name aither-orchestrator
+      --gpu-memory-utilization ${AITHER_VLLM_GPU_UTIL:-0.35}
+      --max-model-len ${AITHER_VLLM_CTX_LEN:-16384}
+      --port 8120
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --enable-prefix-caching
+      --trust-remote-code
+      --dtype auto
+      --max-num-seqs 8
+      ${AITHER_VLLM_QUANT_ARGS:-}
+    ports:
+      - "${VLLM_PORT:-8120}:8120"
+    volumes:
+      - vllm-cache:/root/.cache
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8120/health"]
+      interval: 30s
+      timeout: 15s
+      start_period: 300s
+      retries: 10
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  PROFILE: memory — Persistent vector memory (Spirit)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  spirit:
+    image: ${AITHEROS_REGISTRY:-ghcr.io/aitherium}/aitheros-intelligence:${AITHEROS_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: AitherOS/Dockerfile.Services
+      target: intelligence
+    container_name: adk-spirit
+    profiles: ["memory"]
+    <<: *common-restart
+    environment:
+      AITHER_SERVICE: spirit
+      AITHERSPIRIT_PORT: "8087"
+      AITHER_DOCKER_MODE: "true"
+      AITHER_DEPLOYMENT: adk-node
+    ports:
+      - "${SPIRIT_PORT:-8087}:8087"
+    volumes:
+      - spirit-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8087/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  PROFILE: dashboard — Portal-kit workspace app
+  # ═══════════════════════════════════════════════════════════════════════
+  #  WorkspaceRuntime talks to ADK server instead of Genesis.
+
+  workspace-app:
+    image: ${AITHEROS_REGISTRY:-ghcr.io/aitherium}/aitheros-workspace:${AITHEROS_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: AitherOS/apps/WorkspaceRuntime/backend/Dockerfile
+    container_name: adk-workspace-app
+    profiles: ["dashboard"]
+    <<: *common-restart
+    environment:
+      APP_ID: ${AITHER_IDENTITY:-workspace}
+      APP_PORT: "3000"
+      LLM_PROVIDER: adk
+      DEPLOYMENT_MODE: adk-node
+      ADK_SERVER_URL: http://adk-server:8080
+      QDRANT_URL: http://workspace-qdrant:6333
+      COLLECTION_NAME: ${AITHER_IDENTITY:-workspace}
+    ports:
+      - "${WORKSPACE_PORT:-3000}:3000"
+    volumes:
+      - workspace-data:/app/data
+    depends_on:
+      adk-server:
+        condition: service_healthy
+      workspace-qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+  workspace-qdrant:
+    image: qdrant/qdrant:latest
+    container_name: adk-workspace-qdrant
+    profiles: ["dashboard"]
+    <<: *common-restart
+    volumes:
+      - workspace-qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Volumes
+# ═══════════════════════════════════════════════════════════════════════
+volumes:
+  adk-data:
+    driver: local
+  ollama-data:
+    driver: local
+  spirit-data:
+    driver: local
+  workspace-data:
+    driver: local
+  workspace-qdrant-data:
+    driver: local
+  vllm-cache:
+    driver: local
+  hf-cache:
+    driver: local
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Networks
+# ═══════════════════════════════════════════════════════════════════════
+networks:
+  default:
+    name: adk-node-network
+    driver: bridge

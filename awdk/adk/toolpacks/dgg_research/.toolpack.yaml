@@ -1,0 +1,36 @@
+id: dgg-research
+name: DGG Research — documentary-record tools
+version: 1.0.0
+description: >-
+  Actor resolution and evidence recording for a documentary record. Resolve a
+  person to an actor before asserting anything about them, read every reference
+  the record holds, push an action against the artifact it came from, carry a
+  human's verification of a proposed match, and record a null with the corpus
+  that bounds it. Thin client over the record's own API: the resolution policy
+  lives server-side, so an owner changes the bar without touching an agent.
+category: research
+tier: free
+author: Aitherium
+icon: search
+tags: [research, evidence, actors, provenance, dgg, election-interference,
+       documentary-record]
+
+# NOT a rival to `evidence_archive`, which carries the WORKFLOW for a
+# different archive's HTTP API and deliberately declares no tools. This pack
+# is the callable half for the elif_2026 record specifically: five bound tools
+# against that endpoint. If you are filing to the archive host, you want
+# evidence_archive; if you are working the election-interference record, you
+# want this one. Both, if you are doing both.
+
+# `register()` lives in this module (evidence_tools), and the loader also tries
+# the parent package, so either convention resolves.
+tool_modules:
+  - adk.toolpacks.dgg_research.evidence_tools
+
+entitlements: []
+
+mcp_tools:
+  - "actor_*"
+  - "evidence_*"
+  - "mention_*"
+  - "corpus_*"

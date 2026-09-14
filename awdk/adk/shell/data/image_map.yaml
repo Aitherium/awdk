@@ -1,0 +1,230 @@
+# =============================================================================
+# AitherOS Image Map — Layer-to-service mapping for deployment
+# =============================================================================
+# Extracted from docker/scripts/pull-aither-images.sh
+# Each layer image contains ALL services for that layer. At runtime,
+# AITHER_SERVICE env var selects which service starts.
+
+registry: ghcr.io/aitherium
+
+layer_order:
+  - core
+  - intelligence
+  - autonomic
+  - gateway
+  - social
+  - mcp
+  - memory
+  - perception
+  - training
+  - gpu
+
+layers:
+  core:
+    image: aitheros-core
+    base: slim
+    size_estimate_gb: 0.3
+    services:
+      - aitheros-node
+      - aitheros-pulse
+      - aitheros-watch
+      - aitheros-secrets
+      - aitheros-chronicle
+      - aitheros-strata
+      - aitheros-directory
+      - aitheros-documentation
+      - aitheros-sandbox
+      - aitheros-browser
+      - aitheros-communication-core
+      - aitheros-discord
+      - aitheros-telegram
+      - aitheros-skills
+      - aitheros-registry
+      - aitheros-clientfactory
+      - aitheros-forge-ide
+      - aitheros-forge3d
+      - aitheros-chaos
+      - aitheros-jail
+      - aitheros-quota
+      - aitheros-autorig
+      - aitheros-meshgen
+      - aitheros-tradingengine
+      - aitheros-flux
+      - aitheros-stream
+      - aitheros-transcoder
+      - aitheros-whatsapp
+      - aitheros-slack
+
+  intelligence:
+    image: aitheros-intelligence
+    base: slim
+    size_estimate_gb: 0.3
+    services:
+      - aitheros-mind
+      - aitheros-reasoning
+      - aitheros-search
+      - aitheros-faculties
+      - aitheros-cognition-core
+      - aitheros-cognition-advanced
+      - aitheros-cognition-ci
+      - aitheros-aeon
+      - aitheros-flow
+      - aitheros-loggraph
+      - aitheros-executive
+      - aitheros-bastion
+      - aitheros-benchmark-lab
+      - aitheros-consciousnessintegration
+      - aitheros-creative-engine
+      - aitheros-modeloptimizer
+      - aitheros-nanoprover
+      - aitheros-prometheus
+      - aitheros-security-core
+      - aitheros-security-defense
+      - aitheros-vramyield
+      - aitheros-failover
+
+  autonomic:
+    image: aitheros-autonomic
+    base: slim
+    size_estimate_gb: 0.3
+    services:
+      - aitheros-automation-core
+      - aitheros-compute
+      - aitheros-workflow-hub
+      - aitheros-appstore
+      - aitheros-dark-factory
+      - aitheros-medic
+      - aitheros-portal-gateway
+      - aitheros-rca
+
+  gateway:
+    image: aitheros-gateway
+    base: slim
+    size_estimate_gb: 0.3
+    services:
+      - aitheros-gateway
+      - aitheros-mesh-core
+      - aitheros-external-gateway
+      - aitheros-tunnel-service
+
+  social:
+    image: aitheros-social
+    base: slim
+    size_estimate_gb: 0.3
+    services:
+      - aitheros-social-hub
+      - aitheros-social-platforms
+      - aitheros-social-intelligence
+      - aitheros-civics
+
+  mcp:
+    image: aitheros-mcp
+    base: slim
+    size_estimate_gb: 0.3
+    services:
+      - aitheros-mcp-bridges
+      - aitheros-mcpgateway
+
+  memory:
+    image: aitheros-memory
+    base: ml
+    size_estimate_gb: 3.5
+    services:
+      - aitheros-workingmemory
+      - aitheros-spiritmem
+      - aitheros-nexus
+      - aitheros-knowledgegraph
+      - aitheros-livecontext
+      - aitheros-memory-core
+      - aitheros-ledger
+      - aitheros-a2a
+
+  perception:
+    image: aitheros-perception
+    base: ml
+    size_estimate_gb: 3.5
+    services:
+      - aitheros-canvas
+      - aitheros-perception-core
+      - aitheros-perception-media
+
+  training:
+    image: aitheros-training
+    base: ml
+    size_estimate_gb: 3.5
+    services:
+      - aitheros-nanogpt
+      - aitheros-training-pipeline
+
+  gpu:
+    image: aitheros-gpu
+    base: cuda
+    size_estimate_gb: 5.0
+    services:
+      - aitheros-parallel
+      - aitheros-accel
+      - aitheros-exo
+      - aitheros-kernelforge
+      - aitheros-mcts
+      - aitheros-exonodes
+      - aitheros-force
+
+specialized:
+  genesis:
+    image: aitheros-genesis
+  veil:
+    image: aitheros-veil
+  microscheduler:
+    image: aitheros-microscheduler
+  atlas:
+    image: aitheros-atlas
+  saga:
+    image: aitheros-saga
+  lyra:
+    image: aitheros-lyra
+  iris:
+    image: aitheros-iris
+  vera:
+    image: aitheros-vera
+  hera:
+    image: aitheros-hera
+  demiurge:
+    image: aitheros-demiurge
+  themis:
+    image: aitheros-themis
+  genesis-agent:
+    image: aitheros-genesis-agent
+  chaos-agent:
+    image: aitheros-chaos-agent
+  zero-automation:
+    image: aitheros-zero-automation
+  agent:
+    image: aitheros-agent
+  desktop-web:
+    image: aitheros-desktop-web
+  elysium:
+    image: aitheros-elysium
+  prometheus-web:
+    image: aitheros-prometheus-web
+  create:
+    image: aitheros-create
+  mcpportal:
+    image: aitheros-mcpportal
+  forgeide-web:
+    image: aitheros-forgeide-web
+  admin:
+    image: aitheros-admin
+  remotion-renderer:
+    image: aitheros-remotion-renderer
+  genesis-agentic:
+    image: aitheros-genesis-agentic
+  prometheus-demo:
+    image: aitheros-prometheus-demo
+  rigify:
+    image: aither-rigify
+  training-gpu:
+    image: aitheros-training-gpu
+  # Bonsai Image ships its OWN image (gemlite/hqq/triton quant stack), not the
+  # shared perception layer image — see docker/bonsai-image/bonsai-image.Dockerfile.
+  bonsai-image:
+    image: aitheros-bonsai-image

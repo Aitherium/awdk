@@ -1,0 +1,1690 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aither Agent — Console</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1b2027; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2563eb; --accent-ink: #fff;
+    --ok: #16a34a; --warn: #d97706; --err: #dc2626; --chip: #eceef2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --ink: #e8eaed; --muted: #9aa4b2;
+      --line: #262c34; --accent: #3b82f6; --accent-ink: #fff;
+      --ok: #22c55e; --warn: #f59e0b; --err: #f87171; --chip: #232830;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1b2027; --muted: #6b7280;
+    --line: #e3e6ea; --chip: #eceef2;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --panel: #171b21; --ink: #e8eaed; --muted: #9aa4b2;
+    --line: #262c34; --chip: #232830;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; }
+  .dot.off { background: var(--err); }
+  header b { font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  nav { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line);
+    background: var(--panel); overflow-x: auto; }
+  nav button { background: none; border: none; color: var(--muted); padding: 10px 14px;
+    font: inherit; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  nav button.active { color: var(--ink); border-bottom-color: var(--accent); }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  input, select, textarea { background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 10px; font: inherit; width: 100%; }
+  button.btn { background: var(--accent); color: var(--accent-ink); border: none; border-radius: 7px;
+    padding: 8px 14px; font: inherit; cursor: pointer; }
+  button.btn.ghost { background: var(--chip); color: var(--ink); }
+  button.btn.danger { background: var(--err); }
+  button.btn:disabled { opacity: .55; cursor: default; }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 20px; padding: 2px 9px;
+    font-size: 12px; margin: 2px 4px 2px 0; }
+  .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+  .list-item { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 6px 0;
+    display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+  .list-item .meta { min-width: 0; }
+  .list-item .meta .t { font-weight: 500; word-break: break-word; }
+  .banner { padding: 8px 12px; border-radius: 7px; margin-bottom: 10px; font-size: 13px; }
+  .banner.err { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .banner.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+  /* Chat */
+  #log { display: flex; flex-direction: column; gap: 10px; min-height: 40vh; }
+  .msg { padding: 9px 12px; border-radius: 10px; max-width: 88%; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { background: var(--accent); color: #fff; align-self: flex-end; }
+  .msg.assistant { background: var(--chip); align-self: flex-start; }
+  .think::after { content: "…"; animation: dots 1.2s steps(4, end) infinite; }
+  @keyframes dots { 0%,20%{content:"";}40%{content:".";}60%{content:"..";}80%,100%{content:"...";} }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted);
+    border-top-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -2px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink);
+    color: var(--bg); padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 20; max-width: 90vw; }
+  .toast.show { opacity: .95; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="statusDot"></span>
+  <b id="agentName">Aither Agent</b>
+  <span class="sub" id="agentSub"></span>
+  <span class="spacer"></span>
+  <button class="btn ghost" id="themeToggle" title="Toggle theme">◐</button>
+</header>
+<nav id="nav">
+  <button data-tab="chat" class="active">Chat</button>
+  <button data-tab="ondevice">On-device</button>
+  <button data-tab="backend">Backend</button>
+  <button data-tab="config">Config</button>
+      <button data-tab="secrets">Secrets</button>
+  <button data-tab="packs">Packs</button>
+  <button data-tab="sessions">Sessions</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="chronicle">Chronicle</button>
+  <button data-tab="pulse">Pulse</button>
+  <button data-tab="watch">Watch</button>
+  <button data-tab="flux">Flux</button>
+  <button data-tab="graph">Graph</button>
+  <button data-tab="mcp">MCP</button>
+  <button data-tab="cli">CLI</button>
+  <button data-tab="api">API</button>
+  <button data-tab="deploy">Deploy</button>
+</nav>
+<main>
+  <div id="authBanner" class="banner err" style="display:none">
+    No access token in this page's URL. Reopen the page from <span class="mono">adk up</span>
+    (it appends <span class="mono">#k=…</span>) — admin actions need it.
+  </div>
+
+  <!-- CHAT -->
+  <section class="tab active" id="tab-chat">
+    <div id="log"></div>
+    <form id="chatForm" class="row" style="margin-top:12px">
+      <textarea id="chatIn" rows="1" placeholder="Message the agent…" style="flex:1"></textarea>
+      <button class="btn" id="chatSend">Send</button>
+    </form>
+  </section>
+
+  <!-- SECRETS — the local encrypted vault (adk.vault_lockbox), same store as `aither vault` -->
+  <section class="tab" id="tab-secrets">
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="margin-top:0">Secrets <span class="chip" id="sec-mode">local</span></h3>
+      <div class="muted">The same vault <code>aither vault</code> uses. Values are never shown here
+        by design — use <code>aither vault get &lt;name&gt;</code> if you need to read one back.</div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div class="row" style="gap:8px">
+        <input id="sec-q" placeholder="Search secrets…" style="flex:1" />
+        <button class="btn" id="sec-refresh">Refresh</button>
+        <button class="btn" id="sec-new">+ New</button>
+      </div>
+      <div id="sec-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card" id="sec-form" style="display:none; margin-bottom:12px">
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input id="sec-name" placeholder="SECRET_NAME" style="flex:1; min-width:200px" />
+        <input id="sec-value" type="password" placeholder="value" style="flex:1; min-width:200px" />
+        <input id="sec-type" placeholder="type (generic)" style="width:140px" />
+      </div>
+      <div class="row" style="gap:8px; margin-top:8px">
+        <button class="btn" id="sec-save">Save</button>
+        <button class="btn" id="sec-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div class="card"><div id="sec-list"></div></div>
+  </section>
+
+  <!-- ON-DEVICE (WebGPU, in-browser, zero server compute) -->
+  <section class="tab" id="tab-ondevice">
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="margin-top:0">On-device chat <span class="chip ok">WebGPU</span></h3>
+      <div class="muted">Runs a small model 100% in this browser on your GPU — no server, no API cost,
+        nothing leaves this machine. The model downloads once (~900&nbsp;MB) and is cached.</div>
+    </div>
+    <div id="odRoot"></div>
+  </section>
+
+  <!-- BACKEND -->
+  <section class="tab" id="tab-backend">
+    <div class="card">
+      <h3>Active backend</h3>
+      <div id="backendStatus" class="muted">Loading…</div>
+    </div>
+    <div class="card">
+      <h3>Switch / configure provider</h3>
+      <label>Provider</label>
+      <select id="provSel"></select>
+      <label>Model (optional)</label>
+      <input id="provModel" placeholder="e.g. gpt-4o, claude-opus-4-8">
+      <label>API key (stored locally, 0600 — leave blank to keep existing)</label>
+      <input id="provKey" type="password" placeholder="sk-…">
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="btnSaveKey">Save key</button>
+        <button class="btn ghost" id="btnSwitch">Switch backend</button>
+        <button class="btn ghost" id="btnTestLLM">Test connection</button>
+      </div>
+      <pre id="backendOut" style="display:none"></pre>
+    </div>
+  </section>
+
+  <!-- PACKS -->
+  <section class="tab" id="tab-packs">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">Installed packs</h3>
+        <button class="btn ghost" id="btnReloadPacks">Reload</button></div>
+      <div id="packsBody" class="muted">Loading…</div>
+    </div>
+    <div class="card" id="packDetail" style="display:none">
+      <div class="row"><h3 style="flex:1" id="packDetailTitle">Pack</h3>
+        <button class="btn ghost" id="btnClosePack">Close</button></div>
+      <div id="packDetailBody"></div>
+    </div>
+    <div class="card" id="catalogCard">
+      <div class="row"><h3 style="flex:1">Available from Aitherium</h3>
+        <button class="btn ghost" id="btnRefreshCatalog">Refresh</button></div>
+      <p class="muted" style="margin-top:0">The hosted pack catalog — includes managed
+        service packs (deployed on your Aitherium workspace, not this agent). Subscribe
+        and manage them in the portal marketplace.</p>
+      <div id="catalogBody" class="muted">Loading…</div>
+    </div>
+  </section>
+
+  <!-- SESSIONS -->
+  <section class="tab" id="tab-sessions">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">Conversations</h3>
+        <button class="btn ghost" id="btnRefreshSessions">Refresh</button></div>
+      <div id="sessionsBody" class="muted">Loading…</div>
+    </div>
+    <div class="card" id="sessionDetail" style="display:none">
+      <div class="row"><h3 style="flex:1" id="sessionTitle">Session</h3>
+        <button class="btn ghost" id="btnCloseSession">Close</button></div>
+      <div id="sessionMessages"></div>
+    </div>
+  </section>
+
+  <!-- LOGS -->
+  <section class="tab" id="tab-logs">
+    <div class="card">
+      <div class="row">
+        <h3 style="flex:1">Agent log <span class="muted" style="font-weight:400">(secrets redacted)</span></h3>
+        <label style="margin:0"><input type="checkbox" id="logAuto" style="width:auto"> auto</label>
+        <button class="btn ghost" id="btnRefreshLogs">Refresh</button>
+      </div>
+      <pre id="logsBody" class="mono">Loading…</pre>
+    </div>
+  </section>
+
+  <!-- CHRONICLE — Logs & Search -->
+  <section class="tab" id="tab-chronicle">
+    <div class="card">
+      <h3 style="margin-top:0">Logs & Search <span class="chip" id="chron-mode">live</span></h3>
+      <div class="muted">Aggregated logging service — recent entries, full-text search, and storage stats.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input id="chron-search" placeholder="Search logs (q=error)…" style="flex:1; min-width:200px" />
+        <select id="chron-service" style="min-width:140px"><option value="">All services</option></select>
+        <select id="chron-level" style="width:100px">
+          <option value="">All levels</option>
+          <option value="error">Error</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </select>
+        <button class="btn" id="chron-search-btn">Search</button>
+        <button class="btn ghost" id="chron-refresh">Refresh</button>
+      </div>
+      <div id="chron-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Active services</div>
+          <div id="chron-svc-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Errors today</div>
+          <div id="chron-err-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Buffer size</div>
+          <div id="chron-buf-size" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Storage (MB)</div>
+          <div id="chron-storage" style="font-size:20px; font-weight:600">—</div></div>
+      </div>
+    </div>
+
+    <div class="card"><div id="chron-logs" style="max-height:50vh; overflow-y:auto"></div></div>
+  </section>
+
+  <!-- PULSE — Alerts & Health -->
+  <section class="tab" id="tab-pulse">
+    <div class="card">
+      <h3 style="margin-top:0">Alerts & Health <span class="chip" id="pulse-mode">live</span></h3>
+      <div class="muted">Infrastructure alerts, resource pressure signals, and fleet health status.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <input id="pulse-filter" placeholder="Filter alerts (severity, title)…" style="flex:1" />
+        <button class="btn ghost" id="pulse-refresh">Refresh</button>
+      </div>
+      <div id="pulse-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Active alerts</div>
+          <div id="pulse-alert-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Critical</div>
+          <div id="pulse-critical-count" style="font-size:20px; font-weight:600; color:var(--err)">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Uptime</div>
+          <div id="pulse-uptime" style="font-size:16px">—</div></div>
+      </div>
+    </div>
+
+    <div class="card" id="pulse-pain" style="display:none">
+      <h3 style="margin-bottom:8px">Infrastructure pressure</h3>
+      <div id="pulse-pain-list"></div>
+    </div>
+
+    <div class="card"><h3 style="margin-bottom:8px">Active alerts</h3><div id="pulse-alerts"></div></div>
+  </section>
+
+  <!-- WATCH — Components -->
+  <section class="tab" id="tab-watch">
+    <div class="card">
+      <h3 style="margin-top:0">Components <span class="chip" id="watch-mode">live</span></h3>
+      <div class="muted">Service monitoring — process status, uptime, resource usage, and agent heartbeats.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <input id="watch-filter" placeholder="Filter components…" style="flex:1" />
+        <button class="btn ghost" id="watch-refresh">Refresh</button>
+      </div>
+      <div id="watch-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Components</div>
+          <div id="watch-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Online</div>
+          <div id="watch-online" style="font-size:20px; font-weight:600; color:var(--ok)">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Offline</div>
+          <div id="watch-offline" style="font-size:20px; font-weight:600; color:var(--err)">—</div></div>
+      </div>
+    </div>
+
+    <div class="card"><div id="watch-components" style="max-height:50vh; overflow-y:auto"></div></div>
+  </section>
+
+  <!-- FLUX — Event Flow -->
+  <section class="tab" id="tab-flux">
+    <div class="card">
+      <h3 style="margin-top:0">Event Flow <span class="chip" id="flux-mode">live</span></h3>
+      <div class="muted">Event bus routing, mailbox depths, message flow statistics, and cognitive budgets.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <button class="btn ghost" id="flux-refresh">Refresh</button>
+      </div>
+      <div id="flux-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Services</div>
+          <div id="flux-svc-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Packets/sec</div>
+          <div id="flux-pps" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Success rate</div>
+          <div id="flux-success" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Avg latency (ms)</div>
+          <div id="flux-latency" style="font-size:20px; font-weight:600">—</div></div>
+      </div>
+    </div>
+
+    <div class="card"><h3 style="margin-bottom:8px">Mailboxes by service</h3><div id="flux-mailboxes" style="max-height:40vh; overflow-y:auto"></div></div>
+
+    <div class="card"><h3 style="margin-bottom:8px">Cognitive budgets</h3><div id="flux-budgets" style="max-height:40vh; overflow-y:auto"></div></div>
+  </section>
+
+  <!-- GRAPH -->
+  <section class="tab" id="tab-graph">
+    <div class="card">
+      <h3>Knowledge graph</h3>
+      <div id="graphStats" class="muted"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="graphQ" placeholder="Search entities…" style="flex:1">
+        <button class="btn" id="btnGraphSearch">Search</button>
+      </div>
+      <div id="graphBody"></div>
+    </div>
+  </section>
+
+  <!-- MCP -->
+  <section class="tab" id="tab-mcp">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">External MCP servers</h3>
+        <button class="btn ghost" id="btnRefreshMcp">Refresh</button></div>
+      <div id="mcpBody" class="muted">Loading…</div>
+    </div>
+    <div class="card">
+      <h3>Add a server</h3>
+      <p class="muted" style="margin-top:0">Its tools are injected into the agent's reasoning loop —
+        only add servers you trust. Localhost / private addresses are blocked by default.</p>
+      <label>URL</label>
+      <input id="mcpUrl" placeholder="https://example.com/mcp">
+      <label>Name (optional)</label>
+      <input id="mcpName" placeholder="My MCP server">
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="btnMcpPrepare">Preview tools</button>
+      </div>
+      <div id="mcpPreview" style="display:none"></div>
+    </div>
+  </section>
+
+  <!-- CONFIG -->
+  <section class="tab" id="tab-config">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">Effective configuration</h3>
+        <input id="cfgFilter" placeholder="filter…" style="max-width:200px">
+        <button class="btn ghost" id="btnRefreshCfg">Refresh</button></div>
+      <p class="muted" style="margin-top:0">Every runtime setting. Secrets are masked;
+        <span class="chip ok">writable</span> fields edit inline — the rest are read-only
+        (set via env/startup).</p>
+      <div id="cfgBody" class="muted">Loading…</div>
+    </div>
+  </section>
+
+  <!-- CLI -->
+  <section class="tab" id="tab-cli">
+    <div class="card">
+      <h3>Interactive CLI</h3>
+      <div class="banner warn">Runs <span class="mono">adk &lt;command&gt;</span> on the agent host
+        (manifest commands only — never arbitrary shell). Bearer-gated; disable with
+        <span class="mono">AITHER_ADMIN_CLI=0</span>.</div>
+      <pre id="cliOut" class="mono" style="min-height:34vh; max-height:52vh; overflow:auto">adk console — type a command and Run (↑/↓ for history). "help" lists commands.</pre>
+      <form id="cliForm" class="row" style="margin-top:10px">
+        <span class="mono" style="align-self:center">adk</span>
+        <input id="cliIn" list="cliCmds" placeholder="command args…  e.g. status  |  keys list" style="flex:1">
+        <datalist id="cliCmds"></datalist>
+        <button class="btn" id="cliRun">Run</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- API EXPLORER -->
+  <section class="tab" id="tab-api">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">API explorer</h3>
+        <input id="apiFilter" placeholder="filter path…" style="max-width:220px">
+        <button class="btn ghost" id="btnRefreshApi">Refresh</button></div>
+      <p class="muted" style="margin-top:0">Every endpoint this agent serves (from its own
+        OpenAPI schema). Calls go out with your bearer — including mutating ones, so mind
+        what you Send.</p>
+      <div id="apiList" style="max-height:34vh; overflow:auto"></div>
+    </div>
+    <div class="card" id="apiCaller" style="display:none">
+      <div class="row"><span class="chip" id="apiMethod"></span>
+        <span class="mono" id="apiPath" style="flex:1"></span>
+        <button class="btn ghost" id="apiClose">Close</button></div>
+      <div id="apiParams"></div>
+      <label>Request body (JSON, for POST/PATCH/PUT)</label>
+      <textarea id="apiBody" rows="4" class="mono" placeholder="{ }"></textarea>
+      <div class="row" style="margin-top:10px"><button class="btn" id="apiSend">Send</button></div>
+      <pre id="apiResp" style="display:none"></pre>
+    </div>
+  </section>
+
+  <!-- DEPLOY (ISO Factory) -->
+  <section class="tab" id="tab-deploy">
+    <div class="card">
+      <h3>Appliance factory</h3>
+      <div id="deployStatus" class="muted">Checking factory…</div>
+    </div>
+    <div class="card" id="deployForm" style="display:none">
+      <h3>Build an appliance</h3>
+      <p class="muted" style="margin-top:0">Scope a product into a bootable appliance. The console shows
+        the <b>dry-run plan</b> (what would be built); real builds run in CI on a bootc runner.</p>
+      <label>Product</label>
+      <select id="depProduct"></select>
+      <label>Tier (override — optional)</label>
+      <select id="depTier">
+        <option value="">(product default)</option>
+        <option>lite</option><option>entry</option><option>pro</option>
+        <option>pro-reasoning</option><option>full</option>
+      </select>
+      <label>Target</label>
+      <select id="depTarget"><option>iso</option><option>vhdx</option><option>qcow2</option><option>node</option></select>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="btnDepResolve">Preview services</button>
+        <button class="btn ghost" id="btnDepPlan">Preview build plan</button>
+      </div>
+      <pre id="depOut" style="display:none"></pre>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+// Bearer from URL fragment (#k=…) — the browser never sends the fragment to the
+// server, so the gated /admin/* + /chat/stream stay authenticated without the
+// token ever hitting server logs. Kept in memory ONLY (never localStorage).
+const KEY = (() => {
+  const m = /[#&]k=([^&]+)/.exec(location.hash || "");
+  return m ? decodeURIComponent(m[1]) : "";
+})();
+const $ = (id) => document.getElementById(id);
+const H = () => KEY ? { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" }
+                    : { "Content-Type": "application/json" };
+let toastT = 0;
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { ...H(), ...(opts.headers || {}) } });
+  let body = null; try { body = await res.json(); } catch (_) {}
+  if (!res.ok) throw Object.assign(new Error((body && (body.error || body.detail)) || res.status),
+                                   { status: res.status, body });
+  return body;
+}
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s);
+  return d.innerHTML; }
+
+if (!KEY) $("authBanner").style.display = "block";
+
+// ── Theme toggle ──
+$("themeToggle").onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const next = cur === "dark" ? "light" : cur === "light" ? "dark"
+    : (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+  document.documentElement.setAttribute("data-theme", next);
+};
+
+// ── Tabs ──
+const loaders = {};
+document.querySelectorAll("#nav button").forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll("#nav button").forEach((x) => x.classList.remove("active"));
+    document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    $("tab-" + b.dataset.tab).classList.add("active");
+    if (loaders[b.dataset.tab]) loaders[b.dataset.tab]();
+  };
+});
+
+// ── Health / header ──
+async function loadHealth() {
+  try {
+    const h = await (await fetch("/health")).json();
+    $("agentName").textContent = h.agent || "Aither Agent";
+    $("agentSub").textContent = (h.llm_backend || "") + " · v" + (h.version || "?");
+    document.title = (h.agent || "Aither") + " — Console";
+    $("statusDot").classList.remove("off");
+  } catch (_) { $("statusDot").classList.add("off"); }
+}
+
+// ── CHAT ──
+let sid = "web-" + Math.random().toString(36).slice(2);
+function bubble(role, text) { const d = document.createElement("div");
+  d.className = "msg " + role; d.textContent = text; $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight; return d; }
+$("chatForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("chatIn").value.trim(); if (!text) return;
+  $("chatIn").value = ""; bubble("user", text);
+  const el = bubble("assistant", ""); el.classList.add("think");
+  $("chatSend").disabled = true;
+  try {
+    const res = await fetch("/chat/stream", { method: "POST", headers: H(),
+      body: JSON.stringify({ message: text, session_id: sid }) });
+    if (!res.ok) { el.classList.remove("think");
+      el.textContent = "⚠ " + res.status + (res.status === 401 ? " — reopen from `adk up`" : ""); }
+    else {
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "", acc = "";
+      for (;;) { const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true }); const parts = buf.split("\n\n"); buf = parts.pop();
+        for (const p of parts) { const line = p.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue; let d; try { d = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+          // Wire format from /chat/stream (server.py:_aitheros_stream): a FLAT
+          // JSON payload keyed by `type` — token text in `.t`, answer in `.answer`.
+          if (d.type === "token") { el.classList.remove("think"); acc += (d.t || ""); el.textContent = acc; }
+          else if (d.type === "answer") { el.classList.remove("think"); acc = d.answer || acc; el.textContent = acc; }
+          else if (d.type === "error") { el.classList.remove("think"); el.textContent = "⚠ " + (d.error || "error"); }
+          $("log").scrollTop = $("log").scrollHeight; } }
+    }
+  } catch (err) { el.classList.remove("think"); el.textContent = "⚠ " + err.message; }
+  $("chatSend").disabled = false;
+};
+$("chatIn").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("chatForm").requestSubmit(); } });
+
+// ── BACKEND ──
+loaders.backend = async () => {
+  $("backendStatus").textContent = "Loading…";
+  try {
+    const s = await api("/admin/llm/status");
+    const chips = s.providers.map((p) =>
+      `<span class="chip ${p.has_key ? "ok" : ""}">${esc(p.label)}${p.has_key ? " ✓" : ""}</span>`).join("");
+    $("backendStatus").innerHTML =
+      `Active: <b>${esc(s.active_backend)}</b>${s.model ? " · " + esc(s.model) : ""}<br>` +
+      `Local backend: ${s.local_backend_detected ? esc(s.local_backend || "yes") : "none detected"}` +
+      `<div style="margin-top:8px">${chips}</div>`;
+    const sel = $("provSel"); sel.innerHTML = "";
+    s.providers.forEach((p) => { const o = document.createElement("option");
+      o.value = p.id; o.textContent = p.label; sel.appendChild(o); });
+  } catch (e) { $("backendStatus").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+$("btnSaveKey").onclick = async () => {
+  const provider = $("provSel").value, api_key = $("provKey").value.trim();
+  if (!api_key) return toast("Enter a key first");
+  try { const r = await api("/admin/llm/keys", { method: "POST",
+    body: JSON.stringify({ provider, api_key }) });
+    $("provKey").value = ""; toast("Key saved (" + r.key_preview + ")"); loaders.backend(); }
+  catch (e) { toast("Failed: " + e.message); }
+};
+$("btnSwitch").onclick = async () => {
+  const provider = $("provSel").value, model = $("provModel").value.trim() || undefined;
+  try { const r = await api("/admin/llm/switch", { method: "POST",
+    body: JSON.stringify({ provider, model }) });
+    toast("Switched to " + r.active_backend); loaders.backend(); }
+  catch (e) { toast("Failed: " + e.message); }
+};
+$("btnTestLLM").onclick = async () => {
+  const out = $("backendOut"); out.style.display = "block"; out.innerHTML = '<span class="spin"></span> testing…';
+  try { const r = await api("/admin/llm/test", { method: "POST",
+    body: JSON.stringify({ provider: $("provSel").value }) });
+    out.textContent = "✓ " + (r.response_preview || "ok"); }
+  catch (e) { out.textContent = "✗ " + (e.body && e.body.error || e.message); }
+};
+
+// ── PACKS ──
+// Enriched cards from /admin/packs (description, tools/skills, entitlements,
+// deprecation) + a detail drawer, plus dynamic console tabs for enabled packs
+// that declare a `ui:` block (mounted as sandboxed iframes — see bridge below).
+let packIndex = {};   // id -> pack summary (incl. mcp_tools for the bridge allowlist)
+loaders.packs = async () => {
+  $("packsBody").textContent = "Loading…";
+  try {
+    const d = await api("/admin/packs");
+    packIndex = {};
+    (d.available || []).forEach((p) => { if (p.id) packIndex[p.id] = p; });
+    let html = `<p class="muted">${d.active_tool_count} tools active · ${(d.enabled_packs || []).length} packs enabled</p>`;
+    if (!(d.available || []).length) html += '<span class="muted">No packs discovered. Point AITHER_TOOLPACK_DIRS at a packs directory.</span>';
+    (d.available || []).forEach((p) => {
+      const on = !!p.enabled;
+      const chips =
+        (p.tier ? `<span class="chip">${esc(p.tier)}</span>` : "") +
+        `<span class="chip">${p.live_tool_count || 0} tools live</span>` +
+        ((p.skills || []).length ? `<span class="chip">${p.skills.length} skills</span>` : "") +
+        (p.has_ui ? '<span class="chip ok">UI</span>' : "") +
+        (p.entitlements || []).map((e) => `<span class="chip warn">${esc(e)}</span>`).join("");
+      const dep = p.deprecated
+        ? `<div class="banner warn" style="margin:6px 0 0">DEPRECATED${p.redirect_to ? " — superseded by <b>" + esc(p.redirect_to) + "</b>" : ""}</div>`
+        : "";
+      html += `<div class="list-item"><div class="meta">` +
+        `<div class="t" style="cursor:pointer" data-detail="${esc(p.id)}">${esc(p.name || p.id)}</div>` +
+        `<div class="muted mono">${esc(p.id)}${p.version ? " · v" + esc(p.version) : ""}</div>` +
+        (p.description ? `<div class="muted" style="margin-top:2px">${esc(p.description).slice(0, 220)}</div>` : "") +
+        `<div style="margin-top:4px">${chips}</div>${dep}</div>` +
+        `<div class="row" style="flex:none">` +
+        `<button class="btn ghost" data-detail="${esc(p.id)}">Details</button>` +
+        `<button class="btn ${on ? "ghost" : ""}" data-pack="${esc(p.id)}" data-on="${on}">` +
+        `${on ? "Disable" : "Enable"}</button></div></div>`;
+    });
+    $("packsBody").innerHTML = html;
+    $("packsBody").querySelectorAll("[data-detail]").forEach((b) =>
+      b.onclick = () => openPackDetail(b.dataset.detail));
+    $("packsBody").querySelectorAll("button[data-pack]").forEach((b) => b.onclick = async () => {
+      const on = b.dataset.on === "true";
+      try { await api("/admin/packs/" + (on ? "disable" : "enable"), { method: "POST",
+        body: JSON.stringify({ pack: b.dataset.pack }) });
+        toast((on ? "Disabled " : "Enabled ") + b.dataset.pack);
+        await loaders.packs(); refreshPackTabs(); }
+      catch (e) { toast("Failed: " + e.message); } });
+    refreshPackTabs();
+  } catch (e) { $("packsBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+  loadCatalog();
+};
+$("btnReloadPacks").onclick = async () => {
+  try { const r = await api("/admin/packs/reload", { method: "POST" });
+    toast("Reloaded (+" + (r.tools_added || 0) + " tools)"); loaders.packs(); }
+  catch (e) { toast("Failed: " + e.message); }
+};
+async function openPackDetail(id) {
+  $("packDetail").style.display = "block";
+  $("packDetailTitle").textContent = id;
+  $("packDetailBody").innerHTML = '<span class="spin"></span>';
+  try {
+    const p = await api("/admin/packs/" + encodeURIComponent(id));
+    $("packDetailTitle").textContent = p.name || id;
+    let html = "";
+    if (p.deprecated) html += `<div class="banner warn">DEPRECATED${p.redirect_to ? " — use <b>" + esc(p.redirect_to) + "</b> instead" : ""}</div>`;
+    if (p.description) html += `<p>${esc(p.description)}</p>`;
+    html += `<p class="muted mono">v${esc(p.version || "?")} · ${esc(p.category || "")} · tier ${esc(p.tier || "free")}` +
+      (p.min_tier ? ` · requires ${esc(p.min_tier)}` : "") + `</p>`;
+    if ((p.tags || []).length) html += `<div>${p.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</div>`;
+    if ((p.entitlements || []).length)
+      html += `<label>Entitlements</label><div>${p.entitlements.map((e) => `<span class="chip warn">${esc(e)}</span>`).join("")}</div>`;
+    html += `<label>Live tools (${(p.live_tools || []).length})</label>`;
+    html += (p.live_tools || []).length
+      ? p.live_tools.map((t) => `<div class="list-item"><div class="meta"><div class="t mono">${esc(t.name)}</div>` +
+          `<div class="muted">${esc(t.description || "")}</div></div></div>`).join("")
+      : '<p class="muted">None registered — pack disabled, not reloaded, or its tools are entitlement-gated.</p>';
+    if ((p.mcp_tools || []).length)
+      html += `<label>Declared tool patterns</label><div class="mono muted">${p.mcp_tools.map(esc).join(", ")}</div>`;
+    if ((p.skills || []).length)
+      html += `<label>Skills</label><div>${p.skills.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>`;
+    if (p.persona_fragment_count) html += `<p class="muted">${p.persona_fragment_count} persona fragment(s) injected when enabled.</p>`;
+    $("packDetailBody").innerHTML = html;
+    $("packDetail").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { $("packDetailBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+}
+$("btnClosePack").onclick = () => $("packDetail").style.display = "none";
+
+// ── Aitherium catalog (fail-soft: hides when offline) ──
+async function loadCatalog() {
+  try {
+    const d = await api("/admin/catalog/packs");
+    if (d.offline || !(d.packs || []).length) {
+      $("catalogCard").style.display = d.offline ? "none" : "block";
+      $("catalogBody").innerHTML = `<span class="muted">${esc(d.note || "No catalog entries.")}</span>`;
+      return;
+    }
+    $("catalogCard").style.display = "block";
+    $("catalogBody").innerHTML = d.packs.map((p) => {
+      const price = p.pricing && p.pricing.subscription_cents
+        ? "$" + (p.pricing.subscription_cents / 100).toFixed(0) + "/mo" : "";
+      const badges =
+        (p.type ? `<span class="chip">${esc(p.type)}</span>` : "") +
+        (p.tier ? `<span class="chip">${esc(p.tier)}</span>` : "") +
+        (price ? `<span class="chip">${esc(price)}</span>` : "") +
+        (p.licensed ? '<span class="chip ok">licensed</span>' : "") +
+        (p.local ? '<span class="chip ok">installed here</span>' : "");
+      return `<div class="list-item"><div class="meta"><div class="t">${esc(p.name || p.id)}</div>` +
+        `<div class="muted">${esc(p.description || "")}</div>` +
+        `<div style="margin-top:4px">${badges}</div></div></div>`;
+    }).join("") +
+      `<p class="muted" style="margin-top:8px">Subscribe / deploy in the ` +
+      `<a href="https://portal.aitherium.com/portal/marketplace/packs" target="_blank" rel="noopener">portal marketplace ↗</a></p>`;
+  } catch (e) {
+    $("catalogCard").style.display = "none";
+  }
+}
+$("btnRefreshCatalog").onclick = () => { $("catalogBody").textContent = "Loading…"; loadCatalog(); };
+
+// ── Pack UI tabs (sandboxed-iframe plugin system) ──
+// Enabled packs with a `ui:` block get their own console tab. The iframe is
+// sandbox="allow-scripts allow-forms" — NO allow-same-origin, NO token in the
+// URL: the page runs in an opaque origin and can only talk to us via
+// postMessage. We hold the bearer and relay allowlisted tool calls.
+const packFrames = new Map(); // contentWindow -> { packId }
+function packTabKey(packId, tabId) { return "packui-" + packId + "-" + tabId; }
+function refreshPackTabs() {
+  const wanted = {};
+  Object.values(packIndex).forEach((p) => {
+    if (!p.enabled || !(p.ui_tabs || []).length) return;
+    p.ui_tabs.forEach((t) => { wanted[packTabKey(p.id, t.id)] = { pack: p, tab: t }; });
+  });
+  // Remove tabs for disabled/vanished packs.
+  document.querySelectorAll("#nav button[data-packtab]").forEach((b) => {
+    if (!wanted[b.dataset.packtab]) {
+      const sec = $("tab-" + b.dataset.packtab);
+      if (sec) {
+        const fr = sec.querySelector("iframe");
+        if (fr && fr.contentWindow) packFrames.delete(fr.contentWindow);
+        sec.remove();
+      }
+      const wasActive = b.classList.contains("active");
+      b.remove();
+      if (wasActive) document.querySelector('#nav button[data-tab="packs"]').click();
+    }
+  });
+  // Add missing tabs.
+  Object.entries(wanted).forEach(([key, w]) => {
+    if (document.querySelector(`#nav button[data-packtab="${key}"]`)) return;
+    const btn = document.createElement("button");
+    btn.dataset.packtab = key;
+    btn.textContent = w.tab.title || w.pack.name || w.pack.id;
+    btn.onclick = () => activatePackTab(key, w);
+    document.getElementById("nav").appendChild(btn);
+    const sec = document.createElement("section");
+    sec.className = "tab";
+    sec.id = "tab-" + key;
+    document.querySelector("main").appendChild(sec);
+  });
+}
+function activatePackTab(key, w) {
+  document.querySelectorAll("#nav button").forEach((x) => x.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+  const btn = document.querySelector(`#nav button[data-packtab="${key}"]`);
+  if (btn) btn.classList.add("active");
+  const sec = $("tab-" + key);
+  sec.classList.add("active");
+  if (!sec.querySelector("iframe")) {
+    const fr = document.createElement("iframe");
+    // Security: sandbox = allow-scripts + allow-forms + allow-downloads only.
+    // Never allow-same-origin — the frame could reach into this page and read
+    // the bearer from memory.
+    fr.setAttribute("sandbox", "allow-scripts allow-forms allow-downloads");
+    fr.src = "/packs/" + encodeURIComponent(w.pack.id) + "/ui/" + (w.tab.entry || "index.html");
+    fr.dataset.pack = w.pack.id;
+    fr.style.cssText = "width:100%;height:calc(100vh - 140px);border:1px solid var(--line);border-radius:10px;background:var(--panel)";
+    sec.appendChild(fr);
+    fr.addEventListener("load", () => { if (fr.contentWindow) packFrames.set(fr.contentWindow, { packId: w.pack.id }); });
+    if (fr.contentWindow) packFrames.set(fr.contentWindow, { packId: w.pack.id });
+  }
+}
+function toolAllowed(tool, patterns) {
+  for (const pat of patterns || []) {
+    if (pat.endsWith("*")) { if (pat.length > 1 && tool.startsWith(pat.slice(0, -1))) return true; }
+    else if (tool === pat) return true;
+  }
+  return false;
+}
+window.addEventListener("message", async (ev) => {
+  const d = ev.data;
+  if (!d || d.aither !== true || !d.type) return;
+  // Only accept messages from iframes WE created — map lookup by source window.
+  const src = packFrames.get(ev.source);
+  if (!src) return;
+  const packId = src.packId;
+  const reply = (payload) => {
+    // targetOrigin must be "*": the sandboxed frame has an opaque origin. Safe
+    // because we address the exact source window and send no secrets.
+    try { ev.source.postMessage({ aither: true, type: "response", id: d.id, ...payload }, "*"); }
+    catch (_) {}
+  };
+  if (d.type === "notify") {
+    toast("[" + packId + "] " + String(d.message || "").slice(0, 200));
+    return;
+  }
+  if (d.type === "get-pack-info") {
+    try { reply({ result: await api("/admin/packs/" + encodeURIComponent(packId)) }); }
+    catch (e) { reply({ error: e.message }); }
+    return;
+  }
+  if (d.type === "invoke-tool") {
+    const tool = String(d.tool || "");
+    const manifest = packIndex[packId];
+    // Client-side pre-check (UX); the server re-validates authoritatively.
+    if (!manifest || !toolAllowed(tool, manifest.mcp_tools)) {
+      reply({ error: "tool_not_in_pack: " + tool }); return;
+    }
+    try {
+      const body = { args: d.args || {} };
+      if (d.timeout) body.timeout = d.timeout;
+      const r = await api("/admin/packs/" + encodeURIComponent(packId) +
+        "/tools/" + encodeURIComponent(tool) + "/invoke",
+        { method: "POST", body: JSON.stringify(body) });
+      reply({ result: r.result, truncated: !!r.truncated });
+    } catch (e) {
+      reply({ error: (e.body && (e.body.error || e.body.detail)) || e.message });
+    }
+  }
+});
+
+// ── SESSIONS ──
+loaders.sessions = async () => {
+  $("sessionsBody").textContent = "Loading…";
+  try {
+    const d = await api("/admin/sessions");
+    if (!d.sessions.length) { $("sessionsBody").innerHTML = '<span class="muted">No conversations yet.</span>'; return; }
+    $("sessionsBody").innerHTML = d.sessions.map((s) =>
+      `<div class="list-item"><div class="meta"><div class="t mono">${esc(s.session_id)}</div>` +
+      `<div class="muted">${s.message_count} msgs · ${esc(s.agent_name || "")}</div></div><div class="row">` +
+      `<button class="btn ghost" data-open="${esc(s.session_id)}">Open</button>` +
+      `<button class="btn danger" data-del="${esc(s.session_id)}">Delete</button></div></div>`).join("");
+    $("sessionsBody").querySelectorAll("[data-open]").forEach((b) => b.onclick = () => openSession(b.dataset.open));
+    $("sessionsBody").querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => {
+      try { await api("/admin/sessions/" + encodeURIComponent(b.dataset.del), { method: "DELETE" });
+        toast("Deleted"); loaders.sessions(); } catch (e) { toast("Failed: " + e.message); } });
+  } catch (e) { $("sessionsBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+async function openSession(id) {
+  try {
+    const d = await api("/admin/sessions/" + encodeURIComponent(id));
+    $("sessionTitle").textContent = id;
+    $("sessionMessages").innerHTML = d.messages.map((m) =>
+      `<div class="list-item"><div class="meta"><div class="muted">${esc(m.role)}</div>` +
+      `<div>${esc(m.content)}</div></div></div>`).join("") || '<span class="muted">Empty.</span>';
+    $("sessionDetail").style.display = "block";
+    $("sessionDetail").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { toast("Failed: " + e.message); }
+}
+$("btnCloseSession").onclick = () => $("sessionDetail").style.display = "none";
+$("btnRefreshSessions").onclick = () => loaders.sessions();
+
+// ── LOGS ──
+let logTimer = 0;
+loaders.logs = async () => {
+  try { const d = await api("/admin/logs/tail?n=300");
+    $("logsBody").textContent = (d.lines || []).join("\n") || "(empty)";
+    $("logsBody").scrollTop = $("logsBody").scrollHeight; }
+  catch (e) { $("logsBody").textContent = "⚠ " + e.message; }
+};
+$("btnRefreshLogs").onclick = () => loaders.logs();
+$("logAuto").onchange = (e) => { clearInterval(logTimer);
+  if (e.target.checked) logTimer = setInterval(loaders.logs, 3000); };
+
+// ── GRAPH ──
+loaders.graph = async () => {
+  try { const d = await api("/admin/graph/stats");
+    $("graphStats").textContent = d.note ? d.note : JSON.stringify(d.stats); }
+  catch (e) { $("graphStats").textContent = e.message; }
+};
+$("btnGraphSearch").onclick = async () => {
+  const q = $("graphQ").value.trim(); if (!q) return;
+  $("graphBody").innerHTML = '<span class="spin"></span>';
+  try { const d = await api("/admin/graph/search?q=" + encodeURIComponent(q));
+    if (!d.nodes || !d.nodes.length) { $("graphBody").innerHTML = '<p class="muted">No matches.</p>'; return; }
+    $("graphBody").innerHTML = d.nodes.map((n) =>
+      `<div class="list-item"><div class="meta"><div class="t">${esc(n.name || n.id || "?")}</div>` +
+      `<div class="muted mono">${esc(n.type || n.node_type || "")}</div>` +
+      `${n.content ? `<div>${esc(String(n.content).slice(0, 240))}</div>` : ""}</div></div>`).join("");
+  } catch (e) { $("graphBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+
+// ── MCP ──
+loaders.mcp = async () => {
+  $("mcpBody").textContent = "Loading…";
+  try { const d = await api("/admin/mcp/servers");
+    if (!d.servers.length) { $("mcpBody").innerHTML = '<span class="muted">No external servers.</span>'; return; }
+    $("mcpBody").innerHTML = d.servers.map((s) =>
+      `<div class="list-item"><div class="meta"><div class="t">${esc(s.name || s.url)}</div>` +
+      `<div class="muted mono">${esc(s.url)}</div></div>` +
+      `<button class="btn danger" data-mcp="${esc(s.id)}">Remove</button></div>`).join("");
+    $("mcpBody").querySelectorAll("[data-mcp]").forEach((b) => b.onclick = async () => {
+      try { await api("/admin/mcp/servers/" + encodeURIComponent(b.dataset.mcp), { method: "DELETE" });
+        toast("Removed"); loaders.mcp(); } catch (e) { toast("Failed: " + e.message); } });
+  } catch (e) { $("mcpBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+$("btnRefreshMcp").onclick = () => loaders.mcp();
+$("btnMcpPrepare").onclick = async () => {
+  const url = $("mcpUrl").value.trim(); if (!url) return toast("Enter a URL");
+  const box = $("mcpPreview"); box.style.display = "block"; box.innerHTML = '<span class="spin"></span> probing…';
+  try {
+    const d = await api("/admin/mcp/servers/prepare", { method: "POST",
+      body: JSON.stringify({ url, name: $("mcpName").value.trim() || undefined }) });
+    box.innerHTML = `<div class="banner warn">${esc(d.warning)}</div>` +
+      `<p><b>${d.tool_count}</b> tool(s):</p>` +
+      d.tools.map((t) => `<div class="list-item"><div class="meta"><div class="t">${esc(t.name)}</div>` +
+        `<div class="muted">${esc(t.description || "")}</div></div></div>`).join("") +
+      `<button class="btn" id="btnMcpConfirm">Confirm & add</button>`;
+    $("btnMcpConfirm").onclick = async () => {
+      try { const r = await api("/admin/mcp/servers/confirm", { method: "POST",
+        body: JSON.stringify({ confirm_token: d.confirm_token }) });
+        toast("Added (" + r.tools_registered + " tools)"); box.style.display = "none";
+        $("mcpUrl").value = ""; $("mcpName").value = ""; loaders.mcp(); }
+      catch (e) { toast("Failed: " + e.message); } };
+  } catch (e) { box.innerHTML = `<span class="banner err">${esc(e.body && e.body.detail || e.message)}</span>`; }
+};
+
+// ── CONFIG ──
+let cfgCache = null;
+loaders.config = async () => {
+  $("cfgBody").textContent = "Loading…";
+  try {
+    const d = await api("/admin/config");
+    cfgCache = d; renderConfig();
+  } catch (e) { $("cfgBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+function renderConfig() {
+  if (!cfgCache) return;
+  const writable = new Set(cfgCache.writable_fields || []);
+  const eff = cfgCache.effective || cfgCache.config || {};
+  const filter = ($("cfgFilter").value || "").toLowerCase();
+  const keys = Object.keys(eff).sort().filter((k) => !filter || k.toLowerCase().includes(filter));
+  if (!keys.length) { $("cfgBody").innerHTML = '<span class="muted">No matching keys.</span>'; return; }
+  $("cfgBody").innerHTML = keys.map((k) => {
+    const v = eff[k]; const w = writable.has(k);
+    const val = (v && typeof v === "object") ? JSON.stringify(v) : String(v);
+    const control = w
+      ? `<input data-cfg="${esc(k)}" value="${esc(val)}" style="max-width:260px">`
+      : `<span class="mono muted">${esc(val)}</span>`;
+    return `<div class="list-item"><div class="meta"><div class="t mono">${esc(k)}` +
+      `${w ? ' <span class="chip ok">writable</span>' : ''}</div></div>${control}</div>`;
+  }).join("") +
+    `<div class="row" style="margin-top:10px"><button class="btn" id="btnSaveCfg">Save writable changes</button></div>`;
+  $("btnSaveCfg").onclick = saveConfig;
+}
+async function saveConfig() {
+  const patch = {};
+  $("cfgBody").querySelectorAll("input[data-cfg]").forEach((i) => {
+    const k = i.dataset.cfg, orig = String((cfgCache.effective || {})[k]);
+    if (i.value !== orig) {
+      let v = i.value;
+      if (v === "true") v = true; else if (v === "false") v = false;
+      else if (v !== "" && !isNaN(Number(v)) && /^-?\d+(\.\d+)?$/.test(v)) v = Number(v);
+      patch[k] = v;
+    }
+  });
+  if (!Object.keys(patch).length) return toast("No changes");
+  try { await api("/admin/config", { method: "PATCH", body: JSON.stringify({ config: patch }) });
+    toast("Saved " + Object.keys(patch).join(", ")); loaders.config(); }
+  catch (e) { toast("Failed: " + (e.body && e.body.error || e.message)); }
+}
+$("btnRefreshCfg").onclick = () => loaders.config();
+$("cfgFilter").oninput = () => renderConfig();
+
+// ── CLI ──
+const cliHist = []; let cliHistIdx = -1;
+loaders.cli = async () => {
+  if ($("cliCmds").children.length) return;
+  try { const d = await api("/admin/cli/commands");
+    $("cliCmds").innerHTML = (d.commands || []).map((c) =>
+      `<option value="${esc(c.name)}">`).join(""); }
+  catch (e) { cliPrint("⚠ could not load commands: " + (e.body && e.body.detail || e.message)); }
+};
+function cliPrint(s) { const o = $("cliOut"); o.textContent += "\n" + s; o.scrollTop = o.scrollHeight; }
+$("cliForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const raw = $("cliIn").value.trim(); if (!raw) return;
+  cliHist.push(raw); cliHistIdx = cliHist.length;
+  $("cliIn").value = ""; cliPrint("\n$ adk " + raw);
+  const parts = raw.split(/\s+/); const command = parts[0]; const args = parts.slice(1);
+  $("cliRun").disabled = true;
+  try {
+    const d = await api("/admin/cli/exec", { method: "POST",
+      body: JSON.stringify({ command, args }) });
+    if (d.stdout) cliPrint(d.stdout.replace(/\n$/, ""));
+    if (d.stderr) cliPrint(d.stderr.replace(/\n$/, ""));
+    cliPrint("[exit " + d.returncode + "]");
+  } catch (e) { cliPrint("⚠ " + (e.body && (e.body.detail || e.body.error) || e.message)); }
+  $("cliRun").disabled = false;
+};
+$("cliIn").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowUp") { if (cliHistIdx > 0) { cliHistIdx--; $("cliIn").value = cliHist[cliHistIdx]; } e.preventDefault(); }
+  else if (e.key === "ArrowDown") { if (cliHistIdx < cliHist.length - 1) { cliHistIdx++; $("cliIn").value = cliHist[cliHistIdx]; }
+    else { cliHistIdx = cliHist.length; $("cliIn").value = ""; } e.preventDefault(); }
+});
+
+// ── API EXPLORER ──
+// Uses /admin/routes (route-table introspection) rather than /openapi.json,
+// which 500s on this server (from __future__ annotations → Request ForwardRefs).
+let apiRoutes = null;
+loaders.api = async () => {
+  if (apiRoutes) { renderApiList(); return; }
+  try { const d = await api("/admin/routes"); apiRoutes = d.routes || []; renderApiList(); }
+  catch (e) { $("apiList").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+function renderApiList() {
+  const filter = ($("apiFilter").value || "").toLowerCase();
+  const rows = apiRoutes.filter((r) => !filter || r.path.toLowerCase().includes(filter)).map((r) => {
+    const m = r.method, color = m === "GET" ? "ok" : (m === "DELETE" ? "err" : "warn");
+    return `<div class="list-item" style="cursor:pointer" data-m="${m}" data-p="${esc(r.path)}">` +
+      `<div class="meta"><div class="t"><span class="chip ${color}">${m}</span> ` +
+      `<span class="mono">${esc(r.path)}</span></div>` +
+      `<div class="muted">${esc(r.summary || "")}</div></div></div>`;
+  });
+  $("apiList").innerHTML = rows.join("") || '<span class="muted">No endpoints match.</span>';
+  $("apiList").querySelectorAll("[data-p]").forEach((el) =>
+    el.onclick = () => openApiCaller(el.dataset.m, el.dataset.p));
+}
+$("apiFilter").oninput = () => apiRoutes && renderApiList();
+$("btnRefreshApi").onclick = () => { apiRoutes = null; loaders.api(); };
+let apiCur = null;
+function openApiCaller(method, path) {
+  apiCur = { method, path };
+  $("apiMethod").textContent = method;
+  $("apiMethod").className = "chip " + (method === "GET" ? "ok" : method === "DELETE" ? "err" : "warn");
+  $("apiPath").textContent = path;
+  const params = (path.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1));
+  $("apiParams").innerHTML = params.length
+    ? "<label>Path parameters</label>" + params.map((p) =>
+        `<input data-param="${esc(p)}" placeholder="${esc(p)}" style="margin-bottom:6px">`).join("")
+    : "";
+  $("apiBody").style.display = (method === "GET" || method === "DELETE") ? "none" : "block";
+  $("apiResp").style.display = "none";
+  $("apiCaller").style.display = "block";
+  $("apiCaller").scrollIntoView({ behavior: "smooth" });
+}
+$("apiClose").onclick = () => $("apiCaller").style.display = "none";
+$("apiSend").onclick = async () => {
+  let path = apiCur.path;
+  $("apiParams").querySelectorAll("[data-param]").forEach((i) => {
+    path = path.replace("{" + i.dataset.param + "}", encodeURIComponent(i.value.trim())); });
+  const opts = { method: apiCur.method };
+  if (apiCur.method !== "GET" && apiCur.method !== "DELETE") {
+    const body = $("apiBody").value.trim();
+    if (body) { try { JSON.parse(body); } catch (_) { return toast("Body is not valid JSON"); } opts.body = body; }
+  }
+  const out = $("apiResp"); out.style.display = "block"; out.innerHTML = '<span class="spin"></span> sending…';
+  try {
+    const res = await fetch(path, { ...opts, headers: H() });
+    let text; try { text = JSON.stringify(await res.json(), null, 2); } catch (_) { text = await res.text(); }
+    out.textContent = res.status + " " + res.statusText + "\n\n" + text;
+  } catch (e) { out.textContent = "⚠ " + e.message; }
+};
+
+// ── DEPLOY (ISO Factory) ──
+loaders.deploy = async () => {
+  try {
+    const st = await api("/admin/factory/status");
+    if (!st.available) {
+      $("deployStatus").innerHTML = '<span class="banner warn">The ISO Factory isn\'t present on this host '
+        + '(only available in the monorepo / on a build host).</span>';
+      return;
+    }
+    $("deployStatus").innerHTML = `Factory ready <span class="muted">(${esc(st.factory_dir)})</span>`
+      + (st.real_build_enabled ? '' : '<div class="muted">Real builds disabled here — dry-run plans only.</div>');
+    $("deployForm").style.display = "block";
+    if (!$("depProduct").children.length) {
+      const d = await api("/admin/factory/products");
+      $("depProduct").innerHTML = (d.products || []).map((p) =>
+        `<option value="${esc(p.replace(/^\./, ""))}">${esc(p.replace(/^\./, ""))}</option>`).join("");
+    }
+  } catch (e) { $("deployStatus").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+async function _depCall(path) {
+  const out = $("depOut"); out.style.display = "block"; out.innerHTML = '<span class="spin"></span> running…';
+  const body = { product: $("depProduct").value, target: $("depTarget").value };
+  if ($("depTier").value) body.tier = $("depTier").value;
+  try {
+    const r = await api(path, { method: "POST", body: JSON.stringify(body) });
+    out.textContent = JSON.stringify(r, null, 2);
+  } catch (e) { out.textContent = "⚠ " + (e.body && (e.body.detail || e.body.error) || e.message); }
+}
+$("btnDepResolve").onclick = () => _depCall("/admin/factory/resolve");
+$("btnDepPlan").onclick = () => _depCall("/admin/factory/build");
+
+loadHealth();
+// Prefetch the pack list so enabled packs' UI tabs appear without visiting
+// the Packs tab first (needs the bearer; skipped when the page has no token).
+if (KEY) (async () => {
+  try {
+    const d = await api("/admin/packs");
+    packIndex = {};
+    (d.available || []).forEach((p) => { if (p.id) packIndex[p.id] = p; });
+    refreshPackTabs();
+  } catch (_) {}
+})();
+
+// ── Secrets tab ────────────────────────────────────────────────────────────
+// Backed by adk.vault_lockbox via /secrets, i.e. the SAME store `aither vault`
+// manages — no second vault, no drift. Values are never fetched or rendered:
+// listing is names + metadata only, which is the console's existing secret
+// boundary ("never RENDERS a stored key"). Reading a value back is a CLI
+// action, where it lands in your own scrollback rather than a browser panel.
+let secretsCache = [];
+
+function secStatus(msg, cls) {
+  const el = $("sec-status");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = cls === "err" ? "" : "muted";
+  el.style.color = cls === "err" ? "var(--bad, #e74c3c)" : "";
+}
+
+function secRender() {
+  const list = $("sec-list");
+  if (!list) return;
+  const q = ($("sec-q")?.value || "").trim().toLowerCase();
+  const rows = secretsCache
+    .filter((s) => !q || String(s.name || "").toLowerCase().includes(q))
+    .sort((a, b) => String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase()));
+
+  if (!rows.length) {
+    list.innerHTML = '<div class="muted">' +
+      (secretsCache.length ? "No secrets match that search." : "Nothing loaded.") + "</div>";
+    return;
+  }
+  list.innerHTML = rows.map((s) => {
+    const meta = [s.type, s.scope, s.access_level].filter(Boolean).map(esc).join(" · ");
+    return '<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border,#333)">' +
+      '<div style="min-width:0"><div style="font-family:monospace">' + esc(s.name) + "</div>" +
+      (meta ? '<div class="muted" style="font-size:11px">' + meta + "</div>" : "") +
+      "</div>" +
+      '<div class="row" style="gap:6px">' +
+      '<button class="btn" data-sec-edit="' + esc(s.name) + '">Replace</button>' +
+      "</div></div>";
+  }).join("");
+}
+
+async function secLoad() {
+  secStatus("Loading vault…");
+  try {
+    const d = await api("/secrets");
+    secretsCache = d.secrets || [];
+    const modeEl = $("sec-mode");
+    if (modeEl) modeEl.textContent = d.remote ? "remote: " + (d.source || "platform") : "local";
+    secStatus(d.count + " secrets");
+    secRender();
+  } catch (e) {
+    // Distinguish the failure modes: an empty list and an auth failure look
+    // identical otherwise, and that ambiguity is how a broken panel reads as an
+    // empty vault.
+    secStatus(
+      e.status === 401 ? "Not authorised — open the console with its token (#k=…)."
+      : e.status === 503 ? "Vault unavailable on this agent."
+      : e.status === 502 ? "Vault read failed: " + (e.message || "")
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+}
+
+async function secSave() {
+  const name = ($("sec-name")?.value || "").trim();
+  const value = $("sec-value")?.value || "";
+  if (!name) { secStatus("Name is required.", "err"); return; }
+  if (!value) { secStatus("Value is required — an empty write would wipe a live secret.", "err"); return; }
+  try {
+    const d = await api("/secrets", {
+      method: "POST",
+      body: JSON.stringify({ name, value, secret_type: ($("sec-type")?.value || "generic") }),
+    });
+    // The server re-reads after writing, so this length proves it PERSISTED
+    // rather than merely that the POST returned 200.
+    toast("Saved " + d.name + " (" + d.length + " chars, verified)");
+    $("sec-form").style.display = "none";
+    $("sec-value").value = "";
+    await secLoad();
+  } catch (e) {
+    secStatus("Save failed: " + (e.message || e.status), "err");
+  }
+}
+
+function secOpenForm(name) {
+  const f = $("sec-form");
+  if (!f) return;
+  f.style.display = "block";
+  $("sec-name").value = name || "";
+  $("sec-value").value = "";
+  (name ? $("sec-value") : $("sec-name")).focus();
+}
+
+$("sec-refresh")?.addEventListener("click", secLoad);
+$("sec-new")?.addEventListener("click", () => secOpenForm(""));
+$("sec-cancel")?.addEventListener("click", () => {
+  $("sec-form").style.display = "none";
+  $("sec-value").value = "";
+});
+$("sec-save")?.addEventListener("click", secSave);
+$("sec-q")?.addEventListener("input", secRender);
+$("sec-list")?.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-sec-edit]");
+  if (b) secOpenForm(b.getAttribute("data-sec-edit"));
+});
+// Load lazily on first visit to the tab.
+document.querySelector('[data-tab="secrets"]')?.addEventListener("click", () => {
+  if (!secretsCache.length) secLoad();
+});
+
+// ── CHRONICLE (Logs & Search) ────────────────────────────────────────────────
+// Reads from /operator/chronicle (aggregated logging service data).
+let chronCache = null;
+loaders.chronicle = async () => {
+  const status = (msg, cls) => {
+    const el = $("chron-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/chronicle");
+    chronCache = d;
+    const logs = d.logs || [];
+    const stats = d.stats || {};
+    const services = d.services || [];
+
+    // Update service dropdown
+    const sel = $("chron-service");
+    if (sel && sel.children.length === 1) {
+      (services || []).forEach((s) => {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s;
+        sel.appendChild(o);
+      });
+    }
+
+    // Render stats cards
+    const statsFields = { svc_count: stats.active_services || "—", err_count: (stats.level_counts?.error || 0),
+      buf_size: stats.buffer_size || "—", storage: (stats.combined_log_size_mb || 0).toFixed(1) };
+    ["svc-count", "err-count", "buf-size", "storage"].forEach((k, i) => {
+      const el = $("chron-" + k);
+      if (el) el.textContent = Object.values(statsFields)[i];
+    });
+
+    // Render logs table
+    const logHtml = (logs || []).length
+      ? logs.map((log) => {
+          const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false }) : "?";
+          const level = log.level || "?";
+          const level_color = level === "error" ? "var(--err)" : level === "warning" ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="muted" style="font-size:11px">${esc(ts)} <span style="color:${level_color}">${esc(level)}</span> ${esc(log.service || "?")}</div>` +
+            `<div style="margin-top:2px">${esc(String(log.message || "").slice(0, 280))}</div></div></div>`;
+        }).join("")
+      : '<div class="muted">No logs loaded.</div>';
+    const logEl = $("chron-logs");
+    if (logEl) logEl.innerHTML = logHtml;
+
+    status(`${logs.length} recent entries · ${services.length} services`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Chronicle unavailable on this agent."
+      : e.status === 502 ? "Chronicle unreachable: " + (e.message || "network error")
+      : e.status === 404 ? "Endpoint not found (Chronicle endpoint may be disabled)."
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("chron-refresh")?.addEventListener("click", loaders.chronicle);
+$("chron-search-btn")?.addEventListener("click", async () => {
+  const query = $("chron-search").value.trim();
+  const service = $("chron-service").value.trim();
+  const level = $("chron-level").value.trim();
+  if (!query) return toast("Enter a search term");
+  const status = (msg, cls) => { const el = $("chron-status");
+    if (el) { el.textContent = msg; el.style.color = cls === "err" ? "var(--err, #dc2626)" : ""; } };
+  status("Searching…");
+  try {
+    const d = await api("/operator/chronicle");
+    const results = (d.search || []).filter((r) =>
+      (!service || String(r.service || "").includes(service)) &&
+      (!level || (r.level || "").toLowerCase() === level.toLowerCase()) &&
+      String(r.message || "").toLowerCase().includes(query.toLowerCase())
+    );
+    const logHtml = results.length
+      ? results.slice(0, 100).map((log) => {
+          const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false }) : "?";
+          const level_color = (log.level || "?") === "error" ? "var(--err)" : (log.level || "?") === "warning" ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="muted" style="font-size:11px">${esc(ts)} <span style="color:${level_color}">${esc(log.level || "?")}</span> ${esc(log.service || "?")}</div>` +
+            `<div style="margin-top:2px">${esc(String(log.message || "").slice(0, 280))}</div></div></div>`;
+        }).join("")
+      : '<div class="muted">No results matching that search.</div>';
+    const logEl = $("chron-logs");
+    if (logEl) logEl.innerHTML = logHtml;
+    status(`${results.length} matches (showing first 100)`);
+  } catch (e) { status("Search failed: " + (e.message || e.status), "err"); }
+});
+document.querySelector('[data-tab="chronicle"]')?.addEventListener("click", () => {
+  if (!chronCache) loaders.chronicle();
+});
+
+// ── PULSE (Alerts & Health) ────────────────────────────────────────────────
+// Reads from /operator/pulse (infrastructure alerts and resource pressure).
+let pulseCache = null;
+loaders.pulse = async () => {
+  const status = (msg, cls) => {
+    const el = $("pulse-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/pulse");
+    pulseCache = d;
+    const alerts = d.alerts || [];
+    const stats = d.stats || {};
+    const pain = d.pain || [];
+
+    // Update summary cards
+    const alertStats = stats.alerts || {};
+    const uptime = stats.uptime_seconds ? Math.round(stats.uptime_seconds / 3600) + "h" : "—";
+    $("pulse-alert-count").textContent = alertStats.active_count || "0";
+    $("pulse-critical-count").textContent = alertStats.critical_count || "0";
+    $("pulse-uptime").textContent = uptime;
+
+    // Render alerts
+    const alertHtml = alerts.length
+      ? alerts.map((a) => {
+          const severity = (a.severity || 0.5) >= 0.8 ? "error" : (a.severity || 0.5) >= 0.5 ? "warn" : "ok";
+          const severity_color = severity === "error" ? "var(--err)" : severity === "warn" ? "var(--warn)" : "var(--ok)";
+          const lastSeen = a.last_seen ? new Date(a.last_seen).toLocaleTimeString("en-US", { hour12: false }) : "?";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div style="color:${severity_color}; font-weight:600">${esc(a.title || a.alert_key || "?")}</div>` +
+            `<div class="muted" style="font-size:12px; margin-top:2px">${esc(a.message || "")} · ${esc(a.category || "?")} · ${a.occurrence_count || 1} occurrences</div>` +
+            `<div class="muted" style="font-size:11px; margin-top:2px">Last: ${lastSeen}</div></div>` +
+            `<div class="row" style="gap:6px"><button class="btn" data-pulse-ack="${esc(a.alert_key || "")}">Ack</button>` +
+            `<button class="btn ghost" data-pulse-resolve="${esc(a.alert_key || "")}">Resolve</button></div></div>`;
+        }).join("")
+      : '<div class="muted">No active alerts.</div>';
+    const alertEl = $("pulse-alerts");
+    if (alertEl) alertEl.innerHTML = alertHtml;
+
+    // Handle alert actions
+    $("pulse-alerts")?.querySelectorAll("[data-pulse-ack]").forEach((b) =>
+      b.onclick = async () => {
+        toast("Alert action not yet implemented in console (use CLI)");
+      });
+    $("pulse-alerts")?.querySelectorAll("[data-pulse-resolve]").forEach((b) =>
+      b.onclick = async () => {
+        toast("Alert action not yet implemented in console (use CLI)");
+      });
+
+    // Render pain signals if present
+    const painEl = $("pulse-pain");
+    if (pain.length && painEl) {
+      painEl.style.display = "block";
+      const painHtml = pain.map((p) => {
+        const val = p.current_value ? p.current_value.toFixed(1) : "?";
+        const thr = p.threshold ? p.threshold.toFixed(1) : "?";
+        const pct = p.threshold ? Math.round((p.current_value / p.threshold) * 100) : "?";
+        return `<div class="list-item" style="padding:6px 0; border-bottom:1px solid var(--line)">` +
+          `<div class="meta"><div class="t">${esc(p.pain_point_id || "?")}</div>` +
+          `<div class="muted" style="font-size:11px">${val} / ${thr} threshold (${pct}%)</div></div></div>`;
+      }).join("");
+      const painListEl = $("pulse-pain-list");
+      if (painListEl) painListEl.innerHTML = painHtml;
+    } else if (painEl) {
+      painEl.style.display = "none";
+    }
+
+    status(`${alerts.length} active alerts · ${(stats.uptime_seconds || 0).toFixed(0)}s uptime`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Pulse unavailable on this agent."
+      : e.status === 502 ? "Pulse unreachable (infrastructure degraded): " + (e.message || "network error")
+      : e.status === 504 ? "Pulse timeout (slow response from fleet)."
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("pulse-refresh")?.addEventListener("click", loaders.pulse);
+document.querySelector('[data-tab="pulse"]')?.addEventListener("click", () => {
+  if (!pulseCache) loaders.pulse();
+});
+
+// ── WATCH (Components) ────────────────────────────────────────────────
+// Reads from /operator/watch (service monitoring and health).
+let watchCache = null;
+loaders.watch = async () => {
+  const status = (msg, cls) => {
+    const el = $("watch-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/watch");
+    watchCache = d;
+    const components = d.components || [];
+    const health = d.health || {};
+
+    // Count online/offline
+    let online = 0, offline = 0;
+    (components || []).forEach((c) => {
+      if (c.status === "online" || c.status === "running") online++; else offline++;
+    });
+
+    $("watch-count").textContent = components.length;
+    $("watch-online").textContent = online;
+    $("watch-offline").textContent = offline;
+
+    // Render components table
+    const compHtml = components.length
+      ? components.map((c) => {
+          const status_color = (c.status === "online" || c.status === "running") ? "var(--ok)" : (c.status === "degraded") ? "var(--warn)" : "var(--err)";
+          const uptime = c.uptime_seconds ? Math.round(c.uptime_seconds / 60) + "m" : "—";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div><span style="color:${status_color}; font-weight:600">●</span> ${esc(c.name || c.id || "?")}</div>` +
+            `<div class="muted" style="font-size:12px">${esc(c.status || "?")}</div>` +
+            `<div class="muted" style="font-size:11px; margin-top:2px">Up ${uptime} · ${c.memory_mb || "?"}MB · CPU ${(c.cpu_percent || 0).toFixed(0)}%` +
+            (c.restart_count ? ` · restarts: ${c.restart_count}` : "") + `</div>` +
+            (c.error ? `<div style="color:var(--err); font-size:11px; margin-top:2px">${esc(c.error.slice(0, 120))}</div>` : "") +
+            `</div></div>`;
+        }).join("")
+      : '<div class="muted">No components loaded (Watch service may be unreachable).</div>';
+    const compEl = $("watch-components");
+    if (compEl) compEl.innerHTML = compHtml;
+
+    status(`${components.length} components · ${online} online · ${offline} offline`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Watch module unavailable on this agent."
+      : e.status === 502 ? "Watch service unreachable (fleet network degraded)"
+      : e.status === 504 ? "Watch timeout (service slow or DNS issue)"
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("watch-refresh")?.addEventListener("click", loaders.watch);
+document.querySelector('[data-tab="watch"]')?.addEventListener("click", () => {
+  if (!watchCache) loaders.watch();
+});
+
+// ── FLUX (Event Flow) ────────────────────────────────────────────────
+// Reads from /operator/flux (event bus routing and cognitive budgets).
+let fluxCache = null;
+loaders.flux = async () => {
+  const status = (msg, cls) => {
+    const el = $("flux-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/flux");
+    fluxCache = d;
+    const mailboxes = d.mailboxes || [];
+    const routes = d.routes || [];
+    const services = d.services || [];
+    const stats = d.stats || {};
+    const budgets = d.cognitive_budgets || [];
+
+    // Update summary cards
+    const pps = stats.packets_per_second || 0;
+    const success = stats.success_rate ? (stats.success_rate * 100).toFixed(0) : "?";
+    const latency = stats.avg_latency_ms ? stats.avg_latency_ms.toFixed(1) : "?";
+    $("flux-svc-count").textContent = services.length || "—";
+    $("flux-pps").textContent = pps.toFixed(1);
+    $("flux-success").textContent = (typeof success === "string" ? success : success) + "%";
+    $("flux-latency").textContent = latency;
+
+    // Render mailboxes table (sorted by depth descending)
+    const mbHtml = (mailboxes || []).length
+      ? mailboxes.sort((a, b) => (b.messages_queued || 0) - (a.messages_queued || 0))
+        .slice(0, 50)
+        .map((m) => {
+          const depth = m.messages_queued || 0;
+          const color = depth > 100 ? "var(--err)" : depth > 20 ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:6px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="t">${esc(m.service_id || m.service || "?")}</div>` +
+            `<div class="muted" style="font-size:12px">${m.type || "queue"}</div></div>` +
+            `<div style="color:${color}; font-weight:600">${depth} msgs</div></div>`;
+        }).join("")
+      : '<div class="muted">No mailbox data.</div>';
+    const mbEl = $("flux-mailboxes");
+    if (mbEl) mbEl.innerHTML = mbHtml;
+
+    // Render cognitive budgets
+    const budgetHtml = (budgets || []).length
+      ? budgets.map((b) => {
+          const pct = b.remaining && b.used ? Math.round((b.used / (b.used + b.remaining)) * 100) : 0;
+          const barColor = pct > 80 ? "var(--err)" : pct > 50 ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="t">${esc(b.service || "?")}</div>` +
+            `<div style="height:6px; background:var(--chip); border-radius:3px; margin-top:4px">` +
+            `<div style="height:100%; width:${pct}%; background:${barColor}; border-radius:3px; transition:width 0.3s"></div></div>` +
+            `<div class="muted" style="font-size:11px; margin-top:2px">${b.used || 0} / ${(b.used || 0) + (b.remaining || 0)} tokens (${pct}%)</div></div></div>`;
+        }).join("")
+      : '<div class="muted">No budget data.</div>';
+    const budgetEl = $("flux-budgets");
+    if (budgetEl) budgetEl.innerHTML = budgetHtml;
+
+    status(`${services.length} services · ${(mailboxes || []).reduce((a, m) => a + (m.messages_queued || 0), 0)} queued messages`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Flux module unavailable on this agent."
+      : e.status === 502 ? "Flux unreachable (TLS/connection error): " + (e.message || "network")
+      : e.status === 504 ? "Flux timeout (mesh DNS issue or service wedged)"
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("flux-refresh")?.addEventListener("click", loaders.flux);
+document.querySelector('[data-tab="flux"]')?.addEventListener("click", () => {
+  if (!fluxCache) loaders.flux();
+});
+</script>
+
+<!-- On-device WebGPU chat: transformers.js runs the model in the browser on the GPU.
+     Loaded lazily (only when the tab is first opened) inside a blob module worker so the
+     big download + GPU compile never freezes the console UI. -->
+<script type="module">
+(() => {
+  const MODEL = { repo: "google/gemma-4-E2B-it-qat-mobile-transformers", label: "Gemma 4 (E2B, mobile)", mb: 900 };
+  const root = document.getElementById("odRoot");
+  const navBtn = document.querySelector('#nav button[data-tab="ondevice"]');
+  if (!root || !navBtn) return;
+  const mb = (b) => (b / 1048576).toFixed(0);
+  const gpu = typeof navigator !== "undefined" && "gpu" in navigator && !!navigator.gpu;
+  // A PHONE NEVER GETS THE WEBGPU LANE, tap or no tap (same rule as gpuLaneAllowed in the
+  // awkit/Veil brains). Mobile browsers expose navigator.gpu and then the OS kills the
+  // worker for memory mid-load -- no message, no onerror, nothing to clean up. The 900 MB
+  // model below is far past any phone tab budget; the honest answer is the local node.
+  const isMobileDevice = () => {
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    if (/Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(ua)) return true;
+    return /Macintosh/i.test(ua) && ((navigator.maxTouchPoints || 0) > 1);
+  };
+  const mobile = isMobileDevice();
+
+  let worker = null, inited = false, files = {}, msgs = [], streaming = "", status = "idle", progress = 0, loaded = 0, total = 0, curFile = "", tps = null, err = "";
+
+  function workerSrc() {
+    return `
+import { pipeline, TextStreamer } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.0";
+let gen = null;
+self.addEventListener("message", async (e) => {
+  const m = e.data;
+  if (m.type === "load") {
+    try {
+      gen = await pipeline("text-generation", ${JSON.stringify(MODEL.repo)}, {
+        device: "webgpu", dtype: "q4",
+        progress_callback: (p) => { if (p && p.status === "progress") self.postMessage({ type: "progress", file: p.file, loaded: p.loaded, total: p.total }); },
+      });
+      self.postMessage({ type: "ready" });
+    } catch (err) { self.postMessage({ type: "error", message: String((err && err.message) || err) }); }
+  } else if (m.type === "generate") {
+    try {
+      let n = 0; const t0 = performance.now();
+      const streamer = new TextStreamer(gen.tokenizer, { skip_prompt: true, skip_special_tokens: true,
+        callback_function: (t) => { n++; self.postMessage({ type: "token", text: t }); } });
+      await gen(m.messages, { max_new_tokens: 512, do_sample: false, streamer });
+      const s = (performance.now() - t0) / 1000;
+      self.postMessage({ type: "done", tps: s > 0 ? n / s : null });
+    } catch (err) { self.postMessage({ type: "error", message: String((err && err.message) || err) }); }
+  }
+});`;
+  }
+
+  function ensureWorker() {
+    if (worker) return worker;
+    worker = new Worker(URL.createObjectURL(new Blob([workerSrc()], { type: "text/javascript" })), { type: "module" });
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === "progress") {
+        if (m.file && m.total > 0) { files[m.file] = { loaded: m.loaded || 0, total: m.total }; curFile = m.file; }
+        const fs = Object.values(files); loaded = fs.reduce((a, f) => a + f.loaded, 0); total = fs.reduce((a, f) => a + f.total, 0);
+        progress = total > 0 ? Math.min(1, loaded / total) : 0;
+      } else if (m.type === "ready") { progress = 1; curFile = ""; status = "ready"; }
+      else if (m.type === "token") { streaming += m.text; }
+      else if (m.type === "done") { msgs.push({ role: "assistant", content: streaming }); streaming = ""; tps = m.tps; status = "ready"; }
+      else if (m.type === "error") { err = m.message; status = "error"; }
+      render();
+    };
+    return worker;
+  }
+
+  function load() { status = "loading"; progress = 0; err = ""; ensureWorker().postMessage({ type: "load" }); render(); }
+  function send(text) {
+    text = text.trim(); if (!text || status === "generating") return;
+    const convo = [{ role: "system", content: "You are the awdk on-device helper. Be concise." }, ...msgs, { role: "user", content: text }];
+    msgs.push({ role: "user", content: text }); streaming = ""; status = "generating";
+    ensureWorker().postMessage({ type: "generate", messages: convo }); render();
+  }
+
+  function render() {
+    const A = "var(--accent)", P = "var(--panel)", L = "var(--line)", M = "var(--muted)";
+    if (mobile) { root.innerHTML = `<div class="card"><strong>On-device WebGPU is off on phones and tablets.</strong> A phone tab cannot hold this model; the OS kills it mid-load without an error. Run <code>adk up</code> on a computer, or serve the model natively on this phone with <code>curl -fsSL https://aitherium.com/phone.sh | bash</code> -- the console finds it on localhost.</div>`; return; }
+    if (!gpu) { root.innerHTML = `<div class="card"><strong>WebGPU isn't available in this browser.</strong>
+      <div class="muted" style="margin-top:6px">On-device inference needs WebGPU — use Chrome or Edge. The rest of the console works fine.</div></div>`; return; }
+    let h = "";
+    if (status === "idle") {
+      h = `<button class="btn" id="odLoad">Load model (~${MODEL.mb} MB, one-time)</button>
+        <div class="muted" style="margin-top:8px">Downloads once, then it's cached on this device and never re-downloads.</div>`;
+    } else if (status === "loading") {
+      const compiling = progress >= 1;
+      h = `<div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;font-size:14px"><b>${compiling ? "Compiling on your GPU…" : "Downloading model…"}</b><span class="muted">${Math.round(progress * 100)}%</span></div>
+        <div style="height:8px;border-radius:999px;background:var(--chip);overflow:hidden"><div style="height:100%;width:${Math.max(3, Math.round(progress * 100))}%;background:${A};border-radius:999px;transition:width .3s ease;${compiling ? "animation:odpulse 1.1s ease-in-out infinite" : ""}"></div></div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:${M};font-variant-numeric:tabular-nums"><span>${total > 0 ? mb(loaded) + " / " + mb(total) + " MB" : "starting…"}</span><span>one-time · cached on your device</span></div>
+        ${curFile && !compiling ? `<div style="font-size:12px;color:${M}">fetching ${curFile}</div>` : ""}</div>`;
+    } else if (status === "error") {
+      h = `<div class="card" style="border-color:var(--err)"><strong style="color:var(--err)">Error</strong><div class="muted" style="margin-top:6px">${err}</div>
+        <button class="btn" id="odLoad" style="margin-top:10px">Retry</button></div>`;
+    } else {
+      const rows = msgs.map((m) => m.role === "user"
+        ? `<div style="align-self:flex-end;background:${A};color:var(--accent-ink);padding:8px 12px;border-radius:12px;max-width:80%">${escapeHtml(m.content)}</div>`
+        : `<div style="align-self:flex-start;background:var(--chip);padding:8px 12px;border-radius:12px;max-width:80%;white-space:pre-wrap">${escapeHtml(m.content)}</div>`).join("");
+      const stream = streaming ? `<div style="align-self:flex-start;background:var(--chip);padding:8px 12px;border-radius:12px;max-width:80%;white-space:pre-wrap">${escapeHtml(streaming)}▍</div>` : "";
+      const empty = (!msgs.length && !streaming) ? `<div class="muted">Loaded and running on your GPU. Ask it anything.</div>` : "";
+      h = `<div id="odLog" style="display:flex;flex-direction:column;gap:10px;min-height:30vh;max-height:52vh;overflow:auto">${rows}${stream}${empty}</div>
+        ${tps != null ? `<div class="muted" style="font-size:12px;margin:6px 0">${tps.toFixed(1)} tok/s · on your GPU</div>` : ""}
+        <form id="odForm" class="row" style="margin-top:10px"><textarea id="odIn" rows="1" placeholder="Message the on-device model…" style="flex:1" ${status === "generating" ? "disabled" : ""}></textarea>
+        <button class="btn" id="odSend" ${status === "generating" ? "disabled" : ""}>${status === "generating" ? "…" : "Send"}</button></form>`;
+    }
+    root.innerHTML = h;
+    const lb = document.getElementById("odLoad"); if (lb) lb.onclick = load;
+    const f = document.getElementById("odForm"); if (f) f.onsubmit = (e) => { e.preventDefault(); const i = document.getElementById("odIn"); send(i.value); i.value = ""; };
+    const lg = document.getElementById("odLog"); if (lg) lg.scrollTop = lg.scrollHeight;
+  }
+  function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+  // keyframes for the compile pulse
+  const st = document.createElement("style"); st.textContent = "@keyframes odpulse{0%,100%{opacity:1}50%{opacity:.55}}"; document.head.appendChild(st);
+
+  // lazy init on first tab open (don't touch WebGPU until the user asks)
+  navBtn.addEventListener("click", () => { if (!inited) { inited = true; render(); } });
+})();
+</script>
+</body>
+</html>

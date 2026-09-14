@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aither Mesh Console</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+  --fg:#e7e9ee; --dim:#9aa3b2; --accent:#4f8cff; --ok:#3ba55d; --warn:#e0a24e; --err:#c0392b;
+  --code:#0c0e13;
+}
+@media(prefers-color-scheme:light){:root{
+  --bg:#f4f5f7; --panel:#fff; --panel2:#f0f2f5; --line:#e2e5ea;
+  --fg:#141824; --dim:#6b7280; --accent:#2563eb; --code:#f2f3f6;
+}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);
+ color:var(--fg);display:flex;flex-direction:column;height:100vh}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);
+ background:var(--panel);flex:none}
+header .title{font-weight:650}
+header .sub{color:var(--dim);font-size:12px}
+header .spacer{flex:1}
+header button{background:none;border:1px solid var(--line);color:var(--dim);border-radius:8px;
+ padding:5px 10px;cursor:pointer;font:inherit;font-size:12px}
+header button:hover{color:var(--fg);border-color:var(--accent)}
+.wrap{flex:1;display:flex;min-height:0}
+/* sidebar */
+aside{width:250px;border-right:1px solid var(--line);background:var(--panel);overflow-y:auto;flex:none}
+aside .head{padding:10px 14px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.agent{padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;flex-direction:column;gap:2px}
+.agent:hover{background:var(--panel2)}
+.agent.sel{background:var(--panel2);border-left:3px solid var(--accent);padding-left:11px}
+.agent .n{font-weight:600}
+.agent .m{color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:var(--dim)}
+.dot.online{background:var(--ok)} .dot.offline{background:var(--err)}
+/* main */
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+.tabs{display:flex;gap:2px;padding:8px 14px 0;border-bottom:1px solid var(--line);background:var(--panel);
+ flex:none;overflow-x:auto}
+.tab{padding:7px 13px;cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;
+ color:var(--dim);font-size:13px;white-space:nowrap}
+.tab.sel{color:var(--fg);background:var(--panel2);border-color:var(--line)}
+.body{flex:1;overflow:auto;padding:16px 18px}
+.empty{color:var(--dim);text-align:center;margin-top:18vh}
+h3{margin:0 0 10px;font-size:14px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600}
+td.k{color:var(--dim);white-space:nowrap;width:1%}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+ overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12.5px;max-height:60vh}
+.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:11px;border:1px solid var(--line);color:var(--dim)}
+.masked{color:var(--warn);font-family:ui-monospace,Consolas,monospace}
+.act{background:none;border:1px solid var(--line);color:var(--dim);border-radius:7px;padding:3px 9px;
+ cursor:pointer;font:inherit;font-size:12px}
+.act:hover{color:var(--fg);border-color:var(--accent)}
+.act.danger:hover{color:#fff;background:var(--err);border-color:var(--err)}
+.msg{color:var(--dim);font-size:12px;margin:6px 0}
+.err{color:var(--err)}
+.note{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 11px;
+ color:var(--dim);font-size:12px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<header>
+  <span class="title">Aither Mesh Console</span>
+  <span class="sub" id="sub">discovering agents…</span>
+  <span class="spacer"></span>
+  <button id="refresh">↻ Refresh</button>
+</header>
+<div class="wrap">
+  <aside>
+    <div class="head">Mesh Agents</div>
+    <div id="agentList"></div>
+  </aside>
+  <main>
+    <div class="tabs" id="tabs" style="display:none">
+      <div class="tab sel" data-t="overview">Overview</div>
+      <div class="tab" data-t="settings">Settings</div>
+      <div class="tab" data-t="config">Config</div>
+      <div class="tab" data-t="sessions">Sessions</div>
+      <div class="tab" data-t="logs">Logs</div>
+      <div class="tab" data-t="packs">Packs</div>
+      <div class="tab" data-t="mcp">MCP</div>
+    </div>
+    <div class="body" id="body">
+      <div class="empty" id="empty">
+        <h3>Select an agent</h3>
+        <div>See its config, sessions, logs, packs, and MCP servers — read-only,<br>
+        secret values stay masked. Safe controls: reload/enable packs, end a session.</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+(function(){
+  // Bearer from URL fragment (#k=…) — never placed in the URL path/query.
+  var key=(location.hash.match(/[#&]k=([^&]+)/)||[])[1]||'';
+  function hdrs(h){h=h||{};if(key)h['Authorization']='Bearer '+decodeURIComponent(key);return h;}
+  function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+  var agents=[], selected=null, tab='overview';
+  var listEl=document.getElementById('agentList'), bodyEl=document.getElementById('body'),
+      emptyEl=document.getElementById('empty'), tabsEl=document.getElementById('tabs'),
+      subEl=document.getElementById('sub');
+
+  async function api(path, opts){
+    // path is relative to the current agent's admin proxy, e.g. "config".
+    var url='/mesh/agents/'+encodeURIComponent(selected.name)+'/admin/'+path;
+    var res=await fetch(url,Object.assign({headers:hdrs((opts&&opts.headers)||{})},opts||{}));
+    var text=await res.text(), data;
+    try{data=JSON.parse(text)}catch(e){data=text}
+    if(!res.ok){throw {status:res.status,data:data}}
+    return data;
+  }
+
+  function renderAgents(){
+    listEl.innerHTML='';
+    if(!agents.length){listEl.innerHTML='<div class="agent"><div class="m">none discovered</div></div>';return;}
+    agents.forEach(function(a){
+      var d=document.createElement('div');
+      d.className='agent'+(selected&&selected.name===a.name?' sel':'');
+      var online=(a.status||'').toLowerCase()==='online';
+      d.innerHTML='<div class="n"><span class="dot '+(online?'online':(a.status?'offline':''))+'"></span>'+
+        esc(a.name)+'</div><div class="m">'+esc(a.model||a.provider_hint||a.reach||'')+'</div>';
+      d.onclick=function(){selected=a;tab='overview';renderTabs();renderAgents();renderTab();};
+      listEl.appendChild(d);
+    });
+  }
+  function renderTabs(){
+    tabsEl.style.display=selected?'flex':'none';
+    emptyEl.style.display=selected?'none':'';
+    Array.prototype.forEach.call(tabsEl.children,function(t){
+      t.className='tab'+(t.dataset.t===tab?' sel':'');
+      t.onclick=function(){tab=t.dataset.t;renderTabs();renderTab();};
+    });
+  }
+
+  function kvTable(obj){
+    var rows=Object.keys(obj||{}).map(function(k){
+      var v=obj[k];
+      if(v&&typeof v==='object')v=JSON.stringify(v);
+      return '<tr><td class="k">'+esc(k)+'</td><td>'+esc(v)+'</td></tr>';
+    }).join('');
+    return '<table>'+rows+'</table>';
+  }
+  function loading(){bodyEl.innerHTML='<div class="msg">loading…</div>';}
+  function showErr(e){
+    var s=e&&e.status, d=e&&e.data;
+    var m=(d&&d.error)||(typeof d==='string'?d:'request failed');
+    bodyEl.innerHTML='<div class="note err">'+(s?('HTTP '+s+' — '):'')+esc(m)+
+      (s===401?' — open this console via `adk up` (auth token missing).':'')+
+      (s===403?' — this route is not permitted through the mesh console.':'')+'</div>';
+  }
+
+  async function renderTab(){
+    if(!selected)return;
+    loading();
+    try{
+      if(tab==='overview'){
+        var meta={}; try{meta=await api('meta')}catch(e){}
+        var llm={}; try{llm=await api('llm/status')}catch(e){}
+        bodyEl.innerHTML='<h3>'+esc(selected.name)+'</h3>'+
+          '<div class="note">reach: '+esc(selected.reach||'?')+' · backend: '+
+          esc(selected.provider_hint||'?')+' · model: '+esc(selected.model||'?')+'</div>'+
+          '<h3>Meta</h3>'+kvTable(meta)+'<h3 style="margin-top:16px">LLM</h3>'+kvTable(llm);
+      } else if(tab==='settings'){
+        var st=await api('llm/status');
+        var provs=(st&&st.providers)||[];
+        // Backend options: cloud providers (from status) + common local backends.
+        var localOpts=['llamacpp','vllm','ollama','lmstudio','genesis'];
+        var cloudIds=provs.map(function(p){return p.id;});
+        var allBackends=localOpts.concat(cloudIds.filter(function(x){return localOpts.indexOf(x)<0;}));
+        var active=(st&&st.active_backend)||'?';
+        var curModel=(st&&st.model)||'';
+        function opts(list,sel){return list.map(function(v){
+          return '<option value="'+esc(v)+'"'+(v===sel?' selected':'')+'>'+esc(v)+'</option>';}).join('');}
+        var provRows=provs.map(function(p){
+          return '<tr><td>'+esc(p.label||p.id)+'</td><td>'+
+            (p.has_key?('<span class="masked">'+esc(p.key_preview||'••••')+'</span>')
+                      :'<span class="pill">no key</span>')+'</td></tr>';
+        }).join('');
+        bodyEl.innerHTML=
+          '<h3>Inference backend</h3>'+
+          '<div class="note">Active: <b>'+esc(active)+'</b>'+(curModel?(' · model '+esc(curModel)):'')+
+          (st&&st.local_backend_detected?(' · local detected: '+esc(st.local_backend||'')):'')+'</div>'+
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Backend'+
+            '<select id="swBackend" style="min-width:150px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px">'+opts(allBackends,active)+'</select></label>'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Model'+
+            '<input id="swModel" value="'+esc(curModel)+'" placeholder="(optional)" style="padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px"></label>'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Base URL (local/custom)'+
+            '<input id="swBase" placeholder="e.g. http://192.168.1.121:8090/v1" style="min-width:230px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px"></label>'+
+          '<button class="act" id="swSave">Switch backend</button>'+
+          '<button class="act" id="swTest">Test</button></div>'+
+          '<div class="msg" id="swMsg"></div>'+
+          '<h3 style="margin-top:18px">Provider API keys</h3>'+
+          '<div class="note">Enter a key to set it; stored keys show masked and are never displayed in full. '+
+          'Keys are saved to the agent’s own vault via its admin API.</div>'+
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Provider'+
+            '<select id="kProv" style="min-width:150px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px">'+
+            opts(cloudIds.length?cloudIds:['openai','anthropic','groq','deepseek'],'')+'</select></label>'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">API key'+
+            '<input id="kVal" type="password" autocomplete="off" placeholder="paste key…" style="min-width:230px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px"></label>'+
+          '<button class="act" id="kSave">Set key</button></div>'+
+          '<div class="msg" id="kMsg"></div>'+
+          (provRows?('<table style="margin-top:8px"><tr><th>provider</th><th>key</th></tr>'+provRows+'</table>'):'');
+
+        document.getElementById('swSave').onclick=async function(){
+          var m=document.getElementById('swMsg');m.textContent='switching…';m.className='msg';
+          try{
+            var r=await api('llm/switch',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({provider:document.getElementById('swBackend').value,
+                model:document.getElementById('swModel').value||undefined,
+                base_url:document.getElementById('swBase').value||undefined})});
+            m.textContent='✓ active: '+(r.active_backend||'?')+(r.model?(' · '+r.model):'');
+          }catch(e){m.className='msg err';m.textContent='✗ '+((e.data&&(e.data.detail||e.data.error))||('HTTP '+e.status));}
+        };
+        document.getElementById('swTest').onclick=async function(){
+          var m=document.getElementById('swMsg');m.textContent='testing…';m.className='msg';
+          try{var r=await api('llm/test',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({provider:document.getElementById('swBackend').value})});
+            m.textContent='✓ '+(r.provider||'')+': '+(r.response_preview||'ok');
+          }catch(e){m.className='msg err';m.textContent='✗ '+((e.data&&(e.data.error))||('HTTP '+e.status));}
+        };
+        document.getElementById('kSave').onclick=async function(){
+          var m=document.getElementById('kMsg');var val=document.getElementById('kVal').value;
+          if(!val){m.className='msg err';m.textContent='enter a key';return;}
+          m.textContent='saving…';m.className='msg';
+          try{
+            var r=await api('llm/keys',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({provider:document.getElementById('kProv').value,api_key:val})});
+            document.getElementById('kVal').value='';
+            m.textContent='✓ '+(r.provider||'')+' key set ('+(r.key_preview||'••••')+')';
+            renderTab();  // refresh masked list
+          }catch(e){m.className='msg err';m.textContent='✗ '+((e.data&&(e.data.error))||('HTTP '+e.status));}
+        };
+      } else if(tab==='config'){
+        var cfg=await api('config');
+        bodyEl.innerHTML='<h3>Effective config</h3>'+
+          '<div class="note">Secret values are masked by the agent. This console cannot read or set key values.</div>'+
+          '<pre>'+esc(JSON.stringify(cfg,null,2))+'</pre>';
+      } else if(tab==='sessions'){
+        var s=await api('sessions');
+        var arr=Array.isArray(s)?s:(s.sessions||[]);
+        if(!arr.length){bodyEl.innerHTML='<div class="msg">no active sessions</div>';return;}
+        var rows=arr.map(function(x){
+          var id=x.session_id||x.id||x;
+          return '<tr><td>'+esc(id)+'</td><td>'+esc(x.turns!=null?x.turns:'')+'</td>'+
+            '<td><button class="act danger" data-end="'+esc(id)+'">End</button></td></tr>';
+        }).join('');
+        bodyEl.innerHTML='<h3>Sessions</h3><table><tr><th>id</th><th>turns</th><th></th></tr>'+rows+'</table>';
+        Array.prototype.forEach.call(bodyEl.querySelectorAll('[data-end]'),function(b){
+          b.onclick=async function(){
+            b.disabled=true;
+            try{await api('sessions/'+encodeURIComponent(b.dataset.end),{method:'DELETE'});renderTab();}
+            catch(e){showErr(e);}
+          };
+        });
+      } else if(tab==='logs'){
+        var l=await api('logs/tail');
+        var text=typeof l==='string'?l:(l.lines?l.lines.join('\n'):JSON.stringify(l,null,2));
+        bodyEl.innerHTML='<h3>Recent logs</h3><pre>'+esc(text)+'</pre>';
+      } else if(tab==='packs'){
+        var p=await api('packs');
+        var arr=Array.isArray(p)?p:(p.packs||[]);
+        var rows=arr.map(function(x){
+          var id=x.id||x.name||x, on=x.enabled!==false;
+          return '<tr><td>'+esc(id)+'</td><td><span class="pill">'+(on?'enabled':'disabled')+'</span></td>'+
+            '<td><button class="act" data-pack="'+esc(id)+'" data-on="'+(on?'0':'1')+'">'+
+            (on?'Disable':'Enable')+'</button></td></tr>';
+        }).join('');
+        bodyEl.innerHTML='<h3>Packs</h3><div style="margin-bottom:8px">'+
+          '<button class="act" id="reloadPacks">↻ Reload packs</button></div>'+
+          '<table><tr><th>pack</th><th>state</th><th></th></tr>'+rows+'</table>';
+        var rb=document.getElementById('reloadPacks');
+        if(rb)rb.onclick=async function(){rb.disabled=true;
+          try{await api('packs/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});renderTab();}
+          catch(e){showErr(e);}};
+        Array.prototype.forEach.call(bodyEl.querySelectorAll('[data-pack]'),function(b){
+          b.onclick=async function(){b.disabled=true;
+            var route=b.dataset.on==='1'?'packs/enable':'packs/disable';
+            try{await api(route,{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({id:b.dataset.pack,pack_id:b.dataset.pack})});renderTab();}
+            catch(e){showErr(e);}};
+        });
+      } else if(tab==='mcp'){
+        var m=await api('mcp/servers');
+        var arr=Array.isArray(m)?m:(m.servers||[]);
+        if(!arr.length){bodyEl.innerHTML='<div class="msg">no MCP servers configured</div>';return;}
+        var rows=arr.map(function(x){
+          return '<tr><td>'+esc(x.id||x.name||'')+'</td><td>'+esc(x.url||x.command||'')+'</td>'+
+            '<td>'+esc(x.status||'')+'</td></tr>';
+        }).join('');
+        bodyEl.innerHTML='<h3>MCP servers</h3><table><tr><th>id</th><th>endpoint</th><th>status</th></tr>'+rows+'</table>';
+      }
+    }catch(e){showErr(e);}
+  }
+
+  async function discover(){
+    subEl.textContent='discovering agents…';
+    try{
+      var r=await fetch('/mesh/agents',{headers:hdrs({})});
+      if(!r.ok){subEl.textContent='discovery failed ('+r.status+')';
+        subEl.className='sub err';return;}
+      var j=await r.json();
+      agents=j.agents||[];
+      subEl.textContent=agents.length+' agent'+(agents.length===1?'':'s')+
+        (j.warnings&&j.warnings.length?(' · '+j.warnings.length+' warning'):'');
+      // keep selection if still present
+      if(selected){var still=agents.filter(function(a){return a.name===selected.name})[0];selected=still||null;}
+      renderAgents();renderTabs();if(selected)renderTab();
+    }catch(e){subEl.textContent='discovery error';subEl.className='sub err';}
+  }
+
+  document.getElementById('refresh').onclick=discover;
+  if(!key){subEl.textContent='no auth token — open via `adk up`';subEl.className='sub err';}
+  discover();
+})();
+</script>
+</body>
+</html>

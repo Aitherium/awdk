@@ -1,0 +1,90 @@
+id: mediaforge
+name: media-forge — Creative Studio on YOUR Machine
+version: 0.1.0
+description: >-
+  The image and video pipeline as agent tools, plus the desktop app that
+  drives it. Render and grade (mediaforge_color_grade, _apply_lut,
+  _color_convert, _video_master, _exr_master), animate and drive avatars
+  (_animate, _flf2v, _expression_set, _export_avatar), train and feed LoRAs
+  (_lora_dataset, _lora_train), and burst capacity up and down on demand
+  (_burst_up, _burst_status, _burst_down, _burst_sweep), and turn a picture or a
+  prompt into textured geometry (_generate_3d, _3d_status, _3d_backends).
+  The engine runs on the
+  operator's own machine; this pack is what an agent and a launcher use to reach
+  it.
+category: tool_packs
+author: Aitherium
+icon: clapperboard
+tags: [creative, render, video, 3d, avatar, lora, comfyui, local-first]
+
+# 3D CLAIM: RESTORED 2026-08-24, in the commit that made it true.
+# It had been removed because this manifest advertised an "image, video and 3D"
+# pipeline in four places while shipping no 3D tool -- the phantom-capability
+# shape PTB001 exists to catch -- and carried a standing instruction to re-add it
+# only alongside mediaforge_generate_3d. mcp_mesh_forge.py is that tool.
+#
+# What it turned out to need was almost nothing: media-forge ALREADY serves
+# /api/studio/make3d and /api/studio/txt2img3d, already tracks them as jobs, and
+# already owns the Hunyuan3D shape->texture->GLB pipeline. The missing piece was
+# only the agent surface. Note what was NOT built: a service in front of
+# ComfyUI-3D. That existed as aitheros-meshgen and was deleted as "a pointless
+# proxy", so adding one back would have re-made a decision already taken.
+#
+# The claim is now 27 tools, not 24. Keep this pairing: if the 3D tools are ever
+# removed, the word comes out of the description and the tags in the SAME commit.
+mcp_tools:
+  - "mediaforge_*"
+
+# Registration is dynamic, same shape as deep_research: the loader file-loads
+# this pack's __init__.py by path and calls register(). No monorepo dotted path,
+# so the pack stays installable by a stranger.
+tool_modules: []
+
+# availability:local — the tools reach an engine the operator runs. There is no
+# hosted surface to entitle, so there is nothing to gate. This is deliberately
+# NOT a way to get paid features for free; it is that the compute is theirs.
+entitlements: []
+
+skills: []
+
+# ── desktop app ────────────────────────────────────────────────────────────
+# NEW in this pack, and the reason it exists.
+#
+# A desktop app costs three hand-edits in three shared files today: an entry in
+# apps-manifest.ts (4,053 lines), a lazy import in veil-widget-import-map.ts,
+# and an id hand-curated into the no-account Set in app-catalog-context.tsx.
+# That drifts -- DAW001 sits pinned at 23 apps that list a window Veil cannot
+# render -- and the drift is invisible, because a missing app is
+# indistinguishable from an app nobody wanted.
+#
+# Declaring it HERE makes the app travel with the thing that implements it. The
+# census in check_desktop_app_wiring.py reads this block as well as the two
+# files, so a pack-declared app is judged exactly like a hardcoded one. Without
+# that half the census would read a shrinking fraction of reality and go quietly
+# vacuous, which is the failure this repo hits most.
+desktop_app:
+  id: mediaforge
+  name: media-forge
+  description: >-
+    Creative studio - image and video pipelines; runs on YOUR machine
+  icon: clapperboard
+  category: creative
+  status: beta
+  # requires_auth:false + availability:local + no_account:true is the honest
+  # trio for this app, and all three are load-bearing. It needs no account
+  # because it reaches the visitor's own engine; saying so is what makes it
+  # offerable to a signed-out stranger. It is NOT a hosted demo, and a pack
+  # cannot make it one -- packaging does not give anybody an engine.
+  requires_auth: false
+  availability: local
+  no_account: true
+  widget:
+    id: mediaforge
+    entry: "@/components/desktop/mediaforge-widget"
+    export: MediaForgeWidget
+    default_size: { width: 1280, height: 820 }
+    icon: clapperboard
+  keywords: [media-forge, mediaforge, studio, render, image, video, comfyui]
+
+persona_fragments:
+  - "You can drive media-forge with mediaforge_* tools: _color_grade / _apply_lut / _color_convert for grading, _video_master and _exr_master for mastering, _animate / _flf2v / _expression_set / _export_avatar for motion and avatars, _lora_dataset and _lora_train to build a style, and _burst_up / _burst_status / _burst_down to rent capacity only while it is needed. The engine runs on the operator's machine — check mediaforge_status before promising a render."

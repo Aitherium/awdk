@@ -1,0 +1,47 @@
+id: node-bootstrap
+name: Node Bootstrap — Hardware Detection, Recipe Matching & Deployment
+version: 1.0.0
+description: >-
+  Hardware-aware inference node bootstrap. Detects system specs, resolves deployment
+  recipes (vLLM, Ollama, llama.cpp, cloud-api), renders deployment plans, applies
+  deployment (Docker Compose or systemd), enrolls with the control plane, registers
+  backends, and verifies inference endpoints. All tools are fail-soft dict-returners.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: server
+tags: [node, bootstrap, inference, deployment, vllm, ollama, hardware, edge]
+
+mcp_tools:
+  - "node_*"
+  - "relay_*"
+
+# Empty -> the loader file-loads this pack's __init__.py by path
+# (pack dir on submodule_search_locations, so `from . import tools` resolves)
+# and calls its register(). No monorepo dotted path; the pack ships standalone.
+tool_modules: []
+
+entitlements: []
+
+# MCP server configuration: when node_bootstrap is deployed as a self-hosted
+# agent pack, it exposes node_* tools via secure MCP. This pack requires
+# explicit entitlement enforcement (enforce_entitlements=true in the loader)
+# to prevent unlicensed deployments in multi-tenant hosted environments.
+mcp_server:
+  enabled: true
+  description: Node bootstrap inference deployment tools (node_* suite)
+  entitlement_required: false  # node_* tools are free tier; tier is enforced via min_tier if set
+  tools: node_*
+
+skills:
+  - node-bootstrap
+
+persona_fragments:
+  - "Node bootstrap: you have node_* tools for hardware-aware inference deployment. node_detect_hardware probes CPU/RAM/GPU; node_resolve_recipe matches recipes (vLLM, Ollama, llama.cpp, cloud API) to hardware; node_plan_deployment renders the deployment steps without side effects; node_apply executes the plan (docker compose, systemd, or remote SSH); node_enroll registers the node with the control plane; node_register_backend posts the backend to Genesis; node_verify checks endpoint health + inference coherence. All tools return dicts (never raise). Missing env vars or credentials => {\"error\": ..., \"fix\": ...}, not anonymous fallback or verify=False."
+  - "node_detect_hardware: returns {system_info: {...hardware...}, recommendation: {...setup advice...}, recommended_recipe: <id or cloud-api>}. Fully local, no network."
+  - "node_resolve_recipe: runs detection internally when needed, then resolves the best recipe by hardware match. Returns {recipe: {...YAML...}, match_score, rationale, warnings}. Explicit recipe_id wins; else automatic scoring by GPU vendor/VRAM, unified memory, RAM, cores; ties break by tier rank."
+  - "node_plan_deployment: pure (no side effects). Returns {steps: [...], compose_template/systemd_unit/delegate, env_dict, ports, download_size_mb, est_duration_min}. Pass to node_apply with dry_run=True to see commands without executing."
+  - "node_apply: executes plan. Local mode: docker compose (writes to ~/.aither/node-bootstrap/) or systemd (requires sudo, returns fix instructions if not root) or returns delegate command. Remote mode (node_ip + ssh_user + ssh_key): SSH subprocess like AitherComet. Idempotent: checks existing containers/units. dry_run=True shows commands without executing, subprocess NOT called."
+  - "node_enroll: fail-closed (no token => error dict), calls adk.enrollment (build_registration + async rich_enroll via asyncio.run). Never anonymous, never verify=False. Redacts token in output."
+  - "node_register_backend: POST {genesis_url}/deploy/cloud-model/register-backend with timeout 15s; URL from arg or env AITHER_GENESIS_URL. Fail-closed on missing URL."
+  - "node_verify: GET health path per backend_type + POST one completion (max_tokens 16), return {status, health, completion_text, latency_ms}. Coherence = non-empty text; timeout 60s default."

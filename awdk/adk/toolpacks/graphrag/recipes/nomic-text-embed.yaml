@@ -1,0 +1,48 @@
+id: nomic-text-embed
+name: nomic-embed-text-v1.5 (general text embeddings)
+embed_role: text
+description: >-
+  The AitherOS general-purpose text embedder — nomic-embed-text-v1.5, 768-dim,
+  served via vLLM. This is what the fleet's memory/RAG (nomic-space vectors) are
+  keyed on, so a self-host that matches it stays vector-compatible with the fleet.
+  Serve args mirror the proven aither-vllm-embeddings config exactly.
+
+model:
+  hf_repo: nomic-ai/nomic-embed-text-v1.5
+  served_name: nomic-embed-text
+  dimension: 768              # verify asserts the embedder actually returns this
+  max_input_tokens: 2048
+
+hardware_requirements:
+  # Tiny — 768-dim embedder fits almost anything; the fleet runs it at 5% of a 5090.
+  min_vram_gb: 2
+  min_ram_gb: 4
+  gpu_vendor: nvidia
+
+serve:
+  port: 8209
+  gpu_memory_utilization: 0.05
+  max_model_len: 2048
+  max_num_seqs: 64
+  dtype: float16
+  task: embed
+  extra_args: []
+  platform_traps:
+    - "This is the fleet's canonical vector space. If you serve a DIFFERENT text
+       embedder, your vectors are NOT comparable to the fleet's memory/RAG store —
+       cross-store retrieval will silently return garbage. Keep nomic-embed-text
+       for fleet parity."
+    - "vLLM auto-detects the embedding architecture; `--task embed` makes it explicit
+       and avoids the model being loaded as a generative LM on newer vLLM builds."
+
+verify:
+  health_timeout_s: 120
+  expected_dimension: 768
+  probe_text: "the quick brown fox"
+  description: >-
+    /v1/embeddings must return a vector of EXACTLY 768 floats. A wrong dimension
+    (or an empty vector at 200 OK) means the model loaded as the wrong task or a
+    different checkpoint — the vectors would be silently useless for retrieval.
+
+fleet_wiring:
+  url_env_var: AITHER_VLLM_EMBEDDING_URL

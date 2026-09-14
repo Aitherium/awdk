@@ -1,0 +1,22 @@
+# Hermes -> AitherOS gateway (Rail 1: CONNECT, zero code)
+# Merge into ~/.hermes/cli-config.yaml.
+#
+# Key shapes verified against hermes' own cli-config.yaml.example:
+#   * top level is `model:` (a MAPPING) — NOT `models:` (a list); a list is ignored.
+#   * provider "custom" == any OpenAI-compatible endpoint, set via `base_url`.
+#   * `mcp_servers:` entries take either command/args (stdio) or `url:` (HTTP).
+
+model:
+  # Any OpenAI-compatible endpoint -> "custom" (aliases: ollama, vllm, llamacpp)
+  provider: "custom"
+  base_url: "{gateway_url}"
+  api_key: "{api_key}"
+  # Whichever model the AitherOS gateway should route to.
+  default: "aither-orchestrator"
+
+mcp_servers:
+  # AitherOS platform toolset over HTTP MCP.
+  aitheros:
+    url: "{mcp_url}"
+    headers:
+      Authorization: "Bearer {api_key}"

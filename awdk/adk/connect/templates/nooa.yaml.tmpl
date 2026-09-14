@@ -1,0 +1,16 @@
+# Nooa LiteLLM gateway bridge
+# This template repoints Nooa's unifiedllm to use the AitherOS gateway for LLM calls
+
+litellm:
+  model: openai/aitheros-default
+  base_url: {gateway_url}
+  api_key: {api_key}
+  timeout: 300
+
+mcp:
+  enabled: true
+  servers:
+    - name: aitheros
+      url: {mcp_url}
+      auth_type: bearer
+      auth_token: {api_key}

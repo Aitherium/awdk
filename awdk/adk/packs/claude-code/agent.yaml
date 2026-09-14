@@ -1,0 +1,31 @@
+# ============================================================================
+# Claude Code — Software Development Agent
+# ============================================================================
+# A coding-focused agent for feature development, debugging, testing,
+# refactoring, and code review.
+
+name: claude-code
+identity: claude-code
+version: "1.0.0"
+description: >
+  Claude Code is a software development agent that helps with feature
+  development, debugging, testing, refactoring, and code review. Works
+  with any programming language and integrates with version control.
+
+# Brain pack identity
+brain_pack: claude-code
+
+# Capabilities this agent exercises (what it's allowed to do)
+capabilities:
+  - LLM_INFERENCE        # Code generation and analysis
+  - FILE_IO              # read and write source code
+  - GIT_OPS              # git diff, status, blame, log
+  - SUBPROCESS           # run tests, linters, build systems
+  - MEMORY_WRITE         # track code review decisions and patterns
+
+# Tool domains this pack enables
+enabled_domains:
+  - code
+  - testing
+  - architecture
+  - memory

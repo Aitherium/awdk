@@ -1,0 +1,75 @@
+id: cpu-sdxl-turbo
+name: CPU-only ComfyUI (SDXL-Turbo, no GPU)
+tier: cpu
+description: >-
+  No usable GPU. Runs ComfyUI in --cpu mode against a turbo/few-step checkpoint so a
+  laptop, an OptiPlex, or a cheap VPS can still generate images. This is the
+  low-resource tier — correctness over speed. Expect tens of seconds to minutes per
+  image, not the ~1s a GPU gives you.
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 4
+  gpu_vendor: none
+  min_vram_gb: 0
+  unified_memory: false
+  notes: >-
+    SDXL in fp32 on CPU needs ~12GB of system RAM resident. Below 16GB the process
+    will swap and effectively hang. Few-step (turbo/lightning) checkpoints are
+    mandatory here — a 30-step sampler on CPU is minutes per image.
+
+imagegen_config:
+  engine: comfyui
+  model_profile: minimal
+  models:
+    - name: minimal profile base
+      source: profile://minimal
+      size_gb: 6.9
+      note: single SDXL base checkpoint + VAE; use a turbo/lightning variant and 4-8 steps
+  serve_args:
+    - --listen 0.0.0.0
+    - --port 8188
+    - --cpu
+  image: ""   # NATIVE: no published CPU-capable image consumes AITHER_MODEL_DOWNLOADS
+  platform_traps:
+    - "CPU mode is 50-200x slower than a GPU. Use 4-8 step turbo/lightning
+       checkpoints and batch_size=1; a default 30-step SDXL workflow will look
+       like a hang."
+    - "No --lowvram on CPU — that flag is a VRAM strategy and does nothing here."
+    - "NATIVE on purpose: ghcr.io/aitherium/comfyui-cloud is CUDA-ONLY and CRASHES on a
+       GPU-less host (`RuntimeError: 0 active drivers` from triton at import) — verified
+       live 2026-07-24. Do not 'fix' this recipe back to that image."
+    - "Because no published CPU image consumes AITHER_MODEL_DOWNLOADS, model provisioning
+       here is a MANUAL step: drop checkpoints into ComfyUI's models/checkpoints/ yourself.
+       imagegen_verify will report 'degraded' until you do — that is accurate, not a bug."
+
+deployment:
+  target: native
+  compose_template: ""
+  delegate: ""
+  port: 8188
+
+backend_config:
+  backend_type: comfyui
+  health_path: /system_stats
+  capability_path: /object_info/CheckpointLoaderSimple
+  generate_path: /prompt
+
+verify:
+  health_timeout_s: 300
+  capability:
+    expect_min_models: 1
+    description: >-
+      ComfyUI answers 200 with ZERO checkpoints installed. The capability probe
+      lists CheckpointLoaderSimple's available checkpoints — that is the only
+      proof the model profile actually landed.
+
+fleet_wiring:
+  catalog_entry:
+    backend: comfyui
+    category: image
+    vram_gb: 0
+    max_resolution: 1024
+    speed: 1
+    quality: 6
+  url_env_var: COMFYUI_URL

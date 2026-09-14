@@ -1,0 +1,64 @@
+"""Authentication routes — OIDC via AitherIdentity + dev-mode login."""
+
+from __future__ import annotations
+
+import secrets as _secrets
+import time
+from typing import Any
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
+from ..config import settings
+
+router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+SESSION_COOKIE = "{{ session_cookie }}"
+_sessions: dict[str, dict[str, Any]] = {}
+
+
+@router.get("/me")
+async def me(request: Request):
+    session_id = request.cookies.get(SESSION_COOKIE)
+    if not session_id or session_id not in _sessions:
+        return JSONResponse(status_code=401, content={"authenticated": False})
+    session = _sessions[session_id]
+    return {
+        "authenticated": True,
+        "user_id": session["user_id"],
+        "email": session.get("email", ""),
+        "display_name": session["display_name"],
+        "tenant_id": session["tenant_id"],
+        "role": session["role"],
+    }
+
+
+@router.post("/logout")
+async def logout(request: Request):
+    session_id = request.cookies.get(SESSION_COOKIE)
+    if session_id and session_id in _sessions:
+        del _sessions[session_id]
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@router.post("/dev-login")
+async def dev_login(request: Request):
+    """Dev-mode login — create session without OIDC. Only works in standalone mode."""
+    if settings.deployment_mode == "saas":
+        return JSONResponse(status_code=403, content={"detail": "Dev login disabled in SaaS mode"})
+
+    session_id = _secrets.token_urlsafe(32)
+    _sessions[session_id] = {
+        "user_id": "dev-user",
+        "email": "dev@local",
+        "display_name": "Developer",
+        "tenant_id": settings.default_tenant_id,
+        "role": "admin",
+        "created_at": time.time(),
+    }
+
+    resp = JSONResponse({"authenticated": True, "display_name": "Developer", "role": "admin"})
+    resp.set_cookie(SESSION_COOKIE, session_id, httponly=True, samesite="lax", max_age=86400 * 7)
+    return resp

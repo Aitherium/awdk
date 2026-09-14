@@ -1,0 +1,71 @@
+id: metal-ollama
+name: Apple Metal Ollama
+tier: gpu-apple
+description: >-
+  Apple Silicon with Metal acceleration via Ollama. Serves 8-14B models on
+  MacBook Air, MacBook Pro, or Mac mini. Efficient inference with native
+  Metal GPU support and seamless integration with macOS.
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 8
+  gpu_vendor: apple
+  min_vram_gb: 0
+  unified_memory: true
+  notes: >-
+    Apple Silicon (M1/M2/M3/M4) with 16GB+ unified memory. Metal acceleration
+    is native to Ollama on macOS. Recommended for macOS-native agents and
+    edge AI on consumer hardware.
+
+inference_config:
+  engine: ollama
+  models:
+    - name: qwen2.5-7b-instruct
+      source: ollama://qwen2.5:7b
+      size_gb: 8.0
+      quantization: default
+      context_window: 128000
+      served_name: nemotron-8b
+    - name: qwen2.5-14b-instruct
+      source: ollama://qwen2.5:14b
+      size_gb: 9.0
+      quantization: default
+      context_window: 128000
+      served_name: qwen2-14b
+  serve_args:
+    - OLLAMA_HOST=0.0.0.0:11434
+    - OLLAMA_NUM_PARALLEL=2
+    - OLLAMA_NUM_GPU=1024
+  image: ''  # native install (brew install ollama); Docker would silently fall back to CPU
+  platform_traps:
+    - metal-acceleration
+    - macos-native
+
+deployment:
+  target: native
+  compose_template: ''  # native: Docker on macOS has no Metal GPU passthrough — use brew-installed ollama
+  delegate: ""
+  port: 11434
+
+backend_config:
+  backend_type: ollama_remote
+  health_path: /api/tags
+  completion_path: /api/generate
+
+verify:
+  health_timeout_s: 30
+  completion:
+    model: qwen2.5:7b
+    prompt: "What are the benefits of functional programming?"
+    min_tokens: 20
+    timeout_s: 180
+
+fleet_wiring:
+  catalog_entry:
+    backend: ollama_remote
+    category: reasoning
+    context_window: 128000
+    vram_gb: 16
+    speed: 20
+    quality: 8
+  ms_env_var: ""

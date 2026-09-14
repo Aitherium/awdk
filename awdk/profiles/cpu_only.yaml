@@ -1,0 +1,80 @@
+# Hardware Profile: CPU Only
+# No discrete GPU available. All inference routed to cloud LLM providers.
+# Local embedding runs on CPU. Suitable for thin-client or CI environments.
+
+name: cpu_only
+description: "No GPU, cloud LLM fallback"
+
+requirements:
+  vram_gb: 0
+  ram_gb: 16
+  gpu_count: 0
+
+models:
+  chat: null      # cloud provider (see cloud_providers below)
+  reasoning: null  # cloud provider
+  vision: null     # cloud provider
+  coding: null     # cloud provider
+  embedding: nomic-embed-text  # runs on CPU, ~300MB RAM
+
+cloud_providers:
+  primary: anthropic
+  fallback: openai
+  models:
+    chat: claude-sonnet-4-20250514
+    reasoning: claude-opus-4-20250514
+    vision: claude-sonnet-4-20250514
+    coding: claude-sonnet-4-20250514
+
+vllm:
+  enabled: false
+  gpu_memory_utilization: 0.0
+  max_model_len: 0
+  tensor_parallel_size: 0
+  workers: []
+
+ollama:
+  gpu_memory_fraction: 0.0
+  cpu_only: true
+  num_parallel: 1
+  num_thread: 4  # adjust to core count
+  models_to_pull:
+    - nomic-embed-text
+
+services:
+  core:
+    - node
+    - pulse
+    - watch
+    - chronicle
+    - secrets
+  agents:
+    - genesis
+    - identity
+  scheduling:
+    - micro_scheduler
+  disabled:
+    - parallel
+    - accel
+    - force
+    - exo
+    - mesh
+    - deployer
+    - trainer
+    - prism
+    - harvest
+    - voice
+    - vision
+
+resource_limits:
+  max_concurrent_requests: 4
+  max_batch_size: 2
+  context_pipeline_timeout_s: 30
+  ollama_max_loaded_models: 1
+
+notes: >
+  CPU-only profile requires cloud API keys configured in AitherSecrets.
+  All LLM inference is routed through MicroScheduler to cloud providers.
+  Only the embedding model runs locally (CPU mode, ~300MB RAM). Latency
+  will be higher than GPU profiles due to network round-trips. Set
+  ANTHROPIC_API_KEY or OPENAI_API_KEY in environment or Secrets service.

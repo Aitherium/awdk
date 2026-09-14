@@ -1,0 +1,37 @@
+<idea-plugin>
+    <id>com.aitherium.aither-jetbrains</id>
+    <name>Aither — ACP + A2A integration</name>
+    <vendor email="hello@aitherium.com" url="https://aitherium.com">Aitherium</vendor>
+
+    <description><![CDATA[
+    Full <b>A2A</b> + <b>ACP</b> integration from JetBrains.
+    <ul>
+      <li><b>ACP (Agent Client Protocol v2)</b> — spawns <code>adk acp serve --agent &lt;name&gt;</code>
+          (the awdk ACP server) and drives the agent over stdio JSON-RPC: chat prompts,
+          session list/resume/close, and the <code>session/request_permission</code> human-in-the-loop
+          approval gate.</li>
+      <li><b>A2A (Agent-to-Agent)</b> — send signed messages to any other AitherOS agent
+          (<code>send_message</code> / <code>invoke_skill</code>) over the mesh.</li>
+    </ul>
+    Requires the <code>awdk</code> CLI on PATH (<code>adk acp serve</code>).
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Aither Agent"
+                    anchor="right"
+                    secondary="true"
+                    icon="/icons/aither.svg"
+                    factoryClass="com.aitherium.ide.ui.AitherToolWindowFactory"/>
+    </extensions>
+
+    <actions>
+        <action id="com.aitherium.ide.OpenAitherToolWindow"
+                class="com.aitherium.ide.OpenAitherAction"
+                text="Open Aither Agent"
+                description="Open the Aither ACP/A2A agent panel">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

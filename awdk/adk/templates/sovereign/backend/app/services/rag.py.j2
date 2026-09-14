@@ -1,0 +1,184 @@
+"""RAG pipeline — chunking, embedding, retrieval via Qdrant.
+
+Uses local sentence-transformers for embeddings with Qdrant on-disk storage
+as fallback when no external Qdrant server is available.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib as _hashlib
+import logging
+from pathlib import Path
+from typing import Optional
+
+from qdrant_client import QdrantClient, models
+
+from ..config import settings
+
+log = logging.getLogger("{{ log_name }}.rag")
+
+_qdrant: Optional[QdrantClient] = None
+_embedder = None
+_vector_dim: int = 384
+
+
+def _get_embedder():
+    global _embedder
+    if _embedder is None:
+        from sentence_transformers import SentenceTransformer
+        log.info("Loading embedding model: %s", settings.embedding_model)
+        _embedder = SentenceTransformer(settings.embedding_model)
+    return _embedder
+
+
+def _embed(texts: list[str]) -> list[list[float]]:
+    embedder = _get_embedder()
+    return embedder.encode(texts, show_progress_bar=False).tolist()
+
+
+def get_qdrant() -> QdrantClient:
+    global _qdrant
+    if _qdrant is None:
+        try:
+            client = QdrantClient(url=settings.qdrant_url, timeout=3)
+            client.get_collections()
+            _qdrant = client
+            log.info("Connected to Qdrant at %s", settings.qdrant_url)
+        except (ConnectionError, OSError, RuntimeError):
+            qdrant_path = settings.db_path.parent / "qdrant_local"
+            qdrant_path.mkdir(parents=True, exist_ok=True)
+            _qdrant = QdrantClient(path=str(qdrant_path))
+            log.info("Using local Qdrant storage at %s", qdrant_path)
+        _ensure_collection()
+    return _qdrant
+
+
+def _ensure_collection():
+    client = _qdrant
+    cols = {c.name: c for c in client.get_collections().collections}
+    if settings.collection_name not in cols:
+        client.create_collection(
+            collection_name=settings.collection_name,
+            vectors_config=models.VectorParams(size=_vector_dim, distance=models.Distance.COSINE),
+        )
+        log.info("Created collection: %s (dim=%d)", settings.collection_name, _vector_dim)
+
+
+# Text extraction
+
+def extract_text(file_path: Path) -> str:
+    suffix = file_path.suffix.lower()
+    if suffix == ".pdf":
+        import fitz
+        doc = fitz.open(str(file_path))
+        text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        return text
+    elif suffix in (".docx", ".doc"):
+        from docx import Document as DocxDocument
+        doc = DocxDocument(str(file_path))
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    elif suffix in (".xlsx", ".xls"):
+        from openpyxl import load_workbook
+        wb = load_workbook(str(file_path), read_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                parts.append("\t".join(str(c) if c is not None else "" for c in row))
+        wb.close()
+        return "\n".join(parts)
+    else:
+        return file_path.read_text(encoding="utf-8", errors="replace")
+
+
+def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> list[str]:
+    chunk_size = chunk_size or settings.chunk_size
+    overlap = overlap or settings.chunk_overlap
+    if not text.strip():
+        return []
+    paragraphs = text.split("\n")
+    chunks = []
+    current = ""
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        if len(current) + len(para) + 1 > chunk_size and current:
+            chunks.append(current)
+            overlap_text = current[-overlap:] if overlap > 0 else ""
+            current = overlap_text + " " + para if overlap_text else para
+        else:
+            current = current + "\n" + para if current else para
+    if current.strip():
+        chunks.append(current)
+    return chunks
+
+
+def ingest_document(
+    file_path: Path, doc_id: str, doc_type: str, filename: str, tenant_id: str = "default",
+) -> tuple[int, dict]:
+    text = extract_text(file_path)
+    chunks = chunk_text(text)
+    if not chunks:
+        return 0, {}
+
+    client = get_qdrant()
+    vectors = _embed(chunks)
+    points = []
+    for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
+        point_id = _hashlib.sha256(f"{doc_id}:{i}".encode()).hexdigest()[:32]
+        points.append(
+            models.PointStruct(
+                id=point_id,
+                vector=vec,
+                payload={
+                    "tenant_id": tenant_id, "doc_id": doc_id,
+                    "doc_type": doc_type, "filename": filename,
+                    "chunk_index": i, "text": chunk,
+                },
+            )
+        )
+    client.upsert(collection_name=settings.collection_name, points=points)
+    log.info("Ingested %d chunks from %s", len(chunks), filename)
+    return len(chunks), {}
+
+
+def search(
+    query: str, top_k: int = None, doc_type: str = None, tenant_id: str | None = None,
+) -> list[dict]:
+    top_k = top_k or settings.top_k
+    client = get_qdrant()
+    query_vec = _embed([query])[0]
+
+    must: list[models.FieldCondition] = []
+    if doc_type:
+        must.append(models.FieldCondition(key="doc_type", match=models.MatchValue(value=doc_type)))
+    if tenant_id:
+        must.append(models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant_id)))
+    filter_cond = models.Filter(must=must) if must else None
+
+    results = client.query_points(
+        collection_name=settings.collection_name,
+        query=query_vec,
+        limit=top_k,
+        query_filter=filter_cond,
+    )
+    return [
+        {"text": r.payload["text"], "filename": r.payload["filename"],
+         "doc_type": r.payload["doc_type"], "doc_id": r.payload.get("doc_id"),
+         "score": r.score}
+        for r in results.points
+    ]
+
+
+def delete_document(doc_id: str):
+    client = get_qdrant()
+    client.delete(
+        collection_name=settings.collection_name,
+        points_selector=models.FilterSelector(
+            filter=models.Filter(
+                must=[models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))]
+            )
+        ),
+    )

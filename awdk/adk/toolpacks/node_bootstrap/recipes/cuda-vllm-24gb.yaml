@@ -1,0 +1,71 @@
+id: cuda-vllm-24gb
+name: NVIDIA CUDA 24GB vLLM
+tier: gpu-medium
+description: >-
+  NVIDIA GPUs with 24GB VRAM. Serves 14-27B models with fp8 KV quantization.
+  Recommended tier for mid-range reasoning and complex task handling.
+
+hardware_requirements:
+  min_ram_gb: 12
+  min_cpu_cores: 6
+  gpu_vendor: nvidia
+  min_vram_gb: 24
+  unified_memory: false
+  notes: >-
+    24GB GPUs: RTX 4090 mobile, RTX 5880, A6000. fp8 KV quantization reduces
+    KV cache footprint enabling larger context windows or longer sequences.
+
+inference_config:
+  engine: vllm
+  models:
+    - name: qwen2-14b-instruct
+      source: hf://Qwen/Qwen2-14B-Instruct
+      size_gb: 14.0
+      quantization: fp8
+      context_window: 128000
+      served_name: qwen2-14b
+    - name: bonsai-27b-awq
+      source: hf://moe-tail-tokenizer/Bonsai-27B-AWQ
+      size_gb: 17.5
+      quantization: AWQ-4bit
+      context_window: 32768
+      served_name: bonsai-27b
+  serve_args:
+    - --host 0.0.0.0
+    - --port 8000
+    - --gpu-memory-utilization 0.80
+    - --max-num-batched-tokens 16384
+    - --max-model-len 16384
+    - --quantization bitsandbytes
+    - --kv-cache-dtype fp8
+  image: vllm/vllm-openai:latest
+  platform_traps: []
+
+deployment:
+  target: docker-compose
+  compose_template: inference-cuda-vllm.yml
+  delegate: ""
+  port: 8000
+
+backend_config:
+  backend_type: vllm
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 90
+  completion:
+    model: qwen2-14b
+    prompt: "Explain quantum entanglement in simple terms."
+    min_tokens: 30
+    timeout_s: 180
+
+fleet_wiring:
+  catalog_entry:
+    backend: vllm
+    category: reasoning
+    context_window: 128000
+    vram_gb: 24
+    speed: 25
+    quality: 9
+  ms_env_var: AITHER_VLLM_24GB_URL

@@ -1,0 +1,36 @@
+id: llm-serving
+name: LLM Serving — vLLM + Fleet Models, Quant-Optimized to the Hardware
+version: 1.0.0
+description: >-
+  Install vLLM and serve the AitherOS fleet models (Nemotron-Orchestrator-8B,
+  gemma4-12b, qwen-27b, deepseek-r1-14b) with quantization and serve flags OPTIMIZED
+  to the detected GPU architecture — NVFP4 on Blackwell, AWQ/W8A16 on Ampere,
+  bitsandbytes on older cards, fp8 KV where supported. Detects hardware, resolves
+  each model's best runnable quant, plans the vLLM command, applies it, and verifies
+  with a real chat round-trip. All tools are fail-soft dict-returners.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: cpu
+tags: [llm, vllm, serving, quantization, nvfp4, awq, nemotron, gemma, qwen, deepseek]
+
+mcp_tools:
+  - "llm_*"
+
+tool_modules: []
+entitlements: []
+
+mcp_server:
+  enabled: true
+  description: vLLM fleet-model serving tools (llm_* suite)
+  entitlement_required: false
+  tools: llm_*
+
+skills:
+  - llm-serving
+
+persona_fragments:
+  - "LLM serving: you have llm_* tools to install vLLM and serve the fleet models with quant OPTIMIZED to the GPU. llm_detect_hardware reports which of the 4 models fit + their best runnable quant; llm_resolve maps a role (orchestrator|perception|reasoner) or model id to a recipe + the hardware-adaptive quant; llm_plan_deployment renders the exact `vllm serve` command; llm_apply installs vLLM and launches it detached; llm_register_backend posts it to Genesis; llm_verify proves it with a real /v1/chat/completions round-trip. All return dicts, never raise."
+  - "THE QUANT OPTIMIZER is the point: it maps GPU name -> arch (Blackwell/Hopper/Ada/Ampere/Turing) -> the quant formats that arch can ACCELERATE, and intersects with each model's preference. NVFP4 needs Blackwell FP4 tensor cores; native fp8 KV cache needs Ada+. Never hand-force a quant the card cannot run — on Ampere nvfp4 fails to load and fp8 KV silently falls back. The optimizer refuses to and warns."
+  - "llm_verify is the positive assertion: /health alone is NOT proof — a vLLM up with the WRONG --served-model-name is a silent routing dead end (status='wrong_model'). Verify checks /v1/models for the expected served name AND does a real chat round-trip requiring non-empty content. status: healthy | wrong_model | degraded | unknown."
+  - "The 4 recipes carry the fleet's PROVEN serve args, not guesses: Nemotron keeps --enable-auto-tool-choice --tool-call-parser hermes (it is tool-calling by design); gemma4 keeps --enforce-eager (mandatory — cudagraph-capture crash without it); qwen-27b keeps max-num-seqs modest (KV-overflow crashloop when saturated)."

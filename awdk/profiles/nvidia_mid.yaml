@@ -1,0 +1,30 @@
+# AitherADK Hardware Profile: NVIDIA Mid VRAM
+# For GPUs with 8-12 GB VRAM (RTX 3070, RTX 4070, etc.)
+
+name: nvidia_mid
+description: NVIDIA GPU with 8-12 GB VRAM — mid-range models with good quality
+
+gpu:
+  vendor: nvidia
+  min_vram_gb: 8
+  max_vram_gb: 12
+
+models:
+  default: "nemotron-orchestrator-8b"
+  small: "llama3.2:3b"
+  large: "deepseek-r1:8b"
+  embedding: "nomic-embed-text"
+
+recommended_models:
+  - "llama3.2:3b"
+  - "nemotron-orchestrator-8b"
+  - "nomic-embed-text"
+  - "deepseek-r1:8b"
+
+limits:
+  max_context: 16384
+  max_concurrent: 1
+
+notes: >
+  Mid-range VRAM. Can run 8B models with good speed.
+  Reasoning models like deepseek-r1:8b also fit well.

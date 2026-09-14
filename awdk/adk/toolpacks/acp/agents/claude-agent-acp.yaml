@@ -1,0 +1,20 @@
+# claude-agent-acp — Anthropic's Claude Code as an external ACP agent.
+# Valid AgentPackManifest (load_agent_pack): the runtime.cmd is the binary that
+# speaks ACP on stdio. Direct-spawn via acp_connect / adk backend add acp.
+id: claude-agent-acp
+name: Claude Agent (ACP)
+version: 1.0.0
+description: >-
+  Claude Code exposed over the Agent Client Protocol. The `claude` CLI must be
+  installed and reachable; drive it with acp_connect / acp_prompt or register
+  it as the model backend (`adk backend add acp --command claude`).
+framework: native
+protocol: acp
+runtime:
+  type: python
+  cmd: claude
+  args: ["-p", "claude-agent-acp"]
+entrypoint: claude-agent-acp
+install: |
+  npm install -g @anthropic-ai/claude-agent-acp
+  # or, if the `claude` binary is already present: adk backend add acp --command claude

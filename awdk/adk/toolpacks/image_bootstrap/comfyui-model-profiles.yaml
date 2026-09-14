@@ -1,0 +1,340 @@
+# ============================================================================
+# ComfyUI burst-worker MODEL PROFILES (per-workload manifest)
+# ============================================================================
+#
+# Consumed by:
+#   AitherOS/lib/compute/comfyui_models.py
+#     load_profile(name)  -> list[dict]   (resolved catalog entries for a profile)
+#     to_downloads(name)  -> list[{url,dest}]  (the AITHER_MODEL_DOWNLOADS array)
+#
+# The cloud entrypoint (docker/Dockerfile.comfyui-cloud) reads the
+# AITHER_MODEL_DOWNLOADS env var as a JSON array of {url,dest}. For each entry
+# it `mkdir -p "$dest"` then dispatches by URL scheme:
+#     hf://<repo>      -> huggingface-cli download <repo> --local-dir $dest
+#     http(s)://...    -> curl -fsSL <url> -o $dest/$(basename url)
+# (no sha verification today; failures are non-fatal). `dest` here is the
+# ComfyUI *subdir* under COMFY_MODELS_VOLUME (default /comfyui/models); the
+# resolver prefixes the volume root and adds a trailing slash.
+#
+# ----------------------------------------------------------------------------
+# RESOLVER  (the `source` field decides where a model is fetched from)
+# ----------------------------------------------------------------------------
+#   source: minio    PRIVATE + FAST. Pulled from the fleet's aitheros-minio
+#                    object store (bucket `aither-models`, see
+#                    docker-compose.aitheros.yml). `ref` = "<bucket>/<key>"
+#                    (or bare "<key>" -> default bucket aither-models).
+#                    to_downloads() turns this into a time-limited *presigned
+#                    https URL* (boto3 generate_presigned_url against
+#                    MINIO_ENDPOINT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY) so the
+#                    rented GPU's plain `curl` branch can fetch it without creds.
+#                    `public_ref` (optional) records the upstream hf/civitai
+#                    origin used to SEED the bucket / fall back when MinIO is
+#                    unreachable.
+#   source: strata   CURATED/private, served via the MODEL FABRIC
+#                    (lib/compute/model_fabric.py over AitherStrata :8136 +
+#                    AitherNexus ai_models :8122). `ref` = the canonical
+#                    aither:// path "aither://models/<shared|tenant>/<subdir>/
+#                    <name>". to_downloads() calls model_fabric.resolve_model(ref,
+#                    tenant) which RBAC-checks the namespace and mints the same
+#                    curl-able MinIO presigned URL. `public_ref` (hf) is the
+#                    offline / RBAC-denied fallback. Tenant threaded from caller.
+#   source: hf       PUBLIC. HuggingFace. `ref` = "<repo>::<file>" ->
+#                    https://huggingface.co/<repo>/resolve/main/<file>.
+#                    If `ref` has no "::" the whole repo is pulled via the
+#                    entrypoint's `hf://<repo>` scheme.
+#   source: civitai  PUBLIC. `ref` = "<modelVersionId>" ->
+#                    https://civitai.com/api/download/models/<versionId>
+#                    (CIVITAI_TOKEN env appended as ?token= when present).
+#
+# Entry fields: {name, dest, source, ref, public_ref?, sha?, required, note?}
+#   required: true  -> core; must be present for the profile to function.
+#   required: false -> optional enhancer; pull best-effort, non-fatal if missing.
+#
+# Model facts mirror the media-forge forge-studio modules (D:\media-forge\app:
+#   studio.py STUDIO_STYLES, studio_img.py, iclight.py, layerdiff.py,
+#   enhance.py, pose.py, compositor/faceswap).
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# CATALOG — every known model, keyed by id. Profiles reference these ids.
+# ---------------------------------------------------------------------------
+catalog:
+
+  # ---- SDXL bases (style checkpoints) -------------------------------------
+  juggernaut_xl_v9:
+    name: Juggernaut-XL-v9.safetensors
+    dest: checkpoints
+    source: strata                      # CURATED/private -> served via the fabric
+    ref: aither://models/shared/checkpoints/Juggernaut-XL-v9.safetensors
+    public_ref: "RunDiffusion/Juggernaut-XL-v9::Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
+    required: true
+    note: photoreal SDXL base (studio.py STUDIO_STYLES photoreal)
+
+  wai_illustrious_v140:
+    name: waiIllustriousSDXL_v140.safetensors
+    dest: checkpoints
+    source: civitai
+    ref: "827184"                        # WAI-NSFW-Illustrious-SDXL v14.0
+    required: true
+    note: anime SDXL base (studio.py STUDIO_STYLES anime)
+
+  sdxl_vae:
+    name: sdxl_vae.safetensors
+    dest: vae
+    source: strata
+    ref: aither://models/shared/vae/sdxl_vae.safetensors
+    public_ref: "stabilityai/sdxl-vae::sdxl_vae.safetensors"
+    required: true
+    note: studio_img._vae_ref (config studio_vae)
+
+  # ---- IC-Light relight (SD1.5) -------------------------------------------
+  sd15_base:
+    name: v1-5-pruned-emaonly.safetensors
+    dest: checkpoints
+    source: hf
+    ref: "runwayml/stable-diffusion-v1-5::v1-5-pruned-emaonly.safetensors"
+    required: true
+    note: SD1.5 base for IC-Light (iclight._base_ckpt)
+
+  iclight_fc:
+    name: iclight_sd15_fc_unet_ldm.safetensors
+    dest: unet
+    source: strata                      # CURATED IC-Light relight unet -> fabric
+    ref: aither://models/shared/unet/iclight_sd15_fc_unet_ldm.safetensors
+    public_ref: "lllyasviel/ic-light::iclight_sd15_fc.safetensors"
+    required: true
+    note: iclight.py FC relight unet
+
+  iclight_fbc:
+    name: iclight_sd15_fbc_unet_ldm.safetensors
+    dest: unet
+    source: strata                      # CURATED IC-Light relight unet -> fabric
+    ref: aither://models/shared/unet/iclight_sd15_fbc_unet_ldm.safetensors
+    public_ref: "lllyasviel/ic-light::iclight_sd15_fbc.safetensors"
+    required: true
+    note: iclight.py FBC relight unet
+
+  # ---- LayerDiffuse transparent layers ------------------------------------
+  layerdiff_transparent_vae:
+    name: vae_transparent_decoder.safetensors
+    dest: layer_model
+    source: strata                      # CURATED LayerDiffuse layer -> fabric
+    ref: aither://models/shared/layer_model/vae_transparent_decoder.safetensors
+    public_ref: "LayerDiffusion/layerdiffuse::vae_transparent_decoder.safetensors"
+    required: true
+    note: layerdiff.py RGBA decode
+
+  layerdiff_transparent_attn:
+    name: layer_xl_transparent_attn.safetensors
+    dest: layer_model
+    source: strata                      # CURATED LayerDiffuse layer -> fabric
+    ref: aither://models/shared/layer_model/layer_xl_transparent_attn.safetensors
+    public_ref: "LayerDiffusion/layerdiffuse::layer_xl_transparent_attn.safetensors"
+    required: true
+    note: layerdiff.py transparent-attn apply
+
+  # ---- Optional: detail / sliders -----------------------------------------
+  detail_tweaker_xl:
+    name: DetailTweakerXL.safetensors
+    dest: loras
+    source: strata                      # CURATED detail/slider LoRA -> fabric
+    ref: aither://models/shared/loras/DetailTweakerXL.safetensors
+    # Its own note already recorded the upstream; this makes it RESOLVABLE.
+    public_ref: "135867"
+    required: false
+    note: enhance.py detail/slider LoRA (curated; upstream civitai 135867)
+
+  # ---- Optional: upscalers -------------------------------------------------
+  realesrgan_x4plus:
+    name: RealESRGAN_x4plus.pth
+    dest: upscale_models
+    source: hf
+    ref: "ai-forever/Real-ESRGAN::RealESRGAN_x4plus.pth"
+    required: false
+    note: enhance.py photo upscale
+
+  anime_sharp_4x:
+    name: 4x-AnimeSharp.pth
+    dest: upscale_models
+    source: hf
+    ref: "Kim2091/AnimeSharp::4x-AnimeSharp.pth"
+    required: false
+    note: enhance.py anime upscale
+
+  # ---- Optional: controlnets ----------------------------------------------
+  openpose_xl2:
+    name: OpenPoseXL2.safetensors
+    dest: controlnet
+    source: hf
+    ref: "thibaud/controlnet-openpose-sdxl-1.0::OpenPoseXL2.safetensors"
+    required: false
+    note: pose.py POSE_CN
+
+  cn_anytest_xl_v4:
+    name: controlnetxlCNXL_2vxpswa7AnytestV4.safetensors
+    dest: controlnet
+    source: civitai
+    ref: "404152"                        # CN-anytest XL v4
+    required: false
+    note: studio anytest controlnet
+
+  # ---- Optional: FaceID / IPAdapter ---------------------------------------
+  ip_faceid_plusv2_sdxl:
+    name: ip-adapter-faceid-plusv2_sdxl.bin
+    dest: ipadapter
+    source: hf
+    ref: "h94/IP-Adapter-FaceID::ip-adapter-faceid-plusv2_sdxl.bin"
+    required: false
+    note: faceswap/compositor FaceID
+
+  ip_faceid_plusv2_sdxl_lora:
+    name: ip-adapter-faceid-plusv2_sdxl_lora.safetensors
+    dest: loras
+    source: hf
+    ref: "h94/IP-Adapter-FaceID::ip-adapter-faceid-plusv2_sdxl_lora.safetensors"
+    required: false
+    note: FaceID PlusV2 companion LoRA
+
+  ip_plus_sdxl_vith:
+    name: ip-adapter-plus_sdxl_vit-h.safetensors
+    dest: ipadapter
+    source: hf
+    ref: "h94/IP-Adapter::sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors"
+    required: false
+    note: compositor body/clothing/skin IPAdapter PLUS
+
+  clip_vision_vith:
+    name: CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors
+    dest: clip_vision
+    source: hf
+    ref: "h94/IP-Adapter::models/image_encoder/model.safetensors"
+    required: false
+    note: IPAdapter vision encoder
+
+  # ---- Optional: detailer bbox models -------------------------------------
+  adetailer_hand:
+    name: hand_yolov8s.pt
+    dest: ultralytics/bbox
+    source: hf
+    ref: "Bingsu/adetailer::hand_yolov8s.pt"
+    required: false
+    note: enhance.py hands detailer
+
+  adetailer_face:
+    name: face_yolov8m.pt
+    dest: ultralytics/bbox
+    source: hf
+    ref: "Bingsu/adetailer::face_yolov8m.pt"
+    required: false
+    note: finishing FaceDetailer
+
+  # ---- Optional: negative embeddings --------------------------------------
+  neg_xl_d:
+    name: negativeXL_D.safetensors
+    dest: embeddings
+    source: civitai
+    ref: "134583"                        # negativeXL_D textual inversion
+    required: false
+    note: _neg_with_embeds
+
+  # ---- WAN 2.2 i2v video rendering models ------------------------------------
+  wan2_2_i2v_high_noise:
+    name: wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+    dest: diffusion_models
+    source: minio
+    ref: "shared/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"
+    public_ref: "Comfy-Org/Wan_2.2_ComfyUI_Repackaged::split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"
+    required: true
+    note: WAN 2.2 i2v high-noise expert (first stage of two-stage render)
+
+  wan2_2_i2v_low_noise:
+    name: wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+    dest: diffusion_models
+    source: minio
+    ref: "shared/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"
+    public_ref: "Comfy-Org/Wan_2.2_ComfyUI_Repackaged::split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"
+    required: true
+    note: WAN 2.2 i2v low-noise expert (second stage of two-stage render)
+
+  umt5_xxl_fp8:
+    name: umt5_xxl_fp8_e4m3fn_scaled.safetensors
+    dest: text_encoders
+    source: minio
+    ref: "shared/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    public_ref: "Comfy-Org/Wan_2.1_ComfyUI_repackaged::split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    required: true
+    note: Universal Multilingual T5 XXL (text encoder for WAN 2.2 i2v)
+
+  wan2_1_vae:
+    name: wan_2.1_vae.safetensors
+    dest: vae
+    source: minio
+    ref: "shared/vae/wan_2.1_vae.safetensors"
+    public_ref: "Comfy-Org/Wan_2.1_ComfyUI_repackaged::split_files/vae/wan_2.1_vae.safetensors"
+    required: true
+    note: WAN 2.1 VAE decoder (video frame reconstruction)
+
+  clip_vision_wan:
+    name: CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors
+    dest: clip_vision
+    source: minio
+    ref: "shared/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"
+    public_ref: "Comfy-Org/Wan_2.1_ComfyUI_repackaged::split_files/clip_vision/clip_vision_h.safetensors"
+    required: true
+    note: CLIP-ViT-H vision encoder (for conditional frame input)
+
+# ---------------------------------------------------------------------------
+# PROFILES — per-workload model sets (referenced by catalog id)
+# ---------------------------------------------------------------------------
+profiles:
+
+  minimal:
+    description: >
+      Cheapest possible burst — a single SDXL base + VAE, both served from the
+      private MinIO cache for fast cold-start. Enough for plain txt2img / img2img.
+    models:
+      - juggernaut_xl_v9
+      - sdxl_vae
+
+  studio:
+    description: >
+      Full forge-studio workload: dual SDXL bases (photoreal + anime), IC-Light
+      relight, LayerDiffuse transparent layers (CORE/required) plus the optional
+      detail LoRA, upscalers, controlnets and FaceID/IPAdapter stack.
+    models:
+      # --- core / required ---
+      - juggernaut_xl_v9
+      - wai_illustrious_v140
+      - sdxl_vae
+      - sd15_base
+      - iclight_fc
+      - iclight_fbc
+      - layerdiff_transparent_vae
+      - layerdiff_transparent_attn
+      # --- optional enhancers ---
+      - detail_tweaker_xl
+      - realesrgan_x4plus
+      - anime_sharp_4x
+      - openpose_xl2
+      - cn_anytest_xl_v4
+      - ip_faceid_plusv2_sdxl
+      - ip_faceid_plusv2_sdxl_lora
+      - ip_plus_sdxl_vith
+      - clip_vision_vith
+      - adetailer_hand
+      - adetailer_face
+      - neg_xl_d
+
+  wan_2.2:
+    description: >
+      WAN 2.2 i2v video generation: two-stage diffusion (high-noise expert for
+      structure, low-noise expert for refinement) with UMT5-XXL text encoding.
+      Optimized for 14B two-expert inference on 24GB+ VRAM (fp8 scaled models).
+      References all models from the aither-models/shared MinIO bucket with HF fallback.
+    models:
+      # --- core / required ---
+      - wan2_2_i2v_high_noise
+      - wan2_2_i2v_low_noise
+      - umt5_xxl_fp8
+      - wan2_1_vae
+      - clip_vision_wan

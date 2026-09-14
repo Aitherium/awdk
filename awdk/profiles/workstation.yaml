@@ -1,0 +1,97 @@
+# Hardware Profile: Workstation
+# Dual GPU setup (2x RTX 4090, 2x A6000, RTX 6000 Ada)
+# Runs full model stack with dedicated reasoning and coding models.
+
+name: workstation
+description: "Dual GPU, 48GB+ VRAM, 64GB RAM"
+
+requirements:
+  vram_gb: 48
+  ram_gb: 64
+  gpu_count: 2
+
+models:
+  chat: nemotron-orchestrator-8b
+  reasoning: deepseek-r1:32b
+  vision: llava:13b
+  coding: qwen2.5-coder:14b
+  embedding: nomic-embed-text
+
+vllm:
+  enabled: true
+  gpu_memory_utilization: 0.92
+  max_model_len: 16384
+  tensor_parallel_size: 1
+  dtype: float16
+  workers:
+    - name: orchestrator
+      port: 8200
+      model: aither-orchestrator
+      gpu: 0
+      gpu_memory_utilization: 0.45
+    - name: reasoning
+      port: 8201
+      model: deepseek-r1:32b
+      gpu: 0
+      gpu_memory_utilization: 0.45
+    - name: coding
+      port: 8203
+      model: qwen2.5-coder:14b
+      gpu: 1
+      gpu_memory_utilization: 0.40
+
+ollama:
+  gpu_memory_fraction: 0.55
+  num_parallel: 4
+  models_to_pull:
+    - nemotron-orchestrator-8b
+    - deepseek-r1:32b
+    - llava:13b
+    - qwen2.5-coder:14b
+    - nomic-embed-text
+
+services:
+  core:
+    - node
+    - pulse
+    - watch
+    - chronicle
+    - secrets
+    - nexus
+    - strata
+  agents:
+    - genesis
+    - identity
+    - flux
+    - council
+    - a2a
+  scheduling:
+    - micro_scheduler
+    - scheduler
+    - demand
+  cognition:
+    - mind
+    - reasoning
+    - flow
+  perception:
+    - vision
+  gpu:
+    - parallel
+  disabled:
+    - mesh
+    - trainer
+    - prism
+    - accel
+    - exo
+
+resource_limits:
+  max_concurrent_requests: 8
+  max_batch_size: 8
+  context_pipeline_timeout_s: 20
+  ollama_max_loaded_models: 3
+
+notes: >
+  Workstation profile assigns GPU 0 to vLLM (orchestrator + reasoning) and
+  GPU 1 to Ollama and the coding vLLM worker. Vision model loads on demand
+  via Ollama on GPU 1. Reasoning model is always warm for effort >= 7. The
+  coding worker handles swarm coding tasks and forge dispatch.

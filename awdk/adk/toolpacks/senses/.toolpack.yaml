@@ -1,0 +1,29 @@
+id: senses
+name: Senses — see, hear, speak, and act on the machine you are running on
+version: 1.0.0
+description: >-
+  The aw* bricks an agent needs to perceive things outside its own process,
+  exposed as tools. see_image and describe_image (awvision), transcribe_audio
+  and speak_text (awvoice), see_screen and find_on_screen (awscreen),
+  egress_check and egress_explain (awwall), schedule_add and schedule_run_due
+  (awrise). Every one talks to a LOCAL endpoint or the local filesystem --
+  nothing here reaches a hosted API, and a brick that is not installed says so
+  by name instead of failing blankly.
+category: tool_packs
+tier: free
+author: Aitherium
+icon: eye
+tags: [vision, voice, screen, egress, schedule, local, senses]
+
+# Namespaced by VERB rather than by brick, because an agent picks a tool by
+# what it wants to do, not by which package we happened to put it in.
+mcp_tools:
+  - "see_*"
+  - "describe_*"
+  - "transcribe_*"
+  - "speak_*"
+  - "find_on_screen"
+  - "egress_*"
+  - "schedule_*"
+
+# register() lives in this pack's __init__.py; the loader file-loads it by path.

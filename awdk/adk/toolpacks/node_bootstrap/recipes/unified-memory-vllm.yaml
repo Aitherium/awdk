@@ -1,0 +1,81 @@
+id: unified-memory-vllm
+name: Unified Memory vLLM (96GB+)
+tier: gpu-hpc
+description: >-
+  High-memory unified memory systems (typically Apple Silicon Pro/Max or
+  workstations with 96GB+). Serves multiple large models in parallel with
+  shared memory pool. N-service util-split mode for load distribution.
+
+hardware_requirements:
+  min_ram_gb: 96
+  min_cpu_cores: 16
+  gpu_vendor: apple
+  min_vram_gb: 0
+  unified_memory: true
+  notes: >-
+    Typical: Apple MacBook Pro Max (96-128GB unified) or M4 Max workstations.
+    Unified memory eliminates GPU/CPU boundary. vLLM N-service pattern splits
+    utilization across multiple inference service replicas.
+
+inference_config:
+  engine: vllm
+  models:
+    - name: qwen2-32b-instruct
+      source: hf://Qwen/Qwen2-32B-Instruct
+      size_gb: 32.0
+      quantization: fp8
+      context_window: 128000
+      served_name: qwen2-32b
+    - name: nemotron-27b-instruct
+      source: hf://nvidia/Nemotron-27B-Instruct
+      size_gb: 27.0
+      quantization: fp8
+      context_window: 128000
+      served_name: nemotron-27b
+    - name: qwen2-14b-instruct
+      source: hf://Qwen/Qwen2-14B-Instruct
+      size_gb: 14.0
+      quantization: fp8
+      context_window: 128000
+      served_name: qwen2-14b
+  serve_args:
+    - --host 0.0.0.0
+    - --port-base 8000
+    - --gpu-memory-utilization 0.90
+    - --max-num-batched-tokens 65536
+    - --max-model-len 32768
+    - --num-gpu-blocks-override 1024
+    - --kv-cache-dtype fp8
+  image: vllm/vllm-openai:latest
+  platform_traps:
+    - unified-memory-pool
+    - n-service-util-split
+
+deployment:
+  target: docker-compose
+  compose_template: inference-unified-memory.yml
+  delegate: ""
+  port: 8000
+
+backend_config:
+  backend_type: vllm
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 120
+  completion:
+    model: qwen2-32b
+    prompt: "Explain the principles of distributed systems."
+    min_tokens: 50
+    timeout_s: 240
+
+fleet_wiring:
+  catalog_entry:
+    backend: vllm
+    category: reasoning
+    context_window: 128000
+    vram_gb: 96
+    speed: 60
+    quality: 9.5
+  ms_env_var: AITHER_VLLM_UNIFIED_URL

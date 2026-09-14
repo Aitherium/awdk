@@ -1,0 +1,31 @@
+# AitherADK Hardware Profile: NVIDIA Ultra VRAM
+# For GPUs with 32+ GB VRAM (A100, H100, dual-GPU setups, etc.)
+
+name: nvidia_ultra
+description: NVIDIA GPU with 32+ GB VRAM — run the largest open-source models
+
+gpu:
+  vendor: nvidia
+  min_vram_gb: 32
+  max_vram_gb: 999
+
+models:
+  default: "nemotron-orchestrator-8b"
+  small: "llama3.2:3b"
+  large: "deepseek-r1:32b"
+  embedding: "nomic-embed-text"
+
+recommended_models:
+  - "llama3.2:3b"
+  - "nemotron-orchestrator-8b"
+  - "deepseek-r1:32b"
+  - "nomic-embed-text"
+  - "qwen2.5-coder:32b"
+
+limits:
+  max_context: 65536
+  max_concurrent: 3
+
+notes: >
+  Ultra VRAM profile for data center or enthusiast GPUs.
+  Can run 70B quantized models with good throughput.

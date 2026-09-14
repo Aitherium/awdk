@@ -1,0 +1,26 @@
+# AitherADK Hardware Profile: AMD ROCm GPU — small VRAM (<12GB)
+# RX 7600 / RX 6600 / RX 580 and similar.
+
+name: amd_low
+description: AMD GPU under 12GB VRAM — small models on-card, spill to RAM
+
+gpu:
+  vendor: amd
+
+models:
+  default: "gemma4:4b"
+  small: "gemma4:4b"
+  embedding: "nomic-embed-text"
+
+recommended_models:
+  - "gemma4:4b"
+  - "nomic-embed-text"
+
+limits:
+  max_context: 8192
+  max_concurrent: 1
+
+notes: >
+  Under 12GB the working set has to stay small or it spills to system RAM and
+  throughput collapses. Prefer a 4B at a longer context over an 8B at a short
+  one. Vulkan backend, as with every AMD tier here.

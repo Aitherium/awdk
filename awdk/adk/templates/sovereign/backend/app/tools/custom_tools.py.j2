@@ -1,0 +1,11 @@
+"""Custom tools for {{ agent_display_name }}.
+
+Define agent-specific tools here. These are available when the agent
+runs in agentic mode with platform tool access.
+"""
+
+
+def rag_search(query: str, top_k: int = 5) -> list[dict]:
+    """Search the document knowledge base."""
+    from ..services import rag
+    return rag.search(query, top_k=top_k)

@@ -1,0 +1,17 @@
+# Openclaw OpenAI-compatible gateway bridge
+# This template repoints Openclaw to use the AitherOS gateway for LLM calls and MCP tools
+
+provider:
+  type: openai
+  base_url: {gateway_url}
+  api_key: {api_key}
+  model: aitheros-default
+
+tools:
+  mcp:
+    enabled: true
+    provider: aitheros
+    url: {mcp_url}
+    credentials:
+      api_key: {api_key}
+      auth_type: bearer

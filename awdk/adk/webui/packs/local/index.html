@@ -1,0 +1,2747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aitherium — Local AI</title>
+  <meta name="description" content="Aitherium is Local AI. Private inference that lives on your machine. Ask anything." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322d3ee'/%3E%3Cstop offset='1' stop-color='%237c5cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%230a0a12'/%3E%3Cpath d='M16 6.5c-2.4 3.2-4.6 6.8-5.8 10.2 1.8-.6 3.8-1 5.8-1s4 .4 5.8 1C20.6 13.3 18.4 9.7 16 6.5z' fill='url(%23g)'/%3E%3Cpath d='M10.2 18.2C8.4 20.8 7 23.6 6.2 26h19.6c-.8-2.4-2.2-5.2-4-7.8-1.7.7-3.6 1.1-5.8 1.1s-4.1-.4-5.8-1.1z' fill='url(%23g)' opacity='.75'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #07070b;
+      --bg-elev: #0e0e15;
+      --sidebar: #0b0b11;
+      --line: rgba(255,255,255,.07);
+      --line-strong: rgba(255,255,255,.12);
+      --text: #f3f3f7;
+      --muted: #8d8d9c;
+      --faint: #5c5c6b;
+      --cyan: #22d3ee;
+      --violet: #7c5cff;
+      --magenta: #e879f9;
+      --accent: #7c5cff;
+      --glow: rgba(124, 92, 255, .35);
+      --radius: 16px;
+      --sidebar-w: 248px;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --green: #86efac;
+      --amber: #fcd34d;
+      --red: #fca5a5;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      height: 100dvh;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      padding: 16px 12px;
+      gap: 8px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px 16px;
+      text-decoration: none;
+      color: inherit;
+    }
+    .mark { width: 32px; height: 32px; flex-shrink: 0; }
+    .brand-copy { display: flex; flex-direction: column; line-height: 1.1; }
+    .brand-name { font-weight: 650; letter-spacing: .04em; font-size: 14px; }
+    .brand-sub {
+      font-size: 11px; color: var(--muted); letter-spacing: .12em;
+      text-transform: uppercase; margin-top: 3px;
+    }
+
+    .beta-pill {
+      margin-left: auto; font-size: 9px; font-weight: 700; letter-spacing: .14em;
+      padding: 3px 6px; border-radius: 999px; color: #c4b5fd;
+      background: rgba(124,92,255,.16); border: 1px solid rgba(124,92,255,.35);
+    }
+
+    .nav { display: flex; flex-direction: column; gap: 2px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+      border-radius: 12px; color: var(--muted); background: transparent;
+      border: 0; font: inherit; font-size: 14px; font-weight: 500;
+      cursor: pointer; text-align: left; width: 100%;
+      transition: background .15s, color .15s;
+    }
+    .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; opacity: .85; }
+    .nav-item:hover { background: rgba(255,255,255,.04); color: var(--text); }
+    .nav-item.active {
+      background: linear-gradient(180deg, rgba(124,92,255,.16), rgba(34,211,238,.06));
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px rgba(124,92,255,.22);
+    }
+    .nav-item .count {
+      margin-left: auto; font-size: 10px; font-weight: 700; padding: 2px 7px;
+      border-radius: 999px; background: rgba(124,92,255,.2); color: #c4b5fd;
+    }
+    .nav-item .count.zero { background: rgba(255,255,255,.05); color: var(--faint); }
+
+    .sidebar-foot {
+      margin-top: auto; display: flex; flex-direction: column; gap: 8px;
+      padding-top: 12px; border-top: 1px solid var(--line);
+    }
+    .news-card {
+      background: linear-gradient(165deg, rgba(124,92,255,.12), rgba(34,211,238,.05));
+      border: 1px solid rgba(124,92,255,.22); border-radius: 14px; padding: 12px;
+    }
+    .news-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    .news-card p { font-size: 12px; color: var(--muted); line-height: 1.4; margin-bottom: 10px; }
+    .news-card form { display: flex; flex-direction: column; gap: 7px; }
+    .news-card input {
+      width: 100%; background: rgba(0,0,0,.35); border: 1px solid var(--line-strong);
+      color: var(--text); border-radius: 10px; padding: 8px 10px;
+      font: inherit; font-size: 12px; outline: none;
+    }
+    .news-card input:focus { border-color: rgba(124,92,255,.6); }
+    .news-card button, .btn {
+      font: inherit; font-size: 12px; font-weight: 600; border: 0;
+      border-radius: 10px; padding: 8px 10px; cursor: pointer;
+      background: linear-gradient(180deg, #8b74ff, #6b4dff); color: white;
+    }
+    .news-card button:hover, .btn:hover { filter: brightness(1.08); }
+    .news-ok { display: none; font-size: 12px; color: var(--green); }
+
+    /* Main */
+    .main {
+      display: flex; flex-direction: column; min-width: 0; position: relative;
+      background:
+        radial-gradient(1200px 600px at 70% -10%, rgba(124,92,255,.16), transparent 55%),
+        radial-gradient(900px 500px at 10% 110%, rgba(34,211,238,.08), transparent 50%),
+        var(--bg);
+    }
+    .main::before {
+      content: ""; pointer-events: none; position: absolute; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.35'/%3E%3C/svg%3E");
+      opacity: .035; mix-blend-mode: overlay;
+    }
+
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 22px; position: relative; z-index: 2;
+    }
+    .disclaimer { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .disclaimer strong {
+      font-size: 10px; letter-spacing: .12em; color: #c4b5fd;
+      background: rgba(124,92,255,.14); border: 1px solid rgba(124,92,255,.28);
+      padding: 2px 7px; border-radius: 999px;
+    }
+    .daemon-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
+    .daemon-dot.up { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .daemon-dot.down { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+    .profile-wrap { position: relative; }
+    .avatar {
+      width: 36px; height: 36px; border-radius: 50%;
+      border: 1px solid var(--line-strong);
+      background:
+        radial-gradient(circle at 30% 30%, #22d3ee, transparent 45%),
+        radial-gradient(circle at 70% 70%, #7c5cff, #1a1428 70%);
+      cursor: pointer; display: grid; place-items: center;
+    }
+    .avatar:hover { box-shadow: 0 0 0 3px rgba(124,92,255,.2); }
+    .menu {
+      position: absolute; right: 0; top: 44px; width: 252px;
+      background: #12121a; border: 1px solid var(--line-strong);
+      border-radius: 14px; padding: 6px;
+      box-shadow: 0 20px 50px rgba(0,0,0,.5);
+      display: none; z-index: 10;
+    }
+    .menu.open { display: block; }
+    .menu button {
+      width: 100%; background: none; border: 0; color: var(--text);
+      font: inherit; font-size: 13px; text-align: left; padding: 9px 10px;
+      border-radius: 9px; cursor: pointer;
+    }
+    .menu button:hover { background: rgba(255,255,255,.05); }
+    .menu .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+    .menu .meta { font-size: 11px; color: var(--faint); padding: 6px 10px 2px; line-height: 1.5; }
+
+    /* Stage */
+    .stage {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: center;
+      padding: 12px 24px 28px; position: relative; z-index: 1; min-height: 0;
+    }
+    /* The partner mock centres the Ask hero. The WebMock2 port dropped
+       justify-content outright, so the hero sat jammed against the top with a
+       page of empty space under it -- the one visible way the live page still
+       differed from the mock. It cannot come back flat: once a conversation
+       exists the transcript must flow from the TOP, which is what the flat
+       rule broke and why it was removed. #thread gains .visible exactly when
+       there is a transcript, so that is the discriminator. */
+    .stage:has(#thread.visible) { justify-content: flex-start; }
+
+    .hero { text-align: center; max-width: 680px; width: 100%; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px; color: var(--muted);
+      font-size: 12px; letter-spacing: .18em; text-transform: uppercase; margin-bottom: 18px;
+    }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
+    h1 {
+      font-family: "Instrument Serif", Georgia, serif; font-weight: 400;
+      font-size: clamp(40px, 6vw, 68px); letter-spacing: -.02em; line-height: .95;
+      margin-bottom: 14px;
+    }
+    h1 em {
+      font-style: italic;
+      background: linear-gradient(90deg, #22d3ee, #a78bfa 50%, #e879f9);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .lede { color: var(--muted); font-size: 16px; line-height: 1.55; max-width: 460px; margin: 0 auto 32px; }
+
+    .composer-wrap { width: min(720px, 100%); margin: 0 auto; }
+    .composer {
+      display: flex; align-items: flex-end; gap: 8px;
+      background: rgba(18,18,26,.78); border: 1px solid var(--line-strong);
+      border-radius: 22px; padding: 10px 10px 10px 16px;
+      box-shadow: 0 0 0 1px rgba(124,92,255,.08), 0 20px 60px rgba(0,0,0,.35), 0 0 80px rgba(124,92,255,.08);
+      backdrop-filter: blur(16px);
+    }
+    .composer:focus-within {
+      border-color: rgba(124,92,255,.45);
+      box-shadow: 0 0 0 1px rgba(124,92,255,.2), 0 20px 60px rgba(0,0,0,.4), 0 0 90px var(--glow);
+    }
+    textarea {
+      flex: 1; resize: none; background: transparent; border: 0; outline: none;
+      color: var(--text); font: inherit; font-size: 15.5px; line-height: 1.45;
+      min-height: 28px; max-height: 160px; padding: 8px 4px;
+    }
+    textarea::placeholder { color: var(--faint); }
+    .send {
+      width: 40px; height: 40px; border: 0; border-radius: 14px;
+      background: linear-gradient(180deg, #8b74ff, #6246f0); color: white;
+      cursor: pointer; display: grid; place-items: center; flex-shrink: 0;
+    }
+    .send:disabled { opacity: .4; cursor: default; }
+    .hint { text-align: center; font-size: 11px; color: var(--faint); margin-top: 10px; }
+
+    .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 22px 0 0; }
+    .chip {
+      font: inherit; font-size: 13px; color: var(--text);
+      background: rgba(255,255,255,.03); border: 1px solid var(--line-strong);
+      border-radius: 999px; padding: 8px 14px; cursor: pointer;
+    }
+    .chip:hover { background: rgba(255,255,255,.06); border-color: rgba(124,92,255,.35); }
+
+    /* Panel views */
+    .panel { display: none; width: min(880px, 100%); height: 100%; overflow: auto; padding: 8px 8px 40px; }
+    .panel.visible { display: block; }
+    .panel.fullbleed { width: 100%; height: 100%; padding: 0; overflow: hidden; }
+    .stage.os-mode { padding: 0; align-items: stretch; justify-content: stretch; }
+    .panel h2 { font-family: "Instrument Serif", Georgia, serif; font-size: 36px; font-weight: 400; margin-bottom: 8px; }
+    .panel .sub { color: var(--muted); margin-bottom: 22px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+    .card {
+      background: rgba(255,255,255,.03); border: 1px solid var(--line);
+      border-radius: 16px; padding: 16px; min-height: 120px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .card h3 { font-size: 14px; margin-bottom: 2px; }
+    .card p { font-size: 13px; color: var(--muted); line-height: 1.45; }
+    .card .btn { margin-top: auto; align-self: flex-start; }
+    .card .btn:disabled { opacity: .45; cursor: default; }
+    .card textarea {
+      min-height: 40px; max-height: 90px; font-size: 13px;
+      background: rgba(0,0,0,.3); border: 1px solid var(--line-strong);
+      border-radius: 10px; padding: 8px 10px; width: 100%;
+    }
+
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+    .field { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 180px; }
+    .field label { font-size: 11px; color: var(--faint); letter-spacing: .1em; text-transform: uppercase; }
+    .field input, .field select {
+      background: rgba(0,0,0,.3); border: 1px solid var(--line-strong); color: var(--text);
+      border-radius: 10px; padding: 8px 10px; font: inherit; font-size: 13px; outline: none;
+    }
+    .field input:focus, .field select:focus { border-color: rgba(124,92,255,.6); }
+    .field select option { background: #12121a; }
+
+    .backends { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .backend-pill {
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--line-strong); color: var(--muted); display: flex; gap: 6px; align-items: center;
+    }
+    .backend-pill .dot { width: 6px; height: 6px; box-shadow: none; background: var(--faint); }
+    .backend-pill.up { color: var(--text); border-color: rgba(134,239,172,.35); }
+    .backend-pill.up .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .backend-pill.warn { color: #fcd34d; border-color: rgba(252,211,77,.4); }
+
+    .result {
+      margin-top: 14px; background: rgba(255,255,255,.03);
+      border: 1px solid var(--line); border-radius: 16px; padding: 16px;
+      display: none; gap: 12px; flex-direction: column;
+    }
+    .result.visible { display: flex; }
+    .result img { max-width: 100%; border-radius: 12px; border: 1px solid var(--line-strong); }
+    .result .who { font-size: 11px; color: var(--faint); letter-spacing: .06em; text-transform: uppercase; }
+    .result .body { font-size: 13.5px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; }
+    .result .body.plain { color: var(--text); }
+    .meta-line { font-size: 11px; color: var(--faint); }
+
+    .queue { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+    .queue h3 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+    .q-item {
+      display: flex; align-items: center; gap: 12px;
+      background: rgba(255,255,255,.03); border: 1px solid var(--line);
+      border-radius: 12px; padding: 10px 14px; font-size: 13px;
+    }
+    .q-item .q-id { font-family: ui-monospace, monospace; font-size: 11px; color: var(--faint); }
+    .q-item .q-task { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .q-item .q-status { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; }
+    .q-status.queued { background: rgba(252,211,77,.12); color: var(--amber); }
+    .q-status.running { background: rgba(34,211,238,.12); color: var(--cyan); }
+    .q-status.done { background: rgba(134,239,172,.12); color: var(--green); }
+    .q-status.failed, .q-status.cancelled { background: rgba(252,165,165,.12); color: var(--red); }
+    .q-cancel {
+      background: none; border: 1px solid var(--line-strong); color: var(--muted);
+      border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 11px; cursor: pointer;
+    }
+    .q-cancel:hover { color: var(--red); border-color: rgba(252,165,165,.4); }
+    .empty { color: var(--faint); font-size: 13px; padding: 10px 2px; }
+
+    .saga-log { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 14px; }
+    .saga-turn { background: rgba(255,255,255,.03); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+    .saga-turn .you { font-size: 12px; color: var(--faint); margin-bottom: 6px; }
+    .saga-turn .prose, .saga-branch .prose { font-family: "Instrument Serif", Georgia, serif; font-size: 18px; line-height: 1.5; color: var(--text); white-space: pre-wrap; }
+    .ent { color: var(--cyan); }
+    .ent.character { color: var(--magenta); }
+    .saga-issues { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .saga-issue { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+    .saga-issue.error { color: var(--red); border-color: rgba(252,165,165,.4); }
+    .saga-issue.warning { color: var(--amber); border-color: rgba(252,211,77,.4); }
+    .saga-tools { display: flex; gap: 8px; margin: -4px 0 12px; }
+    .saga-tools[hidden], .saga-tools [hidden] { display: none; }
+    .saga-branches { display: grid; gap: 8px; margin-bottom: 12px; }
+    .saga-branch { display: block; width: 100%; text-align: left; background: rgba(124,92,255,.06); border: 1px solid rgba(124,92,255,.25); border-radius: 12px; padding: 12px 14px; color: var(--text); font: inherit; cursor: pointer; }
+    .saga-branch:hover, .saga-branch:focus-visible { border-color: rgba(124,92,255,.6); outline: none; }
+    .saga-branch .score { display: block; font-size: 11px; color: var(--faint); margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+    .studio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .studio-grid .card { display: flex; flex-direction: column; gap: 10px; }
+    .comic-page { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .comic-page figure { margin: 0; border: 2px solid var(--line-strong); border-radius: 6px; overflow: hidden; background: rgba(255,255,255,.04); }
+    .comic-page img { width: 100%; display: block; border: 0; border-radius: 0; }
+    .comic-page figcaption { font-size: 12px; line-height: 1.35; color: var(--text); padding: 6px 8px; }
+    .remote-box { margin-top: 22px; }
+    .remote-box h3 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+    .consent-line { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--muted); margin: 4px 0 12px; }
+    .studio-ops h4 { font-size: 12px; color: var(--faint); letter-spacing: .06em; text-transform: uppercase; margin: 12px 0 6px; }
+    .studio-op-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .files { display: flex; flex-direction: column; gap: 12px; }
+    .dropzone {
+      border: 1.5px dashed var(--line-strong); border-radius: 16px;
+      padding: 26px; text-align: center; color: var(--muted); font-size: 13px;
+      cursor: pointer; transition: border-color .15s, background .15s;
+    }
+    .dropzone:hover { border-color: rgba(124,92,255,.45); background: rgba(124,92,255,.04); }
+    .dropzone b { color: var(--text); font-weight: 600; }
+    .file-item {
+      display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+      background: rgba(255,255,255,.03); border: 1px solid var(--line);
+      border-radius: 12px; font-size: 13px;
+    }
+    .file-item .f-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-item .f-meta { font-size: 11px; color: var(--faint); }
+    .file-item .btn { padding: 5px 10px; font-size: 11px; }
+
+    .thread { display: none; width: min(720px, 100%); flex: 1; overflow: auto; padding: 8px 4px 16px; }
+    .thread.visible { display: flex; flex-direction: column; gap: 16px; }
+    .msg { max-width: 92%; }
+    .msg.user { align-self: flex-end; }
+    .bubble {
+      background: rgba(255,255,255,.05); border: 1px solid var(--line);
+      border-radius: 16px; padding: 12px 14px; font-size: 14.5px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .msg.user .bubble {
+      background: linear-gradient(180deg, rgba(124,92,255,.22), rgba(124,92,255,.1));
+      border-color: rgba(124,92,255,.28);
+    }
+    .msg .who { font-size: 11px; color: var(--faint); margin-bottom: 5px; letter-spacing: .06em; text-transform: uppercase; }
+    .msg .cursor { display: inline-block; width: 8px; height: 16px; background: var(--violet); vertical-align: -2px; animation: blink 1s steps(2) infinite; border-radius: 2px; }
+    .msg .thinking { color: var(--muted); font-size: 13px; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .toast {
+      position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: #12121a; border: 1px solid var(--line-strong); color: var(--text);
+      border-radius: 12px; padding: 10px 16px; font-size: 13px; z-index: 60;
+      opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+      max-width: min(520px, 90vw); box-shadow: 0 14px 40px rgba(0,0,0,.5);
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.err { border-color: rgba(252,165,165,.4); color: var(--red); }
+
+    .banner {
+      display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 70;
+      background: rgba(124,92,255,.12); border-bottom: 1px solid rgba(124,92,255,.3);
+      color: #c4b5fd; font-size: 12.5px; padding: 9px 18px; text-align: center;
+      backdrop-filter: blur(10px);
+    }
+    .banner.show { display: block; }
+
+    .mobile-toggle { display: none; background: none; border: 0; color: var(--text); width: 36px; height: 36px; cursor: pointer; }
+
+    /* Microsoft To Do–style Tasks (partner WebMock2, 2026-08-27) */
+    #panel-tasks { width: min(980px, 100%); padding: 0; }
+    .todo {
+      display: grid; grid-template-columns: 240px 1fr; height: 100%;
+      min-height: 420px; background: #141518; border: 1px solid var(--line);
+      border-radius: 14px; overflow: hidden;
+    }
+    .todo-nav {
+      background: #1a1b1e; border-right: 1px solid var(--line);
+      padding: 18px 10px 12px; display: flex; flex-direction: column; gap: 2px;
+    }
+    .todo-nav h2 {
+      font-family: "Instrument Sans", sans-serif; font-size: 13px; font-weight: 600;
+      letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+      padding: 0 10px 12px; margin: 0;
+    }
+    .todo-list-btn {
+      display: flex; align-items: center; gap: 10px; width: 100%; border: 0;
+      background: transparent; color: var(--text); font: inherit; font-size: 14px;
+      padding: 9px 10px; border-radius: 8px; cursor: pointer; text-align: left;
+    }
+    .todo-list-btn:hover { background: rgba(255,255,255,.04); }
+    .todo-list-btn.active { background: rgba(255,255,255,.07); }
+    .todo-ico {
+      width: 20px; height: 20px; border-radius: 6px; display: grid;
+      place-items: center; flex-shrink: 0; font-size: 11px;
+    }
+    .todo-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+    .todo-main {
+      display: flex; flex-direction: column; min-width: 0;
+      background: linear-gradient(180deg, rgba(124,92,255,.18), transparent 180px), #17181b;
+    }
+    .todo-main[data-list="schedule"] { background: linear-gradient(180deg, rgba(30,107,82,.2), transparent 180px), #17181b; }
+    .todo-main[data-list="summary"] { background: linear-gradient(180deg, rgba(37,100,207,.18), transparent 180px), #17181b; }
+    .todo-add.hidden { display: none; }
+    .todo-quick { display: flex; gap: 8px; flex-wrap: wrap; padding: 6px 16px 0; }
+    .todo-quick .chip { font-size: 12px; padding: 6px 12px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 8px 16px 16px; }
+    .summary-card {
+      background: rgba(28,29,33,.92); border: 1px solid rgba(255,255,255,.06);
+      border-radius: 10px; padding: 14px;
+    }
+    .summary-card b { display: block; font-size: 26px; font-weight: 650; margin-bottom: 4px; }
+    .summary-card span { font-size: 12px; color: var(--muted); }
+    .sched-day {
+      font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+      color: var(--muted); margin: 8px 2px 4px;
+    }
+    .todo-head { padding: 22px 22px 8px; }
+    .todo-head h3 { font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
+    .todo-date { font-size: 13px; color: rgba(255,255,255,.65); margin-top: 4px; }
+    .todo-items {
+      flex: 1; overflow: auto; padding: 10px 16px 8px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .todo-item {
+      display: flex; align-items: flex-start; gap: 12px;
+      background: rgba(28,29,33,.92); border: 1px solid rgba(255,255,255,.06);
+      border-radius: 8px; padding: 12px 14px;
+    }
+    .todo-item.done .todo-title { text-decoration: line-through; color: var(--muted); }
+    .todo-item .q-status { margin-left: auto; flex-shrink: 0; }
+    .check {
+      width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid #8a8d93;
+      background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 1px;
+      display: grid; place-items: center; color: white;
+    }
+    .todo-item.done .check { background: #2564cf; border-color: #2564cf; }
+    .todo-title { font-size: 14px; line-height: 1.35; }
+    .todo-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .todo-add {
+      margin: 8px 16px 16px; display: flex; align-items: center; gap: 10px;
+      background: rgba(20,21,24,.85); border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px; padding: 10px 12px;
+    }
+    .todo-add span { color: #5b9cff; font-size: 20px; line-height: 1; }
+    .todo-add input {
+      flex: 1; background: none; border: 0; outline: none; color: var(--text);
+      font: inherit; font-size: 14px;
+    }
+
+    /* Linux desktop / OS for Desktop (partner WebMock2, 2026-08-27) */
+    .os {
+      height: 100%; display: flex; flex-direction: column;
+      background:
+        radial-gradient(900px 500px at 20% 10%, rgba(124,92,255,.18), transparent 50%),
+        radial-gradient(700px 400px at 90% 80%, rgba(34,211,238,.1), transparent 50%),
+        linear-gradient(160deg, #1a1d24 0%, #0c0e12 55%, #10131a 100%);
+      position: relative; overflow: hidden;
+    }
+    .os-wallpaper {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
+      background-size: 48px 48px; opacity: .35; pointer-events: none;
+    }
+    .os-top {
+      position: relative; z-index: 5; height: 28px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 10px; background: rgba(12,13,16,.72); backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255,255,255,.06); font-size: 12px; color: #d7d8dc;
+    }
+    .os-top-left, .os-top-right { display: flex; align-items: center; gap: 12px; }
+    .os-activities { font-weight: 600; letter-spacing: .02em; }
+    .os-clock { font-variant-numeric: tabular-nums; }
+    .os-desktop { position: relative; flex: 1; min-height: 0; }
+    .desk-icons {
+      position: absolute; top: 18px; left: 16px;
+      display: flex; flex-direction: column; gap: 14px; z-index: 1;
+    }
+    .desk-icon {
+      width: 76px; background: none; border: 1px solid transparent;
+      border-radius: 8px; color: #f2f2f4; cursor: pointer; font: inherit;
+      font-size: 11px; text-align: center; padding: 8px 4px 6px;
+    }
+    .desk-icon:hover, .desk-icon.active { background: rgba(124,92,255,.16); border-color: rgba(124,92,255,.28); }
+    .desk-glyph {
+      width: 40px; height: 40px; margin: 0 auto 6px; border-radius: 10px;
+      display: grid; place-items: center; font-size: 18px;
+      background: #22252c; border: 1px solid rgba(255,255,255,.08);
+    }
+    .win {
+      position: absolute; background: #1c1e24; border: 1px solid rgba(255,255,255,.1);
+      border-radius: 10px; box-shadow: 0 24px 60px rgba(0,0,0,.45);
+      overflow: hidden; min-width: 280px; display: none;
+    }
+    .win.open { display: flex; flex-direction: column; }
+    .win-bar {
+      height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+      background: #262830; border-bottom: 1px solid rgba(255,255,255,.06);
+      cursor: default; user-select: none;
+    }
+    .traffic { display: flex; gap: 6px; }
+    .traffic i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+    .traffic .c { background: #ff5f57; }
+    .traffic .n { background: #febc2e; }
+    .traffic .x { background: #28c840; }
+    .win-title { font-size: 12px; color: #c9cbd1; flex: 1; }
+    .win-body { padding: 12px; font-size: 13px; color: #cfd1d6; line-height: 1.5; overflow: auto; }
+    .term { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; background: #0e1014; color: #d2f0d8; min-height: 180px; }
+    .term .prompt { color: #7c5cff; }
+    .term .path { color: #22d3ee; }
+    .files-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 10px; }
+    .file-tile {
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06);
+      border-radius: 8px; padding: 12px 8px; text-align: center; font-size: 11px;
+    }
+    .os-dock { position: relative; z-index: 6; display: flex; justify-content: center; padding: 0 12px 10px; }
+    .dock { display: flex; gap: 8px; background: rgba(18,19,24,.72); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.1); border-radius: 16px; padding: 8px; }
+    .dock button {
+      width: 42px; height: 42px; border-radius: 12px; border: 1px solid rgba(255,255,255,.08);
+      background: #2a2d36; color: white; cursor: pointer; font-size: 16px;
+    }
+    .dock button:hover { filter: brightness(1.12); }
+    .dock button.active { box-shadow: 0 0 0 2px rgba(124,92,255,.45); }
+
+    @media (max-width: 820px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar {
+        position: fixed; inset: 0 auto 0 0; width: min(280px, 86vw); z-index: 20;
+        transform: translateX(-105%); transition: transform .22s ease;
+      }
+      .sidebar.open { transform: none; }
+      .mobile-toggle { display: grid; place-items: center; }
+      .disclaimer span { display: none; }
+      h1 { font-size: 40px; }
+      .stage { padding: 8px 16px 20px; justify-content: flex-start; padding-top: 40px; }
+      .backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 15; }
+      .backdrop.show { display: block; }
+      .todo { grid-template-columns: 1fr; }
+      .todo-nav { display: flex; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .todo-nav h2 { display: none; }
+      .todo-list-btn { white-space: nowrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="banner" id="offlineBanner"></div>
+  <div class="backdrop" id="backdrop"></div>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="https://www.aitherium.com" aria-label="Aitherium home">
+        <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="g" x1="6" y1="4" x2="26" y2="28" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#22d3ee"/>
+              <stop offset="1" stop-color="#7c5cff"/>
+            </linearGradient>
+          </defs>
+          <rect width="32" height="32" rx="9" fill="#101018"/>
+          <path d="M16 6.2c-2.5 3.3-4.8 7.1-6 10.6 1.9-.6 3.9-1 6-1s4.1.4 6 1C20.8 13.3 18.5 9.5 16 6.2z" fill="url(#g)"/>
+          <path d="M10 18.4c-1.9 2.7-3.3 5.6-4.1 8.1h20.2c-.8-2.5-2.2-5.4-4.1-8.1-1.8.7-3.8 1.1-6 1.1s-4.2-.4-6-1.1z" fill="url(#g)" opacity=".72"/>
+        </svg>
+        <span class="brand-copy">
+          <span class="brand-name">AITHERIUM</span>
+          <span class="brand-sub">Local AI</span>
+        </span>
+        <span class="beta-pill">BETA</span>
+      </a>
+
+      <nav class="nav" aria-label="Workspace">
+        <button class="nav-item active" data-view="ask" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg>
+          Ask
+        </button>
+        <button class="nav-item" data-view="tasks" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 11l3 3L22 4"/><circle cx="9" cy="19" r="2"/><path d="M5 5h6M5 9h4"/></svg>
+          To Do
+          <span class="count zero" id="taskCount">0</span>
+        </button>
+        <button class="nav-item" data-view="visual" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.4"/><path d="M21 16l-5.5-5.5L7 19"/></svg>
+          Visual
+        </button>
+        <button class="nav-item" data-view="play" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Play
+        </button>
+        <button class="nav-item" data-view="studio" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><path d="M13 17h8M17 13v8"/></svg>
+          Studio
+        </button>
+        <button class="nav-item" data-view="build" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+          Desktop
+        </button>
+        <button class="nav-item" data-view="files" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+          Files
+        </button>
+        <button class="nav-item" data-view="mail" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 7 9-7"/></svg>
+          Mail
+        </button>
+        <button class="nav-item" data-view="mcp" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          MCP
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="news-card">
+          <h4>Stay in the loop</h4>
+          <p>Register for product notes as Local AI leaves beta.</p>
+          <form id="newsForm" action="#" method="post">
+            <input type="email" name="email" required placeholder="you@domain.com" aria-label="Email for newsletter" />
+            <button type="submit">Register for newsletter</button>
+          </form>
+          <p class="news-ok" id="newsOk"></p>
+        </div>
+      </div>
+    </aside>
+
+    <section class="main">
+      <header class="topbar">
+        <button class="mobile-toggle" id="menuBtn" aria-label="Open menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="disclaimer">
+          <span class="daemon-dot" id="daemonDot"></span>
+          <strong>BETA</strong>
+          <span id="disclaimerText">Connecting to your local agent…</span>
+        </div>
+        <div class="profile-wrap">
+          <button class="avatar" id="avatarBtn" aria-label="User profile and settings" title="Profile & settings"></button>
+          <div class="menu" id="profileMenu" role="menu">
+            <div class="meta" id="menuMeta"></div>
+            <div class="sep"></div>
+            <button type="button" data-action="models">Local models</button>
+            <button type="button" data-action="backends">Image backends</button>
+            <button type="button" data-action="mail">Mail status</button>
+            <button type="button" data-action="daemon">Daemon health</button>
+            <div class="sep"></div>
+            <button type="button" data-action="signin">Register / Sign in</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- id is load-bearing: switchView() does el("stage").classList... on EVERY
+           nav click, and el() is getElementById. Without it the call throws before
+           the panel is ever shown, so every nav item (To Do / Visual / Desktop /
+           Files / Mail / MCP) silently did nothing on the public demo. -->
+      <div class="stage" id="stage">
+        <div class="hero" id="hero">
+          <div class="eyebrow"><span class="dot"></span> On-device inference</div>
+          <h1>Ask your <em>local</em> mind.</h1>
+          <p class="lede">Aitherium is Local AI — a private assistant that lives on your hardware. No cloud round-trip. No training on your words.</p>
+        </div>
+
+        <div class="thread" id="thread" aria-live="polite"></div>
+
+        <div class="panel" id="panel-tasks">
+          <div class="todo">
+            <aside class="todo-nav">
+              <h2>To Do</h2>
+              <button class="todo-list-btn active" data-list="tasks" type="button">
+                <span class="todo-ico" style="background:#7c5cff">☰</span>
+                Tasks
+                <span class="todo-count" id="count-tasks">0</span>
+              </button>
+              <button class="todo-list-btn" data-list="schedule" type="button">
+                <span class="todo-ico" style="background:#1e6b52">▦</span>
+                Schedule
+                <span class="todo-count" id="count-schedule">3</span>
+              </button>
+              <button class="todo-list-btn" data-list="summary" type="button">
+                <span class="todo-ico" style="background:#2564cf">◉</span>
+                Summary
+              </button>
+            </aside>
+            <section class="todo-main" id="todoMain" data-list="tasks">
+              <div class="todo-head">
+                <h3 id="todoTitle">Tasks</h3>
+                <p class="todo-date" id="todoDate"></p>
+              </div>
+              <div class="todo-quick" id="todoQuick">
+                <button class="chip" data-run="Summarize: {text}" type="button">⚡ Summarize</button>
+                <button class="chip" data-run="Draft a client-ready status email from these notes: {text}" type="button">⚡ Draft email</button>
+                <button class="chip" data-run="Extract a numbered list of action items from: {text}" type="button">⚡ Extract actions</button>
+              </div>
+              <div class="todo-items" id="todoItems"><p class="empty" style="padding:10px 2px">Nothing queued yet — add a task or tap a quick one.</p></div>
+              <form class="todo-add" id="todoAdd">
+                <span>+</span>
+                <input type="text" id="todoInput" placeholder="Add a task for the local agent" autocomplete="off" />
+              </form>
+            </section>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-visual">
+          <h2>Visual</h2>
+          <p class="sub">Generate and edit images locally.</p>
+          <div class="backends" id="backendStrip"><span class="empty">Probing local image backends…</span></div>
+          <div class="row">
+            <div class="field" style="flex: 3">
+              <label for="imgPrompt">Prompt</label>
+              <input id="imgPrompt" type="text" placeholder="A glass of water on a wooden table, cinematic light…" />
+            </div>
+            <div class="field">
+              <label for="imgSize">Size</label>
+              <select id="imgSize">
+                <option>768x768</option>
+                <option>512x512</option>
+                <option>1024x1024</option>
+                <option>512x768</option>
+                <option>768x512</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="imgBackend">Backend</label>
+              <select id="imgBackend"><option value="">auto</option></select>
+            </div>
+          </div>
+          <button class="btn" id="imgGo" type="button">Generate</button>
+          <div class="result" id="imgResult">
+            <div class="who">Aitherium · image</div>
+            <div class="body" id="imgBody"></div>
+            <div class="meta-line" id="imgMeta"></div>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-play">
+          <h2>Play</h2>
+          <p class="sub">A story world that keeps its own state, on this machine.</p>
+          <div class="backends" id="sagaStrip"><span class="empty">Looking for the story engine…</span></div>
+          <div class="row">
+            <div class="field">
+              <label for="sagaStory">Story</label>
+              <input id="sagaStory" type="text" value="default" spellcheck="false" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="sagaWorld">Start from</label>
+              <select id="sagaWorld"><option value="">loading…</option></select>
+            </div>
+            <button class="btn" id="sagaSeed" type="button">Start this world</button>
+          </div>
+          <div class="saga-log" id="sagaLog"></div>
+          <div class="row">
+            <div class="field" style="flex: 4">
+              <label for="sagaMove">Your move</label>
+              <input id="sagaMove" type="text" placeholder="I step into the tavern and look for a friendly face…" />
+            </div>
+            <button class="btn" id="sagaGo" type="button">Take turn</button>
+          </div>
+          <div class="saga-tools" id="sagaTools" hidden>
+            <button class="q-cancel" id="sagaBranches" type="button">Explore branches</button>
+            <button class="q-cancel" id="sagaHandoff" type="button">Illustrate this beat</button>
+          </div>
+          <div class="saga-branches" id="sagaBranchList"></div>
+          <div class="result" id="sagaGlass">
+            <div class="who">Context · what the narrator was given</div>
+            <div class="body" id="sagaGlassBody"></div>
+            <div class="meta-line" id="sagaGlassMeta"></div>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-studio">
+          <h2>Studio</h2>
+          <p class="sub">Sprites and comic pages from your story, made on this machine.</p>
+          <div class="backends" id="studioStrip"><span class="empty">Checking local image backends…</span></div>
+          <div class="studio-grid">
+            <section class="card">
+              <h3>Sprite sheet</h3>
+              <p>One character in several poses from one seed. A shared seed keeps the look close; it does not pin identity.</p>
+              <div class="field">
+                <label for="spritePrompt">Character</label>
+                <input id="spritePrompt" type="text" placeholder="A fox courier in a green cloak, pixel art" />
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label for="spriteFrames">Poses</label>
+                  <select id="spriteFrames"><option>4</option><option>8</option></select>
+                </div>
+                <div class="field">
+                  <label for="spriteSeed">Seed</label>
+                  <input id="spriteSeed" type="number" value="1234" />
+                </div>
+              </div>
+              <button class="btn" id="spriteGo" type="button">Make sheet</button>
+            </section>
+            <section class="card">
+              <h3>Comic page</h3>
+              <p>The latest turns of the story open in Play, one panel each, captioned with the prose.</p>
+              <div class="field">
+                <label for="comicPanels">Panels</label>
+                <select id="comicPanels"><option>4</option><option>6</option></select>
+              </div>
+              <button class="btn" id="comicGo" type="button">Draw page</button>
+            </section>
+          </div>
+          <div class="result" id="studioResult">
+            <div class="who" id="studioWho">Studio</div>
+            <div class="body" id="studioBody"></div>
+            <div class="meta-line" id="studioMeta"></div>
+          </div>
+          <div class="remote-box">
+            <h3>Your Media Forge</h3>
+            <p class="sub" id="remoteNote">Off. Connect a Media Forge you run yourself to see its op catalogue. Nothing is sent anywhere until you do.</p>
+            <div class="row">
+              <div class="field" style="flex: 3">
+                <label for="remoteUrl">Media Forge URL</label>
+                <input id="remoteUrl" type="url" placeholder="http://127.0.0.1:8200" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="remoteKey">Key (optional, kept in this tab only)</label>
+                <input id="remoteKey" type="password" autocomplete="off" />
+              </div>
+            </div>
+            <label class="consent-line" for="remoteConsent"><input type="checkbox" id="remoteConsent" /> Prompts and reference images from this tab will be sent to the Media Forge at the URL above.</label>
+            <div class="row">
+              <button class="btn" id="remoteConnect" type="button">Connect</button>
+              <button class="q-cancel" id="remoteDisconnect" type="button" hidden>Disconnect</button>
+            </div>
+            <div class="studio-ops" id="remoteOps"></div>
+          </div>
+        </div>
+
+        <div class="panel fullbleed" id="panel-build">
+          <div class="os">
+            <div class="os-wallpaper"></div>
+            <div class="os-top">
+              <div class="os-top-left">
+                <span class="os-activities">Activities</span>
+                <span>Aitherium OS</span>
+              </div>
+              <div class="os-clock" id="osClock">—</div>
+              <div class="os-top-right">
+                <span>local</span>
+                <span>en</span>
+                <span>■ ■ ■</span>
+              </div>
+            </div>
+            <div class="os-desktop" id="osDesktop">
+              <div class="desk-icons">
+                <button class="desk-icon" data-win="files" type="button">
+                  <div class="desk-glyph">📁</div>
+                  Home
+                </button>
+                <button class="desk-icon" data-win="term" type="button">
+                  <div class="desk-glyph">⌘</div>
+                  Terminal
+                </button>
+                <button class="desk-icon" data-win="notes" type="button">
+                  <div class="desk-glyph">✎</div>
+                  Notes
+                </button>
+                <button class="desk-icon" data-win="settings" type="button">
+                  <div class="desk-glyph">⚙</div>
+                  Settings
+                </button>
+                <button class="desk-icon" data-win="build" type="button">
+                  <div class="desk-glyph">🛠</div>
+                  Build
+                </button>
+              </div>
+
+              <div class="win open" id="win-term" style="left:120px;top:36px;width:520px;height:280px;">
+                <div class="win-bar" data-drag="win-term">
+                  <span class="traffic"><i class="c" data-close="win-term"></i><i class="n"></i><i class="x"></i></span>
+                  <span class="win-title">Terminal — ~/aitherium</span>
+                </div>
+                <div class="win-body term" id="osTerm">
+                  <div><span class="prompt">user@aitherium</span>:<span class="path">~</span>$ aitherium status</div>
+                  <div>engine: local</div>
+                  <div>runtime: on-device</div>
+                  <div>models: idle</div>
+                  <div>daemon: probing…</div>
+                  <div><span class="prompt">user@aitherium</span>:<span class="path">~</span>$ _</div>
+                </div>
+              </div>
+
+              <div class="win" id="win-files" style="left:200px;top:70px;width:480px;height:300px;">
+                <div class="win-bar" data-drag="win-files">
+                  <span class="traffic"><i class="c" data-close="win-files"></i><i class="n"></i><i class="x"></i></span>
+                  <span class="win-title">Files — Home</span>
+                </div>
+                <div class="win-body">
+                  <div class="files-row">
+                    <div class="file-tile">📁 Documents</div>
+                    <div class="file-tile">📁 Projects</div>
+                    <div class="file-tile">📁 Models</div>
+                    <div class="file-tile">📄 readme.md</div>
+                    <div class="file-tile">📄 notes.txt</div>
+                    <div class="file-tile">🗁 Downloads</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="win" id="win-notes" style="left:280px;top:50px;width:360px;height:240px;">
+                <div class="win-bar" data-drag="win-notes">
+                  <span class="traffic"><i class="c" data-close="win-notes"></i><i class="n"></i><i class="x"></i></span>
+                  <span class="win-title">Notes</span>
+                </div>
+                <div class="win-body">
+                  Local workspace. Scaffold pages and tools here without leaving the machine. Drop a folder, ask the model, keep the files on disk.
+                </div>
+              </div>
+
+              <div class="win" id="win-settings" style="left:160px;top:90px;width:400px;height:220px;">
+                <div class="win-bar" data-drag="win-settings">
+                  <span class="traffic"><i class="c" data-close="win-settings"></i><i class="n"></i><i class="x"></i></span>
+                  <span class="win-title">Settings</span>
+                </div>
+                <div class="win-body">
+                  Appearance: dark<br />
+                  Window manager: Aitherium Shell<br />
+                  Inference: local only<br />
+                  Network: optional newsletter
+                </div>
+              </div>
+
+              <div class="win" id="win-build" style="left:340px;top:120px;width:640px;height:420px;">
+                <div class="win-bar" data-drag="win-build">
+                  <span class="traffic"><i class="c" data-close="win-build"></i><i class="n"></i><i class="x"></i></span>
+                  <span class="win-title">Build — scaffold with the local agent</span>
+                </div>
+                <div class="win-body">
+                  <div class="grid">
+                    <div class="card">
+                      <h3>New project</h3>
+                      <p>Describe an app. Aitherium writes the first pass locally.</p>
+                      <textarea id="build-new" placeholder="A tiny CLI that tracks daily water intake…"></textarea>
+                      <button class="btn" data-forge="Scaffold a new project: {text}" type="button">Build it</button>
+                    </div>
+                    <div class="card">
+                      <h3>Refactor</h3>
+                      <p>Drop a folder from Files and ask for a cleaner structure.</p>
+                      <textarea id="build-refactor" placeholder="What to refactor and why…"></textarea>
+                      <button class="btn" data-forge="Refactor: {text}" type="button">Refactor</button>
+                    </div>
+                    <div class="card">
+                      <h3>Docs</h3>
+                      <p>Turn code comments into a readable README.</p>
+                      <textarea id="build-docs" placeholder="What needs documenting…"></textarea>
+                      <button class="btn" data-forge="Write documentation: {text}" type="button">Document</button>
+                    </div>
+                  </div>
+                  <div class="result" id="buildResult">
+                    <div class="who">Aitherium · build</div>
+                    <div class="body" id="buildBody"></div>
+                    <div class="meta-line" id="buildMeta"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="os-dock">
+              <div class="dock">
+                <button type="button" data-win="files" title="Files">📁</button>
+                <button type="button" class="active" data-win="term" title="Terminal">⌘</button>
+                <button type="button" data-win="notes" title="Notes">✎</button>
+                <button type="button" data-win="settings" title="Settings">⚙</button>
+                <button type="button" data-win="build" title="Build">🛠</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-files">
+          <h2>Files</h2>
+          <p class="sub">Local workspace. Nothing is uploaded.</p>
+          <div class="files">
+            <div class="dropzone" id="filePick">
+              <b>Choose files</b> from this device — they stay on disk. Attach them to an Ask so the local agent can read them.
+            </div>
+            <div class="queue">
+              <h3>Working set</h3>
+              <div id="fileList"><p class="empty">No files picked yet.</p></div>
+            </div>
+            <div class="queue">
+              <h3>Recent</h3>
+              <div id="fileRecent"><p class="empty">Nothing here yet — this is a fresh workspace.</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-mcp">
+          <h2>MCP</h2>
+          <p class="sub">The toolset your local agent works with — and what you review and continue.</p>
+          <div class="queue">
+            <h3>Agent tools</h3>
+            <div id="mcpTools"><p class="empty">Loading the agent's tool roster…</p></div>
+          </div>
+          <div class="queue" style="margin-top: 14px">
+            <h3>MCP servers</h3>
+            <div id="mcpServers"><p class="empty">Probing…</p></div>
+          </div>
+          <div class="queue" style="margin-top: 14px">
+            <h3>WebMCP — the Design Studio</h3>
+            <div id="webmcpBox"></div>
+          </div>
+          <div class="queue" style="margin-top: 14px">
+            <h3>Approvals</h3>
+            <p class="empty" style="padding: 10px 2px; color: var(--faint); font-size: 13px">
+              When the agent needs a tool or a decision, the turn pauses and streams here —
+              you review, approve or deny, and the run continues. Nothing executes unseen.
+            </p>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-mail">
+          <h2>Mail</h2>
+          <p class="sub" id="mailSub">Drafts and messages, composed locally.</p>
+          <div class="backends" id="mailStatusStrip"></div>
+          <div class="row">
+            <div class="field">
+              <label for="mailTo">To</label>
+              <input id="mailTo" type="email" placeholder="you@domain.com" />
+            </div>
+            <div class="field">
+              <label for="mailSubject">Subject</label>
+              <input id="mailSubject" type="text" placeholder="Subject" />
+            </div>
+          </div>
+          <div class="field" style="margin-bottom: 10px">
+            <label for="mailBody">Message</label>
+            <textarea id="mailBody" rows="7" placeholder="Compose here, or draft it with the local model…"></textarea>
+          </div>
+          <div class="row">
+            <button class="btn" id="mailDraft" type="button">Draft with local model</button>
+            <button class="btn" id="mailSend" type="button">Send</button>
+          </div>
+          <div class="result" id="mailResult">
+            <div class="who">Aitherium · mail</div>
+            <div class="body" id="mailBodyOut"></div>
+            <div class="meta-line" id="mailMeta"></div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <form class="composer" id="askForm">
+            <textarea id="ask" rows="1" placeholder="Ask Aitherium anything…" autocomplete="off"></textarea>
+            <button class="send" type="submit" aria-label="Send" id="sendBtn" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </button>
+          </form>
+          <p class="hint">Aitherium · Local AI · Beta. Answers stay on this device.</p>
+          <div class="chips" id="chips">
+            <button class="chip" type="button">What is Local AI?</button>
+            <button class="chip" type="button">How private is Aitherium?</button>
+            <button class="chip" type="button" data-open="build">Open the desktop</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    "use strict";
+
+    // ── API base: same-origin (the local adk daemon) unless the hosting page
+    //    injects window.AITHER_API_BASE (the GitHub Pages demo injects
+    //    https://gateway.aitherium.com). HOSTED switches the chat panels to
+    //    the public anon carve-out (/api/v1/chat/hosted) — the OpenAI-style
+    //    /v1/chat/completions on the gateway needs a token, visitors have none.
+    var API_BASE = (window.AITHER_API_BASE || "").replace(/\/+$/, "");
+    var HOSTED = !!window.AITHER_API_BASE;
+
+    // ── Bootstrap: bearer from the URL fragment (#k=…), never in server logs ──
+    var key = (location.hash.match(/[#&]k=([^&]+)/) || [])[1] || "";
+    var daemonOk = false;
+    var attachedFiles = [];
+
+    function el(id) { return document.getElementById(id); }
+
+    function toast(msg, err) {
+      var t = el("toast");
+      t.textContent = msg;
+      t.className = "toast show" + (err ? " err" : "");
+      clearTimeout(toast._h);
+      toast._h = setTimeout(function () { t.className = "toast"; }, 4200);
+    }
+
+    function hdrs() {
+      var h = { "Content-Type": "application/json" };
+      if (key) h["Authorization"] = "Bearer " + decodeURIComponent(key);
+      return h;
+    }
+
+    // Public hosted chat (the Pages demo): POST {message} → {response, …}.
+    function hostedChat(message) {
+      return fetch(API_BASE + "/api/v1/chat/hosted", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: message })
+      }).then(function (r) {
+        if (!r.ok) return r.json().catch(function () { return {}; }).then(function (j) {
+          throw new Error(j.error || ("HTTP " + r.status));
+        });
+        return r.json().then(function (j) { return (j.response || "").trim(); });
+      });
+    }
+
+    function api(path, opts) {
+      opts = opts || {};
+      return fetch(API_BASE + path, {
+        method: opts.method || "GET",
+        headers: hdrs(),
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+        signal: opts.signal
+      }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (j) {
+          if (!r.ok && j && j.error) throw new Error(j.error);
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return j;
+        });
+      });
+    }
+
+    // ── Health / daemon presence ──
+    function refreshHealth() {
+      fetch(API_BASE + "/health").then(function (r) { return r.json(); }).then(function (j) {
+        daemonOk = true;
+        el("daemonDot").className = "daemon-dot up";
+        var name = (j && (j.agent || j.identity || j.name)) || "your local agent";
+        el("disclaimerText").textContent = "Connected to " + name + ". Models run locally — nothing leaves your machine unless you send it.";
+        el("menuMeta").textContent = "daemon: " + (j.version ? "v" + j.version : "") + " · " + (j.model || "");
+        el("offlineBanner").className = "banner";
+        fetchMenuData();
+      }).catch(function () {
+        daemonOk = false;
+        el("daemonDot").className = "daemon-dot down";
+        el("disclaimerText").textContent = "Local agent offline.";
+        el("offlineBanner").textContent = "The local agent daemon isn't reachable — start it with `adk up`, then reload (adk ui set local selects this surface).";
+        el("offlineBanner").className = "banner show";
+      });
+    }
+
+    // ── Ask: /v1/chat/completions with SSE streaming ──
+    function addMsg(role, text) {
+      el("hero").style.display = "none";
+      el("chips").style.display = "none";
+      var thread = el("thread");
+      thread.classList.add("visible");
+      var wrap = document.createElement("div");
+      wrap.className = "msg " + role;
+      var who = document.createElement("div");
+      who.className = "who";
+      who.textContent = role === "user" ? "You" : "Aitherium";
+      var bubble = document.createElement("div");
+      bubble.className = "bubble";
+      if (text !== undefined) bubble.textContent = text;
+      wrap.appendChild(who);
+      wrap.appendChild(bubble);
+      thread.appendChild(wrap);
+      thread.scrollTop = thread.scrollHeight;
+      return bubble;
+    }
+
+    function hidePanels() {
+      document.querySelectorAll(".panel").forEach(function (p) { p.classList.remove("visible"); });
+    }
+
+    // ── In-flight feedback: "Thinking… Ns" until the first token lands ──
+    // The bubble shows the elapsed time while the model works, so a slow turn
+    // reads as working, not broken. Cleared on first content / done / error.
+    function clearThinking(tick, statusEl) {
+      clearInterval(tick);
+      if (statusEl && statusEl.parentNode) statusEl.parentNode.removeChild(statusEl);
+    }
+
+    // ── Options → chips: the agent asks with choices instead of assuming ──
+    // When the reply contains an "Options:"-style block of bullets, render
+    // them as chips the user can tap to continue. Matches the product rule:
+    // if a request could go several directions, offer the choice rather than
+    // guessing. The system prompt tells the agent to emit this shape.
+    function extractOptions(text) {
+      var out = [];
+      var lines = String(text || "").split("\n");
+      var inOpts = false;
+      for (var i = 0; i < lines.length; i++) {
+        var t = lines[i].trim();
+        if (/^(options|suggestions|you could|choose one|next steps):?$/i.test(t)) { inOpts = true; continue; }
+        if (inOpts) {
+          var m = t.match(/^[-*•]\s*(.+)$/);
+          if (m) { out.push(m[1].trim().replace(/^"(.*)"$/, "$1")); if (out.length >= 4) break; continue; }
+          if (t === "" ) continue;
+          inOpts = false;
+        }
+      }
+      return out;
+    }
+
+    function renderOptionChips(opts) {
+      var last = el("thread").lastElementChild;
+      if (!last) return;
+      var row = document.createElement("div");
+      row.className = "chips";
+      row.style.justifyContent = "flex-start";
+      row.style.marginTop = "2px";
+      opts.forEach(function (o) {
+        var c = document.createElement("button");
+        c.className = "chip";
+        c.type = "button";
+        c.textContent = o;
+        c.addEventListener("click", function () { sendAsk(o); });
+        row.appendChild(c);
+      });
+      last.appendChild(row);
+    }
+
+
+    // ── Display-only: hide the model's reasoning blocks (<think>…</think>) ──
+    function show(t) { return String(t || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(); }
+
+    var lastQuestion = "";
+
+    function sendAsk(text, opts) {
+      opts = opts || {};
+      var q = (text || "").trim();
+      if (!q) return;
+      lastQuestion = q;
+      if (!opts.silent) {
+        hidePanels();
+        addMsg("user", q);
+      }
+      var bubble = addMsg("ai", "");
+      var statusEl = document.createElement("span");
+      statusEl.className = "thinking";
+      statusEl.textContent = "Thinking…";
+      bubble.appendChild(statusEl);
+      var cursor = document.createElement("span");
+      cursor.className = "cursor";
+      bubble.appendChild(cursor);
+      var startedAt = Date.now();
+      var tick = setInterval(function () {
+        statusEl.textContent = "Thinking… " + Math.round((Date.now() - startedAt) / 1000) + "s";
+      }, 1000);
+      el("ask").value = "";
+      resizeAsk();
+
+      var context = "";
+      if (attachedFiles.length) {
+        context = "\n\nLocal files available to you (read them from disk when needed):\n" +
+          attachedFiles.map(function (f) { return "- " + f.name + (f.path ? " (" + f.path + ")" : ""); }).join("\n") +
+          "\n";
+      }
+      var direct = opts.direct ? "Answer the user's question directly. Do NOT call any tools — reply from what you know." : "";
+      var sys = "You are Aitherium, a local AI assistant running on the user's own machine. Keep answers concise and truthful; if you do not know something, say so. You have file and web tools, but answer casual questions directly from knowledge — do not call tools unless the question genuinely requires them (reading a file, searching the web). " + direct + " When the user's request could go several directions, do NOT assume which one — ask, and end your reply with a short block of 2-4 bulleted choices under a line starting with 'Options:' (e.g. 'Options:' then '- choice one', '- choice two'). Keep that block short.";
+      var messages = [
+        { role: "system", content: sys },
+        { role: "user", content: q + context }
+      ];
+      var full = "";
+
+      if (HOSTED) {
+        // Hosted demo: the visitor has no token, so the OpenAI-style endpoint
+        // is unreachable — use the public anon carve-out (no local files here).
+        hostedChat(q).then(function (t) {
+          clearInterval(tick);
+          statusEl.remove();
+          cursor.remove();
+          bubble.textContent = t;
+        }).catch(function (e) {
+          clearInterval(tick);
+          statusEl.remove();
+          cursor.remove();
+          bubble.textContent = "⚠ " + e.message;
+        });
+        return;
+      }
+
+      fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: hdrs(),
+        body: JSON.stringify({ model: "", messages: messages, stream: true, max_tokens: 1200, plain: true })
+      }).then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            throw new Error(j.error || ("HTTP " + r.status));
+          });
+        }
+        // Trust the content-type: a server that ignored stream:true answers
+        // application/json, and reading that as SSE would hang the bubble.
+        var ct = r.headers.get("content-type") || "";
+        if (ct.indexOf("text/event-stream") === -1) {
+          return r.json().then(function (j) {
+            var c = (j.choices && j.choices[0] && (j.choices[0].message || {}).content) || "";
+            full += c;
+            clearThinking(tick, statusEl);
+            cursor.remove();
+            bubble.textContent = show(c);
+            var opts = extractOptions(c);
+            if (opts.length) renderOptionChips(opts);
+            return null;
+          });
+        }
+        var reader = r.body.getReader();
+        var dec = new TextDecoder();
+        var buf = "";
+        function pump() {
+          return reader.read().then(function (res) {
+            if (res.done) {
+              clearThinking(tick, statusEl);
+              cursor.remove();
+              var opts = extractOptions(full);
+              if (opts.length) renderOptionChips(opts);
+              return;
+            }
+            buf += dec.decode(res.value, { stream: true });
+            var lines = buf.split("\n");
+            buf = lines.pop();
+            lines.forEach(function (line) {
+              line = line.trim();
+              if (!line.startsWith("data:")) return;
+              var payload = line.slice(5).trim();
+              if (payload === "[DONE]") return;
+              try {
+                var j = JSON.parse(payload);
+                var delta = ((j.choices || [])[0] || {}).delta || {};
+                if (delta.content) {
+                  clearThinking(tick, statusEl);
+                  full += delta.content; bubble.textContent = show(full);
+                }
+                if (j.choices && j.choices[0] && j.choices[0].finish_reason === "stop") cursor.remove();
+              } catch (e) { /* partial frame */ }
+            });
+            el("thread").scrollTop = el("thread").scrollHeight;
+            return pump();
+          });
+        }
+        return pump();
+      }).catch(function (e) {
+        clearThinking(tick, statusEl);
+        cursor.remove();
+        // One honest retry WITHOUT tools: the agent's tool loop can time out
+        // mid-churn (gateway reload, model swap); a direct answer is the
+        // reliable demo path. The retry is a real second attempt, not a stub.
+        if (!opts.direct) {
+          bubble.textContent = "";
+          cursor = document.createElement("span");
+          cursor.className = "cursor";
+          bubble.appendChild(cursor);
+          sendAsk(q, { direct: true, silent: true });
+          return;
+        }
+        bubble.textContent = "The local model didn't answer (it may have been reloading — try again).";
+        var row = document.createElement("div");
+        row.className = "chips";
+        row.style.justifyContent = "flex-start";
+        var retry = document.createElement("button");
+        retry.className = "chip";
+        retry.type = "button";
+        retry.textContent = "Try again";
+        retry.addEventListener("click", function () { sendAsk(lastQuestion); });
+        row.appendChild(retry);
+        bubble.parentElement.appendChild(row);
+        if (!daemonOk) toast("The local agent daemon is offline.", true);
+      });
+    }
+
+    // ── Tasks: awrun queue via /api/local/awrun, rendered To Do–style ──
+    var taskTimer = null;
+    var queueRuns = [];
+    var todoList = "tasks";
+
+    function loadQueue() {
+      if (!daemonOk) return;
+      api("/api/local/awrun").then(function (j) {
+        if (j && j.error) {
+          el("todoItems").innerHTML = '<p class="empty">Queue unavailable: ' + j.error + (j.fix ? " (" + j.fix + ")" : "") + "</p>";
+          return;
+        }
+        queueRuns = (j && (j.runs || j.items)) || [];
+        renderTodo();
+      }).catch(function (e) {
+        if (!el("todoItems").childElementCount) {
+          el("todoItems").innerHTML = '<p class="empty">Queue unavailable: ' + e.message + "</p>";
+        }
+      });
+    }
+
+    var SCHEDULE_ITEMS = [
+      { t: "Standup — local models", m: "Today · 09:30", day: "Today", done: false },
+      { t: "Write product notes draft", m: "Today · 14:00", day: "Today", done: false },
+      { t: "Review this week's builds", m: "Tomorrow · 11:00", day: "Tomorrow", done: false }
+    ];
+
+    function statusClass(s) { return ["queued", "running", "done", "failed", "cancelled"].indexOf(s) === -1 ? "" : s; }
+
+    function todoRow(title, meta, status, onToggle) {
+      var row = document.createElement("div");
+      row.className = "todo-item" + (status === "done" ? " done" : "");
+      var check = document.createElement("button");
+      check.className = "check";
+      check.type = "button";
+      check.title = onToggle ? "toggle done" : "";
+      check.textContent = status === "done" ? "✓" : "";
+      if (onToggle) check.addEventListener("click", onToggle);
+      row.appendChild(check);
+      var body = document.createElement("div");
+      body.style.flex = "1";
+      var t = document.createElement("div");
+      t.className = "todo-title";
+      t.textContent = title;
+      t.title = title;
+      body.appendChild(t);
+      if (meta) {
+        var m = document.createElement("div");
+        m.className = "todo-meta";
+        m.textContent = meta;
+        body.appendChild(m);
+      }
+      row.appendChild(body);
+      return row;
+    }
+
+    function renderTodo() {
+      var box = el("todoItems");
+      var add = el("todoAdd");
+      var quick = el("todoQuick");
+      el("todoMain").dataset.list = todoList;
+      box.innerHTML = "";
+      var active = 0;
+      queueRuns.forEach(function (r) {
+        var status = (r.status || r.state || "unknown").toLowerCase();
+        if (status === "queued" || status === "running") active++;
+      });
+
+      if (todoList === "summary") {
+        el("todoTitle").textContent = "Summary";
+        add.classList.add("hidden");
+        quick.classList.add("hidden");
+        var open = queueRuns.filter(function (r) {
+          var s = (r.status || "").toLowerCase();
+          return s === "queued" || s === "running";
+        }).length;
+        var done = queueRuns.filter(function (r) {
+          return (r.status || "").toLowerCase() === "done";
+        }).length;
+        var upcoming = SCHEDULE_ITEMS.filter(function (x) { return !x.done; }).length;
+        var cards = document.createElement("div");
+        cards.className = "summary-grid";
+        cards.innerHTML =
+          '<div class="summary-card"><b>' + open + '</b><span>Open tasks</span></div>' +
+          '<div class="summary-card"><b>' + done + '</b><span>Completed</span></div>' +
+          '<div class="summary-card"><b>' + upcoming + '</b><span>On the schedule</span></div>';
+        box.appendChild(cards);
+        queueRuns.slice(0, 5).forEach(function (r) {
+          var status = (r.status || r.state || "unknown").toLowerCase();
+          box.appendChild(todoRow(r.task || r.title || r.kind || "?", (r.id || r.run_id || "?").slice(0, 10), status));
+        });
+      } else if (todoList === "schedule") {
+        el("todoTitle").textContent = "Schedule";
+        add.classList.add("hidden");
+        quick.classList.add("hidden");
+        var groups = {};
+        SCHEDULE_ITEMS.forEach(function (item) {
+          var key = item.day || "Later";
+          (groups[key] = groups[key] || []).push(item);
+        });
+        Object.keys(groups).forEach(function (day) {
+          var label = document.createElement("div");
+          label.className = "sched-day";
+          label.textContent = day;
+          box.appendChild(label);
+          groups[day].forEach(function (item) {
+            box.appendChild(todoRow(item.t, item.m, item.done ? "done" : "", function () {
+              item.done = !item.done;
+              renderTodo();
+            }));
+          });
+        });
+      } else {
+        el("todoTitle").textContent = "Tasks";
+        add.classList.remove("hidden");
+        quick.classList.remove("hidden");
+        if (!queueRuns.length) {
+          box.innerHTML = '<p class="empty" style="padding:10px 2px">Nothing queued yet — add a task or tap a quick one.</p>';
+        } else {
+          queueRuns.forEach(function (r) {
+            var status = (r.status || r.state || "unknown").toLowerCase();
+            var row = todoRow(r.task || r.title || r.kind || "?", (r.id || r.run_id || "?").slice(0, 10), status);
+            var st = document.createElement("span");
+            st.className = "q-status " + statusClass(status);
+            st.textContent = status;
+            row.appendChild(st);
+            if (status === "queued" || status === "running") {
+              var cancel = document.createElement("button");
+              cancel.className = "q-cancel";
+              cancel.type = "button";
+              cancel.textContent = "cancel";
+              cancel.addEventListener("click", function () {
+                api("/api/local/awrun/" + (r.id || r.run_id) + "/cancel", { method: "POST" })
+                  .then(function () { loadQueue(); })
+                  .catch(function (e) { toast(e.message, true); });
+              });
+              row.appendChild(cancel);
+            }
+            box.appendChild(row);
+          });
+        }
+      }
+      var badge = el("taskCount");
+      badge.textContent = String(active);
+      badge.className = "count" + (active ? "" : " zero");
+      el("count-tasks").textContent = String(active);
+      el("count-schedule").textContent = String(SCHEDULE_ITEMS.filter(function (x) { return !x.done; }).length);
+    }
+
+    function submitTask(template, text) {
+      var task = template.replace("{text}", (text || "").trim() || "see prompt");
+      api("/api/local/awrun", {
+        method: "POST",
+        body: { kind: "agent", task: task, agent: "aither", priority: 1 }
+      }).then(function (j) {
+        if (j && j.error) { toast(j.error, true); return; }
+        var rid = (j && (j.id || j.run_id)) || "run";
+        toast("Queued " + String(rid).slice(0, 10));
+        loadQueue();
+      }).catch(function (e) { toast(e.message, true); });
+    }
+
+    // ── Visual: local image backends + generations ──
+    function loadBackends() {
+      api("/api/local/images/backends").then(function (j) {
+        var lanes = (j && j.backends) || [];
+        var strip = el("backendStrip");
+        strip.innerHTML = "";
+        if (!lanes.length) {
+          strip.innerHTML = '<span class="empty">No local image backend found.</span>';
+          return;
+        }
+        lanes.forEach(function (ln) {
+          var pill = document.createElement("span");
+          pill.className = "backend-pill" + (ln.up ? " up" : "");
+          var dot = document.createElement("span");
+          dot.className = "dot";
+          var label = document.createElement("span");
+          label.textContent = ln.label || ln.id || "?";
+          pill.appendChild(dot); pill.appendChild(label);
+          strip.appendChild(pill);
+        });
+        var sel = el("imgBackend");
+        var prev = sel.value;
+        sel.innerHTML = '<option value="">auto</option>';
+        lanes.forEach(function (ln) {
+          var o = document.createElement("option");
+          o.value = ln.id;
+          o.textContent = ln.label || ln.id;
+          sel.appendChild(o);
+        });
+        if (prev) sel.value = prev;
+      }).catch(function () { /* daemon offline; panel shows itself */ });
+    }
+
+    function generateImage() {
+      var prompt = el("imgPrompt").value.trim();
+      if (!prompt) { toast("Describe an image first.", true); return; }
+      var body = {
+        prompt: prompt,
+        size: el("imgSize").value,
+        backend: el("imgBackend").value,
+        steps: 20, cfg: 6.0
+      };
+      el("imgGo").disabled = true;
+      el("imgGo").textContent = "Generating…";
+      api("/api/local/images/generations", { method: "POST", body: body }).then(function (j) {
+        var img = el("imgResult");
+        img.classList.add("visible");
+        var bodyEl = el("imgBody");
+        bodyEl.innerHTML = "";
+        var data = (j.data || [])[0] || {};
+        if (data.b64_json) {
+          var im = document.createElement("img");
+          im.src = "data:image/png;base64," + data.b64_json;
+          im.alt = prompt;
+          bodyEl.appendChild(im);
+        } else {
+          bodyEl.textContent = (data.url || data.path || "image returned, but empty");
+          bodyEl.className = "body plain";
+        }
+        el("imgMeta").textContent = "backend: " + (j.backend || "?") + " · model: " + (j.model || "?");
+      }).catch(function (e) {
+        var img = el("imgResult");
+        img.classList.add("visible");
+        el("imgBody").textContent = e.message;
+        el("imgBody").className = "body";
+        el("imgMeta").textContent = "";
+      }).finally(function () {
+        el("imgGo").disabled = false;
+        el("imgGo").textContent = "Generate";
+      });
+    }
+
+    // ── Play: the Saga story engine ──
+    // Saga is its own process. The adk daemon forwards /api/local/saga/* to it and
+    // the aitheros launcher proxies the same prefix, so this tab works from either.
+    // Errors arrive as {detail: {error, fix}} (the engine), {error, reason} (the
+    // launcher's 501) or {detail: "text"}; each is shown as written, because each
+    // was written to be read by a person.
+    var sagaTurnId = null;
+    var sagaCanBranch = false;
+
+    function sagaWorldRef() {
+      var slug = (el("sagaStory").value || "").trim().toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+      return "private/" + (slug || "default");
+    }
+
+    function sagaApi(path, opts) {
+      opts = opts || {};
+      var h = hdrs();
+      h["X-Saga-World"] = sagaWorldRef();
+      return fetch(API_BASE + path, {
+        method: opts.method || "GET",
+        headers: h,
+        body: opts.body ? JSON.stringify(opts.body) : undefined
+      }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (j) {
+          if (r.ok) return j;
+          var d = j && (j.detail !== undefined ? j.detail : j);
+          var msg = (d && d.error === "not_implemented" && d.reason)
+            || (d && d.error) || (typeof d === "string" ? d : "") || ("HTTP " + r.status);
+          if (d && d.fix) msg += " — " + d.fix;
+          var err = new Error(msg);
+          err.status = r.status;
+          throw err;
+        });
+      });
+    }
+
+    function renderProse(target, prose) {
+      target.textContent = "";
+      var re = /<E\s+t='(\w+)'>([^<]+)<\/E>/g, last = 0, m;
+      prose = String(prose || "");
+      while ((m = re.exec(prose))) {
+        if (m.index > last) target.appendChild(document.createTextNode(prose.slice(last, m.index)));
+        var s = document.createElement("span");
+        s.className = "ent " + m[1];
+        s.title = m[1];
+        s.textContent = m[2];
+        target.appendChild(s);
+        last = re.lastIndex;
+      }
+      if (last < prose.length) target.appendChild(document.createTextNode(prose.slice(last)));
+    }
+
+    function sagaPill(strip, text, up, warn) {
+      var pill = document.createElement("span");
+      pill.className = "backend-pill" + (up ? " up" : "") + (warn ? " warn" : "");
+      var dot = document.createElement("span");
+      dot.className = "dot";
+      var label = document.createElement("span");
+      label.textContent = text;
+      pill.appendChild(dot); pill.appendChild(label);
+      strip.appendChild(pill);
+    }
+
+    function loadPlay() {
+      var strip = el("sagaStrip");
+      sagaApi("/api/local/saga/status").then(function (s) {
+        strip.innerHTML = "";
+        var up = (s && s.llm_upstream) || {};
+        sagaCanBranch = !!(s && s.mcts && s.mcts.available);
+        sagaPill(strip, "story engine", true, false);
+        sagaPill(strip, up.configured ? "model: " + (up.model || "local") : "no model configured", !!up.configured, !up.configured);
+        sagaPill(strip, "semantic recall off", false, false);
+        el("sagaGo").disabled = false;
+        return sagaApi("/api/local/saga/worlds").then(function (w) {
+          var sel = el("sagaWorld");
+          sel.innerHTML = "";
+          ((w && w.worlds) || []).forEach(function (meta) {
+            var o = document.createElement("option");
+            o.value = meta.id;
+            o.textContent = meta.name || meta.id;
+            if (meta.id === w.default) o.selected = true;
+            sel.appendChild(o);
+          });
+          return loadTurns();
+        });
+      }).catch(function (e) {
+        strip.innerHTML = "";
+        sagaPill(strip, "story engine not running here", false, true);
+        var note = document.createElement("span");
+        note.className = "empty";
+        note.textContent = e.message;
+        strip.appendChild(note);
+        el("sagaGo").disabled = true;
+      });
+    }
+
+    function appendTurn(message, prose, issues) {
+      var log = el("sagaLog");
+      var empty = log.querySelector(".empty");
+      if (empty) empty.remove();
+      var card = document.createElement("div");
+      card.className = "saga-turn";
+      var you = document.createElement("div");
+      you.className = "you";
+      you.textContent = "You: " + message;
+      var p = document.createElement("div");
+      p.className = "prose";
+      renderProse(p, prose);
+      card.appendChild(you); card.appendChild(p);
+      if (issues && issues.length) {
+        var box = document.createElement("div");
+        box.className = "saga-issues";
+        issues.forEach(function (i) {
+          var s = document.createElement("span");
+          s.className = "saga-issue " + (i.severity || "");
+          s.textContent = i.message;
+          if (i.suggestion) s.title = i.suggestion;
+          box.appendChild(s);
+        });
+        card.appendChild(box);
+      }
+      log.appendChild(card);
+      card.scrollIntoView({ block: "nearest" });
+    }
+
+    function showSagaTools() {
+      el("sagaTools").hidden = !sagaTurnId;
+      el("sagaBranches").hidden = !sagaCanBranch;
+    }
+
+    function loadTurns() {
+      return sagaApi("/api/local/saga/turns?limit=30").then(function (j) {
+        var log = el("sagaLog");
+        log.innerHTML = "";
+        el("sagaBranchList").innerHTML = "";
+        var turns = (j && j.turns) || [];
+        if (!turns.length) {
+          log.innerHTML = '<span class="empty">No turns yet. Start a world, then make a move.</span>';
+          sagaTurnId = null;
+        } else {
+          turns.forEach(function (t) { appendTurn(t.message, t.prose, []); });
+          sagaTurnId = turns[turns.length - 1].turn_id;
+        }
+        showSagaTools();
+      });
+    }
+
+    function showGlass(t) {
+      var c = t.context || {};
+      var lines = [];
+      (c.activated || []).slice(0, 8).forEach(function (n) {
+        lines.push("• " + n.name + " (" + n.type + ") — " + n.reason);
+      });
+      (c.recalled || []).slice(0, 4).forEach(function (r) { lines.push("↺ " + r.summary); });
+      el("sagaGlass").classList.add("visible");
+      el("sagaGlassBody").textContent = lines.join("\n") || "Nothing in the world graph matched this move.";
+      var stages = (c.stages || []).map(function (s) { return s.name.toLowerCase() + " " + s.items_out; }).join(" · ");
+      el("sagaGlassMeta").textContent = "turn " + t.turn_number + " · ~" + (c.token_estimate || 0)
+        + " tokens · " + stages + (t.effort ? " · effort " + t.effort.level : "");
+    }
+
+    function takeTurn() {
+      var move = el("sagaMove").value.trim();
+      if (!move) { toast("Say what you do first.", true); return; }
+      el("sagaGo").disabled = true;
+      el("sagaGo").textContent = "Narrating…";
+      el("sagaBranchList").innerHTML = "";
+      sagaApi("/api/local/saga/turn", { method: "POST", body: { message: move } }).then(function (t) {
+        el("sagaMove").value = "";
+        appendTurn(move, t.prose, t.continuity || []);
+        sagaTurnId = t.turn_id;
+        showSagaTools();
+        showGlass(t);
+      }).catch(function (e) {
+        toast(e.message, true);
+      }).finally(function () {
+        el("sagaGo").disabled = false;
+        el("sagaGo").textContent = "Take turn";
+      });
+    }
+
+    function seedWorld() {
+      var id = el("sagaWorld").value;
+      if (!id) return;
+      sagaApi("/api/local/saga/worlds/" + encodeURIComponent(id) + "/seed", { method: "POST" }).then(function (j) {
+        toast(j.seeded ? "World ready." : (j.reason || "This story has already started."));
+        return loadTurns();
+      }).catch(function (e) { toast(e.message, true); });
+    }
+
+    function exploreBranches() {
+      if (!sagaTurnId) return;
+      var btn = el("sagaBranches");
+      var list = el("sagaBranchList");
+      btn.disabled = true;
+      btn.textContent = "Exploring…";
+      list.innerHTML = '<span class="empty">Writing alternatives and scoring them. On a small local model this takes a while.</span>';
+      sagaApi("/api/local/saga/turn/" + encodeURIComponent(sagaTurnId) + "/branches",
+        { method: "POST", body: { mode: "lightweight" } }).then(function (j) {
+        list.innerHTML = "";
+        (j.branches || []).forEach(function (b) {
+          var card = document.createElement("button");
+          card.type = "button";
+          card.className = "saga-branch";
+          var p = document.createElement("span");
+          p.className = "prose";
+          renderProse(p, b.text);
+          var sc = document.createElement("span");
+          sc.className = "score";
+          sc.textContent = (b.selected ? "engine's pick · " : "") + "score " + Number(b.total_score || 0).toFixed(2);
+          card.appendChild(p); card.appendChild(sc);
+          card.addEventListener("click", function () { chooseBranch(b.id); });
+          list.appendChild(card);
+        });
+      }).catch(function (e) {
+        list.innerHTML = "";
+        toast(e.message, true);
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Explore branches";
+      });
+    }
+
+    function chooseBranch(id) {
+      sagaApi("/api/local/saga/turn/" + encodeURIComponent(sagaTurnId) + "/choose",
+        { method: "POST", body: { branch_id: id } }).then(function () {
+        toast("Branch taken.");
+        return loadTurns();
+      }).catch(function (e) { toast(e.message, true); });
+    }
+
+    function handoffBeat() {
+      if (!sagaTurnId) return;
+      sagaApi("/api/local/saga/turn/" + encodeURIComponent(sagaTurnId) + "/handoff").then(function (h) {
+        var cast = (h.characters || []).map(function (c) {
+          return c.name + (c.description ? " (" + c.description + ")" : "");
+        });
+        var prompt = [h.style_prefix, h.scene_text,
+          cast.length ? "Characters: " + cast.join("; ") : "",
+          h.location ? "Setting: " + h.location.name : ""].filter(Boolean).join(" · ");
+        el("imgPrompt").value = prompt.replace(/\s+/g, " ").slice(0, 1500);
+        switchView("visual");
+        toast(cast.length + " character(s) carried into the image prompt.");
+      }).catch(function (e) { toast(e.message, true); });
+    }
+
+    // ── Studio: sprites and comic pages ──
+    // LOCAL by default, through the same image backends as Visual. The remote lane
+    // reaches only a Media Forge the person connected, after a consent that names
+    // its URL; the key lives in this tab's input and is never stored.
+    var POSES = ["standing, facing forward", "walking, side view", "running, side view",
+      "jumping", "attacking", "hurt, recoiling", "casting, arms raised", "idle, looking back"];
+
+    function studioApi(path, opts) {
+      opts = opts || {};
+      var h = hdrs();
+      var k = el("remoteKey").value.trim();
+      if (k && /^\/api\/local\/studio\/remote\/(ops|op\/)/.test(path)) h["X-Studio-Key"] = k;
+      return fetch(API_BASE + path, {
+        method: opts.method || "GET",
+        headers: h,
+        body: opts.body ? JSON.stringify(opts.body) : undefined
+      }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (j) {
+          if (r.ok) return j;
+          var d = j && (j.detail !== undefined ? j.detail : j);
+          var msg = (d && d.error === "not_implemented" && d.reason)
+            || (d && d.error) || (typeof d === "string" ? d : "") || ("HTTP " + r.status);
+          if (d && d.fix) msg += " — " + d.fix;
+          throw new Error(msg);
+        });
+      });
+    }
+
+    function studioShow(who, body) {
+      el("studioResult").classList.add("visible");
+      el("studioWho").textContent = who;
+      el("studioBody").className = "body";
+      el("studioBody").textContent = body;
+      el("studioMeta").textContent = "";
+    }
+
+    function studioImage(prompt, seed, size) {
+      return studioApi("/api/local/images/generations", { method: "POST", body: {
+        prompt: prompt, size: size, seed: seed, steps: 20, cfg: 6.0
+      } }).then(function (j) {
+        var d = (j && j.data || [])[0] || {};
+        if (!d.b64_json) throw new Error("The image backend returned no image.");
+        return { src: "data:image/png;base64," + d.b64_json, backend: j.backend, model: j.model };
+      });
+    }
+
+    function loadImg(src) {
+      return new Promise(function (resolve, reject) {
+        var im = new Image();
+        im.onload = function () { resolve(im); };
+        im.onerror = reject;
+        im.src = src;
+      });
+    }
+
+    function makeSheet() {
+      var desc = el("spritePrompt").value.trim();
+      if (!desc) { toast("Describe the character first.", true); return; }
+      var n = parseInt(el("spriteFrames").value, 10) || 4;
+      var seed = parseInt(el("spriteSeed").value, 10) || 1234;
+      var btn = el("spriteGo");
+      var frames = [], meta = {}, i = 0;
+      btn.disabled = true;
+      studioShow("Sprite sheet", "Rendering pose 1 of " + n + "…");
+      function next() {
+        if (i >= n) return Promise.resolve();
+        btn.textContent = "Pose " + (i + 1) + " / " + n;
+        el("studioBody").textContent = "Rendering pose " + (i + 1) + " of " + n + " (" + POSES[i] + ")…";
+        return studioImage(desc + ", " + POSES[i] + ", full body, plain background", seed, "512x512")
+          .then(function (r) { frames.push(r.src); meta = r; i++; return next(); });
+      }
+      next().then(function () {
+        return Promise.all(frames.map(loadImg));
+      }).then(function (imgs) {
+        var cols = Math.min(4, imgs.length), cell = 256;
+        var c = document.createElement("canvas");
+        c.width = cols * cell;
+        c.height = Math.ceil(imgs.length / cols) * cell;
+        var g = c.getContext("2d");
+        imgs.forEach(function (im, k) {
+          g.drawImage(im, (k % cols) * cell, Math.floor(k / cols) * cell, cell, cell);
+        });
+        var out = new Image();
+        out.src = c.toDataURL("image/png");
+        out.alt = desc + ", sprite sheet";
+        el("studioBody").textContent = "";
+        el("studioBody").appendChild(out);
+        el("studioMeta").textContent = imgs.length + " poses · seed " + seed + " · backend: "
+          + (meta.backend || "?") + " · model: " + (meta.model || "?");
+      }).catch(function (e) {
+        el("studioBody").textContent = e.message;
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Make sheet";
+      });
+    }
+
+    function drawPage() {
+      var n = parseInt(el("comicPanels").value, 10) || 4;
+      var seed = parseInt(el("spriteSeed").value, 10) || 1234;
+      var btn = el("comicGo");
+      btn.disabled = true;
+      studioShow("Comic page", "Reading the story…");
+      sagaApi("/api/local/saga/turns?limit=" + n).then(function (j) {
+        var turns = (j && j.turns) || [];
+        if (!turns.length) throw new Error("No story turns yet. Play a few turns first.");
+        var panels = [], meta = {}, i = 0;
+        function next() {
+          if (i >= turns.length) return Promise.resolve();
+          btn.textContent = "Panel " + (i + 1) + " / " + turns.length;
+          el("studioBody").textContent = "Drawing panel " + (i + 1) + " of " + turns.length + "…";
+          var t = turns[i];
+          return studioImage("comic book panel, inked lines, " + String(t.text || "").slice(0, 300),
+            seed + i, "768x512").then(function (r) {
+            panels.push({ src: r.src, caption: t.text }); meta = r; i++; return next();
+          });
+        }
+        return next().then(function () {
+          var page = document.createElement("div");
+          page.className = "comic-page";
+          panels.forEach(function (p) {
+            var fig = document.createElement("figure");
+            var im = document.createElement("img");
+            im.src = p.src;
+            im.alt = "";
+            var cap = document.createElement("figcaption");
+            cap.textContent = String(p.caption || "").slice(0, 180);
+            fig.appendChild(im); fig.appendChild(cap);
+            page.appendChild(fig);
+          });
+          el("studioBody").textContent = "";
+          el("studioBody").appendChild(page);
+          el("studioMeta").textContent = panels.length + " panels · story " + sagaWorldRef().slice(8)
+            + " · backend: " + (meta.backend || "?");
+        });
+      }).catch(function (e) {
+        el("studioBody").textContent = e.message;
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Draw page";
+      });
+    }
+
+    function renderRemote(s) {
+      var r = (s && s.remote) || {};
+      el("remoteDisconnect").hidden = !r.enabled;
+      el("remoteConnect").hidden = !!r.enabled;
+      if (r.enabled) {
+        el("remoteNote").textContent = "Connected to " + r.url + ". Only its curated ops are listed.";
+        el("remoteUrl").value = r.url || "";
+        loadRemoteOps();
+      } else {
+        el("remoteNote").textContent = "Off. Connect a Media Forge you run yourself to see its op catalogue. Nothing is sent anywhere until you do.";
+        el("remoteOps").innerHTML = "";
+      }
+    }
+
+    function loadStudio() {
+      var strip = el("studioStrip");
+      studioApi("/api/local/images/backends").then(function (j) {
+        var lanes = (j && j.backends) || [];
+        strip.innerHTML = "";
+        if (!lanes.length) sagaPill(strip, "no local image backend found", false, true);
+        lanes.forEach(function (ln) { sagaPill(strip, ln.label || ln.id, !!ln.up, false); });
+      }).catch(function (e) {
+        strip.innerHTML = "";
+        sagaPill(strip, "image backends unavailable", false, true);
+        toast(e.message, true);
+      });
+      studioApi("/api/local/studio/status").then(renderRemote).catch(function (e) {
+        el("remoteNote").textContent = e.message;
+      });
+    }
+
+    function connectRemote() {
+      if (!el("remoteConsent").checked) {
+        toast("Tick the consent line first. It says what will be sent.", true);
+        return;
+      }
+      studioApi("/api/local/studio/remote/consent", { method: "POST", body: {
+        url: el("remoteUrl").value.trim(), confirm: true
+      } }).then(function () {
+        return studioApi("/api/local/studio/status");
+      }).then(renderRemote).catch(function (e) { toast(e.message, true); });
+    }
+
+    function disconnectRemote() {
+      studioApi("/api/local/studio/remote/consent", { method: "DELETE" }).then(function () {
+        el("remoteConsent").checked = false;
+        return studioApi("/api/local/studio/status");
+      }).then(renderRemote).catch(function (e) { toast(e.message, true); });
+    }
+
+    function loadRemoteOps() {
+      var box = el("remoteOps");
+      box.innerHTML = '<span class="empty">Reading its op catalogue…</span>';
+      studioApi("/api/local/studio/remote/ops").then(function (j) {
+        var ops = (j && j.ops) || [];
+        var groups = {};
+        box.innerHTML = "";
+        if (!ops.length) { box.innerHTML = '<span class="empty">It answered with no ops.</span>'; return; }
+        ops.forEach(function (op) { var g = op.group || "other"; (groups[g] = groups[g] || []).push(op); });
+        Object.keys(groups).sort().forEach(function (g) {
+          var h = document.createElement("h4");
+          h.textContent = g + " · " + groups[g].length;
+          var list = document.createElement("div");
+          list.className = "studio-op-list";
+          groups[g].forEach(function (op) {
+            var chip = document.createElement("span");
+            chip.className = "chip";
+            chip.textContent = op.label || op.name;
+            chip.title = (op.summary || "") + (op.cost ? " · cost " + op.cost : "");
+            list.appendChild(chip);
+          });
+          box.appendChild(h); box.appendChild(list);
+        });
+      }).catch(function (e) {
+        box.innerHTML = "";
+        var s = document.createElement("span");
+        s.className = "empty";
+        s.textContent = e.message;
+        box.appendChild(s);
+      });
+    }
+
+    // ── Build: AgentForge dispatch ──
+    function dispatchBuild(template, text) {
+      var task = template.replace("{text}", (text || "").trim() || "see prompt");
+      var btn = event && event.target;
+      if (btn) { btn.disabled = true; btn.textContent = "Working…"; }
+      el("buildResult").classList.add("visible");
+      el("buildBody").textContent = "Dispatching the local build agent…";
+      el("buildBody").className = "body";
+      el("buildMeta").textContent = "";
+      api("/v1/forge/dispatch", {
+        method: "POST",
+        body: { agent: "auto", task: task, effort: 5, timeout: 180 }
+      }).then(function (j) {
+        var out = j.content || (j.result && j.result.content) || "(no output)";
+        el("buildBody").textContent = String(out);
+        el("buildBody").className = "body plain";
+        el("buildMeta").textContent = "agent: " + (j.agent || "?") + " · tokens: " + (j.tokens_used || "?") + " · status: " + (j.status || "?");
+      }).catch(function (e) {
+        el("buildBody").textContent = HOSTED
+          ? "Build needs a sign-in — open portal.aitherium.com to use it from the hosted demo. (" + e.message + ")"
+          : e.message;
+        el("buildBody").className = "body";
+      }).finally(function () {
+        if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || "Build it"; }
+      });
+    }
+
+    // ── Files: File System Access API — everything stays on this device ──
+    function pickFiles() {
+      if (!window.showOpenFilePicker) {
+        toast("This browser doesn't support local file picking — use Chrome or Edge.", true);
+        return;
+      }
+      window.showOpenFilePicker({ multiple: true }).then(function (handles) {
+        return Promise.all(handles.map(function (h) { return h.getFile(); }));
+      }).then(function (files) {
+        files.forEach(function (f) {
+          var entry = { name: f.name, size: f.size, lastModified: f.lastModified };
+          attachedFiles.push(entry);
+          var recent = JSON.parse(localStorage.getItem("localai.recent") || "[]");
+          recent = recent.filter(function (r) { return r.name !== f.name; });
+          recent.unshift(entry);
+          localStorage.setItem("localai.recent", JSON.stringify(recent.slice(0, 8)));
+        });
+        renderFiles();
+        toast("Added " + files.length + " file" + (files.length === 1 ? "" : "s") + " — they stay on disk.");
+      }).catch(function (e) {
+        if (e && e.name !== "AbortError") toast(e.message || "Could not open files.", true);
+      });
+    }
+
+    function renderFiles() {
+      var list = el("fileList");
+      list.innerHTML = "";
+      if (!attachedFiles.length) {
+        list.innerHTML = '<p class="empty">No files picked yet.</p>';
+      } else {
+        attachedFiles.forEach(function (f, i) {
+          var row = document.createElement("div");
+          row.className = "file-item";
+          var name = document.createElement("span");
+          name.className = "f-name";
+          name.textContent = f.name;
+          var meta = document.createElement("span");
+          meta.className = "f-meta";
+          meta.textContent = fmtSize(f.size);
+          var use = document.createElement("button");
+          use.className = "btn";
+          use.type = "button";
+          use.textContent = "Ask about it";
+          use.addEventListener("click", function () {
+            attachedFiles = [attachedFiles[i]];
+            renderFiles();
+            switchView("ask");
+            el("ask").value = "Look at " + f.name + " and summarize what it is.";
+            resizeAsk();
+            el("askForm").requestSubmit();
+          });
+          row.appendChild(name); row.appendChild(meta); row.appendChild(use);
+          list.appendChild(row);
+        });
+      }
+      var recent = el("fileRecent");
+      recent.innerHTML = "";
+      var stored = JSON.parse(localStorage.getItem("localai.recent") || "[]");
+      if (!stored.length) {
+        recent.innerHTML = '<p class="empty">Nothing here yet — this is a fresh workspace.</p>';
+      } else {
+        stored.forEach(function (f) {
+          var row = document.createElement("div");
+          row.className = "file-item";
+          var name = document.createElement("span");
+          name.className = "f-name";
+          name.textContent = f.name;
+          var meta = document.createElement("span");
+          meta.className = "f-meta";
+          meta.textContent = fmtSize(f.size);
+          var use = document.createElement("button");
+          use.className = "btn";
+          use.type = "button";
+          use.textContent = "Use";
+          use.addEventListener("click", function () {
+            attachedFiles = [f];
+            renderFiles();
+            switchView("ask");
+          });
+          row.appendChild(name); row.appendChild(meta); row.appendChild(use);
+          recent.appendChild(row);
+        });
+      }
+    }
+
+    function fmtSize(n) {
+      if (!n) return "";
+      if (n < 1024) return n + " B";
+      if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1048576).toFixed(1) + " MB";
+    }
+
+    // ── Mail: awmail-backed via /api/local/mail ──
+    function mailStatus() {
+      api("/api/local/mail/status").then(function (j) {
+        var strip = el("mailStatusStrip");
+        strip.innerHTML = "";
+        var ok = j && j.available;
+        var pill = document.createElement("span");
+        pill.className = "backend-pill" + (ok ? " up" : "");
+        var dot = document.createElement("span");
+        dot.className = "dot";
+        var label = document.createElement("span");
+        label.textContent = ok
+          ? ("Mail ready · " + ((j.transports || []).join(", ") || "bridge"))
+          : (j.message || "Mail unavailable — configure awmail");
+        pill.appendChild(dot); pill.appendChild(label);
+        strip.appendChild(pill);
+        el("mailSub").textContent = ok
+          ? "Composed and sent from a mailbox you already own."
+          : "Drafts and messages, composed locally. Sending needs awmail configured (bridge or SMTP).";
+      }).catch(function () {
+        el("mailStatusStrip").innerHTML = '<span class="empty">Mail status unavailable.</span>';
+      });
+    }
+
+    function sendMail() {
+      var to = el("mailTo").value.trim();
+      var subject = el("mailSubject").value.trim();
+      var body = el("mailBody").value.trim();
+      if (!to) { toast("Enter a recipient address.", true); return; }
+      el("mailSend").disabled = true;
+      el("mailSend").textContent = "Sending…";
+      api("/api/local/mail/send", {
+        method: "POST",
+        body: { to: to, subject: subject || "(no subject)", body: body }
+      }).then(function (j) {
+        var out = el("mailResult");
+        out.classList.add("visible");
+        el("mailBodyOut").textContent = j.message || (j.ok ? "Sent." : "Not sent.");
+        el("mailBodyOut").className = j.ok ? "body plain" : "body";
+        el("mailMeta").textContent = j.ok
+          ? ("transport: " + (j.transport || "?") + " · accepted by relay: " + (j.accepted ? "yes" : "no"))
+          : ("fix: " + (j.fix || ""));
+      }).catch(function (e) {
+        var out = el("mailResult");
+        out.classList.add("visible");
+        el("mailBodyOut").textContent = e.message;
+        el("mailBodyOut").className = "body";
+        el("mailMeta").textContent = "";
+      }).finally(function () {
+        el("mailSend").disabled = false;
+        el("mailSend").textContent = "Send";
+      });
+    }
+
+    function draftMail() {
+      var to = el("mailTo").value.trim();
+      var subject = el("mailSubject").value.trim();
+      var what = el("mailBody").value.trim() || "a short, warm update";
+      addMsg("user", "Draft an email" + (to ? " to " + to : "") + (subject ? " about: " + subject : ""));
+      var bubble = addMsg("ai", "");
+      var cursor = document.createElement("span");
+      cursor.className = "cursor";
+      bubble.appendChild(cursor);
+      var prompt = "Write a short, friendly email" + (to ? " to " + to : "") +
+        (subject ? " with subject '" + subject + "'" : "") + ". Content: " + what +
+        " Return ONLY the email body text, no preamble.";
+      var full = "";
+      if (HOSTED) {
+        hostedChat(prompt).then(function (t) {
+          cursor.remove();
+          bubble.textContent = t;
+          el("mailBody").value = t.trim();
+          toast("Draft written — review it before sending.");
+        }).catch(function (e) {
+          cursor.remove();
+          bubble.textContent = "⚠ " + e.message;
+        });
+        return;
+      }
+      fetch("/v1/chat/completions", {
+        method: "POST", headers: hdrs(),
+        body: JSON.stringify({ model: "", messages: [{ role: "user", content: prompt }], stream: false, max_tokens: 600, plain: true })
+      }).then(function (r) {
+        if (!r.ok) return r.json().catch(function () { return {}; }).then(function (j) { throw new Error(j.error || r.status); });
+        return r.json();
+      }).then(function (j) {
+        var c = (j.choices && j.choices[0] && (j.choices[0].message || {}).content) || "";
+        full = c;
+        cursor.remove();
+        bubble.textContent = c;
+        el("mailBody").value = c.trim();
+        toast("Draft written — review it before sending.");
+      }).catch(function (e) {
+        cursor.remove();
+        bubble.textContent = "(draft failed: " + e.message + ")";
+        toast(e.message, true);
+      });
+    }
+
+    function registerNewsletter() {
+      var email = el("newsForm").querySelector("input").value.trim();
+      var okEl = el("newsOk");
+      if (!email) return;
+      if (daemonOk) {
+        api("/api/local/mail/send", {
+          method: "POST",
+          body: { to: email, subject: "Aitherium Local AI — beta notes", body: "You're on the list. We'll write when it matters." }
+        }).then(function (j) {
+          okEl.textContent = j.ok
+            ? "You're on the list. We'll write when it matters."
+            : "Registered locally — mail isn't wired yet, so no confirmation was sent.";
+          okEl.style.display = "block";
+        }).catch(function () {
+          okEl.textContent = "You're on the list. We'll write when it matters.";
+          okEl.style.display = "block";
+        });
+      } else {
+        okEl.textContent = "You're on the list. We'll write when it matters.";
+        okEl.style.display = "block";
+      }
+      el("newsForm").style.display = "none";
+    }
+
+    // ── MCP: the agent's toolset, surfaced honestly ──
+    function loadMcp() {
+      api("/agents").then(function (j) {
+        var agents = (j && j.agents) || [];
+        var a = agents[0] || {};
+        var tools = a.tools || [];
+        var box = el("mcpTools");
+        box.innerHTML = "";
+        if (!tools.length) {
+          box.innerHTML = '<p class="empty">No tools reported by the agent.</p>';
+          return;
+        }
+        var groups = {};
+        tools.forEach(function (t) {
+          var key = String(t).split("_")[0] || "other";
+          groups[key] = (groups[key] || 0) + 1;
+        });
+        var head = document.createElement("p");
+        head.className = "empty";
+        head.style.marginBottom = "8px";
+        head.textContent = tools.length + " tools · " +
+          Object.keys(groups).map(function (k) { return k + "×" + groups[k]; }).join(" · ");
+        box.appendChild(head);
+        var wrap = document.createElement("details");
+        var sum = document.createElement("summary");
+        sum.className = "empty";
+        sum.textContent = "Show all " + tools.length + " tool names";
+        var list = document.createElement("div");
+        list.style.display = "flex";
+        list.style.flexWrap = "wrap";
+        list.style.gap = "6px";
+        list.style.marginTop = "8px";
+        tools.forEach(function (t) {
+          var chip = document.createElement("span");
+          chip.className = "backend-pill";
+          chip.textContent = t;
+          list.appendChild(chip);
+        });
+        wrap.appendChild(sum);
+        wrap.appendChild(list);
+        box.appendChild(wrap);
+      }).catch(function (e) {
+        el("mcpTools").innerHTML = '<p class="empty">Tool roster unavailable: ' + e.message + "</p>";
+      });
+
+      api("/admin/mcp/servers").then(function (j) {
+        var servers = (j && j.servers) || [];
+        var box = el("mcpServers");
+        box.innerHTML = "";
+        if (!servers.length) {
+          box.innerHTML = '<p class="empty">No external MCP servers attached — the agent works with its built-in toolset above.</p>';
+          return;
+        }
+        servers.forEach(function (s) {
+          var row = document.createElement("div");
+          row.className = "q-item";
+          var id = document.createElement("span");
+          id.className = "q-id";
+          id.textContent = s.id || s.name || "?";
+          var name = document.createElement("span");
+          name.className = "q-task";
+          name.textContent = (s.tools || []).length + " tools";
+          row.appendChild(id); row.appendChild(name);
+          box.appendChild(row);
+        });
+      }).catch(function () {
+        el("mcpServers").innerHTML = '<p class="empty">MCP server status unavailable.</p>';
+      });
+
+      renderWebMcp();
+    }
+
+    // ── WebMCP: the Design Studio, surfaced honestly ──
+    // studio.aitherium.com runs MCP inside the browser (no server in the loop):
+    // design generation + design memory, with the same review-and-continue gate
+    // this pack's Approvals block describes — the agent's edits stay UNCOMMITTED
+    // until approve-batch is called. The tools live in the studio's own tab, so
+    // the pack links out rather than pretending to call them. Tool list verified
+    // against the studio bundle 2026-08-26; the on-device runtime lane was fixed
+    // the same day (weights.aitherium.com now serves the webml modules
+    // byte-identical with the JavaScript MIME `import()` requires).
+    var WEBMCP_TOOLS = [
+      { n: "create-design", g: "Design", d: "Create a new design and switch to it. size: poster (1080×1440), square (1080×1080), story (1080×1920), flyer (2100×1485). palette: neon, paper, ocean, ember." },
+      { n: "duplicate-design", g: "Design", d: "Duplicate the current design (id, elements, palette, background) and switch to the copy." },
+      { n: "list-designs", g: "Design", d: "List saved designs: id, name, size, palette, element count, last modified. No image data." },
+      { n: "get-design-state", g: "Design", d: "Current design as structured JSON: name, size, palette, background, full element list." },
+      { n: "export-design", g: "Design", d: "Export as PNG or JPEG at 1x/2x (pending edits included when asked). Triggers a download." },
+      { n: "undo", g: "Design", d: "Undo the last committed change — one step per approved batch." },
+      { n: "generate-image", g: "Edit (pending)", d: "Generate an image from a prompt — on-device (WebGPU, private, no server) when available, hosted otherwise." },
+      { n: "add-text", g: "Edit (pending)", d: "Add a text element. UNCOMMITTED until approve-batch." },
+      { n: "edit-element", g: "Edit (pending)", d: "Edit an element by id: text, size, color, position, rotation, opacity… UNCOMMITTED until approve-batch." },
+      { n: "remove-element", g: "Edit (pending)", d: "Remove an element by id. UNCOMMITTED until approve-batch." },
+      { n: "restyle-design", g: "Edit (pending)", d: "Re-skin the design: palette, background, titleFont. UNCOMMITTED until approve-batch." },
+      { n: "approve-batch", g: "Review gate", d: "Commit the pending batch. The human-approval gate: until called, nothing the agent did is committed. Each approved batch is one undo step." },
+      { n: "remember-preference", g: "Memory", d: "Persist a preference (brand color, store name, address…), scoped to the studio, survives reloads." },
+      { n: "recall-preference", g: "Memory", d: "Read a saved preference back: {key, value} or {key, found: false}." }
+    ];
+    function renderWebMcp() {
+      var box = el("webmcpBox");
+      box.innerHTML = "";
+      var intro = document.createElement("p");
+      intro.className = "empty";
+      intro.style.marginBottom = "8px";
+      intro.textContent = "studio.aitherium.com — MCP in the browser: 14 tools for design + design memory, no server in the loop.";
+      box.appendChild(intro);
+      var groups = {};
+      WEBMCP_TOOLS.forEach(function (t) {
+        (groups[t.g] = groups[t.g] || []).push(t);
+      });
+      Object.keys(groups).forEach(function (g) {
+        var h = document.createElement("p");
+        h.className = "empty";
+        h.style.margin = "6px 0 3px";
+        h.style.fontSize = "12px";
+        h.style.textTransform = "uppercase";
+        h.style.letterSpacing = "0.08em";
+        h.textContent = g;
+        box.appendChild(h);
+        var row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.flexWrap = "wrap";
+        row.style.gap = "6px";
+        row.style.marginBottom = "4px";
+        groups[g].forEach(function (t) {
+          var chip = document.createElement("span");
+          chip.className = "backend-pill" + (t.n === "approve-batch" ? " warn" : "");
+          chip.title = t.d;
+          chip.textContent = t.n;
+          row.appendChild(chip);
+        });
+        box.appendChild(row);
+      });
+      var line = document.createElement("p");
+      line.className = "empty";
+      line.style.margin = "8px 0";
+      line.style.fontSize = "13px";
+      line.textContent = "On-device runtime: fixed today — the webml modules serve byte-identical with the JS MIME the browser requires.";
+      box.appendChild(line);
+      var open = document.createElement("a");
+      open.className = "btn";
+      open.href = "https://studio.aitherium.com/";
+      open.target = "_blank";
+      open.rel = "noopener";
+      open.textContent = "Open the studio";
+      box.appendChild(open);
+    }
+
+    // ── Profile menu data ──
+    function fetchMenuData() {
+      api("/v1/models").then(function (j) {
+        var m = (j && (j.data || j.models)) || [];
+        var names = m.slice(0, 4).map(function (x) { return x.id || x.name; }).join(", ");
+        if (names) el("menuMeta").textContent = "models: " + names + (m.length > 4 ? "…" : "");
+      }).catch(function () {});
+    }
+
+    function menuAction(action) {
+      var msgs = {
+        models: "Local models: open Ask and type “what models do you have?”",
+        backends: "Image backends: see the Visual tab — it probes what's running on this machine.",
+        mail: "Mail status: see the Mail tab — awmail bridge or SMTP.",
+        daemon: "Daemon health: the top bar dot. Green = your local agent is answering.",
+        signin: "Aitherium is local-first — no account needed for inference."
+      };
+      toast(msgs[action] || action);
+      profileMenu.classList.remove("open");
+    }
+
+    // ── Composer behaviour ──
+    function resizeAsk() {
+      var a = el("ask");
+      a.style.height = "auto";
+      a.style.height = Math.min(a.scrollHeight, 160) + "px";
+      el("sendBtn").disabled = !a.value.trim();
+    }
+
+    function switchView(view) {
+      document.querySelectorAll(".nav-item").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.view === view);
+      });
+      hidePanels();
+      el("sidebar").classList.remove("open");
+      el("backdrop").classList.remove("show");
+      if (view === "ask") {
+        el("stage").classList.remove("os-mode");
+        if (!el("thread").childElementCount) {
+          el("hero").style.display = "";
+          el("chips").style.display = "";
+          el("thread").classList.remove("visible");
+        } else {
+          el("thread").classList.add("visible");
+          el("hero").style.display = "none";
+          el("chips").style.display = "none";
+        }
+        return;
+      }
+      el("hero").style.display = "none";
+      el("thread").classList.remove("visible");
+      el("chips").style.display = "none";
+      el("stage").classList.toggle("os-mode", view === "build");
+      el("panel-" + view).classList.add("visible");
+      if (view === "tasks") { loadQueue(); taskTimer = setInterval(loadQueue, 6000); }
+      else if (taskTimer) { clearInterval(taskTimer); taskTimer = null; }
+      if (view === "visual") loadBackends();
+      if (view === "play") loadPlay();
+      if (view === "studio") loadStudio();
+      if (view === "mail") mailStatus();
+      if (view === "mcp") loadMcp();
+      if (view === "build") { tickClock(); fillTerminal(); }
+    }
+
+    // ── Wire up ──
+    var ask = el("ask");
+    var profileMenu = el("profileMenu");
+
+    ask.addEventListener("input", resizeAsk);
+    ask.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        el("askForm").requestSubmit();
+      }
+    });
+
+    el("askForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      sendAsk(ask.value);
+    });
+
+    document.querySelectorAll(".chip").forEach(function (c) {
+      c.addEventListener("click", function () {
+        if (c.dataset.open) { switchView(c.dataset.open); return; }
+        sendAsk(c.textContent);
+      });
+    });
+
+    document.querySelectorAll(".nav-item").forEach(function (btn) {
+      btn.addEventListener("click", function () { switchView(btn.dataset.view); });
+    });
+
+    el("sagaGo").addEventListener("click", takeTurn);
+    el("sagaMove").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); takeTurn(); }
+    });
+    el("sagaSeed").addEventListener("click", seedWorld);
+    el("sagaBranches").addEventListener("click", exploreBranches);
+    el("sagaHandoff").addEventListener("click", handoffBeat);
+    el("spriteGo").addEventListener("click", makeSheet);
+    el("comicGo").addEventListener("click", drawPage);
+    el("remoteConnect").addEventListener("click", connectRemote);
+    el("remoteDisconnect").addEventListener("click", disconnectRemote);
+    el("sagaStory").addEventListener("change", function () {
+      if (el("panel-play").classList.contains("visible")) {
+        loadTurns().catch(function (e) { toast(e.message, true); });
+      }
+    });
+
+    // Task cards + To Do quick chips (chips have no .card parent)
+    document.querySelectorAll("[data-run]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var card = btn.closest(".card");
+        var ta = card ? card.querySelector("textarea") : null;
+        btn.dataset.label = btn.textContent;
+        submitTask(btn.dataset.run, ta ? ta.value : "");
+      });
+    });
+
+    // Build cards
+    document.querySelectorAll("[data-forge]").forEach(function (btn) {
+      var card = btn.closest(".card");
+      btn.addEventListener("click", function () {
+        var ta = card.querySelector("textarea");
+        btn.dataset.label = btn.textContent;
+        dispatchBuild(btn.dataset.forge, ta ? ta.value : "");
+      });
+    });
+
+    el("imgGo").addEventListener("click", generateImage);
+    el("filePick").addEventListener("click", pickFiles);
+    el("mailSend").addEventListener("click", sendMail);
+    el("mailDraft").addEventListener("click", draftMail);
+
+    // To Do: list switching + add-task (a real queue item)
+    el("todoDate").textContent = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+    document.querySelectorAll(".todo-list-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        document.querySelectorAll(".todo-list-btn").forEach(function (b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+        todoList = btn.dataset.list;
+        renderTodo();
+      });
+    });
+    el("todoAdd").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var input = el("todoInput");
+      var v = input.value.trim();
+      if (!v || todoList !== "tasks") return;
+      input.value = "";
+      submitTask("Task: {text}", v);
+    });
+
+    // Desktop OS: windows, dock, clock — terminal shows REAL daemon state
+    function openWin(id) {
+      var win = document.getElementById("win-" + id);
+      if (!win) return;
+      win.classList.add("open");
+      win.style.zIndex = String(Date.now() % 100000);
+      document.querySelectorAll(".dock button").forEach(function (b) { b.classList.toggle("active", b.dataset.win === id); });
+      document.querySelectorAll(".desk-icon").forEach(function (b) { b.classList.toggle("active", b.dataset.win === id); });
+    }
+    function closeWin(id) {
+      var win = document.getElementById("win-" + id);
+      if (win) win.classList.remove("open");
+    }
+    document.querySelectorAll("[data-win]").forEach(function (el2) {
+      el2.addEventListener("click", function () { openWin(el2.dataset.win); });
+    });
+    document.querySelectorAll("[data-close]").forEach(function (el2) {
+      el2.addEventListener("click", function (e) {
+        e.stopPropagation();
+        closeWin(el2.dataset.close);
+      });
+    });
+    var drag = null;
+    document.querySelectorAll(".win-bar").forEach(function (bar) {
+      bar.addEventListener("mousedown", function (e) {
+        if (e.target.dataset.close) return;
+        var win = document.getElementById(bar.dataset.drag);
+        if (!win) return;
+        var r = win.getBoundingClientRect();
+        var desk = el("osDesktop").getBoundingClientRect();
+        drag = { win: win, ox: e.clientX - r.left, oy: e.clientY - r.top, desk: desk };
+        win.style.zIndex = String(Date.now() % 100000);
+      });
+    });
+    window.addEventListener("mousemove", function (e) {
+      if (!drag) return;
+      drag.win.style.left = Math.max(0, e.clientX - drag.desk.left - drag.ox) + "px";
+      drag.win.style.top = Math.max(0, e.clientY - drag.desk.top - drag.oy) + "px";
+    });
+    window.addEventListener("mouseup", function () { drag = null; });
+    function tickClock() {
+      var d = new Date();
+      el("osClock").textContent = d.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    }
+    function fillTerminal() {
+      // Honest status in the mock terminal: real daemon + models from /health, /v1/models
+      var term = el("osTerm");
+      if (!term) return;
+      api("/v1/models").then(function (j) {
+        var m = (j && (j.data || j.models)) || [];
+        var names = m.slice(0, 3).map(function (x) { return x.id || x.name; }).join(", ");
+        var lines = term.querySelectorAll("div");
+        if (lines.length >= 4) {
+          lines[3].textContent = "models: " + (names || "idle");
+          lines[4].textContent = "daemon: " + (daemonOk ? "connected" : "offline");
+        }
+      }).catch(function () {});
+    }
+
+    el("newsForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      registerNewsletter();
+    });
+
+    el("avatarBtn").addEventListener("click", function (e) {
+      e.stopPropagation();
+      profileMenu.classList.toggle("open");
+    });
+    document.addEventListener("click", function () { profileMenu.classList.remove("open"); });
+    document.querySelectorAll(".menu button[data-action]").forEach(function (b) {
+      b.addEventListener("click", function () { menuAction(b.dataset.action); });
+    });
+
+    el("menuBtn").addEventListener("click", function () {
+      el("sidebar").classList.add("open");
+      el("backdrop").classList.add("show");
+    });
+    el("backdrop").addEventListener("click", function () {
+      el("sidebar").classList.remove("open");
+      el("backdrop").classList.remove("show");
+    });
+
+    resizeAsk();
+    renderFiles();
+    refreshHealth();
+    if (el("thread").childElementCount === 0) {
+      setTimeout(function () {
+        // Warm-up probe so the first answer is fast; the hero stays until asked.
+        fetch("/v1/chat/completions", {
+          method: "POST", headers: hdrs(),
+          body: JSON.stringify({ model: "", messages: [{ role: "user", content: "ping" }], stream: false, max_tokens: 4 })
+        }).catch(function () {});
+      }, 1500);
+    }
+  </script>
+</body>
+</html>

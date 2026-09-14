@@ -1,0 +1,66 @@
+id: cuda-vllm-8gb
+name: NVIDIA CUDA 8GB vLLM
+tier: gpu-small
+description: >-
+  NVIDIA GPUs with 8GB VRAM. Serves 8B model (Nemotron-8B AWQ-4bit, ~7GB).
+  Docker Compose deployment via the upstream vLLM image. Optimal for edge/desktop.
+
+hardware_requirements:
+  min_ram_gb: 8
+  min_cpu_cores: 4
+  gpu_vendor: nvidia
+  min_vram_gb: 8
+  unified_memory: false
+  notes: >-
+    8GB GPUs: RTX 4060, RTX 3060, RTX 2060 Super, T4. WSL2 runners must be
+    v1-compatible (VLLM_USE_V2_MODEL_RUNNER=0 on WSL2).
+
+inference_config:
+  engine: vllm
+  models:
+    - name: nemotron-8b-awq
+      source: hf://cyankiwi/Nemotron-Orchestrator-8B-AWQ-4bit
+      size_gb: 7.0
+      quantization: AWQ-4bit
+      context_window: 128000
+      served_name: nemotron-8b
+  serve_args:
+    - --host 0.0.0.0
+    - --port 8000
+    - --gpu-memory-utilization 0.85
+    - --max-num-batched-tokens 8192
+    - --max-model-len 8192
+    - --quantization awq
+  image: vllm/vllm-openai:latest
+  platform_traps:
+    - wsl2-v1-runner
+    - wsl2-util-ceiling
+
+deployment:
+  target: docker-compose
+  compose_template: inference-cuda-vllm.yml
+  delegate: ""
+  port: 8000
+
+backend_config:
+  backend_type: vllm
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 60
+  completion:
+    model: nemotron-8b
+    prompt: "What is machine learning?"
+    min_tokens: 20
+    timeout_s: 120
+
+fleet_wiring:
+  catalog_entry:
+    backend: vllm
+    category: general
+    context_window: 128000
+    vram_gb: 8
+    speed: 12
+    quality: 8
+  ms_env_var: AITHER_VLLM_8GB_URL

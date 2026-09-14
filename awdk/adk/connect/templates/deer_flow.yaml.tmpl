@@ -1,0 +1,21 @@
+# Deer Flow OpenAI-compatible gateway bridge
+# This template repoints Deer Flow to use the AitherOS gateway for LLM calls and MCP tools
+
+models:
+  - name: aitheros-default
+    api_base: {gateway_url}
+    api_key: {api_key}
+    model: auto
+    provider: openai
+    default: true
+
+extensions_config:
+  mcp:
+    enabled: true
+    servers:
+      - name: aitheros
+        type: http
+        url: {mcp_url}
+        auth:
+          type: bearer
+          token: {api_key}

@@ -1,0 +1,60 @@
+# Hardware Profile: Minimal
+# Single consumer GPU (RTX 3060/4060, Arc A770, RX 7600)
+# Runs a small chat model only; no reasoning or vision model fits in VRAM.
+
+name: minimal
+description: "Single GPU, 8-12GB VRAM, 16GB RAM"
+
+requirements:
+  vram_gb: 8
+  ram_gb: 16
+  gpu_count: 1
+
+models:
+  chat: llama3.2:3b
+  reasoning: null
+  vision: null
+  coding: null
+  embedding: nomic-embed-text
+
+vllm:
+  enabled: false  # not enough VRAM to run vLLM alongside Ollama
+  gpu_memory_utilization: 0.0
+  max_model_len: 0
+  tensor_parallel_size: 1
+  workers: []
+
+ollama:
+  gpu_memory_fraction: 0.85
+  num_parallel: 1
+  models_to_pull:
+    - llama3.2:3b
+    - nomic-embed-text
+
+services:
+  core:
+    - node
+    - pulse
+    - watch
+    - chronicle
+    - secrets
+  agents:
+    - genesis
+  disabled:
+    - micro_scheduler
+    - parallel
+    - accel
+    - mesh
+    - trainer
+    - prism
+
+resource_limits:
+  max_concurrent_requests: 2
+  max_batch_size: 1
+  context_pipeline_timeout_s: 10
+  ollama_max_loaded_models: 1
+
+notes: >
+  Minimal profile keeps only essential services running. No local reasoning
+  or vision model -- use cloud LLM fallback for effort >= 7 tasks. Embedding
+  runs on CPU if GPU is fully occupied by the chat model.

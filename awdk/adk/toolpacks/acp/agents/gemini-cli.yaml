@@ -1,0 +1,21 @@
+# gemini-cli — Google Gemini CLI as an external ACP agent.
+# Valid AgentPackManifest (load_agent_pack): runtime.cmd is the binary that
+# speaks ACP on stdio. Direct-spawn via acp_connect / adk backend add acp.
+id: gemini-cli
+name: Gemini CLI (ACP)
+version: 1.0.0
+description: >-
+  Google's Gemini CLI exposed over the Agent Client Protocol. The `gemini`
+  binary must be installed and authenticated; drive it with acp_connect /
+  acp_prompt.
+framework: native
+protocol: acp
+runtime:
+  type: python
+  cmd: gemini
+  args: ["-p", "gemini-cli"]
+entrypoint: gemini-cli
+install: |
+  npm install -g @google/gemini-cli
+  gemini login
+  # then: adk backend add acp --command gemini

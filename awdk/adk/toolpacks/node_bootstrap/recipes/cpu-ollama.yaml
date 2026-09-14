@@ -1,0 +1,66 @@
+id: cpu-ollama
+name: CPU-Only Ollama
+tier: cpu
+description: >-
+  CPU-only inference via Ollama. Serves local 3B model (Qwen2:3B) or 8B on
+  higher-end CPUs. Docker Compose deployment, port 11434.
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 8
+  gpu_vendor: none
+  min_vram_gb: 0
+  unified_memory: false
+  notes: >-
+    CPU inference is slow (~1-2 tok/s). Recommended for fallback / offline
+    scenarios. Cloud API key strongly recommended for real-time tasks.
+
+inference_config:
+  engine: ollama
+  models:
+    - name: qwen2.5-3b
+      source: ollama://qwen2.5:3b
+      size_gb: 4.0
+      quantization: default
+      context_window: 32768
+      served_name: qwen2.5-3b-cpu
+    - name: nemotron-8b
+      source: ollama://nemotron-12b-instruct
+      size_gb: 8.0
+      quantization: default
+      context_window: 128000
+      served_name: nemotron-8b-cpu
+  serve_args:
+    - OLLAMA_HOST=0.0.0.0:11434
+    - OLLAMA_NUM_PARALLEL=2
+  image: ollama/ollama:latest
+  platform_traps: []
+
+deployment:
+  target: docker-compose
+  compose_template: inference-cpu-ollama.yml
+  delegate: ""
+  port: 11434
+
+backend_config:
+  backend_type: ollama_remote
+  health_path: /api/tags
+  completion_path: /api/generate
+
+verify:
+  health_timeout_s: 15
+  completion:
+    model: qwen2-3b-cpu
+    prompt: "Explain what an algorithm is."
+    min_tokens: 10
+    timeout_s: 120
+
+fleet_wiring:
+  catalog_entry:
+    backend: ollama_remote
+    category: general
+    context_window: 32768
+    vram_gb: 0
+    speed: 1.5
+    quality: 5
+  ms_env_var: ""

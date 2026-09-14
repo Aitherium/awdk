@@ -1,0 +1,46 @@
+This pack contains work derived from DeepSeek Coder.
+
+    https://github.com/deepseek-ai/DeepSeek-Coder
+
+    Code:   MIT License
+    Models: DeepSeek Model License (permits commercial use)
+    Paper:  DeepSeek-Coder: When the Large Language Model Meets Programming
+            -- The Rise of Code Intelligence, arXiv:2401.14196
+
+Two licenses apply and they are not the same. The repository's CODE is MIT. The
+model WEIGHTS are governed by a separate Model License; it does permit
+commercial use, but it is not MIT and carries use restrictions. Anything in this
+pack that ships weights, or a product built on them, is bound by the Model
+License, not by this file.
+
+Derived material:
+
+  * `formats.py` reproduces the fill-in-the-middle sentinel tokens, the instruct
+    prompt template (verbatim from `finetune/finetune_deepseekcoder.py`), the
+    `<|EOT|>` turn terminator, and the 32014 / 32021 stop-token ids. These are a
+    wire protocol -- they must match the upstream tokenizer exactly or the model
+    silently misreads the prompt.
+
+  * `order_by_dependency` / `build_repo_context` implement the repo-level
+    packing described in the paper's data-creation section (parse intra-repo
+    dependencies, order files so dependencies precede dependents, mark each file
+    with a `#path` header). The implementation here is ours; the scheme is theirs.
+
+  * `MODELS` records the released sizes and the fact that 5.7b has no instruct
+    release, taken from the repository README's model table.
+
+No model weights and no upstream source files are vendored into this pack.
+
+Citation:
+
+    @misc{deepseek-coder,
+      author = {Daya Guo and Qihao Zhu and Dejian Yang and Zhenda Xie and Kai Dong
+                and Wentao Zhang and Guanting Chen and Xiao Bi and Y. Wu and
+                Y.K. Li and Fuli Luo and Yingfei Xiong and Wenfeng Liang},
+      title  = {DeepSeek-Coder: When the Large Language Model Meets Programming
+                -- The Rise of Code Intelligence},
+      journal = {CoRR},
+      volume = {abs/2401.14196},
+      year   = {2024},
+      url    = {https://arxiv.org/abs/2401.14196}
+    }

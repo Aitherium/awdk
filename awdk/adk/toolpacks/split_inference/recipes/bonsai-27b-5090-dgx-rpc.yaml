@@ -1,0 +1,102 @@
+id: bonsai-27b-5090-dgx-rpc
+name: Bonsai-27B split across local 5090 + DGX (llama.cpp RPC)
+tier: multi-node-gpu
+description: >-
+  Shards Bonsai-27B across the local RTX 5090 (main/orchestrating node) and the DGX
+  Spark as an RPC backend over the ~1ms LAN. The main node holds the sampler, KV
+  cache and the first layers; the RPC backend serves the remainder. This is the
+  reference topology for pipeline-parallel inference on the AitherNet mesh.
+
+hardware_requirements:
+  min_ram_gb: 32
+  min_cpu_cores: 8
+  gpu_vendor: nvidia
+  min_local_vram_gb: 16
+  min_combined_vram_gb: 24
+  min_rpc_backends: 1
+  notes: >-
+    Bonsai-27B in the shipped GGUF quant is ~3.6GB and fits the 5090 alone — so this
+    topology is about PROVING and exercising the split path, not about necessity.
+    That also means a silent local-only fallback is INVISIBLE here unless you assert
+    the RPC device is attached. Always split_verify.
+
+build:
+  # The stock fleet build has NO --rpc flag (verified: `llama-server --help |
+  # grep -c -- --rpc` == 0). RPC support is compile-time only.
+  source_dir: /work
+  build_dir: /work/build-rpc
+  cmake_configure:
+    - cmake -B build-rpc -DGGML_CUDA=ON -DGGML_RPC=ON -DCMAKE_BUILD_TYPE=Release
+  cmake_build:
+    - cmake --build build-rpc --config Release -j
+  produces:
+    - build-rpc/bin/rpc-server
+    - build-rpc/bin/llama-server
+  est_duration_min: 25
+
+topology:
+  main:
+    host: local
+    container: aither-llamacpp-bonsai
+    device: CUDA0
+    gpu: NVIDIA GeForce RTX 5090
+    vram_gb: 31
+  rpc_backends:
+    - host: spark.local          # the DGX Spark, reached over the private LAN
+      port: 50052
+      bind: 0.0.0.0              # inside the DGX's own private interface ONLY
+      transport: tcp
+      notes: >-
+        ~1ms LAN RTT. rpc-server is UNAUTHENTICATED — bind it to the private
+        LAN/mesh interface only. Never expose port 50052 publicly or via a tunnel.
+
+model:
+  name: bonsai-27b
+  path: /work/bonsai.gguf
+  size_gb: 3.6
+  quant: gguf
+
+serve:
+  # -ngl 99 offloads every layer; llama.cpp then distributes across the device list
+  # (CUDA0 + RPC0...) using --tensor-split. Omit --tensor-split for an even spread.
+  main_args:
+    - --model /work/bonsai.gguf
+    - --rpc spark.local:50052
+    - --gpu-layers 99
+    - --host 0.0.0.0
+    - --port 8080
+  rpc_server_args:
+    - --host 0.0.0.0
+    - --port 50052
+  port: 8080
+  platform_traps:
+    - "A build WITHOUT -DGGML_RPC=ON has no --rpc flag at all — passing it is an
+       unrecognised-argument error, not a silent no-op. Check the build first."
+    - "An UNREACHABLE --rpc target does not reliably abort startup: you can get a
+       healthy endpoint that ran entirely on the local GPU. Because this model fits
+       the 5090 alone, that fallback is invisible without split_verify."
+    - "rpc-server is UNAUTHENTICATED and executes tensor ops from any client that
+       can reach it. Private LAN/mesh interfaces only — never a public bind."
+    - "The RPC backend must run a rpc-server built from the SAME llama.cpp/ggml
+       version as the main node; a protocol mismatch fails at connect time."
+
+verify:
+  health_timeout_s: 120
+  require_rpc_device: true
+  expect_min_rpc_devices: 1
+  completion:
+    prompt: "Explain what pipeline parallelism is, in one sentence."
+    max_tokens: 32
+    timeout_s: 180
+  description: >-
+    `--list-devices` must show an RPC device alongside CUDA0 (pre-split it shows
+    ONLY `CUDA0: NVIDIA GeForce RTX 5090`). That, plus a completion round-trip, is
+    the only proof the split is real.
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp-rpc
+    category: reasoning
+    combined_vram_gb: 31
+    nodes: 2
+  url_env_var: AITHER_LLAMACPP_RPC_URL

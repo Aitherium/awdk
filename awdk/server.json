@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Aitherium/awdk",
+  "title": "AitherOS ADK",
+  "description": "Agent runtime with typed memory, knowledge and code graphs, plus file and web tools",
+  "version": "3.8.18",
+  "websiteUrl": "https://aitherium.com",
+  "repository": {
+    "url": "https://github.com/Aitherium/awdk",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "aither-adk",
+      "version": "3.8.18",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AITHERIDENTITY_URL",
+          "description": "Override the AitherIdentity endpoint used for sign-in. Only needed for a self-hosted node; the public default works out of the box.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AITHERIUM_API_KEY",
+          "description": "Optional API key for the hosted gateway. The server runs fully local without it; its file and web tools need no credential.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

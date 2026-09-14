@@ -1,0 +1,35 @@
+id: graphrag
+name: GraphRAG — Embeddings + Knowledge-Graph Setup
+version: 1.0.0
+description: >-
+  Set up EMBEDDINGS + GraphRAG the way the fleet runs it — serve nomic-embed-text
+  (768-dim, the fleet's canonical vector space) or CodeRankEmbed via vLLM, wire it
+  into a local knowledge graph, ingest a corpus, and verify BOTH halves: the
+  embedder returns the right vector dimension, and retrieval actually returns
+  ingested content (not a silent-empty 200). All tools are fail-soft dict-returners.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: share-2
+tags: [embeddings, graphrag, rag, knowledge-graph, nomic, vector, retrieval, vllm]
+
+mcp_tools:
+  - "rag_*"
+
+tool_modules: []
+entitlements: []
+
+mcp_server:
+  enabled: true
+  description: Embeddings + GraphRAG setup tools (rag_* suite)
+  entitlement_required: false
+  tools: rag_*
+
+skills:
+  - graph-a-repo        # the operational runbook (rag_* + codegraph_*, verify discipline)
+  - graph-rag-agent     # the adk toolkit view
+
+persona_fragments:
+  - "GraphRAG setup: you have rag_* tools to stand up embeddings + a knowledge graph. rag_detect_hardware reports embedder options; rag_resolve_embedder maps a role (text|code) to a recipe; rag_plan_embedder renders the vLLM embed serve command; rag_apply_embedder launches it; rag_verify_embedder asserts the vector DIMENSION is right; rag_ingest ingests a folder into a local knowledge graph (adk ingest); rag_verify_retrieval proves retrieval returns ingested content. All return dicts, never raise."
+  - "TWO positive assertions unique to this domain — do not skip them. (1) rag_verify_embedder: a broken embedder answers 200 with a WRONG-LENGTH or empty vector (useless for retrieval, invisible without a dimension check). It asserts the vector is exactly the expected dimension (nomic-embed-text = 768) and reports status='wrong_dimension' otherwise. (2) rag_verify_retrieval: an EMPTY graph answers 200 with zero hits (the silent-empty trap) — only a round-trip that ingests a sentinel and RETRIEVES it proves the pipeline. status='empty' when nothing comes back."
+  - "nomic-embed-text (768-dim) is the fleet's CANONICAL vector space — memory/RAG are keyed on it. Serving a DIFFERENT text embedder makes your vectors incomparable to the fleet's store (cross-store retrieval silently returns garbage). Keep nomic-embed-text for fleet parity; use CodeRankEmbed ONLY for code, in a SEPARATE graph (code and text are different vector spaces)."

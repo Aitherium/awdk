@@ -1,0 +1,133 @@
+"""{{ agent_display_name }} configuration — multi-provider LLM support."""
+
+import os
+import secrets
+from pathlib import Path
+from pydantic_settings import BaseSettings
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+class Settings(BaseSettings):
+    app_name: str = "{{ agent_display_name }}"
+    secret_key: str = ""
+    api_key: str = ""
+    port: int = {{ port }}
+
+    # LLM Provider: portal, aitheros, ollama, deepseek, openai, anthropic, gemini, custom
+    llm_provider: str = "portal"
+    llm_fallback: str = ""
+
+    # portal.aitherium.com hosted inference
+    portal_url: str = "https://portal.aitherium.com/api/v1/inference"
+    portal_api_key: str = ""
+    portal_model: str = "auto"
+
+    # AitherOS MicroScheduler
+    aitheros_url: str = "http://localhost:8150"
+    aitheros_model: str = "auto"
+
+    # Ollama
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1:8b"
+
+    # DeepSeek
+    deepseek_api_key: str = ""
+    deepseek_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
+
+    # OpenAI
+    openai_api_key: str = ""
+    openai_url: str = "https://api.openai.com"
+    openai_model: str = "gpt-4o"
+
+    # Anthropic
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-20250514"
+
+    # Google Gemini
+    gemini_api_key: str = ""
+    gemini_model: str = "auto"
+
+    # Custom OpenAI-compatible
+    custom_llm_url: str = ""
+    custom_llm_api_key: str = ""
+    custom_llm_model: str = ""
+
+    # Qdrant
+    qdrant_url: str = "http://localhost:6333"
+    collection_name: str = "{{ collection_name }}"
+
+    # Embedding
+    embedding_model: str = "all-MiniLM-L6-v2"
+
+    # Paths
+    upload_dir: Path = _PROJECT_ROOT / "data" / "uploads"
+    export_dir: Path = _PROJECT_ROOT / "data" / "exports"
+    db_path: Path = _PROJECT_ROOT / "data" / "{{ db_name }}"
+
+    # RAG
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
+    top_k: int = 8
+
+    # Deployment mode: standalone | hybrid | saas
+    deployment_mode: str = "standalone"
+    default_tenant_id: str = "default"
+    database_url: str = ""
+
+    # Aitherium onboarding
+    aitherium_agent_id: str = ""
+    aitherium_agent_name: str = ""
+
+    # Instance identity (auto-generated per-machine, persisted)
+    instance_id: str = ""
+
+    # Portal scoping
+    tenant_id: str = ""
+    workspace_id: str = "default"
+
+    # Portal auth
+    portal_token: str = ""
+
+    # Heartbeat
+    heartbeat_interval: int = 60
+    heartbeat_enabled: bool = True
+
+    # CORS
+    cors_origins: str = ""
+
+    # Brain pack
+    brain_pack: str = ""
+
+    model_config = {"env_prefix": "{{ env_prefix }}", "env_file": str(_PROJECT_ROOT / ".env"), "extra": "allow"}
+
+
+settings = Settings()
+
+if not settings.secret_key:
+    import logging as _log
+    _log.getLogger("{{ log_name }}.config").warning(
+        "{{ env_prefix }}SECRET_KEY not set — generating ephemeral key. Set it in production!"
+    )
+    settings.secret_key = secrets.token_hex(32)
+
+# Check standard env vars (without prefix)
+if not settings.anthropic_api_key:
+    settings.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+if not settings.openai_api_key:
+    settings.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+if not settings.deepseek_api_key:
+    settings.deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+if not settings.gemini_api_key:
+    settings.gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
+
+# Auto-load instance_id from project .aither dir if not set via env
+if not settings.instance_id:
+    _instance_id_file = _PROJECT_ROOT / ".aither" / "instance_id"
+    if _instance_id_file.is_file():
+        settings.instance_id = _instance_id_file.read_text(encoding="utf-8").strip()
+
+settings.upload_dir.mkdir(parents=True, exist_ok=True)
+settings.export_dir.mkdir(parents=True, exist_ok=True)
+settings.db_path.parent.mkdir(parents=True, exist_ok=True)

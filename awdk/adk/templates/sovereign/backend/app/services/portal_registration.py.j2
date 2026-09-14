@@ -1,0 +1,173 @@
+"""Register this agent with portal.aitherium.com using federation protocol.
+
+Supports Ed25519 signed requests, heartbeat loop, and multi-instance
+awareness via ``FederationLiteClient`` from the ADK package.  Falls back
+to a simple HTTP POST if the federation module is unavailable.
+"""
+
+import asyncio
+import logging
+
+import httpx
+
+from ..config import settings
+
+log = logging.getLogger("{{ log_name }}.portal")
+
+PORTAL_URL = "https://portal.aitherium.com/api/v1/agents/upsert"
+
+# Try to import the federation-protocol client (ships with ADK >=1.2)
+_federation_client = None
+try:
+    from adk.federation_lite import FederationLiteClient
+    _FEDERATION_AVAILABLE = True
+except ImportError:
+    _FEDERATION_AVAILABLE = False
+
+
+def _get_federation_client():
+    """Lazy-init a FederationLiteClient from current settings."""
+    global _federation_client
+    if _federation_client is not None:
+        return _federation_client
+
+    from pathlib import Path
+    _project_root = Path(__file__).resolve().parent.parent.parent.parent
+    key_dir = _project_root / ".aither" / "keys"
+
+    _federation_client = FederationLiteClient(
+        hub_url=settings.portal_url.replace("/api/v1/inference", "")
+            if "/inference" in settings.portal_url
+            else "https://portal.aitherium.com",
+        api_key=settings.portal_token or settings.portal_api_key,
+        node_id=settings.instance_id,
+        key_dir=key_dir if key_dir.is_dir() else None,
+        key_name="{{ agent_name }}" if key_dir.is_dir() else None,
+    )
+    return _federation_client
+
+
+def _build_agent_entry() -> dict:
+    """Build the agent entry dict for upsert."""
+    return {
+        "name": "{{ agent_name }}",
+        "display_name": settings.aitherium_agent_name or "{{ agent_display_name }}",
+        "description": "{{ agent_description[:100] }}",
+        "health_endpoint": "/api/health",
+        "capabilities": ["rag_search", "document_analysis", "content_generation"],
+        "status": "active",
+        "scope": {
+            "visibility": "workspace" if settings.workspace_id else "tenant",
+            "tenant_id": settings.tenant_id,
+            "workspace_id": settings.workspace_id,
+        },
+        "metadata": {
+            "icon": "file-text",
+            "category": "knowledge",
+            "config_endpoint": "/api/config/embed",
+            "deployment_mode": settings.deployment_mode,
+            "llm_provider": settings.llm_provider,
+            "instance_id": settings.instance_id,
+        },
+    }
+
+
+async def register_with_portal():
+    """Register this agent instance with the portal.
+
+    Uses federation-protocol ``upsert_agents`` when available (signed,
+    node_id-scoped).  Falls back to simple POST otherwise.
+    """
+    if not settings.aitherium_agent_id and not settings.tenant_id:
+        log.info("No aitherium_agent_id or tenant_id configured — skipping portal registration")
+        return
+
+    agent_entry = _build_agent_entry()
+
+    # Federation-protocol path (preferred)
+    if _FEDERATION_AVAILABLE and settings.instance_id:
+        try:
+            client = _get_federation_client()
+            result = await client.upsert_agents([agent_entry])
+            if result.get("error"):
+                log.warning("Federation upsert failed: %s — falling back to simple POST", result)
+            else:
+                log.info(
+                    "Registered with portal via federation (instance=%s, node=%s)",
+                    settings.instance_id, client.node_id,
+                )
+                return
+        except Exception as e:
+            log.warning("Federation registration error: %s — falling back to simple POST", e)
+
+    # Fallback: simple HTTP POST (original behaviour)
+    payload = {
+        "agent_id": settings.aitherium_agent_id,
+        "name": settings.aitherium_agent_name or "{{ agent_display_name }}",
+        "description": "{{ agent_description[:100] }}",
+        "health_endpoint": "/api/health",
+        "capabilities": ["rag_search", "document_analysis", "content_generation"],
+        "status": "active",
+        "metadata": {
+            "icon": "file-text",
+            "category": "knowledge",
+            "config_endpoint": "/api/config/embed",
+            "deployment_mode": settings.deployment_mode,
+            "llm_provider": settings.llm_provider,
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            headers = {}
+            if settings.portal_token:
+                headers["Authorization"] = f"Bearer {settings.portal_token}"
+            elif settings.portal_api_key:
+                headers["Authorization"] = f"Bearer {settings.portal_api_key}"
+            r = await c.post(PORTAL_URL, json=payload, headers=headers)
+            if r.status_code in (200, 201):
+                log.info("Registered with portal: %s", settings.aitherium_agent_id)
+            else:
+                log.warning("Portal registration failed: %s %s", r.status_code, r.text[:200])
+    except Exception as e:
+        log.warning("Portal registration error (non-fatal): %s", e)
+
+
+async def start_heartbeat_loop():
+    """Background heartbeat loop — sends status to portal every N seconds.
+
+    Sends ``status="offline"`` on cancellation (shutdown).
+    """
+    if not _FEDERATION_AVAILABLE:
+        log.debug("Federation not available — heartbeat loop disabled")
+        return
+    if not settings.instance_id:
+        log.debug("No instance_id — heartbeat loop disabled")
+        return
+
+    client = _get_federation_client()
+    interval = settings.heartbeat_interval
+    agent_entry = _build_agent_entry()
+
+    log.info("Starting heartbeat loop (interval=%ds, instance=%s)", interval, settings.instance_id)
+
+    try:
+        while True:
+            try:
+                await client.heartbeat(
+                    status="online",
+                    metrics={},
+                    agents=[agent_entry],
+                )
+                log.debug("Heartbeat sent (instance=%s)", settings.instance_id)
+            except Exception as e:
+                log.warning("Heartbeat failed (will retry): %s", e)
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        # Graceful shutdown — notify portal we're going offline
+        try:
+            await client.heartbeat(status="offline", agents=[agent_entry])
+            log.info("Sent offline heartbeat on shutdown")
+        except Exception:
+            pass
+        raise

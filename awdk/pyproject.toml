@@ -1,0 +1,373 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# DISTRIBUTION name only. The import package is `adk` and is unaffected; the
+# console scripts keep working. safe-bulk-rename §8: a distribution rename
+# changes the INSTALL LINE, not what users type.
+# The old name keeps resolving via the redirect package in `aither-adk-shim/`.
+name = "awdk"
+# 3.6.1, not 3.5.0. The TREE was BEHIND the REGISTRY (safe-bulk-rename §8):
+# PyPI already served aither-adk 3.6.0 while this file said 3.5.0, so shipping
+# the tree version as awdk would hand every user moving across a DOWNGRADE and
+# a silently older package. Continue the existing line instead of restarting it.
+# 3.8.16, not 3.8.4. The tree was BEHIND the registry AGAIN: PyPI served
+# awdk 3.8.15 while this line said 3.8.3, so every value the auto-release lane
+# could cut was a DOWNGRADE and no awdk release shipped for 14 days.
+#
+# Cause, measured 2026-09-09: commit 7061518f17 ("restore: working-tree
+# snapshot after .git metadata destruction", 2026-08-26) restored this line to
+# an older value, and nothing noticed -- PVR001 exists for exactly this and
+# reads the WORKING TREE, where a stale local copy carrying 3.8.16 made it
+# green. Second occurrence of the class 1648a5efe6 fixed on 2026-08-15.
+#
+# Continue the existing line, never restart it: a user moving across a
+# downgrade gets a silently older package.
+version = "3.8.18"
+description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [
+    { name = "Aitherium", email = "hello@aitherium.com" },
+]
+keywords = ["ai", "agents", "llm", "aither", "ollama", "openai", "anthropic", "vllm", "fleet", "multi-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.25.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "jinja2>=3.1.0",
+    "aiosqlite>=0.19.0",
+    "qrcode>=7.4",
+    # Keyless web search for the builtin `web_search` tool. Declared, not
+    # optional, for the same reason cryptography is below: without it the tool
+    # silently falls back to scraping DuckDuckGo HTML, and that scraper has
+    # already gone stale — measured 2026-08-16 it returned 3/3 results with an
+    # EMPTY snippet because the markup changed. Titles and URLs still came
+    # back, so nothing errored; the model just got links with no text and no
+    # way to tell that from "the web had nothing useful". A silent quality
+    # loss is worse than the ModuleNotFoundError the note below describes,
+    # because nobody files a bug for it.
+    "ddgs>=9.0",
+    # awgit — the git plane: micro-commits, semantic diff, an operation log and
+    # path leases. FIVE adk modules already import it (decisions/context,
+    # decisions/terminal, harnesses/well, node/local_tools, and the tool guards)
+    # behind soft ImportError guards, so today the behaviour depends on whether
+    # the user happens to have it: present on a monorepo checkout, absent for
+    # everyone who ran `pip install aither-adk`.
+    #
+    # That is the worst shape for a capability. The guards mean nothing errors —
+    # the features are simply skipped, and a user comparing notes with a
+    # developer sees a different product with no message explaining why.
+    # Declaring it makes the guarded paths reachable for everyone; the guards
+    # stay, because they are also what keeps adk working in a non-git directory.
+    # >=1.0 rather than >=1.1: the monorepo tree declares 1.0.0 and PyPI is at
+    # 1.1.1, so a tighter pin would force pip to replace a developer's editable
+    # checkout with the published wheel — the copy they are actively editing.
+    "awgit>=1.0",
+    # A2A identity/signing. NOT optional despite a2a_client.py's "pip install
+    # cryptography" hint: `adk/cli.py` imports a2a_identity, and the endpoint
+    # REGISTRATION payload carries the agent's public key — so a plain
+    # `pip install awdk` produced a package whose registration path raised
+    # ModuleNotFoundError on a machine that happened not to have it.
+    #
+    # Undeclared here since before 3.0.6 and invisible the whole time, because
+    # every environment that ran the tests already had cryptography installed by
+    # something else. It surfaced only when the release gate moved to a venv, which
+    # is the point of testing the payload in a clean environment: an undeclared
+    # dependency is not a test failure, it is what a stranger gets.
+    "cryptography>=41.0.0",
+    # The code graph the ADK indexes with. Was a 2,800-line FORK of this engine
+    # inside adk/faculties/code_graph.py, ~2,000 lines behind the published
+    # package, with nothing comparing them. Now a real dependency so there is one
+    # implementation. Its only dependency is httpx, which is already required
+    # here, so this is close to free.
+    "awgraph>=1.1.0",
+    # THE AW FAMILY, COMPLETED. Three independent packages that answer three
+    # different questions, and an agent needs all three to work the way a careful
+    # human does:
+    #
+    #   awgraph  — what the code IS and what depends on what
+    #   awgit    — what CHANGED and who is editing it right now
+    #   awrelay  — who FOUND what, and who still needs to hear it
+    #
+    # None requires the others; they are separate declarations rather than a bundle
+    # so a consumer that only needs messaging does not carry a code-graph engine.
+    #
+    # awgit was ALREADY imported by adk/tool_guards.py (the lease guard that stops one
+    # agent overwriting another's in-flight edit) and was NOT declared here. The import
+    # is wrapped in `except Exception: return`, so on any machine without it the guard
+    # silently became a NO-OP — agents kept writing, and concurrent edits were destroyed
+    # with no error and no log line. That degradation is correct for a single-user
+    # customer machine and catastrophic on a shared repo, and nothing distinguished the
+    # two. Declaring it makes the guard present by default; tool_guards.py now says out
+    # loud when it is missing rather than disappearing.
+    #
+    # Same class as the `cryptography` entry above: an undeclared dependency is not a
+    # test failure, it is what a stranger gets.
+    "awgit>=1.2.0",
+    "awrelay>=0.2.0",
+]
+
+[project.optional-dependencies]
+# ── The rest of the aw family ────────────────────────────────────────────────
+# awgit / awgraph / awrelay are HARD dependencies above: all three are published,
+# so a plain `pip install awdk` gets them and the capability is simply present.
+#
+# These four are EXTRAS, and that is a constraint rather than a preference: awm,
+# awrecover, awseal and awshare are 0.1.0 and NOT on PyPI. Declaring an unpublished
+# package as a hard dependency breaks `pip install awdk` for every stranger --
+# which is what PVR003 (check_package_version_ahead_of_registry.py) exists to catch.
+#
+# As extras they fail HONESTLY: a stranger's plain install keeps working, an agent
+# that asks for a capability we cannot ship yet gets a resolution error naming the
+# package, and in-fleet agents get them from the monorepo today. The alternative --
+# leaving them undeclared entirely -- is the awgit failure this session already paid
+# for: imported, undeclared, and silently inert (AWP105).
+#
+# PROMOTE EACH TO A HARD DEPENDENCY IN THE COMMIT THAT PUBLISHES IT, not before.
+memory = ["awm>=0.1.0"]          # portable scoped agent memory (tenant:user:project)
+snapshots = ["awrecover>=0.1.0"] # labelled snapshots; restore lands fully or not at all
+seal = ["awseal>=0.1.0"]         # Ed25519 provenance a stranger can verify
+share = ["awshare>=0.1.0"]       # content-addressed publish/fetch, verified on retrieval
+nest = ["awnest>=0.1.0"]         # is there a human there -- verdicts and bound attestations
+senses = ["awfind>=0.1.0", "awbrowse>=0.1.0"]  # search and page reading for agents
+# Priority-aware run queue (awrun_submit/queue/status/bump/cancel below). Same
+# reason as memory/snapshots/seal/share above: awrun is 0.1.0 and NOT on PyPI,
+# so it is an extra, never a hard dependency in [project.dependencies] -- a
+# hard pin here would break `pip install awdk` for every stranger and is
+# exactly what PVR003 (check_package_version_ahead_of_registry.py) exists to
+# catch. Promote to a hard dependency in the commit that publishes it.
+queue = ["awrun>=0.1.0"]
+# Everything the family offers, for an agent that wants the lot.
+aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0"]
+
+anthropic = ["anthropic>=0.18.0"]
+openai = ["openai>=1.0.0"]
+graphs = [
+    "numpy>=1.24.0",
+]
+embedding = [
+    "sentence-transformers>=2.3.0",
+    "torch>=2.0.0",
+]
+node = ["mcp>=1.28,<2", "starlette>=0.36"]
+# `adk storage` is a pass-through to the awstorage brick (adk/storage_cmd.py).
+storage = ["awstorage>=0.1.0"]
+pdf = ["pypdf>=4.0", "fpdf2>=2.7"]
+# ARC world-model contribution: the bundled arc-brainpack pack registers/streams
+# transitions with only core deps (httpx); PLAYING ARC to generate transitions
+# (arc_contribute / `adk contribute play`) needs the real game client.
+arc = ["arcengine>=0.9.3", "requests>=2.28.0"]
+sync = ["watchdog>=3.0.0"]
+federation = ["cryptography>=41.0.0"]
+addons = ["docker>=7.0"]
+workspace = [
+    "awdk[platform]",
+]
+harness = [
+    # AitherShell's harness layer: the daemon (fastapi/uvicorn), the agent relay
+    # (httpx) and a REAL pty. Without a pty backend the `terminal` and `sandbox`
+    # harnesses refuse to start rather than degrading to a pipe — a pipe-backed
+    # "terminal" looks right until you run something interactive.
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.26",
+    "ptyprocess>=0.7; sys_platform != 'win32'",
+    "pywinpty>=2.0; sys_platform == 'win32'",
+]
+shell = [
+    "rich>=13.0",
+    "click>=8.0",
+    "argcomplete>=3.0",
+    # Command center + session browser TUIs, and live-session detection
+    "prompt_toolkit>=3.0",
+    "psutil>=5.9.0",
+]
+telegram = ["python-telegram-bot>=21.0"]
+discord = ["discord.py>=2.3"]
+slack = ["slack-bolt>=1.18"]
+channels = [
+    "awdk[telegram,discord,slack]",
+]
+voice-local = [
+    "faster-whisper>=0.10.0",
+    "piper-tts>=1.1.0",
+]
+voice-cloud = [
+    "openai>=1.0.0",
+    "deepgram-sdk>=3.0",
+    "elevenlabs>=0.2",
+]
+voice = ["awdk[voice-local,voice-cloud]"]
+all = [
+    "awdk[graphs,embedding,channels,federation,sync,addons,node,shell,voice,pdf]",
+    "anthropic>=0.18.0",
+    "openai>=1.0.0",
+]
+platform = [
+    # Internal platform toolkit dependencies (merged from aither-platform)
+    "pydantic>=2.0.0",
+    "aiohttp>=3.8.0",
+    "requests>=2.28.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "jinja2>=3.1.0",
+    "prompt_toolkit>=3.0.0",
+    "python-dotenv>=1.0.0",
+    "psutil>=5.9.0",
+]
+dev = [
+    "pytest>=7.0",
+    # Campaign memory's real store: without it CI importorskips the entire
+    # gobbonet campaign suite forever, which is a vacuous pass wearing a green
+    # tick. awm is published (0.1.0 on PyPI since 2026-08); dev-only here — the
+    # runtime keeps it as the `memory` extra so a stranger's install is untouched.
+    "awm>=0.1.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.2.0",
+    "respx>=0.20.0",
+    # Real coverage for pack-signature verification (pack_verifier degrades
+    # gracefully without it, but then CI never exercises the verify path).
+    "cryptography>=41.0.0",
+    # ACP v2 conformance ORACLE — dev-only. The adk ACP client/server are
+    # deliberately hand-rolled with zero runtime deps; this reference SDK is
+    # what tests prove our wire against (tests importorskip it, so the wheel
+    # and runtime stay untouched). NOT a runtime dependency.
+    "agent-client-protocol>=0.12.0",
+]
+
+[project.urls]
+Homepage = "https://aitherium.com"
+Repository = "https://github.com/Aitherium/awdk"
+Documentation = "https://github.com/Aitherium/awdk#readme"
+
+[project.scripts]
+adk = "adk.cli:main"
+adk-py = "adk.cli:main"
+# `uvx <package> <args>` runs the console script whose name MATCHES the package.
+# The ACP registry's uvx distribution is exactly that shape, so without this
+# alias `uvx awdk acp serve` fails with "no such executable" and the
+# registry entry is unusable while validating fine (the schema check only
+# confirms the package exists on PyPI, never that it is runnable).
+aither-adk = "adk.cli:main"
+# ...and the SAME rule applied to the new distribution name: once this ships as
+# `awdk`, `uvx awdk <args>` looks for a console script called `awdk`. Without
+# this line the uvx path breaks the moment the rename publishes, while every
+# schema check still passes (they confirm the package EXISTS, never that it is
+# runnable). `aither-adk` stays for the ACP registry entry already in the wild.
+awdk = "adk.cli:main"
+adk-serve = "adk.server:main"
+adk-workspace = "adk.server:main_workspace"
+adk-bug = "adk.bugreport:main"
+adk-shell = "adk.shell.cli:entry"
+
+[tool.hatch.build]
+# Distribution-time moat boundary. These files exist in the source repo (the
+# internal AitherOS runtime uses them) but are NEVER shipped in the published
+# PyPI wheel. Same proven pattern used for premium identities.
+#
+#   - identities/*.yaml : only the free aither.yaml ships; the rest are
+#                         premium IP delivered via pack download after purchase.
+#   - nanogpt.py        : on-device training IP — competitors must not get a
+#                         turnkey trainer in the free SDK.
+exclude = [
+    "adk/identities/*.yaml",
+    "adk/nanogpt.py",
+    "adk/formbridge/**",
+    "adk/room_binaries/**",
+    "adk/shell_binaries/**",
+    "adk/faculties/memory_graph.py",
+    "adk/platform/memory/**",
+    "GRID_SETUP.md",
+    "docker-compose.grid.yml",
+    "tests/test_formbridge.py",
+]
+artifacts = [
+    "adk/identities/aither.yaml",
+    # Bundled tool packs (arc-brainpack, deep_research, cloudflare): force-include
+    # their non-.py assets — the .toolpack.yaml manifests (dotfiles), pack UIs and
+    # skill markdown — so a `pip install awdk` ships working, discoverable packs.
+    "adk/toolpacks/**/*",
+    # Swappable agent UI packs (built-ins: llamacpp, …). `adk ui set <name>`
+    # selects one; a custom pack is a folder with index.html dropped into
+    # ~/.aither/ui-packs/. Ship the built-ins inside the wheel.
+    "adk/webui/packs/**/*",
+    # Vendored ODS model catalog and hardware database (deterministic model resolution).
+    # JSON files needed at runtime by adk.ods.resolver; force-include via importlib.resources.
+    "adk/ods/**/*",
+    # Bundled component manifests -- the mirror of AitherOS/config/addon_manifests
+    # (comments stripped, generated by sync_addon_manifests_to_awdk.py, parity gated
+    # by ACM007). A stranger's `pip install awdk` must know what a component IS
+    # without the monorepo, or `adk addon enable awgym` reads as "Unknown addon".
+    "adk/addon_manifests/*.yaml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["adk"]
+[tool.hatch.build.targets.wheel.force-include]
+"docker-compose.adk-vllm.yml" = "adk/docker-compose.adk-vllm.yml"
+"agent.yaml" = "adk/workspace-agent.yaml"
+# Built-in admin/settings web console served by aither-serve at / and /ui.
+"adk/webui/index.html" = "adk/webui/index.html"
+# Pack-UI bridge SDK served at /packs/_sdk.js for sandboxed pack iframes.
+"adk/webui/pack_sdk.js" = "adk/webui/pack_sdk.js"
+# Bundled self-service deploy compose files (adk deploy node, both the default
+# ADK-native path and --genesis full-stack path, each with a --federate profile) —
+# ship versioned inside the package so `adk deploy node` needs no network fetch from
+# the private AitherOS monorepo for its own config, only for the (public) GHCR pull.
+"deploy/compose/docker-compose.node.yml" = "adk/deploy/compose/docker-compose.node.yml"
+"deploy/compose/docker-compose.node-adk.yml" = "adk/deploy/compose/docker-compose.node-adk.yml"
+
+[tool.hatch.build.targets.wheel.targets.data]
+"adk/packs" = "adk/packs"
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    # IRC event handlers use ensure_future for async broadcast — harmless in tests
+    "ignore:coroutine 'IRCServer._broadcast_to_channel' was never awaited:RuntimeWarning",
+    "ignore:coroutine 'IRCServer._send_to_nick' was never awaited:RuntimeWarning",
+    # CPython unittest.mock bug: AsyncMock child creation creates unawaited coroutines
+    # https://github.com/python/cpython/issues/100226
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+]
+
+[tool.ruff]
+# awdk is a published, pip-distributed SDK that also lives inside the
+# AitherOS monorepo. Without a local config it inherited the repo-root ruff
+# config but NONE of the per-file-ignores AitherOS grants its own code — holding
+# the SDK to a STRICTER bar than the platform itself (1900+ false-positives).
+# This restores parity with the platform's pragmatic standard: real correctness
+# (E/F/W) is enforced; intentional SDK style (camelCase A2A/protocol fields,
+# acronym import aliases, __init__ star re-exports, docstring whitespace) is
+# accepted. Genuine bugs — undefined names (F821/F822) and parse errors — are
+# deliberately KEPT so regressions surface.
+line-length = 100
+target-version = "py312"
+extend-exclude = ["examples", "install.py", "install.ps1", "setup-vllm.py", "packaging", "scripts"]
+
+[tool.ruff.lint]
+# N (pep8-naming) intentionally NOT selected: the SDK uses camelCase wire-format
+# fields for protocol compat and short acronym aliases by design.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501", "E402", "E701", "E702", "E731", "E741",
+    "F401", "F403", "F405", "F541", "F811", "F841",
+    "I001", "W291", "W293",
+]

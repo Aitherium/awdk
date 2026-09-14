@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ACP</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font: 13px/1.5 ui-monospace, monospace; margin: 0; padding: 12px; background: #0d1117; color: #c9d1d9; }
+    h1 { font-size: 15px; margin: 0 0 10px; color: #e6edf3; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; }
+    input[type=text] { flex: 1; background: #161b22; border: 1px solid #30363d; color: #e6edf3; padding: 6px 8px; border-radius: 6px; }
+    select, button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+    button:active { background: #30363d; }
+    pre { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; white-space: pre-wrap; max-height: 50vh; overflow: auto; }
+    .hint { color: #8b949e; }
+  </style>
+</head>
+<body>
+  <h1>ACP — external Agent Client Protocol agents</h1>
+  <div class="row">
+    <input type="text" id="command" placeholder="agent command (e.g. claude)" />
+    <input type="text" id="args" placeholder="args (e.g. -p claude-agent-acp)" />
+    <button id="connect">Connect</button>
+    <button id="list">List agents</button>
+  </div>
+  <div class="row">
+    <input type="text" id="message" placeholder="prompt message" />
+    <button id="prompt">Prompt</button>
+  </div>
+  <pre id="out" class="hint">Tools: acp_list_agents, acp_connect, acp_prompt, acp_close. Connect first, then prompt.</pre>
+
+  <script>
+    let sessionId = "";
+    const out = document.getElementById("out");
+
+    function invokeTool(name, args) {
+      return new Promise((resolve) => {
+        const handler = (ev) => {
+          if (ev.data && ev.data.type === "toolResult" && ev.data.requestId === reqId) {
+            window.removeEventListener("message", handler);
+            resolve(ev.data.result);
+          }
+        };
+        const reqId = Math.random().toString(36).slice(2);
+        window.addEventListener("message", handler);
+        window.parent.postMessage({ type: "invokeTool", name, args, requestId: reqId }, "*");
+        setTimeout(() => resolve({ error: "timeout waiting for tool result" }), 60000);
+      });
+    }
+
+    document.getElementById("list").onclick = async () => {
+      const r = await invokeTool("acp_list_agents", {});
+      out.textContent = JSON.stringify(r, null, 2);
+    };
+
+    document.getElementById("connect").onclick = async () => {
+      const r = await invokeTool("acp_connect", {
+        command: document.getElementById("command").value,
+        args: document.getElementById("args").value,
+      });
+      out.textContent = JSON.stringify(r, null, 2);
+      if (r.session_id) sessionId = r.session_id;
+    };
+
+    document.getElementById("prompt").onclick = async () => {
+      const r = await invokeTool("acp_prompt", {
+        command: document.getElementById("command").value,
+        args: document.getElementById("args").value,
+        message: document.getElementById("message").value,
+        session_id: sessionId,
+      });
+      out.textContent = JSON.stringify(r, null, 2);
+      if (r.session_id) sessionId = r.session_id;
+    };
+  </script>
+</body>
+</html>

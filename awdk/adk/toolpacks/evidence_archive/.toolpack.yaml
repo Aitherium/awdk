@@ -1,0 +1,22 @@
+id: evidence_archive
+name: Evidence Archive — Actor Resolution & Append-Only Timeline
+version: 1.0.0
+description: >-
+  Agent instructions for filing to a graded evidence archive: resolve an actor
+  BEFORE creating one (the archive splits its own timeline if you do not),
+  append evidence with a required source_url and a sourcing grade, correct by
+  superseding rather than deleting, and verify the hash-chained audit trail.
+  The API is HTTP (`/api/research/*` on the archive host); this pack carries the
+  workflow an agent must follow to use it correctly, not a second copy of it.
+category: tool_packs
+author: Aitherium
+icon: archive-box
+tags: [research, evidence, provenance, timeline, osint, append-only]
+
+# No mcp_tools are declared. A pack that names a tool which does not exist
+# advertises a capability the runtime cannot bind, and the agent then behaves as
+# though the feature is configured off — so the declaration waits until the MCP
+# wrappers exist rather than promising them now.
+mcp_tools: []
+
+instructions: RESEARCH_AGENT_INSTRUCTIONS.md

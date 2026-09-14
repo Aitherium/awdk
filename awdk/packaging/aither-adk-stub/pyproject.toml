@@ -1,0 +1,51 @@
+# Permanent redirect package: `aither-adk` -> `awdk`.
+#
+# 🚨 DO NOT let a rename sweep touch the `name` field in this file. The literal
+# string "aither-adk" here is LOAD-BEARING: it is the whole reason the package
+# exists. A tree-wide s/aither-adk/awdk/ turned this into a package named
+# "awdk" that depended on "awdk>=3.6.0" -- self-referential nonsense that
+# publishes as a duplicate of the real package and redirects nobody. That
+# actually happened on 2026-08-19, during the very rename this file exists to
+# absorb, and it was caught by check_package_version_ahead_of_registry.py
+# reporting two rows called "awdk" rather than by anyone reading the file.
+#
+# PyPI has no rename. `aither-adk` shipped 153 releases (latest 3.5.0) before
+# the move, so every existing lockfile, install script, blog post and customer
+# runbook that says `pip install aither-adk` must keep resolving to a working
+# install FOREVER. This package makes that true: it carries no code and no
+# console scripts of its own, it only depends on `awdk`.
+#
+# The import name never changed (`import adk`) and neither did the commands
+# (`adk`, `adk-py`, `adk-serve`, `adk-workspace`, `adk-bug`, `adk-shell`),
+# which `awdk` installs. So a user who installs the old name gets an identical
+# environment to one who installs the new name.
+#
+# Keep `version` at or above the newest `awdk` release, and keep the dependency
+# pin `>=` that same version, or `pip install aither-adk` silently resolves to
+# an OLDER awdk than the one this stub was cut alongside.
+#
+# Do NOT add modules here. A stub that ships an `adk/` package would SHADOW the
+# real one depending on install order, which fails as an ImportError naming the
+# wrong project.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# The old name. Never rewrite this line. See the header.
+name = "aither-adk"
+version = "3.6.0"
+description = "Deprecated alias for awdk - installs awdk, which provides the same `adk` commands."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["awdk>=3.6.0"]
+
+[project.urls]
+Homepage = "https://github.com/Aitherium/awdk"
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.sdist]
+include = ["README.md", "pyproject.toml"]

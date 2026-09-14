@@ -1,0 +1,6 @@
+# {{ agent_display_name }} — Caddy reverse proxy
+# Maps {{ agent_name }}.aitherium.com -> localhost:{{ port }}
+
+{{ agent_name }}.aitherium.com {
+    reverse_proxy localhost:{{ port }}
+}

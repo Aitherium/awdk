@@ -1,0 +1,71 @@
+id: cuda-vllm-40gb
+name: NVIDIA CUDA 40GB vLLM
+tier: gpu-large
+description: >-
+  NVIDIA GPUs with 40GB VRAM. Serves 27-70B models full precision or quantized.
+  Enterprise-class reasoning, multi-turn conversations, and complex workflows.
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 8
+  gpu_vendor: nvidia
+  min_vram_gb: 40
+  unified_memory: false
+  notes: >-
+    40GB GPUs: RTX 6000 Ada, L40, RTX 4090. Suitable for production deployments
+    requiring high-quality inference at enterprise scale.
+
+inference_config:
+  engine: vllm
+  models:
+    - name: qwen2-32b-instruct
+      source: hf://Qwen/Qwen2-32B-Instruct
+      size_gb: 32.0
+      quantization: fp8
+      context_window: 128000
+      served_name: qwen2-32b
+    - name: qwen3.6-27b
+      source: hf://Qwen/Qwen3.6-27B-Instruct
+      size_gb: 27.0
+      quantization: fp8
+      context_window: 128000
+      served_name: qwen3.6-27b
+  serve_args:
+    - --host 0.0.0.0
+    - --port 8000
+    - --gpu-memory-utilization 0.85
+    - --max-num-batched-tokens 32768
+    - --max-model-len 32768
+    - --quantization bitsandbytes
+    - --kv-cache-dtype fp8
+  image: vllm/vllm-openai:latest
+  platform_traps: []
+
+deployment:
+  target: docker-compose
+  compose_template: inference-cuda-vllm.yml
+  delegate: ""
+  port: 8000
+
+backend_config:
+  backend_type: vllm
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 120
+  completion:
+    model: qwen3.6-27b
+    prompt: "Design a system architecture for a global scale social network."
+    min_tokens: 50
+    timeout_s: 240
+
+fleet_wiring:
+  catalog_entry:
+    backend: vllm
+    category: reasoning
+    context_window: 128000
+    vram_gb: 40
+    speed: 40
+    quality: 9.5
+  ms_env_var: AITHER_VLLM_40GB_URL

@@ -1,0 +1,45 @@
+id: deep_research
+name: Deep Research — Multi-Engine Web Research & Report Writing
+version: 1.0.0
+description: >-
+  A full deep-research workflow as agent tools: multi-angle web sweeps
+  (dr_deep_research), keyless multi-engine search (dr_web_search), page fetch +
+  readability extraction with a dedup cache (dr_fetch_url), same-domain mirroring
+  (dr_mirror_website), a citable findings knowledge graph (dr_save_finding /
+  dr_recall / dr_knowledge_graph), and cited report generation to
+  markdown/PDF/DOCX (dr_generate_*). Wraps the deep-research engine that already
+  ships as an ADK agent template; a token-savings ledger credits dedup/cache
+  hits. Web search is keyless (DuckDuckGo + HTML-scrape fallback), so free tier.
+category: tool_packs
+author: Aitherium
+icon: magnifying-glass
+tags: [research, web-search, osint, report-writing, knowledge-graph, citations]
+
+# Namespaced dr_* so nothing collides with AitherBrowser's web_* tools.
+mcp_tools:
+  - "dr_*"
+  - "relay_*"
+
+# Registration is dynamic (session-scoped closures built at register() time).
+# Empty tool_modules -> the loader file-loads this pack's __init__.py by path
+# (with the pack dir on submodule_search_locations, so `from . import ...`
+# resolves) and calls its register(). No monorepo dotted path.
+tool_modules: []
+
+# Free tier: keyless web research over public engines. No entitlement gate.
+entitlements: []
+
+skills: []
+
+# Console UI plugin: mounted by the adk admin console as a sandboxed iframe
+# (opaque origin, no bearer); tool calls go through the postMessage bridge.
+ui:
+  assets_dir: ui
+  tabs:
+    - id: main
+      title: Deep Research
+      entry: index.html
+      icon: magnifying-glass
+
+persona_fragments:
+  - "You can run genuine deep research with dr_* tools: dr_deep_research sweeps a topic from several angles at once; dr_web_search hits multiple engines; dr_fetch_url reads pages (cached); dr_mirror_website crawls a site; dr_save_finding / dr_recall / dr_knowledge_graph build a citable findings graph; dr_generate_markdown / dr_generate_pdf / dr_generate_docx write a cited report. Prefer these over guessing — cite sources."

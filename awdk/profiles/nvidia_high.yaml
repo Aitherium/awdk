@@ -1,0 +1,31 @@
+# AitherADK Hardware Profile: NVIDIA High VRAM
+# For GPUs with 16-24 GB VRAM (RTX 3090, RTX 4090, A5000, etc.)
+
+name: nvidia_high
+description: NVIDIA GPU with 16-24 GB VRAM — large models with excellent quality
+
+gpu:
+  vendor: nvidia
+  min_vram_gb: 16
+  max_vram_gb: 24
+
+models:
+  default: "nemotron-orchestrator-8b"
+  small: "llama3.2:3b"
+  large: "deepseek-r1:14b"
+  embedding: "nomic-embed-text"
+
+recommended_models:
+  - "llama3.2:3b"
+  - "nemotron-orchestrator-8b"
+  - "deepseek-r1:14b"
+  - "nomic-embed-text"
+  - "qwen2.5-coder:14b"
+
+limits:
+  max_context: 32768
+  max_concurrent: 2
+
+notes: >
+  High VRAM profile. Can run 14B parameter models and keep a second
+  small model loaded simultaneously.

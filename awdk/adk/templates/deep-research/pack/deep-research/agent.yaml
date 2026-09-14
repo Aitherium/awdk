@@ -1,0 +1,27 @@
+# ============================================================================
+# Deep Research Agent — Agent Spec
+# ============================================================================
+# Discovered by adk.pack_discovery.discover_agent_yaml(). Declares the agent's
+# name, brain pack, capabilities, and the tool domains it is allowed to use.
+
+name: researcher
+version: "1.0.0"
+description: >
+  A senior research analyst that searches the open web, reads primary sources,
+  cross-checks claims against its knowledge graph, and writes cited reports.
+  Sign-in-free; runs on the operator's own LLM key.
+
+brain_pack: deep-research
+
+# Read/generate only — deliberately NO shell, file-write, or deploy capabilities.
+capabilities:
+  - LLM_INFERENCE
+  - NET_HTTP        # web search + page fetch
+  - MEMORY_READ
+  - MEMORY_WRITE    # knowledge graph (local SQLite only)
+
+# Tool domains this pack enables (matches the brain_pack tools whitelist).
+enabled_domains:
+  - research
+  - documents
+  - memory

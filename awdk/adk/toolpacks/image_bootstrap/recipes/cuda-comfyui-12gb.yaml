@@ -1,0 +1,71 @@
+id: cuda-comfyui-12gb
+name: NVIDIA CUDA 12GB ComfyUI (SDXL studio)
+tier: gpu-medium
+description: >-
+  NVIDIA GPUs with 12-23GB VRAM. The default full-quality SDXL station: photoreal
+  and anime SDXL bases, ControlNet, IPAdapter, and the ADetailer face/hand refiners.
+  This is the band most desktop cards land in (3060 12GB, 4070, 4070 Ti, 3080 Ti).
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 6
+  gpu_vendor: nvidia
+  min_vram_gb: 12
+  max_vram_gb: 23
+  unified_memory: false
+  notes: >-
+    SDXL at 1024x1024 needs ~10GB with the refiner resident. 12GB is comfortable
+    for single-image work; batch sizes above 4 will OOM. Video (WAN 2.2) needs the
+    24GB recipe.
+
+imagegen_config:
+  engine: comfyui
+  model_profile: studio
+  models:
+    - name: Juggernaut-XL-v9
+      source: profile://studio
+      size_gb: 6.9
+      note: photoreal SDXL base
+    - name: waiIllustriousSDXL_v140
+      source: profile://studio
+      size_gb: 6.6
+      note: anime/booru SDXL base
+    - name: controlnet + ipadapter + adetailer
+      source: profile://studio
+      size_gb: 5.0
+      note: pose/depth control, reference conditioning, face+hand refiners
+  serve_args:
+    - COMFY_PORT=8188
+  image: ghcr.io/aitherium/comfyui-cloud:latest
+  platform_traps: []
+
+deployment:
+  target: docker-compose
+  compose_template: remote-comfyui.compose.yml
+  delegate: ""
+  port: 8188
+
+backend_config:
+  backend_type: comfyui
+  health_path: /system_stats
+  capability_path: /object_info/CheckpointLoaderSimple
+  generate_path: /prompt
+
+verify:
+  health_timeout_s: 180
+  capability:
+    expect_min_models: 1
+    description: >-
+      ComfyUI answers 200 with ZERO checkpoints installed. The capability probe
+      lists CheckpointLoaderSimple's available checkpoints — that is the only
+      proof the model profile actually landed.
+
+fleet_wiring:
+  catalog_entry:
+    backend: comfyui
+    category: image
+    vram_gb: 12
+    max_resolution: 1024
+    speed: 6
+    quality: 9
+  url_env_var: COMFYUI_URL

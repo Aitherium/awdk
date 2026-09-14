@@ -1,0 +1,43 @@
+id: image-bootstrap
+name: Image Bootstrap — Hardware Detection, Recipe Matching & Image-Gen Deployment
+version: 1.0.0
+description: >-
+  Hardware-aware IMAGE GENERATION node bootstrap — the node-bootstrap twin for the
+  visual plane. Detects system specs, resolves deployment recipes (ComfyUI, SANA,
+  CPU-only, Apple Metal, vast.ai burst), renders deployment plans, applies deployment
+  (Docker Compose or native), registers the backend with Genesis, and verifies the
+  endpoint is not just UP but actually has models loaded. All tools are fail-soft
+  dict-returners.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: image
+tags: [image, comfyui, sana, sdxl, bootstrap, deployment, gpu, creative, edge]
+
+mcp_tools:
+  - "imagegen_*"
+
+# Empty -> the loader file-loads this pack's __init__.py by path
+# (pack dir on submodule_search_locations, so `from . import tools` resolves)
+# and calls its register(). No monorepo dotted path; the pack ships standalone.
+tool_modules: []
+
+entitlements: []
+
+mcp_server:
+  enabled: true
+  description: Image-gen bootstrap deployment tools (imagegen_* suite)
+  entitlement_required: false  # imagegen_* tools are free tier
+  tools: imagegen_*
+
+skills:
+  - image-bootstrap
+
+persona_fragments:
+  - "Image bootstrap: you have imagegen_* tools for hardware-aware IMAGE GENERATION deployment. imagegen_detect_hardware probes CPU/RAM/GPU and reports the VRAM band; imagegen_resolve_recipe matches recipes (ComfyUI 6/12/24GB, SANA Sprint, CPU-only, Apple Metal native, vast.ai burst) to that hardware; imagegen_plan_deployment renders the steps with no side effects; imagegen_apply executes the plan (docker compose or native); imagegen_register_backend posts the backend to Genesis; imagegen_verify checks health AND proves models actually loaded. All tools return dicts (never raise). Missing env vars or credentials => {\"error\": ..., \"fix\": ...}, never anonymous fallback and never verify=False."
+  - "imagegen_detect_hardware: returns {system_info, vram_band, recommendation, recommended_recipe}. Fully local, no network. vram_band is one of none/small/medium/large and is what drives model-profile choice."
+  - "imagegen_resolve_recipe: runs detection internally when needed, then resolves by hardware match. Returns {recipe, match_score, rationale, warnings}. Explicit recipe_id wins. prefer_engine ('comfyui'|'sana') is a TIEBREAKER, not a hard gate — ComfyUI wins ties by default because it is the general-purpose surface."
+  - "imagegen_plan_deployment: pure (no side effects). Returns {steps, compose_yaml or native_commands or delegate, env, port, download_size_mb, est_duration_min}. The env carries AITHER_MODEL_DOWNLOADS — the JSON {url,dest} array the ComfyUI entrypoint consumes to pull the model profile."
+  - "imagegen_apply: executes the plan. docker-compose writes to ~/.aither/image-bootstrap/ and runs `docker compose up -d`. native returns the documented manual steps (Apple Silicon has NO Metal passthrough in Docker — the engine must run natively). delegate reports the exact fleet command instead of pretending to run it. dry_run=True shows commands without executing; subprocess is NOT called."
+  - "imagegen_register_backend: fail-closed. POST {genesis_url}/deploy/cloud-model/register-backend with a Bearer token (arg or AITHER_AUTH_TOKEN). Never anonymous — an unauthenticated register would 401 silently or let any caller point fleet image routing at an arbitrary URL. Genesis authorizes server-side."
+  - "imagegen_verify: the POSITIVE assertion. Health alone is NOT proof — a ComfyUI with zero checkpoints answers 200 on / and generates nothing. Verify GETs the capability path (ComfyUI /object_info/CheckpointLoaderSimple, SANA /v1/backends) and asserts at least one model is actually loaded. Returns {status, health, models_loaded, model_count, sample_models}. status='degraded' when it is up but empty — report that, never call it healthy."

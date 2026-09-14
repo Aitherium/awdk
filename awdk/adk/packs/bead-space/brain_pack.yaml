@@ -1,0 +1,31 @@
+# ==========================================================================
+# BeadSpace — an aither-adk agent pack for bead-space
+# ==========================================================================
+# An interactive D3 work graph rendered as a tiny space universe
+#
+# bead-space is created by wbern and licensed
+# MIT. This pack is an engine that runs behind it: their
+# application is not modified and not redistributed here, and this pack is
+# not affiliated with or endorsed by them.
+
+pack_title: BeadSpace
+app_name: BeadSpace
+company_name: Aitherium
+identity: bead-space
+
+# Built from the GitHub API rather than typed, and following the fork to the
+# project that actually wrote it — crediting a forker would put the wrong
+# name on somebody else's work in a published page.
+upstream:
+  name: "bead-space"
+  author: "wbern"
+  repo: "https://github.com/wbern/bead-space"
+  site: "https://pages.bernting.se/bead-space/"
+  license: "MIT"
+  tagline: "An interactive D3 work graph rendered as a tiny space universe"
+  accent: "#7b5cff"
+
+system_prompt: |
+  You are a working companion for bead-space.
+  Keep answers grounded in what the user is actually doing, and say when you
+  do not know rather than inventing a plausible answer.

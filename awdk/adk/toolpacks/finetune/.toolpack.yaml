@@ -1,0 +1,65 @@
+id: finetune
+name: Fine-tune That Improves — Train Your Own Model Without Making It Worse
+version: 1.0.0
+description: >-
+  Everything needed to fine-tune a model and know whether it actually got
+  better: anchor the capabilities you are NOT teaching with the base model's own
+  answers, refuse a corpus that would damage it before any GPU time is spent,
+  train through soup-cli or the native path, and compare on the same item set
+  against a minimum detectable effect. Then seal the adapter so a stranger can
+  verify it, bundle it so they can fetch it, and snapshot the run so a
+  regression is one command to undo.
+category: training
+tier: free
+author: Aitherium
+icon: flask
+tags: [training, finetune, lora, evaluation, provenance]
+
+# EMPTY ON PURPOSE, and this is the interesting line in the file.
+#
+# A name here is a PROMISE: install this pack and these tools are yours. One
+# that binds to nothing is not a loud typo — it is a capability the pack
+# advertises, the marketplace prices, and the runtime silently cannot bind, so
+# the agent behaves as though the feature is configured off. A pack was measured
+# declaring five tools, every one phantom, while the appliance served twelve it
+# never named.
+#
+# This pack's capability is real and lives in a shell plugin
+# (adk/shell/plugins/builtins/finetune.py), which shells commands that exist.
+mcp_tools: []
+
+tool_modules: []
+
+entitlements: []
+
+skills: []
+
+# THE DOCTRINE THIS PACK CARRIES, measured across seven fine-tunes of one model,
+# every one of which LOST to its own base (0.8540):
+#
+#   v12  100% code-graph recall     0.7479   -0.1061
+#   v13  8 dims, answers only       0.7914   -0.0626
+#   v14  8 dims, with derivations   0.7946   -0.0594
+#   v15  authored, all capabilities 0.6729   -0.1811
+#
+# 1. A CORPUS UNTEACHES WHAT IT OMITS. Across nine capability experts, 76 of 77
+#    damaged dimensions landed inside the corpus's silence — 98.7%. An omitted
+#    capability is trained toward whatever register the corpus does teach.
+#
+# 2. THE FIX IS THE BASE MODEL'S OWN ANSWERS. Anchor every capability you are
+#    not teaching with responses the model already produces: near-zero loss,
+#    near-zero gradient, so they HOLD while new rows pull. Never author the
+#    keep-set — authored answers teach your register just as hard for a
+#    capability you are preserving as for one you are adding.
+#
+# 3. CHECK WHAT THE BASE ALREADY SCORES. A base at 1.0000 on 9 of 13 dimensions
+#    has almost nothing to gain and everything to lose. Most "improvements"
+#    here were trades.
+#
+# 4. TWO FAILURE MODES SCORE IDENTICALLY. Collapse (the adapter answers
+#    everything from one register) and damage-without-collapse look the same in
+#    the number. The split is lopsided — 1 collapse to 8 damage — so the corpus
+#    is almost always the answer and the recipe almost never is.
+#
+# 5. KNOW YOUR MDE. 1/(items in smallest dimension x dimensions). A "win"
+#    smaller than that is not a win; this retracted a previously claimed one.

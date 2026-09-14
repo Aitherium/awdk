@@ -1,0 +1,129 @@
+# Hardware Profile: Server
+# Multi-GPU server (4x A100 80GB, 8x H100, DGX)
+# Full model stack with tensor parallelism and all services enabled.
+
+name: server
+description: "Multi-GPU, 80GB+ VRAM, 128GB+ RAM"
+
+requirements:
+  vram_gb: 80
+  ram_gb: 128
+  gpu_count: 4
+
+models:
+  chat: llama3.3:70b
+  reasoning: deepseek-r1:70b
+  vision: llava:34b
+  coding: qwen2.5-coder:32b
+  embedding: nomic-embed-text
+
+vllm:
+  enabled: true
+  gpu_memory_utilization: 0.95
+  max_model_len: 32768
+  tensor_parallel_size: 2
+  dtype: auto  # fp8 preferred on H100, float16 on A100
+  enforce_eager: false
+  enable_prefix_caching: true
+  workers:
+    - name: orchestrator
+      port: 8200
+      model: aither-orchestrator
+      gpu: [0, 1]
+      tensor_parallel_size: 2
+      gpu_memory_utilization: 0.45
+      max_model_len: 32768
+    - name: reasoning
+      port: 8201
+      model: deepseek-r1:70b
+      gpu: [0, 1]
+      tensor_parallel_size: 2
+      gpu_memory_utilization: 0.45
+      max_model_len: 32768
+    - name: vision
+      port: 8202
+      model: llava:34b
+      gpu: [2]
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.90
+      max_model_len: 16384
+    - name: coding
+      port: 8203
+      model: qwen2.5-coder:32b
+      gpu: [3]
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.90
+      max_model_len: 32768
+
+ollama:
+  gpu_memory_fraction: 0.90
+  num_parallel: 8
+  models_to_pull:
+    - llama3.3:70b
+    - deepseek-r1:70b
+    - llava:34b
+    - qwen2.5-coder:32b
+    - nomic-embed-text
+
+services:
+  core:
+    - node
+    - pulse
+    - watch
+    - chronicle
+    - secrets
+    - nexus
+    - strata
+  agents:
+    - genesis
+    - identity
+    - flux
+    - council
+    - a2a
+    - recover
+  scheduling:
+    - micro_scheduler
+    - scheduler
+    - demand
+    - autonomic
+  cognition:
+    - mind
+    - reasoning
+    - judge
+    - tag
+    - flow
+    - will
+  perception:
+    - voice
+    - vision
+    - portal
+    - reflex
+    - sense
+  gpu:
+    - parallel
+    - accel
+    - force
+    - exo
+  mesh:
+    - mesh
+    - deployer
+  training:
+    - prism
+    - trainer
+    - harvest
+  automation:
+    - dark_factory
+  disabled: []
+
+resource_limits:
+  max_concurrent_requests: 32
+  max_batch_size: 16
+  context_pipeline_timeout_s: 30
+  ollama_max_loaded_models: 5
+
+notes: >
+  Server profile runs all services and the full 4-worker vLLM configuration.
+  GPUs 0-1 share orchestrator and reasoning models via tensor parallelism
+  (time-sliced by MicroScheduler priority queue). GPU 2 is dedicated to
+  vision. GPU 3 handles coding. Ollama is available as overflow for models
+  not loaded in vLLM. VRAM preemption is enabled for ComfyUI workloads.

@@ -1,0 +1,20 @@
+# codex-acp — OpenAI Codex CLI as an external ACP agent.
+# Valid AgentPackManifest (load_agent_pack): runtime.cmd is the binary that
+# speaks ACP on stdio. Direct-spawn via acp_connect / adk backend add acp.
+id: codex-acp
+name: Codex CLI (ACP)
+version: 1.0.0
+description: >-
+  OpenAI's Codex CLI exposed over the Agent Client Protocol. The `codex` binary
+  must be installed and authenticated; drive it with acp_connect / acp_prompt.
+framework: native
+protocol: acp
+runtime:
+  type: python
+  cmd: codex
+  args: ["-p", "codex-acp"]
+entrypoint: codex-acp
+install: |
+  npm install -g @openai/codex
+  codex login
+  # then: adk backend add acp --command codex

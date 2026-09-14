@@ -1,0 +1,139 @@
+# =============================================================================
+# AitherNet Sovereign Relay Bundle
+# =============================================================================
+#
+# Self-contained relay for the AitherNet community mesh. Runs locally and
+# optionally federates to a public hub for room discovery and cross-node
+# messaging.
+#
+# Parametrized environment:
+#   AITHERNET_FEDERATION       — "true" to connect to hub (default: false)
+#   AITHERNET_HUB_URL          — Hub relay endpoint (default: https://demo.aitherium.com/ws/chat)
+#   AITHERNET_NODE_SLUG        — Node identifier (default: relay-<random>)
+#   AITHERNET_ADVERTISED_ROOMS — Comma-separated room names (default: #general)
+#   AITHERNET_DIRECTORY_URL    — Directory service for registration (default: off)
+#   AITHER_NODE_TOKEN          — Optional: auth token for hub federation
+#
+# Usage:
+#   # Standalone relay (no federation):
+#   docker compose -f docker-compose.relay.yml up -d
+#
+#   # With hub federation:
+#   AITHERNET_FEDERATION=true AITHERNET_HUB_URL="wss://hub.example.com/ws/chat" \
+#   docker compose -f docker-compose.relay.yml up -d
+#
+# Connect:
+#   ws://localhost:8205/ws/chat (local fallback; no auth required for open rooms)
+#   Bearer token required if AITHER_AUTH_ENABLED=true
+#
+# =============================================================================
+
+version: "3.9"
+
+# ── Shared config ──
+x-common-env: &common-env
+  AITHER_ENV: ${AITHER_ENV:-production}
+  AITHER_LOG_LEVEL: ${AITHER_LOG_LEVEL:-INFO}
+  AITHER_DOCKER_MODE: "true"
+  AITHER_DEPLOYMENT: relay
+  AITHERNET_NODE_SLUG: ${AITHERNET_NODE_SLUG:-relay-standalone}
+  AITHER_NODE_TOKEN: ${AITHER_NODE_TOKEN:-}
+  REDIS_URL: redis://redis:6379/0
+  AITHERNET_FEDERATION: ${AITHERNET_FEDERATION:-false}
+  AITHERNET_HUB_URL: ${AITHERNET_HUB_URL:-wss://demo.aitherium.com/ws/chat}
+  AITHERNET_ADVERTISED_ROOMS: ${AITHERNET_ADVERTISED_ROOMS:-#general}
+  AITHERNET_DIRECTORY_URL: ${AITHERNET_DIRECTORY_URL:-}
+  # This relay's OWN public address (wss:// or https://) — what the community
+  # directory lists as the join endpoint. Registration is skipped without it.
+  AITHERNET_PUBLIC_ENDPOINT: ${AITHERNET_PUBLIC_ENDPOINT:-}
+  AITHER_AITHERNET_DIRECTORY: ${AITHER_AITHERNET_DIRECTORY:-}
+  AITHERNET_AUTH_ENABLED: ${AITHERNET_AUTH_ENABLED:-false}
+  AITHER_SERVICE: relay
+
+x-common-service: &common-service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-build-relay: &build-relay
+  context: .
+  dockerfile: AitherOS/Dockerfile.Services
+  args:
+    BASE_IMAGE: ${AITHEROS_BASE_IMAGE:-aitheros-base:latest}
+  target: relay
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════
+  #  INFRASTRUCTURE — Redis for message storage
+  # ═══════════════════════════════════════════════════════════════════════
+
+  redis:
+    image: redis:7-alpine
+    container_name: aithernet-redis
+    <<: *common-service
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  RELAY SERVICE — Community mesh chat + federation
+  # ═══════════════════════════════════════════════════════════════════════
+
+  relay:
+    image: ${AITHEROS_REGISTRY:-ghcr.io/aitherium}/aither-connect:${AITHEROS_IMAGE_TAG:-latest}
+    build:
+      <<: *build-relay
+    container_name: aithernet-relay
+    <<: [*common-service]
+    environment:
+      <<: *common-env
+      AITHERRELAY_PORT: "8205"
+    ports:
+      - "${RELAY_PORT:-8205}:8205"
+    volumes:
+      - relay-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8205/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Volumes
+# ═══════════════════════════════════════════════════════════════════════
+volumes:
+  redis-data:
+    driver: local
+  relay-data:
+    driver: local
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Networks
+# ═══════════════════════════════════════════════════════════════════════
+networks:
+  default:
+    name: aithernet-relay-network
+    driver: bridge

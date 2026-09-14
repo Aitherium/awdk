@@ -1,0 +1,36 @@
+# AitherADK Hardware Profile: AMD ROCm GPU — large VRAM (>=20GB)
+# RX 7900 XT / 7900 XTX / W7900 / MI210 and up.
+
+name: amd_high
+description: AMD GPU, 20GB+ VRAM — 27B-class models fit entirely on-card
+
+gpu:
+  vendor: amd
+
+requirements:
+  vram_gb: 20
+
+models:
+  default: "nemotron-orchestrator-8b"
+  small: "gemma4:4b"
+  large: "gemma4:27b"
+  reasoning: "deepseek-r1:14b"
+  embedding: "nomic-embed-text"
+
+recommended_models:
+  - "nemotron-orchestrator-8b"
+  - "deepseek-r1:14b"
+  - "gemma4:27b"
+  - "nomic-embed-text"
+
+limits:
+  max_context: 32768
+  max_concurrent: 2
+
+notes: >
+  A 20GB+ RDNA3 card runs a 27B Q4 at 32K context without leaving VRAM.
+  llama.cpp is built against Vulkan here rather than ROCm — the ROCm builds
+  exist but pin you to a driver/kernel combination, and Vulkan is portable
+  across the same cards. Measured throughput needs a local benchmark after
+  first launch; the catalog's tokens/sec figures are estimates, not
+  measurements, and none of them were taken on RDNA3.

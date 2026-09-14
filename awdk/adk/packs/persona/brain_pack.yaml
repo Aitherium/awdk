@@ -1,0 +1,31 @@
+# ==========================================================================
+# Persona — an aither-adk agent pack for persona
+# ==========================================================================
+# Bringing real-time voice to life.
+#
+# persona is created by xikhar and licensed
+# MIT. This pack is an engine that runs behind it: their
+# application is not modified and not redistributed here, and this pack is
+# not affiliated with or endorsed by them.
+
+pack_title: Persona
+app_name: Persona
+company_name: Aitherium
+identity: persona
+
+# Built from the GitHub API rather than typed, and following the fork to the
+# project that actually wrote it — crediting a forker would put the wrong
+# name on somebody else's work in a published page.
+upstream:
+  name: "persona"
+  author: "xikhar"
+  repo: "https://github.com/xikhar/persona"
+  site: "https://github.com/xikhar/persona"
+  license: "MIT"
+  tagline: "Bringing real-time voice to life."
+  accent: "#ff6b6b"
+
+system_prompt: |
+  You are a working companion for persona.
+  Keep answers grounded in what the user is actually doing, and say when you
+  do not know rather than inventing a plausible answer.

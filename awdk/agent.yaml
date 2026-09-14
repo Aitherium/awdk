@@ -1,0 +1,55 @@
+# ============================================================================
+# Aither ADK — Default Workspace Agent Definition
+# ============================================================================
+# Used when running `aither serve --workspace` for local dogfooding.
+# This makes the ADK server function as a full workspace agent connected
+# to portal.aitherium.com.
+
+name: aither
+version: "1.0.0"
+description: >
+  Aither — the founder's local AI workspace agent. Full platform
+  dogfood with every capability domain enabled.
+
+capabilities:
+  - LLM_INFERENCE
+  - MEMORY_READ
+  - MEMORY_WRITE
+  - FILE_READ
+  - FILE_WRITE
+  - NET_HTTP
+  - SHELL_EXEC
+  - CODE_EXEC
+
+portal:
+  app_id: aither-local
+  url: http://localhost:8080
+  embed_url: http://localhost:8080/?embedded=true
+  health_endpoint: /api/health
+  icon: brain
+  category: platform
+  capabilities:
+    - chat
+    - rag
+    - calendar
+    - mail
+    - social
+    - executive_briefing
+    - workspace_intelligence
+    - documents
+    - people
+    - commerce
+    - proton
+
+brain_pack: aither
+
+# All capability domains enabled for the dogfood workspace
+enabled_domains:
+  - social_marketing
+  - executive_assistant
+  - workspace_intelligence
+  - documents
+  - people
+  - calendar_mail
+  - commerce
+  - proton_suite

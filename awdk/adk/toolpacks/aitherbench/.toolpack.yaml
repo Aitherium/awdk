@@ -1,0 +1,55 @@
+id: aitherbench
+name: AitherBench — Is This Model Fit to Run Your Agent Stack?
+version: 1.0.0
+description: >-
+  Score any OpenAI-compatible model on the seven properties an agent platform
+  actually depends on: effort calibration (1-10), MODEL routing under capability
+  constraints, plan dependency ordering, resistance to logic traps, factual
+  recall WITH the ability to decline, operational doctrine, and knowing when an
+  answer requires a lookup. Every item is scored by exact match, set membership
+  or an ordering predicate — there is NO LLM judge anywhere, because a judge is
+  a model and a benchmark whose verdict comes from a model cannot tell you the
+  model is wrong. Runs against any endpoint, or against your own harness by
+  passing a single callable.
+category: evaluation
+tier: free
+author: Aitherium
+icon: gauge
+tags: [eval, benchmark, agents, routing, planning, reasoning, tool-use]
+
+mcp_tools: []
+
+tool_modules: []
+
+# WHY THIS PACK EXISTS, and what it is not.
+#
+# General benchmarks tell you a model does arithmetic word problems or memorised
+# facts. They do not tell you whether it will make good decisions inside an
+# agent stack, and a model can top them while producing confident, well-formed,
+# WRONG operational calls.
+#
+# The dimensions here were chosen because each one has produced a real incident:
+#
+#   effort         spending deep-reasoning budget on a status lookup, or
+#                  triaging an architecture decision — miscalibration is
+#                  expensive in both directions
+#   routing_model  choosing the nearest-sounding model rather than the only one
+#                  that CAN do the job (vision, offline, cost)
+#   planning       correct steps in an order that destroys the thing the next
+#                  step needs
+#   logic_traps    the answer pattern-matching supplies, when it is wrong
+#   knowledge      inventing a plausible metric instead of declining
+#   doctrine       reading "the checker examined nothing and exited 0" as a pass
+#   search         answering volatile facts from memory, or searching stable ones
+#
+# LIMITS, stated because a benchmark that oversells itself is worse than none:
+#   * 23 items. It ranks candidates; it is not a leaderboard-grade measurement.
+#   * The default model roster names one vendor lineup. Replace MODEL_ROSTER and
+#     the routing_model expectations with your own, or that dimension measures
+#     familiarity with someone else's fleet rather than routing skill.
+#   * Scores are per-dimension means, deliberately NOT a flat item average: the
+#     dimensions have different item counts and a flat mean silently weights the
+#     largest one.
+#   * `headroom_items` is reported per dimension for a reason. A dimension where
+#     every candidate scores near 1.0 cannot rank them, and reading a zero delta
+#     there as "no difference" is the most common way to misread this output.

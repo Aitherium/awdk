@@ -1,0 +1,196 @@
+id: bonsai-selfhost
+name: Self-Hosted Bonsai (upstream installer, any OS, GPU or CPU)
+# `cpu` is the honest floor: it runs CPU-only and scores on any box, and it uses a GPU when
+# one is there. It must be a REAL tier — `tier: auto` was not in TIER_RANKS, which the recipe
+# test caught the instant this recipe stopped being invisible to the loader.
+tier: cpu
+# NEVER auto-selected. Bonsai self-hosting is a thing a person chooses, not a default that
+# should displace the fleet's existing CPU recipes on every node bootstrap. Selectable by
+# explicit id (which is what the one-click installer passes).
+auto_select: false
+description: >-
+  Anyone's own hardware, two commands, then aitherium.com talks to it. Wraps the
+  PUBLIC upstream installer (PrismML-Eng/Bonsai-demo) rather than a fleet-side
+  script, so this recipe works on a stranger's laptop, not just our OptiPlex.
+  Defaults to Ternary-Bonsai-27B (Q2_0) — upstream's own default and the
+  higher-quality build.
+
+# WHY A SECOND LLAMA.CPP RECIPE EXISTS
+# cpu-1bit-llamacpp.yaml is fleet infrastructure: OptiPlex-specific, CPU-only, pinned to
+# Q1_0, and it provisions through .DEPLOYMENT/scripts/optiplex-node/deploy-bonsai-node.sh —
+# a script that is NOT in this public pack. A person who wants to run Bonsai on their own
+# machine cannot use it.
+#
+# This one shells out to upstream's setup.sh, which already solves the hard parts for every
+# platform we would otherwise reimplement: prebuilt CUDA / Metal / Vulkan / ROCm binaries,
+# HF downloads, venv creation, GPU autodetection, and a RAM-tiered context size. Wrapping it
+# is a fraction of the work of maintaining our own installer, and it stays correct as they
+# ship new backends.
+#
+# QUALITY NOTE, and the reason this defaults to ternary: the in-browser WebGPU path can only
+# run Q1_0 (one bit per weight) because that is the only format our kernels implement.
+# Ternary Q2_0 (~1.7-2.25 bits/weight) is upstream's default and is materially better —
+# llama.cpp runs it today. Self-hosting is therefore not merely "faster", it is the only way
+# to get the GOOD model, which is the honest pitch for doing it.
+
+hardware_requirements:
+  min_ram_gb: 8
+  min_cpu_cores: 4
+  gpu_vendor: any
+  min_vram_gb: 0
+  unified_memory: false
+  notes: >-
+    Runs anywhere upstream's installer runs: macOS (Metal), Linux/Windows
+    (CUDA/Vulkan/ROCm), or CPU. Peak memory for Ternary-27B is ~7.8 GiB at 4K
+    context and ~13.7 GiB at 100K; the 1-bit build is ~4.8/10.8 GiB. Smaller
+    sizes (8B/4B/1.7B) exist for constrained machines — set BONSAI_MODEL.
+
+inference_config:
+  engine: llamacpp
+  models:
+    - name: ternary-bonsai-27b
+      source: gguf://prism-ml/Ternary-Bonsai-27B-gguf
+      size_gb: 6.66
+      quantization: Q2_0
+      # Must match what the server is actually started with. Advertising more than the
+      # server serves makes every long prompt fail AT the node instead of being routed
+      # somewhere that can handle it — the trap cpu-1bit-llamacpp.yaml documents.
+      # 16384 is a deliberately conservative floor: upstream's launcher picks a RAM-tiered
+      # context (8K on small machines up to 131K above ~71 GB), so this is the value we can
+      # promise on the smallest machine that meets hardware_requirements.
+      context_window: 16384
+      served_name: bonsai-selfhost
+  serve_args:
+    - --host 127.0.0.1
+    - --port 8080
+    # BOUND THE THINKING. Bonsai ships the Qwen3 chat template, which force-OPENS `<think>`
+    # on every turn, and llama-server's default budget is -1 (unrestricted): the block never
+    # closes, `message.content` comes back EMPTY, and the quantised model drifts off-language
+    # mid-thought. Independently reproduced in our own WebGPU runtime on 2026-07-26, where an
+    # unbounded think block produced exactly this. 2048 leaves real room to reason while
+    # guaranteeing an answer; raise it on fast hardware.
+    - --reasoning-budget 2048
+  image: ""
+  platform_traps:
+    # 127.0.0.1 rather than 0.0.0.0 ON PURPOSE. This is someone's personal machine, and the
+    # browser reaches it over loopback; binding to all interfaces would publish an
+    # unauthenticated inference server to their whole LAN. Opt into 0.0.0.0 only for a node
+    # meant to serve others, and put auth in front of it when you do.
+    - loopback-bind-not-lan
+    - q2_0-needs-prism-fork-binaries-stock-llamacpp-cannot-read-it
+
+# THE PATH A STRANGER ACTUALLY TAKES — one click, zero commands, no terminal.
+# aitherium.com serves an installer that does everything below without asking a single
+# question: detects RAM/GPU, picks the model size and backend, pulls the prism llama.cpp
+# release binary and the ternary GGUF (both PUBLIC — verified 200 anonymous, 13/13 URLs),
+# starts llama-server on 127.0.0.1:8080 with --reasoning-budget, proves it ANSWERS rather
+# than merely listens, and registers a per-user logon task / systemd unit / LaunchAgent so
+# it survives a reboot. No git, no python, no uv, no HF token, no admin.
+#
+#   Windows          https://aitherium.com/install-bonsai.cmd   (double-click)
+#   macOS / Linux    https://aitherium.com/install-bonsai.sh
+#
+# Source: AitherOS/apps/AitherVeil/public/install-bonsai.{ps1,cmd,sh}
+# The `setup.steps` below remain the MANUAL equivalent, kept for operators provisioning a
+# node by hand and for anyone who wants to read what the installer does before running it.
+oneclick:
+  windows: "https://aitherium.com/install-bonsai.cmd"
+  unix: "https://aitherium.com/install-bonsai.sh"
+  prompts: 0
+  requires_token: false
+  requires_admin: false
+
+setup:
+  repo: https://github.com/PrismML-Eng/Bonsai-demo.git
+  env:
+    # Upstream defaults: family=ternary, model=27B. Stated explicitly so a reader of this
+    # file knows what they get without cross-referencing their README.
+    BONSAI_FAMILY: ternary
+    BONSAI_MODEL: 27B
+    # NO TOKEN. This recipe used to say a BONSAI_TOKEN was required "while the 27B repos are
+    # private" — CHECKED 2026-07-26 AND FALSE: every Ternary-Bonsai GGUF (1.7B/4B/8B/27B) and
+    # every prism llama.cpp release asset returns 200 to an anonymous request. The stale claim
+    # mattered because it made this recipe read as needing a credential a stranger cannot have,
+    # which is exactly the wall the one-click installer exists to remove.
+  steps:
+    - "git clone https://github.com/PrismML-Eng/Bonsai-demo.git && cd Bonsai-demo"
+    - "./setup.sh"                              # deps, weights, prebuilt binaries
+    - "./scripts/start_llama_server.sh"         # OpenAI-compatible API on :8080
+  windows_steps:
+    - "git clone https://github.com/PrismML-Eng/Bonsai-demo.git; cd Bonsai-demo"
+    - "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\\setup.ps1"
+    - ".\\scripts\\start_llama_server.ps1"
+
+deployment:
+  # No delegate script and no compose file: upstream's launcher IS the deployment. Anything
+  # we wrote here would duplicate their GPU autodetection and drift from it.
+  target: user-managed
+  compose_template: ""
+  delegate: ""
+  port: 8080
+
+backend_config:
+  # Reuses the EXISTING llamacpp_remote backend — no new backend type is needed. The server
+  # upstream starts is OpenAI-compatible, which is the shape this backend already speaks.
+  backend_type: llamacpp_remote
+  health_path: /health
+  completion_path: /v1/chat/completions
+
+verify:
+  health_timeout_s: 60      # first start loads several GB from disk into VRAM
+  completion:
+    model: bonsai-selfhost
+    prompt: "What is the capital of France? Answer in one short sentence."
+    min_tokens: 3
+    timeout_s: 120
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp_remote
+    category: reasoning
+    # Must equal inference_config.models[0].context_window — the router trusts this when
+    # deciding whether a prompt fits the node.
+    context_window: 16384
+    vram_gb: 0
+    speed: 5
+    quality: 8     # ternary Q2_0 — clearly above the 1-bit build's 7
+  ms_env_var: AITHER_GRID_LLAMACPP_URL
+
+# HOW aitherium.com FINDS IT — already built, listed so nobody rebuilds it.
+# AitherVeil/src/components/os/use-local-node.ts probes 127.0.0.1:8080 (among others),
+# gates on /health, and calls /v1/chat/completions. Loopback is a browser secure-context
+# exception, so an HTTPS page may call it; the site's CSP had to name 127.0.0.1 explicitly
+# for that to work, which was fixed on 2026-07-26 — `connect-src` matches the literal host
+# and does not resolve names, so `http://localhost:*` never authorised `http://127.0.0.1:*`.
+discovery:
+  browser_probe: "http://127.0.0.1:8080"
+  probe_gate: "/health"
+  chat_path: "/v1/chat/completions"
+  notes: >-
+    No account, no tunnel, no port-forward: the page and the model are on the
+    same machine, talking over loopback.
+
+# HOW TO GO FURTHER THAN LOOPBACK — already built, verified 2026-07-26, do not rebuild.
+# Loopback covers "my browser, my model". To reach the node from your PHONE, from another
+# machine, or to offer it to the mesh, join the overlay and advertise it:
+#
+#   adk mesh onboard
+#   adk mesh provide --inference-url http://127.0.0.1:8080/v1 --model bonsai-selfhost
+#
+# `provide` is a real subcommand (adk/cli.py:6459, argparse at :11922 — confirmed by running
+# `adk mesh provide --help`), backed by adk/mesh_provider.py:558. It registers the node with
+# Strata + Conductor and then WAITS on an operator trust grant, which is the fail-closed part:
+# `--tenant-id` is the authenticated owner identity, and a node nobody has trusted serves
+# nobody. That is deliberate — an inference endpoint that joins a shared mesh and is
+# immediately routable to strangers is the thing this design refuses to do.
+#
+# The two paths are independent. Loopback keeps working with the mesh down, and sharing does
+# not require giving up local use.
+mesh_share:
+  onboard: "adk mesh onboard"
+  advertise: "adk mesh provide --inference-url http://127.0.0.1:8080/v1 --model bonsai-selfhost"
+  gate: operator-trust-grant
+  notes: >-
+    Optional. Loopback needs none of this. Advertising binds the node to an
+    authenticated tenant and still requires an operator to grant trust before
+    anything routes to it.

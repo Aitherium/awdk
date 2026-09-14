@@ -1,0 +1,144 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# Model License Registry
+# ════════════════════════════════════════════════════════════════════════════════
+# Static reference data for model licenses and provenance.
+# Separate from model-stacks.yaml (73KB, hot-reloaded for stack switching).
+
+models:
+  # ─── Qwen Family ──────────────────────────────────────────────────────────
+  "qwen3:32b":
+    display_name: "Qwen 3 32B"
+    license: "Apache-2.0"
+    license_url: "https://www.apache.org/licenses/LICENSE-2.0"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "Alibaba Cloud / Qwen Team"
+    hf_url: "https://huggingface.co/Qwen/Qwen3-32B"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible", "hipaa_compatible"]
+
+  "qwen3:8b":
+    display_name: "Qwen 3 8B"
+    license: "Apache-2.0"
+    license_url: "https://www.apache.org/licenses/LICENSE-2.0"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "Alibaba Cloud / Qwen Team"
+    hf_url: "https://huggingface.co/Qwen/Qwen3-8B"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible", "hipaa_compatible"]
+
+  "qwen2.5-coder:14b":
+    display_name: "Qwen 2.5 Coder 14B"
+    license: "Apache-2.0"
+    license_url: "https://www.apache.org/licenses/LICENSE-2.0"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "Alibaba Cloud / Qwen Team"
+    hf_url: "https://huggingface.co/Qwen/Qwen2.5-Coder-14B"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible"]
+
+  # ─── Llama Family ─────────────────────────────────────────────────────────
+  "llama3.2:3b":
+    display_name: "Llama 3.2 3B"
+    license: "Llama 3.2 Community License"
+    license_url: "https://www.llama.com/llama3_2/license/"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "Meta AI"
+    hf_url: "https://huggingface.co/meta-llama/Llama-3.2-3B"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible"]
+    notes: "Free for companies with <700M monthly active users"
+
+  "llama3.1:8b":
+    display_name: "Llama 3.1 8B"
+    license: "Llama 3.1 Community License"
+    license_url: "https://www.llama.com/llama3_1/license/"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "Meta AI"
+    hf_url: "https://huggingface.co/meta-llama/Llama-3.1-8B"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible"]
+    notes: "Free for companies with <700M monthly active users"
+
+  # ─── DeepSeek Family ──────────────────────────────────────────────────────
+  "deepseek-r1:14b":
+    display_name: "DeepSeek R1 14B"
+    license: "MIT"
+    license_url: "https://opensource.org/licenses/MIT"
+    license_flags:
+      commercial_ok: true
+      attribution_required: false
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "DeepSeek AI"
+    hf_url: "https://huggingface.co/deepseek-ai/DeepSeek-R1"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible", "hipaa_compatible"]
+
+  "deepseek-r1:32b":
+    display_name: "DeepSeek R1 32B"
+    license: "MIT"
+    license_url: "https://opensource.org/licenses/MIT"
+    license_flags:
+      commercial_ok: true
+      attribution_required: false
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "DeepSeek AI"
+    hf_url: "https://huggingface.co/deepseek-ai/DeepSeek-R1"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible", "hipaa_compatible"]
+
+  # ─── Embedding Models ─────────────────────────────────────────────────────
+  "nomic-embed-text":
+    display_name: "Nomic Embed Text v1.5"
+    license: "Apache-2.0"
+    license_url: "https://www.apache.org/licenses/LICENSE-2.0"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "Nomic AI"
+    hf_url: "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible"]
+
+  # ─── Vision Models ────────────────────────────────────────────────────────
+  "llava:13b":
+    display_name: "LLaVA 1.6 13B"
+    license: "Apache-2.0"
+    license_url: "https://www.apache.org/licenses/LICENSE-2.0"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "LLaVA Team (UW-Madison / Microsoft)"
+    hf_url: "https://huggingface.co/liuhaotian/llava-v1.6-mistral-7b"
+    compliance_tags: ["gdpr_compatible"]
+
+  # ─── TTS Models ───────────────────────────────────────────────────────────
+  "kokoro":
+    display_name: "Kokoro TTS"
+    license: "Apache-2.0"
+    license_url: "https://www.apache.org/licenses/LICENSE-2.0"
+    license_flags:
+      commercial_ok: true
+      attribution_required: true
+      derivative_ok: true
+      redistribution_ok: true
+    provenance: "Hexgrad"
+    hf_url: "https://huggingface.co/hexgrad/Kokoro-82M"
+    compliance_tags: ["privileged_work_safe", "gdpr_compatible"]

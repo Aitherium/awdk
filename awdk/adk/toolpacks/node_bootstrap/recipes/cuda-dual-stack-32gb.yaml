@@ -1,0 +1,74 @@
+id: cuda-dual-stack-32gb
+name: NVIDIA CUDA 32GB Dual-Stack (RTX 5090)
+tier: gpu-stack
+description: >-
+  RTX 5090 co-resident stack: Nemotron-8B orchestrator (util 0.27/16K context)
+  + gemma4-12b reasoning on-demand swap slot with 7GB DDR5 CPU offload.
+  Proven live (2026-07-15). Maximum efficiency on single high-end card.
+
+hardware_requirements:
+  min_ram_gb: 24
+  min_cpu_cores: 16
+  gpu_vendor: nvidia
+  min_vram_gb: 31  # "32GB" cards report 31.84GiB (32607MB) — 32 would never match real hardware
+  max_vram_gb: 39  # 32GB-card-specific stack (5090); bigger cards use cuda-vllm-40gb
+  unified_memory: false
+  notes: >-
+    RTX 5090 (32GB) only. Orchestrator constrained to util 0.27 / max_len 16K
+    to free 3GB for co-resident gemma4-12b. Gemma4 weights (12.89GB) minus
+    on-demand VRAM yield ~7GB DDR5 spill via VLLM_CPU_OFFLOAD_GB.
+    WSL2 V1 model-runner (no CUDA UVA). Proven stack requires
+    fleet-internal vLLM images (supplied by the delegate playbook).
+
+inference_config:
+  engine: vllm
+  models:
+    - name: nemotron-8b-tq
+      source: hf://nvidia/Nemotron-Orchestrator-8B-Instruct
+      size_gb: 8.0
+      quantization: tq-t4nc
+      context_window: 16384
+      served_name: orchestrator
+    - name: gemma4-12b-w8a16
+      source: hf://google/gemma-2-27b
+      size_gb: 12.89
+      quantization: W8A16
+      context_window: 8192
+      served_name: gemma4-12b-reasoning
+  serve_args:
+    - orchestrator: [--host, 0.0.0.0, --port, "8199", --gpu-memory-utilization, "0.27", --max-model-len, "16384"]
+    - gemma4: [--host, 0.0.0.0, --port, "8201", --gpu-memory-utilization, "0.75", --cpu-offload-gb, "7"]
+  image: ''  # fleet-side delegate playbook supplies its own images
+  platform_traps:
+    - wsl2-v1-runner
+    - ddr5-offload
+    - co-residency-single-card
+
+deployment:
+  target: delegate-playbook
+  compose_template: ""
+  delegate: deploy-5090-model-stack.psd1
+  port: 8199
+
+backend_config:
+  backend_type: vllm
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 120
+  completion:
+    model: orchestrator
+    prompt: "What is the capital of France?"
+    min_tokens: 5
+    timeout_s: 60
+
+fleet_wiring:
+  catalog_entry:
+    backend: vllm
+    category: orchestrator
+    context_window: 16384
+    vram_gb: 16
+    speed: 50
+    quality: 9
+  ms_env_var: AITHER_VLLM_TQ_URL

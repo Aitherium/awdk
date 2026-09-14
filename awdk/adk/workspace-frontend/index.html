@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aither Workspace</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #09090b;
+            --bg-base: #0f0f13;
+            --bg-surface: #18181b;
+            --bg-elevated: #1f1f23;
+            --glass-border: rgba(255,255,255,0.06);
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent-primary: #06b6d4;
+            --accent-glow: rgba(6,182,212,0.15);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-deep);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        .shell { display: flex; min-height: 100vh; }
+        .sidebar {
+            width: 260px; background: var(--bg-base);
+            border-right: 1px solid var(--glass-border);
+            display: flex; flex-direction: column; flex-shrink: 0;
+        }
+        .sidebar-header {
+            padding: 1rem; border-bottom: 1px solid var(--glass-border);
+            display: flex; align-items: center; gap: 0.6rem;
+        }
+        .brand-icon {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: var(--accent-primary); display: flex;
+            align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.9rem; color: var(--bg-deep);
+        }
+        .brand-name { font-size: 1rem; font-weight: 600; }
+        .brand-sub { font-size: 0.7rem; color: var(--text-muted); }
+        .nav { flex: 1; padding: 0.5rem; display: flex; flex-direction: column; gap: 2px; }
+        .nav-item {
+            padding: 0.6rem 0.75rem; border-radius: 8px; cursor: pointer;
+            font-size: 0.85rem; color: var(--text-secondary);
+            transition: all 0.15s;
+        }
+        .nav-item:hover { background: rgba(255,255,255,0.04); color: var(--text-primary); }
+        .nav-item.active {
+            background: var(--accent-glow); color: var(--accent-primary);
+            font-weight: 500;
+        }
+        .portal-link {
+            padding: 0.75rem 1rem; border-top: 1px solid var(--glass-border);
+            font-size: 0.7rem; color: var(--text-muted); text-decoration: none;
+        }
+        .portal-link a { color: var(--text-muted); text-decoration: none; }
+        .portal-link a:hover { color: var(--accent-primary); }
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        .content { flex: 1; overflow: auto; }
+        .panel-frame {
+            width: 100%; height: 100%; border: none; background: var(--bg-deep);
+        }
+        .status-bar {
+            padding: 0.4rem 1rem; border-bottom: 1px solid var(--glass-border);
+            background: var(--bg-base); font-size: 0.7rem; color: var(--text-muted);
+            display: flex; align-items: center; gap: 1rem;
+        }
+        .status-dot {
+            width: 6px; height: 6px; border-radius: 50%; display: inline-block;
+        }
+        .status-dot.ok { background: #22c55e; }
+        .status-dot.err { background: #ef4444; }
+        .loading {
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; color: var(--text-muted); font-size: 0.85rem;
+        }
+        .chat-container { height: 100%; display: flex; flex-direction: column; }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 1rem; }
+        .chat-input-bar {
+            padding: 0.75rem 1rem; border-top: 1px solid var(--glass-border);
+            display: flex; gap: 0.5rem;
+        }
+        .chat-input {
+            flex: 1; padding: 0.6rem 0.8rem; border-radius: 8px;
+            background: var(--bg-surface); border: 1px solid var(--glass-border);
+            color: var(--text-primary); font-size: 0.85rem; font-family: inherit;
+            outline: none;
+        }
+        .chat-input:focus { border-color: var(--accent-primary); }
+        .chat-send {
+            padding: 0.6rem 1rem; border-radius: 8px; border: none;
+            background: var(--accent-primary); color: var(--bg-deep);
+            font-weight: 600; font-size: 0.85rem; cursor: pointer;
+        }
+        .chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
+        .msg { margin-bottom: 1rem; }
+        .msg-role { font-size: 0.7rem; color: var(--text-muted); margin-bottom: 0.25rem; font-weight: 600; }
+        .msg-body { font-size: 0.85rem; line-height: 1.5; white-space: pre-wrap; }
+        .msg-body.assistant { color: var(--accent-primary); }
+    </style>
+</head>
+<body>
+<div id="app" class="loading">Loading workspace...</div>
+<script>
+(async function() {
+    const app = document.getElementById('app');
+
+    // Fetch config
+    let config = {};
+    try {
+        const [embedRes, tabsRes, healthRes] = await Promise.all([
+            fetch('/api/config/embed').then(r => r.ok ? r.json() : {}),
+            fetch('/api/config/tabs').then(r => r.ok ? r.json() : {}),
+            fetch('/health').then(r => r.ok ? r.json() : { status: 'error' }),
+        ]);
+        config = { ...embedRes, ...tabsRes, health: healthRes };
+    } catch(e) {
+        config = { name: 'Aither', tabs: [], health: { status: 'error' } };
+    }
+
+    const name = config.name || 'Aither';
+    const initial = name.charAt(0).toUpperCase();
+    const healthy = config.health?.status === 'ok' || config.health?.status === 'healthy';
+    document.title = name + ' Workspace';
+
+    // Default tabs
+    const defaultTabs = [
+        { id: 'chat', label: 'Chat' },
+        { id: 'documents', label: 'Documents' },
+        { id: 'calendar', label: 'Calendar' },
+        { id: 'mail', label: 'Mail' },
+        { id: 'contacts', label: 'Contacts' },
+        { id: 'social', label: 'Social' },
+        { id: 'intelligence', label: 'Intelligence' },
+        { id: 'settings', label: 'Settings' },
+    ];
+
+    let activeTab = 'chat';
+    let messages = [];
+    let sending = false;
+
+    function render() {
+        app.className = 'shell';
+        app.innerHTML = `
+            <div class="sidebar">
+                <div class="sidebar-header">
+                    <div class="brand-icon">${initial}</div>
+                    <div>
+                        <div class="brand-name">${name}</div>
+                        <div class="brand-sub">Workspace</div>
+                    </div>
+                </div>
+                <div class="nav">
+                    ${defaultTabs.map(t => `
+                        <div class="nav-item ${activeTab === t.id ? 'active' : ''}"
+                             data-tab="${t.id}">${t.label}</div>
+                    `).join('')}
+                </div>
+                <div class="portal-link">
+                    <a href="https://portal.aitherium.com" target="_blank">portal.aitherium.com</a>
+                </div>
+            </div>
+            <div class="main">
+                <div class="status-bar">
+                    <span><span class="status-dot ${healthy ? 'ok' : 'err'}"></span> ${healthy ? 'Connected' : 'Offline'}</span>
+                    <span>${config.app_id || 'aither-local'}</span>
+                </div>
+                <div class="content" id="panel-content"></div>
+            </div>
+        `;
+
+        // Wire nav clicks
+        app.querySelectorAll('.nav-item').forEach(el => {
+            el.addEventListener('click', () => {
+                activeTab = el.dataset.tab;
+                render();
+            });
+        });
+
+        // Render active panel
+        const panel = document.getElementById('panel-content');
+        if (activeTab === 'chat') {
+            renderChat(panel);
+        } else {
+            // Proxy to API endpoint as iframe or show placeholder
+            const apiMap = {
+                documents: '/api/documents', calendar: '/api/calendar',
+                mail: '/api/mail', contacts: '/api/contacts',
+                social: '/api/social', intelligence: '/api/workspace-intelligence/health',
+                settings: '/api/settings',
+            };
+            panel.innerHTML = `
+                <div style="padding: 2rem;">
+                    <h2 style="font-size: 1.1rem; margin-bottom: 0.5rem;">${defaultTabs.find(t => t.id === activeTab)?.label || activeTab}</h2>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                        API endpoint: <code style="color: var(--accent-primary);">${apiMap[activeTab] || '/api/' + activeTab}</code>
+                    </p>
+                    <p style="font-size: 0.8rem; color: var(--text-muted);">
+                        Open <a href="https://portal.aitherium.com" target="_blank"
+                            style="color: var(--accent-primary);">portal.aitherium.com</a>
+                        for the full panel UI, or use the chat to interact with this workspace.
+                    </p>
+                </div>
+            `;
+        }
+    }
+
+    function renderChat(container) {
+        container.innerHTML = `
+            <div class="chat-container">
+                <div class="chat-messages" id="chat-messages">
+                    ${messages.length === 0 ? `
+                        <div style="text-align: center; padding: 3rem; color: var(--text-muted);">
+                            <div style="font-size: 2rem; margin-bottom: 0.5rem;">${initial}</div>
+                            <p style="font-size: 0.85rem;">Ask ${name} anything.</p>
+                        </div>
+                    ` : messages.map(m => `
+                        <div class="msg">
+                            <div class="msg-role">${m.role === 'user' ? 'You' : name}</div>
+                            <div class="msg-body ${m.role}">${escapeHtml(m.content)}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="chat-input-bar">
+                    <input class="chat-input" id="chat-input" placeholder="Message ${name}..."
+                           ${sending ? 'disabled' : ''} />
+                    <button class="chat-send" id="chat-send" ${sending ? 'disabled' : ''}>
+                        ${sending ? '...' : 'Send'}
+                    </button>
+                </div>
+            </div>
+        `;
+        const input = document.getElementById('chat-input');
+        const btn = document.getElementById('chat-send');
+        const msgBox = document.getElementById('chat-messages');
+
+        async function send() {
+            const text = input.value.trim();
+            if (!text || sending) return;
+            messages.push({ role: 'user', content: text });
+            sending = true;
+            render();
+            try {
+                const resp = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text }),
+                });
+                const data = await resp.json();
+                const reply = data.response || data.content || data.text || JSON.stringify(data);
+                messages.push({ role: 'assistant', content: reply });
+            } catch(e) {
+                messages.push({ role: 'assistant', content: 'Error: ' + e.message });
+            }
+            sending = false;
+            render();
+            document.getElementById('chat-messages')?.scrollTo(0, 999999);
+            document.getElementById('chat-input')?.focus();
+        }
+
+        btn?.addEventListener('click', send);
+        input?.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+        input?.focus();
+        msgBox?.scrollTo(0, 999999);
+    }
+
+    function escapeHtml(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    render();
+})();
+</script>
+</body>
+</html>

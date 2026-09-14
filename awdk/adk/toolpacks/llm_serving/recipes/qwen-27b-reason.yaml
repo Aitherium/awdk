@@ -1,0 +1,74 @@
+id: qwen-27b-reason
+name: Qwen3.6-27B (reasoning — NVFP4 on Blackwell)
+model_role: reasoner
+description: >-
+  Qwen3.6-27B, the AitherOS deep-reasoning model. On Blackwell (DGX Spark / 5090)
+  it runs NVFP4 with DFlash at ~19-24 tok/s; elsewhere AWQ-4bit. This is a big
+  model — 27B needs real VRAM or a quant that fits. Reasoning/architecture/
+  root-cause work (effort tiers 7-10), not chat.
+
+model:
+  served_name: qwen36-27b-dgx
+  # This IS the model the fleet's DGX reasoner serves: Qwen3.6-27B (multimodal),
+  # and the NVFP4 checkpoint IS published — `vrfai/Qwen3.6-27B-NVFP4` (all verified
+  # on HF 2026-07-24). The fleet runs vrfai-NVFP4 + a DFlash drafter via the AEON
+  # image at ~19-22 tok/s; a plain self-host serves vrfai-NVFP4 alone (~8.7 tok/s
+  # for this DENSE 27B — NVFP4 is compute-bound here; DFlash is what makes it fast).
+  quant_repos:
+    nvfp4: vrfai/Qwen3.6-27B-NVFP4
+    base: Qwen/Qwen3.6-27B
+  # Per-checkpoint vLLM --quantization override. vrfai packages NVFP4 as
+  # COMPRESSED-TENSORS (serves natively, no --trust-remote-code), NOT modelopt_fp4 —
+  # the optimizer's generic nvfp4->modelopt_fp4 default is wrong for THIS checkpoint,
+  # so the recipe pins the correct loader.
+  quant_args:
+    nvfp4: compressed-tensors
+
+hardware_requirements:
+  # Qwen3-32B: ~18GB in AWQ-4bit, ~16GB in NVFP4 — 24GB is the practical floor with
+  # KV headroom. On a 24GB card keep max-model-len modest; 32GB+ is comfortable.
+  min_vram_gb: 24
+  min_ram_gb: 32
+  gpu_vendor: nvidia
+
+serve:
+  port: 8124
+  gpu_memory_utilization: 0.85
+  max_model_len: 32768
+  max_num_seqs: 8
+  swap_space_gb: 16
+  extra_args:
+    - --trust-remote-code
+    - --enable-prefix-caching
+  platform_traps:
+    - "27B is the model most prone to KV-overflow crashloops when fleet-saturated —
+       keep max-num-seqs modest (8) and do NOT push max-model-len past what the KV
+       cache fits, or it enters the documented crash loop."
+    - "NVFP4 on a DENSE 27B is COMPUTE-bound (~8.7 tok/s) — the FP4 GEMM unpacking
+       eats the bandwidth win. The fleet's ~19-22 tok/s comes from DFlash spec-decode
+       (k=15) via the AEON image + the drafter `z-lab/Qwen3.6-27B-DFlash` (3.2GB,
+       PUBLIC on HF — verified gated:false 2026-07-24; already on the DGX at
+       /dflash-drafter). Without DFlash, expect ~8.7 tok/s."
+    - "vrfai NVFP4 is a compressed-tensors checkpoint (quant_args pins that). Only
+       Blackwell has native FP4 kernels; on older cards vLLM DEQUANTs FP4->bf16
+       (works, no speed win). `base` (Qwen/Qwen3.6-27B) is the fallback for cards
+       without a working NVFP4 path — shrink on-the-fly via bitsandbytes/fp8."
+    - "Qwen3.6-27B is MULTIMODAL (Qwen3_5ForConditionalGeneration). A modelopt
+       text-only NVFP4 export does NOT load in vLLM (no text-only loader) — this is
+       why the recipe uses vrfai's full-multimodal checkpoint, not a self-export."
+
+verify:
+  health_timeout_s: 600
+  chat_probe:
+    prompt: "What is 17 plus 4? Reply with just the number."
+    max_tokens: 16
+  description: >-
+    Big-model cold start includes the full weight load — allow up to 10min before
+    treating an unanswered probe as a failure. Assert non-empty content + served name.
+
+fleet_wiring:
+  catalog_entry:
+    backend: vllm
+    category: reasoning
+    speed: 22
+  url_env_var: AITHER_REASONER_URL

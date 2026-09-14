@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aeon Group Chat</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+  --fg:#e7e9ee; --dim:#9aa3b2; --accent:#4f8cff; --user:#2d3550; --code:#0c0e13;
+  --agent1:#8b5cf6; --agent2:#06b6d4; --agent3:#10b981; --agent4:#f59e0b; --agent5:#ef4444;
+}
+@media(prefers-color-scheme:light){:root{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#f0f2f5; --line:#e2e5ea;
+  --fg:#141824; --dim:#6b7280; --accent:#2563eb; --user:#dce6ff; --code:#f2f3f6;
+  --agent1:#7c3aed; --agent2:#0891b2; --agent3:#059669; --agent4:#d97706; --agent5:#dc2626;
+}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);
+ color:var(--fg);display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);
+ background:var(--panel)}
+header .dot{width:8px;height:8px;border-radius:50%;background:#3ba55d;flex:none}
+header .title{font-weight:650}
+header .subtitle{color:var(--dim);font-size:13px;margin-left:auto;margin-right:20px}
+header .spacer{flex:1}
+header button.icon{background:none;border:1px solid var(--line);color:var(--dim);border-radius:8px;
+ padding:5px 10px;cursor:pointer;font-size:13px}
+header button.icon:hover{color:var(--fg);border-color:var(--accent)}
+/* settings drawer */
+#settings{display:none;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel2);
+ gap:14px;flex-wrap:wrap;align-items:flex-end}
+#settings.open{display:flex}
+#settings label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}
+#settings select,#settings input{background:var(--panel);border:1px solid var(--line);color:var(--fg);
+ border-radius:8px;padding:6px 9px;font:inherit;font-size:13px}
+#settings input[type=range]{padding:0;width:150px}
+/* conversation */
+#log{flex:1;overflow-y:auto;padding:22px 16px;display:flex;flex-direction:column;align-items:center;gap:12px}
+.turn{width:100%;max-width:800px;display:flex;gap:12px;padding:12px;border-radius:8px;background:var(--panel2)}
+.turn.user{background:var(--user);margin-left:40px}
+.turn .who{flex:none;width:32px;height:32px;border-radius:7px;display:flex;align-items:center;
+ justify-content:center;font-size:12px;font-weight:700;color:#fff}
+.turn.user .who{background:var(--accent)}
+.turn.agent1 .who{background:var(--agent1)}
+.turn.agent2 .who{background:var(--agent2)}
+.turn.agent3 .who{background:var(--agent3)}
+.turn.agent4 .who{background:var(--agent4)}
+.turn.agent5 .who{background:var(--agent5)}
+.turn .name{font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:600}
+.turn.synthesis{border-left:3px solid var(--accent);background:var(--panel)}
+.turn.synthesis .who{background:var(--accent)}
+.turn .body{flex:1;min-width:0;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere}
+.turn .body pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+ overflow-x:auto;white-space:pre;font-size:.9em}
+.turn .body code{background:var(--code);border-radius:4px;padding:1px 5px;font-size:.92em}
+.turn .body pre code{background:none;padding:0}
+.turn .meta{font-size:11px;color:var(--dim);margin-top:6px}
+.empty{color:var(--dim);text-align:center;margin-top:16vh}
+.empty h2{font-weight:650;margin:0 0 6px;color:var(--fg)}
+.cursor::after{content:'▋';color:var(--accent);animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+/* composer */
+form{display:flex;gap:8px;padding:12px 16px 16px;border-top:1px solid var(--line);background:var(--panel);
+ justify-content:center}
+.composer{width:100%;max-width:800px;display:flex;gap:8px;align-items:flex-end}
+#in{flex:1;padding:11px 13px;border-radius:12px;border:1px solid var(--line);background:var(--bg);
+ color:var(--fg);font:inherit;resize:none;max-height:180px}
+#in:focus{outline:none;border-color:var(--accent)}
+button.send{padding:0 18px;height:44px;border:0;border-radius:12px;background:var(--accent);color:#fff;
+ font:inherit;font-weight:650;cursor:pointer}
+button.send:disabled{opacity:.5;cursor:default}
+button.stop{background:#c0392b}
+.hint{max-width:800px;width:100%;margin:6px auto 0;color:var(--dim);font-size:11px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span>
+  <span class="title">Aeon Group Chat</span>
+  <span class="subtitle" id="subHeading"></span>
+  <span class="spacer"></span>
+  <button class="icon" id="clearBtn" title="New conversation">＋ New</button>
+  <button class="icon" id="gearBtn" title="Settings">⚙ Settings</button>
+</header>
+
+<div id="settings">
+  <label>Preset
+    <select id="preset">
+      <option value="balanced">Balanced</option>
+      <option value="creative">Creative</option>
+      <option value="technical">Technical</option>
+      <option value="security">Security</option>
+      <option value="minimal">Minimal</option>
+      <option value="duo_code">Duo Code</option>
+      <option value="research">Research</option>
+    </select>
+  </label>
+</div>
+
+<div id="log">
+  <div class="empty" id="empty">
+    <h2>Aeon Group Chat</h2>
+    <div>Ask a question and multiple agents will discuss it together.</div>
+  </div>
+</div>
+
+<form id="f">
+  <div class="composer">
+    <textarea id="in" rows="1" placeholder="Ask the group something…  (Enter to send, Shift+Enter for newline)" autofocus></textarea>
+    <button type="submit" class="send" id="send">Send</button>
+  </div>
+</form>
+<div class="hint" id="hint"></div>
+
+<script>
+(function(){
+  var log=document.getElementById('log'), input=document.getElementById('in'),
+      form=document.getElementById('f'), btn=document.getElementById('send'),
+      empty=document.getElementById('empty'), hint=document.getElementById('hint');
+
+  // Bearer from URL fragment (#k=…)
+  var key=(location.hash.match(/[#&]k=([^&]+)/)||[])[1]||'';
+  var sid=localStorage.getItem('adk_sid')||('web-'+Math.random().toString(36).slice(2));
+  localStorage.setItem('adk_sid',sid);
+  var busy=false, controller=null;
+
+  function hdrs(h){h=h||{};if(key)h['Authorization']='Bearer '+decodeURIComponent(key);return h;}
+
+  function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function md(s){
+    var out=esc(s);
+    out=out.replace(/```([\s\S]*?)```/g,function(_,c){return '<pre><code>'+c.replace(/^\n/,'')+'</code></pre>';});
+    out=out.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+    out=out.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    return out;
+  }
+
+  var agentColors=['agent1','agent2','agent3','agent4','agent5'];
+  var colorIdx=0;
+  var agentColorMap={};
+
+  function getAgentColor(name){
+    if(!agentColorMap[name]){
+      agentColorMap[name]=agentColors[colorIdx%agentColors.length];
+      colorIdx++;
+    }
+    return agentColorMap[name];
+  }
+
+  function turn(role,name,html,isSynthesis){
+    if(empty)empty.style.display='none';
+    var t=document.createElement('div');
+    var cls='turn '+role;
+    if(isSynthesis)cls+=' synthesis';
+    if(!isSynthesis&&role==='assistant')cls+=' '+getAgentColor(name);
+    t.className=cls;
+    var who=document.createElement('div');who.className='who';
+    var chr=name?name.charAt(0).toUpperCase():'A';
+    who.textContent=chr;
+    var body=document.createElement('div');
+    if(!isSynthesis&&role==='assistant'){
+      var nm=document.createElement('div');nm.className='name';nm.textContent=name;
+      body.appendChild(nm);
+    }
+    var content=document.createElement('div');content.className='body';content.innerHTML=html;
+    body.appendChild(content);
+    t.appendChild(who);t.appendChild(body);log.appendChild(t);
+    log.scrollTop=log.scrollHeight;
+    return body;
+  }
+
+  function setBusy(b){
+    busy=b;btn.disabled=false;
+    if(b){btn.textContent='Stop';btn.classList.add('stop');}
+    else{btn.textContent='Send';btn.classList.remove('stop');input.focus();}
+  }
+
+  // Settings (preset only — Aeon runs a fixed multi-agent round; per-turn
+  // temperature/max-tokens aren't threaded through group chat, so they're not shown)
+  document.getElementById('gearBtn').addEventListener('click',function(){
+    document.getElementById('settings').classList.toggle('open');});
+  document.getElementById('clearBtn').addEventListener('click',function(){
+    if(busy&&controller)controller.abort();
+    document.querySelectorAll('.turn').forEach(function(n){n.remove();});
+    agentColorMap={};colorIdx=0;
+    sid='web-'+Math.random().toString(36).slice(2);localStorage.setItem('adk_sid',sid);
+    if(empty)empty.style.display='';input.focus();});
+
+  async function send(text){
+    var userDiv=turn('user','',esc(text));
+    var preset=document.getElementById('preset').value;
+    setBusy(true);
+    controller=new AbortController();
+    var payload={message:text,preset:preset,session_id:sid};
+    try{
+      var res=await fetch('/aeon/stream',{
+        method:'POST',
+        headers:hdrs({'Content-Type':'application/json'}),
+        body:JSON.stringify(payload),
+        signal:controller.signal
+      });
+      if(!res.ok){
+        turn('assistant','',hint='⚠ '+res.status+(res.status===401?' — reopen via `adk up` (auth token missing)':''));
+        setBusy(false);return;
+      }
+      var reader=res.body.getReader(),dec=new TextDecoder(),buf='';
+      var agents={};
+      while(true){
+        var c=await reader.read();if(c.done)break;
+        buf+=dec.decode(c.value,{stream:true});
+        var idx;
+        while((idx=buf.indexOf('\n\n'))>=0){
+          var frame=buf.slice(0,idx);buf=buf.slice(idx+2);
+          var lines=frame.split('\n');
+          var eventLine=lines.filter(function(l){return l.indexOf('event:')===0})[0];
+          var dataLine=lines.filter(function(l){return l.indexOf('data:')===0})[0];
+          if(!dataLine)continue;
+          var d;try{d=JSON.parse(dataLine.slice(5).trim())}catch(e){continue}
+
+          if(d.type==='session_start'){
+            var names=d.participants.filter(function(n){return n!==d.orchestrator});
+            document.getElementById('subHeading').textContent=names.join(', ')+' + '+d.orchestrator;
+          }
+          else if(d.type==='agent_message'){
+            var name=d.agent||'?';
+            var content=md(d.content);
+            if(!agents[name])agents[name]=turn('assistant',name,'');
+            agents[name].innerHTML=content;
+            if(d.tokens_used||d.latency_ms)agents[name].innerHTML+='<div class="meta">'+d.tokens_used+' tokens • '+Math.round(d.latency_ms)+'ms</div>';
+            agents[name].parentNode.scrollIntoView();
+          }
+          else if(d.type==='synthesis'){
+            var name=d.agent||'Synthesis';
+            var content=md(d.content);
+            turn('assistant',name,content,true).innerHTML+='<div class="meta">'+d.tokens_used+' tokens • '+Math.round(d.latency_ms)+'ms</div>';
+            log.scrollTop=log.scrollHeight;
+          }
+          else if(d.type==='error'){
+            turn('assistant','','⚠ '+esc(d.error||'error'));
+          }
+        }
+      }
+    }catch(e){
+      if(e.name==='AbortError'){turn('assistant','','[stopped by user]');}
+      else{turn('assistant','','⚠ '+esc(e.message));}
+    }
+    controller=null;setBusy(false);
+  }
+
+  form.addEventListener('submit',function(e){
+    e.preventDefault();
+    if(busy){if(controller)controller.abort();return;}
+    var t=input.value.trim();if(!t)return;input.value='';autosize();send(t);
+  });
+  function autosize(){input.style.height='auto';input.style.height=Math.min(input.scrollHeight,180)+'px';}
+  input.addEventListener('input',autosize);
+  input.addEventListener('keydown',function(e){
+    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.requestSubmit();}});
+
+  hint.textContent='';  // local access is auto-authenticated by the server; a remote 401 is surfaced on send
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+# ADK vLLM Inference Stack
+# ========================
+# 2-worker setup for AitherOS Alpha (standalone agent platform).
+#
+# Usage:
+#   docker compose -f docker-compose.adk-vllm.yml up -d          # Primary only (12GB+ VRAM)
+#   docker compose -f docker-compose.adk-vllm.yml --profile dual up -d  # Both workers (24GB+)
+#
+# All models are env-var configurable:
+#   ADK_VLLM_MODEL_PRIMARY=your/model docker compose -f docker-compose.adk-vllm.yml up -d
+
+volumes:
+  adk-hf-cache:
+    name: adk-hf-cache
+
+networks:
+  adk-net:
+    name: adk-net
+    driver: bridge
+
+services:
+  # ──────────────────────────────────────────────────────────────
+  # PRIMARY WORKER — always starts (12GB+ VRAM)
+  # General-purpose orchestration model
+  # ──────────────────────────────────────────────────────────────
+  adk-vllm-primary:
+    image: vllm/vllm-openai:latest
+    container_name: adk-vllm-primary
+    ports:
+      - "${ADK_VLLM_PORT_PRIMARY:-8200}:8000"
+    volumes:
+      - adk-hf-cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - VLLM_NO_USAGE_STATS=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      --model ${ADK_VLLM_MODEL_PRIMARY:-nvidia/Nemotron-Orchestrator-8B}
+      --gpu-memory-utilization ${ADK_VLLM_GPU_PRIMARY:-0.45}
+      --max-model-len ${ADK_VLLM_CTX_PRIMARY:-8192}
+      --dtype auto
+      --trust-remote-code
+      --disable-log-requests
+    networks:
+      - adk-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
+
+  # ──────────────────────────────────────────────────────────────
+  # REASONING WORKER — profile "dual" only (24GB+ VRAM)
+  # Deep reasoning / chain-of-thought model
+  # ──────────────────────────────────────────────────────────────
+  adk-vllm-reasoning:
+    image: vllm/vllm-openai:latest
+    container_name: adk-vllm-reasoning
+    profiles:
+      - dual
+    ports:
+      - "${ADK_VLLM_PORT_REASONING:-8201}:8000"
+    volumes:
+      - adk-hf-cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - VLLM_NO_USAGE_STATS=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      --model ${ADK_VLLM_MODEL_REASONING:-deepseek-ai/DeepSeek-R1-Distill-Qwen-14B}
+      --gpu-memory-utilization ${ADK_VLLM_GPU_REASONING:-0.35}
+      --max-model-len ${ADK_VLLM_CTX_REASONING:-8192}
+      --dtype auto
+      --trust-remote-code
+      --disable-log-requests
+    networks:
+      - adk-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s

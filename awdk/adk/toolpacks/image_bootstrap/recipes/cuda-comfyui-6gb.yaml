@@ -1,0 +1,64 @@
+id: cuda-comfyui-6gb
+name: NVIDIA CUDA 6GB ComfyUI (minimal / low-VRAM)
+tier: gpu-small
+description: >-
+  NVIDIA GPUs with 6-11GB VRAM. Runs the minimal model profile in ComfyUI's
+  low-VRAM mode — SDXL-Turbo class fast generation rather than the full studio
+  stack. Targets 2060/3060 8GB, 4060, laptop 3070.
+
+hardware_requirements:
+  min_ram_gb: 8
+  min_cpu_cores: 4
+  gpu_vendor: nvidia
+  min_vram_gb: 6
+  max_vram_gb: 11
+  unified_memory: false
+  notes: >-
+    --lowvram keeps the UNet resident and swaps the text encoder/VAE per step.
+    Slower per image than the 12GB band but it does not OOM. Batch size 1 only.
+
+imagegen_config:
+  engine: comfyui
+  model_profile: minimal
+  models:
+    - name: minimal profile base
+      source: profile://minimal
+      size_gb: 6.9
+      note: single SDXL base checkpoint + VAE, no ControlNet stack
+  serve_args:
+    - COMFY_PORT=8188
+    - COMFY_EXTRA_ARGS=--lowvram
+  image: ghcr.io/aitherium/comfyui-cloud:latest
+  platform_traps:
+    - "6-8GB cards: batch>1 or resolution>1024 will OOM. Keep batch_size=1."
+
+deployment:
+  target: docker-compose
+  compose_template: remote-comfyui.compose.yml
+  delegate: ""
+  port: 8188
+
+backend_config:
+  backend_type: comfyui
+  health_path: /system_stats
+  capability_path: /object_info/CheckpointLoaderSimple
+  generate_path: /prompt
+
+verify:
+  health_timeout_s: 180
+  capability:
+    expect_min_models: 1
+    description: >-
+      ComfyUI answers 200 with ZERO checkpoints installed. The capability probe
+      lists CheckpointLoaderSimple's available checkpoints — that is the only
+      proof the model profile actually landed.
+
+fleet_wiring:
+  catalog_entry:
+    backend: comfyui
+    category: image
+    vram_gb: 6
+    max_resolution: 1024
+    speed: 4
+    quality: 7
+  url_env_var: COMFYUI_URL

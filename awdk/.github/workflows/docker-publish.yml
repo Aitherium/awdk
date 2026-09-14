@@ -1,0 +1,61 @@
+name: Publish Docker Image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: aitherium/adk-node
+
+jobs:
+  # Audit 2026-06-12 P1-5: the image build had NO moat gate — a Dockerfile or
+  # build-config change could ship premium identities / nanogpt in image layers.
+  # Same hard gate as pypi-publish.yml: nothing publishes unless the built wheel
+  # AND sdist are clean.
+  moat-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build artifacts
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Moat boundary check (wheel + sdist)
+        run: python scripts/check_moat_boundary.py
+
+  build-and-push:
+    needs: moat-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

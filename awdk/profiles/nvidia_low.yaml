@@ -1,0 +1,29 @@
+# AitherADK Hardware Profile: NVIDIA Low VRAM
+# For GPUs with 4-6 GB VRAM (GTX 1650, RTX 3050, etc.)
+
+name: nvidia_low
+description: NVIDIA GPU with 4-6 GB VRAM — small quantized models
+
+gpu:
+  vendor: nvidia
+  min_vram_gb: 4
+  max_vram_gb: 6
+
+models:
+  default: "llama3.2:3b"
+  small: "llama3.2:1b"
+  large: "llama3.2:3b"
+  embedding: "nomic-embed-text"
+
+recommended_models:
+  - "llama3.2:1b"
+  - "llama3.2:3b"
+  - "nomic-embed-text"
+
+limits:
+  max_context: 8192
+  max_concurrent: 1
+
+notes: >
+  Low VRAM profile. Runs 3B parameter models comfortably.
+  Larger models will be too slow or cause OOM.

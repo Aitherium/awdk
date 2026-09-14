@@ -1,0 +1,37 @@
+id: acp
+name: ACP — drive external Agent Client Protocol agents
+version: 1.0.0
+description: >-
+  Drive external ACP agents (claude-agent-acp, codex-acp, gemini-cli, ...) from
+  the agent console, and serve an AitherOS agent to ACP editors. Tools:
+  acp_list_agents, acp_connect, acp_prompt, acp_close. The `adk acp` CLI and
+  `adk backend add acp` cover the server / model-backend directions.
+category: tool_packs
+author: Aitherium
+icon: cable
+tags: [acp, agent-client-protocol, external-agents, editors, protocol, stdio]
+
+# Namespaced acp_* so nothing collides with the MCP/SSE tool families.
+mcp_tools:
+  - "acp_*"
+
+# register() lives in this pack's __init__.py; the loader file-loads it by path.
+tool_modules: []
+
+# Free/local capability — the external agent's own binary is the gate.
+entitlements: []
+
+skills: []
+
+# Console UI plugin: mounted by the adk admin console as a sandboxed iframe.
+# Tool calls go through the postMessage bridge (aither.invokeTool).
+ui:
+  assets_dir: ui
+  tabs:
+    - id: main
+      title: ACP
+      entry: index.html
+      icon: cable
+
+persona_fragments:
+  - "You can drive external ACP agents (claude-agent-acp, codex-acp, gemini-cli, ...) with the acp_* tools: acp_list_agents enumerates the bundled manifests; acp_connect spawns an agent and opens a session (returning its session_id); acp_prompt sends one turn and returns the reply — reuse the session_id to continue the conversation; acp_close ends the session and frees the subprocess. The `adk acp` CLI serves an AitherOS agent to ACP editors, and `adk backend add acp` registers an external agent as the model backend."

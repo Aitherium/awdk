@@ -1,0 +1,68 @@
+id: metal-comfyui
+name: Apple Silicon ComfyUI (native MPS)
+tier: gpu-apple
+description: >-
+  Apple Silicon (M1-M4) running ComfyUI NATIVELY against the MPS backend. Unified
+  memory means a 32GB Mac can hold models a 12GB discrete card cannot — but Docker
+  on macOS has NO Metal passthrough, so this recipe deliberately targets a native
+  install, not a container.
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 8
+  gpu_vendor: apple
+  min_vram_gb: 0
+  unified_memory: true
+  notes: >-
+    Unified memory is shared with the OS — a 16GB Mac has roughly 10-11GB usable for
+    the model. SDXL works; WAN 2.2 video does not fit comfortably below 32GB.
+
+imagegen_config:
+  engine: comfyui-native
+  model_profile: studio
+  models:
+    - name: studio SDXL stack
+      source: profile://studio
+      size_gb: 18.5
+      note: photoreal + anime bases, ControlNet, IPAdapter, ADetailer
+  serve_args:
+    - --listen 0.0.0.0
+    - --port 8188
+  image: ""
+  platform_traps:
+    - "Docker Desktop on macOS has NO Metal/MPS GPU passthrough — a containerised
+       ComfyUI silently falls back to CPU and is ~100x slower. This recipe is native
+       ON PURPOSE; do not 'fix' it into docker-compose."
+    - "PYTORCH_ENABLE_MPS_FALLBACK=1 is required — a few ComfyUI ops have no MPS
+       kernel and hard-crash the sampler without it."
+
+deployment:
+  target: native
+  compose_template: ""
+  delegate: ""
+  port: 8188
+
+backend_config:
+  backend_type: comfyui
+  health_path: /system_stats
+  capability_path: /object_info/CheckpointLoaderSimple
+  generate_path: /prompt
+
+verify:
+  health_timeout_s: 180
+  capability:
+    expect_min_models: 1
+    description: >-
+      ComfyUI answers 200 with ZERO checkpoints installed. The capability probe
+      lists CheckpointLoaderSimple's available checkpoints — that is the only
+      proof the model profile actually landed.
+
+fleet_wiring:
+  catalog_entry:
+    backend: comfyui
+    category: image
+    vram_gb: 0
+    max_resolution: 1024
+    speed: 4
+    quality: 9
+  url_env_var: COMFYUI_URL

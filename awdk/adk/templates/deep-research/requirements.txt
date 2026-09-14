@@ -1,0 +1,21 @@
+# Deep Research Studio — extra dependencies.
+# NOTE: awdk itself (the agent engine: ReAct loop, knowledge graph, memory,
+# metering) is installed separately by start.ps1 / start.sh with a fallback chain
+# (bundled wheel in vendor/ -> PyPI -> local checkout), so a PyPI hiccup never
+# blocks the rest of the install.
+
+# Web search (AitherSearch lineage — DuckDuckGo, no API key)
+ddgs>=6.0
+
+# Document generation
+reportlab>=4.0          # PDF reports
+python-docx>=1.1        # DOCX reports
+
+# Token counting for the savings ledger (falls back to an estimate if absent)
+tiktoken>=0.7
+
+# Server (also pulled in by awdk, pinned here for the standalone launcher)
+fastapi>=0.104
+uvicorn[standard]>=0.24
+httpx>=0.25
+pyyaml>=6.0

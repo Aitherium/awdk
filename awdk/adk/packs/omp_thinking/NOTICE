@@ -1,0 +1,28 @@
+This pack contains work derived from Oh My Pi (omp).
+
+    https://github.com/can1357/oh-my-pi
+
+    MIT License
+    Copyright (c) 2025 Mario Zechner
+    Copyright (c) 2025-2026 Can Boluk
+
+Derived material:
+
+  * The external-thinking technique itself — suppress the provider's native
+    reasoning channel, then supply a tool whose single string parameter is
+    described as a private scratchpad. Shipped upstream as the `externalThinking`
+    setting in omp v17.2.14.
+
+  * `supports_external_thinking()` in `__init__.py` is a port of
+    `supportsExternalThinking()` from
+    `packages/coding-agent/src/tools/think.ts`, with one clause added: a model
+    with no native reasoning channel is admitted on any transport. That clause
+    is ours and is marked as such in the function's docstring.
+
+  * The tool description string "private scratchpad; not shown to user" and the
+    content-free tool result are taken from upstream's `ThinkTool`, because both
+    are load-bearing for the behaviour rather than incidental wording.
+
+The MIT license text is reproduced in full at:
+
+    https://github.com/can1357/oh-my-pi/blob/main/LICENSE

@@ -1,0 +1,42 @@
+id: aitherzero
+name: AitherZero — Inventory, Config Generation & Automation Authoring
+version: 1.0.0
+description: >-
+  Self-service infrastructure provisioning surface for AitherZero. Lets an awdk agent
+  inventory the numbered automation-scripts and playbooks, regenerate the config schema from
+  any inventory (public OR a customer's private scripts), generate and validate a
+  config.local.psd1, plan a playbook into ordered steps, and scaffold a new automation-script
+  that auto-extends config once scanned. All tools are fail-soft dict-returners.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: sliders
+tags: [aitherzero, config, psd1, bootstrap, automation, playbook, provisioning, inventory]
+
+mcp_tools:
+  - "az_*"
+
+# Empty -> the loader file-loads this pack's __init__.py by path (pack dir on
+# submodule_search_locations, so `from . import tools` resolves). The pack ships standalone.
+tool_modules: []
+
+entitlements: []
+
+mcp_server:
+  enabled: true
+  description: AitherZero config + automation-authoring tools (az_* suite)
+  entitlement_required: false
+  tools: az_*
+
+skills:
+  - aitherzero   # awskills/skills/aitherzero.md — set up + use the config/provisioning surface
+
+persona_fragments:
+  - "AitherZero: you have az_* tools to manage the AitherZero self-service provisioning surface — a config.psd1 + bootstrap.ps1 that provisions bare-metal/on-prem/cloud/hybrid by driving numbered PowerShell automation-scripts and playbooks. The config is GENERATED from the script inventory (every param() block), so anyone who writes a pwsh automation-script extends AitherZero automatically. All tools return dicts (never raise); missing paths => {error, fix}, never anonymous fallback."
+  - "az_inventory: read-only catalogue from config-schema.json. No args => per-category script counts + totals + playbook names. category=<name> => that category's scripts (id, name, synopsis, param count, config keys). Set root=<path to .AITHERZERO> or AITHERZERO_ROOT env if not auto-found."
+  - "az_describe_script: full configurable surface of one script (every param: type, enum options, default, mandatory, help) + the config.psd1 keys it reads. Matches exact name then case-insensitive substring; ambiguous substring returns the candidate list."
+  - "az_export_schema: (re)generate config-schema.json by AST-scanning param() blocks via Export-AitherConfigSchema.ps1. Point script_root at a PRIVATE automation-scripts folder to fold those into the same schema the editor + az_inventory read — the extensibility seam. Shells pwsh; pwsh-missing fails soft."
+  - "az_generate_config: emit a valid config.local.psd1 from `sections` (nested section overrides) + `automation` (per-script param overrides keyed 'category/ScriptName', written under AutomationDefaults). Pure — returns psd1 text, no disk write."
+  - "az_validate_config: fail-closed traps before bootstrap — vLLM port collisions vs services.yaml, GPU memory-fraction sum > 1.0, mesh replica missing PrimaryHost. Accepts psd1_path or inline psd1_text. Returns {ok, errors, warnings}."
+  - "az_plan_playbook: resolve library/playbooks/<name>.psd1 into {parameters, prerequisites, steps[]} (each step: name, command, condition, continue_on_error). Read-only — plans, never executes. Unknown name returns the available list."
+  - "az_scaffold_script: generate a new automation-script skeleton (comment-based help, [CmdletBinding()] param() block with ValidateSet enums + defaults + [Parameter(Mandatory)]). params = list of {name, type, enum, default, mandatory, help}. write=True writes into the category folder (requires an explicit `number` slot; refuses to overwrite). Run az_export_schema after to surface the new params."

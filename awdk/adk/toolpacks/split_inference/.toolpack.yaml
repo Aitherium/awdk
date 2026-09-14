@@ -1,0 +1,37 @@
+id: split-inference
+name: Split Inference — Multi-Node llama.cpp RPC Model Sharding
+version: 1.0.0
+description: >-
+  Shard ONE model across MULTIPLE machines' GPUs using llama.cpp's RPC backend.
+  Detects the local device topology plus reachable RPC backends, resolves a split
+  recipe against combined VRAM, builds llama.cpp with -DGGML_RPC=ON, starts
+  rpc-server on the backend hosts, launches the main server with --rpc, and — the
+  point of the pack — PROVES the split is real rather than a silent local-only
+  fallback. All tools are fail-soft dict-returners.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: layers
+tags: [inference, llamacpp, rpc, distributed, sharding, gpu, bonsai, mesh]
+
+mcp_tools:
+  - "split_*"
+
+tool_modules: []
+
+entitlements: []
+
+mcp_server:
+  enabled: true
+  description: Split/distributed inference deployment tools (split_* suite)
+  entitlement_required: false
+  tools: split_*
+
+skills:
+  - split-inference
+
+persona_fragments:
+  - "Split inference: you have split_* tools for sharding ONE model across MULTIPLE machines via llama.cpp RPC. split_detect_topology lists local devices and probes configured RPC backends, reporting COMBINED VRAM; split_resolve_recipe matches a model against that combined pool; split_plan_deployment renders the build + backend-start + main-launch steps with no side effects; split_apply executes them (dry_run available); split_verify PROVES the split is real. All tools return dicts, never raise."
+  - "THE CORE TRAP: a llama.cpp binary built WITHOUT -DGGML_RPC=ON has no --rpc flag at all, and an --rpc target that is unreachable does NOT necessarily stop the server — you get a working endpoint that quietly ran entirely on the local GPU. A model that fits locally makes this invisible. NEVER conclude a split worked because the server answers; split_verify asserts an RPC device actually appears in --list-devices AND that layers were assigned to it."
+  - "split_verify is the positive assertion: it runs `llama-server --list-devices` (or the server's /props) and requires at least one RPC device to be present, then round-trips one completion. status='healthy' only when an RPC device is present AND inference works; 'local_only' when the server works but NO RPC device attached (the silent-fallback case — report it, never call it a split); 'degraded' when inference itself fails."
+  - "SECURITY: llama.cpp's rpc-server is UNAUTHENTICATED and deserializes tensor operations from any client that can reach it — upstream documents it as unsafe on untrusted networks. Bind it to the private LAN/mesh interface only, never a public address, and never 0.0.0.0 on a host with a public NIC. The pack refuses to plan a public bind."

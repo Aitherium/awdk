@@ -1,0 +1,74 @@
+# Hardware Profile: Standard
+# Single mid-range GPU (RTX 3090/4070 Ti Super/4080, A5000)
+# Runs chat + a small reasoning model with room for embedding.
+
+name: standard
+description: "Single GPU, 24GB VRAM, 32GB RAM"
+
+requirements:
+  vram_gb: 24
+  ram_gb: 32
+  gpu_count: 1
+
+models:
+  chat: nemotron-orchestrator-8b
+  reasoning: deepseek-r1:14b
+  vision: llava:7b
+  coding: null
+  embedding: nomic-embed-text
+
+vllm:
+  enabled: true
+  gpu_memory_utilization: 0.90
+  max_model_len: 8192
+  tensor_parallel_size: 1
+  dtype: float16
+  workers:
+    - name: orchestrator
+      port: 8200
+      model: aither-orchestrator
+      gpu_memory_utilization: 0.45
+
+ollama:
+  gpu_memory_fraction: 0.50
+  num_parallel: 2
+  models_to_pull:
+    - nemotron-orchestrator-8b
+    - deepseek-r1:14b
+    - llava:7b
+    - nomic-embed-text
+
+services:
+  core:
+    - node
+    - pulse
+    - watch
+    - chronicle
+    - secrets
+    - nexus
+    - strata
+  agents:
+    - genesis
+    - identity
+    - flux
+  scheduling:
+    - micro_scheduler
+    - scheduler
+  disabled:
+    - parallel
+    - mesh
+    - trainer
+    - prism
+    - accel
+
+resource_limits:
+  max_concurrent_requests: 4
+  max_batch_size: 4
+  context_pipeline_timeout_s: 15
+  ollama_max_loaded_models: 2
+
+notes: >
+  Standard profile splits VRAM between one vLLM worker (orchestrator) and
+  Ollama for on-demand reasoning/vision. The reasoning model is swapped in
+  on effort >= 7 requests. Vision model loaded on demand and evicts the
+  reasoning model temporarily.

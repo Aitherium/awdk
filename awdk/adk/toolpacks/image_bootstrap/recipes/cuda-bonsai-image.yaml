@@ -1,0 +1,86 @@
+id: cuda-bonsai-image
+name: NVIDIA CUDA Bonsai Image 4B (ternary FLUX.2 Klein, 4-step)
+tier: gpu-small
+description: >-
+  NVIDIA GPUs with 8GB+ VRAM running AitherBonsaiImage — prism-ml's
+  ternary-quantized FLUX.2 Klein 4B MMDiT (Qwen3-4B text encoder @4-bit HQQ,
+  Flux2 VAE, 4-step FlowMatchEuler). Near-Flux quality at ~7GiB peak VRAM and
+  1-5s/image; the text encoder offloads after encoding. Apache 2.0. No
+  ControlNet / inpaint — use ComfyUI when you need control.
+
+hardware_requirements:
+  min_ram_gb: 10
+  min_cpu_cores: 4
+  gpu_vendor: nvidia
+  min_vram_gb: 8
+  unified_memory: false
+  notes: >-
+    Total payload ~4.3GB (ternary DiT 1.21GB + Qwen3-4B encoder ~2.84GB + VAE).
+    Peak ~6.8GiB at 1024x1024; 512x512 fits comfortably on 8GB cards. gemlite
+    JIT-compiles triton kernels on first generation — expect a slow (minutes)
+    first image per fresh container.
+
+imagegen_config:
+  engine: bonsai-image
+  model_profile: ""
+  models:
+    - name: bonsai-image-ternary-4B-gemlite-2bit
+      source: hf://prism-ml/bonsai-image-ternary-4B-gemlite-2bit
+      size_gb: 4.3
+      note: quality-oriented ternary (1.58-bit) DiT, recommended
+    - name: bonsai-image-binary-4B-gemlite-1bit
+      source: hf://prism-ml/bonsai-image-binary-4B-gemlite-1bit
+      size_gb: 3.9
+      note: footprint-oriented binary (1-bit) DiT, sub-1GB transformer
+  serve_args:
+    - AITHER_SERVICE=bonsai_image
+    - BONSAI_IMAGE_PORT=8798
+    - BONSAI_IMAGE_MODEL=prism-ml/bonsai-image-ternary-4B-gemlite-2bit
+  image: ghcr.io/aitherium/aitheros-bonsai-image:latest
+  platform_traps:
+    - "Bonsai Image ships its OWN image (aitheros-bonsai-image) carrying the
+       gemlite/hqq/triton stack — it is NOT inside the multi-service perception
+       image, unlike SANA."
+    - "Weights MUST be pre-cached in the mounted HF cache before the container
+       starts: fleet containers run HF_HUB_OFFLINE=1 (no external DNS), so an
+       empty cache means the keep-warm load retries forever and /health stays
+       degraded."
+    - "First generation JIT-compiles triton kernels (minutes). Healthcheck
+       start_period must outlast keep-warm load + compile or autoheal kills the
+       boot loop."
+    - "Blackwell (sm_120, RTX 5090) needs a torch/triton pairing new enough for
+       that arch (torch>=2.7 cu128 wheels). Older triton wheels fail kernel
+       compile at first generation, not at import — verify with a live /v1/generate
+       round-trip, never just /health."
+
+deployment:
+  target: docker-compose
+  compose_template: ""
+  delegate: ""
+  port: 8798
+
+backend_config:
+  backend_type: bonsai-image
+  health_path: /health
+  capability_path: /v1/backends
+  generate_path: /v1/generate
+
+verify:
+  health_timeout_s: 300
+  capability:
+    expect_min_models: 1
+    description: >-
+      GET /v1/backends reports the loaded model. A container that started with
+      an empty HF cache answers /health (degraded) but serves nothing — require
+      a POSITIVE /v1/generate round-trip returning a base64 image before
+      declaring the node image-capable.
+
+fleet_wiring:
+  catalog_entry:
+    backend: bonsai-image
+    category: image
+    vram_gb: 7
+    max_resolution: 1024
+    speed: 8
+    quality: 8
+  url_env_var: BONSAI_IMAGE_URL

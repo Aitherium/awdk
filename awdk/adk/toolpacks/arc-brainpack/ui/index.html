@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARC Contribute</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#f6f7f9; --panel:#fff; --ink:#1b2027; --muted:#6b7280; --line:#e3e6ea;
+    --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626; --chip:#eceef2; }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#0f1216; --panel:#171b21; --ink:#e8eaed; --muted:#9aa4b2; --line:#262c34;
+    --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --err:#f87171; --chip:#232830; } }
+  * { box-sizing:border-box }
+  body { margin:0; padding:14px; background:var(--bg); color:var(--ink);
+    font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:14px; margin-bottom:12px }
+  h2 { margin:0 0 4px; font-size:17px } h3 { margin:0 0 8px; font-size:13px; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.04em }
+  .muted { color:var(--muted) } .mono { font-family:ui-monospace,Menlo,monospace; font-size:12.5px }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+  .stat { display:inline-block; background:var(--chip); border-radius:20px; padding:3px 12px;
+    font-size:12.5px; margin:2px 5px 2px 0 }
+  .stat b { font-weight:600 }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted);
+    vertical-align:1px; margin-right:5px }
+  .dot.live { background:var(--ok) } .dot.err { background:var(--err) }
+  .badge { display:inline-block; padding:1px 8px; border-radius:6px; font-size:11.5px; font-weight:600 }
+  .badge.on { background:var(--ok); color:#fff } .badge.off { background:var(--chip); color:var(--muted) }
+  table { width:100%; border-collapse:collapse; font-size:13px }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line) }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em }
+  td.num { text-align:right; font-family:ui-monospace,Menlo,monospace }
+  ol { margin:6px 0 0; padding-left:20px } li { margin:3px 0 }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:9px;
+    white-space:pre-wrap; word-break:break-word; margin:8px 0 0; font-size:12.5px }
+  code { font-family:ui-monospace,Menlo,monospace; background:var(--chip); padding:1px 5px; border-radius:5px }
+</style>
+</head>
+<body>
+<h2>ARC Contribute</h2>
+<p class="muted" style="margin-top:0"><span id="conn" class="dot"></span><span id="connLabel">connecting…</span>
+  — crowdsource the world model. Enroll, then contribute from the Chat tab with
+  <span class="mono">arc_register</span> / <span class="mono">arc_contribute</span>.</p>
+
+<div class="card">
+  <div class="row">
+    <span class="stat">enrolled <span id="enrolledBadge" class="badge off">no</span></span>
+    <span class="stat">contributor <b id="contributor">—</b></span>
+    <span class="stat">accepted <b id="accepted">—</b></span>
+    <span class="stat">gateway <b id="gateway" class="mono">—</b></span>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Leaderboard</h3>
+  <table>
+    <thead><tr><th>#</th><th>Contributor</th><th class="num">Accepted</th></tr></thead>
+    <tbody id="lb"><tr><td colspan="3" class="muted">loading…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>How to contribute</h3>
+  <ol>
+    <li><b>Enroll</b> — call <code>arc_register</code> (mints an ACTA wallet, gets a
+        contributor token, persists it). Or a maintainer adds you to
+        <span class="mono">contrib_tokens.json</span> and you set
+        <code>WM_CONTRIB_TOKEN</code>.</li>
+    <li><b>Set</b> <code>ARC_API_KEY</code> so you can reach the ARC game API.</li>
+    <li><b>Contribute</b> — call
+        <code>arc_contribute(games="ls20,vc33", n=200)</code>. It plays each game with a
+        random policy and submits every transition (quarantined + vetted offline).</li>
+    <li><b>Track</b> — <code>arc_status</code> for your accept count, this panel for the
+        ranking.</li>
+    <li><b>Solo</b> — prefer your own box? <code>arc_solo</code> prints the one-command
+        <span class="mono">docker-compose.standalone.yml</span> bootstrap (world model +
+        gateway, loopback-only, no GPU).</li>
+  </ol>
+  <pre id="raw" class="muted">status feed…</pre>
+</div>
+
+<script src="/packs/_sdk.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+const POLL_MS = 4000;
+
+function setConn(state, label) {
+  const dot = $("conn");
+  dot.className = "dot" + (state === "live" ? " live" : state === "err" ? " err" : "");
+  $("connLabel").textContent = label;
+}
+function parse(r) { return (typeof r === "string") ? JSON.parse(r || "{}") : (r || {}); }
+
+async function pollStatus() {
+  try {
+    const s = parse(await aither.invokeTool("arc_status", {}));
+    const enrolled = !!s.enrolled;
+    const badge = $("enrolledBadge");
+    badge.className = "badge " + (enrolled ? "on" : "off");
+    badge.textContent = enrolled ? "yes" : "no";
+    $("contributor").textContent = s.contributor_id != null ? s.contributor_id : "—";
+    $("accepted").textContent = s.accepted != null ? s.accepted : "—";
+    $("gateway").textContent = s.gateway || "—";
+    $("raw").textContent = JSON.stringify(s, null, 2);
+    setConn(s.error ? "err" : "live", s.error ? ("gateway: " + s.error) : "live");
+  } catch (e) {
+    setConn("err", "status error: " + (e && e.message ? e.message : e));
+  } finally {
+    setTimeout(pollStatus, POLL_MS);
+  }
+}
+
+async function pollLeaderboard() {
+  try {
+    const d = parse(await aither.invokeTool("arc_leaderboard", { limit: 20 }));
+    const rows = Array.isArray(d.leaderboard) ? d.leaderboard
+      : (d.leaderboard && Array.isArray(d.leaderboard.rows) ? d.leaderboard.rows : []);
+    const tb = $("lb");
+    if (d.error || !rows.length) {
+      tb.innerHTML = '<tr><td colspan="3" class="muted">' +
+        esc(d.error || "no contributors yet") + "</td></tr>";
+    } else {
+      tb.innerHTML = rows.map((r, i) => {
+        const name = r.contributor_id || r.contributor || r.name || r.id || "—";
+        const acc = r.accepted != null ? r.accepted : (r.count != null ? r.count : "—");
+        return "<tr><td>" + (i + 1) + "</td><td>" + esc(name) +
+          '</td><td class="num">' + esc(acc) + "</td></tr>";
+      }).join("");
+    }
+  } catch (e) {
+    $("lb").innerHTML = '<tr><td colspan="3" class="muted">leaderboard error: ' +
+      esc(e && e.message ? e.message : e) + "</td></tr>";
+  } finally {
+    setTimeout(pollLeaderboard, POLL_MS * 3);
+  }
+}
+
+pollStatus();
+pollLeaderboard();
+</script>
+</body>
+</html>

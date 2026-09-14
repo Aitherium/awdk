@@ -1,0 +1,23 @@
+This pack interoperates with Oh My Pi (omp).
+
+    https://github.com/can1357/oh-my-pi
+
+    MIT License
+    Copyright (c) 2025 Mario Zechner
+    Copyright (c) 2025-2026 Can Boluk
+
+Derived material:
+
+  * The tool names in `OMP_TO_ADK_TOOLS` are omp's, taken from its built-in tool
+    set, so that a recorded omp session can be translated into adk terms.
+
+  * `THINK_TOOL_NAMES` includes omp's `think`, the scratchpad tool introduced by
+    the `externalThinking` feature in omp v17.2.14.
+
+No omp source code is copied into this pack. The SQLite reader here discovers
+the schema at runtime rather than reproducing omp's table definitions, and it
+opens every database read-only.
+
+The MIT license text is reproduced in full at:
+
+    https://github.com/can1357/oh-my-pi/blob/main/LICENSE
