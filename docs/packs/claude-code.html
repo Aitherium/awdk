@@ -282,23 +282,23 @@ a:focus-visible, .jump a:focus-visible {
     <p class="eyebrow">aither-adk agent pack</p>
     <h1>Claude Code Studio</h1>
     <p class="lede">Claude Code — Software Development Agent Brain Pack</p>
-    <nav class="jump"><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.19/claude-code-3.8.19.tar.gz">Download</a></nav>
+    <nav class="jump"><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.20/claude-code-3.8.20.tar.gz">Download</a></nav>
   </header>
 
   <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">claude-code — install</span></div><pre class="term-body"><span class="c"># one command each; nothing else to configure</span>
-<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.19/claude-code-3.8.19.tar.gz
-<span class="p">$</span> tar xzf claude-code-3.8.19.tar.gz
+<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.20/claude-code-3.8.20.tar.gz
+<span class="p">$</span> tar xzf claude-code-3.8.20.tar.gz
 <span class="p">$</span> python claude-code/install.py
 <span class="o">installed claude-code -&gt; ~/.aither/packs/claude-code</span>
 <span class="o">verified: adk discovers &#x27;claude-code&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">claude-code — install</span></div><pre class="term-body"><span class="c"># PowerShell. curl.exe and tar ship with Windows 10 1803+</span>
-<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.19/claude-code-3.8.19.tar.gz
-<span class="p">$</span> tar -xzf claude-code-3.8.19.tar.gz
+<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.20/claude-code-3.8.20.tar.gz
+<span class="p">$</span> tar -xzf claude-code-3.8.20.tar.gz
 <span class="p">$</span> python claude-code\install.py
 <span class="o">installed claude-code -&gt; ~\.aither\packs\claude-code</span>
 <span class="o">verified: adk discovers &#x27;claude-code&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.19</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>b6a5505cabb0d03d…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.20</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>9fba1adb169a0cc0…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -313,13 +313,13 @@ integrates with version control.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>b6a5505cabb0d03df115adf2fc155d91c9f20fa9b3f18da09b653d0dfd458cdf</code></p>
+    <p class="sub">sha256 <code>9fba1adb169a0cc030e37e7c4c498d403ab9d4f3d2dab8c6cb16e92490ff1fa7</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
-<span class="p">$</span> sha256sum -c claude-code-3.8.19.sha256
-<span class="o">claude-code-3.8.19.tar.gz: OK</span>
+<span class="p">$</span> sha256sum -c claude-code-3.8.20.sha256
+<span class="o">claude-code-3.8.20.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;B6A5505CABB0D03DF115ADF2FC155D91C9F20FA9B3F18DA09B653D0DFD458CDF&#x27;
-<span class="p">$</span> (Get-FileHash claude-code-3.8.19.tar.gz -Algorithm SHA256).Hash -eq $want
+<span class="p">$</span> $want = &#x27;9FBA1ADB169A0CC030E37E7C4C498D403AB9D4F3D2DAB8C6CB16E92490FF1FA7&#x27;
+<span class="p">$</span> (Get-FileHash claude-code-3.8.20.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
   </section>
@@ -327,7 +327,7 @@ integrates with version control.</p></div></section>
   
 
   <footer>
-    Built from <code>v3.8.19</code> · adk 3.8.19 ·
+    Built from <code>v3.8.20</code> · adk 3.8.20 ·
     <a href="../packs.html">All packs</a> ·
     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a>
   </footer>

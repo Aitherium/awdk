@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**106 commands.**
+**107 commands.**
 
 | command | what it does |
 |---|---|
@@ -93,6 +93,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk publish-preflight`](#adk-publish-preflight) | Check a package can actually be published: an interpreter that meets requires-python, and a wheel that installs AND imports |
 | [`adk quickstart`](#adk-quickstart) | Sign in, enrol this device and show it in your fleet (--cloud: BYOK provider keys) |
 | [`adk quickstart-local`](#adk-quickstart-local) | Local inference quickstart (no cloud required) |
+| [`adk rc`](#adk-rc) | Remote control: enrol this machine and hold the link so its sessions are reachable from your phone |
 | [`adk register`](#adk-register) | Create a new Aitherium account |
 | [`adk relay`](#adk-relay) | Connect this agent to AitherRelay chat (join + serve DMs) |
 | [`adk reregister`](#adk-reregister) | Re-register endpoint(s) with A2A public keys (backfill for existing endpoints) |
@@ -983,6 +984,18 @@ Local inference quickstart (no cloud required)
 | `--port` | int |  | `8209` | Port for local inference endpoint (default: 8209) |
 | `--dry-run` | str |  | `false` | Show what would happen without making changes |
 | `--api-key` | str |  |  | AITHER_API_KEY |
+
+## `adk rc`
+
+Remote control: enrol this machine and hold the link so its sessions are reachable from your phone
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
+| `--harness-url` | str |  |  | Local session daemon to advertise (default: http://127.0.0.1:8362) |
+| `--token-ttl-days` | int |  | `30` | Lifetime of the per-node scoped harness token (default: 30) |
+| `--api-key` | str |  |  | Sign in non-interactively before enrolling |
+| `--once` | str |  | `false` | Enrol, start the link and exit instead of holding the foreground |
 
 ## `adk register`
 

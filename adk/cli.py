@@ -13386,6 +13386,27 @@ def _register_commands(sub):
              "stays the default where `wg` exists; without either transport the "
              "device is enrolled but not reachable from your browser")
 
+    # adk rc — remote control: enrol this machine and hold the link so its
+    # sessions are reachable from a phone. ONE paste-able command, no new URL.
+    rc_p = sub.add_parser(
+        "rc",
+        help="Remote control: enrol this machine and hold the link so its "
+             "sessions are reachable from your phone")
+    rc_p.add_argument(
+        "--node-class", choices=["phone", "laptop", "sovereign"], default="laptop",
+        help="What this device is (default: laptop)")
+    rc_p.add_argument(
+        "--harness-url",
+        help="Local session daemon to advertise (default: http://127.0.0.1:8362)")
+    rc_p.add_argument(
+        "--token-ttl-days", type=int, default=30,
+        help="Lifetime of the per-node scoped harness token (default: 30)")
+    rc_p.add_argument(
+        "--api-key", help="Sign in non-interactively before enrolling")
+    rc_p.add_argument(
+        "--once", action="store_true",
+        help="Enrol, start the link and exit instead of holding the foreground")
+
     # adk devices — the devices enrolled in your workspace (one registry)
     devices_p = sub.add_parser(
         "devices", help="List, inspect and remove the devices enrolled in your workspace")
@@ -15657,6 +15678,9 @@ def main():
     elif args.command == "devices":
         from adk.devices import cmd_devices
         sys.exit(cmd_devices(args))
+    elif args.command == "rc":
+        from adk.rc import cmd_rc
+        sys.exit(cmd_rc(args))
     elif args.command == "host":
         sys.exit(cmd_host(args))
     elif args.command == "integrate":

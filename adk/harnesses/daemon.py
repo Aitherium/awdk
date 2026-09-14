@@ -180,22 +180,64 @@ class Principal:
     unrelated later edit silently turns a check off for everyone.
     """
 
-    __slots__ = ("id", "plan", "entitlements")
+    __slots__ = ("id", "plan", "entitlements", "paths")
 
-    def __init__(self, id: str, plan: str = "free", entitlements: frozenset = frozenset()):
+    def __init__(self, id: str, plan: str = "free", entitlements: frozenset = frozenset(),
+                 paths: tuple = ()):
         self.id = id
         self.plan = plan
         self.entitlements = entitlements
+        #: PATH SCOPE. Empty = unrestricted (the owner). Non-empty = this
+        #: principal may reach ONLY these path prefixes, checked on every request
+        #: before the handler runs.
+        self.paths = tuple(paths or ())
 
     def has(self, entitlement: str) -> bool:
         return "*" in self.entitlements or entitlement in self.entitlements
+
+    def may_reach(self, path: str) -> bool:
+        """Is ``path`` inside this principal's scope?
+
+        FAIL CLOSED for a scoped principal: an unrecognised path is refused, so
+        adding a route to this daemon never silently widens an existing token.
+        That ordering matters -- the reverse-link token exists precisely so a
+        remote caller CANNOT reach `/awrun/*`, `/rooms/*` or the fs routes, and a
+        default-allow would hand it all of them the moment a new route lands.
+
+        Matching is on whole path SEGMENTS (`/sessions` matches `/sessions` and
+        `/sessions/x`, never `/sessions-admin`), and any `..` segment is refused
+        outright rather than normalised -- normalising is where traversal bugs
+        live.
+        """
+        if not self.paths:
+            return True
+        p = "/" + (path or "").strip("/")
+        if ".." in p.split("/"):
+            return False
+        low = p.lower()
+        for allowed in self.paths:
+            a = "/" + str(allowed).strip("/").lower()
+            if a == "/":
+                continue
+            if low == a or low.startswith(a + "/"):
+                return True
+        return False
 
     def __repr__(self) -> str:  # never render the token, only the subject
         return f"Principal(id={self.id!r}, plan={self.plan!r})"
 
 
 #: The caller when no registry exists: the box's owner, everything allowed.
+#: `paths=()` is the unrestricted marker -- the owner holds the box, the sessions
+#: and the filesystem those sessions write to, so scoping them here would be
+#: theatre. Every SCOPED principal is a registry entry with a non-empty `paths`.
 OWNER_PRINCIPAL = Principal(id="owner", plan="owner", entitlements=frozenset({"*"}))
+
+#: What a per-node reverse-link token may reach. This is the D1 contract: the
+#: phone app needs the session list, one session's stream and input, the pending
+#: decision cards, and the fleet status tile. It must NEVER get the daemon's ROOT
+#: token, which can spawn a coding agent with filesystem access on this machine.
+SCOPED_LINK_PATHS = ("/sessions", "/decisions", "/desk/fleet/status")
 
 
 def load_principals(path: Path = None) -> dict:
@@ -219,6 +261,55 @@ def load_principals(path: Path = None) -> dict:
             f"shared bearer. Per-client identity is OFF until this parses.\n"
         )
         return {}
+
+
+def mint_scoped_token(
+    principal_id: str,
+    paths: tuple = SCOPED_LINK_PATHS,
+    *,
+    ttl_days: int = 30,
+    plan: str = "link",
+    entitlements: tuple = (),
+    path: Path = None,
+) -> str:
+    """Mint a PATH-SCOPED bearer for this daemon and persist its hash.
+
+    Returns the plaintext token ONCE. The registry stores only sha256, so a
+    reader of the file learns who exists, not how to authenticate as them.
+
+    This exists so the reverse link never carries the daemon's ROOT token. That
+    token can `POST /sessions` a coding agent with filesystem access on this
+    machine; a phone that wants to read a session list must not be one stolen
+    header away from that. The scope defaults to :data:`SCOPED_LINK_PATHS`.
+
+    The registry is rewritten from a FRESH read every time, and expired entries
+    are dropped on the way through, so the file cannot grow without bound and a
+    concurrent mint cannot be clobbered by a stale in-memory copy.
+    """
+    target = path or PRINCIPALS_PATH
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = time.time()
+    reg = load_principals(target)
+    reg = {
+        k: v for k, v in reg.items()
+        if not (isinstance(v, dict) and v.get("expires_at")
+                and float(v["expires_at"]) <= now)
+    }
+    reg[digest] = {
+        "principal": principal_id,
+        "plan": plan,
+        "entitlements": list(entitlements),
+        "paths": list(paths),
+        "expires_at": now + ttl_days * 86400 if ttl_days else 0,
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(reg, indent=2), encoding="utf-8")
+    try:
+        os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError as exc:
+        sys.stderr.write(f"[harness] could not restrict {target}: {exc}\n")
+    return token
 
 
 def resolve_principal(value: str, bearer: str, registry: dict = None) -> Optional[Principal]:
@@ -248,6 +339,7 @@ def resolve_principal(value: str, bearer: str, registry: dict = None) -> Optiona
                 id=str(entry.get("principal") or "unknown"),
                 plan=str(entry.get("plan") or "free"),
                 entitlements=frozenset(entry.get("entitlements") or ()),
+                paths=tuple(entry.get("paths") or ()),
             )
 
     # constant-time: a wrong token must not reveal how much of it was right
@@ -283,6 +375,16 @@ except ImportError:  # The daemon needs fastapi+pydantic; the rest of the
     # sessions in-process on a box with no web stack.
     BaseModel = None  # type: ignore[assignment]
     Field = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - import guard
+    # MODULE level, and it has to be: this file uses `from __future__ import
+    # annotations`, so every annotation is a STRING that FastAPI resolves against
+    # the MODULE globals. `Request` imported only inside create_app() therefore
+    # does not resolve -- FastAPI cannot tell it is the request object, treats it
+    # as a query parameter, and every authed route answers 422 instead of 200.
+    from fastapi import Request
+except ImportError:
+    Request = None  # type: ignore[assignment]
 
 
 class DeviceFlowState:
@@ -513,7 +615,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     """Build the FastAPI app. Raises if no token can be resolved (fail-closed)."""
     if BaseModel is None:
         raise RuntimeError("fastapi and pydantic are required: pip install fastapi uvicorn")
-    from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+    from fastapi import Depends, FastAPI, Header, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
 
@@ -532,7 +634,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         allow_headers=["Authorization", "Content-Type"],
     )
 
-    def auth(authorization: str = Header(default="")) -> Principal:
+    def auth(request: Request, authorization: str = Header(default="")) -> Principal:
         """Authenticate, and RETURN who it was.
 
         Returns a Principal rather than None so a route can ask "who is this"
@@ -555,6 +657,17 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         principal = resolve_principal(value, bearer)
         if principal is None:
             raise HTTPException(status_code=403, detail="invalid token")
+        # PATH SCOPE (D1). A scoped token -- the per-node one `adk rc` mints for
+        # the reverse link -- is refused on anything outside its own list, BEFORE
+        # the handler runs. 403, not 404: a caller holding a valid credential for
+        # a narrower surface should learn it was refused, not that the route is
+        # missing, or it will retry forever against a decision that never changes.
+        if not principal.may_reach(request.url.path):
+            raise HTTPException(
+                status_code=403,
+                detail=f"principal {principal.id!r} is not scoped to "
+                       f"{request.url.path}",
+            )
         return principal
 
     def require_entitlement(name: str):
