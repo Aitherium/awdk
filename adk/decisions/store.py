@@ -264,6 +264,15 @@ class DecisionCard:
     credential_scope: Optional[str] = None   # "platform" | "workspace" | "user"
     credential_description: Optional[str] = None  # Why we need it (displayed to owner)
     credential_preset: Optional[str] = None  # e.g., "proton" for multi-field
+    credential_recipe: Optional[str] = None  # id in config/credential_recipes.yaml
+    #: The signed audit of a credential answer — WHAT was vaulted, WHERE, by
+    #: which door, and a digest of the value. Never the value itself. It exists
+    #: because `CREDENTIAL_ANSWER` is a single constant string: every credential
+    #: card that ever closed says exactly the same thing, so the card alone
+    #: cannot distinguish "the owner supplied the GitHub secret to the user
+    #: lockbox from the window" from "somebody closed the card". A receipt is
+    #: the only durable record of which of those happened.
+    credential_receipt: Optional[dict[str, Any]] = None
 
     # ── derived helpers ────────────────────────────────────────────────────────
 
@@ -365,6 +374,10 @@ class DecisionCard:
             credential_scope=raw.get("credential_scope"),
             credential_description=raw.get("credential_description"),
             credential_preset=raw.get("credential_preset"),
+            credential_recipe=raw.get("credential_recipe"),
+            credential_receipt=(raw.get("credential_receipt")
+                                if isinstance(raw.get("credential_receipt"), dict)
+                                else None),
         )
 
 
@@ -568,6 +581,7 @@ class DecisionStore:
         note: str = "",
         via: str = "cli",
         deliver: bool = True,
+        receipt: Optional[dict[str, Any]] = None,
     ) -> DecisionCard:
         """Record an answer and deliver it to the raising session.
 
@@ -609,6 +623,13 @@ class DecisionStore:
             card.answer_note = note or None
             card.answered_at = time.time()
             card.answered_via = via
+            if receipt is not None:
+                # Written inside the SAME lock and the same _write as the answer
+                # itself. A receipt recorded by a second read-modify-write could
+                # be lost to a racing writer, leaving a closed credential card
+                # with no evidence of where its value went — which is exactly
+                # the state the receipt exists to make impossible.
+                card.credential_receipt = dict(receipt)
             self._write(card)
 
         if deliver:
@@ -616,6 +637,24 @@ class DecisionStore:
             # hold up another session's raise.
             self.deliver_answer(card)
         return card
+
+    def add_facts(self, card_id: str, facts: list[str]) -> DecisionCard:
+        """Append measurements to a card, open or closed. Never touches status.
+
+        A credential card is verified AFTER it closes (the value must be in the
+        vault first), so this must work on an answered card — the facts are the
+        post-landing proof and belong on the ask they prove.
+        """
+        clean = [str(f).strip() for f in facts if str(f).strip()]
+        with self._lock:
+            card = self.get(card_id)
+            if card is None:
+                raise DecisionError(f"no such card: {card_id}")
+            if not clean:
+                return card
+            card.facts.extend(clean)
+            self._write(card)
+            return card
 
     def cancel(self, card_id: str, *, note: str = "") -> DecisionCard:
         """Withdraw a card the agent no longer needs answered.

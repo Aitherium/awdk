@@ -41,7 +41,8 @@ Deliberate behaviours:
   failure of quality gate 1t, which this repo has already been bitten by.
 
 * **Keyboard first.** ``1``–``9`` pick an option, ``Enter`` takes the
-  recommendation, ``Ctrl+Enter`` sends the reply box, ``Esc`` snoozes,
+  recommendation (on a credential card it opens the masked vault prompt bound
+  to the card), ``Ctrl+Enter`` sends the reply box, ``Esc`` snoozes,
   ``Ctrl+←/→`` walks the queue. Every binding is suppressed while the caret is in
   the reply box, so typing "1. do the thing" cannot answer the card.
 
@@ -297,6 +298,11 @@ class CardWindow:
     def _on_return(self, _event=None):
         if self._typing():
             return None                    # a newline in the reply box
+        if self._is_credential():
+            # A credential card has no recommendation to take; Enter opens
+            # the masked prompt, which is the card's one primary action.
+            self._launch_credential_prompt()
+            return "break"
         self._take_recommended()
         return "break"
 
@@ -548,8 +554,19 @@ class CardWindow:
 
         row = tk.Frame(frame, bg=BG)
         row.pack(fill="x", pady=(8, 0))
-        self._plain_button(row, "Vault it  (Ctrl+Enter)",
-                           self._submit_credential, primary=True, side="left")
+        # THE door. "Enter it now" opens the host's masked GUI prompt bound to
+        # THIS card: the prompt writes to the vault, reads the length back and
+        # answers the card itself, so the raising session is told through the
+        # ordinary answer mailbox. It is the same command `awask ask
+        # --credential` runs at raise time — one door, whichever surface the
+        # owner happens to be looking at. Enter triggers it (see _on_return).
+        self._plain_button(row, "Enter it now  (Enter)",
+                           self._launch_credential_prompt, primary=True, side="left",
+                           hint="opens the masked vault prompt for this secret; "
+                                "it closes the card when the write is confirmed")
+        self._plain_button(row, "Vault it here  (Ctrl+Enter)",
+                           self._submit_credential, side="left",
+                           hint="push the field above straight to the vault")
 
         # Reveal is HELD, never toggled, and starts masked. A toggle is a state
         # someone can leave on: the field then stays readable behind whatever
@@ -568,7 +585,30 @@ class CardWindow:
             reveal.bind(unmask, lambda _e: entry.configure(show="•"))
 
         entry.bind("<Control-Return>", lambda _e: self._submit_credential())
+        # A plain Return INSIDE the field submits the field. Without this the
+        # keystroke would fall through to the root binding and open the GUI
+        # prompt on top of a value the owner had just finished typing.
+        entry.bind("<Return>", lambda _e: (self._submit_credential(), "break")[1])
         entry.focus_set()
+
+    def _is_credential(self) -> bool:
+        return (self.card.kind or "").strip().lower() == "credential"
+
+    def _launch_credential_prompt(self) -> None:
+        """Open the masked GUI prompt bound to this card, detached.
+
+        The launch is reported either way. A button that silently does nothing
+        is the exact shape that sent the owner hunting for a terminal window,
+        so the reason a prompt could NOT open is flashed on the card and names
+        the terminal door as the fallback.
+        """
+        try:
+            from adk.decisions.secure_prompt import launch_gui_prompt
+        except ImportError as exc:  # pragma: no cover - packaging accident
+            self._flash(f"masked prompt unavailable: {exc}", RED)
+            return
+        launched, why = launch_gui_prompt(self.card)
+        self._flash(why, GREEN if launched else GOLD)
 
     def _submit_credential(self) -> None:
         """Read the field, clear it, push on a worker, report the real outcome."""
@@ -593,14 +633,23 @@ class CardWindow:
         card_id = self.card.id
 
         def worker(secret: str) -> None:
-            from adk.decisions.secure_prompt import vault_credential
             from adk.decisions.store import DecisionError
 
             try:
+                # Imported INSIDE the try: an ImportError here used to kill the
+                # worker thread with the status stuck on "Writing to the
+                # vault…" forever — the value already cleared from the field,
+                # the card still open, and nothing on screen saying which. A
+                # missing writer is a failed write and is reported as one.
+                from adk.decisions.secure_prompt import vault_credential
+
                 code, detail = vault_credential(card_id, self.store, secret,
                                                 via="popup-masked")
             except DecisionError as exc:
                 code, detail = 3, str(exc)
+            except ImportError as exc:
+                code, detail = 1, (f"in-window writer unavailable ({exc}); use "
+                                   f"'Enter it now' or: awask answer {card_id}")
             finally:
                 del secret
             self.root.after(0, lambda: self._credential_done(code, detail))

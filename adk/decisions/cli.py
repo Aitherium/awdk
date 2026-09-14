@@ -208,6 +208,31 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
             return 2
 
     kind = args.kind
+    recipe_id = (getattr(args, "recipe", "") or "").strip()
+    recipe: dict = {}
+    if recipe_id:
+        # A recipe IS a credential ask: it fills what the caller left blank and
+        # renders the provider steps + permission table onto the card, so the
+        # owner reads data, not something typed from memory.
+        from adk.decisions.recipes import RecipeError, get_recipe, render_detail, render_summary
+
+        try:
+            recipe = get_recipe(recipe_id)
+        except RecipeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        args.credential = True
+        args.title = (args.title or "").strip() or str(recipe.get("title") or "")
+        args.secret_name = (args.secret_name or "").strip() or str(recipe.get("vault_name") or "")
+        args.credential_format = args.credential_format or str(recipe.get("format") or "api_key")
+        args.credential_description = ((args.credential_description or "").strip()
+                                       or str(recipe.get("why") or "").strip())
+        args.summary = (args.summary or "").strip() or render_summary(recipe)
+        rendered = render_detail(recipe)
+        args.detail = "\n\n".join(p for p in ((args.detail or "").strip(), rendered) if p)
+    if not (args.title or "").strip():
+        print("a title is required (or --recipe <id>, which supplies one)", file=sys.stderr)
+        return 2
     if args.credential:
         if not (args.secret_name or "").strip():
             print("--credential requires --secret-name VAULT_KEY", file=sys.stderr)
@@ -216,6 +241,7 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
             print("--credential requires --credential-description (shown to the owner)",
                   file=sys.stderr)
             return 2
+        args.credential_format = args.credential_format or "api_key"
         kind = "credential"
     elif args.secret_name:
         print("--secret-name requires --credential", file=sys.stderr)
@@ -248,6 +274,7 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
         credential_scope=args.credential_scope if args.credential else None,
         credential_description=((args.credential_description or "").strip()
                                 if args.credential else None),
+        credential_recipe=(recipe_id or None) if args.credential else None,
     )
 
     try:
@@ -258,11 +285,30 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
 
     result = notify(card, store)
 
+    # ONE command, ONE window. A credential ask opens the masked GUI itself
+    # when a desktop exists; the GUI writes to the vault and answers the card,
+    # so the raising session learns the outcome through the ordinary answer
+    # mailbox. An agent that hand-launches the prompt beside the card, or
+    # polls the vault for a change, is re-creating the failure this removes.
+    prompt_line = ""
+    if kind == "credential":
+        if args.no_prompt:
+            prompt_line = (f"masked prompt not launched (--no-prompt); "
+                           f"answer with: awask answer {card.id}")
+        else:
+            from adk.decisions.secure_prompt import launch_gui_prompt
+
+            _launched, prompt_line = launch_gui_prompt(card)
+        # stderr on purpose: --json owns stdout, and the line must still reach
+        # a human reading the terminal.
+        print(f"  {prompt_line}", file=sys.stderr)
+
     if args.json:
         print(json.dumps({
             "id": card.id,
             "status": card.status,
             "notify": result.describe(),
+            "prompt": prompt_line,
             "card": card.to_dict(),
         }, indent=2))
     else:
@@ -373,6 +419,35 @@ def cmd_answer(args: argparse.Namespace, store: DecisionStore) -> int:
         print("no session on this card — nothing to steer; the answer is recorded only",
               file=sys.stderr)
     return 0
+
+
+def cmd_credential_verify(args: argparse.Namespace, store: DecisionStore) -> int:
+    """Run the card's recipe probe inside the fleet; record the proof as facts.
+
+    Exit 0 every expectation and scope probe passed · 1 a value or scope
+    failed (the token is live but not the one the recipe asked for) · 2 the
+    probe could not run at all. The value is fetched from the vault INSIDE the
+    container and never printed; only the recipe's ``record`` fields and each
+    probe's pass/fail reach the card or this terminal.
+    """
+    from adk.decisions.recipes import RecipeError, verify_card
+
+    try:
+        code, facts = verify_card(args.id, store)
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except RecipeError as exc:
+        print(f"could not verify: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps({"id": args.id, "exit": code, "facts": facts}, indent=2))
+    else:
+        for line in facts:
+            print(line)
+        if code == 0 and facts and "no probe" in facts[0]:
+            print("no probe for this recipe")
+    return code
 
 
 def cmd_steer(args: argparse.Namespace, store: DecisionStore) -> int:
@@ -700,7 +775,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     ask = sub.add_parser("ask", help="raise a card")
-    ask.add_argument("title")
+    ask.add_argument("title", nargs="?", default="",
+                     help="what is being asked (optional when --recipe supplies one)")
     ask.add_argument("--summary", default="", help="one or two lines: what you need to know")
     ask.add_argument("--detail", default="", help="longer context, shown under the summary")
     ask.add_argument("--option", action="append", metavar="key:Label:consequence",
@@ -717,12 +793,20 @@ def build_parser() -> argparse.ArgumentParser:
                           "prompt (secure_prompt.py), never the card")
     ask.add_argument("--secret-name", default="", metavar="VAULT_KEY",
                      help="vault key the value is written to (required with --credential)")
-    ask.add_argument("--credential-format", default="api_key",
-                     choices=("password", "api_key", "totp_seed", "custom"))
+    ask.add_argument("--credential-format", default=None,
+                     choices=("password", "api_key", "totp_seed", "custom"),
+                     help="default api_key, or the recipe's format")
+    ask.add_argument("--recipe", default="", metavar="ID",
+                     help="fill the ask from config/credential_recipes.yaml: title, vault "
+                          "key, format, why, dashboard, numbered steps and the permission "
+                          "table; implies --credential and makes the card verifiable")
     ask.add_argument("--credential-scope", default="platform",
                      choices=("platform", "workspace", "user"))
     ask.add_argument("--credential-description", default="",
                      help="why we need it — shown to the owner (required with --credential)")
+    ask.add_argument("--no-prompt", action="store_true",
+                     help="with --credential: raise the card only; do not open the masked "
+                          "GUI prompt (the owner answers with `awask answer <id>`)")
     ask.add_argument("--urgency", default="normal",
                      choices=("low", "normal", "high", "critical"))
     ask.add_argument("--session", default="", help="session id the answer routes back to")
@@ -767,6 +851,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     window = sub.add_parser("window", help="open the card window on what is waiting")
     window.add_argument("id", nargs="?", default="", help="start on this card")
+
+    verify = sub.add_parser(
+        "credential-verify",
+        help="run a credential card's recipe probe inside the fleet; record id/status/"
+             "scopes on the card as facts, never the value (exit 1 if a scope is missing)")
+    verify.add_argument("id")
+    verify.add_argument("--json", action="store_true")
 
     cancel = sub.add_parser("cancel", help="withdraw a card you no longer need answered")
     cancel.add_argument("id")
@@ -835,6 +926,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "show": cmd_show,
         "answer": cmd_answer,
         "steer": cmd_steer,
+        "credential-verify": cmd_credential_verify,
         "window": cmd_window,
         "cancel": cmd_cancel,
         "promise": cmd_promise,
