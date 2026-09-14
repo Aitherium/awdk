@@ -46,7 +46,9 @@ import os
 import platform
 import time
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import (
+    Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple,
+)
 
 log = logging.getLogger("adk.enrollment")
 
@@ -356,6 +358,8 @@ async def heartbeat_loop(
     inference_url: Optional[str] = None,
     node_class: str = "laptop",
     max_beats: Optional[int] = None,
+    reach_provider: Optional[Callable[[], str]] = None,
+    harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
 ) -> None:
     """Background heartbeat — POST /v1/nodes/heartbeat every ``interval`` seconds.
 
@@ -369,6 +373,12 @@ async def heartbeat_loop(
 
     Args:
         max_beats: Stop after this many beats (tests); ``None`` runs forever.
+        reach_provider: Called each beat for the CURRENT reach kind
+            (``wg`` | ``ws`` | ``none``). It is a callable, not a value, because
+            reach is the one field that must not be sticky: a phone whose reverse
+            link dropped has to stop claiming reach within a minute, or the
+            owner's device page offers a machine that cannot answer.
+        harness_provider: Called each beat for ``(harness_url, harness_ready)``.
     """
     import httpx
 
@@ -395,6 +405,18 @@ async def heartbeat_loop(
                 "inference_url": reg["inference_url"],
                 "inference_kind": reg["inference_kind"],
             }
+            if reach_provider is not None:
+                try:
+                    hb["reach_kind"] = str(reach_provider() or "none")
+                except Exception as e:  # noqa: BLE001 -- reach never breaks a beat
+                    log.debug("reach_provider failed: %s", e)
+            if harness_provider is not None:
+                try:
+                    h_url, h_ready = harness_provider()
+                    hb["harness_url"] = str(h_url or "")
+                    hb["harness_ready"] = bool(h_ready)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("harness_provider failed: %s", e)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
                     f"{base}/v1/nodes/heartbeat", json=hb, headers=headers
@@ -464,6 +486,8 @@ async def rich_enroll(
     enable_heartbeat: bool = True,
     inference_url: Optional[str] = None,
     node_class: str = "laptop",
+    reach_provider: Optional[Callable[[], str]] = None,
+    harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
 ) -> Dict[str, Any]:
     """Register this device with the rich endpoint spine.
 
@@ -523,6 +547,8 @@ async def rich_enroll(
                     base, token, node_id,
                     inference_url=reg["inference_url"] or None,
                     node_class=node_class,
+                    reach_provider=reach_provider,
+                    harness_provider=harness_provider,
                 ))
             except RuntimeError:
                 # No running loop (sync context) — caller can start it later.

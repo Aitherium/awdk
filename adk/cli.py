@@ -4359,6 +4359,7 @@ def cmd_enroll(args) -> int:
             "AITHER_PORTAL_URL", "https://api.aitherium.com")
         genesis_url = getattr(args, "genesis", None) or os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
         no_heartbeat = getattr(args, "no_heartbeat", False)
+        no_link = getattr(args, "no_link", False)
         force = getattr(args, "force", False)
         inference_url = (getattr(args, "inference_url", None) or "auto").strip()
         if inference_url.lower() == "auto":
@@ -4422,6 +4423,7 @@ def cmd_enroll(args) -> int:
             enable_heartbeat=not no_heartbeat,
             inference_url=inference_url,
             node_class=node_class,
+            start_link=not no_link,
         ))
 
         if not result.get("enrolled"):
@@ -4473,6 +4475,18 @@ def cmd_enroll(args) -> int:
             print(f"  Public URL: {result['public_url']}")
         if not no_heartbeat:
             print("  Heartbeat: enabled (60s interval)")
+        # REACH, said plainly. "Enrolled" and "reachable from your browser" are
+        # different states, and every prior version of this output conflated them.
+        reach = result.get("reach_kind", "none")
+        if no_link:
+            print("  Reach: link disabled (--no-link) — WireGuard only")
+        elif reach == "ws":
+            print("  Reach: ws (reverse link attached)")
+        else:
+            print(f"  Reach: {reach}"
+                  + (f" — {result['link_error']}" if result.get("link_error") else "")
+                  + "\n         (the link attaches in the background; re-check with "
+                    "`adk devices status`)")
         print()
         print("See it in your fleet:  adk devices status")
         print(f"View in portal: {portal_url.rstrip('/')}/settings/connected-devices")
@@ -13366,6 +13380,11 @@ def _register_commands(sub):
     enroll_p.add_argument(
         "--node-class", choices=["phone", "laptop", "sovereign"], default="laptop",
         help="What this device is (default: laptop)")
+    enroll_p.add_argument(
+        "--no-link", action="store_true",
+        help="Do not hold the outbound reverse link to the tunnel. WireGuard "
+             "stays the default where `wg` exists; without either transport the "
+             "device is enrolled but not reachable from your browser")
 
     # adk devices — the devices enrolled in your workspace (one registry)
     devices_p = sub.add_parser(

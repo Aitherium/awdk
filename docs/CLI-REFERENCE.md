@@ -505,6 +505,7 @@ Register this workstation with the control plane
 | `--force` | str |  | `false` | Re-enroll even if already registered |
 | `--inference-url` | str |  | `auto` | Local inference base URL to advertise (e.g. http://127.0.0.1:8080). 'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), 11434 (Ollama), 8120 (vLLM) in that order |
 | `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
+| `--no-link` | str |  | `false` | Do not hold the outbound reverse link to the tunnel. WireGuard stays the default where `wg` exists; without either transport the device is enrolled but not reachable from your browser |
 
 ## `adk eval`
 

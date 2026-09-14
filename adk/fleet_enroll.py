@@ -28,6 +28,7 @@ from __future__ import annotations
 __all__ = [
     "enroll_on_boot",
     "enroll_base_url",
+    "active_node_link",
 ]
 
 import asyncio
@@ -540,6 +541,73 @@ def enroll_base_url() -> str:
 #: keeps paying for — the device looks enrolled and is in no list the owner sees.
 _REFUSAL_STATUSES = (401, 402, 403)
 
+# ── The reverse link (FRONT C4b) ───────────────────────────────────────────
+#
+# A device is enrolled when identity knows about it. It is REACHABLE when
+# something can actually get to it. For a laptop with `wg` those are the same
+# thing; for a phone they were never the same thing, because a phone has no wg
+# module and the `public_url` identity advertises resolves through a proxy that
+# forwards over WireGuard. The link closes that gap: an outbound WebSocket this
+# process holds open, over which the tunnel sends allowlisted requests.
+#
+# ONE per process, same reasoning as the heartbeat task below.
+_node_link: Optional[Any] = None
+_node_link_task: Optional["asyncio.Task[None]"] = None
+
+
+def active_node_link() -> Optional[Any]:
+    """The reverse link this process holds, if any. ``adk devices status`` reads it."""
+    return _node_link
+
+
+def _start_node_link(
+    node_id: str,
+    token: str,
+    *,
+    inference_url: str = "",
+    harness_url: str = "",
+    harness_token: str = "",
+) -> Optional[Any]:
+    """Create and schedule the reverse link. Returns it, or None.
+
+    Never raises: a device that cannot hold a link is still enrolled, still
+    heart-beating, and still reachable over WireGuard if it has it. The failure is
+    LOGGED and visible on the link object (`last_error`) rather than swallowed --
+    "enrolled but unreachable" is exactly the state that needs to be sayable.
+    """
+    global _node_link, _node_link_task
+    if _node_link_task is not None and not _node_link_task.done():
+        return _node_link
+    try:
+        from adk.node_link import NodeLink, default_tunnel_url
+
+        link = NodeLink(
+            tunnel_url=default_tunnel_url(),
+            node_id=node_id,
+            token=token,
+            inference_url=inference_url,
+            harness_url=harness_url,
+            harness_token=harness_token,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("Reverse link unavailable: %s", e)
+        return None
+    _node_link = link
+    try:
+        _node_link_task = asyncio.get_running_loop().create_task(link.run())
+    except RuntimeError:
+        # Synchronous caller: the object exists (so reach reads `none` honestly)
+        # but nothing is driving it.
+        log.debug("No event loop for the reverse link; not started")
+        _node_link_task = None
+    return link
+
+
+def _link_reach_provider(link: Optional[Any]) -> Optional[Any]:
+    """`reach_kind` callable for the heartbeat, or None when there is no link."""
+    return link.reach_kind if link is not None else None
+
+
 # One heartbeat task per process. This used to be a `_heartbeat_started` flag
 # PERSISTED in node_auth.json, which is wrong across processes: `adk enroll`
 # exits, the task dies with its loop, and every later boot read the flag and
@@ -573,6 +641,9 @@ async def enroll_on_boot(
     *,
     inference_url: Optional[str] = None,
     node_class: str = "laptop",
+    start_link: bool = True,
+    harness_url: str = "",
+    harness_token: str = "",
 ) -> Dict[str, Any]:
     """Enroll this node into both local and portal fleets.
 
@@ -634,12 +705,22 @@ async def enroll_on_boot(
                 # persisted at registration — not a fresh ladder walk.
                 from adk.enrollment import heartbeat_loop as _rich_heartbeat
 
+                _link = _start_node_link(
+                    node_auth["node_id"], api_key,
+                    inference_url=node_auth.get("inference_url") or "",
+                    harness_url=harness_url,
+                    harness_token=harness_token,
+                ) if start_link else None
                 _start_heartbeat_task(_rich_heartbeat(
                     node_auth.get("enroll_base") or enroll_base,
                     api_key,
                     node_auth["node_id"],
                     inference_url=node_auth.get("inference_url") or None,
                     node_class=node_auth.get("node_class") or "laptop",
+                    reach_provider=_link_reach_provider(_link),
+                    harness_provider=(
+                        (lambda: (harness_url, bool(harness_url))) if harness_url else None
+                    ),
                 ))
             else:
                 _start_heartbeat_task(_heartbeat_loop(
@@ -662,6 +743,17 @@ async def enroll_on_boot(
     # node registry → AitherDirectory). Falls through to the legacy federation path
     # if it doesn't take (older control plane, no token, offline, etc.) — but NOT
     # when identity answered with a refusal; that is surfaced verbatim.
+    # The link object is created BEFORE registration so the heartbeat rich_enroll
+    # starts can read its live reach. It is not DIALLED until registration
+    # succeeds: the tunnel refuses to attach a link for a node its table does not
+    # carry, and identity is what puts it there.
+    link = _start_node_link(
+        node_id, api_key,
+        inference_url="" if (inference_url or "auto") == "auto" else (inference_url or ""),
+        harness_url=harness_url,
+        harness_token=harness_token,
+    ) if start_link else None
+
     try:
         from adk.enrollment import rich_enroll
 
@@ -670,6 +762,10 @@ async def enroll_on_boot(
             enable_heartbeat=enable_heartbeat,
             inference_url=inference_url,
             node_class=node_class,
+            reach_provider=_link_reach_provider(link),
+            harness_provider=(
+                (lambda: (harness_url, bool(harness_url))) if harness_url else None
+            ),
         )
     except Exception as e:  # never let enrollment block boot
         log.debug("Rich enrollment unavailable: %s", e)
@@ -700,6 +796,10 @@ async def enroll_on_boot(
                 node_api_key = minted
 
         reg = rich.get("registration", {}) or {}
+        # The link now knows where the local server actually answered, so the
+        # requests the tunnel sends have somewhere to go.
+        if link is not None:
+            link.inference_url = (reg.get("inference_url") or "").rstrip("/")
         _save_node_auth({
             "node_id": node_id,
             "api_key": node_api_key,
@@ -743,6 +843,8 @@ async def enroll_on_boot(
             "inference_kind": reg.get("inference_kind", "none"),
             "inference_ready": bool(reg.get("inference_ready")),
             "node_class": reg.get("node_class", node_class),
+            "reach_kind": link.reach_kind() if link is not None else "none",
+            "link_error": getattr(link, "last_error", "") if link is not None else "",
         }
 
     # FALLBACK: legacy federation registration (agents only, no hardware).
