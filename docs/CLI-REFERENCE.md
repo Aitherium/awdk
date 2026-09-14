@@ -323,7 +323,7 @@ Switch Claude Code between DeepSeek, Kimi, local AitherOS models, and Anthropic
 - `adk claude-model bridge` — Manage the translation bridge
 - `adk claude-model auto` — One-shot: start bridge + switch + verify
 - `adk claude-model failover` — Test current; if broken, switch to next working provider
-- `adk claude-model watch` — Auto-switch on rate limit (daemon)
+- `adk claude-model watch` — NOT IMPLEMENTED — use `adk claude-model failover`
 - `adk claude-model plan` — → Anthropic Opus 5 (architecture, design, review)
 - `adk claude-model code` — → DeepSeek Flash (fast ultracode, 1M context)
 - `adk claude-model reason` — → DeepSeek Pro (deep reasoning, 1M context)

@@ -145,7 +145,17 @@ def cmd_claude_model(args: Any) -> int:
         elif sub == "failover":
             return cmd_failover(args)
         elif sub == "watch":
-            return cmd_watch(args)
+            # `watch` was advertised by the parser and implemented NOWHERE: this branch
+            # called an undefined name, so every `adk claude-model watch` ended in a
+            # NameError traceback, and `claude_model_profile.py` — where `list`/`status`/
+            # `check` delegate — has no `watch` subcommand to fall back to either. The
+            # same shape as the unregistered `cmd_up`: a handler nobody could reach.
+            # Say what is true and point at the verb that does this job, rather than
+            # crashing or pretending a daemon was started.
+            print("`adk claude-model watch` is not implemented.", file=sys.stderr)
+            print("Use `adk claude-model failover` — it tests the active profile and "
+                  "switches to the next working provider.", file=sys.stderr)
+            return 2
         elif sub in _WORKFLOW_ALIASES:
             return cmd_workflow(sub, args)
         else:

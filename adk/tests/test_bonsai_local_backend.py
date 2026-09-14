@@ -64,18 +64,30 @@ def test_the_cli_default_port_is_not_a_separate_literal(src):
     assert 'os.environ.get("AITHER_BONSAI_PORT", str(BONSAI_LOCAL_PORT))' in src
 
 
-def test_local_and_bonsai_presets_still_point_at_the_fleet_server(src):
-    """Do NOT silently repoint the fleet presets.
+def test_the_new_preset_is_additive_and_does_not_hijack_local_or_bonsai(src):
+    """Do NOT fix the laptop path by hijacking the FLEET presets.
 
-    `local` and `bonsai` mean AitherVLLMSwap on :8201 for existing fleet users. Fixing the
-    laptop path by hijacking those would trade one broken audience for another — the new
-    preset is additive on purpose.
+    This test used to assert `local`/`bonsai` both spell `localhost:8201/v1`, pinning the
+    literal instead of the rule. That became wrong on 2026-08-22 (3a69e0c19a): :8201 is
+    AitherVLLMSwap, whose bonsai slot had been OFFLINE since 2026-07-25, so the presets
+    were deliberately repointed to MicroScheduler (:8150) — i.e. the very audience the
+    old assertion claimed to protect was being served nothing. The pin then failed for
+    doing its job backwards: the code moved for a measured reason and the test called it
+    a regression.
+
+    The invariant that actually survives is the one the docstring always described —
+    `bonsai-local` is ADDITIVE. The laptop preset owns BONSAI_LOCAL_PORT; the two fleet
+    presets must keep pointing somewhere else, whatever that somewhere currently is.
     """
     body = _presets(src)
-    assert body.count("localhost:8201/v1") == 2, (
-        "the `local`/`bonsai` presets no longer both target :8201 — repointing them breaks "
-        "fleet users instead of serving laptop users"
-    )
+    fleet = re.findall(r'"(local|bonsai)":\s*\{([^}]*)\}', body)
+    assert len(fleet) == 2, "the `local` and `bonsai` presets are gone"
+    for name, entry in fleet:
+        assert "BONSAI_LOCAL_PORT" not in entry, (
+            f"the `{name}` preset was repointed at BONSAI_LOCAL_PORT — that hijacks a fleet "
+            "preset to serve laptops instead of adding a preset, which trades one broken "
+            "audience for another. Use `--backend bonsai-local`."
+        )
 
 
 def test_the_docstring_no_longer_claims_8090_is_the_local_tier(src):
@@ -84,5 +96,6 @@ def test_the_docstring_no_longer_claims_8090_is_the_local_tier(src):
     assert m, "cmd_bonsai_local is gone — this test is stale, not passing"
     doc = m.group(1)
     assert "ladder's `local` tier" not in doc, (
-        "the docstring again claims :8090 is the `local` tier; `local` targets :8201"
+        "the docstring again claims :8090 is the `local` tier; `local` is a fleet preset "
+        "pointing elsewhere — the laptop server is reached by `--backend bonsai-local`"
     )

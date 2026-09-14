@@ -5420,11 +5420,12 @@ _BACKEND_PRESETS: dict[str, dict] = {
     "local":   {"provider": "vllm", "base_url": "https://127.0.0.1:8150/v1", "model": "bonsai-27b"},
     "bonsai":  {"provider": "vllm", "base_url": "https://127.0.0.1:8150/v1", "model": "bonsai-27b"},
     # `adk bonsai-local` serves llama.cpp on :8090 — a DIFFERENT backend from the two
-    # above, which target AitherVLLMSwap on :8201. That is a fleet service and does not
-    # exist on anyone else's machine, so before this preset existed the one-command
-    # install had no backend that could reach it: you ran `adk bonsai-local`, got a
-    # healthy server, and every `--backend local|bonsai` still dialled :8201 and found
-    # nothing. Named after the command that starts it so the pairing is discoverable.
+    # above, which target the FLEET (MicroScheduler :8150 today, AitherVLLMSwap :8201
+    # before 2026-08-22). Either way that is a fleet service and does not exist on
+    # anyone else's machine, so before this preset existed the one-command install had
+    # no backend that could reach it: you ran `adk bonsai-local`, got a healthy server,
+    # and every `--backend local|bonsai` still dialled the fleet and found nothing.
+    # Named after the command that starts it so the pairing is discoverable.
     "bonsai-local": {"provider": "openai",
                      "base_url": f"http://localhost:{BONSAI_LOCAL_PORT}/v1",
                      "model": "bonsai-27b"},
@@ -12902,9 +12903,15 @@ def _register_commands(sub):
 
     claude_model_sub.add_parser("failover", help="Test current; if broken, switch to next working provider")
 
-    cm_watch_p = claude_model_sub.add_parser("watch", help="Auto-switch on rate limit (daemon)")
-    cm_watch_p.add_argument("--daemon", action="store_true", help="Run in background")
-    cm_watch_p.add_argument("--stop", action="store_true", help="Stop the background daemon")
+    # Kept registered so the verb answers instead of vanishing, but the help no longer
+    # promises a daemon: nothing ever implemented one (the handler was an undefined name
+    # and the profile tool has no `watch`), so `watch` exits 2 and names `failover`.
+    cm_watch_p = claude_model_sub.add_parser(
+        "watch", help="NOT IMPLEMENTED — use `adk claude-model failover`")
+    cm_watch_p.add_argument("--daemon", action="store_true",
+                            help="(accepted, unused — watch is not implemented)")
+    cm_watch_p.add_argument("--stop", action="store_true",
+                            help="(accepted, unused — watch is not implemented)")
 
     # Workflow shortcuts — instant model switching by role
     claude_model_sub.add_parser("plan", help="→ Anthropic Opus 5 (architecture, design, review)")
