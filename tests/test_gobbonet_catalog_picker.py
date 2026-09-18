@@ -18,6 +18,30 @@ from adk.packs.gobbonet import models as models_mod
 from adk.packs.gobbonet.models import ModelManager
 
 
+@pytest.fixture(autouse=True)
+def stock_runtime(monkeypatch):
+    """Every test here runs against STOCK llama.cpp unless it says otherwise.
+
+    The gate is read from the environment and from the installed binary, and
+    a developer box may carry either; pinning both keeps the counts below
+    about the picker rather than about whoever ran the suite.
+    """
+    monkeypatch.delenv(models_mod.RUNTIME_ENV, raising=False)
+    monkeypatch.setattr(ModelManager, "_llama_server_exe", lambda self: None)
+
+
+def stock_servable():
+    """The catalog rows a stock llama.cpp can serve — what the picker offers."""
+    return [e for e in catalog.entries() if not e.requires_runtime]
+
+
+def prism_only():
+    """The rows that need the PrismML fork (Bonsai 2). The suite needs one."""
+    rows = [e for e in catalog.entries() if e.requires_runtime == models_mod.PRISM_RUNTIME]
+    assert rows, "the catalog must carry a prism-only row for these tests to mean anything"
+    return rows
+
+
 @pytest.fixture()
 def models_dir(tmp_path: Path) -> Path:
     d = tmp_path / "models"
@@ -30,7 +54,7 @@ def test_picker_offers_models_that_are_not_installed(models_dir):
     rows = ModelManager(models_dir=models_dir).models_list()["models"]
     offered = [r for r in rows if r.get("installed") is False]
     assert offered, "a fresh machine must see what it COULD have, not an empty list"
-    assert len(rows) == 1 + len(catalog.entries())
+    assert len(rows) == 1 + len(stock_servable())
 
 
 def test_an_empty_models_folder_still_lists_the_catalog(tmp_path):
@@ -39,8 +63,70 @@ def test_an_empty_models_folder_still_lists_the_catalog(tmp_path):
     d = tmp_path / "empty"
     d.mkdir()
     rows = ModelManager(models_dir=d).models_list()["models"]
-    assert len(rows) == len(catalog.entries())
+    assert len(rows) == len(stock_servable())
     assert all(r["installed"] is False for r in rows)
+
+
+def test_a_prism_only_row_is_not_offered_under_stock_llamacpp(models_dir):
+    """Their <option> builder has no disabled state: a row that is present is a
+    row that can be picked, and picking Bonsai 2 under mainline llama.cpp is a
+    6 GB download that then answers every prompt with noise."""
+    rows = ModelManager(models_dir=models_dir).models_list()["models"]
+    files = {r["file"] for r in rows}
+    for e in prism_only():
+        assert e.filename not in files, f"{e.filename} offered without its runtime"
+
+
+def test_a_prism_only_row_is_offered_once_the_fork_is_declared(models_dir, monkeypatch):
+    monkeypatch.setenv(models_mod.RUNTIME_ENV, models_mod.PRISM_RUNTIME)
+    rows = ModelManager(models_dir=models_dir).models_list()["models"]
+    files = {r["file"] for r in rows}
+    for e in prism_only():
+        assert e.filename in files
+    assert len(rows) == 1 + len(catalog.entries())
+
+
+def test_the_binary_can_declare_itself_a_prism_build(models_dir, monkeypatch, tmp_path):
+    """No env var, but `llama-server --version` names prism: believed."""
+    import subprocess
+
+    exe = tmp_path / "llama-server"
+    exe.write_bytes(b"")
+    monkeypatch.setattr(ModelManager, "_llama_server_exe", lambda self: exe)
+
+    def fake_run(cmd, **kw):
+        assert cmd[0] == str(exe) and cmd[1] == "--version"
+        return subprocess.CompletedProcess(cmd, 0, stdout="",
+                                           stderr="version: 10685 (7dffb15) prism")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert ModelManager(models_dir=models_dir).installed_runtime() == models_mod.PRISM_RUNTIME
+
+
+def test_swapping_to_a_prism_only_row_is_refused_naming_the_fork(models_dir, monkeypatch):
+    """Refused BEFORE any download, and the message says what to install."""
+    def never(*a, **k):
+        raise AssertionError("download must not start for a refused swap")
+
+    monkeypatch.setattr(catalog, "download", never)
+    e = prism_only()[0]
+    m = ModelManager(models_dir=models_dir, _spawn=lambda *a, **k: None)
+    ok, msg = m.swap(e.filename)
+    assert ok is False
+    assert "PrismML" in msg and e.filename in msg
+    assert m.swap_status()["phase"] == "idle"
+
+
+def test_a_prism_only_file_already_on_disk_is_still_refused_under_stock(models_dir):
+    """Someone copied the GGUF in by hand: stock llama-server would start on it
+    and talk nonsense, so presence on disk is not permission to serve it."""
+    e = prism_only()[0]
+    (models_dir / e.filename).write_bytes(b"GGUF")
+    spawned = []
+    m = ModelManager(models_dir=models_dir, _spawn=lambda *a, **k: spawned.append(a))
+    ok, msg = m.swap(e.filename)
+    assert ok is False and "PrismML" in msg
+    assert spawned == []
 
 
 def test_catalog_rows_carry_every_key_gobbonets_builder_reads(models_dir):

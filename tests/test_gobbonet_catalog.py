@@ -17,7 +17,6 @@ from __future__ import annotations
 import http.server
 import json
 import threading
-from pathlib import Path
 
 import pytest
 from adk.packs.gobbonet import catalog
@@ -131,6 +130,35 @@ def test_recommended_is_none_when_nothing_fits():
     assert catalog.recommended(ram_gb=0.5) is None
 
 
+# ── Bonsai 2 ──────────────────────────────────────────────────────────────────
+def test_bonsai2_is_listed_with_its_measured_size_and_the_fork_requirement():
+    """The row exists so every surface agrees on filename + bytes; the size is
+    the real GGUF header total (2026-09-17), not a rounded figure."""
+    e = catalog.find("Ternary-Bonsai-2-27B-PTQ1_0.gguf")
+    assert e is not None
+    assert e.size_bytes == 5946648928
+    assert e.min_ram_gb == 12.0
+    assert e.family == "bonsai"
+    assert e.requires_runtime == "prism-llama.cpp"
+    assert "PrismML" in e.note and "fork" in e.note
+    assert e.resolve_url() == catalog.MIRROR_BASE + e.filename
+    assert e.as_json()["requires_runtime"] == "prism-llama.cpp"
+    # Bonsai 1 stays intact beside it.
+    assert catalog.find("Bonsai-27B-Q1_0.gguf") is not None
+
+
+def test_recommended_never_auto_picks_a_fork_only_model():
+    """A 16 GB box fits Bonsai 2 (min 12 GB) and must still not be handed it:
+    stock llama.cpp loads the Hadamard-rotated file and emits gibberish."""
+    e = catalog.find("Ternary-Bonsai-2-27B-PTQ1_0.gguf")
+    assert e is not None and catalog.fits(e, ram_gb=16.0)
+    for ram in (16.0, 512.0):
+        pick = catalog.recommended(ram_gb=ram)
+        assert pick is not None
+        assert not pick.requires_runtime, f"{ram} GB: recommended {pick.filename}"
+    assert e in catalog.entries(), "still listed so a picker can show it with its note"
+
+
 # ── download ──────────────────────────────────────────────────────────────────
 def test_download_writes_the_file_and_reports_progress(origin, tmp_path):
     seen = []
@@ -222,11 +250,13 @@ def test_refresh_replaces_rather_than_merges(tmp_path):
     before = list(catalog.CATALOG)
     doc = tmp_path / "c.json"
     doc.write_text(json.dumps({"models": [
-        {"filename": "only.gguf", "label": "Only", "size_bytes": 123, "min_ram_gb": 1}
+        {"filename": "only.gguf", "label": "Only", "size_bytes": 123, "min_ram_gb": 1,
+         "requires_runtime": "prism-llama.cpp"}
     ]}), encoding="utf-8")
     try:
         got = catalog.refresh_from(doc.as_uri())
         assert [e.filename for e in got] == ["only.gguf"]
+        assert got[0].requires_runtime == "prism-llama.cpp", "the runtime gate survives a refresh"
         # A withdrawn entry must really go away, not linger because nothing removes it.
         assert catalog.find("Bonsai-4B-Q1_0.gguf") is None
     finally:

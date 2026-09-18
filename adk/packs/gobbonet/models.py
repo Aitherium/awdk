@@ -31,6 +31,7 @@ loading answers the socket long before it can answer a prompt.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -49,6 +50,15 @@ except Exception:  # noqa: BLE001 - adk internals absent in a bare checkout
     MODELS_DIR = Path.home() / ".aither" / "models"
     LLAMA_PORT = 8200
 
+
+#: The runtime tag a catalog row can demand (`CatalogEntry.requires_runtime`),
+#: and how this machine says it has that runtime. adk's own `llamacpp_setup`
+#: installs MAINLINE llama.cpp, which loads a Hadamard-rotated Bonsai 2 file
+#: and emits gibberish, so the default answer is "stock". A box that runs the
+#: PrismML fork says so with AITHER_LLAMA_RUNTIME=prism-llama.cpp, or the
+#: binary says so itself when `llama-server --version` names prism.
+PRISM_RUNTIME = "prism-llama.cpp"
+RUNTIME_ENV = "AITHER_LLAMA_RUNTIME"
 
 #: Family + thinking format inferred from the filename, because that is all a
 #: GGUF on disk tells you. Their UI uses `thinkingFormat` to strip reasoning
@@ -146,6 +156,9 @@ class ModelManager:
         self._state = SwapState()
         self._lock = threading.Lock()
         self._active: str = ""
+        #: `installed_runtime()` asks the binary once per manager, not once per
+        #: poll: the picker fetches /models-list.json on every open.
+        self._runtime_probe: Optional[str] = None
 
     # ── discovery ────────────────────────────────────────────────────────
     def available(self) -> list[str]:
@@ -223,6 +236,12 @@ class ModelManager:
         for entry in self._catalog_entries():
             if entry.filename in installed:
                 continue
+            if not self.runtime_serves(entry):
+                # Not offered rather than offered-and-broken: their <option>
+                # builder has no disabled state, so a row that is present is a
+                # row that can be picked, and picking it downloads gigabytes
+                # that the installed server then turns into gibberish.
+                continue
             _family, thinking = _classify(entry.filename)
             models.append({
                 "file": entry.filename,
@@ -248,6 +267,63 @@ class ModelManager:
         except Exception:  # noqa: BLE001 - pack trimmed or bare checkout
             return []
         return catalog.entries()
+
+    # ── the runtime gate ─────────────────────────────────────────────────
+    def installed_runtime(self) -> str:
+        """Which llama.cpp this machine serves with: "" for stock/mainline.
+
+        `AITHER_LLAMA_RUNTIME` wins so an operator who built the PrismML fork
+        by hand can say so. Otherwise the installed binary is asked; a fork
+        build that names itself is believed, anything else is stock. Unknown
+        is reported as stock on purpose: the cost of a wrong "prism" is a
+        6 GB download that talks nonsense, the cost of a wrong "stock" is a
+        row missing from a picker.
+        """
+        forced = os.environ.get(RUNTIME_ENV, "").strip()
+        if forced:
+            return forced
+        if self._runtime_probe is None:
+            self._runtime_probe = self._probe_runtime()
+        return self._runtime_probe
+
+    def _probe_runtime(self) -> str:
+        exe = self._llama_server_exe()
+        if exe is None:
+            return ""
+        import subprocess
+
+        try:
+            out = subprocess.run([str(exe), "--version"], capture_output=True,
+                                 text=True, encoding="utf-8", errors="replace",
+                                 timeout=10)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return ""
+        text = ((out.stdout or "") + " " + (out.stderr or "")).lower()
+        return PRISM_RUNTIME if "prism" in text else ""
+
+    def runtime_serves(self, entry) -> bool:
+        """True when the installed runtime can serve this catalog entry."""
+        need = getattr(entry, "requires_runtime", "") or ""
+        return not need or self.installed_runtime() == need
+
+    def _runtime_refusal(self, entry) -> str:
+        return (f"{entry.filename} needs the {entry.requires_runtime} runtime "
+                "(github.com/PrismML-Eng/llama.cpp, branch prism, release "
+                "prism-b10685-7dffb15 or newer); the installed llama-server is "
+                "stock llama.cpp, which loads it and emits gibberish. Install the "
+                f"fork and set {RUNTIME_ENV}={entry.requires_runtime}.")
+
+    def _llama_server_exe(self) -> Optional[Path]:
+        try:
+            from adk import llamacpp_setup as lc
+        except Exception:  # noqa: BLE001 - bare checkout
+            return None
+        binary = getattr(lc, "LLAMACPP_DIR", Path.home() / ".aither" / "llamacpp")
+        try:
+            return next((p for p in Path(binary).rglob("llama-server*") if p.is_file()),
+                        None)
+        except OSError:
+            return None
 
     def active_model(self) -> dict:
         """`GET /active-model.json` — id, name, ggufFile, thinkingFormat."""
@@ -277,8 +353,14 @@ class ModelManager:
         if not filename:
             return False, "no file given"
         entry = None
+        known = self._catalog_entry(filename)
+        if known is not None and not self.runtime_serves(known):
+            # Refused whether or not the file is already on disk: a stock
+            # server starts on it fine and then answers every prompt with
+            # noise, which reads as a broken model rather than as this.
+            return False, self._runtime_refusal(known)
         if filename not in self.available():
-            entry = self._catalog_entry(filename)
+            entry = known
             if entry is None:
                 # Named explicitly. "Swap failed: HTTP 400" sends someone
                 # looking at the network; naming the file sends them to the
@@ -390,10 +472,7 @@ class ModelManager:
 
     def _spawn_llama(self, model_path: Path, port: int) -> None:
         """Restart llama-server on the chosen model."""
-        from adk import llamacpp_setup as lc
-
-        binary = getattr(lc, "LLAMACPP_DIR", Path.home() / ".aither" / "llamacpp")
-        exe = next((p for p in Path(binary).rglob("llama-server*") if p.is_file()), None)
+        exe = self._llama_server_exe()
         if exe is None:
             raise RuntimeError(
                 "llama-server is not installed — run `adk gobbonet --setup-model`")

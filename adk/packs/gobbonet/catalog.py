@@ -77,6 +77,10 @@ class CatalogEntry:
     note: str = ""
     #: Absent for mirror entries; set by `from_hf()` for a user's own pick.
     url: str = ""
+    #: Non-empty when STOCK llama.cpp cannot serve the file. `recommended()`
+    #: never auto-picks such an entry: a runtime that loads it and emits
+    #: gibberish is a worse failure than a smaller model that answers.
+    requires_runtime: str = ""
 
     @property
     def size_gb(self) -> float:
@@ -117,6 +121,19 @@ CATALOG: list[CatalogEntry] = [
         filename="Bonsai-27B-Q1_0.gguf", label="Bonsai 27B", params_b=27.0,
         size_bytes=3803452480, min_ram_gb=10.0, family="bonsai",
         note="Served stitched from parts; a plain ranged GET still works.",
+    ),
+    CatalogEntry(
+        # Bonsai 2 27B (PrismML, 2026-09-17). size_bytes read from the real GGUF
+        # header over HTTP Range the day it was mirrored (aitherkvcache
+        # `bonsai2-v1`, stitched from .part0-.part3). PTQ1_0 = 1.75 bits/weight,
+        # ggml type 143; PQ2_0 (7,206,168,928 B) is the CUDA-fast sibling.
+        filename="Ternary-Bonsai-2-27B-PTQ1_0.gguf", label="Bonsai 2 27B", params_b=27.0,
+        size_bytes=5946648928, min_ram_gb=12.0, family="bonsai",
+        requires_runtime="prism-llama.cpp",
+        note="Needs the PrismML llama.cpp fork (github.com/PrismML-Eng/llama.cpp, "
+             "branch prism, release prism-b10687-5d80cff or newer): the weights are "
+             "Walsh-Hadamard rotated (prism.hadamard.*) and stock llama.cpp loads "
+             "them but emits gibberish. Not auto-recommended for that reason.",
     ),
     CatalogEntry(
         filename="aither-orchestrator-Q4_K_M.gguf", label="Orchestrator 8B (Q4_K_M)",
@@ -218,7 +235,10 @@ def recommended(ram_gb: float = 0.0, vram_gb: float = 0.0) -> Optional[CatalogEn
     """
     if max(ram_gb, vram_gb) <= 0:
         return None
-    ok = [e for e in entries() if fits(e, ram_gb, vram_gb)]
+    # An entry that needs a non-stock runtime is never auto-picked: adk
+    # installs mainline llama.cpp, which loads such a file and emits gibberish.
+    # It stays in `entries()` so a picker can show it with its note.
+    ok = [e for e in entries() if fits(e, ram_gb, vram_gb) and not e.requires_runtime]
     return ok[-1] if ok else None
 
 
@@ -268,6 +288,7 @@ def refresh_from(url: str, timeout: int = 20) -> list[CatalogEntry]:
             min_ram_gb=float(item.get("min_ram_gb") or 0),
             family=item.get("family") or "custom",
             note=item.get("note") or "", url=item.get("url") or "",
+            requires_runtime=item.get("requires_runtime") or "",
         ))
     CATALOG[:] = parsed
     return parsed

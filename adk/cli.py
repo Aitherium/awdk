@@ -1540,14 +1540,36 @@ def _cmd_sandbox_down(args) -> int:
     return 0
 
 
+# The two 27B generations `adk bonsai-local` can run, keyed by catalog id. Each is a
+# baked image: the PrismML llama.cpp fork plus the GGUF. Bonsai 2 needs a fork build at
+# or after prism-b10685-7dffb15 (PTQ1_0 + the shared Walsh-Hadamard transform, PRs #148
+# and #150); a STOCK llama.cpp, or the previous generation's baked image, loads the
+# Bonsai 2 file and emits gibberish, which is why the image name carries the generation.
+BONSAI_LOCAL_MODELS: dict[str, dict[str, str]] = {
+    "bonsai2-27b": {
+        "image": "aither-llamacpp-bonsai2:latest",
+        "label": "Bonsai 2 27B",
+        "weights": "Ternary-Bonsai-2-27B-PQ2_0.gguf on CUDA, PTQ1_0 (5.9 GB) on CPU",
+        "release": "prism-b10685-7dffb15",
+    },
+    "bonsai-27b": {
+        "image": "aither-llamacpp-bonsai:latest",
+        "label": "Bonsai-27B (previous generation)",
+        "weights": "Bonsai-27B-Q1_0.gguf (3.8 GB)",
+        "release": "prism-b9596-9fcaed7 or newer",
+    },
+}
+
+
 def cmd_bonsai_local(args) -> int:
-    """One command: run Bonsai-27B locally on :8090, reachable as `--backend bonsai-local`.
+    """One command: run Bonsai 2 27B locally on :8090, reachable as `--backend bonsai-local`.
 
     NOT the `local` preset: that one targets AitherVLLMSwap on :8201, a fleet service.
     This docstring used to claim otherwise, which is why the pairing looked wired.
 
-    Runs the baked PrismML llama.cpp fork image (aither-llamacpp-bonsai:latest) —
-    llama-server on the 1-bit Q1_0 GGUF — mapped to host :8090, so the Living OS at
+    Runs a baked PrismML llama.cpp fork image (default aither-llamacpp-bonsai2:latest,
+    `--model bonsai-27b` for the previous generation's image; see BONSAI_LOCAL_MODELS) —
+    llama-server on the ternary GGUF — mapped to host :8090, so the Living OS at
     aitherium.com detects it (localhost:8090/health) and chats on YOUR hardware.
     GPU is used automatically when present (the image requests -ngl 99); on a CPU-only
     box llama.cpp falls back to CPU (AVX). No GPU required to run — just slower.
@@ -1557,7 +1579,13 @@ def cmd_bonsai_local(args) -> int:
     import shutil
     import subprocess
 
-    image = os.environ.get("AITHER_BONSAI_IMAGE", "aither-llamacpp-bonsai:latest")
+    model = getattr(args, "model", "") or os.environ.get("AITHER_BONSAI_MODEL", "bonsai2-27b")
+    spec = BONSAI_LOCAL_MODELS.get(model)
+    if spec is None:
+        print(f"  [!] Unknown --model {model!r}; choose one of: "
+              + ", ".join(sorted(BONSAI_LOCAL_MODELS)))
+        return 1
+    image = os.environ.get("AITHER_BONSAI_IMAGE", spec["image"])
     name = os.environ.get("AITHER_BONSAI_CONTAINER", "aither-bonsai-local")
     port = int(
         getattr(args, "port", 0)
@@ -1586,8 +1614,10 @@ def cmd_bonsai_local(args) -> int:
     ]
 
     if getattr(args, "dry_run", False):
-        print("  [dry-run] would run Bonsai-27B locally:")
-        print("    image      :", image)
+        print(f"  [dry-run] would run {spec['label']} locally:")
+        print("    model      :", model, "--", spec["weights"])
+        print("    image      :", image, f"(PrismML fork {spec['release']}; stock llama.cpp "
+              "cannot serve ternary Bonsai)")
         print("    serve on   : http://localhost:%d  (/health, /v1/chat/completions)" % port)
         print("    gpu        :", "yes (nvidia runtime)" if gpu_args else "no — CPU (AVX) fallback")
         print("    command    :", " ".join(run_cmd))
@@ -1604,13 +1634,14 @@ def cmd_bonsai_local(args) -> int:
         return 0
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)  # clear any stopped remnant
 
-    print(f"  [*] Starting Bonsai-27B ({image}) on :{port} ...")
+    print(f"  [*] Starting {spec['label']} ({image}) on :{port} ...")
     res = subprocess.run(run_cmd, capture_output=True, text=True)
     if res.returncode != 0:
         err = (res.stderr or "").strip()
         if "No such image" in err or "not found" in err:
             print(f"  [!] Image {image} not present. Build/pull it first (PrismML llama.cpp fork "
-                  f"+ Bonsai Q1_0 GGUF baked), then re-run `adk bonsai-local`.")
+                  f"{spec['release']} + {spec['weights']} baked), then re-run "
+                  f"`adk bonsai-local --model {model}`.")
         else:
             print(f"  [!] docker run failed: {err}")
         return 1
@@ -1628,7 +1659,8 @@ def cmd_bonsai_local(args) -> int:
         except Exception:
             time.sleep(2)
     if healthy:
-        print(f"  [+] Bonsai-27B live on http://localhost:{port} — open aitherium.com; it'll chat on your hardware.")
+        print(f"  [+] {spec['label']} live on http://localhost:{port} — open aitherium.com; "
+              "it'll chat on your hardware.")
         # Persist it as THE configured backend so `adk start`, `adk up`, the SDK
         # and awsh use it without a flag. The old hint, `adk --backend
         # bonsai-local`, was not a real flag (2026-09-12).
@@ -1636,7 +1668,7 @@ def cmd_bonsai_local(args) -> int:
             save_saved_config({
                 "default_backend": "bonsai-local",
                 "inference_url": f"http://127.0.0.1:{port}/v1",
-                "default_model": "bonsai-27b",
+                "default_model": model,
             })
             print(f"  [+] Configured as your backend: bonsai-local http://127.0.0.1:{port}/v1")
             print("      adk status / adk start / awsh now use it. Undo: adk backend set gateway")
@@ -12671,9 +12703,13 @@ def _register_commands(sub):
 
     bonsai_p = sub.add_parser(
         "bonsai-local",
-        help="Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally")
+        help="Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; "
+             "aitherium.com then chats locally")
     bonsai_p.add_argument("--port", type=int, default=BONSAI_LOCAL_PORT,
                           help=f"Host port to serve on (default: {BONSAI_LOCAL_PORT})")
+    bonsai_p.add_argument("--model", choices=sorted(BONSAI_LOCAL_MODELS), default="bonsai2-27b",
+                          help="bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork "
+                               ">= prism-b10685) or bonsai-27b (the previous generation)")
     bonsai_p.add_argument("--dry-run", action="store_true", help="Show what would run without starting anything")
     bonsai_p.add_argument("--stop", action="store_true", help="Stop and remove the local Bonsai container")
 
