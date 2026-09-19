@@ -35,6 +35,7 @@ import re
 import secrets
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -97,6 +98,33 @@ PRINCIPALS_PATH = Path(
     os.environ.get("AITHER_HARNESS_PRINCIPALS", "").strip()
     or (Path.home() / ".aither" / "harness_tokens.json")
 )
+
+#: Per-name in-flight slot for POST /wakes/{name}/run: name -> child pid. Held
+#: until the CHILD exits (a reaper thread pops it), not until the request
+#: returns, so a retry or a double-click cannot start a second run through this
+#: window. Per daemon process only; awrise's own overlap policy stays the
+#: cross-process authority.
+_RUNNING: dict[str, int] = {}
+_RUNNING_LOCK = threading.Lock()
+
+#: Answer keys whose action is a RUN (as opposed to enable/disable), so the CARD
+#: path can apply the same per-name in-flight refusal `/wakes/{name}/run` does.
+#: Named here rather than derived from the argv, because the argv is built inside
+#: card_recipes and this check has to happen before anything is built.
+_WAKE_RUN_CHOICES = frozenset({"run_now", "run"})
+
+#: What a card whose recipe THIS BUILD CANNOT CLASSIFY demands before it may be
+#: raised or answered. Mirrors `card_recipes.UNKNOWN_RECIPE_ENTITLEMENT` and is
+#: duplicated on purpose: the daemon must still deny when that module is absent
+#: or broken, which is exactly when it cannot be imported to ask.
+#: `test_the_unknown_recipe_entitlement_matches_the_registry` keeps the two equal.
+UNKNOWN_RECIPE_ENTITLEMENT = "decisions:recipe:unknown"
+
+#: Longest a /wakes/{name}/run caller may hold the request open. The handler
+#: polls with asyncio.sleep (no worker thread is held), but an unbounded wait
+#: still pins a connection; the child is never killed at the deadline.
+WAKE_RUN_WAIT_MAX_S = 120.0
+WAKE_RUN_WAIT_DEFAULT_S = 20.0
 
 #: Browser origins allowed to call this daemon. AitherShell-in-the-browser is
 #: served from these; anything else is refused.
@@ -508,6 +536,23 @@ if BaseModel is not None:
         credential_format: str = "password"
         credential_scope: str = "platform"
         credential_description: str = ""
+        # ---- dedupe / card recipes ------------------------------------------
+        # A producer that raises on EVERY failing pass (awrise's report policy is
+        # the first) needs "one failing streak = one card, ever". The store has
+        # that guard and keys it on ``dedupe_key``; until these three fields
+        # existed here, every card raised through this route carried
+        # ``dedupe_key=""`` and the guard at store.create() was skipped outright.
+        # So the property held on the awask CLI path and nowhere else — and this
+        # route is the one Discord, awdesk and AitherDesktop all reach through.
+        #
+        # ``card_recipe`` + ``recipe_vars`` are the other half: they name the
+        # TEMPLATE, and the store's transition turns the owner's answer into the
+        # action the recipe promised. A raise that names a recipe is built BY the
+        # recipe (title, options, consequences, deadline, dedupe key and all), so
+        # an off-box caller cannot invent an option key that maps to no action.
+        dedupe_key: str = ""
+        card_recipe: str = ""
+        recipe_vars: dict[str, str] = Field(default_factory=dict)
         # provenance — set by the caller that authenticated the raiser
         raised_by: str = ""
         agent: str = ""
@@ -538,6 +583,34 @@ if BaseModel is not None:
         # The card the FORWARDER last showed the owner, so a bare "2" from the
         # phone resolves to the card they are looking at, not a guess.
         last_sent_card: str = ""
+
+    class WakeOrigin(BaseModel):  # type: ignore[misc]
+        """Identity CLAIM attached to a /wakes mutation by a chat bridge.
+
+        The daemon re-checks it against the owner-bound ``channels.json`` through
+        the same fail-closed ``authorize`` that ``/decisions/chat-reply`` uses. It
+        can only NARROW what the bearer allows, never widen it. ``is_direct_message``
+        has no default for the reason ``ChatReply`` gives it none.
+        """
+
+        model_config = {"extra": "forbid"}
+
+        platform: str
+        user_id: str
+        is_direct_message: bool
+
+    class WakeMutate(BaseModel):  # type: ignore[misc]
+        """Optional body for POST /wakes/{name}/{enable|disable|run}.
+
+        Module level for the reason documented on ``CreateSession``. ``extra`` is
+        forbidden on purpose: scope (home, binary, argv, cwd, env) comes from the
+        daemon's own process environment and never from the payload.
+        """
+
+        model_config = {"extra": "forbid"}
+
+        note: str = ""
+        origin: Optional[WakeOrigin] = None
 
     class CreateRoom(BaseModel):  # type: ignore[misc]
         id: str = DEFAULT_ROOM
@@ -1278,7 +1351,8 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         return {
             "decisions": decisions,
             "count": len(decisions),
-            "triage_reason": "filtered to decision-only (options, deadline, credential, or blocked)",
+            "triage_reason": ("filtered to decision-only (options, deadline, "
+                              "credential, or blocked)"),
         }
 
     @app.get("/decisions/triage-patterns", dependencies=[Depends(auth)])
@@ -1400,8 +1474,150 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         )
         return {"reply": reply or ""}
 
+    def _recipe_entitlement_for(recipe_id: str) -> str:
+        """What a caller must hold to raise or answer this recipe's cards.
+
+        Fail-closed on EVERY way the lookup can go wrong, and the deny answer is
+        the INITIAL value rather than something an except handler returns: an
+        absent card_recipes module, a registry that raises, an unknown recipe id
+        all leave `want` at the entitlement only "*" carries. A build with no
+        card_recipes still gates the door — an answer would spawn nothing in THAT
+        build, but a gate that disappears along with a module is not a gate.
+        """
+        want = UNKNOWN_RECIPE_ENTITLEMENT
+        try:
+            from adk.decisions.card_recipes import recipe_entitlement
+
+            want = recipe_entitlement(recipe_id)
+        except ImportError:
+            # No registry in this build: DENY, said out loud rather than by
+            # declining to overwrite (the shape security_lint SEC019 exists for).
+            want = UNKNOWN_RECIPE_ENTITLEMENT
+        except Exception:  # noqa: BLE001 - a broken registry must not open the door
+            want = UNKNOWN_RECIPE_ENTITLEMENT
+        return want
+
+    def _require_recipe(principal: Principal, recipe_id: str) -> None:
+        """THE CARD DOOR MUST NOT BE A WAY AROUND THE ROUTE DOOR.
+
+        Measured 2026-09-18: `POST /wakes/{name}/{enable,disable,run}` were the
+        only routes carrying `wakes:mutate`, while `POST /decisions` (the recipe
+        door) and `POST /decisions/{id}/answer` carried the bearer alone. The
+        store's answer transition calls `card_recipes.apply_answer`, which spawns
+        `awrise disable|run --name <job>` -- so a principal refused at
+        `/wakes/nightly-sync/run` reached the identical spawn by raising a
+        `wake-failed` card and answering it, from anywhere on the fleet network
+        (this daemon binds 0.0.0.0 and genesis proxies /api/v1/decisions/*).
+
+        BOTH halves are gated, not just the answer: raising a spawning card is a
+        remote OFFER to spawn on the owner's host, and an unentitled caller must
+        not be able to put one in front of them either.
+
+        With no token registry every caller is the owner principal holding "*",
+        so this changes nothing until an operator writes harness_tokens.json --
+        the same ordering `require_entitlement` documents.
+        """
+        want = _recipe_entitlement_for(recipe_id)
+        if want and not principal.has(want):
+            raise HTTPException(
+                status_code=403,
+                detail=(f"principal {principal.id!r} lacks entitlement {want!r} "
+                        f"(required by card recipe {recipe_id!r})"),
+            )
+
+    def _guard_recipe_answer(principal: Principal, card: Any, choice: str) -> None:
+        """The checks `_wake_prepare` applies, on the CARD path.
+
+        The entitlement is checked for every recipe card. The rest apply only to
+        an answer that actually spawns: the job must still exist (a card outlives
+        its job easily, and `awrise run --name <gone>` surfaces hours later as a
+        confusing 502), and the same job must not already be running -- the
+        per-name in-flight slot `/wakes/{name}/run` holds, plus the ledger's own
+        view, which is the only one that sees a run this process did not start.
+        """
+        recipe_id = (getattr(card, "card_recipe", "") or "").strip()
+        if not recipe_id:
+            return
+        _require_recipe(principal, recipe_id)
+        try:
+            from adk.decisions.card_recipes import spawns_on
+        except ImportError:
+            return
+        if not spawns_on(recipe_id, choice):
+            return
+        variables = getattr(card, "recipe_vars", None)
+        job = (variables or {}).get("job") if isinstance(variables, dict) else None
+        if not isinstance(job, str) or not job:
+            return
+        from adk.wakes import get_wake, read_jobs, valid_name
+
+        if not valid_name(job):
+            raise HTTPException(status_code=400, detail="invalid wake name on the card")
+        jobs = read_jobs()
+        if not jobs["installed"]:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        if jobs["error"]:
+            raise HTTPException(status_code=503, detail=jobs["error"])
+        if job not in jobs["jobs"]:
+            raise HTTPException(status_code=404, detail=f"no such wake: {job}")
+        if (choice or "").strip() in _WAKE_RUN_CHOICES:
+            with _RUNNING_LOCK:
+                live = _RUNNING.get(job)
+            if live is not None:
+                raise HTTPException(
+                    status_code=409, detail={"error": "already running", "pid": live},
+                )
+            current = get_wake(job)
+            if current is not None and current.get("running"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "already running",
+                            "since": current.get("running_since")},
+                )
+
+    def _store_and_notify(card: Any) -> dict[str, Any]:
+        """Persist a built card and tell the owner. The tail BOTH raise doors share.
+
+        Shared rather than duplicated because the notify half is the part that is
+        easy to forget: a card that lands in the store and raises no window is
+        the silent no-op this whole channel exists to prevent, and the recipe
+        door would have been a second place to forget it.
+        """
+        from adk.decisions.store import DecisionError, get_store
+
+        try:
+            created = get_store().create(card)
+        except DecisionError as exc:
+            # 400, not 500: the store's validation IS the contract (a decision needs a
+            # default, a credential card needs a secret_name and no options), and a
+            # caller that violates it has sent a bad request, not hit a broken daemon.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # A dedupe HIT returns the card that ALREADY exists — the store documents
+        # this as "the object you get back is not the object you passed in", and
+        # identity is the only way to tell, since a fresh card has its id minted
+        # inside create(). The owner was already told about that card, so
+        # notifying again is exactly the storm the key exists to prevent.
+        if created is not card:
+            return {**created.to_dict(), "deduped": True}
+
+        # Raise the window/toast exactly as a local `adk decide ask` would. Without
+        # this a remotely-raised card lands in the store and the owner is never told —
+        # the silent no-op this whole channel exists to prevent.
+        try:
+            from adk.decisions.notify import notify
+
+            notify(created)
+        except Exception as exc:  # noqa: BLE001
+            # The card IS stored; failing the request now would make the caller retry
+            # and duplicate it. Report the degradation in the response instead of
+            # swallowing it, so "raised but nobody was told" is visible.
+            return {**created.to_dict(), "notify_error": f"{type(exc).__name__}: {exc}"}
+        return created.to_dict()
+
     @app.post("/decisions", dependencies=[Depends(auth)])
-    def raise_decision(body: RaiseDecision) -> dict[str, Any]:
+    def raise_decision(body: RaiseDecision,
+                       principal: Principal = Depends(auth)) -> dict[str, Any]:
         """RAISE a card from off-box.
 
         Until this existed the daemon could list, read, answer and cancel cards but not
@@ -1413,13 +1629,40 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         returns the daemon's 404 as "Decision not found", which reads as a missing card
         rather than a missing endpoint.
         """
-        from adk.decisions.store import (
-            DecisionCard,
-            DecisionError,
-            DecisionOption,
-            DecisionSource,
-            get_store,
+        from adk.decisions.store import DecisionCard, DecisionOption, DecisionSource
+
+        _source = DecisionSource(
+            session_id=(body.session_id or "").strip(),
+            agent=(body.raised_by or body.agent or "api").strip(),
+            cwd=(body.cwd or "").strip(),
         )
+
+        # ---- the RECIPE door -------------------------------------------------
+        # Naming a recipe builds the whole card here, from code, so an off-box
+        # caller supplies only VARIABLES. It cannot invent an option whose key
+        # maps to no action, cannot widen the dedupe key, and cannot lengthen the
+        # deadline — the properties the recipe layer exists to hold. A recipe
+        # this build does not carry is a 400 and never a silently plain card,
+        # because a plain card would be answered and do nothing.
+        _recipe_id = (body.card_recipe or "").strip()
+        if _recipe_id:
+            # Gated BEFORE the recipe is built: an unentitled caller is refused,
+            # and learns nothing about which recipes this build carries.
+            _require_recipe(principal, _recipe_id)
+            try:
+                from adk.decisions.card_recipes import CardRecipeError, build_card
+            except ImportError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=("card recipes are not available in this build "
+                            f"({exc}); raise a plain card instead"),
+                ) from exc
+            try:
+                card = build_card(_recipe_id, dict(body.recipe_vars or {}),
+                                  source=_source)
+            except CardRecipeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return _store_and_notify(card)
 
         kwargs: dict[str, Any] = dict(
             id="",
@@ -1432,12 +1675,26 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                      for o in (body.options or [])],
             default_key=(body.default or "").strip(),
             facts=[f for f in (body.facts or []) if f.strip()],
-            source=DecisionSource(
-                session_id=(body.session_id or "").strip(),
-                agent=(body.raised_by or body.agent or "api").strip(),
-                cwd=(body.cwd or "").strip(),
-            ),
+            source=_source,
         )
+
+        # DEDUPE IS FEATURE-DETECTED, AND FAIL-CLOSED WHEN ASKED FOR AND ABSENT.
+        # Same shape and same reason as the credential block below: this daemon
+        # and the store can be two different vintages. Silently dropping a
+        # dedupe_key would turn "one failing streak = one card" into a card per
+        # failing pass — the storm the key exists to prevent — and it would look
+        # like the producer misbehaving rather than a version skew.
+        _dedupe_fields = set(getattr(DecisionCard, "__dataclass_fields__", {}) or {})
+        _want_dedupe = (body.dedupe_key or "").strip()
+        if _want_dedupe and "dedupe_key" not in _dedupe_fields:
+            raise HTTPException(
+                status_code=400,
+                detail=("this store build cannot dedupe cards (DecisionCard has no "
+                        "dedupe_key); raising anyway would produce one card per "
+                        "failing pass"),
+            )
+        if "dedupe_key" in _dedupe_fields:
+            kwargs["dedupe_key"] = _want_dedupe
 
         # CREDENTIAL FIELDS ARE OPTIONAL AT THE STORE, AND THIS ROUTE MUST NOT DIE
         # WHEN THEY ARE ABSENT.
@@ -1484,28 +1741,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             if _k in _card_fields:
                 kwargs[_k] = _v
 
-        card = DecisionCard(**kwargs)
-        try:
-            created = get_store().create(card)
-        except DecisionError as exc:
-            # 400, not 500: the store's validation IS the contract (a decision needs a
-            # default, a credential card needs a secret_name and no options), and a
-            # caller that violates it has sent a bad request, not hit a broken daemon.
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        # Raise the window/toast exactly as a local `adk decide ask` would. Without
-        # this a remotely-raised card lands in the store and the owner is never told —
-        # the silent no-op this whole channel exists to prevent.
-        try:
-            from adk.decisions.notify import notify
-
-            notify(created)
-        except Exception as exc:  # noqa: BLE001
-            # The card IS stored; failing the request now would make the caller retry
-            # and duplicate it. Report the degradation in the response instead of
-            # swallowing it, so "raised but nobody was told" is visible.
-            return {**created.to_dict(), "notify_error": f"{type(exc).__name__}: {exc}"}
-        return created.to_dict()
+        return _store_and_notify(DecisionCard(**kwargs))
 
     @app.post("/decisions/{card_id}/steer", dependencies=[Depends(auth)])
     def steer_decision(card_id: str, body: SteerDecision) -> dict[str, Any]:
@@ -1533,10 +1769,22 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         return card.to_dict()
 
     @app.post("/decisions/{card_id}/answer", dependencies=[Depends(auth)])
-    def answer_decision(card_id: str, body: AnswerDecision) -> dict[str, Any]:
+    def answer_decision(card_id: str, body: AnswerDecision,
+                        principal: Principal = Depends(auth)) -> dict[str, Any]:
         from adk.decisions.store import DecisionError, get_store
 
         store = get_store()
+        # READ BEFORE ANSWERING. The answer TRANSITION is what spawns the recipe's
+        # action, so the capability check has to happen while the card is still
+        # open -- afterwards the process is already started and a 403 would be a
+        # lie. A card that does not exist falls through to store.answer(), which
+        # owns the 404/409 wording.
+        try:
+            _existing = store.get(card_id)
+        except DecisionError:
+            _existing = None
+        if _existing is not None:
+            _guard_recipe_answer(principal, _existing, body.choice)
         try:
             card = store.answer(
                 card_id, body.choice, note=body.note or "", via=body.via or "api",
@@ -1569,6 +1817,314 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         except DecisionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return card.to_dict()
+
+    # ── awrise wakes: the ONE read/mutate window for the scheduler ──────────
+    #
+    # Reads come straight off AWRISE_HOME (jobs.json + ledger) through
+    # ``adk.wakes``, imported lazily inside each handler so a broken import never
+    # takes the daemon down. Mutations spawn the awrise CLI as an argv LIST and
+    # propagate its exit code. Scope (home, binary) is the daemon's own process
+    # environment; nothing in a payload can name a path, a binary or an argv.
+    #
+    # Route order matters: FastAPI matches in registration order, so the static
+    # /wakes/count and /wakes/ledger are registered BEFORE /wakes/{name}.
+
+    _wake_tail_bytes = 2048
+
+    def _wake_tail(text: str) -> str:
+        return (text or "")[-_wake_tail_bytes:]
+
+    def _wake_file_tail(handle: Any) -> str:
+        """Last 2 KiB of a temp file the child wrote to, decoded leniently."""
+        try:
+            handle.flush()
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - _wake_tail_bytes))
+            data = handle.read()
+        except (OSError, ValueError):
+            return ""
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data)
+
+    def _wake_prepare(name: str, verb: str, principal: Principal,
+                      body: Any) -> tuple[list[str], str]:
+        """Everything that must hold BEFORE a spawn: name, origin, job, binary.
+
+        Order: the name gate first (nothing else may touch a path or an argv
+        with an unchecked name), then the origin re-authorization (an identity
+        claim is refused before the daemon reveals whether the job exists), then
+        job existence (a typo never reaches the CLI), then the binary.
+        """
+        from adk.wakes import build_argv, read_jobs, resolve_bin, valid_name
+
+        if not valid_name(name):
+            raise HTTPException(status_code=400, detail="invalid wake name")
+        via = principal.id
+        origin = getattr(body, "origin", None) if body is not None else None
+        if origin is not None:
+            from adk.decisions.channels import ChannelConfigError, authorize, load_config
+
+            try:
+                configs = load_config()
+            except ChannelConfigError as exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error": "origin not authorized", "reason": str(exc)},
+                ) from exc
+            verdict = authorize(
+                configs.get(origin.platform),
+                user_id=origin.user_id,
+                is_direct_message=origin.is_direct_message,
+            )
+            if not verdict.allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error": "origin not authorized", "reason": verdict.reason},
+                )
+            via = f"{principal.id}:{origin.platform}:{origin.user_id}"
+        jobs = read_jobs()
+        if not jobs["installed"]:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        if jobs["error"]:
+            raise HTTPException(status_code=503, detail=jobs["error"])
+        if name not in jobs["jobs"]:
+            raise HTTPException(status_code=404, detail=f"no such wake: {name}")
+        binary = resolve_bin()
+        if binary is None:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        return build_argv(binary, verb, name), via
+
+    def _wake_sync(name: str, verb: str, principal: Principal, body: Any) -> dict[str, Any]:
+        """enable/disable: a bounded synchronous spawn; the exit code is the answer."""
+        import subprocess
+
+        argv, via = _wake_prepare(name, verb, principal, body)
+        started = time.monotonic()
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=30, cwd=None, check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(
+                status_code=408, detail=f"awrise {verb} timed out after 30s",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503, detail=f"awrise not installed: {exc}",
+            ) from exc
+        duration = round(time.monotonic() - started, 3)
+        stderr_tail = _wake_tail(proc.stderr)
+        if proc.returncode != 0:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": f"awrise {verb} exited {proc.returncode}",
+                        "exit_code": proc.returncode, "stderr_tail": stderr_tail},
+            )
+        return {
+            "ok": True, "name": name, "action": verb, "exit_code": proc.returncode,
+            "via": via, "argv": argv, "note": getattr(body, "note", "") or "",
+            "stdout_tail": _wake_tail(proc.stdout), "stderr_tail": stderr_tail,
+            "duration_s": duration,
+        }
+
+    @app.get("/wakes", dependencies=[Depends(auth)])
+    def list_wakes(state: str = Query(default="")) -> dict[str, Any]:
+        """Every job with its last state, plus clock liveness. Never 5xx.
+
+        ``installed: false`` when awrise has no jobs.json; ``clock_stale: true``
+        when no ``tick`` row has landed in five minutes — a green job list with
+        a dead clock is the failure this window exists to show.
+        """
+        from adk.wakes import snapshot
+
+        if state and state not in ("failing", "running", "disabled"):
+            raise HTTPException(status_code=400, detail="state must be failing|running|disabled")
+        return snapshot(state=state or None)
+
+    @app.get("/wakes/count", dependencies=[Depends(auth)])
+    def count_wakes() -> dict[str, Any]:
+        from adk.wakes import snapshot
+
+        snap = snapshot()
+        return {k: snap[k] for k in ("count", "failing", "disabled", "running", "installed",
+                                     "schema", "last_tick_at", "clock_stale")}
+
+    @app.get("/wakes/ledger", dependencies=[Depends(auth)])
+    def wakes_ledger(
+        job: str = Query(default=""),
+        limit: int = Query(default=50),
+        since: str = Query(default=""),
+        event: str = Query(default=""),
+    ) -> dict[str, Any]:
+        from adk.wakes import read_ledger, valid_name
+
+        if job and not valid_name(job):
+            raise HTTPException(status_code=400, detail="invalid wake name")
+        return read_ledger(job=job or None, limit=limit, since=since or None,
+                           event=event or None)
+
+    @app.get("/wakes/{name}", dependencies=[Depends(auth)])
+    def get_wake_detail(name: str) -> dict[str, Any]:
+        """One job plus its last 10 ledger rows: state -> reason -> output tail.
+
+        503 when awrise is not installed so a consumer can tell "no such job"
+        from "no awrise"; 404 for a job that is not in jobs.json.
+        """
+        from adk.wakes import get_wake, read_jobs, valid_name
+
+        if not valid_name(name):
+            raise HTTPException(status_code=400, detail="invalid wake name")
+        jobs = read_jobs()
+        if not jobs["installed"]:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        if jobs["error"]:
+            raise HTTPException(status_code=503, detail=jobs["error"])
+        job = get_wake(name)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no such wake: {name}")
+        return job
+
+    @app.post("/wakes/{name}/enable", dependencies=[Depends(auth)])
+    def enable_wake(
+        name: str,
+        body: Optional[WakeMutate] = None,
+        principal: Principal = Depends(require_entitlement("wakes:mutate")),
+    ) -> dict[str, Any]:
+        return _wake_sync(name, "enable", principal, body)
+
+    @app.post("/wakes/{name}/disable", dependencies=[Depends(auth)])
+    def disable_wake(
+        name: str,
+        body: Optional[WakeMutate] = None,
+        principal: Principal = Depends(require_entitlement("wakes:mutate")),
+    ) -> dict[str, Any]:
+        return _wake_sync(name, "disable", principal, body)
+
+    def _wake_spawn(name: str, argv: list[str]) -> dict[str, Any]:
+        """Start ``awrise run`` detached from the request, reaped by a thread.
+
+        stdout/stderr go to temp FILES (never PIPE — an unattended child must
+        not block on a full pipe). The reaper waits for the child, collects the
+        tails, unlinks the files and frees the per-name slot; the slot is held
+        until the CHILD exits, not until the request returns.
+        """
+        import subprocess
+        import tempfile
+
+        out_f = tempfile.NamedTemporaryFile(prefix="awrise-out-", suffix=".log", delete=False)
+        err_f = tempfile.NamedTemporaryFile(prefix="awrise-err-", suffix=".log", delete=False)
+        holder: dict[str, Any] = {
+            "pid": None, "exit_code": None, "stdout_tail": "", "stderr_tail": "",
+            "done": threading.Event(),
+        }
+
+        def _cleanup() -> None:
+            for handle in (out_f, err_f):
+                try:
+                    handle.close()
+                except OSError:
+                    continue
+                try:
+                    os.unlink(handle.name)
+                except OSError:
+                    continue
+
+        try:
+            proc = subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f, cwd=None,
+            )
+        except OSError:
+            _cleanup()
+            raise
+        holder["pid"] = proc.pid
+        with _RUNNING_LOCK:
+            _RUNNING[name] = proc.pid
+
+        def _reap() -> None:
+            try:
+                holder["exit_code"] = proc.wait()
+                holder["stdout_tail"] = _wake_file_tail(out_f)
+                holder["stderr_tail"] = _wake_file_tail(err_f)
+            finally:
+                _cleanup()
+                with _RUNNING_LOCK:
+                    if _RUNNING.get(name) == proc.pid:
+                        _RUNNING.pop(name, None)
+                holder["done"].set()
+
+        threading.Thread(target=_reap, name=f"awrise-reap-{name}", daemon=True).start()
+        return holder
+
+    @app.post("/wakes/{name}/run", dependencies=[Depends(auth)])
+    async def run_wake(
+        name: str,
+        body: Optional[WakeMutate] = None,
+        wait_s: float = Query(default=WAKE_RUN_WAIT_DEFAULT_S),
+        principal: Principal = Depends(require_entitlement("wakes:mutate")),
+    ) -> dict[str, Any]:
+        """Fire one wake now. Waits up to ``wait_s`` (0..120) WITHOUT killing.
+
+        200/502 with the exit code when the child finished inside the window;
+        202 with the pid when it is still running (awrise writes the ``finished``
+        row itself — read the outcome from ``GET /wakes/{name}``); 409 when this
+        daemon already holds a live child for that name.
+        """
+        from fastapi.responses import JSONResponse
+
+        argv, via = _wake_prepare(name, "run", principal, body)
+        wait = min(max(float(wait_s), 0.0), WAKE_RUN_WAIT_MAX_S)
+        with _RUNNING_LOCK:
+            live = _RUNNING.get(name)
+            if live is not None:
+                raise HTTPException(
+                    status_code=409, detail={"error": "already running", "pid": live},
+                )
+            _RUNNING[name] = 0  # reserve the slot until Popen hands back a pid
+        try:
+            holder = _wake_spawn(name, argv)
+        except OSError as exc:
+            with _RUNNING_LOCK:
+                if _RUNNING.get(name) == 0:
+                    _RUNNING.pop(name, None)
+            raise HTTPException(
+                status_code=502,
+                detail={"error": f"awrise run could not start: {exc}", "exit_code": None,
+                        "stderr_tail": ""},
+            ) from exc
+        except Exception:
+            with _RUNNING_LOCK:
+                if _RUNNING.get(name) == 0:
+                    _RUNNING.pop(name, None)
+            raise
+        started = time.monotonic()
+        deadline = started + wait
+        done: threading.Event = holder["done"]
+        while not done.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+        if not done.is_set():
+            return JSONResponse(status_code=202, content={
+                "ok": True, "name": name, "action": "run", "running": True,
+                "pid": holder["pid"], "exit_code": None, "via": via, "argv": argv,
+                "note": getattr(body, "note", "") or "",
+                "outcome": f"GET /wakes/{name} .recent",
+            })
+        exit_code = holder["exit_code"]
+        if exit_code != 0:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": f"awrise run exited {exit_code}", "exit_code": exit_code,
+                        "stderr_tail": holder["stderr_tail"]},
+            )
+        return {
+            "ok": True, "name": name, "action": "run", "running": False,
+            "pid": holder["pid"], "exit_code": exit_code, "via": via, "argv": argv,
+            "note": getattr(body, "note", "") or "",
+            "stdout_tail": holder["stdout_tail"], "stderr_tail": holder["stderr_tail"],
+            "duration_s": round(time.monotonic() - started, 3),
+        }
 
     @app.post("/sessions/{session_id}/resize", dependencies=[Depends(auth)])
     def resize(session_id: str, body: ResizeInput) -> dict[str, Any]:
@@ -1679,6 +2235,102 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         if render:
             snapshot["rendered"] = well.render_context(cwd=cwd, actor=actor)
         return snapshot
+
+
+    # ── desk: the owner's Desk bridge, reachable from inside the fleet ───────
+    #
+    # The desk bridge binds 127.0.0.1 on the Windows host and must keep doing so
+    # (an agent command channel on the LAN is a worse trade than the gap it
+    # closes). This daemon runs on that same host, already listens where every
+    # container can reach it, and already checks the same bearer -- so it is the
+    # natural bridge, and the desk grows no new exposure.
+    #
+    # Measured 2026-09-08, from the aitheros-mcpgateway container:
+    #   host.docker.internal:8362   OPEN        <- this daemon
+    #   host.docker.internal:47931  REFUSED     <- the desk, loopback-only
+    #
+    # ALLOWLISTED, never generic. An open forwarder on an authenticated daemon
+    # would convert one bearer into reach over every service on the desk host's
+    # loopback, which is a larger hole than the one being closed.
+
+    desk_base = os.environ.get("AWDESK_URL", "http://127.0.0.1:47931").rstrip("/")
+    desk_surfaces = ("overlay", "app")
+
+    def _desk_call(method: str, path: str, body: Any = None) -> dict[str, Any]:
+        """One hop to the desk bridge, carrying this daemon's own bearer.
+
+        Never raises: a desk that is not running is a NORMAL state (the owner
+        closed it), and a 502 traceback would read as the daemon being broken.
+        """
+        import urllib.error  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+
+        url = f"{desk_base}{path}"
+        data = None
+        headers = {"accept": "application/json"}
+        tok = resolve_token()
+        if tok:
+            headers["authorization"] = f"Bearer {tok}"
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["content-type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+                raw = resp.read().decode("utf-8", "replace")
+                status = resp.status
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            status = exc.code
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "status": 0,
+                "error": (
+                    f"awdesk unreachable at {desk_base} ({type(exc).__name__}). The "
+                    f"Desk app runs on the owner's Windows session; this daemon "
+                    f"reaches it over loopback, so a failure here means Desk is not "
+                    f"running -- not that the fleet lost a route."
+                ),
+            }
+        try:
+            payload = json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            payload = {"raw": raw[:2000]}
+        if isinstance(payload, dict):
+            payload.setdefault("ok", 200 <= status < 300)
+            payload["status"] = status
+            return payload
+        return {"ok": 200 <= status < 300, "status": status, "result": payload}
+
+    @app.get("/desk/fleet/status", dependencies=[Depends(auth)])
+    def desk_fleet_status() -> dict[str, Any]:
+        """The desk's fleet verdict -- containers, masks, VRAM holders, doors."""
+        return _desk_call("GET", "/fleet/status")
+
+    @app.post("/desk/command", dependencies=[Depends(auth)])
+    def desk_command(body: dict[str, Any]) -> dict[str, Any]:
+        """Hand the desk a sentence, the way the Command window does."""
+        text = str((body or {}).get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text is required")
+        return _desk_call("POST", "/command", {"text": text})
+
+    @app.get("/desk/desktop/status", dependencies=[Depends(auth)])
+    def desk_desktop_status() -> dict[str, Any]:
+        """Which desktop surfaces are open (overlay, AitherDesktop app)."""
+        return _desk_call("GET", "/desktop/status")
+
+    @app.post("/desk/desktop/{surface}", dependencies=[Depends(auth)])
+    def desk_desktop_open(surface: str) -> dict[str, Any]:
+        """Raise one desktop surface. The segment is VALIDATED, not forwarded."""
+        if surface not in desk_surfaces:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown desktop surface {surface!r}; "
+                       f"expected one of {list(desk_surfaces)}",
+            )
+        return _desk_call("POST", f"/desktop/{surface}")
 
     @app.get("/rooms", dependencies=[Depends(auth)])
     def list_rooms() -> dict[str, Any]:

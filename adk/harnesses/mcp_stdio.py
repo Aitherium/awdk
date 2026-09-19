@@ -54,6 +54,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -420,6 +421,28 @@ def _send(session_id: str, text: str) -> dict:
         "POST", "/sessions/%s/input" % session_id, {"text": framed})
 
 
+#: Same gate as the daemon's /wakes window: a name that misses never becomes
+#: a path segment in a request, so a traversal or an option-shaped name is
+#: refused here without a round trip.
+_WAKE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _awsh_wakes(a: dict) -> dict:
+    """List awrise wakes, or one wake with its recent ledger rows.
+
+    A read-only passthrough of the daemon JSON: ``last_tick_at`` / ``clock_stale``
+    and every row's ``last_reason`` arrive as-is. Mutations are deliberately not
+    exposed as MCP tools -- silencing a wake is an owner action taken from a
+    surface that holds a bearer.
+    """
+    name = str(a.get("name") or "").strip()
+    if not name:
+        return _req("GET", "/wakes")
+    if not _WAKE_NAME_RE.match(name):
+        return {"error": "invalid wake name"}
+    return _req("GET", "/wakes/%s" % name)
+
+
 TOOLS: list = [
     {"name": "awsh_health",
      "description": "Is the AitherShell harness daemon up, and what does it allow.",
@@ -526,6 +549,14 @@ TOOLS: list = [
      "description": "Open decision cards waiting on a human.",
      "schema": {"type": "object", "properties": {}},
      "fn": lambda a: _req("GET", "/decisions")},
+
+    {"name": "awsh_wakes",
+     "description": "List awrise wakes (scheduled jobs), clock liveness and last "
+                    "state; with name: one job with its last 10 ledger rows "
+                    "(state, reason, exit_code, output_tail)",
+     "schema": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "optional job name"}}},
+     "fn": _awsh_wakes},
 
     {"name": "awsh_awrun_queue",
      "description": "The awrun job queue.",
