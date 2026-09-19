@@ -539,7 +539,7 @@ class TestThreadSafety:
         # created_at, so which rows the 15 iterations reach depends entirely on
         # the interleaving: three threads that read the same page all mark the
         # same rows, and the tail can legitimately go untouched. Asserting it
-        # made this test fail intermittently (D-2121) while blaming
+        # made this test fail intermittently while blaming
         # thread-safety for an ordinary property of a bounded work loop.
         #
         # What IS guaranteed is the retry BUDGET, and that used to be false: a

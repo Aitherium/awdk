@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from adk.harnesses import rooms as rooms_mod
 from adk.harnesses.rooms import Room
 
