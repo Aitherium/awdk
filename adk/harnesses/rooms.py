@@ -66,6 +66,19 @@ MAX_BUFFERED_EVENTS = 2000
 #: 4 MB comfortably covers MAX_BUFFERED_EVENTS at typical event size.
 HYDRATE_TAIL_BYTES = 4 * 1024 * 1024
 
+#: 🚩 THE TRANSCRIPT IS ROTATED, BECAUSE AN UNBOUNDED ONE STOPS THE ROOM.
+#: Measured 2026-09-18 on the owner's box: room "main" had grown to 554 MB of
+#: JSONL (every Claude Code tab emits tool_call rows into it) and a single
+#: ``POST /events`` to that room took OVER 25 SECONDS, while the same request
+#: against a fresh room answered in 0.23 s — same route, same lock, same code.
+#: Every producer with a client timeout (the desk's room publisher gives up at
+#: 4 s) was therefore silently failing to reach the room, which reads exactly
+#: like "the spine is down". The in-memory buffer was capped from the start;
+#: the file behind it never was. Rotation keeps the ACTIVE file small, which is
+#: the only thing append speed depends on. Old segments are renamed, never
+#: deleted: this is the audit record.
+MAX_TRANSCRIPT_BYTES = int(os.environ.get("AITHER_HARNESS_ROOM_MAX_BYTES", 64 * 1024 * 1024))
+
 #: Room ids are used as directory names, so they are constrained rather than sanitised.
 #: Sanitising invites two different ids collapsing onto one directory.
 _ROOM_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -113,6 +126,9 @@ class Room:
         self.dir = rooms_root() / self.id
         self.dir.mkdir(parents=True, exist_ok=True)
         self._transcript = self.dir / "events.jsonl"
+        #: Bytes in the ACTIVE transcript segment, tracked so the rotation check
+        #: costs no syscall per publish. Seeded by _hydrate from the file on disk.
+        self._transcript_bytes = 0
         self.hydrated = self._hydrate()
 
     def _hydrate(self) -> int:
@@ -128,10 +144,15 @@ class Room:
         stderr. Refusing to construct the room would take the whole spine down over one
         bad line; pretending it was empty silently would hide it.
         """
+        self._transcript_bytes = 0
         if not self._transcript.is_file():
             return 0
         try:
             size = self._transcript.stat().st_size
+            #: Seed the rotation counter: a room that starts up already over the
+            #: cap rotates on its FIRST publish, which is how an existing oversized
+            #: transcript (the 554 MB "main" that started this) heals itself.
+            self._transcript_bytes = size
             with self._transcript.open("rb") as handle:
                 if size > HYDRATE_TAIL_BYTES:
                     handle.seek(size - HYDRATE_TAIL_BYTES)
@@ -212,12 +233,51 @@ class Room:
         # Outside the lock: disk I/O must not serialize concurrent producers. A failed
         # append is reported inline rather than swallowed -- losing the audit record
         # silently is worse than a noisy room.
+        line = json.dumps(stamped) + "\n"
         try:
+            self._rotate_if_large(len(line.encode("utf-8")))
             with self._transcript.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(stamped) + "\n")
+                handle.write(line)
+            self._transcript_bytes += len(line.encode("utf-8"))
         except OSError as exc:
             sys.stderr.write(f"[room {self.id}] transcript write failed: {exc}\n")
         return stamped
+
+    def _rotate_if_large(self, incoming: int) -> None:
+        """Retire the active transcript once it passes the cap.
+
+        Size is TRACKED, not stat()ed per event: a syscall per publish on the
+        hot path is exactly the kind of cost that only shows up under the load
+        this guard exists for. The counter is seeded from the file at startup
+        (``_hydrate``) and corrected here if a rename races another process.
+
+        Rotation renames, so the segment keeps its bytes and its name says when
+        it closed. Nothing is deleted: a room transcript is the audit record,
+        and a spine that quietly drops history is worse than a large directory.
+        """
+        if MAX_TRANSCRIPT_BYTES <= 0:
+            return
+        if self._transcript_bytes + incoming <= MAX_TRANSCRIPT_BYTES:
+            return
+        try:
+            if not self._transcript.exists():
+                self._transcript_bytes = 0
+                return
+            stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+            target = self.dir / f"events-{stamp}.jsonl"
+            # A second rotation inside the same second must not clobber the first.
+            suffix = 1
+            while target.exists():
+                target = self.dir / f"events-{stamp}-{suffix}.jsonl"
+                suffix += 1
+            self._transcript.replace(target)
+            self._transcript_bytes = 0
+            sys.stderr.write(f"[room {self.id}] transcript rotated to {target.name}\n")
+        except OSError as exc:
+            # A rotation that cannot happen must never stop the room from
+            # recording. Keep appending to the large file and say so once.
+            sys.stderr.write(f"[room {self.id}] transcript rotation failed: {exc}\n")
+            self._transcript_bytes = 0
 
     def _normalise(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Coerce an inbound payload into a valid AitherEvent, or refuse with a reason."""
