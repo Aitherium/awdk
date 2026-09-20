@@ -1,0 +1,4 @@
+{
+  "description": "Replaces a long tool result with its compacted form, decided per line shape by the AitherOS decision door.",
+  "modules": ["./compact.ts"]
+}

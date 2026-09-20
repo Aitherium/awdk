@@ -1,0 +1,16 @@
+{
+  "name": "awcompact",
+  "owner": { "name": "Aitherium" },
+  "description": "Tool-output compaction on the AitherOS decision door.",
+  "plugins": [
+    {
+      "name": "awcompact",
+      "source": "./",
+      "description": "A tool.call hook that replaces a long Bash/test/build result with the lines that decide what happens next, chosen per line SHAPE by the decision door -- so the second run of the same command costs no model call, and a wrongly dropped line can be taught.",
+      "version": "0.1.0",
+      "author": { "name": "Aitherium" },
+      "license": "MIT",
+      "category": "development"
+    }
+  ]
+}

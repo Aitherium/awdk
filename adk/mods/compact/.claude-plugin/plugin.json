@@ -1,0 +1,9 @@
+{
+  "name": "awcompact",
+  "version": "0.1.0",
+  "description": "Compacts a long tool result through the AitherOS decision door before the model reads it: per LINE SHAPE, learned from outcomes, never dropping a traceback or a summary line.",
+  "author": {
+    "name": "Aitherium"
+  },
+  "license": "MIT"
+}
