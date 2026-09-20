@@ -399,6 +399,20 @@ class LLMRouter:
             or (getattr(self._config, "llm_base_url", "") if self._config else "")
             or os.environ.get("AITHER_LLM_BASE_URL", "")
         )
+        # WHEN THE OPERATOR NAMED AN ENDPOINT, A SLOW ONE IS NOT AN ABSENT ONE.
+        # health_check gives it 5 s; on a loaded host the named server routinely
+        # takes longer, and the port scan below then finds something else in
+        # milliseconds. Measured 2026-09-20 on the #agents responder: the same
+        # process alternated between real answers and
+        # "[agent error: 503 ... on-device inference failed (gemma3npc-1b)]",
+        # because the fallback landed on :8200 -- which health-checks, lists
+        # models and 503s every chat -- and that 503 was POSTED TO THE CHANNEL as
+        # the agent's own reply. Set AITHER_LLM_STRICT_BASE_URL=1 where the
+        # endpoint is policy (this platform routes every call through
+        # MicroScheduler) and a named endpoint becomes the ONLY candidate:
+        # a slow answer, never a different brain.
+        strict = str(os.environ.get("AITHER_LLM_STRICT_BASE_URL", "")).strip().lower() in (
+            "1", "true", "yes", "on")
         if vllm_env:
             try:
                 url = vllm_env.rstrip("/")
@@ -406,6 +420,10 @@ class LLMRouter:
                     url = f"{url}/v1"
                 p = OpenAIProvider(base_url=url, api_key="not-needed", default_model=self._model or "",
                                    ctk_by_model=_DEFAULT_CTK_BY_MODEL)
+                if strict:
+                    self._provider_name = "vllm"
+                    logger.info("vLLM pinned by AITHER_LLM_STRICT_BASE_URL at %s", url)
+                    return p
                 if await p.health_check():
                     try:
                         models = await p.list_models()
