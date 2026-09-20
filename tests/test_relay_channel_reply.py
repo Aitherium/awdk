@@ -96,7 +96,7 @@ async def test_the_first_pass_only_primes_then_answers_once():
 
     http.rows = rows + [_msg("2", "david+77db6255", "lyra: and the db?", to=["lyra"])]
     assert await c.poll_channel_once(http) == 1
-    assert agent.seen == ["lyra: and the db?"]
+    assert agent.seen == ["[relay #agents] david+77db6255 says: lyra: and the db?"],         "the turn must carry who asked and where, or the reply does not know it is in a channel"
     url, body = http.posts[-1]
     assert url.endswith("/channels/agents/messages")
     assert body["nick"] == NICK and body["agent"] is True

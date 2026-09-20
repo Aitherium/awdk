@@ -386,8 +386,15 @@ class RelayClient:
             if not addressed_to_me(content, self.nick):
                 continue
             text = strip_envelope(content)
+            # WHO AND WHERE, not just what. Measured 2026-09-20 on the first live
+            # answer: asked "what channel are you on?", the agent replied "No channel
+            # on my end -- I'm just here on your Windows machine", because the turn
+            # carried the words and none of the situation. A reply that does not know
+            # it is in a shared channel reads as a different agent than the one people
+            # addressed.
+            framed = f"[relay {self.channel}] {sender} says: {text}"
             try:
-                resp = await self.agent.chat(text)
+                resp = await self.agent.chat(framed)
                 answer = getattr(resp, "content", None) or str(resp)
             except Exception as exc:  # noqa: BLE001 - a bad turn must not kill the loop
                 logger.error("relay: agent turn failed for %s: %s", sender, exc)

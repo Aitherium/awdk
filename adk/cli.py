@@ -5570,7 +5570,12 @@ def _relay_join_base(args) -> str:
     if getattr(args, "url", ""):
         return args.url.rstrip("/")
     if getattr(args, "local", False):
-        return "https://localhost:8205/v1"
+        # 127.0.0.1, NOT "localhost": localhost resolves to BOTH ::1 and 127.0.0.1 here,
+        # and the fleet relay publishes on IPv4 only -- a client that tries ::1 first
+        # spends its whole connect timeout there and reports the relay as unreachable
+        # while curl against 127.0.0.1 answers 200 (measured 2026-09-20, three restarts
+        # of the #agents responder).
+        return "https://127.0.0.1:8205/v1"
     return "https://relay.aitherium.com/api/relay/v1"
 
 
@@ -5585,7 +5590,7 @@ def _relay_acta_base(saved: dict, args) -> str:
         if cand:
             return cand.rstrip("/")
     if getattr(args, "local", False):
-        return "https://localhost:8206"          # portal-gateway (ACTA) on the mesh box
+        return "https://127.0.0.1:8206"          # portal-gateway (ACTA) on the mesh box
     return "https://mcp.aitherium.com"            # cloud ACTA surface
 
 
@@ -5935,7 +5940,7 @@ def _relay_notifications(args) -> int:
     if getattr(args, "url", ""):
         base = args.url.rstrip("/")
     elif getattr(args, "local", False):
-        base = "https://localhost:8205/v1"
+        base = "https://127.0.0.1:8205/v1"
     else:
         base = "https://relay.aitherium.com/api/relay/v1"
 
@@ -6040,6 +6045,23 @@ def _relay_notifications(args) -> int:
     return 0
 
 
+def _session_bearer_token() -> str:
+    """The device-flow bearer this box mints -- preferred over a saved login.
+
+    On a fleet host `~/.aither/session-bearer` is the live identity -- it is what
+    awrelay, the MCP bridge and every session hook already present -- and it is
+    re-minted for running processes, so it outlives the saved login this CLI was
+    written against. Measured 2026-09-20: `adk relay join` refused to start with
+    "No relay credential" (and, worse, joined with a STALE saved key and got a
+    bare 403) on a box whose bearer was valid the whole time.
+    """
+    try:
+        return (Path.home() / ".aither" / "session-bearer").read_text(
+            encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def cmd_relay(args):
     """Connect this agent to AitherRelay as a chat participant — one command.
 
@@ -6072,7 +6094,13 @@ def cmd_relay(args):
     from adk.relay_client import RelayClient
 
     saved = load_saved_config()
+    # ORDER MATTERS: an explicit token, then the env, then THIS HOST'S LIVE BEARER,
+    # and only then the saved login. The saved credential does not expire in the
+    # config file -- measured 2026-09-20, it was a 17-character key the relay had
+    # long since stopped accepting, and because it sorted first the join failed with
+    # "check the token / nick / channel" on a box whose bearer was valid all along.
     token = (getattr(args, "token", "") or os.environ.get("AITHER_RELAY_TOKEN", "")
+             or _session_bearer_token()
              or saved.get("relay_token", "")
              or saved.get("api_key", "") or saved.get("access_token", ""))
     if not token:
@@ -6083,7 +6111,7 @@ def cmd_relay(args):
     if getattr(args, "url", ""):
         base = args.url.rstrip("/")
     elif getattr(args, "local", False):
-        base = "https://localhost:8205/v1"       # local fleet AitherRelay (internal CA)
+        base = "https://127.0.0.1:8205/v1"       # local fleet AitherRelay (internal CA)
     else:
         base = "https://relay.aitherium.com/api/relay/v1"   # cloud fabric (public cert)
 
@@ -13567,14 +13595,14 @@ def _register_commands(sub):
     relay_join_p = relay_sub.add_parser("join", help="Join AitherRelay and answer DMs on this agent's own inference")
     relay_join_p.add_argument("--nick", help="Agent nick on the relay (default: your login username)")
     relay_join_p.add_argument("--url", help="Relay API base (default: cloud relay.aitherium.com)")
-    relay_join_p.add_argument("--local", action="store_true", help="Use the local fleet relay (https://localhost:8205/v1)")
+    relay_join_p.add_argument("--local", action="store_true", help="Use the local fleet relay (https://127.0.0.1:8205/v1)")
     relay_join_p.add_argument("--channel", default="#agents", help="Channel to join (default: #agents)")
     relay_join_p.add_argument("--token", help="Bearer credential (default: provisioned/saved login / $AITHER_RELAY_TOKEN)")
 
     relay_prov_p = relay_sub.add_parser(
         "provision", help="Enroll a fleet agent so it may DM humans (binds nick -> your owner identity)")
     relay_prov_p.add_argument("nick", help="Agent nick to enroll (e.g. optiplex-agent)")
-    relay_prov_p.add_argument("--local", action="store_true", help="Use the local mesh ACTA/portal-gateway (https://localhost:8206)")
+    relay_prov_p.add_argument("--local", action="store_true", help="Use the local mesh ACTA/portal-gateway (https://127.0.0.1:8206)")
     relay_prov_p.add_argument("--acta-url", help="ACTA/portal-gateway base URL (serves /v1/auth/keys)")
     relay_prov_p.add_argument("--roster", help="Path to the relay fleet_trust.json (default: ./AitherOS/config/relay/fleet_trust.json or $AITHER_RELAY_FLEET_TRUST_FILE)")
     relay_prov_p.add_argument("--user-id", help="Assert your owner user_id (skips ACTA lookup)")
@@ -13588,7 +13616,7 @@ def _register_commands(sub):
         "notifications", help="Get stored notifications for this agent (one-shot)")
     relay_notif_p.add_argument("--nick", help="Agent nick on the relay (default: your login username)")
     relay_notif_p.add_argument("--url", help="Relay API base (default: cloud relay.aitherium.com)")
-    relay_notif_p.add_argument("--local", action="store_true", help="Use the local fleet relay (https://localhost:8205/v1)")
+    relay_notif_p.add_argument("--local", action="store_true", help="Use the local fleet relay (https://127.0.0.1:8205/v1)")
     relay_notif_p.add_argument("--unread", action="store_true", help="Only show unread notifications")
     relay_notif_p.add_argument("--ack", action="store_true", help="Mark retrieved notifications as read")
     relay_notif_p.add_argument("--token", help="Bearer credential (default: provisioned/saved login / $AITHER_RELAY_TOKEN)")
