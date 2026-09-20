@@ -120,6 +120,19 @@ dependencies = [
     # test failure, it is what a stranger gets.
     "awgit>=1.2.0",
     "awrelay>=0.2.0",
+    # awreport - the redaction that scrubs a secret before a bug report leaves the
+    # machine. adk/bugreport.py POSTs the report to gateway.aitherium.com AND builds
+    # a PRE-FILLED PUBLIC ISSUE url on Aitherium/awdk, carrying free user text and
+    # `str(exc_value)` plus three traceback frames. Nothing scrubbed either until
+    # 2026-09-20, while awreport -- written for exactly this -- had ZERO importers
+    # anywhere in the repo.
+    #
+    # Hard, not an extra, and the rule below is why that is allowed: awreport is
+    # PUBLISHED on PyPI, so a plain `pip install awdk` gets it. It has to be hard in
+    # any case -- redact_report() fails CLOSED, so behind a soft guard a stranger's
+    # install would refuse to file any bug at all, which is the silent-quality-loss
+    # shape the ddgs note above argues against.
+    "awreport>=0.1.0",
 ]
 
 [project.optional-dependencies]

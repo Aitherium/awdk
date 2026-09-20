@@ -17,6 +17,8 @@ import httpx
 
 from adk import __version__
 
+from awreport import RedactionError, redact_feedback
+
 logger = logging.getLogger("adk.bugreport")
 
 _GATEWAY_URL = "https://gateway.aitherium.com"
@@ -83,6 +85,63 @@ def build_report(
     return report
 
 
+class ReportNotRedactableError(RuntimeError):
+    """Redaction could not be performed, so nothing may leave this machine."""
+
+
+def redact_report(report: dict) -> dict:
+    """Scrub the report through awreport before ANY of it leaves the machine.
+
+    `build_report` is the inspectable payload -- `_collect_system_info` genuinely
+    holds no secrets. The two fields that reach a stranger do: `description` is
+    free text the user typed, and `last_error` carries `str(exc_value)` plus the
+    last three traceback frames. In this codebase an exception message routinely
+    names a URL with a query token or a home path, and both of those fields are
+    interpolated into `_build_github_url` -- a PRE-FILLED PUBLIC ISSUE on
+    Aitherium/awdk -- as well as POSTed to the gateway. Until 2026-09-20 nothing
+    here redacted anything; awreport, the brick written for exactly this, had
+    zero importers in the repo.
+
+    Fails CLOSED. awreport's `redact_feedback` raises rather than returning a
+    half-scrubbed string, and this function turns any failure into a refusal:
+    a report that cannot be scrubbed is not sent, not saved and not turned into
+    a URL. A redactor that falls back to the raw text is worse than none,
+    because the promise on the tin is what makes people paste a stack trace in.
+    """
+    error = report.get("last_error") or {}
+    stack = ""
+    if error:
+        frames = error.get("traceback") or []
+        stack = "".join(frames) + "{}: {}".format(
+            error.get("type", ""), error.get("message", ""))
+
+    try:
+        clean = redact_feedback(
+            title=str(report.get("description", ""))[:80],
+            description=str(report.get("description", "")),
+            environment=report.get("system") or {},
+            stack_trace=stack or None,
+        )
+    except RedactionError as exc:
+        raise ReportNotRedactableError(str(exc)) from exc
+
+    out = dict(report)
+    out["description"] = clean.get("description", "")
+    out["system"] = clean.get("environment") or {}
+    if error:
+        scrubbed = clean.get("stack_trace", "")
+        out["last_error"] = {
+            "type": error.get("type", ""),
+            # The message and the frames are re-derived from the SCRUBBED text,
+            # never carried over from `error`: copying either field back would
+            # reintroduce exactly what was just removed.
+            "message": scrubbed,
+            "traceback": [scrubbed],
+        }
+    out["redacted"] = True
+    return out
+
+
 async def submit_bug_report(
     description: str,
     agent_name: str = "",
@@ -96,8 +155,21 @@ async def submit_bug_report(
     """
     report = build_report(description, agent_name, llm_backend, include_logs)
 
+    # Before the dry-run return, so `--dry-run` shows the payload that would
+    # actually be sent. A dry run that prints the RAW report is a dry run that
+    # lies about the thing it exists to let you check.
+    try:
+        report = redact_report(report)
+    except ReportNotRedactableError as exc:
+        return {
+            "submitted": False,
+            "local_path": None,
+            "github_url": None,
+            "error": "redaction failed, so nothing was sent or saved: {}".format(exc),
+        }
+
     if dry_run:
-        return {"submitted": False, "report": report, "message": "Dry run — nothing sent"}
+        return {"submitted": False, "report": report, "message": "Dry run - nothing sent"}
 
     # Always save locally
     _save_local(report)
