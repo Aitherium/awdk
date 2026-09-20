@@ -6099,7 +6099,11 @@ def cmd_relay(args):
     except KeyboardInterrupt:
         print("\n  Left the relay.")
     except Exception as e:  # noqa: BLE001 — surface a clean error, not a traceback
-        print(f"  Relay error: {e}")
+        # NAME THE EXCEPTION. httpx's timeouts stringify to "", so a relay that was
+        # merely starved printed `Relay error: ` -- a line that tells a supervisor
+        # (and the person reading its log) nothing at all. Measured 2026-09-20 while
+        # standing up the #agents responder: three restarts, three empty reasons.
+        print(f"  Relay error: {type(e).__name__}: {e}".rstrip(": "))
         return 1
     return 0
 
