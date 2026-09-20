@@ -1,4 +1,20 @@
-import { test, expect } from 'claude-code/testing'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+
+/*
+ * node:test, NOT `claude-code/testing`. Importing the host's harness made this
+ * file die with ERR_MODULE_NOT_FOUND on every machine that is not inside the
+ * plugin host -- 0 passed / 1 failed, identical to the code being broken.
+ * A test that cannot tell "absent harness" from "broken code" is not a test.
+ * node:test ships with node, so this runs standalone and in the host alike.
+ *
+ * `expect` is a three-line shim over node:assert so the assertions below read
+ * the same as they did; nothing about what they check has changed.
+ */
+const expect = (got: unknown) => ({
+  toBe: (want: unknown) => assert.strictEqual(got, want),
+  toEqual: (want: unknown) => assert.deepStrictEqual(got, want),
+})
 import { commandOf, countLines, forkOf, textOf, withText } from './compact.ts'
 
 /*
