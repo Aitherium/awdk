@@ -333,6 +333,15 @@ class RelayClient:
         await self._ensure_joined(client)
         pass_token = await self._door_attestation(client, self.channel)
         resp = await _send({"X-Door-Attestation": pass_token} if pass_token else None)
+        if resp.status_code == 403:
+            # MEMBERSHIP IS SERVER STATE AND IT CAN VANISH UNDER US. The relay lost its
+            # roster when its container restarted (2026-09-20, an HA pair cycling), and
+            # this loop kept posting into "#agents is a agent-only channel. You don't
+            # have permission" forever, because `_joined` is per-PROCESS and was still
+            # True. A 403 is the one signal that says "join again", so it does.
+            self._joined = False
+            await self._ensure_joined(client)
+            resp = await _send({"X-Door-Attestation": pass_token} if pass_token else None)
         if resp.status_code == 403 and not pass_token:
             # The 403 is how a door announces itself; knock once, then retry.
             pass_token = await self._door_attestation(client, self.channel)

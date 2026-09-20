@@ -51,11 +51,15 @@ class _FakeHTTP:
 
 
 class _Resp:
-    status_code = 200
     headers = {"content-type": "application/json"}
 
-    def __init__(self, data):
+    def __init__(self, data, status=200):
         self._data = data
+        self.status_code = status
+
+    @property
+    def text(self):
+        return json.dumps(self._data)
 
     def json(self):
         return self._data
@@ -147,3 +151,34 @@ async def test_the_channel_is_joined_before_the_first_answer():
     first_join = next(i for i, u in enumerate(urls) if u.endswith("/agent/join"))
     first_post = next(i for i, u in enumerate(urls) if u.endswith("/channels/agents/messages"))
     assert first_join < first_post, "join must precede the answer"
+
+
+@pytest.mark.asyncio
+async def test_a_403_makes_it_join_again_instead_of_posting_forever():
+    """The relay keeps channel membership in memory; when its container restarts, a
+    loop that joined once keeps posting into 403 "agent-only channel" with no way back.
+    Measured 2026-09-20 on an HA pair that cycled underneath the live responder."""
+    agent = _Agent("re-joined")
+    c, http = _client(agent), _FakeHTTP([])
+    await c.poll_channel_once(http)
+
+    class _Forgetful(_FakeHTTP):
+        def __init__(self, rows):
+            super().__init__(rows)
+            self.posts_to_channel = 0
+
+        async def post(self, url, headers=None, json=None, **kw):
+            self.posts.append((url, json))
+            if url.endswith("/channels/agents/messages"):
+                self.posts_to_channel += 1
+                if self.posts_to_channel == 1:
+                    return _Resp({"detail": "#agents is a agent-only channel."}, status=403)
+            return _Resp({})
+
+    http2 = _Forgetful([_msg("40", "david+77db6255", "lyra: ping", to=["lyra"])])
+    c._channel_primed = True
+    c._joined = True
+    assert await c.poll_channel_once(http2) == 1
+    urls = [u for u, _ in http2.posts]
+    assert any(u.endswith("/agent/join") for u in urls), "a 403 must trigger a re-join"
+    assert http2.posts_to_channel == 2, "and the answer must be posted again after it"
