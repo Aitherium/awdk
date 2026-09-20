@@ -5911,6 +5911,19 @@ def _relay_provision(args) -> int:
 
     where = "--local" if getattr(args, "local", False) else ""
     print(f"\n  Done. Bring the agent online:  adk relay join --nick {nick} {where}".rstrip())
+    if cred_kind != "minted":
+        # SAY WHAT WILL ACTUALLY HAPPEN. Without a minted agent key the relay refuses the
+        # bare nick ("Requested nick does not match authenticated identity") -- the roster
+        # binding lifts that only for an ACTA-keyed caller. An unqualified "Done" here
+        # pointed people at a command that 403s, which is how this flow earned its
+        # reputation. `adk relay join` now falls back to `<you>+<nick>`, so the agent does
+        # come online and stays distinguishable; this says so instead of letting them find
+        # out from a refusal.
+        print(f"  Note: no on-mesh mint token, so the relay will not grant the bare nick "
+              f"'{nick}'. The agent joins as '<your-nick>+{nick}' -- same agent, still "
+              f"distinguishable in the channel.")
+        print("  For the bare nick, run this ON the mesh with AITHER_INTERNAL_SECRET set "
+              "(it mints a revocable agent key), or have your platform admin run it.")
     if not wrote:
         print("  (join will succeed but DMs to HUMANS stay quarantined until the roster entry lands + commcore restarts.)")
     return 0

@@ -183,6 +183,42 @@ class RelayClient:
         # solves this by omitting the nick when authenticated; do the same on
         # retry, and ADOPT the identity nick so later logs name the real actor.
         if r.status_code == 403 and self.nick:
+            # KEEP THE AGENT DISTINGUISHABLE. A relay refuses a nick its roster binds to
+            # an owner unless the caller holds a platform-minted ACTA key -- a credential
+            # that exists only inside the fleet, so for everyone else "run my agent on a
+            # channel" dead-ended here. The alias `<identity>+<nick>` is a name the relay
+            # DOES grant an authenticated owner, and it still says which agent is speaking
+            # (`david+aither`, not a second anonymous `david`). Try it before falling back
+            # to the bare identity, which makes every agent look like its owner.
+            alias = ""
+            try:
+                whoami = await client.post(f"{self.base_url}/auth/relay-token",
+                                           headers=self._headers(), json={})
+                if whoami.status_code == 200:
+                    import base64
+                    tok = (whoami.json() or {}).get("relay_token") or ""
+                    if tok.count(".") == 2:
+                        pad = tok.split(".")[1] + "=="
+                        who = json.loads(base64.urlsafe_b64decode(pad))
+                        base_nick = str(who.get("nick") or "")
+                        if base_nick and base_nick != self.nick:
+                            alias = f"{base_nick}+{self.nick}"
+            except Exception as exc:  # noqa: BLE001 - the plain retry below still runs
+                logger.debug("relay: could not derive an alias nick: %s", exc)
+            if alias:
+                aliased = await client.post(
+                    f"{self.base_url}/agent/join",
+                    headers=self._headers(),
+                    params={"channel": self.channel},
+                    json={"nick": alias, "agent_service": self.agent_service},
+                )
+                if aliased.status_code == 200:
+                    logger.warning(
+                        "relay: nick %r needs a platform-minted agent key; joined as %r "
+                        "instead -- same agent, and the channel can still tell it apart",
+                        self.nick, alias)
+                    self.nick = alias
+                    return True
             retry = await client.post(
                 f"{self.base_url}/agent/join",
                 headers=self._headers(),
@@ -500,7 +536,8 @@ class RelayClient:
                 partner = p.get("nick") or ""
                 thread = self._rows(await self._get(client, f"/dms/{partner}")) if partner else []
                 if thread:
-                    self._seen[partner] = str(thread[-1].get("id") or thread[-1].get("message_id") or "")
+                    self._seen[partner] = str(
+                        thread[-1].get("id") or thread[-1].get("message_id") or "")
             while self._running:
                 try:
                     await self.poll_once(client)
