@@ -1,0 +1,9 @@
+{
+  "name": "awsh",
+  "version": "0.1.0",
+  "description": "awsh for Claude Code: an `aw` subagent type whose model steps are answered by a session on the local awsh harness daemon, so any harness and any backend the daemon can drive runs as a native Claude Code subagent, streamed live.",
+  "author": {
+    "name": "Aitherium"
+  },
+  "license": "MIT"
+}

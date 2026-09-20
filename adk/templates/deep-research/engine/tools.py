@@ -169,12 +169,14 @@ def build_research_tools(session: ResearchSession) -> list[Callable]:
             ledger.record_dedup(cached[:max_chars])  # avoided a re-fetch + re-read
             return json.dumps({"url": url, "text": cached[:max_chars], "cached": True})
         try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True,
-                                         max_redirects=5) as client:
-                resp = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; DeepResearchAgent/1.0)"})
-                resp.raise_for_status()
-                text = _strip_html(resp.text)
+            # The shared fetch ladder: httpx, then Scrapling when a bot wall answers
+            # (awdk[scrape] extra), with the SSRF guard in front of every engine.
+            from adk.webfetch import fetch as _ladder_fetch
+            result = await _ladder_fetch(url, max_chars=10_000_000)
+            if result.error and not result.text:
+                return json.dumps({"url": url, "error": result.error,
+                                   "engine": result.engine})
+            text = result.text
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"url": url, "error": str(exc)})
         session._page_cache[url] = text

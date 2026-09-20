@@ -78,8 +78,8 @@ def mediaforge_color_convert(media_id: int, out_colorspace: str = "ACEScg",
 
 def mediaforge_color_grade(media_id: int, slope: float = 1.0, offset: float = 0.0,
                       power: float = 1.0, saturation: float = 1.0,
-                      slope_rgb: list = None, offset_rgb: list = None,
-                      power_rgb: list = None, mix: float = 1.0) -> dict:
+                      slope_rgb: list[float] = None, offset_rgb: list[float] = None,
+                      power_rgb: list[float] = None, mix: float = 1.0) -> dict:
     """ASC CDL grade (the film-industry primary): slope=gain, offset=lift, power=gamma,
     plus saturation. Master values hit all channels; pass slope_rgb/offset_rgb/power_rgb
     as [r,g,b] for per-channel control (e.g. slope_rgb=[1.05,1.0,0.92] warms highlights).

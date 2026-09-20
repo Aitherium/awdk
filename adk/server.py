@@ -481,11 +481,20 @@ def create_app(
         # cloud, so connecting to it is fully consistent with the sovereign posture and is
         # what closes the parity gap against genesis's ~1500 platform tools.
         if offline:
-            await _connect_local_mcp_if_available()
-            # Do NOT let a momentary gateway flap cost this daemon its 1,227 platform
-            # tools for the rest of its life. Both loops are background tasks:
-            # boot must never block on the gateway being up.
+            # BIND FIRST. This used to `await` attach attempt #1 right here, ahead of
+            # uvicorn serving anything. Measured 2026-09-19 with the gateway mid-rebuild:
+            # that attempt took ~30 s to fail, the awnode/LLM probes below added ~10 s more,
+            # and the :9001 watchdog task ticks every 60 s and kills any `adk.server` that
+            # is not LISTENING -- so every daemon was executed mid-boot: 15 relaunches in
+            # 30 min, none ever logging "Application startup complete", and every awsh
+            # turn fell through to the cloud sign-in dead end. The supervisor below
+            # already owns re-attach; it now owns attempt #1 as well. `mcp_retry_now` is
+            # pre-set so that attempt starts immediately in the background instead of
+            # after the loop's first 5 s backoff. /health reports `tools.mode` honestly
+            # (builtin-only until the attach lands), which is what the capability probe
+            # and its 90 s grace were written for.
             _state["mcp_retry_now"] = asyncio.Event()
+            _state["mcp_retry_now"].set()
             _state["mcp_supervisor_task"] = asyncio.create_task(_supervise_local_mcp())
         if not offline:
             await _connect_gateway_mcp()
@@ -2775,26 +2784,6 @@ def create_app(
         # ~/.aither/ui-packs/. Never blank — falls back console -> minimal.
         return _pack_html()
 
-    @app.get("/packs/{pack_name}/{asset_path:path}", response_class=FileResponse)
-    async def pack_asset(pack_name: str, asset_path: str):
-        """Static assets for a UI pack (e.g. the on-device Bonsai worker).
-
-        The pack's index.html is served as a STRING (load_ui_pack); its sibling
-        files were served by nothing, which is why the old on-device backend
-        inlined its runtime as a blob. Drop-in dir wins, then the packaged dir.
-        Traversal is refused, and an asset that does not exist is a 404 — never
-        a fallback to the index (a missing worker must be loud, not a page).
-        """
-        if not asset_path or ".." in asset_path or "\\" in asset_path or asset_path.startswith("/"):
-            raise HTTPException(status_code=404, detail="no such asset")
-        base = _ui_packs_dir()
-        cand = os.path.join(base, pack_name, asset_path)
-        if not os.path.isfile(cand):
-            cand = os.path.join(os.path.dirname(__file__), "webui", "packs", pack_name, asset_path)
-        if not os.path.isfile(cand):
-            raise HTTPException(status_code=404, detail="no such asset")
-        return FileResponse(cand)
-
     @app.get("/ui", response_class=HTMLResponse)
     async def console_page_alias():
         return _pack_html()
@@ -2906,21 +2895,6 @@ def create_app(
         if not os.path.isfile(cand):
             raise HTTPException(status_code=404, detail="no such asset")
         return FileResponse(cand)
-
-    @app.get("/ui", response_class=HTMLResponse)
-    async def console_page_alias():
-        return _pack_html()
-
-    @app.get("/chat", response_class=HTMLResponse)
-    async def chat_page_minimal():
-        # Back-compat: the original lightweight streaming chat page (the
-        # "minimal" pack), regardless of the selected pack.
-        return _pack_html("minimal")
-
-    @app.get("/aeon", response_class=HTMLResponse)
-    async def aeon_page():
-        # Aeon group-chat UI pack — multi-agent discussion.
-        return _pack_html("aeon")
 
 
     # ─── Admin/settings console API (all under /admin/*, bearer-gated) ───
@@ -3519,7 +3493,33 @@ def create_app(
 
     @app.get("/v1/models")
     async def list_models_endpoint():
+        import inspect as _inspect
+
         a = await get_agent()
+        # HONESTY (2026-09-13). This listing hardcoded `owned_by: local` for every id the
+        # provider returned -- including, that afternoon, an orchestrator whose unit was
+        # masked and whose every answer came from DeepSeek-flash. When the provider is an
+        # OpenAI-compatible upstream (MicroScheduler), forward ITS listing, which carries
+        # the `aither` availability block; fall back to the flat list only when it cannot.
+        # get_provider is async on the real LLM facade and a plain MagicMock under
+        # test; a fake provider's base_url is not a str. Neither may 500 the listing.
+        try:
+            provider = a.llm.get_provider()
+            if _inspect.isawaitable(provider):
+                provider = await provider
+        except (RuntimeError, OSError, ConnectionError, AttributeError, TypeError):
+            provider = None
+        base = getattr(provider, "base_url", None)
+        if isinstance(base, str) and base:
+            try:
+                async with httpx.AsyncClient(timeout=10.0, verify=tls_verify()) as _c:
+                    r = await _c.get(base.rstrip("/").removesuffix("/v1") + "/v1/models")
+                if r.status_code == 200 and isinstance(r.json().get("data"), list):
+                    return {"object": "list", "data": r.json()["data"],
+                            "aither_source": base}
+            except Exception as exc:  # noqa: BLE001 - fall through to the flat list
+                logger.debug("upstream /v1/models unavailable, serving the flat "
+                             "list without availability: %s", exc)
         try:
             models = await a.llm.list_models()
         except (RuntimeError, OSError, ConnectionError):
@@ -3533,6 +3533,8 @@ def create_app(
                     "object": "model",
                     "created": 0,
                     "owned_by": "local",
+                    "aither": {"available": None, "probed": False,
+                               "note": "flat list; upstream availability not consulted"},
                 }
                 for m in models
             ],

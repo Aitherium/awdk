@@ -35,10 +35,45 @@ FAIL-SOFT, NEVER FAIL-SILENT
 An unknown pillar is REJECTED rather than coerced to a default lane. Silently filing a
 mystery event under ``orchestration`` is how a lane stops meaning anything, and the
 producer that sent it would never learn it was wrong.
+
+ADDRESSING (``to``/``hops``) IS A ROUTING HINT, NEVER AUTHORIZATION
+------------------------------------------------------------------
+An event may name up to :data:`MAX_TO_TARGETS` recipients so something downstream can
+carry it to a specific body. That is all it is. ``actor.kind``/``id``/``name`` are echoed
+verbatim from the payload the producer sent, so an addressed event proves only that
+*somebody* asked — authority travels in the mailbox file's ``aither-steer v1
+authority="owner|peer"`` header, not here. A dispatcher that read ``to`` as permission
+would let any producer put text in front of any session.
+
+``actor.*`` IS THE CLAIM; ``auth`` IS THE DAEMON'S OWN FINDING
+---------------------------------------------------------------
+A stamped event carries a second block, ``auth = {"principal", "plan"}``, built ONLY
+from the ``auth=`` argument :meth:`Room.publish` was called with -- the ``Principal`` the
+daemon's ``POST /events`` route resolved from the bearer the producer actually presented.
+A producer that writes ``auth`` into its own payload gets it dropped on the fixed-key-set
+line like any other undeclared field, so a non-empty ``auth`` was never typed by a
+producer. The two blocks must never be read interchangeably: ``actor.kind == "human"`` is
+what the sender SAID, ``auth.plan == "owner"`` is what the daemon FOUND. The in-process
+producers (spool tailer, transcript bridge) call ``publish`` with no ``auth`` and land
+with ``auth == {}``, which every consumer must treat as "unvouched" -- never as owner.
+
+Validation lives in :meth:`Room._normalise` and NOT in the HTTP route, because
+``_normalise`` returns a FIXED key set: a field added anywhere else is silently dropped
+on the way in, and the two loudest producers (the spool tailer and the transcript bridge)
+never cross the route at all — a rule on the route would read as enforced and miss them.
+
+LISTENERS
+---------
+:meth:`Room.add_listener` / :meth:`RoomRegistry.add_listener` fan out at the END of
+``publish``, OUTSIDE the lock and after the transcript append. Both are required: a
+listener that raised into ``publish`` would turn one bad consumer into a lost event, and a
+listener that ran inside the lock would turn the already-25-s publish on a huge room into
+a wedge.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -47,7 +82,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from adk.aither_events_generated import (
     ACTOR_KINDS,
@@ -85,6 +120,25 @@ _ROOM_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 DEFAULT_ROOM = "main"
 
+#: How many actors one event may address. Small on purpose: ``to`` exists to steer a
+#: named body, and a producer that wants to reach everyone already has the room.
+MAX_TO_TARGETS = 8
+
+#: 🚩 A ROUND TRIP, NOT A CHAIN. ``hops`` counts how many times an addressed event has
+#: been re-emitted by something that received one. 2 is the ceiling because the shapes
+#: this spine actually needs are "owner asks an agent" (0) and "that agent answers" (1);
+#: anything deeper is a loop, and a loop here lands text in interactive sessions.
+MAX_HOPS = 2
+
+#: Actor ids that may appear in ``to``. Constrained rather than sanitised for the same
+#: reason room ids are: sanitising invites two different ids collapsing onto one target.
+#: Colon is allowed because the namespaced forms (``relay:<nick>``) are already in use.
+_ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+#: A publish listener, called as ``fn(room, event)`` or ``fn(event)`` — whichever its
+#: signature takes (see :func:`_listener_wants_room`).
+RoomListener = Callable[..., Any]
+
 
 class RoomError(ValueError):
     """A malformed room id or event. Always carries the reason, never a bare refusal."""
@@ -107,6 +161,114 @@ def validate_room_id(room_id: str) -> str:
     return room_id
 
 
+def _normalise_actor(kind: str, actor_id: str, raw: Dict[str, Any]) -> Dict[str, Any]:
+    """The actor as the room stores it: kind/id/name, plus `title` when set.
+
+    Rebuilding the actor from three literal keys silently DROPPED every other
+    field a producer sent -- measured 2026-09-19: the transcript bridge set
+    `title` (what the session is working on) on every event and every stored
+    event served `title: None`, with producer and consumer both looking right.
+    `title` rides only when non-empty so the stored shape is unchanged for
+    every producer that does not carry one; it is clipped, because a room row
+    is a line the owner reads, not a document.
+    """
+    out = {"kind": kind, "id": actor_id, "name": str(raw.get("name") or actor_id)}
+    title = str(raw.get("title") or "").strip()
+    if title:
+        out["title"] = title[:120]
+    return out
+
+
+def _normalise_addressing(event: Dict[str, Any], sender_id: str) -> Dict[str, Any]:
+    """Validate ``to``/``hops`` and return ONLY the keys that belong on the event.
+
+    Both default ABSENT: an event with neither field comes back as ``{}``, so every
+    producer shape that existed before addressing (spool, transcript bridge, desk, relay)
+    produces a byte-identical envelope.
+
+    🚩 AN EMPTY ``to`` IS ABSENT, NOT AN ERROR. The daemon's ``PublishEvent`` model
+    defaults ``to`` to ``[]`` and ``hops`` to ``0``, so every HTTP publish carries them
+    whether the producer meant to address anyone or not. Refusing an empty list would
+    400 every existing HTTP producer; echoing ``to: []`` would mark every event as
+    "addressed to nobody". So ``[]`` and ``hops=0`` with no targets both collapse to
+    nothing. ``hops`` is still VALIDATED first, so a bad value is refused either way.
+
+    ``to`` is a routing hint, never authorization — see the module docstring.
+    """
+    raw_to = event.get("to")
+    raw_hops = event.get("hops")
+
+    hops = 0
+    if raw_hops is not None:
+        # bool is an int subclass: ``hops: true`` must not read as 1.
+        if isinstance(raw_hops, bool) or not isinstance(raw_hops, int):
+            raise RoomError(f"hops must be an integer 0-{MAX_HOPS}, got {raw_hops!r}")
+        if raw_hops < 0:
+            raise RoomError(f"hops {raw_hops} is negative; expected 0-{MAX_HOPS}")
+        if raw_hops > MAX_HOPS:
+            raise RoomError(f"hops {raw_hops} exceeds the limit {MAX_HOPS}")
+        hops = raw_hops
+
+    if raw_to is None or (isinstance(raw_to, (list, tuple)) and not raw_to):
+        return {"hops": hops} if hops else {}
+
+    # A bare string is the likeliest producer mistake, and iterating it would address
+    # one actor per CHARACTER — refuse it by name rather than by accident.
+    if isinstance(raw_to, str) or not isinstance(raw_to, (list, tuple)):
+        raise RoomError(
+            f"to must be a list of 1-{MAX_TO_TARGETS} actor ids, got {type(raw_to).__name__}"
+        )
+    if len(raw_to) > MAX_TO_TARGETS:
+        raise RoomError(f"to lists {len(raw_to)} targets; at most {MAX_TO_TARGETS}")
+
+    targets: List[str] = []
+    for index, value in enumerate(raw_to):
+        target = value.strip() if isinstance(value, str) else ""
+        if not _ACTOR_ID_RE.match(target):
+            raise RoomError(
+                f"to[{index}] is not a valid actor id ({value!r}): letters, digits, dot, "
+                "dash, underscore and colon only, 1-128 chars"
+            )
+        if target == sender_id:
+            raise RoomError(f"to[{index}] names the sender; an actor cannot address itself")
+        # Deduped, order kept: a retrying producer that lists a target twice must not
+        # get it delivered twice by a dispatcher that trusts the list.
+        if target not in targets:
+            targets.append(target)
+    return {"to": targets, "hops": hops}
+
+
+def _listener_wants_room(fn: RoomListener) -> bool:
+    """Does this listener take ``(room, event)`` or only ``(event)``?
+
+    Decided ONCE, at registration, from the signature. A dispatcher needs the Room (to
+    resolve a target against the room's own participants); a counter or a probe needs
+    only the event. Guessing by calling and catching ``TypeError`` would misread a
+    TypeError raised INSIDE the listener as a signature mismatch and call it twice.
+    Only REQUIRED positionals count: ``def on_event(event, sink=None)`` is a one-arg
+    listener with an option, not a request for the room. ``*args`` and anything
+    uninspectable get ``(room, event)`` — the richer form.
+    """
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return True
+    required = 0
+    for param in params:
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if param.default is inspect.Parameter.empty and param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            required += 1
+    return required >= 2
+
+
+def _listener_name(fn: RoomListener) -> str:
+    return str(getattr(fn, "__qualname__", None) or getattr(fn, "__name__", None) or fn)
+
+
 class Room:
     """One ordered, durable, replayable event stream with a participant roster."""
 
@@ -122,6 +284,11 @@ class Room:
         #: announce it -- the same reason the cockpit derives session status from the
         #: transcript rather than trusting a status field.
         self._participants: Dict[str, Dict[str, Any]] = {}
+        #: (listener, wants_room). A SEPARATE lock from ``_lock``: registration must never
+        #: contend with the publish hot path, and fan-out snapshots this list and then
+        #: runs with NO lock held.
+        self._listeners: List[Tuple[RoomListener, bool]] = []
+        self._listener_lock = threading.Lock()
 
         self.dir = rooms_root() / self.id
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -204,14 +371,19 @@ class Room:
 
     # ── ingest ──────────────────────────────────────────────────────────────
 
-    def publish(self, event: Dict[str, Any]) -> Dict[str, Any]:
+    def publish(self, event: Dict[str, Any], *, auth: tuple = ()) -> Dict[str, Any]:
         """Validate, stamp, persist and buffer one event. Safe from any thread.
 
         Returns the stamped event. Raises :class:`RoomError` on a malformed envelope --
         an ingest endpoint that accepted anything would turn a producer bug into a
         stream that is merely confusing.
+
+        ``auth`` is ``(principal_id, plan)`` as the DAEMON resolved it from the caller's
+        bearer, or empty for a producer nobody authenticated (the in-process tailer and
+        bridge). It is the only source of the stamped event's ``auth`` block -- see the
+        module docstring's "``actor.*`` IS THE CLAIM" section.
         """
-        stamped = self._normalise(event)
+        stamped = self._normalise(event, auth)
 
         with self._lock:
             self._seq += 1
@@ -241,7 +413,47 @@ class Room:
             self._transcript_bytes += len(line.encode("utf-8"))
         except OSError as exc:
             sys.stderr.write(f"[room {self.id}] transcript write failed: {exc}\n")
+        self._notify(stamped)
         return stamped
+
+    # ── listeners ───────────────────────────────────────────────────────────
+
+    def add_listener(self, fn: RoomListener) -> None:
+        """Call ``fn`` once for every event published to this room from now on.
+
+        Called as ``fn(room, event)`` or ``fn(event)`` per :func:`_listener_wants_room`.
+        IDEMPOTENT: registering the same callable twice is a no-op, because a steer
+        dispatcher registered twice would deliver every addressed event twice — and an
+        LRU downstream only catches that if both calls land inside its window.
+        """
+        if not callable(fn):
+            raise RoomError(f"listener must be callable, got {type(fn).__name__}")
+        wants_room = _listener_wants_room(fn)
+        with self._listener_lock:
+            if any(existing is fn or existing == fn for existing, _ in self._listeners):
+                return
+            self._listeners.append((fn, wants_room))
+
+    def _notify(self, event: Dict[str, Any]) -> None:
+        """Fan out one stamped event. Runs with NO lock held, after the transcript write.
+
+        A listener that raises costs one stderr line and nothing else: the event is
+        already buffered and on disk, and the NEXT listener still runs. Listeners get the
+        same dict the buffer holds — they must treat it as read-only.
+        """
+        with self._listener_lock:
+            listeners = list(self._listeners)
+        for fn, wants_room in listeners:
+            try:
+                if wants_room:
+                    fn(self, event)
+                else:
+                    fn(event)
+            except Exception as exc:  # a consumer bug must never become a lost event
+                sys.stderr.write(
+                    f"[room {self.id}] publish listener {_listener_name(fn)} failed on "
+                    f"seq {event.get('seq')}: {type(exc).__name__}: {exc}\n"
+                )
 
     def _rotate_if_large(self, incoming: int) -> None:
         """Retire the active transcript once it passes the cap.
@@ -279,7 +491,7 @@ class Room:
             sys.stderr.write(f"[room {self.id}] transcript rotation failed: {exc}\n")
             self._transcript_bytes = 0
 
-    def _normalise(self, event: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalise(self, event: Dict[str, Any], auth: tuple = ()) -> Dict[str, Any]:
         """Coerce an inbound payload into a valid AitherEvent, or refuse with a reason."""
         if not isinstance(event, dict):
             raise RoomError("event must be an object")
@@ -319,18 +531,18 @@ class Room:
         if not isinstance(ts, (int, float)) or ts <= 0:
             ts = time.time()
 
-        return {
+        # 🚩 MUST be here, not on the route: the dict below is a FIXED key set, so a field
+        # validated anywhere else is dropped on this line without a word.
+        addressing = _normalise_addressing(event, actor_id)
+
+        normalised = {
             "v": int(event.get("v") or PROTOCOL_VERSION),
             "id": str(event.get("id") or uuid.uuid4().hex),
             "seq": 0,
             "ts": float(ts),
             "room": self.id,
             "session": str(event.get("session") or ""),
-            "actor": {
-                "kind": actor_kind,
-                "id": actor_id,
-                "name": str(actor_raw.get("name") or actor_id),
-            },
+            "actor": _normalise_actor(actor_kind, actor_id, actor_raw),
             "pillar": pillar,
             "tier": tier,
             "type": event_type,
@@ -338,7 +550,16 @@ class Room:
             "payload": event.get("payload") if isinstance(event.get("payload"), dict) else {},
             "correlation_id": str(event.get("correlation_id") or ""),
             "causation_id": str(event.get("causation_id") or ""),
+            # Built ONLY from the ``publish(auth=...)`` argument, never from ``event`` --
+            # a producer that puts ``auth`` in its own payload is dropped on this line
+            # exactly like any other key the fixed set does not declare.
+            "auth": (
+                {"principal": str(auth[0]), "plan": str(auth[1])}
+                if auth and len(auth) >= 2 else {}
+            ),
         }
+        normalised.update(addressing)
+        return normalised
 
     # ── read ────────────────────────────────────────────────────────────────
 
@@ -351,6 +572,21 @@ class Room:
     def last_seq(self) -> int:
         with self._lock:
             return self._seq
+
+    @property
+    def last_event_ts(self) -> Optional[float]:
+        """``ts`` of the newest buffered event, or None for an empty room.
+
+        Why this exists beside ``last_seq``: seq is a monotonic counter, so "is the room
+        still receiving?" took TWO samples and a wait. A timestamp answers it from ONE
+        GET. A hydrated room reports its newest ON-DISK event, which is the honest answer
+        after a restart: nothing new has arrived yet.
+        """
+        with self._lock:
+            if not self._events:
+                return None
+            ts = self._events[-1].get("ts")
+        return float(ts) if isinstance(ts, (int, float)) and ts > 0 else None
 
     def participants(self, idle_after: float = 300.0) -> List[Dict[str, Any]]:
         """Roster with liveness derived from traffic, newest first."""
@@ -379,6 +615,7 @@ class Room:
             "title": self.title,
             "created_at": self.created_at,
             "last_seq": self.last_seq,
+            "last_event_ts": self.last_event_ts,
             "participants": self.participants(),
             "pillars": self.pillar_counts(),
             "transcript": str(self._transcript),
@@ -391,6 +628,26 @@ class RoomRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._rooms: Dict[str, Room] = {}
+        #: Listeners every room gets, including rooms that do not exist yet.
+        self._listeners: List[RoomListener] = []
+
+    def add_listener(self, fn: RoomListener) -> None:
+        """Register ``fn`` on every current room AND every room created later.
+
+        🚩 Registering on the rooms that exist at startup is not enough: rooms are created
+        lazily on first publish, and a room reconstructed from disk after a restart is
+        "created" the first time anything touches it — a per-room registration made at
+        boot would silently miss both. Idempotent, like :meth:`Room.add_listener`.
+        """
+        if not callable(fn):
+            raise RoomError(f"listener must be callable, got {type(fn).__name__}")
+        with self._lock:
+            if any(existing is fn or existing == fn for existing in self._listeners):
+                return
+            self._listeners.append(fn)
+            rooms = list(self._rooms.values())
+        for room in rooms:
+            room.add_listener(fn)
 
     def get_or_create(self, room_id: str = DEFAULT_ROOM, title: str = "") -> Room:
         room_id = validate_room_id(room_id)
@@ -398,6 +655,10 @@ class RoomRegistry:
             room = self._rooms.get(room_id)
             if room is None:
                 room = Room(room_id, title=title)
+                # Attached BEFORE the room is published into the registry, so no event
+                # can reach a new room ahead of its listeners.
+                for fn in self._listeners:
+                    room.add_listener(fn)
                 self._rooms[room_id] = room
             return room
 

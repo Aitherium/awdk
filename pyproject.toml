@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.20"
+version = "3.8.22"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -152,8 +152,12 @@ senses = ["awfind>=0.1.0", "awbrowse>=0.1.0"]  # search and page reading for age
 # exactly what PVR003 (check_package_version_ahead_of_registry.py) exists to
 # catch. Promote to a hard dependency in the commit that publishes it.
 queue = ["awrun>=0.1.0"]
+# Give one local port a public address (`/tunnel setup` in the shell, and the
+# connector `adk up` will move onto). awtunnel 0.1.0 is on PyPI; the connector
+# arrived in 0.2.0, so this extra resolves once the mirror lane publishes it.
+tunnel = ["awtunnel>=0.2.0"]
 # Everything the family offers, for an agent that wants the lot.
-aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0"]
+aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0", "awtunnel>=0.2.0"]
 
 anthropic = ["anthropic>=0.18.0"]
 openai = ["openai>=1.0.0"]
@@ -168,6 +172,18 @@ node = ["mcp>=1.28,<2", "starlette>=0.36"]
 # `adk storage` is a pass-through to the awstorage brick (adk/storage_cmd.py).
 storage = ["awstorage>=0.1.0"]
 pdf = ["pypdf>=4.0", "fpdf2>=2.7"]
+# Document conversion for `adk ingest` (PDF/DOCX/PPTX/XLSX -> text). The slim
+# distribution with format extras only: the model-free native PDF pipeline, no
+# torch. Users who need layout/OCR install the `docling` meta-package instead;
+# adk/docconvert.py picks up either.
+# convert-core is REQUIRED: docling/backend/pdf_backend.py imports PIL at module top,
+# so format-pdf alone ImportErrors on the first PDF (measured on 2.129.0). pypdf is
+# the light fallback rung the same ladder uses when docling is absent.
+docs = ["docling-slim[convert-core,format-pdf,format-office,format-web]>=2.0", "pypdf>=4.0"]
+# Stealth web fetch behind adk/webfetch.py's ladder (httpx first; Scrapling on a
+# bot wall; a stealth browser only when asked). Opt-in: the fetchers extra pulls
+# curl_cffi and Playwright, and Playwright downloads a browser on first use.
+scrape = ["scrapling[fetchers]>=0.4", "markdownify>=1.0"]
 # ARC world-model contribution: the bundled arc-brainpack pack registers/streams
 # transitions with only core deps (httpx); PLAYING ARC to generate transitions
 # (arc_contribute / `adk contribute play`) needs the real game client.
@@ -314,6 +330,10 @@ artifacts = [
     # by ACM007). A stranger's `pip install awdk` must know what a component IS
     # without the monorepo, or `adk addon enable awgym` reads as "Unknown addon".
     "adk/addon_manifests/*.yaml",
+    # The Claude Code mod (`adk harness mod`): a plugin, so no Python in it, and its
+    # manifest lives in a DOT directory (.claude-plugin/) the default walk skips.
+    # Without this the wheel imports fine and `mod status` reports mod_present=false.
+    "adk/harnesses/claude_mod/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]

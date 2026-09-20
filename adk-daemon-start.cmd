@@ -77,6 +77,24 @@ echo   Chat:     POST http://127.0.0.1:%PORT%/chat
 echo   Health:   GET  http://127.0.0.1:%PORT%/health
 echo.
 
+REM ONE SPEC (2026-09-19). When this host carries the scheduled-task payload that the
+REM :9001 watchdog itself launches (~\.aither\bin\hidden-tasks\AitherOS-AdkDaemon.cmd:
+REM AITHER_OFFLINE=1, log redirect, canonical tree), delegate to it instead of starting a
+REM SECOND daemon with a DIFFERENT env. Measured that day: awsh launched this file
+REM (--backend vllm, visible console) while the watchdog launched the hidden one every
+REM tick -- three launchers, two configs, one port. The env above still applies on a
+REM box without the hidden task (a stranger's machine), which is the fallback below.
+if "%PORT%"=="9001" if exist "%USERPROFILE%\.aither\bin\hidden-tasks\AitherOS-AdkDaemon.cmd" (
+    echo   delegating to the hidden scheduled-task payload ^(one launcher, one spec^)
+    if exist "%USERPROFILE%\.aither\bin\run-hidden.vbs" (
+        start "" wscript.exe //B //Nologo "%USERPROFILE%\.aither\bin\run-hidden.vbs" "%USERPROFILE%\.aither\bin\hidden-tasks\AitherOS-AdkDaemon.cmd"
+    ) else (
+        start "AitherADK Daemon :%PORT%" "%USERPROFILE%\.aither\bin\hidden-tasks\AitherOS-AdkDaemon.cmd"
+    )
+    endlocal
+    exit /b 0
+)
+
 REM Run daemon in a new detached window
 start "AitherADK Daemon :%PORT%" python -m adk.server --port %PORT% --backend vllm --identity adk-daemon
 

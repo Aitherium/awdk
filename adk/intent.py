@@ -91,7 +91,14 @@ _SYS = (
 
 
 def depth_for_effort(effort: int) -> str:
-    """Canonical effort → reasoning-depth mapping (matches EffortScaler)."""
+    """Canonical effort → reasoning-depth mapping (matches EffortScaler).
+
+    Effort here only scales REASONING DEPTH / step budget — never what a tool
+    is allowed to do. A caller that reads a low number back from this function
+    and treats it as "therefore safe to skip an authorization check" has
+    misread it: authorization is entitlements + origin re-authorization (see
+    e.g. the harness daemon's ``/wakes`` window), never this scale.
+    """
     if effort <= 1:
         return "skip"
     if effort <= 5:
@@ -116,7 +123,27 @@ def _extract_json(text: str) -> Optional[dict]:
 
 # ── Keyword fallback (cheap, never calls the network, never raises) ──────────
 _GREETING = _re.compile(r"^\s*(hi|hey|hello|yo|sup|thanks|thank you|ty|gm|good (morning|evening|afternoon)|how are you|how's it going|what's up)\b", _re.I)
-_TOOL_VERB = _re.compile(r"\b(search|look up|find|email|send|schedule|book|calendar|read|open|upload|download|create|build|generate|write|draft|analyze|analyse|compare|research|investigate|deploy|run|execute|fix|debug)\b", _re.I)
+_TOOL_VERB = _re.compile(
+    r"\b(search|look up|find|email|send|schedule|book|calendar|read|open|upload|download|"
+    r"create|build|generate|write|draft|analyze|analyse|compare|research|investigate|deploy|"
+    r"run|execute|fix|debug|"
+    # awrise (wakes/recurring-job scheduler) command verbs — see _WAKE_NOUN/_STATUS_VERB
+    # below for the read-shaped counterparts of these same jobs.
+    r"add|set|enable|disable|delete|remove|pause|resume|turn (on|off))\b",
+    _re.I,
+)
+# Read-shaped: a status/explain/history question about something that already
+# exists (a wake, a job, ...) — needs a tool call to answer honestly, but at
+# LOW effort, unlike the command verbs above. Checked only when no _TOOL_VERB
+# matched, so an imperative ("disable nightly-backup") still takes the command
+# branch while its question form ("is nightly-backup disabled") lands here.
+_STATUS_VERB = _re.compile(
+    r"\b(list|show|status|explain|history|fired|failed|fail|ran|enabled|disabled|running)\b",
+    _re.I,
+)
+# The awrise domain noun. Present with no _TOOL_VERB match ("what wakes do I
+# have") still means a tool call is needed to answer honestly.
+_WAKE_NOUN = _re.compile(r"\b(wakes?|awrise)\b", _re.I)
 
 
 def keyword_intent(message: str) -> IntentDecision:
@@ -134,6 +161,14 @@ def keyword_intent(message: str) -> IntentDecision:
         return IntentDecision(intent="command", effort=5, agentic=True,
                               reasoning_depth="gate", requires_grounding=True,
                               grounding_label="your data", source="keyword")
+    if _STATUS_VERB.search(msg) or _WAKE_NOUN.search(msg):
+        # A read that still needs a tool call (a status/history check, or the
+        # wake domain named outright) — agentic, but cheap: LOW effort, not the
+        # mutate-verb tier above.
+        label = "your wakes" if _WAKE_NOUN.search(msg) else "your data"
+        return IntentDecision(intent="question", effort=2, agentic=True,
+                              reasoning_depth="gate", requires_grounding=True,
+                              grounding_label=label, source="keyword")
     # A plain question / statement: answer directly, no loop.
     return IntentDecision(intent="question", effort=2, agentic=False,
                           reasoning_depth="gate", requires_grounding=False, source="keyword")

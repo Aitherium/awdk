@@ -63,6 +63,19 @@ BIN_NAME = "awrise"
 #: typing. Zero on POSIX, where the argument is accepted and means nothing.
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+#: A ``steerback`` value that is this PREFIX (rather than an argv template
+#: tuple) is applied through a named Python builder instead of
+#: ``str.format`` substitution. ``wake-failed``'s only interpolated var is a
+#: job NAME, already constrained to ``_NAME_RE`` — safe inside a template
+#: string. ``wakes-add``/``wakes-set-command`` interpolate a shell COMMAND,
+#: which routinely contains ``{``/``}`` (brace expansion, JSON, f-strings);
+#: running THAT through ``str.format`` as a positional would raise on stray
+#: braces or, worse, silently consume an unrelated recipe var. A builder reads
+#: the raw value straight off the card and hands it to the same
+#: ``build_add_argv``/``build_set_argv`` the daemon's own routes use — one
+#: validator for "is this safe in an argv element", not two.
+BUILDER_PREFIX = "builder:"
+
 
 class CardRecipeError(Exception):
     """A recipe or variable problem the caller should print and exit 2 on."""
@@ -146,6 +159,96 @@ CARD_RECIPES: dict[str, dict[str, Any]] = {
         #: stalls the channel, and a timeout kill would abort the very run the
         #: owner just asked for.
         "detach": ("run_now",),
+    },
+    "wakes-add": {
+        "producer": "wakes-api",
+        #: POST /wakes registers a job that RUNS ARBITRARY HOST COMMANDS on a
+        #: schedule the caller also names — the single highest-value spawn this
+        #: daemon exposes, and the daemon route only ever RAISES this card
+        #: (202 pending); nothing is spawned until the owner answers "create".
+        #: A stricter tier than `wakes:mutate` (which only turns an
+        #: already-owner-vetted job on/off) on purpose: holding it lets a
+        #: caller PUT a new command in front of the owner, holding
+        #: `wakes:mutate` alone does not.
+        "entitlement": "wakes:create",
+        "required": ("name", "command", "every"),
+        "optional": ("cwd", "timeout", "requested_by"),
+        #: Only "name" reaches an argv element through `str.format` (the
+        #: builder below reads command/every/cwd/timeout straight off the
+        #: card, re-validated with `adk.wakes.valid_payload` — see
+        #: `BUILDER_PREFIX`).
+        "name_vars": ("name",),
+        "defaults": {"cwd": "", "timeout": "", "requested_by": "api"},
+        "kind": "decision",
+        #: high: the chat lane filters below high, and a card offering to
+        #: register a new scheduled command is exactly what must reach the
+        #: owner rather than sit unread.
+        "urgency": "high",
+        "deadline_seconds": 24 * 3600,
+        #: One open card per proposed NAME — a retried POST /wakes for the
+        #: same name answers the existing card instead of stacking a second.
+        "dedupe_key": "awrise:wakes-add:{name}",
+        "dedupe_prefix": "awrise:wakes-add:{name}:",
+        "title": "Create new wake '{name}'?",
+        "summary": ("{requested_by} asked to register a NEW scheduled job '{name}', "
+                    "running every {every}. It will start on that schedule the moment "
+                    "you approve it."),
+        "detail": "command: {command}\nevery: {every}\ncwd: {cwd}\ntimeout: {timeout}",
+        "facts": ("name: {name}", "every: {every}", "requested via: {requested_by}"),
+        "options": (
+            {"key": "create", "label": "Create it",
+             "consequence": "awrise add --name {name} --every {every} --run <command> "
+                            "registers the job; it starts running on its own schedule "
+                            "immediately"},
+            {"key": "deny", "label": "Don't create it",
+             "consequence": "no change; the job is never registered",
+             "recommended": True},
+        ),
+        #: Default never spawns — a free-text reply or an expired deadline
+        #: must never create an unattended scheduled command.
+        "default_key": "deny",
+        "steerback": {
+            "create": BUILDER_PREFIX + "wakes_add",
+            "deny": None,
+        },
+    },
+    "wakes-set-command": {
+        "producer": "wakes-api",
+        #: PATCH /wakes/{name} changing `command` is the SAME capability as
+        #: `wakes-add` — it replaces what an already-scheduled job runs — so it
+        #: spends the same `wakes:create` tier, not the `wakes:mutate` that
+        #: gates enable/disable/run and a non-command PATCH (every/timeout/cwd
+        #: alone never changes WHAT runs, only when/where).
+        "entitlement": "wakes:create",
+        "required": ("name", "command"),
+        "optional": ("every", "cwd", "timeout", "requested_by"),
+        "name_vars": ("name",),
+        "defaults": {"every": "", "cwd": "", "timeout": "", "requested_by": "api"},
+        "kind": "decision",
+        "urgency": "high",
+        "deadline_seconds": 24 * 3600,
+        #: One open card per job — a second command change proposed while the
+        #: first is still pending answers that one rather than stacking.
+        "dedupe_key": "awrise:wakes-set-command:{name}",
+        "dedupe_prefix": "awrise:wakes-set-command:{name}:",
+        "title": "Change what wake '{name}' runs?",
+        "summary": ("{requested_by} asked to change what '{name}' RUNS. This takes effect "
+                    "on the job's NEXT scheduled wake if you approve it."),
+        "detail": "new command: {command}\nevery: {every}\ncwd: {cwd}\ntimeout: {timeout}",
+        "facts": ("name: {name}", "requested via: {requested_by}"),
+        "options": (
+            {"key": "apply", "label": "Apply the change",
+             "consequence": "awrise set --name {name} run=<command> changes what this job "
+                            "runs; other supplied fields (every/timeout/cwd) change with it"},
+            {"key": "deny", "label": "Don't change it",
+             "consequence": "no change; the job keeps running its current command",
+             "recommended": True},
+        ),
+        "default_key": "deny",
+        "steerback": {
+            "apply": BUILDER_PREFIX + "wakes_set",
+            "deny": None,
+        },
     },
 }
 
@@ -394,6 +497,71 @@ def _detached(argv: list[str]) -> "subprocess.Popen[bytes]":
     return subprocess.Popen(argv, **kwargs)
 
 
+def _apply_builder(builder_name: str, binary: str, safe: dict[str, str],
+                    variables: dict[str, Any]) -> tuple[bool, str]:
+    """Build and run argv through a NAMED ``adk.wakes`` builder rather than
+    ``str.format`` substitution — for a recipe whose free-text vars are a
+    shell COMMAND that must never be treated as a format template. Every
+    field is re-validated here with the same ``valid_payload``/``build_*_argv``
+    the daemon's own ``/wakes`` routes apply: the card JSON on disk is
+    attacker-writable, so trusting what was checked at raise time would defeat
+    the point of checking again at apply time. ``safe`` already carries the
+    ``_NAME_RE``-revalidated ``name``; every other field is read straight from
+    ``variables`` (the card's own ``recipe_vars``, unmodified by any truncation
+    — these two recipes deliberately never truncate command/every/cwd, because
+    a truncated value here would silently register or apply a CUT command).
+    """
+    from adk.wakes import build_add_argv, build_set_argv
+
+    name = safe.get("name")
+    if not name:
+        return False, "refused: name missing at apply time"
+
+    def _opt(field: str) -> Optional[str]:
+        value = variables.get(field)
+        # "" means the field was never supplied (see the recipes' `defaults`);
+        # every genuinely-supplied value is non-empty, already enforced by
+        # `valid_payload` at raise time.
+        return value if isinstance(value, str) and value else None
+
+    command = variables.get("command")
+    if not isinstance(command, str) or not command:
+        return False, "refused: command missing at apply time"
+    every = _opt("every")
+    cwd = _opt("cwd")
+    timeout_raw = _opt("timeout")
+    timeout: Optional[int] = None
+    if timeout_raw is not None:
+        try:
+            timeout = int(timeout_raw)
+        except ValueError:
+            return False, "refused: timeout invalid at apply time"
+
+    try:
+        if builder_name == "wakes_add":
+            if not every:
+                return False, "refused: every missing at apply time"
+            argv = build_add_argv(binary, name, command=command, every=every,
+                                  timeout=timeout, cwd=cwd)
+        elif builder_name == "wakes_set":
+            argv = build_set_argv(binary, name, command=command, every=every,
+                                  timeout=timeout, cwd=cwd)
+        else:
+            return False, f"refused: unknown builder {builder_name!r}"
+    except ValueError as exc:
+        return False, f"refused: {exc}"
+
+    spoken = " ".join(argv[1:])
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              creationflags=_CREATE_NO_WINDOW,
+                              timeout=SYNC_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return False, f"timeout after {int(SYNC_TIMEOUT_SECONDS)}s"
+    return done.returncode == 0, f"{spoken} -> exit {done.returncode}"
+
+
 def apply_answer(card: DecisionCard) -> tuple[bool, str]:
     """Turn a closed card's answer into the action it promised. ``(applied, why)``.
 
@@ -431,6 +599,10 @@ def apply_answer(card: DecisionCard) -> tuple[bool, str]:
         binary = resolve_bin()
         if not binary:
             return False, "refused: awrise binary not found"
+
+        if isinstance(template, str) and template.startswith(BUILDER_PREFIX):
+            builder_name = template[len(BUILDER_PREFIX):]
+            return _apply_builder(builder_name, binary, safe, variables)
 
         try:
             argv = [binary] + [str(part).format(**safe) for part in template[1:]]
@@ -593,6 +765,62 @@ def _self_test() -> int:
         check("a missing binary refuses", not applied and "not found" in why, why)
         check("a missing binary spawned nothing", not marker.exists())
         os.environ["AWRISE_BIN"] = marker_bin(tmp, marker)
+
+        # (f2) wakes-add / wakes-set-command: the BUILDER path (a card whose
+        # free-text vars are a shell command, not a name — the class the
+        # security fix of 2026-09-19 added).
+        check("wakes-add names its stricter entitlement",
+              recipe_entitlement("wakes-add") == "wakes:create",
+              recipe_entitlement("wakes-add"))
+        check("wakes-set-command names its stricter entitlement",
+              recipe_entitlement("wakes-set-command") == "wakes:create",
+              recipe_entitlement("wakes-set-command"))
+        check("spawns_on is true only for the spawning choice on wakes-add",
+              spawns_on("wakes-add", "create") and not spawns_on("wakes-add", "deny"))
+
+        add_vars = {"name": "selftest-job", "command": "echo hi {braces} $(nope)", "every": "5m"}
+        card = build_card("wakes-add", add_vars)
+        check("wakes-add default is 'deny'", card.default_key == "deny", card.default_key)
+        card.answer = "create"
+        applied, why = apply_answer(card)
+        check("wakes-add 'create' runs the builder", applied and "exit 0" in why, why)
+        check("the fake producer really ran the add", marker.exists())
+        if marker.exists():
+            recorded = marker.read_text(encoding="utf-8", errors="replace")
+            check("the command reached argv WITH ITS BRACES INTACT",
+                  "echo hi {braces} $(nope)" in recorded, recorded.strip())
+            marker.unlink()
+
+        card = build_card("wakes-add", add_vars)
+        card.answer = "deny"
+        applied, why = apply_answer(card)
+        check("wakes-add 'deny' is a no-op", applied and why == "no-op", why)
+        check("wakes-add 'deny' spawned nothing", not marker.exists())
+
+        # apply-time re-validation: the card on disk is attacker-writable, and
+        # this is the promise this file documents for it — checked again here,
+        # not trusted from what raise-time already checked.
+        for bad_field, bad_value, needle in (
+            ("command", "echo hi\x00rm -rf /", "invalid or oversized command"),
+            ("name", "-name", "name invalid at apply time"),
+        ):
+            card = build_card("wakes-add", add_vars)
+            card.answer = "create"
+            card.recipe_vars = {**card.recipe_vars, bad_field: bad_value}
+            applied, why = apply_answer(card)
+            check(f"apply-time refuses a tampered {bad_field}", not applied and needle in why, why)
+        check("nothing was spawned by any wakes-add refusal", not marker.exists())
+
+        set_vars = {"name": "selftest-job", "command": "python sync.py --flag={x}"}
+        card = build_card("wakes-set-command", set_vars)
+        card.answer = "apply"
+        applied, why = apply_answer(card)
+        check("wakes-set-command 'apply' runs the builder", applied and "exit 0" in why, why)
+        if marker.exists():
+            recorded = marker.read_text(encoding="utf-8", errors="replace")
+            check("the new command reached argv intact",
+                  "python sync.py --flag={x}" in recorded, recorded.strip())
+            marker.unlink()
 
         # (g)/(h) dedupe: one streak, one card — even after the first is CLOSED.
         os.environ["AITHER_DECISIONS_DIR"] = str(tmp / "cards")

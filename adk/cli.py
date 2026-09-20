@@ -12896,7 +12896,9 @@ def _register_commands(sub):
 
     sh_new = shell_sub.add_parser("new", help="Start a session")
     sh_new.add_argument("--harness", default="claude",
-                        help="claude|gemini|terminal|sandbox|aither|group")
+                        help="claude|claude-tty|gemini|terminal|sandbox|aither|group "
+                             "(claude-tty = the real interactive Claude Code TUI, "
+                             "daemon-owned and steerable immediately)")
     sh_new.add_argument("--cwd", default="", help="Working directory")
     sh_new.add_argument("--model-profile", dest="model_profile", default="",
                         help="Per-session model profile")
@@ -12908,6 +12910,8 @@ def _register_commands(sub):
     sh_new.add_argument("--participants", default="", help="Comma list of agents (harness=group)")
     sh_new.add_argument("--target", default="", help="Container name (harness=sandbox)")
     sh_new.add_argument("--attach", action="store_true", help="Attach after creating")
+    sh_new.add_argument("--extra-args", dest="extra_args", nargs="*", default=[],
+                        help="Extra argv for the program (harness=claude-tty|terminal)")
 
     sh_send = shell_sub.add_parser("send", help="Send a turn to a session")
     sh_send.add_argument("session_id")
@@ -12921,12 +12925,30 @@ def _register_commands(sub):
     sh_kill = shell_sub.add_parser("kill", help="Stop a session")
     sh_kill.add_argument("session_id")
 
+    sh_tell = shell_sub.add_parser(
+        "tell", help="Say something to ONE named session (nick, session id or prefix)")
+    sh_tell.add_argument("target", help="claude-<first8> nick, a session id, or a unique prefix")
+    sh_tell.add_argument("text", help="What to say -- delivered as one complete turn")
+    sh_tell.add_argument("--dry-run", dest="dry_run", action="store_true",
+                         help="Resolve and show what would happen; send nothing")
+    sh_tell.add_argument("--await", dest="await", type=int, default=0,
+                         help="Seconds to wait and echo the session's reply to the relay")
+
     sh_wrap = shell_sub.add_parser("wrap", help="Terminal-resident daemon session (bridge stdin/stdout to daemon)")
     sh_wrap.add_argument("--harness", default="claude", help="Harness type (default: claude)")
     sh_wrap.add_argument("--cwd", default="", help="Working directory")
     sh_wrap.add_argument("--model", default="", help="Model profile or id")
     sh_wrap.add_argument("--resume", default="", help="Resume a previous session by id")
     sh_wrap.add_argument("--title", default="", help="Session title in daemon")
+
+    sh_mod = shell_sub.add_parser(
+        "mod", help="The Claude Code mod: run any harness as a native Claude Code subagent")
+    sh_mod.add_argument("mod_action", nargs="?", default="status",
+                        choices=["status", "install", "uninstall", "smoke"],
+                        help="status (default; exit 1 when not active), install, uninstall, "
+                             "smoke (two real Claude Code runs; spends tokens)")
+    sh_mod.add_argument("--harness", default="opencode",
+                        help="smoke: which harness the live run must be answered by")
 
     # adk claude-model — switch Claude Code backend (DeepSeek/Kimi/local/Anthropic)
     claude_model_p = sub.add_parser(
@@ -14176,6 +14198,24 @@ def _register_commands(sub):
     # adk backup — export all ~/.aither/ data
     backup_p = sub.add_parser("backup", help="Backup all agent data (memory, graphs, config)")
     backup_p.add_argument("-o", "--output", help="Output file path (default: aither-backup-<timestamp>.tar.gz)")
+
+    # adk patterns — Fabric-shaped prompt patterns (<name>/system.md), run on stdin/file.
+    # Parser and handler live in adk/patterns.py so this file gains three lines.
+    try:
+        from adk.patterns import add_patterns_parser
+        add_patterns_parser(sub)
+    except ImportError as _exc:  # a partial install must not take `adk --help` down
+        import logging as _logging
+        _logging.getLogger("adk.cli").warning("adk patterns unavailable: %s", _exc)
+
+    # adk spec — spec-driven change workflow (specflow toolpack: proposal -> delta
+    # specs -> tasks -> archive). Parser and handler live in the pack.
+    try:
+        from adk.toolpacks.specflow.cli import add_spec_parser
+        add_spec_parser(sub)
+    except ImportError as _exc:
+        import logging as _logging
+        _logging.getLogger("adk.cli").warning("adk spec unavailable: %s", _exc)
 
     # adk ingest — manually ingest files into knowledge graph
     ingest_p = sub.add_parser("ingest", help="Ingest files into the agent's knowledge graph")
@@ -15604,6 +15644,12 @@ def main():
         sys.exit(cmd_up(args))
     elif args.command == "sandbox":
         sys.exit(cmd_sandbox(args))
+    elif args.command == "patterns":
+        from adk.patterns import cmd_patterns
+        sys.exit(cmd_patterns(args))
+    elif args.command == "spec":
+        from adk.toolpacks.specflow.cli import cmd_spec
+        sys.exit(cmd_spec(args))
     elif args.command == "publish-preflight":
         from .toolpacks.publish_preflight.tools import (
             publish_diagnose_failure, publish_preflight)

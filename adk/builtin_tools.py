@@ -669,70 +669,31 @@ async def web_search(query: str, limit: int = 5, max_results: int = 0, **_extra:
 
 
 def _is_safe_url(url: str) -> bool:
-    """Block SSRF: reject private IPs, localhost, metadata endpoints."""
-    from urllib.parse import urlparse
-    import ipaddress
-    try:
-        parsed = urlparse(url)
-        hostname = parsed.hostname or ""
-        # Block non-HTTP schemes
-        if parsed.scheme not in ("http", "https"):
-            return False
-        # Block localhost and common internal hostnames
-        if hostname in ("localhost", "0.0.0.0", "127.0.0.1", "[::]", "[::1]"):
-            return False
-        if hostname.startswith("169.254.") or hostname.startswith("fe80:"):
-            return False  # Link-local / cloud metadata
-        if hostname.endswith(".internal") or hostname.endswith(".local"):
-            return False
-        # Block private IP ranges
-        try:
-            ip = ipaddress.ip_address(hostname)
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                return False
-        except ValueError:
-            pass  # hostname, not IP — OK
-        return True
-    except Exception:
-        return False
+    """Block SSRF: reject private IPs, localhost, metadata endpoints.
+
+    The guard moved to ``adk.webfetch.is_safe_url`` so every fetch engine (httpx,
+    Scrapling, the stealth browser) sits behind the same gate; this name stays
+    for callers that imported it from here.
+    """
+    from adk.webfetch import is_safe_url
+    return is_safe_url(url)
 
 
-async def web_fetch(url: str, max_chars: int = 20000) -> str:
+async def web_fetch(url: str, max_chars: int = 20000, stealth: bool = False) -> str:
     """Fetch a webpage and return its text content.
 
     url: URL to fetch
     max_chars: Maximum characters to return (default 20000)
+    stealth: Use the anti-bot fetch ladder (needs the awdk[scrape] extra); default false
     """
-    if not _is_safe_url(url):
-        return json.dumps({
-            "error": "URL blocked: private/internal addresses not allowed"
-        })
+    from adk.webfetch import fetch
     try:
-        import httpx
-        async with httpx.AsyncClient(
-            timeout=15.0, follow_redirects=True, max_redirects=5,
-        ) as client:
-            resp = await client.get(
-                url,
-                headers={"User-Agent": "AitherADK/1.0"},
-            )
-            resp.raise_for_status()
-            content = resp.text
-
-        # Strip HTML tags for cleaner output
-        import re
-        # Remove script/style blocks
-        content = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', content, flags=re.DOTALL)
-        # Remove tags
-        content = re.sub(r'<[^>]+>', ' ', content)
-        # Collapse whitespace
-        content = re.sub(r'\s+', ' ', content).strip()
-
-        return content[:max_chars]
-    except ImportError:
-        return json.dumps({"error": "httpx required for web fetch"})
+        result = await fetch(url, max_chars=max_chars, stealth=stealth)
     except Exception as e:
         return json.dumps({"error": str(e)})
+    if result.error and not result.text:
+        return json.dumps({"error": result.error, "engine": result.engine, "status": result.status})
+    return result.text[:max_chars]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2893,12 +2854,16 @@ TOOL_INTENT_CATEGORIES = {
 # Agent Notebook tools are registered lazily (they proxy the Genesis /notebooks/*
 # router) — their intent categories are attached in _init_notebook_tools().
 
+# Vectorless tree search over long Markdown documents (PageIndex-style; adk/graph_rag).
+from adk.graph_rag.page_index import doc_tree_search  # noqa: E402
+
 # Tool category definitions
 TOOL_CATEGORIES: dict = {
     "file_io": [file_read, file_write, file_edit, file_list, file_search],
     "shell": [shell_exec],
     "python": [python_exec],
     "web": [web_search, web_fetch],
+    "documents": [doc_tree_search],
     "secrets": [secret_get, secret_set, secret_list],
     "creative": [image_generate, image_refine, image_smart],
     "git": [git_status, git_diff, git_log, git_add, git_commit, git_branch_list],

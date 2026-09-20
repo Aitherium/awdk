@@ -74,12 +74,31 @@ def cmd_shell(args: Any) -> int:
         "attach": _cmd_attach,
         "kill": _cmd_kill,
         "wrap": _cmd_wrap,
+        "tell": _cmd_tell,
+        "mod": _cmd_mod,
     }.get(command)
     if handler is None:
         print(f"Unknown subcommand: {command}", file=sys.stderr)
         _print_help()
         return 2
     return handler(args)
+
+
+def _cmd_mod(args: Any) -> int:
+    """The Claude Code mod: install, remove, or say what state it is in."""
+    from adk.harnesses import mod
+
+    action = getattr(args, "mod_action", "") or "status"
+    if action == "smoke":
+        from adk.harnesses.mod_smoke import smoke
+
+        return smoke(getattr(args, "harness", "") or "opencode")
+    run = {"status": mod.status, "install": mod.install, "uninstall": mod.uninstall}[action]
+    result = run()
+    print(json.dumps(result, indent=2))
+    if action == "status":
+        return 0 if result["active"] else 1
+    return 0 if result.get("ok") else 1
 
 
 def _cmd_serve(args: Any) -> int:
@@ -146,6 +165,7 @@ def _cmd_new(args: Any) -> int:
         "agent": getattr(args, "agent", "") or "",
         "target": getattr(args, "target", "") or "",
         "participants": [p for p in (getattr(args, "participants", "") or "").split(",") if p],
+        "extra_args": [str(a) for a in (getattr(args, "extra_args", None) or [])],
     }
     status, payload = _request(args, "/sessions", "POST", body)
     _die_if_down(status, payload)
@@ -154,6 +174,20 @@ def _cmd_new(args: Any) -> int:
         args.session_id = payload["id"]
         return _cmd_attach(args)
     return 0
+
+
+def _cmd_tell(args: Any) -> int:
+    """Say something to ONE named session, as a complete turn.
+
+    ``adk.harnesses.tell`` has been a finished resolve -> record -> deliver -> echo
+    loop since the peer-integration program; measured 2026-09-19 it was dispatched
+    NOWHERE (this table listed ``wrap`` and not ``tell``; zero importers), so the verb
+    existed only as a file. Imported lazily: it pulls the relay client, and the rest
+    of this CLI must keep working on a box with no relay.
+    """
+    from adk.harnesses.tell import cmd_tell
+
+    return cmd_tell(args)
 
 
 def _cmd_send(args: Any) -> int:

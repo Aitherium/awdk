@@ -1,12 +1,12 @@
 # Aither System Orchestrator
 
-`aither` · version `3.8.20` · 4.4 KB
+`aither` · version `3.8.22` · 9.8 KB
 
-**[Download aither-3.8.20.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.20/aither-3.8.20.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.20/aither-3.8.20.sha256)
+**[Download aither-3.8.22.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.22/aither-3.8.22.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.22/aither-3.8.22.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.20/aither-3.8.20.tar.gz
-tar xzf aither-3.8.20.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.22/aither-3.8.22.tar.gz
+tar xzf aither-3.8.22.tar.gz
 python aither/install.py
 ```
 
@@ -33,11 +33,18 @@ decision-making. Bundles GraphRAG memory for persistent knowledge retention.
 
 ```
 brain_pack.yaml
+patterns/README.md
+patterns/critique_plan/system.md
+patterns/explain_code/system.md
+patterns/extract_wisdom/system.md
+patterns/report_150w/system.md
+patterns/summarize/system.md
+patterns/write_commit_message/system.md
 skills/coordination.md
 skills/memory-recall.md
 ```
 
 ---
 
-sha256 `5e3cdbfe4068386ad9339a2105d2a56da1dceddd2d3027c0c770a2f8301521a3`  
-Built from `v3.8.20` (adk 3.8.20). [All packs](../packs.md)
+sha256 `ffd348c81aee6730fa6e71279d1bbd51a282a2bea52a4d2395addae56f7cc40a`  
+Built from `v3.8.22` (adk 3.8.22). [All packs](../packs.md)

@@ -59,9 +59,16 @@ except ImportError:
         kind: ActorKind
         id: str
         name: str = ""
+        #: Kept identical to lib.core.AitherEventSpine.Actor on purpose: a
+        #: fallback that drops a field the real one carries is how a stranger's
+        #: install loses data the monorepo keeps.
+        title: str = ""
 
         def to_dict(self) -> Dict[str, Any]:
-            return {"kind": self.kind.value, "id": self.id, "name": self.name or self.id}
+            out = {"kind": self.kind.value, "id": self.id, "name": self.name or self.id}
+            if self.title:
+                out["title"] = self.title
+            return out
 
     @dataclass
     class AitherEvent:

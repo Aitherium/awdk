@@ -1,0 +1,4 @@
+{
+  "description": "Answers an Agent call on the aw subagent type from a session on the awsh harness daemon, recorded as the Agent tool's own result",
+  "modules": ["./register.ts"]
+}

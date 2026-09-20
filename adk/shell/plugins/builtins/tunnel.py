@@ -58,6 +58,16 @@ def _cloudflared_path() -> Optional[str]:
     return shutil.which("cloudflared")
 
 
+# The awtunnel brick (pip install awdk[tunnel]) owns the connector: it finds
+# cloudflared in the standard install dirs too, reads the pipe in a worker thread
+# instead of blocking this async shell for 15 s, and is the same code the
+# `awtunnel up` CLI runs. Absent, the inline path below still works.
+try:
+    from awtunnel.connector import AitherTunnel as _BrickTunnel
+except ImportError:                              # extra not installed -- honest fallback
+    _BrickTunnel = None
+
+
 class TunnelPlugin(SlashCommand):
     name: str = "tunnel"
     aliases: List[str] = ["tun"]
@@ -99,6 +109,8 @@ class TunnelPlugin(SlashCommand):
         return await self._help(args, ctx)
 
     async def _setup(self, args: List[str], ctx: Dict[str, Any]) -> str:
+        if _BrickTunnel is not None:
+            return await self._setup_via_brick(args)
         cf = _cloudflared_path()
         if not cf:
             return self._install_instructions()
@@ -179,6 +191,37 @@ class TunnelPlugin(SlashCommand):
 
         return "\n".join(lines)
 
+    async def _setup_via_brick(self, args: List[str]) -> str:
+        """`/tunnel setup` on the awtunnel connector. Same state file as the inline
+        path, so `/tunnel status|stop|url` work unchanged across shell restarts."""
+        user = AuthStore.get_active_user() if AuthStore else None
+        username = user.get("username", "aither") if user else "aither"
+        local_port = 8001
+        for i, a in enumerate(args):
+            if a in ("--port", "-p") and i + 1 < len(args):
+                local_port = int(args[i + 1])
+        try:
+            tunnel = _BrickTunnel(local_port=local_port, local_host="localhost")
+        except FileNotFoundError:
+            return self._install_instructions()
+        try:
+            url = await tunnel.start()
+        except Exception as e:                   # timeout / cloudflared exited
+            return f"Tunnel did not come up: {e}\nCheck `/tunnel status` or install cloudflared."
+        pid = tunnel._process.pid if tunnel._process else None
+        self._brick_tunnel = tunnel
+        _save_tunnel_info({"url": url, "local_port": local_port, "pid": pid,
+                           "username": username, "via": "awtunnel"})
+        return "\n".join([
+            "**Tunnel active!** (awtunnel connector)",
+            f"  URL: `{url}`",
+            f"  Local: `http://localhost:{local_port}`",
+            f"  PID: {pid}",
+            "\nRegister with portal: `/tunnel register`",
+            "This URL is temporary. For persistent tunnels, use "
+            "`awtunnel up --name N --hostname H`.",
+        ])
+
     async def _status(self, args: List[str], ctx: Dict[str, Any]) -> str:
         info = _load_tunnel_info()
         if not info:
@@ -208,7 +251,11 @@ class TunnelPlugin(SlashCommand):
             return "No tunnel running."
 
         pid = info.get("pid")
-        if pid and _is_process_alive(pid):
+        brick = getattr(self, "_brick_tunnel", None)
+        if brick is not None:
+            await brick.stop()                   # the connector owns its child
+            self._brick_tunnel = None
+        elif pid and _is_process_alive(pid):
             try:
                 import signal
                 os.kill(pid, signal.SIGTERM)

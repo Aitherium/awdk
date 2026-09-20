@@ -579,7 +579,12 @@ class TestRouteOrder:
         import adk.harnesses.daemon as daemon
 
         src = Path(daemon.__file__).read_text(encoding="utf-8")
-        assert src.count('require_entitlement("wakes:mutate")') == 3
+        # enable, disable, run, and PATCH /wakes/{name} (every/timeout/cwd path)
+        # carry the SAME gate. POST /wakes and a command-changing PATCH carry
+        # the STRICTER `wakes:create` instead (they PROPOSE a card, never spawn
+        # directly) — see TestWakeCreateUpdateRouteShape for that half.
+        assert src.count('require_entitlement("wakes:mutate")') == 4
+        assert src.count('"wakes:create"') == 2
 
     def test_wakes_reader_is_imported_lazily(self):
         import adk.harnesses.daemon as daemon
@@ -772,3 +777,100 @@ class TestWakeCardRecipeDoor:
         assert recipe_entitlement("nope") == UNKNOWN_RECIPE_ENTITLEMENT
         assert spawns_on("wake-failed", "run_now")
         assert not spawns_on("wake-failed", "keep")
+
+
+# ── ANSWERING a spawning card must re-check origin exactly like RAISING one ──
+
+
+class TestWakeCardAnswerOriginParity:
+    """Security finding 2026-09-19.
+
+    RAISING a spawning card already re-authorizes an ``origin`` claim against
+    ``channels.json`` (``TestWakesOrigin`` above, via every direct ``/wakes``
+    mutation's ``_wake_reauthorize_origin``). ANSWERING one did not:
+    ``AnswerDecision`` carried no ``origin`` field at all, so a claim attached
+    to a ``POST /decisions/{id}/answer`` body was silently dropped as an
+    unrecognised extra field and the answer proceeded on the flat entitlement
+    check alone — the SAME bearer that raised a card through a channel could
+    turn around and answer it with no channel claim whatsoever. This class
+    proves the answer route now applies the identical re-check, that the
+    resulting identity is what gets recorded as ``answered_via`` (never the
+    client-supplied default), and that a deployment with no channel claim at
+    all sees NO behavioural change from this fix (origin-narrowing only
+    narrows what the bearer already allows).
+    """
+
+    def _channels(self, tmp_path, owner: str = "111", dm: bool = True) -> None:
+        d = tmp_path / "decisions"
+        d.mkdir(exist_ok=True)
+        (d / "channels.json").write_text(json.dumps({"discord": {
+            "enabled": True, "owner_user_id": owner, "require_direct_message": dm}}))
+
+    def _store(self, tmp_path, monkeypatch):
+        import adk.decisions.store as store
+
+        monkeypatch.setenv("AITHER_DECISIONS_DIR", str(tmp_path / "decisions"))
+        monkeypatch.setenv("AITHER_STEER_DIR", str(tmp_path / "steer"))
+        monkeypatch.setattr(store, "_STORE", None)
+        return store
+
+    def _raise(self, client, job, *, ts="2026-09-19T05:00:01+00:00", n="3"):
+        return client.post("/decisions", json={
+            "title": "ignored - the recipe owns the card",
+            "card_recipe": "wake-failed",
+            "recipe_vars": {"job": job, "first_failure_ts": ts, "n": n},
+        })
+
+    def test_a_mismatched_origin_claim_on_answer_is_refused_and_spawns_nothing(
+            self, client, home, fake, tmp_path, monkeypatch):
+        """Before this fix, `origin` on the answer body did nothing: the owner
+        bearer that raised this card also holds `wakes:mutate` outright, so
+        answering with a claim `channels.json` denies would still have
+        spawned. It must not, now — the claim is consulted, not ignored."""
+        self._store(tmp_path, monkeypatch)
+        self._channels(tmp_path, owner="999")  # binds a DIFFERENT user than the claim below
+        raised = self._raise(client, "nightly-sync")
+        assert raised.status_code == 200, raised.text
+        card_id = raised.json()["id"]
+
+        resp = client.post(f"/decisions/{card_id}/answer", json={
+            "choice": "disable",
+            "origin": {"platform": "discord", "user_id": "111", "is_direct_message": True},
+        })
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "origin not authorized"
+        assert spawned(fake["capture"]) == [], \
+            "a rejected origin claim on the ANSWER route must not still spawn"
+        # and the card is STILL OPEN — a refused answer must not close the ask.
+        assert client.get(f"/decisions/{card_id}").json()["status"] == "open"
+
+    def test_a_matching_origin_claim_answers_and_records_who_actually_confirmed(
+            self, client, home, fake, tmp_path, monkeypatch):
+        """The positive twin. `answered_via` must be the RE-AUTHORIZED identity,
+        not the client-supplied default `via` field."""
+        self._store(tmp_path, monkeypatch)
+        self._channels(tmp_path, owner="111")
+        raised = self._raise(client, "daily-report", ts="2026-09-19T06:00:00+00:00")
+        assert raised.status_code == 200, raised.text
+        card_id = raised.json()["id"]
+
+        resp = client.post(f"/decisions/{card_id}/answer", json={
+            "choice": "disable",
+            "via": "api",  # the client-supplied default — must be OVERRIDDEN below
+            "origin": {"platform": "discord", "user_id": "111", "is_direct_message": True},
+        })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["decision"]["answered_via"] == "owner:discord:111"
+        assert spawned(fake["capture"]) == [["disable", "--name", "daily-report"]]
+
+    def test_no_origin_claim_on_answer_is_unchanged_for_the_default_deployment(
+            self, client, home, fake, tmp_path, monkeypatch):
+        """No channels.json, no origin claim in the body: the default,
+        no-registry deployment behaves exactly as before this fix."""
+        self._store(tmp_path, monkeypatch)
+        raised = self._raise(client, "never-ran", ts="2026-09-19T06:30:00+00:00")
+        assert raised.status_code == 200, raised.text
+        resp = client.post(f"/decisions/{raised.json()['id']}/answer",
+                           json={"choice": "disable"})
+        assert resp.status_code == 200, resp.text
+        assert spawned(fake["capture"]) == [["disable", "--name", "never-ran"]]

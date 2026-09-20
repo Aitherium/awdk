@@ -176,6 +176,13 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
     for k, v in remote.items():
         if k in _SECRET_KEYS:
             continue                      # a portal must not push credentials down
+        if k in _SECRET_SUBKEYS and isinstance(v, dict):
+            # ...and that includes the NESTED ones. `redact()` strips
+            # `sandbox.credentials` on the way out; nothing refused it on the way
+            # IN, so a profile carrying one was merged into the local file. A
+            # server-side filter may also drop it, but a client that relies on the
+            # server has no protection from any other source of that profile.
+            v = {sk: sv for sk, sv in v.items() if sk not in _SECRET_SUBKEYS[k]}
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             merged = dict(out[k])
             merged.update(v)

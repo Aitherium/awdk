@@ -21,6 +21,18 @@ On restart the tailer resumes from the CURRENT END of each file it has never see
 rather than replaying history. Replaying a week of hook lines into the room on every
 daemon restart would bury live traffic under archaeology. The files remain on disk as
 the durable record, and the room's own JSONL transcript is the replayable stream.
+
+COUNTERS ARE MONOTONIC, SO THEY CANNOT ANSWER "IS THIS PRODUCER ALIVE?"
+----------------------------------------------------------------------
+``published`` and ``rejected`` count since boot, which means a health arm asserting
+``published > 0`` passes forever on events published yesterday. Measured 2026-09-19:
+``spool.published`` was 11 across 139 spool files, the newest spool file was ~7 h
+stale, and the room's newest event was NOW — i.e. the counter said "working" while
+this producer had delivered nothing all day. So ``stats()`` also carries
+``last_published_at`` / ``last_rejected_at`` (epoch seconds, 0.0 = never) and
+``last_rejection`` (the refusal text that used to go only to stderr).
+🪤 Stamp those ONLY where an event really moved. A timestamp advanced on a tick
+would make any freshness check pass forever — the same hole in a new shape.
 """
 
 from __future__ import annotations
@@ -62,6 +74,15 @@ class SpoolTailer:
         self._thread: Optional[threading.Thread] = None
         self.published = 0
         self.rejected = 0
+        #: Epoch seconds of the last event that really reached a room, 0.0 = never.
+        #: Advanced at the publish site, never on a tick — see the module docstring.
+        self.last_published_at = 0.0
+        #: Epoch seconds of the last refusal, 0.0 = never.
+        self.last_rejected_at = 0.0
+        #: The reason for that refusal, verbatim (a RoomError text, or the parse
+        #: failure). Surfaced rather than only printed: stderr on a daemon thread is
+        #: not somewhere an operator or a checker looks.
+        self.last_rejection = ""
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -140,6 +161,21 @@ class SpoolTailer:
         self._offsets[key] = offset
         return published
 
+    def _reject(self, reason: str, log: str = "") -> bool:
+        """Count, TIMESTAMP and NAME one refusal. Always returns False.
+
+        Every rejection site funnels through here so none can grow the counter
+        without also saying WHEN and WHY: a bare count of 11 from yesterday reads
+        exactly like 11 from this minute.
+        """
+        self.rejected += 1
+        self.last_rejected_at = time.time()
+        # Verbatim, with no prefix: a checker and the /health reader want the
+        # producer's own words, and the log line adds its own tag below.
+        self.last_rejection = reason
+        sys.stderr.write(f"[aeon-spool] {log or reason}\n")
+        return False
+
     def _publish(self, line: str) -> bool:
         line = line.strip()
         if not line:
@@ -147,12 +183,11 @@ class SpoolTailer:
         try:
             event = json.loads(line)
         except (json.JSONDecodeError, ValueError):
-            self.rejected += 1
-            sys.stderr.write("[aeon-spool] dropped a malformed spool line\n")
-            return False
+            return self._reject("malformed spool line", "dropped a malformed spool line")
         if not isinstance(event, dict):
-            self.rejected += 1
-            return False
+            # Previously counted in total silence, which is the failure mode this
+            # module's docstring complains about, one level down.
+            return self._reject("spool line was not a JSON object")
         try:
             room = self.registry.get_or_create(str(event.get("room") or "main"))
             room.publish(event)
@@ -160,10 +195,9 @@ class SpoolTailer:
             # A refused event is a PRODUCER bug and must be visible. Counting it and
             # naming the reason is the difference between "the hook is wrong" and
             # "the room is mysteriously empty".
-            self.rejected += 1
-            sys.stderr.write(f"[aeon-spool] rejected event: {exc}\n")
-            return False
+            return self._reject(str(exc), f"rejected event: {exc}")
         self.published += 1
+        self.last_published_at = time.time()
         return True
 
     def stats(self) -> Dict[str, object]:
@@ -172,6 +206,11 @@ class SpoolTailer:
             "files": len(self._offsets),
             "published": self.published,
             "rejected": self.rejected,
+            # checked_at moves on every read; these two move only on real work, so
+            # (checked_at - last_published_at) is the producer's staleness.
+            "last_published_at": self.last_published_at,
+            "last_rejected_at": self.last_rejected_at,
+            "last_rejection": self.last_rejection,
             "running": self._thread is not None and self._thread.is_alive(),
             "checked_at": time.time(),
         }

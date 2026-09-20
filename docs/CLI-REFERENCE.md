@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**107 commands.**
+**109 commands.**
 
 | command | what it does |
 |---|---|
@@ -34,7 +34,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk backend`](#adk-backend) | Manage LLM backends (list, set, test, switch, status) |
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
 | [`adk balance`](#adk-balance) | Show your Aitherium credit balance and earnings |
-| [`adk bonsai-local`](#adk-bonsai-local) | Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally |
+| [`adk bonsai-local`](#adk-bonsai-local) | Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally |
 | [`adk briefs`](#adk-briefs) | List and read executive briefs |
 | [`adk chat`](#adk-chat) | Chat with a mesh agent by name (adk chat <agent> [msg]) |
 | [`adk claude`](#adk-claude) | Run scoped headless Claude Code subagents (serve/spawn/runs/kill) |
@@ -88,6 +88,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk pack`](#adk-pack) | Manage ToolPack extensions (list, search, install, remove, info) |
 | [`adk packs`](#adk-packs) | List available agent packs |
 | [`adk pair`](#adk-pair) | Pair this machine with the portal as an inference node (6-char code from the portal) |
+| [`adk patterns`](#adk-patterns) | Prompt patterns: list, show, run, import |
 | [`adk platform`](#adk-platform) | Internal platform toolkit (merged from aither-platform) |
 | [`adk publish`](#adk-publish) | Publish agent to Elysium marketplace |
 | [`adk publish-preflight`](#adk-publish-preflight) | Check a package can actually be published: an interpreter that meets requires-python, and a wheel that installs AND imports |
@@ -106,6 +107,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk shell`](#adk-shell) | Launch AitherShell interactive terminal |
 | [`adk skills`](#adk-skills) | Manage learned skills |
 | [`adk soul`](#adk-soul) | Import/export SOUL.md identity files |
+| [`adk spec`](#adk-spec) | Spec-driven change workflow: proposal -> delta specs -> tasks -> archive |
 | [`adk ssh`](#adk-ssh) | Open a remote terminal into a prod/dev environment via the tunnel |
 | [`adk ssh-cert`](#adk-ssh-cert) | Fetch a short-lived SSH certificate from the AitherCert SSH CA (GitHub org SSH) |
 | [`adk stack`](#adk-stack) | Start the consumer stack (Room + Ollama) as native processes |
@@ -261,11 +263,12 @@ Show your Aitherium credit balance and earnings
 
 ## `adk bonsai-local`
 
-Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally
+Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally
 
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `--port` | int |  | `8090` | Host port to serve on (default: 8090) |
+| `--model` | str |  | `bonsai2-27b` | bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork >= prism-b10685) or bonsai-27b (the previous generation) |
 | `--dry-run` | str |  | `false` | Show what would run without starting anything |
 | `--stop` | str |  | `false` | Stop and remove the local Bonsai container |
 
@@ -627,7 +630,9 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 - `adk harness send` — Send a turn to a session
 - `adk harness attach` — Follow a session's event stream
 - `adk harness kill` — Stop a session
+- `adk harness tell` — Say something to ONE named session (nick, session id or prefix)
 - `adk harness wrap` — Terminal-resident daemon session (bridge stdin/stdout to daemon)
+- `adk harness mod [status|install|uninstall|smoke]` — The Claude Code mod: an `aw` subagent type answered by a daemon session, so any harness (OpenCode, Gemini, Codex, Aider, a sovereign agent, Claude Code on another backend) runs as a native Claude Code subagent. `status` exits 1 when the mod is not active
 
 | option | type | required | default | description |
 |---|---|---|---|---|
@@ -926,6 +931,17 @@ Pair this machine with the portal as an inference node (6-char code from the por
 | `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab |
 | `--portal` | str |  |  | Portal base URL (default: https://api.aitherium.com) |
 
+## `adk patterns`
+
+Prompt patterns: list, show, run, import
+
+**Subcommands**
+
+- `adk patterns list` — List discoverable patterns and where each comes from
+- `adk patterns show` — Print a pattern's system prompt
+- `adk patterns run` — Apply a pattern to text (stdin unless --in)
+- `adk patterns import` — Copy patterns from a directory or a Fabric clone
+
 ## `adk platform`
 
 Internal platform toolkit (merged from aither-platform)
@@ -1143,6 +1159,19 @@ Import/export SOUL.md identity files
 
 - `adk soul import` — Import a SOUL.md file
 - `adk soul export` — Export identity as SOUL.md
+
+## `adk spec`
+
+Spec-driven change workflow: proposal -> delta specs -> tasks -> archive
+
+**Subcommands**
+
+- `adk spec new` — Scaffold a change (proposal, design, tasks, .openspec.yaml)
+- `adk spec validate` — Check a change: Why, delta specs, scenarios, tasks
+- `adk spec status` — List open changes with task progress and validity
+- `adk spec tasks` — List a change's tasks; --done N.M ticks one
+- `adk spec archive` — Validate, merge deltas into living specs, move to archive/
+- `adk spec export` — Write <change>/export.md (proposal + deltas + tasks)
 
 ## `adk ssh`
 

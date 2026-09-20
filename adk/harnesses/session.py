@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from adk.harnesses.events import EventKind, HarnessEvent, error, notice
+from adk.harnesses.mod import apply_to_launch as apply_mod_to_launch
 from adk.harnesses.models import ModelBinding, apply_binding
 from adk.harnesses.registry import HarnessSpec, LaunchSpec, Transport, resolve_binary
 
@@ -64,6 +65,24 @@ TURN_QUIET_NOTICE_SECONDS = float(os.environ.get("AITHER_HARNESS_TURN_QUIET", "4
 #: background-spawned console window TAKES FOCUS on the logged-on desktop —
 #: a known problem that CREATE_NO_WINDOW prevents.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
+#: Environment markers Claude Code sets for ITS OWN children. A harness the daemon spawns
+#: is a fresh top-level session, never a child of whatever launched the daemon.
+NESTED_CLAUDE_MARKERS = ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT",
+                         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+NESTED_CLAUDE_PREFIX = "CLAUDE_CODE_"
+KEEP_CLAUDE_VARS = ("CLAUDE_CONFIG_DIR",)
+
+
+def scrub_nested_claude_markers(env: dict) -> dict:
+    """Drop every nested-session marker from ``env`` in place; return it."""
+    for key in list(env):
+        if key in KEEP_CLAUDE_VARS:
+            continue
+        if key in NESTED_CLAUDE_MARKERS or key.startswith(NESTED_CLAUDE_PREFIX):
+            env.pop(key, None)
+    return env
 
 
 class SessionState(str):
@@ -102,6 +121,10 @@ class SessionConfig:
     base_url: str = ""
     #: Per-session ceiling on a one-shot turn, in seconds (0 = module default).
     turn_timeout: float = 0.0
+    #: Opt-in: may a PEER agent's steer be typed straight into this session's pty
+    #: (tier 1)? Default off; the owner still lands immediately either way. A peer's
+    #: text arrives framed with its provenance whichever tier carries it.
+    allow_peer_input: bool = False
 
 
 class HarnessSession:
@@ -184,9 +207,17 @@ class HarnessSession:
         env = dict(os.environ)
         if self.binding is not None:
             env = apply_binding(env, self.binding)
-        # A child harness must never inherit our own stream-json wiring.
-        env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        # A child harness must never inherit our own stream-json wiring -- nor the
+        # markers that say "you are INSIDE a Claude Code session". Measured 2026-09-19:
+        # a daemon started from a Claude Code shell (which is how awsh reaches it) carried
+        # CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_MESSAGING_* and CLAUDE_PID; a
+        # claude-tty spawned under them rendered NOTHING (23 bytes of pty output, no
+        # banner) while a plain shell in the same daemon worked. CLAUDE_CONFIG_DIR is the
+        # owner's own setting and stays.
+        scrub_nested_claude_markers(env)
         env["AITHER_HARNESS_SESSION"] = self.id
+        # After the scrub, which removes the very variable this sets.
+        apply_mod_to_launch(self.spec.id, self.config.owner, env, [])
         return env
 
     def _launch_spec(self, prompt: str = "") -> LaunchSpec:
@@ -204,7 +235,9 @@ class HarnessSession:
             mcp_config=self.config.mcp_config,
             prompt=prompt,
             target=self.config.target,
-            extra_args=list(self.config.extra_args),
+            extra_args=apply_mod_to_launch(
+                self.spec.id, self.config.owner, {}, list(self.config.extra_args)
+            ),
         )
 
     def start(self) -> None:
@@ -395,6 +428,18 @@ class HarnessSession:
         self._threads.append(thread)
 
     # ── turns ───────────────────────────────────────────────────────────────
+
+    def submit(self, text: str) -> bool:
+        """Deliver ``text`` as a COMPLETE turn.
+
+        For a structured or one-shot harness that is exactly :meth:`send`. A pty
+        harness overrides it to add the Enter a terminal needs. Dispatchers call THIS,
+        never ``send``: measured 2026-09-19, the steer dispatcher's tier 1 called
+        ``send(text)`` on a pty and then reported ``landed_now=True`` / "the agent has
+        it now" -- for a terminal that would have been a line sitting unsubmitted in
+        the input box, a receipt lying by one keystroke.
+        """
+        return self.send(text)
 
     def send(self, text: str) -> bool:
         """Deliver one user turn. Returns False when the session cannot take it."""
@@ -612,6 +657,8 @@ class HarnessSession:
             "title": self.config.title or self.spec.label,
             "cwd": self.config.cwd,
             "owner": self.config.owner,
+            # Echoed so a caller can see which tabs opted in to peer input at spawn.
+            "allow_peer_input": bool(self.config.allow_peer_input),
             "created_at": self.created_at,
             "turn": self.turn,
             "last_seq": self.last_seq,

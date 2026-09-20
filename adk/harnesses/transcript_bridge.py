@@ -28,6 +28,7 @@ runs on its own daemon thread, exactly like ``session_directory``'s own I/O.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import time
@@ -66,7 +67,70 @@ def _tool_summary(tool_input: Any) -> Dict[str, str]:
     return out
 
 
-def events_from_entry(entry: Dict[str, Any], session_id: str, cwd: str) -> List[Dict[str, Any]]:
+def _seed_topic(transcript_path: str) -> str:
+    """The topic a session already has, read from its transcript on discovery.
+
+    Shares session_directory's scanner (and its cache), so the room and the
+    sessions pane derive one topic from one read -- a second implementation
+    here is how two surfaces start disagreeing about the same session. Never
+    raises: a bridge that dies on discovery stops publishing every tab.
+    """
+    try:
+        from adk.harnesses.session_directory import _last_human_prompt
+
+        return session_topic(_last_human_prompt(transcript_path, session_topic))
+    except Exception:  # noqa: BLE001 - a missing topic is not worth a dead bridge
+        return ""
+
+
+def _session_name(session_id: str, cwd: str, claude_name: str = "") -> str:
+    """The session's own name, not the checkout's.
+
+    Claude Code writes `<repo> <branch> <HH:MM>` into its state file, which
+    carries the branch and a start time the owner can match to a tab; that is
+    the name when it is available. `<repo>#<8 hex>` is the fallback -- either
+    way it is addressable in cast.json as ONE SESSION rather than one checkout.
+    """
+    name = " ".join(str(claude_name or "").split())
+    if name:
+        return name[:80]
+    repo = Path(cwd).name or "session"
+    short = (session_id or "")[:8]
+    return f"{repo}#{short}" if short else repo
+
+
+def session_topic(prompt: str, limit: int = 72) -> str:
+    """One line naming what a session is doing, from the human's own words.
+
+    The first sentence of the prompt, stripped of the machine-injected
+    wrappers Claude Code sends through the same channel (system reminders,
+    hook feedback, task notifications) -- those are not the owner speaking
+    and must never become the topic.
+    """
+    text = " ".join(str(prompt or "").split())
+    # A <pasted_content> block IS the owner speaking -- their words follow the
+    # closing tag (measured 2026-09-19: 3 of 4 live sessions lost their topic
+    # because the whole prompt was rejected for starting with "<").
+    text = re.sub(r"<pasted_content\b[^>]*>.*?</pasted_content[^>]*>", " ", text)
+    text = " ".join(text.split()).lstrip("- ").strip()
+    if not text or text[0] in "<[" or text.startswith(("Stop hook feedback",
+                                                      "Caveat:", "This session is being continued")):
+        return ""
+    # Filler advances the work but names nothing; the caller walks back to the
+    # newest prompt that does.
+    if text.lower().rstrip("?!. ") in ("continue", "go", "done", "ok", "yes", "next",
+                                       "status", "proceed", "keep going", "carry on"):
+        return ""
+    for stop in (". ", "? ", "! ", " -- ", " — "):
+        cut = text.find(stop)
+        if 0 < cut <= limit:
+            text = text[:cut]
+            break
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")
+
+
+def events_from_entry(entry: Dict[str, Any], session_id: str, cwd: str,
+                      topic: str = "", claude_name: str = "") -> List[Dict[str, Any]]:
     """Map one Claude Code transcript entry onto zero or more AitherEvents.
 
     ``pillar`` is left absent on purpose — the room derives it from the event type, so
@@ -81,7 +145,15 @@ def events_from_entry(entry: Dict[str, Any], session_id: str, cwd: str) -> List[
     actor = {
         "kind": "claude_code",
         "id": session_id,
-        "name": Path(cwd).name or session_id,
+        # UNIQUE per session, not per repo. `Path(cwd).name` alone gave every
+        # parallel tab in one checkout the same name, so cast.json's `authors`
+        # tier could not address one of them, the character seed (`author:seat`)
+        # differed only by seat and reshuffled as seats moved, and the room said
+        # "<repo> says:" where the owner needed to know WHICH session.
+        "name": _session_name(session_id, cwd, claude_name),
+        # What this session is working on, so a line carries its own context.
+        # Absent until the session's first human prompt is seen -- never guessed.
+        "title": topic or "",
     }
     base = {
         "v": 1,
@@ -144,6 +216,10 @@ class TranscriptBridge:
         self._offsets: Dict[str, int] = {}
         #: transcript path -> (session_id, cwd)
         self._known: Dict[str, tuple] = {}
+        #: session_id -> the topic its last human prompt named
+        self._topics: Dict[str, str] = {}
+        #: session_id -> Claude Code's own name for the tab (`repo branch HH:MM`)
+        self._names: Dict[str, str] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_discovery = 0.0
@@ -151,6 +227,13 @@ class TranscriptBridge:
         self.rejected = 0
         self.sessions_seen = 0
         self.last_error = ""
+        #: Epoch seconds of the last event that really reached a room, 0.0 = never.
+        #: ``published`` is monotonic since boot, so it answers "has this ever
+        #: worked", never "is it working now" — measured 2026-09-19, the sibling
+        #: spool producer read as healthy on 11 events it had delivered the day
+        #: before. 🪤 Advance this at the publish site ONLY: stamped on a tick it
+        #: would make every freshness check pass forever.
+        self.last_published_at = 0.0
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -206,6 +289,18 @@ class TranscriptBridge:
             if not path:
                 continue
             self._known[path] = (getattr(session, "id", ""), getattr(session, "cwd", ""))
+            # Claude Code's own name for the tab, so the room and the sessions
+            # pane call one session by one name.
+            sid = getattr(session, "id", "")
+            if sid:
+                self._names[sid] = getattr(session, "name", "") or ""
+                # Seed the topic from the transcript ALREADY on disk. Learning
+                # it only from a prompt seen after start meant every session
+                # published untitled lines until its owner typed again -- which
+                # on a long-running tab is never (measured 2026-09-19: ten live
+                # actors in the room, every title empty after a restart).
+                if sid not in self._topics:
+                    self._topics[sid] = _seed_topic(path)
             count += 1
         self.sessions_seen = count
         return count
@@ -258,11 +353,21 @@ class TranscriptBridge:
 
         room = self.registry.get_or_create(self.room)
         published = 0
-        for event in events_from_entry(entry, session_id, cwd):
+        topic = self._topics.get(session_id, "")
+        for event in events_from_entry(entry, session_id, cwd, topic,
+                                       self._names.get(session_id, "")):
+            # A human prompt IS the new topic -- from this event onward, every
+            # line this session emits carries it.
+            if event.get("stage") == "transcript.user":
+                fresh = session_topic((event.get("payload") or {}).get("prompt", ""))
+                if fresh:
+                    self._topics[session_id] = fresh
+                    event["actor"] = {**event["actor"], "title": fresh}
             try:
                 room.publish(event)
                 published += 1
                 self.published += 1
+                self.last_published_at = time.time()
             except RoomError as exc:
                 self.rejected += 1
                 self.last_error = str(exc)
@@ -275,6 +380,9 @@ class TranscriptBridge:
             "transcripts": len(self._offsets),
             "published": self.published,
             "rejected": self.rejected,
+            # The only field here that distinguishes "delivering now" from
+            # "delivered something once, before lunch". 0.0 = never.
+            "last_published_at": self.last_published_at,
             "running": self._thread is not None and self._thread.is_alive(),
             "last_error": self.last_error,
         }

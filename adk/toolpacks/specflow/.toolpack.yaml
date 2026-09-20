@@ -1,0 +1,37 @@
+id: specflow
+name: Specflow — spec-driven change workflow
+version: 1.0.0
+description: >-
+  Spec-before-code discipline for standalone agents. A change lives at
+  openspec/changes/<change-id>/ as proposal.md (why, what, capabilities,
+  prioritised user stories) -> specs/<capability>/spec.md (a DELTA of
+  ADDED / MODIFIED / REMOVED requirements, each with WHEN/THEN scenarios) ->
+  design.md (optional) -> tasks.md (checkbox tasks). Living specs accumulate
+  under openspec/specs/<capability>/spec.md; archiving a change merges its
+  deltas into them. spec_new scaffolds, spec_validate checks, spec_status
+  lists, spec_tasks ticks, spec_archive merges + moves, spec_export writes one
+  markdown file a connected platform can ingest. An optional
+  openspec/CONSTITUTION.md holds project principles every proposal must check
+  against. This pack is an adaptation of the OpenSpec workflow SHAPE
+  (https://github.com/Fission-AI/OpenSpec, MIT) with the constitution and
+  prioritised, independently testable user stories borrowed from spec-kit
+  (https://github.com/github/spec-kit, MIT); no upstream code is vendored.
+category: tool_packs
+author: Aitherium
+icon: clipboard-list
+tags: [spec, sdd, planning]
+
+mcp_tools:
+  - "spec_*"
+
+# Registration is plain functions built at register() time. Empty tool_modules
+# -> the loader file-loads this pack's __init__.py by path and calls register().
+tool_modules: []
+
+# Free tier: local files only, no network, no entitlement gate.
+entitlements: []
+
+skills: []
+
+persona_fragments:
+  - "Before writing code for a non-trivial change, run the spec_* workflow: spec_new <change-id> scaffolds openspec/changes/<change-id>/ (proposal.md, design.md, tasks.md); write the proposal's Why and prioritised user stories, add a delta spec at specs/<capability>/spec.md with ADDED/MODIFIED/REMOVED requirements and WHEN/THEN scenarios, then spec_validate until ok. Tick tasks with spec_tasks as you implement, and spec_archive when the change ships so the living specs under openspec/specs/ stay true."

@@ -84,6 +84,12 @@ class BenchItem:
     system: str = ""
     max_tokens: int = 400
     criteria: str = ""
+    #: Follow-up user turns sent AFTER the model's reply to `prompt`, each with
+    #: the full history. Only the FINAL reply is scored. Added 2026-09-19: every
+    #: item until then was single-turn, and the axis users actually complained
+    #: about ("one-shots with a few follow-ups") was one this suite could not
+    #: see -- a model can score 0.9 here and lose the thread by turn three.
+    follow_ups: tuple = ()
 
 
 # ── Scoring helpers ────────────────────────────────────────────────────────
@@ -257,6 +263,16 @@ def answer_is_not(*reject: str) -> Callable[[str], float]:
 def both(a: Callable[[str], float], b: Callable[[str], float]
          ) -> Callable[[str], float]:
     return lambda r: min(a(r), b(r))
+
+
+def ends_with(word: str) -> Callable[[str], float]:
+    """The reply's last token is `word` (punctuation ignored). A standing
+    format instruction from turn one is the cheapest thing to forget by turn
+    three, and the only way to test it is to look at the END."""
+    def f(resp: str) -> float:
+        t = _norm(resp).rstrip(" .!?*`\"'")
+        return 1.0 if t.endswith(word.lower()) else 0.0
+    return f
 
 
 def ordered(*steps: str) -> Callable[[str], float]:
@@ -780,6 +796,86 @@ ITEMS: List[BenchItem] = [
         criteria="Stable fact. Searching everything is its own failure — "
                  "latency and cost for nothing.",
     ),
+    # ── MULTI-TURN (2026-09-19) ────────────────────────────────────────────
+    # The complaint this suite could not see: "try some tangible result
+    # one-shots with even a few follow-ups and it's such trash" (a user, on
+    # Bonsai 2, the day it scored 0.9165 on the 45 single-turn items above).
+    # Each item is a prompt plus follow-ups carrying the full history; only the
+    # last reply is scored, and every oracle is a fact the thread ESTABLISHED
+    # and then MOVED -- a number carried across turns, a constraint revised, a
+    # fact corrected, a standing instruction still honoured on turn three.
+    # Hard oracles, as everywhere in this file: the trap answer is the one a
+    # model gives when it reads only the latest turn.
+    BenchItem(
+        id="mt_carry_number", dimension="multi_turn",
+        prompt="I have 12 apples. I give 5 to a friend.",
+        follow_ups=("Then I buy 9 more at the shop.",
+                    "How many apples do I have now? Reply with just the number."),
+        score=both(answer_is("16"), answer_is_not("21", "7")),
+        criteria="Arithmetic across three turns. 21 (ignores the gift) and 7 "
+                 "(ignores the purchase) are the single-turn readings.",
+    ),
+    BenchItem(
+        id="mt_revise_constraint", dimension="multi_turn",
+        prompt="Our release has three steps: build, test, ship. List them in order.",
+        follow_ups=("Change of policy: tests must run BEFORE the build from now on.",
+                    "Give the final order, one step per line, nothing else."),
+        score=ordered("test", "build", "ship"),
+        criteria="A constraint revised mid-thread. Repeating turn one's order "
+                 "is the failure.",
+    ),
+    BenchItem(
+        id="mt_correction", dimension="multi_turn",
+        prompt="Some context: my name is Ada and my dog is called Rex.",
+        follow_ups=("Sorry, typo -- the dog is Max, not Rex.",
+                    "What is my dog's name? One word."),
+        score=both(answer_is("max"), answer_is_not("rex")),
+        criteria="A corrected fact. The first-stated name is the trap.",
+    ),
+    BenchItem(
+        id="mt_stale_fact", dimension="multi_turn",
+        prompt="Note for later: the staging server listens on port 8080.",
+        follow_ups=("Update: ops moved staging to port 9090 yesterday.",
+                    "Which port do I connect to for staging? Just the number."),
+        score=both(answer_is("9090"), answer_is_not("8080")),
+        criteria="Newest statement wins. Answering the first-mentioned port "
+                 "is reading the thread as a bag of facts.",
+    ),
+    BenchItem(
+        id="mt_cancelled_task", dimension="multi_turn",
+        prompt="Tonight's checklist: backup, migrate, notify.",
+        follow_ups=("Migrate is cancelled -- the DBA postponed it.",
+                    "Which checklist items remain? Comma-separated, nothing else."),
+        score=both(contains_all("backup", "notify"), answer_is_not("migrate")),
+        criteria="A set edited across turns. Listing all three is the failure.",
+    ),
+    BenchItem(
+        id="mt_standing_format", dimension="multi_turn",
+        prompt="For the rest of this conversation, end every reply with the "
+               "single word DONE. Acknowledge briefly.",
+        follow_ups=("What is 2 + 2?", "And 3 + 3?"),
+        score=both(answer_is("6"), ends_with("done")),
+        criteria="A standing instruction from turn one, checked on turn three. "
+                 "The right number without the marker is the common miss.",
+    ),
+    BenchItem(
+        id="mt_unit_carry", dimension="multi_turn",
+        prompt="A loaf needs 250 g of flour.",
+        follow_ups=("I am baking 3 loaves.",
+                    "Total flour in grams? Reply with just the number."),
+        score=both(answer_is("750"), answer_is_not("250")),
+        criteria="A quantity from turn one applied to a count from turn two.",
+    ),
+    BenchItem(
+        id="mt_code_revision", dimension="multi_turn",
+        prompt="Write a Python function add(a, b) that returns a + b.",
+        follow_ups=("Rename it to combine and make it return a * b instead.",
+                    "Reply with exactly: name=<function name> result=<combine(3, 4)>"),
+        score=both(contains_all("name=combine", "result=12"),
+                   answer_is_not("result=7")),
+        criteria="A revision to earlier code. name=add or result=7 is turn "
+                 "one leaking through.",
+    ),
 ]
 
 
@@ -815,6 +911,22 @@ def run(turn_fn: Callable[[List[Dict[str, str]]], str],
         msgs.append({"role": "user", "content": item.prompt})
         try:
             out = turn_fn(msgs)
+            # Multi-turn: replay the JUDGED reply (reasoning stripped, as a
+            # chat client would) and send each follow-up with the history.
+            # Any turn that cannot be judged makes the ITEM unjudged -- a
+            # thread with a hole in it is not a thread.
+            for fu in item.follow_ups:
+                prev, prev_fin = out if isinstance(out, tuple) else (out, "")
+                msgs.append({"role": "assistant",
+                             "content": judge_response(prev, prev_fin)})
+                msgs.append({"role": "user", "content": fu})
+                out = turn_fn(msgs)
+        except UnjudgeableError as e:
+            unjudged.append({"id": item.id, "dimension": item.dimension,
+                             "why": f"mid-thread: {e}", "chars": "0"})
+            detail.append({"id": item.id, "dimension": item.dimension,
+                           "score": None, "unjudged": f"mid-thread: {str(e)[:110]}"})
+            continue
         except Exception as e:  # noqa: BLE001
             # A TRANSPORT failure is "could not judge", not "answered wrongly"
             # — the same rule as judge_response(), which this branch used to
@@ -1119,6 +1231,63 @@ def self_test() -> int:
     counts = {d: sum(1 for i in ITEMS if i.dimension == d) for d in DIMENSIONS}
     ck(all(c >= 2 for c in counts.values()),
        f"every dimension has >= 2 items {counts}")
+
+    # ── multi_turn ────────────────────────────────────────────────────────
+    ck(by_id["mt_carry_number"].score("16") == 1.0
+       and by_id["mt_carry_number"].score("21") == 0.0
+       and by_id["mt_carry_number"].score("You have 7 apples.") == 0.0,
+       "multi_turn carry: the single-turn readings (21, 7) score zero")
+    ck(by_id["mt_revise_constraint"].score("test\nbuild\nship") == 1.0
+       and by_id["mt_revise_constraint"].score("build\ntest\nship") == 0.4,
+       "multi_turn revise: turn one's order scores low after the revision")
+    ck(by_id["mt_correction"].score("Max") == 1.0
+       and by_id["mt_correction"].score("Rex") == 0.0
+       and by_id["mt_correction"].score("Max (formerly Rex)") == 0.0,
+       "multi_turn correction: the corrected name, and not the old one")
+    ck(by_id["mt_standing_format"].score("6 DONE") == 1.0
+       and by_id["mt_standing_format"].score("6. DONE.") == 1.0
+       and by_id["mt_standing_format"].score("6") == 0.0
+       and by_id["mt_standing_format"].score("DONE 6") == 0.0,
+       "multi_turn standing format: the marker must END the reply")
+    ck(by_id["mt_code_revision"].score("name=combine result=12") == 1.0
+       and by_id["mt_code_revision"].score("name=add result=7") == 0.0,
+       "multi_turn code revision: turn one's function is the trap")
+
+    # run() must SEND the follow-ups with history, replay the stripped reply,
+    # and treat a hole in the thread as unjudged rather than 0.0.
+    seen: List[List[Dict[str, str]]] = []
+
+    def scripted(messages):
+        seen.append([dict(m) for m in messages])
+        n = sum(1 for m in messages if m["role"] == "user")
+        if n == 1:
+            return ("<think>twelve minus five</think>7 apples so far.", "stop")
+        return ("16", "stop")
+
+    r = run(scripted, dimensions=["multi_turn"])
+    carry = [c for c in seen if c[0]["content"].startswith("I have 12 apples")]
+    ck(len(carry) == 3 and len(carry[2]) == 5
+       and carry[2][1]["role"] == "assistant"
+       and carry[2][1]["content"] == "7 apples so far."
+       and carry[2][2]["content"] == "Then I buy 9 more at the shop.",
+       "run() sends each follow-up with the history and replays the JUDGED "
+       "reply (think-block stripped), not the raw one")
+    ck(r["dimensions"].get("multi_turn") is not None
+       and any(d["id"] == "mt_carry_number" and d["score"] == 1.0
+               for d in r["detail"]),
+       "run() scores the FINAL reply of a multi-turn item")
+
+    def holed(messages):
+        if sum(1 for m in messages if m["role"] == "user") == 2:
+            return ("", "length")          # truncated to nothing mid-thread
+        return ("fine", "stop")
+
+    r2 = run(holed, dimensions=["multi_turn"])
+    ck(all(d["score"] is None for d in r2["detail"])
+       and all(u["why"].startswith("mid-thread") for u in r2["unjudged"])
+       and r2["comparable"] is False,
+       "a turn that cannot be judged mid-thread makes the item UNJUDGED, "
+       "never 0.0, and the run is not comparable")
 
     print(f"\nself-test: {'PASSED' if not bad else 'FAILED'} ({bad} failure(s))")
     return 1 if bad else 0

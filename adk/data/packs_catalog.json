@@ -522,8 +522,8 @@
       "name": "Roboflow Vision",
       "type": "tool_pack",
       "version": "1.0.0",
-      "description": "Computer-vision tools over a Roboflow inference server (local Docker or remote): run detection models and Workflows, drive the asset pipeline with quality gating and JSONL/CSV logging, and bridge PASS-grade assets to 3D via MicroScheduler mesh generation. Cloud project ops use your Roboflow API key. Pure HTTP \u2014 no torch, no inference SDK baked in.",
-      "tier": "free",
+      "description": "PROFESSIONAL+ \u2014 Computer-vision tools over a Roboflow inference server (local Docker or remote): run detection models and Workflows, drive the asset pipeline with quality gating and JSONL/CSV logging, and bridge PASS-grade assets to 3D via MicroScheduler mesh generation. Cloud project ops use your Roboflow API key. Pure HTTP \u2014 no torch, no inference SDK baked in.",
+      "tier": "enterprise",
       "category": "creative",
       "tags": [
         "computer-vision",
@@ -535,8 +535,8 @@
         "roboflow"
       ],
       "pricing": {
-        "free_tier": true,
-        "subscription_cents": 0
+        "free_tier": false,
+        "subscription_cents": 2900
       }
     },
     {

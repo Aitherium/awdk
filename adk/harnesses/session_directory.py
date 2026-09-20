@@ -117,6 +117,130 @@ class UnifiedSession:
     extras: Optional[dict[str, Any]] = None
 
 
+#: How far back a COLD read looks for the last human prompt. One tail window is
+#: not enough: measured 2026-09-19, a 19.5 MB transcript's newest prompt that
+#: named anything sat 2.58 MB from EOF, because a long turn writes megabytes of
+#: tool traffic between human turns.
+_PROMPT_SCAN_BYTES = 12_000_000
+
+#: transcript path -> (size_at_scan, prompt). The directory re-derives every
+#: session on a 2 s TTL, so a deep scan per poll would be tens of MB/s of disk
+#: for a string that changes once a turn. After the cold read only the appended
+#: bytes are read, and the last found prompt stands until a newer one appears.
+_PROMPT_CACHE: dict[str, tuple[int, str]] = {}
+_PROMPT_CACHE_LOCK = threading.Lock()
+
+
+#: Statuses worth SAYING on a surface the owner watches. "working" and "idle"
+#: are the ordinary states and add noise; these two mean the session is stuck
+#: on a human.
+NEEDS_OWNER = {"waiting-input": "waiting for you", "blocked?": "maybe blocked"}
+
+
+def session_display_title(session_id: str, cwd: str, transcript_path: str = "",
+                          claude_name: str = "", status: str = "") -> str:
+    """`<repo>#<8 hex> - <what the human last asked for>`.
+
+    The repo alone collided across every parallel tab in one checkout, which is
+    what made the room say "<repo> says:" and every /sessions/unified row look
+    identical. The topic half comes from the transcript's last HUMAN prompt --
+    Claude Code sends machine turns (system reminders, hook feedback, task
+    notifications) down the same channel, and those are filtered by
+    `session_topic`, so an absent topic degrades to the bare name and is never
+    guessed.
+    """
+    from adk.harnesses.transcript_bridge import session_topic
+
+    # Claude Code's own name for the session is `<repo> <branch> <HH:MM>` --
+    # it already carries the BRANCH (peers work on their own) and a start time
+    # the owner can match to a tab, so it beats anything derived here. The
+    # `#<id8>` form stays for a session that has no such name.
+    repo = Path(cwd).name if cwd else ""
+    short = (session_id or "")[:8]
+    name = " ".join(str(claude_name or "").split())
+    if not name:
+        name = f"{repo}#{short}" if repo and short else (repo or short or "session")
+    prompt = _last_human_prompt(transcript_path, session_topic) if transcript_path else ""
+    topic = session_topic(prompt) if prompt else ""
+    need = NEEDS_OWNER.get(status or "")
+    parts = [name]
+    if need:
+        parts.append(need)
+    if topic:
+        parts.append(topic)
+    return " - ".join(parts)
+
+
+def _last_human_prompt(transcript_path: str, topic_of=None) -> str:
+    """The newest human prompt that NAMES something, scanning backwards.
+
+    A tool RESULT is also a user entry, so the discriminator is the content
+    SHAPE (a plain string) and not the role -- the same trap the bridge and
+    hook_common.py both document. Transcripts here reach 18 MB and the last
+    human turn is routinely far outside one tail window, so this walks backward
+    in bounded chunks (at most _PROMPT_SCAN_BYTES) and stops at the first
+    prompt `topic_of` accepts -- filler ("continue") and machine turns are
+    rejected there, not here.
+    """
+    cached = None
+    try:
+        path = Path(transcript_path)
+        if not path.exists():
+            return ""
+        size = path.stat().st_size
+        with _PROMPT_CACHE_LOCK:
+            cached = _PROMPT_CACHE.get(transcript_path)
+        # Warm: read only what was appended since the last look. A file that
+        # SHRANK (rotated, replaced) invalidates -- it is not the same stream.
+        # UNCHANGED is the common case on a 2 s poll and must read nothing at
+        # all: computing `size - cached[0]` and falling through to the deep
+        # bound made the cache inert (measured: warm was 1x cold).
+        if cached and cached[0] == size:
+            return cached[1]
+        limit = min(size, size - cached[0]) if cached and 0 < cached[0] < size else min(size, _PROMPT_SCAN_BYTES)
+        found = ""
+        with open(path, "rb") as fh:
+            scanned, buf = 0, b""
+            while scanned < limit:
+                step = min(TRANSCRIPT_TAIL_SIZE, size - scanned)
+                scanned += step
+                fh.seek(size - scanned)
+                buf = fh.read(step) + buf
+                text = buf.decode("utf-8", errors="replace")
+                lines = text.split("\n")
+                # The first line of a mid-file window is almost always partial;
+                # keep it in `buf` for the next, wider pass instead of parsing it.
+                for line in reversed(lines[1:] if scanned < size else lines):
+                    line = line.strip()
+                    if not line or '"user"' not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if entry.get("type") != "user":
+                        continue
+                    content = (entry.get("message") or {}).get("content")
+                    if not isinstance(content, str) or not content.strip():
+                        continue
+                    if topic_of is None or topic_of(content):
+                        found = content
+                        break
+                if found:
+                    break
+    except OSError:
+        return (cached[1] if cached else "")
+    if not found and cached:
+        # Nothing new named anything: the session is still on the same work.
+        found = cached[1]
+    with _PROMPT_CACHE_LOCK:
+        _PROMPT_CACHE[transcript_path] = (size, found)
+        if len(_PROMPT_CACHE) > 256:  # bounded: sessions come and go
+            for stale in list(_PROMPT_CACHE)[:64]:
+                _PROMPT_CACHE.pop(stale, None)
+    return found
+
+
 def _derive_status_from_transcript(transcript_path: str) -> tuple[str, float, str]:
     """Derive session status from transcript tail.
 
@@ -305,6 +429,14 @@ class SessionDirectory:
                 status, activity_at, activity_summary = _derive_status_from_transcript(
                     transcript
                 )
+            # The session's OWN state outranks anything inferred from its transcript.
+            # Measured 2026-09-19: a killed claude-tty (state=exited, exit 2) was listed
+            # as `idle` with steer_capability `full`, because a transcript that simply
+            # stopped growing reads as an idle tab -- so `tell` could address a corpse
+            # and the desk could keep a body on stage for it.
+            dead = str(info.get("state") or "") in ("exited", "failed")
+            if dead:
+                status = "exited"
 
             out.append(
                 UnifiedSession(
@@ -319,7 +451,7 @@ class SessionDirectory:
                     last_activity_summary=activity_summary,
                     transcript_path=transcript,
                     pid=None,
-                    steer_capability="full",
+                    steer_capability="none" if dead else "full",
                     extras=info,
                 )
             )
@@ -340,7 +472,11 @@ class SessionDirectory:
             out.append(
                 UnifiedSession(
                     id=disc.id,
-                    title=disc.name,
+                    # disc.name is Claude Code's OWN `<repo> <branch> <HH:MM>`;
+                    # the helper adds what the session is doing and whether it
+                    # is stuck on a human.
+                    title=session_display_title(disc.id, disc.cwd, disc.transcript_path,
+                                                claude_name=disc.name, status=status),
                     cwd=disc.cwd,
                     harness="claude",  # Discovered sessions are always Claude
                     harness_label="Claude Code",
@@ -376,8 +512,14 @@ class SessionDirectory:
             discovered = self._discover()
             discovered_unified = self._build_from_discovered(discovered)
 
-            # Merge, deduplicating by id (daemon takes precedence)
+            # Merge, deduplicating by id (daemon takes precedence). A daemon-owned
+            # claude-tty session is ALSO discovered from Claude's own state files under
+            # the --session-id the daemon minted for it -- fold that row into the daemon
+            # row, or one Claude Code lists twice: once steerable, once not.
             daemon_ids = {s.id for s in daemon_unified}
+            daemon_ids |= {
+                str((s.extras or {}).get("harness_session_id") or "") for s in daemon_unified
+            } - {""}
             combined = daemon_unified + [d for d in discovered_unified if d.id not in daemon_ids]
 
             # Sort by last activity (newest first)

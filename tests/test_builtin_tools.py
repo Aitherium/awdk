@@ -384,6 +384,11 @@ class TestWebFetch:
         mock_resp = MagicMock()
         mock_resp.text = "<html><body><p>Hello World</p></body></html>"
         mock_resp.raise_for_status = MagicMock()
+        # The fetch ladder re-checks every redirect hop against the SSRF gate and
+        # reads the final status, so a mocked response must look like a real one.
+        mock_resp.url = "https://example.com"
+        mock_resp.history = []
+        mock_resp.status_code = 200
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
@@ -399,6 +404,11 @@ class TestWebFetch:
         mock_resp = MagicMock()
         mock_resp.text = "x" * 50_000
         mock_resp.raise_for_status = MagicMock()
+        # The fetch ladder re-checks every redirect hop against the SSRF gate and
+        # reads the final status, so a mocked response must look like a real one.
+        mock_resp.url = "https://example.com"
+        mock_resp.history = []
+        mock_resp.status_code = 200
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
@@ -414,6 +424,11 @@ class TestWebFetch:
         mock_resp = MagicMock()
         mock_resp.text = "<script>alert('xss')</script><p>Clean text</p>"
         mock_resp.raise_for_status = MagicMock()
+        # The fetch ladder re-checks every redirect hop against the SSRF gate and
+        # reads the final status, so a mocked response must look like a real one.
+        mock_resp.url = "https://example.com"
+        mock_resp.history = []
+        mock_resp.status_code = 200
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)

@@ -265,7 +265,7 @@ def cmd_tell(args: Any) -> int:
         print(f"  text: {text}")
         print(f"  relay record: REQUEST drive on #{CHANNEL} "
               f"(correlation {correlation})")
-        print(f"  delivery: POST /sessions/{session_id}/input")
+        print(f"  delivery: POST /sessions/{session_id}/submit")
         return 0
 
     try:
@@ -278,8 +278,10 @@ def cmd_tell(args: Any) -> int:
     except Exception as exc:  # noqa: BLE001 - reported; delivery still proceeds
         print(f"relay record failed (delivery continues): {exc}", file=sys.stderr)
 
+    # /submit, not /input: a tell is a complete turn. /input is raw keystrokes -- on a
+    # pty (claude-tty) it left the text sitting unsubmitted in the input box.
     status, payload = daemon_request(
-        args, f"/sessions/{session_id}/input", "POST", {"text": text})
+        args, f"/sessions/{session_id}/submit", "POST", {"text": text})
     _die_if_down(status, payload)
 
     await_secs = int(getattr(args, "await", 0) or 0)

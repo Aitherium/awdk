@@ -17,6 +17,9 @@ that offers a harness it cannot start is worse than one that says so.
 from __future__ import annotations
 
 import os
+import io
+import re
+import sys
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -63,6 +66,12 @@ class LaunchSpec:
     #: For RAW_STREAM/exec: target container or host.
     target: str = ""
     extra_args: list[str] = field(default_factory=list)
+    #: For a PTY program harness (claude-tty): the id the daemon MINTED for this
+    #: session, handed to the program so the daemon row and the program's own state
+    #: files share one identity. Empty when resuming (resume_session_id wins).
+    session_id: str = ""
+    #: The session's display title, for harnesses that can carry one (`--name`).
+    title: str = ""
 
 
 @dataclass
@@ -178,6 +187,40 @@ def _claude_encode(text: str) -> str:
     )
 
 
+def _claude_tty_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """Claude Code, the REAL interactive TUI, behind a daemon-owned pseudo-terminal.
+
+    Deliberately NO ``-p`` / ``--output-format`` / ``--input-format``: those make the
+    ``claude`` harness above headless. This one is the screen the owner already
+    knows -- permission prompts, the input box, Ctrl-C -- with one difference: the
+    daemon holds the keyboard, so a steer addressed to this session lands NOW
+    (``steer_dispatch`` tier 1) instead of at the next turn boundary. Measured
+    2026-09-19: every interactive Claude Code tab on this box was ``origin=discovered``
+    and tier 1 never once fired; this harness is what makes a tab managed.
+
+    ``--session-id`` is minted by the daemon (``PtyHarnessSession._resolve_argv``) so
+    the row the daemon lists and the transcript Claude writes under
+    ``~/.claude/projects`` carry ONE id and the session directory folds them.
+    """
+    argv = [spec.binary]
+    if launch.resume_session_id:
+        argv += ["--resume", launch.resume_session_id]
+    elif launch.session_id:
+        argv += ["--session-id", launch.session_id]
+    if launch.title:
+        argv += ["--name", launch.title]
+    if launch.model:
+        argv += ["--model", launch.model]
+    if launch.permission_mode:
+        argv += ["--permission-mode", launch.permission_mode]
+    for directory in launch.add_dirs:
+        argv += ["--add-dir", directory]
+    if launch.mcp_config:
+        argv += ["--mcp-config", launch.mcp_config]
+    argv += launch.extra_args
+    return argv
+
+
 def _gemini_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
     argv = [spec.binary, "-o", "stream-json", "-p", launch.prompt]
     if launch.model:
@@ -217,6 +260,29 @@ register(
         json_lines=True,
         build_argv=_claude_argv,
         encode_input=_claude_encode,
+    )
+)
+
+register(
+    HarnessSpec(
+        id="claude-tty",
+        label="Claude Code (terminal)",
+        description=(
+            "Anthropic Claude Code, the real interactive TUI behind a pseudo-terminal "
+            "the daemon owns -- steerable immediately, resumable, one id"
+        ),
+        transport=Transport.PTY_STREAM,
+        binary="claude",
+        version_argv=["--version"],
+        install_hint="npm i -g @anthropic-ai/claude-code",
+        adapter="text",
+        # The brain stays a frontier model: no per-session model binding, and
+        # PtyHarnessSession scrubs MANAGED_VARS from the child env so a bridge
+        # profile in the daemon's own environment can never become this tab's brain
+        # (the ~26k-token always-on prompt floor does not fit a fleet window).
+        supports_model_binding=False,
+        supports_resume=True,
+        build_argv=_claude_tty_argv,
     )
 )
 
@@ -335,14 +401,44 @@ def get(harness_id: str) -> HarnessSpec:
     return SPECS[harness_id]
 
 
+def exe_from_cmd_shim(cmd_path: str, text: Optional[str] = None) -> Optional[str]:
+    """The .exe an npm ``.cmd`` shim launches, or None. Pure when ``text`` is given.
+
+    npm's Windows shim is one line -- ``"%dp0%\\node_modules\\...\\bin\\claude.exe" %*``.
+    Spawning the shim itself puts a ``cmd.exe`` between the pty and the program, so an
+    interrupt or a kill reaches the wrapper, not Claude. Follow it to the executable.
+    Same recipe the desk uses (``command-agent.cjs`` ``exeFromCmdShim``).
+    """
+    try:
+        body = text if text is not None else io.open(cmd_path, encoding="utf-8").read()
+    except OSError:
+        return None
+    m = re.search(r'"%dp0%\\([^"]+\.exe)"', body, re.IGNORECASE) or re.search(
+        r'"%~dp0\\([^"]+\.exe)"', body, re.IGNORECASE
+    )
+    if not m:
+        return None
+    candidate = os.path.join(os.path.dirname(cmd_path), m.group(1))
+    if text is not None or os.path.exists(candidate):
+        return candidate
+    return None
+
+
 def resolve_binary(spec: HarnessSpec) -> Optional[str]:
-    """Absolute path to the harness binary, or None when not installed."""
+    """Absolute path to the harness binary, or None when not installed.
+
+    On Windows an npm-installed CLI resolves to its ``.cmd`` shim; when that shim
+    names a real ``.exe`` next to it, answer the ``.exe`` (see ``exe_from_cmd_shim``).
+    """
     if not spec.binary:
         return None
     override = os.environ.get(f"AITHER_HARNESS_{spec.id.upper()}_BIN")
     if override:
         return override if os.path.exists(override) else shutil.which(override)
-    return shutil.which(spec.binary)
+    found = shutil.which(spec.binary)
+    if found and sys.platform == "win32" and found.lower().endswith(".cmd"):
+        return exe_from_cmd_shim(found) or found
+    return found
 
 
 def probe_version(spec: HarnessSpec, timeout: float = 12.0) -> str:

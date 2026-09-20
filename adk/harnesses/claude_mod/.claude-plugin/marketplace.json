@@ -1,0 +1,16 @@
+{
+  "name": "awsh",
+  "owner": { "name": "Aitherium" },
+  "description": "Run any awsh harness as a native Claude Code subagent.",
+  "plugins": [
+    {
+      "name": "awsh",
+      "source": "./",
+      "description": "An `aw` subagent type whose model steps are answered by the local awsh harness daemon: Gemini, Codex, OpenCode, Aider, sovereign agents, or Claude Code on another backend, in Claude Code's own agent UI, streamed live.",
+      "version": "0.1.0",
+      "author": { "name": "Aitherium" },
+      "license": "MIT",
+      "category": "development"
+    }
+  ]
+}

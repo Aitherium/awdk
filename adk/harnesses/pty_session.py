@@ -33,13 +33,20 @@ import shutil
 import sys
 import threading
 import time
+import uuid
 from typing import Any, Optional
 
 from adk.harnesses.events import EventKind, HarnessEvent, error, notice
+from adk.harnesses.models import MANAGED_VARS
+from adk.harnesses.registry import resolve_binary
 from adk.harnesses.session import HarnessSession, SessionState
 
 #: How much to read per pty read() call.
 _READ_SIZE = 65536
+
+#: Pause between typing a submitted line and pressing Enter, so a TUI's paste detection
+#: sees two events (text, then a key) rather than one burst. See ``submit``.
+SUBMIT_ENTER_DELAY_S = float(os.environ.get("AITHER_PTY_SUBMIT_ENTER_DELAY", "0.15"))
 
 
 class PtyUnavailableError(RuntimeError):
@@ -160,7 +167,7 @@ class PtyHarnessSession(HarnessSession):
         if argv is None:
             return
 
-        env = self._child_env()
+        env = self._scrub_program_env(self._child_env())
         # A pty session IS a terminal; advertise one so curses apps behave.
         env.setdefault("TERM", "xterm-256color")
         env["COLUMNS"] = str(self.cols)
@@ -202,6 +209,22 @@ class PtyHarnessSession(HarnessSession):
         thread.start()
         self._threads.append(thread)
 
+    def _scrub_program_env(self, env: dict[str, str]) -> dict[str, str]:
+        """A PROGRAM harness (claude-tty) never inherits the daemon's model wiring.
+
+        ``_child_env`` copies ``os.environ`` verbatim. The daemon may itself be running
+        under a bridge profile (ANTHROPIC_BASE_URL at a fleet model); a shell session
+        inheriting that is the owner's business, but a Claude Code tab spawned here
+        would silently run its brain on a 32k window that cannot hold the repo's
+        always-on prompt. Scrubbed for the harnesses that declare no model binding
+        AND build their own argv -- i.e. the program harnesses, not the shells.
+        """
+        if self.spec.build_argv is None or self.spec.supports_model_binding:
+            return env
+        for var in MANAGED_VARS:
+            env.pop(var, None)
+        return env
+
     def _resolve_argv(self) -> Optional[list[str]]:
         """Build argv for this terminal flavour, or fail loudly."""
         if self.spec.id == "sandbox":
@@ -223,6 +246,42 @@ class PtyHarnessSession(HarnessSession):
                 return None
             shell = self.config.extra_args[0] if self.config.extra_args else "/bin/bash"
             return [docker, "exec", "-it", container, shell]
+
+        if self.spec.build_argv is not None:
+            # A pty harness that is a PROGRAM (claude-tty), not a shell: the spec builds
+            # argv exactly as the structured harnesses do, and argv[0] goes through
+            # resolve_binary so the npm .cmd shim becomes the real .exe -- ConPTY then
+            # runs the program itself, and an interrupt reaches it, not a cmd.exe wrapper.
+            path = resolve_binary(self.spec)
+            if not path:
+                self.state = SessionState.FAILED
+                self._emit(
+                    error(
+                        f"{self.spec.label} is not installed on this host.",
+                        harness=self.spec.id,
+                        install_hint=self.spec.install_hint,
+                    )
+                )
+                self._emit(
+                    HarnessEvent(kind=EventKind.SESSION_EXITED, data={"exit_code": None})
+                )
+                return None
+            launch = self._launch_spec()
+            if launch.resume_session_id:
+                # Resuming: the program's id IS the one we were handed.
+                self.harness_session_id = launch.resume_session_id
+            elif self.spec.supports_resume:
+                # ONE id for one Claude Code. Minted here, handed to the program as
+                # --session-id, so the daemon row and the transcript the program writes
+                # under its own state dir share it and the session directory folds them
+                # (session_directory.py) instead of listing the same tab twice with two
+                # steer capabilities.
+                self.harness_session_id = str(uuid.uuid4())
+                launch.session_id = self.harness_session_id
+            launch.title = self.config.title
+            argv = self.spec.argv(launch)
+            argv[0] = path
+            return argv
 
         if self.config.extra_args:
             return list(self.config.extra_args)
@@ -275,6 +334,32 @@ class PtyHarnessSession(HarnessSession):
             self._emit(error(f"terminal write failed: {exc}"))
             return False
         return True
+
+    def submit(self, text: str) -> bool:
+        """Type ``text`` as ONE line and press Enter.
+
+        ``send`` stays raw (a bare Ctrl-C, a single-key answer, the awsh pty attach
+        forwarding keystrokes verbatim all depend on it). This is the message-shaped
+        sibling a dispatcher wants: newline runs collapse to one space because the one
+        shape known to submit in Claude Code's input box is a single line ending in
+        ``\r`` -- what a multi-line paste does there is unmeasured, and a steer that
+        half-submits is worse than one that arrives as a long line. Whitespace-only
+        text is refused (there is nothing to submit) rather than sending a bare Enter,
+        which would answer whatever prompt happened to be open.
+        """
+        line = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        if not line:
+            return False
+        # The Enter is its OWN keystroke, after a beat. Measured 2026-09-19 against
+        # Claude Code 2.1.278: ``line + "\r"`` in ONE write submitted a 50-character
+        # prompt and left an 83-character one sitting in the input box forever -- a burst
+        # that size is read as a PASTE, and the trailing CR becomes part of the pasted
+        # text instead of the key that submits it. The receipt said "the agent has it
+        # now" over an unsubmitted line, which is the exact lie submit() exists to end.
+        if not self.send(line):
+            return False
+        time.sleep(SUBMIT_ENTER_DELAY_S)
+        return self.send("\r")
 
     def resize(self, rows: int, cols: int) -> bool:
         pty = self._pty

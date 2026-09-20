@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from adk import docconvert
+
 logger = logging.getLogger("adk.ingest")
 
 __all__ = [
@@ -115,6 +117,16 @@ class FileWalker:
         """
         self.exclude_dirs = exclude_dirs or _DEFAULT_EXCLUSIONS
         self.exclude_extensions = exclude_extensions or _BINARY_EXTENSIONS
+        # With the default set, document formats become ingestible once a
+        # converter is importable; otherwise they stay excluded and we hint once.
+        self._hint_documents = False
+        if exclude_extensions is None:
+            if docconvert.available_converters():
+                self.exclude_extensions = (
+                    self.exclude_extensions - docconvert.DOCUMENT_EXTENSIONS
+                )
+            else:
+                self._hint_documents = True
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
         self.allow_hidden = allow_hidden
 
@@ -148,6 +160,8 @@ class FileWalker:
                     # Skip binary extensions
                     ext = entry.suffix.lstrip(".").lower()
                     if ext in self.exclude_extensions:
+                        if self._hint_documents and ext in docconvert.DOCUMENT_EXTENSIONS:
+                            docconvert.hint_once()
                         logger.debug("Skipping binary file: %s", entry)
                         continue
 
@@ -432,8 +446,17 @@ async def ingest_files(
             continue
 
         try:
-            # Read file
-            content = file_path.read_text(encoding="utf-8", errors="replace")
+            # Read file (documents go through the converter ladder)
+            if file_path.suffix.lstrip(".").lower() in docconvert.DOCUMENT_EXTENSIONS:
+                converted = docconvert.convert_document(file_path)
+                if converted is None:
+                    result.files_skipped += 1
+                    result.skipped_files.append((str(file_path), "no document converter"))
+                    logger.warning("SKIPPED (no document converter): %s", file_path)
+                    continue
+                content = converted
+            else:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
 
             # Scan for secrets in content
             secret_matches = guard.scan_for_secrets(content)

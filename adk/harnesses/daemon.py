@@ -43,9 +43,12 @@ from typing import Any, Optional
 from adk.harnesses.manager import ManagerError, SessionManager, default_manager
 from adk.harnesses.models import ProfileError, list_profiles
 from adk.harnesses.registry import get as get_harness
+from adk.harnesses.character_recall import register as register_character_recall
 from adk.harnesses.rooms import DEFAULT_ROOM, RoomError, default_registry
 from adk.harnesses.session import SessionConfig
 from adk.harnesses.spool import default_tailer
+from adk.harnesses.steer_dispatch import frame_peer_text
+from adk.harnesses.steer_dispatch import register as register_steer_dispatcher
 from adk.harnesses.transcript_bridge import default_bridge
 from adk.harnesses.well import default_well
 
@@ -478,9 +481,16 @@ if BaseModel is not None:
         extra_args: list[str] = Field(default_factory=list)
         title: str = ""
         owner: str = ""
+        #: Opt-in at spawn: may a PEER agent's steer be typed straight into this
+        #: session's pty? Default off (``SessionConfig.allow_peer_input``); the owner
+        #: still lands immediately either way.
+        allow_peer_input: bool = False
 
     class SendInput(BaseModel):  # type: ignore[misc]
         text: str
+        #: True = deliver as a COMPLETE turn (a pty adds the Enter). False = raw
+        #: keystrokes, which is what a terminal attach forwards.
+        submit: bool = False
 
     class ResizeInput(BaseModel):  # type: ignore[misc]
         rows: int = 30
@@ -503,6 +513,25 @@ if BaseModel is not None:
         choice: str
         note: str = ""
         via: str = "api"
+        #: Identity CLAIM a chat bridge attaches, same shape and same
+        #: no-registry no-op semantics as ``WakeCreate.origin`` /
+        #: ``WakeUpdate.origin`` (see ``_wake_reauthorize_origin``). Added so
+        #: ANSWERING a spawning recipe card (wakes-add / wakes-set-command)
+        #: gets the identical re-check RAISING one already gets --
+        #: previously this model carried no origin field at all, so the
+        #: "propose, then confirm" split had origin-narrowing on the propose
+        #: half only. A caller (or an agent tool holding the same bearer,
+        #: e.g. the awrise toolpack's ``awrise_confirm``) could raise a card
+        #: through a narrowed/scoped principal and then answer it with no
+        #: origin claim whatsoever, and nothing here would have noticed
+        #: (security finding 2026-09-19). Optional and origin-narrowing only
+        #: NARROWS what the bearer already allows, so a caller holding
+        #: ``wakes:create``/``*`` outright (the default, no-registry
+        #: deployment) is unaffected either way -- this closes the
+        #: asymmetry for a hardened deployment (a principals registry +
+        #: ``channels.json``), it does not by itself change what the shared,
+        #: unscoped daemon bearer can do.
+        origin: Optional["WakeOrigin"] = None
 
     class CancelDecision(BaseModel):  # type: ignore[misc]
         note: str = ""
@@ -612,6 +641,46 @@ if BaseModel is not None:
         note: str = ""
         origin: Optional[WakeOrigin] = None
 
+    class WakeCreate(BaseModel):  # type: ignore[misc]
+        """Body for POST /wakes — register a NEW wake.
+
+        Module level for the reason ``CreateSession`` documents. ``command``,
+        ``every`` and (when given) ``cwd`` are each payload-checked — non-empty,
+        bounded, no control bytes — before any argv is built; the CLI's own
+        grammar for ``every``/``timeout`` still runs inside the spawned process,
+        so a payload-safe but malformed interval is a 502 (the CLI's exit code),
+        never a silent daemon accept. ``extra`` is forbidden for the same reason
+        ``WakeMutate`` forbids it: scope (home, binary, argv) never comes from
+        the payload.
+        """
+
+        model_config = {"extra": "forbid"}
+
+        name: str
+        command: str
+        every: str
+        timeout: Optional[int] = None
+        cwd: Optional[str] = None
+        note: str = ""
+        origin: Optional[WakeOrigin] = None
+
+    class WakeUpdate(BaseModel):  # type: ignore[misc]
+        """Body for PATCH /wakes/{name} — CHANGE an existing wake.
+
+        At least one of ``command``/``every``/``timeout``/``cwd`` is required
+        (400 "no fields to update" otherwise); each supplied field is validated
+        exactly like ``WakeCreate`` validates it.
+        """
+
+        model_config = {"extra": "forbid"}
+
+        command: Optional[str] = None
+        every: Optional[str] = None
+        timeout: Optional[int] = None
+        cwd: Optional[str] = None
+        note: str = ""
+        origin: Optional[WakeOrigin] = None
+
     class CreateRoom(BaseModel):  # type: ignore[misc]
         id: str = DEFAULT_ROOM
         title: str = ""
@@ -624,6 +693,15 @@ if BaseModel is not None:
         absent. That is what makes adding a producer a one-line change rather than an
         integration — it emits the event names it already has and lands in the right
         lane.
+
+        ``to``/``hops`` (U15) are the addressing fields ``Room._normalise`` already
+        validates via ``_normalise_addressing`` — but a pydantic model only forwards
+        the keys it DECLARES, so before these two existed here every HTTP-posted
+        addressed event was silently stripped to an unaddressed one before
+        ``room.publish()`` ever saw ``to``/``hops``, and the room-side validation and
+        the steer dispatcher (see ``steer_dispatch.py``) never ran for this producer.
+        Defaults match ``_normalise_addressing``'s own "absent" case (``[]``/``0``)
+        so an unaddressed POST is byte-identical to today's behaviour.
         """
 
         type: str
@@ -639,6 +717,8 @@ if BaseModel is not None:
         ts: float = 0.0
         v: int = 0
         id: str = ""
+        to: list[str] = Field(default_factory=list)
+        hops: int = 0
 
     class LinkDeviceCodeResponse(BaseModel):  # type: ignore[misc]
         """Response from POST /auth/link — initiates device flow.
@@ -703,7 +783,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -775,9 +855,13 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         extra_args: list[str] = Field(default_factory=list)
         title: str = ""
         owner: str = ""
+        allow_peer_input: bool = False
 
     class SendInput(BaseModel):
         text: str
+        #: True = deliver as a COMPLETE turn (a pty adds the Enter). False = raw
+        #: keystrokes, which is what a terminal attach forwards.
+        submit: bool = False
 
     # ── unauthenticated liveness ────────────────────────────────────────────
 
@@ -988,6 +1072,17 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     "transcript_path": s.transcript_path,
                     "pid": s.pid,
                     "steer_capability": s.steer_capability,
+                    # The id the PROGRAM carries (claude-tty's --session-id). Every other
+                    # surface knows a tab by it; without it a client cannot resolve an
+                    # awsh-opened tab by the id its own transcript is named after.
+                    "harness_session_id": str(
+                        (s.extras or {}).get("harness_session_id") or ""
+                    ),
+                    # Which tabs opted in to PEER input on their pty at spawn. Only a
+                    # daemon-owned row can be True; a discovered tab has no config.
+                    "allow_peer_input": bool(
+                        (s.extras or {}).get("allow_peer_input") or False
+                    ),
                 }
                 for s in unified
             ]
@@ -1000,14 +1095,57 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @app.post("/sessions/{session_id}/input", dependencies=[Depends(auth)])
-    def send_input(session_id: str, body: SendInput) -> dict[str, Any]:
+    def _peer_input_text(session, session_id: str, principal: Principal, text: str) -> str:
+        """The text a caller may put on this pty, or a 403.
+
+        The steer dispatcher's tier-1 rule -- owner-plan AND (a human actor OR the
+        target's opt-in) -- would be theatre if the direct door stayed open to any
+        bearer that can reach ``/sessions``: a scoped ``plan="agent"`` token could
+        type into any managed pty by POSTing here instead of publishing an event.
+        So a non-owner principal is refused unless the target opted in at spawn, and
+        its text is framed with the same provenance the dispatcher prepends, from
+        the daemon's own principal id -- never a name the caller typed.
+        """
+        if principal.plan == "owner":
+            return text
+        if not getattr(session.config, "allow_peer_input", False):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"session {session_id!r} did not opt in to peer input "
+                    f"(allow_peer_input at spawn); principal {principal.id!r} may "
+                    "address it through its steering mailbox instead"
+                ),
+            )
+        return frame_peer_text(text, principal.id)
+
+    @app.post("/sessions/{session_id}/input")
+    def send_input(
+        session_id: str, body: SendInput, principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
         try:
             session = mgr.get_session(session_id)
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        accepted = session.send(body.text)
+        text = _peer_input_text(session, session_id, principal, body.text)
+        accepted = session.submit(text) if body.submit else session.send(text)
         if not accepted:
+            raise HTTPException(
+                status_code=409, detail=f"session {session.state} cannot accept input"
+            )
+        return {"ok": True, "turn": session.turn, "seq": session.last_seq}
+
+    @app.post("/sessions/{session_id}/submit")
+    def submit_input(
+        session_id: str, body: SendInput, principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """``/input`` with the Enter key: one complete turn, whatever the transport."""
+        try:
+            session = mgr.get_session(session_id)
+        except ManagerError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        text = _peer_input_text(session, session_id, principal, body.text)
+        if not session.submit(text):
             raise HTTPException(
                 status_code=409, detail=f"session {session.state} cannot accept input"
             )
@@ -1525,30 +1663,55 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                         f"(required by card recipe {recipe_id!r})"),
             )
 
-    def _guard_recipe_answer(principal: Principal, card: Any, choice: str) -> None:
+    def _guard_recipe_answer(principal: Principal, card: Any, choice: str,
+                              body: Any = None) -> Optional[str]:
         """The checks `_wake_prepare` applies, on the CARD path.
 
         The entitlement is checked for every recipe card. The rest apply only to
-        an answer that actually spawns: the job must still exist (a card outlives
-        its job easily, and `awrise run --name <gone>` surfaces hours later as a
-        confusing 502), and the same job must not already be running -- the
-        per-name in-flight slot `/wakes/{name}/run` holds, plus the ledger's own
-        view, which is the only one that sees a run this process did not start.
+        an answer that actually spawns: the origin claim is re-checked (the
+        literal same helper the RAISE side of every /wakes mutation applies --
+        see the docstring below), then the job must still exist (a card
+        outlives its job easily, and `awrise run --name <gone>` surfaces hours
+        later as a confusing 502), and the same job must not already be
+        running -- the per-name in-flight slot `/wakes/{name}/run` holds, plus
+        the ledger's own view, which is the only one that sees a run this
+        process did not start.
+
+        Returns the resolved `via` (see `_wake_reauthorize_origin`) for a
+        spawning answer, or ``None`` when this recipe/choice does not spawn --
+        callers use that to record who ACTUALLY authorized the spawn, not just
+        who held the bearer.
         """
         recipe_id = (getattr(card, "card_recipe", "") or "").strip()
         if not recipe_id:
-            return
+            return None
         _require_recipe(principal, recipe_id)
         try:
             from adk.decisions.card_recipes import spawns_on
         except ImportError:
-            return
+            return None
         if not spawns_on(recipe_id, choice):
-            return
+            return None
+        # RAISING a spawning card (POST /decisions with card_recipe=, and every
+        # direct /wakes mutation) already re-authorizes an `origin` claim
+        # against the owner-bound `channels.json` via `_wake_reauthorize_origin`.
+        # ANSWERING one did not -- `AnswerDecision` carried no `origin` field at
+        # all until this fix, so the two-step "propose, then confirm" split had
+        # that re-check on the propose half only. A caller (or an agent tool
+        # holding the daemon's own bearer, e.g. the awrise toolpack's
+        # `awrise_confirm`) could raise a wakes-add/wakes-set-command card
+        # through a channel-narrowed principal and then answer it itself with
+        # no origin claim, closing the loop the split exists to prevent
+        # (security finding 2026-09-19). This call is the identical helper,
+        # never a lookalike, so it cannot drift from the raise side; it still
+        # only NARROWS what the bearer already allows, so a caller holding
+        # `wakes:create`/`*` outright (the default, no-registry deployment)
+        # sees no behavioural change from this alone.
+        via = _wake_reauthorize_origin(body, principal)
         variables = getattr(card, "recipe_vars", None)
         job = (variables or {}).get("job") if isinstance(variables, dict) else None
         if not isinstance(job, str) or not job:
-            return
+            return via
         from adk.wakes import get_wake, read_jobs, valid_name
 
         if not valid_name(job):
@@ -1574,6 +1737,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     detail={"error": "already running",
                             "since": current.get("running_since")},
                 )
+        return via
 
     def _store_and_notify(card: Any) -> dict[str, Any]:
         """Persist a built card and tell the owner. The tail BOTH raise doors share.
@@ -1783,11 +1947,18 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             _existing = store.get(card_id)
         except DecisionError:
             _existing = None
+        _recipe_via = None
         if _existing is not None:
-            _guard_recipe_answer(principal, _existing, body.choice)
+            _recipe_via = _guard_recipe_answer(principal, _existing, body.choice, body)
         try:
             card = store.answer(
-                card_id, body.choice, note=body.note or "", via=body.via or "api",
+                card_id, body.choice, note=body.note or "",
+                # A spawning answer records who the origin re-check actually
+                # resolved to (e.g. "owner:discord:12345"), the same provenance
+                # `_wake_sync` records for a direct /wakes mutation -- never
+                # the bare client-supplied `via` for that case, which would
+                # hide exactly the identity this re-check exists to surface.
+                via=_recipe_via or body.via or "api",
                 # Delivered explicitly below (the response reports the path);
                 # letting answer() deliver as well writes the mailbox twice.
                 deliver=False,
@@ -1848,6 +2019,41 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             return data.decode("utf-8", errors="replace")
         return str(data)
 
+    def _wake_reauthorize_origin(body: Any, principal: Principal) -> str:
+        """The origin re-authorization every ``/wakes`` mutation applies.
+
+        Extracted so create/update run the LITERAL SAME check ``_wake_prepare``
+        always has, rather than a lookalike that could drift from it. Returns
+        the ``via`` string: the bare principal id, or ``principal:platform:user``
+        once an origin claim has passed re-authorization against the owner-bound
+        ``channels.json``. An origin claim can only NARROW what the bearer
+        already allows, never widen it.
+        """
+        via = principal.id
+        origin = getattr(body, "origin", None) if body is not None else None
+        if origin is None:
+            return via
+        from adk.decisions.channels import ChannelConfigError, authorize, load_config
+
+        try:
+            configs = load_config()
+        except ChannelConfigError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "origin not authorized", "reason": str(exc)},
+            ) from exc
+        verdict = authorize(
+            configs.get(origin.platform),
+            user_id=origin.user_id,
+            is_direct_message=origin.is_direct_message,
+        )
+        if not verdict.allowed:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "origin not authorized", "reason": verdict.reason},
+            )
+        return f"{principal.id}:{origin.platform}:{origin.user_id}"
+
     def _wake_prepare(name: str, verb: str, principal: Principal,
                       body: Any) -> tuple[list[str], str]:
         """Everything that must hold BEFORE a spawn: name, origin, job, binary.
@@ -1861,29 +2067,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
         if not valid_name(name):
             raise HTTPException(status_code=400, detail="invalid wake name")
-        via = principal.id
-        origin = getattr(body, "origin", None) if body is not None else None
-        if origin is not None:
-            from adk.decisions.channels import ChannelConfigError, authorize, load_config
-
-            try:
-                configs = load_config()
-            except ChannelConfigError as exc:
-                raise HTTPException(
-                    status_code=403,
-                    detail={"error": "origin not authorized", "reason": str(exc)},
-                ) from exc
-            verdict = authorize(
-                configs.get(origin.platform),
-                user_id=origin.user_id,
-                is_direct_message=origin.is_direct_message,
-            )
-            if not verdict.allowed:
-                raise HTTPException(
-                    status_code=403,
-                    detail={"error": "origin not authorized", "reason": verdict.reason},
-                )
-            via = f"{principal.id}:{origin.platform}:{origin.user_id}"
+        via = _wake_reauthorize_origin(body, principal)
         jobs = read_jobs()
         if not jobs["installed"]:
             raise HTTPException(status_code=503, detail="awrise not installed")
@@ -1896,20 +2080,23 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             raise HTTPException(status_code=503, detail="awrise not installed")
         return build_argv(binary, verb, name), via
 
-    def _wake_sync(name: str, verb: str, principal: Principal, body: Any) -> dict[str, Any]:
-        """enable/disable: a bounded synchronous spawn; the exit code is the answer."""
+    def _wake_exec(argv: list[str], verb: str, *, timeout_s: float = 30.0
+                   ) -> tuple[int, str, str, float]:
+        """Run *argv* synchronously; a nonzero exit or a timeout becomes the
+        HTTPException every ``/wakes`` mutation answers with. Returns
+        ``(exit_code, stdout_tail, stderr_tail, duration_s)`` on success.
+        """
         import subprocess
 
-        argv, via = _wake_prepare(name, verb, principal, body)
         started = time.monotonic()
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=30, cwd=None, check=False,
+                errors="replace", timeout=timeout_s, cwd=None, check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(
-                status_code=408, detail=f"awrise {verb} timed out after 30s",
+                status_code=408, detail=f"awrise {verb} timed out after {int(timeout_s)}s",
             ) from exc
         except OSError as exc:
             raise HTTPException(
@@ -1923,12 +2110,197 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 detail={"error": f"awrise {verb} exited {proc.returncode}",
                         "exit_code": proc.returncode, "stderr_tail": stderr_tail},
             )
+        return proc.returncode, _wake_tail(proc.stdout), stderr_tail, duration
+
+    def _wake_sync(name: str, verb: str, principal: Principal, body: Any) -> dict[str, Any]:
+        """enable/disable: a bounded synchronous spawn; the exit code is the answer."""
+        argv, via = _wake_prepare(name, verb, principal, body)
+        exit_code, stdout_tail, stderr_tail, duration = _wake_exec(argv, verb)
         return {
-            "ok": True, "name": name, "action": verb, "exit_code": proc.returncode,
+            "ok": True, "name": name, "action": verb, "exit_code": exit_code,
             "via": via, "argv": argv, "note": getattr(body, "note", "") or "",
-            "stdout_tail": _wake_tail(proc.stdout), "stderr_tail": stderr_tail,
+            "stdout_tail": stdout_tail, "stderr_tail": stderr_tail,
             "duration_s": duration,
         }
+
+    def _require_wakes_create(principal: Principal) -> None:
+        """The STRICTER tier a command-carrying wake mutation spends.
+
+        ``wakes:mutate`` is provisioned for turning an already owner-vetted job
+        on/off (enable/disable/run) or reshaping WHEN/WHERE it runs
+        (every/timeout/cwd on an existing job). It was never meant to cover
+        WHAT a job runs — that is an arbitrary host command — so a principal
+        holding only ``wakes:mutate`` may still raise/answer neither
+        ``wakes-add`` nor ``wakes-set-command``. Same shape as
+        ``require_entitlement``, called inline rather than as a route
+        dependency because whether it applies to a PATCH depends on the BODY
+        (a command change), not the route alone.
+        """
+        if not principal.has("wakes:create"):
+            raise HTTPException(
+                status_code=403,
+                detail=f"principal {principal.id!r} lacks entitlement 'wakes:create'",
+            )
+
+    def _wake_validate_create(body: "WakeCreate", principal: Principal) -> str:
+        """Everything that must hold before a CREATE is even OFFERED as a card.
+
+        Same checks and the same order a synchronous ``add`` spawn used to
+        apply immediately: name, then every payload field, then the
+        network-touching origin re-authorization, then existence (a CREATE
+        refuses a name that already exists, 409), then the binary. Moved in
+        front of the card raise rather than a spawn — measured 2026-09-19: the
+        prior version ran these checks and then spawned ``awrise add``
+        SYNCHRONOUSLY on the same call, gated only by ``wakes:mutate`` (the
+        same flat entitlement enable/disable/run use), with no owner
+        confirmation before a caller's arbitrary command started running on a
+        schedule. A malformed or already-taken name must still never reach the
+        owner as something to decide about.
+        """
+        from adk.wakes import (
+            MAX_COMMAND_LEN,
+            MAX_CWD_LEN,
+            MAX_EVERY_LEN,
+            read_jobs,
+            resolve_bin,
+            valid_name,
+            valid_payload,
+        )
+
+        if not valid_name(body.name):
+            raise HTTPException(status_code=400, detail="invalid wake name")
+        if not valid_payload(body.command, MAX_COMMAND_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized command")
+        if not valid_payload(body.every, MAX_EVERY_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized every")
+        if body.cwd is not None and not valid_payload(body.cwd, MAX_CWD_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized cwd")
+        if body.timeout is not None and (
+            isinstance(body.timeout, bool) or not isinstance(body.timeout, int)
+            or body.timeout <= 0
+        ):
+            raise HTTPException(status_code=400, detail="timeout must be a positive integer")
+        via = _wake_reauthorize_origin(body, principal)
+        jobs = read_jobs()
+        if not jobs["installed"]:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        if jobs["error"]:
+            raise HTTPException(status_code=503, detail=jobs["error"])
+        if body.name in jobs["jobs"]:
+            raise HTTPException(status_code=409, detail=f"wake already exists: {body.name}")
+        if resolve_bin() is None:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        return via
+
+    def _wake_prepare_update(name: str, body: "WakeUpdate", principal: Principal
+                             ) -> tuple[list[str], str]:
+        """Everything that must hold BEFORE a synchronous ``set`` spawn — the
+        every/timeout/cwd path ONLY. ``body.command`` is never read or built
+        into an argv here: a command change is routed to
+        ``_wake_validate_update_command`` + a card before this function is
+        ever called, so a caller cannot reach a direct command spawn through
+        this path even if it changed to accept one by accident — there is
+        nothing here that would build it."""
+        from adk.wakes import (
+            MAX_CWD_LEN,
+            MAX_EVERY_LEN,
+            build_set_argv,
+            read_jobs,
+            resolve_bin,
+            valid_name,
+            valid_payload,
+        )
+
+        if not valid_name(name):
+            raise HTTPException(status_code=400, detail="invalid wake name")
+        if body.every is None and body.timeout is None and body.cwd is None:
+            raise HTTPException(status_code=400, detail="no fields to update")
+        if body.every is not None and not valid_payload(body.every, MAX_EVERY_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized every")
+        if body.cwd is not None and not valid_payload(body.cwd, MAX_CWD_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized cwd")
+        if body.timeout is not None and (
+            isinstance(body.timeout, bool) or not isinstance(body.timeout, int)
+            or body.timeout <= 0
+        ):
+            raise HTTPException(status_code=400, detail="timeout must be a positive integer")
+        via = _wake_reauthorize_origin(body, principal)
+        jobs = read_jobs()
+        if not jobs["installed"]:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        if jobs["error"]:
+            raise HTTPException(status_code=503, detail=jobs["error"])
+        if name not in jobs["jobs"]:
+            raise HTTPException(status_code=404, detail=f"no such wake: {name}")
+        binary = resolve_bin()
+        if binary is None:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        argv = build_set_argv(binary, name, command=None, every=body.every,
+                              timeout=body.timeout, cwd=body.cwd)
+        return argv, via
+
+    def _wake_validate_update_command(name: str, body: "WakeUpdate", principal: Principal
+                                      ) -> str:
+        """Everything that must hold before a COMMAND-changing PATCH is even
+        OFFERED as a card. Same shape as ``_wake_validate_create`` — existence
+        is inverted (404, not 409) to match every other ``/wakes/{name}``
+        route. Any every/timeout/cwd supplied ALONGSIDE the command in the
+        same request is validated too and carried onto the same card, so one
+        PATCH becomes one card and one eventual ``awrise set``, never two.
+        """
+        from adk.wakes import (
+            MAX_COMMAND_LEN,
+            MAX_CWD_LEN,
+            MAX_EVERY_LEN,
+            read_jobs,
+            resolve_bin,
+            valid_name,
+            valid_payload,
+        )
+
+        if not valid_name(name):
+            raise HTTPException(status_code=400, detail="invalid wake name")
+        if not valid_payload(body.command, MAX_COMMAND_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized command")
+        if body.every is not None and not valid_payload(body.every, MAX_EVERY_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized every")
+        if body.cwd is not None and not valid_payload(body.cwd, MAX_CWD_LEN):
+            raise HTTPException(status_code=400, detail="invalid or oversized cwd")
+        if body.timeout is not None and (
+            isinstance(body.timeout, bool) or not isinstance(body.timeout, int)
+            or body.timeout <= 0
+        ):
+            raise HTTPException(status_code=400, detail="timeout must be a positive integer")
+        via = _wake_reauthorize_origin(body, principal)
+        jobs = read_jobs()
+        if not jobs["installed"]:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        if jobs["error"]:
+            raise HTTPException(status_code=503, detail=jobs["error"])
+        if name not in jobs["jobs"]:
+            raise HTTPException(status_code=404, detail=f"no such wake: {name}")
+        if resolve_bin() is None:
+            raise HTTPException(status_code=503, detail="awrise not installed")
+        return via
+
+    def _wake_raise_card(recipe_id: str, variables: dict[str, Any], *, action: str,
+                         name: str) -> Any:
+        """Build, store and notify a ``wakes-add``/``wakes-set-command`` card,
+        and answer the HTTP call with 202 pending — the shape every ``/wakes``
+        route that can no longer spawn directly shares. Nothing has been
+        registered or changed yet: the job exists (or changes) only once the
+        card raised here is ANSWERED, which runs through
+        ``card_recipes.apply_answer`` behind the same ``wakes:create``
+        entitlement (``_guard_recipe_answer`` on the answer route)."""
+        from fastapi.responses import JSONResponse
+
+        from adk.decisions.card_recipes import build_card
+
+        card = build_card(recipe_id, variables)
+        result = _store_and_notify(card)
+        return JSONResponse(status_code=202, content={
+            "ok": True, "pending": True, "action": action, "name": name, "card": result,
+        })
 
     @app.get("/wakes", dependencies=[Depends(auth)])
     def list_wakes(state: str = Query(default="")) -> dict[str, Any]:
@@ -1943,6 +2315,29 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         if state and state not in ("failing", "running", "disabled"):
             raise HTTPException(status_code=400, detail="state must be failing|running|disabled")
         return snapshot(state=state or None)
+
+    @app.post("/wakes")
+    def create_wake(
+        body: WakeCreate,
+        principal: Principal = Depends(require_entitlement("wakes:create")),
+    ) -> Any:
+        """PROPOSE a new wake. Never spawns directly: this raises a
+        ``wakes-add`` card and answers 202 pending. The job is not registered
+        until the card is answered ``create`` — by this principal or anyone
+        else holding ``wakes:create`` — which runs ``awrise add`` from
+        ``card_recipes.apply_answer``, never from this route.
+
+        Gated on ``wakes:create``, stricter than the ``wakes:mutate`` that
+        gates enable/disable/run: this call PROPOSES an arbitrary host
+        command on a schedule, not merely toggling a job the owner already
+        vetted.
+        """
+        via = _wake_validate_create(body, principal)
+        return _wake_raise_card("wakes-add", {
+            "name": body.name, "command": body.command, "every": body.every,
+            "cwd": body.cwd or "", "timeout": str(body.timeout) if body.timeout else "",
+            "requested_by": via,
+        }, action="add", name=body.name)
 
     @app.get("/wakes/count", dependencies=[Depends(auth)])
     def count_wakes() -> dict[str, Any]:
@@ -1986,6 +2381,47 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         if job is None:
             raise HTTPException(status_code=404, detail=f"no such wake: {name}")
         return job
+
+    @app.patch("/wakes/{name}")
+    def update_wake(
+        name: str,
+        body: WakeUpdate,
+        principal: Principal = Depends(require_entitlement("wakes:mutate")),
+    ) -> Any:
+        """Change an existing wake.
+
+        A ``command`` change is a DIFFERENT capability from every/timeout/cwd:
+        it replaces WHAT the job runs, the same thing ``POST /wakes`` grants,
+        so it never spawns directly either — it raises a ``wakes-set-command``
+        card (202 pending), gated on ``wakes:create`` (checked here, in
+        addition to the route's own ``wakes:mutate``, since whether the
+        stricter tier applies depends on the body). every/timeout/cwd ALONE
+        stay the existing synchronous ``awrise set`` under ``wakes:mutate`` —
+        those change WHEN/WHERE a job runs, not what it runs, the same
+        capability enable/disable/run already spend.
+        """
+        if body.command is not None:
+            _require_wakes_create(principal)
+            via = _wake_validate_update_command(name, body, principal)
+            return _wake_raise_card("wakes-set-command", {
+                "name": name, "command": body.command,
+                "every": body.every or "", "cwd": body.cwd or "",
+                "timeout": str(body.timeout) if body.timeout else "",
+                "requested_by": via,
+            }, action="set", name=name)
+
+        argv, via = _wake_prepare_update(name, body, principal)
+        exit_code, stdout_tail, stderr_tail, duration = _wake_exec(argv, "set")
+        updated_fields = [field for field, value in (
+            ("every", body.every), ("timeout", body.timeout), ("cwd", body.cwd),
+        ) if value is not None]
+        return {
+            "ok": True, "name": name, "action": "set", "exit_code": exit_code,
+            "via": via, "argv": argv, "note": body.note or "",
+            "updated_fields": updated_fields,
+            "stdout_tail": stdout_tail, "stderr_tail": stderr_tail,
+            "duration_s": duration,
+        }
 
     @app.post("/wakes/{name}/enable", dependencies=[Depends(auth)])
     def enable_wake(
@@ -2199,6 +2635,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     # the kernel tick, a genesis SSE shim -- and every client reads one stream.
 
     rooms = default_registry()
+    # Every spoken room event becomes its actor's memory (character_recall.py). Constructs
+    # in microseconds; the lib import and the embedder run on its own worker thread, so
+    # this line costs the boot path nothing.
+    character_recall = register_character_recall(rooms)
 
     # Producers that must not block (Claude Code hooks run synchronously inside the
     # owner's session) append to a spool file instead of POSTing. Tailing it is
@@ -2214,10 +2654,105 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     bridge = default_bridge()
     bridge.start()
 
+    # SteerDispatcher (U15): the one listener that turns an ADDRESSED event (``to``)
+    # into a delivered mailbox. Registered here, beside the tailer and the bridge, so
+    # it covers every room created LATER too (``RoomRegistry.add_listener`` applies to
+    # rooms not yet constructed) and the two producers above that never touch HTTP at
+    # all — a dispatcher wired only into the ``/events`` route would miss both of them.
+    # Constructed exactly ONCE per process: ``register()`` is idempotent per-callable
+    # via ``Room.add_listener``, but two SEPARATE ``SteerDispatcher`` instances do not
+    # share their delivered-event LRU, so registering a second one would double-deliver
+    # every addressed event despite that guard.
+    def _list_unified_sessions_for_dispatch() -> list[dict[str, Any]]:
+        """Real backing for the dispatcher's target resolver -- same source
+        ``GET /sessions/unified`` reads. A resolver that raises must not crash dispatch
+        of every OTHER target in the same event; ``steer_dispatch`` already wraps this
+        call in try/except for that reason, so this stays a thin, honest passthrough.
+        """
+        from adk.harnesses.session_directory import default_directory
+
+        unified = default_directory().list_sessions_sync(mgr.list_sessions())
+        rows = [{"id": s.id, "title": s.title} for s in unified]
+        # A daemon-owned claude-tty is known to every OTHER surface by the id the
+        # PROGRAM carries -- its --session-id, which is the transcript's name, the desk
+        # stage's slot key and the room actor its bridge emits under -- and the
+        # directory folds that discovered row INTO the daemon row. So the program id
+        # must resolve here as well, or a steer from the desk is refused as "unknown
+        # actor" for the very pty this tier was built to reach (measured 2026-09-19).
+        for s in unified:
+            alias = str((s.extras or {}).get("harness_session_id") or "")
+            if alias and alias != s.id:
+                rows.append({"id": alias, "title": s.title})
+        return rows
+
+    def _send_managed_input_for_dispatch(session_id: str, text: str) -> bool:
+        """Real backing for the dispatcher's tier-1 (managed pty) delivery.
+
+        Measured to miss almost always (``steer_dispatch``'s own docstring: every
+        interactive Claude Code tab on this box today is ``origin=discovered``, never
+        daemon-spawned) -- kept as a real tier so a caller that DID spawn its target
+        through THIS daemon still gets immediate delivery instead of a queued one.
+        """
+        try:
+            session = mgr.get_session(session_id)
+        except ManagerError:
+            session = _managed_session_by_harness_id(session_id)
+            if session is None:
+                return False
+        # submit(), never send(): on a pty, send() leaves the text unsubmitted in the
+        # input box while the receipt claims "the agent has it now" (2026-09-19).
+        return bool(session.submit(text))
+
+    def _managed_session_by_harness_id(harness_session_id: str):
+        """A managed session addressed by the id the PROGRAM knows (claude-tty's
+        --session-id, which is also the room actor id its transcript bridge emits under),
+        not the daemon's own row id. Both must resolve, or a steer addressed to a tab by
+        the id every other surface shows for it misses the pty it is sitting in."""
+        wanted = str(harness_session_id or "")
+        if not wanted:
+            return None
+        for info in mgr.list_sessions():
+            if str(info.get("harness_session_id") or "") == wanted:
+                try:
+                    return mgr.get_session(str(info.get("id") or ""))
+                except ManagerError:
+                    return None
+        return None
+
+    def _tier1_opt_in_for_dispatch(session_id: str) -> bool:
+        """Did this managed session opt in to PEER input on its pty at spawn?
+
+        Resolves the same two ways ``_send_managed_input_for_dispatch`` does (the
+        daemon's row id AND the program's ``harness_session_id``), because a target the
+        pty tier can reach by one id must answer the opt-in question by that same id.
+        Unknown id or a ``ManagerError`` is False: an unresolvable target did not opt in.
+        """
+        try:
+            session = mgr.get_session(session_id)
+        except ManagerError:
+            session = _managed_session_by_harness_id(session_id)
+            if session is None:
+                return False
+        return bool(getattr(session.config, "allow_peer_input", False))
+
+    steer_dispatcher = register_steer_dispatcher(
+        rooms,
+        list_unified_sessions=_list_unified_sessions_for_dispatch,
+        send_managed_input=_send_managed_input_for_dispatch,
+        tier1_opt_in=_tier1_opt_in_for_dispatch,
+    )
+
     # The ambient context well. Background-computed so a draw is O(1) — an agent that
     # pays 2s of discovery before its first useful thought pays it on every turn.
     well = default_well(session_lister=mgr.list_sessions)
     well.start()
+
+    @app.get("/character-recall/status", dependencies=[Depends(auth)])
+    def character_recall_status() -> dict[str, Any]:
+        """Read-only status for the character-recall listener: available/booting/off,
+        counts (seen, utterances, indexed, unembedded, dropped), the party manifest it
+        resolves personas through. A quiet room and a dead hook must not look alike."""
+        return character_recall.status()
 
     @app.get("/well", dependencies=[Depends(auth)])
     def draw_well(
@@ -2356,19 +2891,59 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             raise HTTPException(status_code=404, detail=f"no room {room_id!r}")
         return room.info()
 
-    @app.post("/events", dependencies=[Depends(auth)])
-    def publish_event(body: PublishEvent) -> dict[str, Any]:
+    @app.post("/events")
+    def publish_event(
+        body: PublishEvent,
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
         """Ingest one event. The room is created on first use, so a producer never
         has to know whether it is first -- a 404 here would make startup ordering a
-        thing every producer had to get right."""
+        thing every producer had to get right.
+
+        The ``Principal`` ``auth`` resolved is BOUND here and handed to the room as
+        the event's ``auth`` stamp (out-of-band: ``Room._normalise`` builds it from
+        this argument only and drops any ``auth`` the payload carried). This covers
+        the HTTP producers only, and that is the correct scope: the spool tailer and
+        the transcript bridge started above feed this same room via ``Room.publish``
+        directly, get NO stamp, and therefore fail closed out of the steer
+        dispatcher's tier 1 -- they are agent producers, and the mailbox is where an
+        unvouched producer's words belong.
+        """
         try:
             room = rooms.get_or_create(body.room)
-            stamped = room.publish(body.model_dump())
+            stamped = room.publish(
+                body.model_dump(), auth=(principal.id, principal.plan)
+            )
         except RoomError as exc:
             # 400 with the reason, never a silent accept. A producer sending a bad
             # envelope must learn it now, not by noticing an empty lane next week.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"ok": True, "seq": stamped["seq"], "pillar": stamped["pillar"]}
+        # ``to`` echoed back is the NORMALISED list ``Room._normalise`` produced (deduped,
+        # self-address and empty-list both already refused/collapsed) — never the raw
+        # ``body.to``, which could still contain the producer's pre-dedup order. ``dispatch``
+        # tells the caller, from the envelope alone, whether this event was addressed at
+        # all (the dispatcher registered above ran synchronously inside ``room.publish()``
+        # by the time this line executes; its aggregate outcome is ``GET /steer/dispatch``,
+        # not repeated here per-event).
+        to = stamped.get("to") or []
+        return {
+            "ok": True,
+            "seq": stamped["seq"],
+            "pillar": stamped["pillar"],
+            "to": to,
+            "dispatch": {"addressed": bool(to), "targets": len(to)},
+        }
+
+    @app.get("/steer/dispatch", dependencies=[Depends(auth)])
+    def steer_dispatch_status() -> dict[str, Any]:
+        """Read-only status for the addressed-event dispatcher registered at startup.
+
+        Same auth convention as every other substantive GET in this file (``/harnesses``,
+        ``/profiles``, ``/agents``) -- there is no existing PUBLIC read-route precedent
+        for something this operationally sensitive (delivery targets, recent addressees),
+        so this stays behind the bearer rather than joining ``/health``.
+        """
+        return steer_dispatcher.status()
 
     # ── local auth: browser sign-in via device flow ──────────────────────────────
     # The daemon is a loopback service reachable ONLY from the local machine.

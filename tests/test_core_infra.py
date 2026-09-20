@@ -175,6 +175,11 @@ class TestWebTools:
         mock_resp = MagicMock()
         mock_resp.text = "<html><body><p>Hello World</p></body></html>"
         mock_resp.raise_for_status = MagicMock()
+        # The fetch ladder re-checks every redirect hop against the SSRF gate and
+        # reads the final status, so a mocked response must look like a real one.
+        mock_resp.url = "https://example.com"
+        mock_resp.history = []
+        mock_resp.status_code = 200
         mock_resp.headers = {"content-type": "text/html"}
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
