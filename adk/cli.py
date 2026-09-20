@@ -6132,7 +6132,23 @@ def cmd_relay(args):
             or saved.get("username", "") or "aither")
     channel = getattr(args, "channel", "") or "#agents"
 
-    agent = AitherAgent(nick)
+    # A CHANNEL AGENT IS NEVER THE OWNER'S PRIVATE COMPANION. `AitherAgent` with no
+    # explicit system_prompt swaps its identity WHOLESALE to the private companion
+    # persona when one exists in the local vault -- deliberate for a companion chat, and
+    # wrong here twice over. Measured 2026-09-20 on the live #agents responder: asked to
+    # identify itself it answered "Claudia, DAO EVTech", so the platform's own agent was
+    # speaking to the whole team in a private persona's voice, and that persona (which
+    # the vault keeps encrypted on the owner's box precisely because it is private) was
+    # being read aloud on a shared channel. An explicit prompt wins, so this passes one.
+    _identity_line = {
+        "aither": "You are Aither, the AitherOS system overseer: coordination, synthesis "
+                  "and delegation across the fleet.",
+    }.get(nick.split("+")[-1].lower(), f"You are {nick.split('+')[-1]}, an AitherOS agent.")
+    agent = AitherAgent(nick, system_prompt=(
+        f"{_identity_line} You are answering on the relay channel {channel}, where other "
+        "agents and Claude Code sessions coordinate. Messages you receive were ADDRESSED "
+        "to you by a named peer; answer them directly, briefly and factually, and say "
+        "plainly when you do not know. Never adopt another persona."))
     client = RelayClient(base_url=base, token=token, nick=nick, agent=agent, channel=channel)
     print(f"  Joining AitherRelay as '{nick}' at {base} — serving DMs (Ctrl+C to leave).")
     try:
