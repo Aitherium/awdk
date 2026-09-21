@@ -55,6 +55,12 @@ MANAGED_VARS = (
     "CLAUDE_CODE_SUBAGENT_MODEL",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     "CLAUDE_CODE_EFFORT_LEVEL",
+    # Claude Code's built-in Artifact tool carries a JSON Schema that strict
+    # third-party Anthropic-compatible validators reject (DeepSeek answers
+    # 400 "Invalid schema for function 'Artifact'"), and that 400 kills every
+    # turn on the backend. Every profile this binder produces points away
+    # from Anthropic, so the tool is disabled on all of them.
+    "CLAUDE_CODE_DISABLE_ARTIFACT",
 )
 
 _TOOL_RELPATH = Path("AitherOS") / "dev" / "tools" / "claude_model_profile.py"
@@ -223,6 +229,7 @@ def resolve_binding(profile_name: str, *, bridge_url: str = "") -> ModelBinding:
         "CLAUDE_CODE_SUBAGENT_MODEL": str(subagent),
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(profile.get("context_window") or 200000),
         "CLAUDE_CODE_EFFORT_LEVEL": str(profile.get("effort") or "high"),
+        "CLAUDE_CODE_DISABLE_ARTIFACT": "1",
     }
     return ModelBinding(
         profile=name,

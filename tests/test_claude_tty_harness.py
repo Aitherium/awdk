@@ -152,7 +152,13 @@ def test_child_env_never_says_it_is_inside_a_claude_session(tmp_path, monkeypatc
     for harness in ("claude-tty", "terminal", "claude"):
         s = PtyHarnessSession(SPECS[harness], SessionConfig(harness=harness), root=tmp_path)
         env = s._child_env()
-        assert not [k for k in env if k.startswith("CLAUDE_CODE_")], harness
+        # CLAUDE_CODE_ENABLE_FUNCTION_HOOKS is NOT a nested-session marker: the awsh
+        # mod (apply_to_launch, mod.py) sets it AFTER the scrub, on purpose, so a
+        # claude/claude-tty child can load the plugin. Everything else with the
+        # CLAUDE_CODE_ prefix must still be gone.
+        leaked = [k for k in env
+                  if k.startswith("CLAUDE_CODE_") and k != "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"]
+        assert not leaked, (harness, leaked)
         assert "CLAUDECODE" not in env and "CLAUDE_PID" not in env, harness
         assert env["CLAUDE_CONFIG_DIR"] == "C:/keep/me", harness
         assert env["AITHER_HARNESS_SESSION"] == s.id
