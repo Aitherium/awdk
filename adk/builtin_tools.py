@@ -2892,6 +2892,38 @@ TOOL_CATEGORIES: dict = {
 # Default categories for common identity profiles
 # Every identity gets "self" by default — self-introspection is universally safe and
 # directly addresses Reddit pain ("I asked the agent what it did and it lied").
+#: Named toolpacks: a small, task-shaped subset a process can ask for by one word in
+#: ADK_BUILTIN_TOOL_CATEGORIES (mixed with plain category names). "coding" is the set
+#: the SWE-bench harness measured as sufficient for a fix (file, shell, python, git,
+#: code navigation) plus the decision channel every agent keeps.
+TOOLPACK_ALIASES: dict[str, list[str]] = {
+    "coding": ["file_io", "shell", "python", "git", "code", "decisions"],
+    "minimal": ["file_io", "decisions"],
+    "research": ["file_io", "web", "browse", "find", "decisions"],
+}
+
+
+def categories_from_env(value: str) -> list[str] | None:
+    """Parse ADK_BUILTIN_TOOL_CATEGORIES: a comma list of category names and/or toolpack
+    aliases. Empty/unset -> None (identity default). Unknown names are dropped with a
+    warning; an entry that resolves to NOTHING is also None, so a typo can never leave an
+    agent with zero tools silently."""
+    names = [n.strip() for n in (value or "").split(",") if n.strip()]
+    if not names:
+        return None
+    out: list[str] = []
+    for name in names:
+        if name in TOOLPACK_ALIASES:
+            out.extend(c for c in TOOLPACK_ALIASES[name] if c not in out)
+        elif name in TOOL_CATEGORIES or name == "self":
+            if name not in out:
+                out.append(name)
+        else:
+            logger.warning("ADK_BUILTIN_TOOL_CATEGORIES: unknown category/toolpack %r ignored",
+                           name)
+    return out or None
+
+
 IDENTITY_DEFAULTS = {
     "adk-daemon": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
@@ -3072,6 +3104,13 @@ def register_builtin_tools(
     _init_browse_tools()  # lazily populate browse category (awbrowse)
     _init_find_tools()  # lazily populate find category (awfind)
 
+    if categories is None:
+        # SCHEMA TAX. Measured 2026-09-21 with tiktoken: the daemon identity's 14
+        # categories are 48-55 tools whose OpenAI schema is ~5.5k tokens, a third of a
+        # 16,384-token slot, paid on EVERY call before a byte of the task. A named
+        # toolpack (or explicit categories) in ADK_BUILTIN_TOOL_CATEGORIES narrows the
+        # set for the whole process; unknown names are logged and dropped, never fatal.
+        categories = categories_from_env(os.environ.get("ADK_BUILTIN_TOOL_CATEGORIES", ""))
     if categories is None and auto:
         # Unknown identities get a minimal, fully-local default. "workspace"
         # tools call a workspace-intelligence service and aren't useful to an

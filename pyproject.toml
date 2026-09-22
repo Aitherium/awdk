@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.22"
+version = "3.8.24"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -136,6 +136,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# awdecide - the local half of `adk.choose`. Without it, a stranger with no
+# decision door gets DecideUnavailableError forever; with it, decide/outcome are
+# answered in-process off the same evidence ledger. Published and dependency-free,
+# so this extra resolves for anyone.
+decide = ["awdecide>=0.3.0"]
+
 # ── The rest of the aw family ────────────────────────────────────────────────
 # awgit / awgraph / awrelay are HARD dependencies above: all three are published,
 # so a plain `pip install awdk` gets them and the capability is simply present.

@@ -624,6 +624,7 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 - `adk harness serve` — Run the harness daemon
 - `adk harness harnesses` — What this box can drive
 - `adk harness agents` — Sovereign agent roster
+- `adk harness skills` — Skills and slash commands a session can be handed (<cwd>/.claude then ~/.claude)
 - `adk harness profiles` — Model profiles usable per session
 - `adk harness list` — Live sessions
 - `adk harness new` — Start a session
@@ -632,7 +633,7 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 - `adk harness kill` — Stop a session
 - `adk harness tell` — Say something to ONE named session (nick, session id or prefix)
 - `adk harness wrap` — Terminal-resident daemon session (bridge stdin/stdout to daemon)
-- `adk harness mod [status|install|uninstall|smoke]` — The Claude Code mod: an `aw` subagent type answered by a daemon session, so any harness (OpenCode, Gemini, Codex, Aider, a sovereign agent, Claude Code on another backend) runs as a native Claude Code subagent. `status` exits 1 when the mod is not active
+- `adk harness mod` — The Claude Code mod: run any harness as a native Claude Code subagent
 
 | option | type | required | default | description |
 |---|---|---|---|---|

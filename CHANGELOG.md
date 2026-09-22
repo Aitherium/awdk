@@ -55,6 +55,126 @@ All notable changes to aither-adk will be documented in this file.
   reads the same host store (~/.aither/briefs) the stop hook writes, so an
   agent can answer "what did the sessions do" without hunting transcripts.
 
+## [3.8.24] - 2026-09-21
+
+### Added
+
+- LM Studio (:1234) joins both local-inference ladders: `adk.enrollment.default_candidates`
+  (rung 6, proven by `/v1/models`) and `adk.local_inference.SELFHOST_PORTS` (with Ollama :11434).
+  A laptop running only LM Studio no longer enrols as `inference_ready: false`. From the
+  Personal-AI-Router intake (PR #8622).
+
+## [3.8.23] - 2026-09-21
+
+### Added - `adk.choose` answers locally through awdecide when no door is named
+A stranger who pip-installs awdk had no decision door to call and `adk.choose`
+raised `DecideUnavailableError` forever. It now answers in-process through
+awdecide's Loop when no door was named (or `AITHER_DECIDE_URL=local`) and the
+optional package is importable; `/choose` lands as a harness verb.
+
+## [3.8.22] - 2026-09-20
+
+### Added - bug reports file through awreport's redactor
+`adk bug` delegates to awreport so a report never carries a raw secret or path.
+EC009 (the ecosystem-surfaces ratchet) reaches ZERO with this pairing.
+
+## [3.8.21] - 2026-09-20
+
+### Fixed - `awdk[docs]` needs docling's `convert-core` extra
+docling's PDF backend imports PIL at module top, so `format-pdf` alone
+ImportErrored on the first PDF. `convert-core` supplies pillow/numpy/scipy/rtree;
+pypdf joins the extra as the light rung `adk/docconvert.py` already falls to.
+
+## [3.8.20] - 2026-09-13
+
+### Added - `adk rc`: a path-scoped harness token and sessions over the link
+The harness daemon on 127.0.0.1:8362 already served `/sessions/unified`,
+`/sessions/{id}/stream`, `/sessions/{id}/input` and `/decisions/*`; `adk rc`
+reaches them through the reverse link with a token scoped to those paths.
+
+## [3.8.19] - 2026-09-13
+
+### Added - an outbound reverse link, so a phone is reachable at all
+The tunnel's reverse proxy forwarded to a WireGuard peer and nothing else. A
+device that cannot hold a WireGuard peer dials OUT and is reachable through
+that link.
+
+## [3.8.18] - 2026-09-13
+
+### Fixed - enrollment probes the real inference ladder
+A phone's llama-server on :8099 (or awnode on :8090) enrolled as
+`inference_ready=false` because enrollment probed only Ollama :11434 and vLLM
+:8120. `adk devices` lists what enrolled; `adk quickstart` = login -> enroll ->
+status.
+
+## [3.8.17] - 2026-09-12
+
+### Fixed - a self-hosted Bonsai is found by every agent path
+On a box where `install-bonsai.sh` had a working llama-server on :8080,
+`adk status` probed :8209 and printed DOWN, and `adk up`'s preflight agreed.
+Every path now shares one discovery ladder.
+
+## [3.8.16] - 2026-09-09
+
+### Fixed - develop was BEHIND PyPI (3.8.3 vs 3.8.15), no release for 14 days
+`adk-auto-release` fires on a bump to `awdk/pyproject.toml`, and every version
+it could reach from 3.8.3 was a DOWNGRADE against the 3.8.15 PyPI already
+served, so it cut nothing. Bumped past the registry so the lane can fire.
+
+## [3.8.15] - 2026-09-05
+
+### Fixed - two unregistered bricks were failing ~37 other mirrors' publish gates
+PUB001 runs inside EVERY brick's boundary gate. `awsettings` and `awstorage`
+were registered public and on PyPI at 0.1.0 but in no boundary scan and no
+sync lane, so every other brick's gate reported them.
+
+## [3.8.14] - 2026-09-05
+
+### Fixed - release plane unambiguous (3.8.13 -> 3.8.14)
+Bump so the source version is ahead of the last release tag (RP007).
+
+## [3.8.13] - 2026-09-05
+
+### Added - one `aitheros` binary owning awdk, awnode, awgym, awsh, awdesk and awconnect
+
+## [3.8.12] - 2026-09-04
+
+### Fixed - the version/tag mismatch and the advertised-command check closed; the onboarding self-test un-broken
+`awdk/pyproject.toml` sat at 3.8.11 while `adk-v3.8.11` was already tagged.
+
+## [3.8.11] - 2026-09-01
+
+### Added - awstorage: scan, classify, catalog, diff, propose, reversible apply
+New stdlib-only package `AitherOS/packages/awstorage`; `adk storage <...>`
+pass-through and the `awdk[storage]` extra. Delete is a same-volume
+QUARANTINE with revert; apply refuses outside roots, stale fingerprints and
+unapproved classes; every action is ledgered.
+
+## [3.8.10] - 2026-08-30
+
+### Fixed - all five version carriers synced
+The 3.8.7/3.8.8/3.8.9 bumps touched only `pyproject.toml`; `awdk/__init__.py`,
+npm, brew and `server.json` sat at 3.8.3-3.8.5, so sync-adk's manifest-parity
+step failed on every run since 3.8.7.
+
+## [3.8.9] - 2026-08-29
+
+### Fixed - debt-box-contract DEAD steps closed; vibe/studio origins claimed
+Router anchor, kvcache crash and surface-registry enumeration each exited 2
+(could-not-judge) on every run.
+
+## [3.8.8] - 2026-08-29
+
+### Fixed - 3.8.7 self-tagged; RP006 build-connect allowlist
+The gate-coverage plane converged: the fleet-live batch executes, the host
+step is wired, a swept checker restored.
+
+## [3.8.7] - 2026-08-29
+
+### Fixed - version 3.8.6 -> 3.8.7: RP007 was red on develop
+`adk-v3.8.6` already existed while the source still said 3.8.6, failing the
+release-plane step of every debt run.
+
 ## [3.8.6] - 2026-08-28
 
 ### Added

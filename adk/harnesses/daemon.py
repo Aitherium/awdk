@@ -485,6 +485,19 @@ if BaseModel is not None:
         #: session's pty? Default off (``SessionConfig.allow_peer_input``); the owner
         #: still lands immediately either way.
         allow_peer_input: bool = False
+        #: Relay-session fields. ``SessionConfig`` accepted ``agent`` and
+        #: ``participants`` and the CLI sent them, but this model did not declare
+        #: them, so ``model_dump()`` dropped both and EVERY ``--harness aither
+        #: --agent atlas`` session ran as aither (measured 2026-09-21). A field that
+        #: exists on the config must exist here -- check_door_relay.py DOOR001.
+        agent: str = ""
+        participants: list[str] = Field(default_factory=list)
+        base_url: str = ""
+        #: A skill or slash command from ``.claude/skills`` / ``.claude/commands``
+        #: (cwd first, then ~), rendered into ``system_prompt_append``. Not a
+        #: SessionConfig field: it is resolved here and never travels further.
+        skill: str = ""
+        skill_arguments: str = ""
 
     class SendInput(BaseModel):  # type: ignore[misc]
         text: str
@@ -1023,9 +1036,48 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     f"{body.harness!r} (requires entitlement {needed!r})"
                 ),
             )
+        # A relay session that names an agent the roster does not know used to
+        # start anyway and answer as aither. Refuse with the roster instead: a
+        # wrong name is a typo the caller can fix, a silent fallback is not.
+        if body.harness in ("aither", "awdk", "group"):
+            from adk.harnesses.agents import AGENT_ROSTER
+
+            known = [a["id"] for a in AGENT_ROSTER]
+            named = ([body.agent] if body.agent else []) + list(body.participants)
+            unknown = [a for a in named if a not in known]
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown agent(s) {unknown}; roster: {', '.join(known)}",
+                )
+        fields = body.model_dump(exclude={"skill", "skill_arguments"})
+        if body.harness == "awdk" and body.agent:
+            # adk serve has no identity store, so the roster's persona line is
+            # the only way a named agent answers as itself on the local loop.
+            # Measured 2026-09-21: `--agent atlas` on this harness answered as
+            # "your helpful, warm test companion". Genesis loads the identity
+            # itself, so the `aither` harness gets nothing here.
+            entry = next((a for a in AGENT_ROSTER if a["id"] == body.agent), None)
+            if entry and entry.get("persona"):
+                persona = f"You are {entry['label']} ({entry['role']}). {entry['persona']}"
+                fields["system_prompt_append"] = (
+                    persona + "\n\n" + (fields.get("system_prompt_append") or "").strip()
+                ).strip()
+        if body.skill:
+            from adk.harnesses import skills_local
+
+            try:
+                rendered = skills_local.resolve(
+                    body.skill, body.skill_arguments, cwd=body.cwd or os.getcwd(),
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=400, detail=str(exc.args[0])) from exc
+            fields["system_prompt_append"] = (
+                (fields.get("system_prompt_append") or "").rstrip() + "\n\n" + rendered
+            ).strip()
         try:
             cwd = validate_cwd(body.cwd)
-            config = SessionConfig(**{**body.model_dump(), "cwd": cwd})
+            config = SessionConfig(**{**fields, "cwd": cwd})
             session = mgr.create(config)
         except ManagerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1235,6 +1287,40 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         from adk.harnesses.agents import AGENT_ROSTER
 
         return {"agents": AGENT_ROSTER}
+
+    # ── skills: what a session can be handed from disk ─────────────────────
+    # Read from ``<cwd>/.claude`` then ``~/.claude`` on the HOST, which is where
+    # the daemon runs -- no fleet, no mount. This is how a skill leaves Claude
+    # Code: it is handed to the session as ``system_prompt_append``.
+    @app.get("/skills", dependencies=[Depends(auth)])
+    def skills(cwd: str = Query(default="")) -> dict[str, Any]:
+        from adk.harnesses import skills_local
+
+        base = cwd or os.getcwd()
+        found = skills_local.discover(cwd=base)
+        return {
+            "skills": [s.describe() for s in found.values()],
+            "roots": [str(r) for r in skills_local.default_roots(base)],
+            "collisions": {
+                name: [str(p) for p in paths]
+                for name, paths in skills_local.collisions(cwd=base).items()
+            },
+        }
+
+    @app.get("/skills/{name}", dependencies=[Depends(auth)])
+    def skill_text(name: str, cwd: str = Query(default=""),
+                   arguments: str = Query(default="")) -> dict[str, Any]:
+        from adk.harnesses import skills_local
+
+        base = cwd or os.getcwd()
+        found = skills_local.discover(cwd=base)
+        skill = found.get(name)
+        if skill is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown skill {name!r}; {len(found)} known",
+            )
+        return {**skill.describe(), "text": skills_local.render(skill, arguments)}
 
     # ── awrun job queue (AWS-runner / CI / agent-run priority control) ─────────
     # Reuses adk.builtin_tools' existing queue_submit/queue_list/queue_status/

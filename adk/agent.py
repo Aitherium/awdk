@@ -11,7 +11,10 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:  # pragma: no cover - annotation only (ruff F821 on the string form)
+    from adk.loop_policy import LoopPolicy
 
 from adk import coherence
 from adk.config import Config
@@ -312,6 +315,7 @@ class AgentResponse:
     pending: list[dict] = field(default_factory=list)
 
 
+
 class AitherAgent:
     """An AI agent with identity, tools, memory, and LLM access.
 
@@ -341,8 +345,13 @@ class AitherAgent:
         user_mcp: bool = True,
         memory_maintenance: bool = False,
         routines: bool = False,
+        loop_policy: "LoopPolicy | None" = None,
     ):
         self.config = config or Config.from_env()
+        # Opt-in loop policy (adk.loop_policy.LoopPolicy): the four measured nudges
+        # that turn exploration into a landed, verified edit. None = off; the
+        # ruler's promotion rule decides when it becomes the default.
+        self.loop_policy = loop_policy
 
         # Identity
         if isinstance(identity, Identity):
@@ -1700,20 +1709,34 @@ class AitherAgent:
             # two-layer compaction (snip -> summarize) that preserves the
             # assistant-tool_calls -> tool-results pairing invariant. See
             # adk/context_budget.py.
-            from adk.context_budget import maybe_compact
+            from adk.context_budget import calibrate_overhead, estimate_tokens, maybe_compact
 
             async def _summarize_history(prompt: str) -> str:
+                # Pinned to the SAME model as the turn: effort=2 alone lets the router
+                # pick its cheap tier, which the fleet scheduler served from a cloud
+                # fallback (measured 2026-09-21: mesa-2394's only compaction call came
+                # back from deepseek_api on a bonsai2-27b arm -- the served-by check
+                # raised inside the summarizer, maybe_compact swallowed it, and the
+                # instance ran on unsummarized until the slot overflowed).
                 _summary_resp = await self.llm.chat(
                     [Message(role="user", content=prompt)],
                     effort=2,  # cheap: summarization is not a reasoning task
+                    model=(getattr(self.llm, "model", None)
+                           or getattr(self.llm, "_model", None)),
                 )
                 return _summary_resp.content or ""
 
+            # L3b: the estimator sees message chars only; the provider's last real
+            # prompt_tokens carries the schema + system prompt + tokenizer gap, so the
+            # threshold is judged on estimate + that measured overhead (0 until the
+            # first response reports usage).
             messages, _did_compact = await maybe_compact(
                 messages,
                 model=getattr(self.llm, "model", None),
                 summarize=_summarize_history,
                 make_message=lambda role, content: Message(role=role, content=content),
+                overhead_tokens=getattr(self, "_context_overhead", 0),
+                limit_override=getattr(self, "_context_limit_observed", None),
             )
             if _did_compact:
                 logger.info("[REACT] History compacted at iteration %d", _loop_idx)
@@ -1754,12 +1777,48 @@ class AitherAgent:
                     _advisor.conversation_cap,
                 )
 
-            resp = await self.llm.chat(
-                messages, tools=tools_schema, effort=_effort,
-                tool_choice=_tool_choice, top_p=_top_p,
-                repetition_penalty=_repetition_penalty,
-                advisor=(_advisor if _advisor_on else None), **kwargs,
-            )
+            _est_at_send = estimate_tokens(messages)
+            try:
+                resp = await self.llm.chat(
+                    messages, tools=tools_schema, effort=_effort,
+                    tool_choice=_tool_choice, top_p=_top_p,
+                    repetition_penalty=_repetition_penalty,
+                    advisor=(_advisor if _advisor_on else None), **kwargs,
+                )
+            except Exception as _exc:  # noqa: BLE001 - only the overflow shape is handled
+                _requested = getattr(_exc, "requested_tokens", 0)
+                if not _requested and type(_exc).__name__ != "ContextOverflowError":
+                    raise
+                # L3c: the provider named the real size of the request that did not
+                # fit. Learn the overhead from it, compact ONCE against it, retry once.
+                # A second overflow is the caller's problem, not a loop.
+                _learned = calibrate_overhead(_est_at_send, _requested) if _requested \
+                    else max(getattr(self, "_context_overhead", 0), 4096)
+                self._context_overhead = max(getattr(self, "_context_overhead", 0), _learned)
+                _limit_said = getattr(_exc, "limit_tokens", 0) or 0
+                if _limit_said > 0:
+                    # the provider named the slot: budget against THAT from now on
+                    self._context_limit_observed = int(_limit_said)
+                logger.warning("[CONTEXT] overflow (%s tokens requested) -- compacting with "
+                               "overhead %d and retrying once", _requested or "?",
+                               self._context_overhead)
+                messages, _ = await maybe_compact(
+                    messages, model=getattr(self.llm, "model", None),
+                    summarize=_summarize_history,
+                    make_message=lambda role, content: Message(role=role, content=content),
+                    overhead_tokens=self._context_overhead,
+                    limit_override=getattr(self, "_context_limit_observed", None),
+                )
+                _est_at_send = estimate_tokens(messages)
+                resp = await self.llm.chat(
+                    messages, tools=tools_schema, effort=_effort,
+                    tool_choice=_tool_choice, top_p=_top_p,
+                    repetition_penalty=_repetition_penalty,
+                    advisor=(_advisor if _advisor_on else None), **kwargs,
+                )
+            _overhead = calibrate_overhead(_est_at_send, getattr(resp, "prompt_tokens", 0))
+            if _overhead:
+                self._context_overhead = _overhead
 
             # ── Gap 3: continuation on output-cap truncation ──
             # finish_reason == "length" → continue + STITCH via the shared adk
@@ -1844,7 +1903,8 @@ class AitherAgent:
                             "[REACT] finish_reason=%s but no structured calls — nudging",
                             resp.finish_reason,
                         )
-                        messages.append(Message(role="assistant", content=resp.content or ""))
+                        messages.append(Message(role="assistant", content=resp.content or "",
+                                     reasoning=(getattr(resp, "reasoning", "") or None)))
                         messages.append(Message(role="system", content=(
                             "You indicated you want to call a tool but didn't produce "
                             "a structured tool call. You MUST call tools using the "
@@ -1870,7 +1930,8 @@ class AitherAgent:
                         and _should_steer_tool_use(message, _tool_choice)):
                     _steered_once = True
                     logger.debug("[REACT] Turn-1 no tool call — injecting steering retry")
-                    messages.append(Message(role="assistant", content=resp.content or ""))
+                    messages.append(Message(role="assistant", content=resp.content or "",
+                                     reasoning=(getattr(resp, "reasoning", "") or None)))
                     messages.append(Message(role="system", content=_TOOL_STEERING_MSG))
                     _tool_choice = "required"
                     continue
@@ -1903,7 +1964,8 @@ class AitherAgent:
                             _turn_budget.continuations,
                         )
                         messages.append(
-                            Message(role="assistant", content=resp.content or "")
+                            Message(role="assistant", content=resp.content or "",
+                                     reasoning=(getattr(resp, "reasoning", "") or None))
                         )
                         messages.append(Message(role="user", content=_nudge))
                         continue
@@ -2021,6 +2083,9 @@ class AitherAgent:
                     for tc in resp.tool_calls
                 ],
                 content_blocks=(resp.raw_content_blocks or None),
+                # a thinking-mode API refuses the next round without it (DeepSeek
+                # v4-pro, 2026-09-21); non-thinking backends never see the key
+                reasoning=(getattr(resp, "reasoning", "") or None),
             ))
 
             # World model advisory: consult the learned model to reorder tool choices.
@@ -2184,6 +2249,9 @@ class AitherAgent:
                     content=result,
                     tool_call_id=tc.id,
                 ))
+                if self.loop_policy is not None:
+                    self.loop_policy.record(tc.name, tc.arguments, result)
+                    _deferred_nudges.extend(self.loop_policy.nudges())
 
             # Every tool_call in this assistant turn now has its matching `tool`
             # result appended contiguously. Emit any loop-guard steering AFTER
@@ -2734,6 +2802,8 @@ class AitherAgent:
             await _emit({"type": "tool_result", "name": name, "result": obs[:1500]})
             # Track tool result for knowledge graph
             _kg_tools.add(str(name).lower())
+            # reasoning-n/a: streamed text, no response object -- the stream loop has
+            # no reasoning to carry; thinking-mode backends run the non-stream loop
             msgs.append(Message(role="assistant", content=full))
             msgs.append(Message(role="user", content=f"OBSERVATION: {obs[:3000]}"))
         else:

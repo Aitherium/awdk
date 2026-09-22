@@ -15,17 +15,35 @@ into training signal, so the next identical state is answered from evidence.
 Endpoint: AITHER_DECIDE_URL (default https://127.0.0.1:8197, the in-fleet door;
 set it to your gateway's https://.../v1 when calling from outside). Domains are
 namespaced `decide.<fork>` automatically.
+
+**No door? There is a local backend.** With the optional package `awdecide`
+installed (`pip install "awdk[decide]"`) `decide`, `decide_batch`, `outcome` and
+`teach` are answered IN-PROCESS -- same evidence-then-model ladder, same
+learning from outcomes, a sqlite ledger at awdecide's own default path
+(`AWDECIDE_DB`), and an optional brain from `AWDECIDE_LLM_URL` +
+`AWDECIDE_LLM_MODEL`. A local answer always says so: `source` is
+`local:<backend>` (`local:evidence`, `local:chat`, `local:none`), never plain
+`engine`/`llm`, so a caller can always tell it did not come from the door.
+
+It engages when you named no door and the default one is unreachable, or when
+you set `AITHER_DECIDE_URL=local` (which skips the network entirely). If you
+NAMED a door, an outage stays an outage -- you are owed an honest error, not a
+quietly different answer; `AITHER_DECIDE_LOCAL=1` overrides that, `=0` disables
+the local backend outright. Without `awdecide` the behaviour is unchanged:
+`DecideUnavailableError`, whose message now names the fix.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 DEFAULT_URL = "https://127.0.0.1:8197"
 
@@ -48,7 +66,9 @@ class Decision:
 
     @property
     def learned(self) -> bool:
-        return self.source == "engine"
+        """Answered from resolved outcomes rather than a model -- at the door
+        (`engine`) or in-process (`local:evidence`)."""
+        return self.source == "engine" or self.source == "local:evidence"
 
 
 def _url() -> str:
@@ -110,6 +130,154 @@ def _shape(d: Dict[str, Any]) -> Decision:
     )
 
 
+# --------------------------------------------------------------------- local
+# The door is one implementation of this contract; `awdecide` is another, small
+# enough to run in this process. Everything below is inert until a local answer
+# is actually needed -- importing this module never imports awdecide.
+
+LOCAL = "local"
+_INSTALL_HINT = 'no local decision backend either: pip install "awdk[decide]"'
+_EVIDENCE_N = re.compile(r"evidence:\s*(\d+)\s+resolved")
+# decision ids answered locally in THIS process, so outcome() routes them back
+# to the ledger that issued them. Bounded: past the cap the door is tried first
+# and the local ledger is still reached through the normal fallback.
+_LOCAL_IDS: Set[str] = set()
+_LOCAL_IDS_MAX = 4096
+
+
+def _import_awdecide() -> Optional[Tuple[Any, Any]]:
+    """The one guarded, lazy import point for the local backend.
+
+    Returns `(mcp, ledger)` from awdecide, or None when it is not installed.
+    Tests replace this function to simulate either."""
+    try:
+        from awdecide import ledger as ledger_mod
+        from awdecide import mcp as mcp_mod
+    except ImportError:
+        return None
+    return mcp_mod, ledger_mod
+
+
+def _raw_url() -> str:
+    return os.environ.get("AITHER_DECIDE_URL", "").strip()
+
+
+def _local_only() -> bool:
+    """AITHER_DECIDE_URL=local -- answer here, never touch the network."""
+    return _raw_url().lower() == LOCAL
+
+
+def _local_allowed() -> bool:
+    """May a door outage fall through to the local backend?"""
+    flag = os.environ.get("AITHER_DECIDE_LOCAL", "").strip().lower()
+    if flag in ("0", "off", "no", "false", "never"):
+        return False
+    if flag in ("1", "on", "yes", "true", "always"):
+        return True
+    return not _raw_url()
+
+
+def _local_loop(door_down: Optional[Exception] = None) -> Tuple[Any, Any]:
+    """`(mcp, Loop)` -- a FRESH Loop per call, because its sqlite connection
+    must not be shared across threads. The caller closes the ledger."""
+    mods = _import_awdecide()
+    if mods is None:
+        raise DecideUnavailableError(f"{door_down}; {_INSTALL_HINT}" if door_down
+                                     else _INSTALL_HINT) from None
+    mcp_mod, ledger_mod = mods
+    db = os.environ.get("AWDECIDE_DB")
+    return mcp_mod, mcp_mod.build_loop(Path(db) if db else ledger_mod.DEFAULT_DB)
+
+
+def _local_args(fork: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """This client's vocabulary in awdecide's terms. The mapping (yesno -> bool,
+    decision_id <- id, answer <- value, source <- backend) is awdecide's own
+    `mcp.call`; only the argument names are ours."""
+    return {
+        "fork": _domain(fork),
+        "state": body.get("state", ""),
+        "kind": body.get("kind", "choice"),
+        "options": body.get("options"),
+        "question": body.get("question", ""),
+        "min_confidence": body.get("min_confidence", 0.0),
+    }
+
+
+def _shape_local(a: Dict[str, Any]) -> Decision:
+    """An awdecide answer as a Decision. An undecided answer is `answer=None`,
+    confidence 0.0, source `local:none` -- never a guess."""
+    decided = bool(a.get("decided"))
+    learned_from = 0
+    for reason in a.get("reasons") or []:
+        hit = _EVIDENCE_N.search(str(reason))
+        if hit:
+            learned_from = int(hit.group(1))
+    probs = dict(a.get("probabilities") or {})
+    d = Decision(
+        decision_id=str(a.get("decision_id") or ""),
+        answer=a.get("answer") if decided else None,
+        confidence=float(a.get("confidence") or 0.0) if decided else 0.0,
+        source=f"local:{a.get('source') or 'none'}" if decided else "local:none",
+        learned_from=learned_from,
+        alternatives=[{"answer": k, "value": v}
+                      for k, v in sorted(probs.items(), key=lambda kv: -kv[1])],
+        raw=a,
+    )
+    if d.decision_id:
+        if len(_LOCAL_IDS) >= _LOCAL_IDS_MAX:
+            _LOCAL_IDS.clear()
+        _LOCAL_IDS.add(d.decision_id)
+    return d
+
+
+def _local_decide(fork: str, body: Dict[str, Any], down: Optional[Exception] = None) -> Decision:
+    mcp_mod, loop = _local_loop(down)
+    try:
+        return _shape_local(mcp_mod.call(loop, "decide", _local_args(fork, body)))
+    finally:
+        loop.ledger.close()
+
+
+def _local_batch(
+    fork: str, items: Sequence[Dict[str, Any]], down: Optional[Exception] = None
+) -> List[Decision]:
+    """One Loop, one connection, one thread; order preserved."""
+    mcp_mod, loop = _local_loop(down)
+    try:
+        return [
+            _shape_local(mcp_mod.call(loop, "decide",
+                                      _local_args(str(it.get("fork") or fork), dict(it))))
+            for it in items
+        ]
+    finally:
+        loop.ledger.close()
+
+
+def _local_outcome(
+    decision_id: str, reward: float, down: Optional[Exception] = None
+) -> Dict[str, Any]:
+    """Route to `Loop.resolve`. An id the ledger never issued raises ValueError,
+    the same way the door's 422 does."""
+    mcp_mod, loop = _local_loop(down)
+    try:
+        return mcp_mod.call(loop, "decide_outcome",
+                            {"decision_id": decision_id, "correct": float(reward) > 0})
+    finally:
+        loop.ledger.close()
+
+
+def _local_teach(
+    fork: str, state: str, answer: Any, reward: float, down: Optional[Exception] = None
+) -> Dict[str, Any]:
+    mcp_mod, loop = _local_loop(down)
+    try:
+        return mcp_mod.call(loop, "decide_teach", {"fork": _domain(fork), "state": state,
+                                                   "value": str(answer),
+                                                   "correct": float(reward) > 0})
+    finally:
+        loop.ledger.close()
+
+
 def decide(
     fork: str,
     state: str,
@@ -131,7 +299,14 @@ def decide(
     }
     if options is not None:
         body["options"] = [str(o) if kind != "score" or options else o for o in options]
-    return _shape(_post("/decide", body, timeout))
+    if _local_only():
+        return _local_decide(fork, body)
+    try:
+        return _shape(_post("/decide", body, timeout))
+    except DecideUnavailableError as down:
+        if not _local_allowed():
+            raise
+        return _local_decide(fork, body, down)
 
 
 def decide_batch(
@@ -150,25 +325,46 @@ def decide_batch(
         }
         for it in items
     ]
-    return [
-        _shape(a) for a in _post("/decide/batch", {"items": payload}, timeout).get("answers", [])
-    ]
+    if _local_only():
+        return _local_batch(fork, items)
+    try:
+        return [
+            _shape(a)
+            for a in _post("/decide/batch", {"items": payload}, timeout).get("answers", [])
+        ]
+    except DecideUnavailableError as down:
+        if not _local_allowed():
+            raise
+        return _local_batch(fork, items, down)
 
 
 def outcome(decision_id: str, reward: float, *, timeout: float = 15.0) -> Dict[str, Any]:
-    """Teach the door: reward in -1..1 for the decision you acted on."""
-    return _post("/decide/outcome", {"decision_id": decision_id, "reward": float(reward)}, timeout)
+    """Teach the door: reward in -1..1 for the decision you acted on. An id the
+    local backend issued goes back to it, wherever the door is."""
+    did = str(decision_id)
+    if _local_only() or did in _LOCAL_IDS:
+        return _local_outcome(did, reward)
+    try:
+        return _post("/decide/outcome", {"decision_id": did, "reward": float(reward)}, timeout)
+    except DecideUnavailableError as down:
+        if not _local_allowed():
+            raise
+        return _local_outcome(did, reward, down)
 
 
 def teach(
     fork: str, state: str, answer: Any, reward: float, *, timeout: float = 15.0
 ) -> Dict[str, Any]:
     """Teach without a prior decision: 'in this state, this answer earned this'."""
-    return _post(
-        "/decide/outcome",
-        {"domain": _domain(fork), "state": state, "answer": answer, "reward": float(reward)},
-        timeout,
-    )
+    body = {"domain": _domain(fork), "state": state, "answer": answer, "reward": float(reward)}
+    if _local_only():
+        return _local_teach(fork, state, answer, reward)
+    try:
+        return _post("/decide/outcome", body, timeout)
+    except DecideUnavailableError as down:
+        if not _local_allowed():
+            raise
+        return _local_teach(fork, state, answer, reward, down)
 
 
 def judge(

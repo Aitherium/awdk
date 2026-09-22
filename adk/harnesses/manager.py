@@ -88,11 +88,14 @@ class SessionManager:
                 participants=participants, base_url=config.base_url,
             )
         elif spec.transport == Transport.HTTP_STREAM:
-            from adk.harnesses.agents import AgentRelaySession
+            from adk.harnesses.agents import ADK_URL, AgentRelaySession
 
+            # `awdk` relays to this host's own loop unless the caller named a
+            # base_url; `aither` keeps Genesis (an explicit base_url still wins).
+            base_url = config.base_url or (ADK_URL if spec.id == "awdk" else "")
             session = AgentRelaySession(
                 spec, config, binding, root=self._root,
-                agent=config.agent or "aither", base_url=config.base_url,
+                agent=config.agent or "aither", base_url=base_url,
             )
         else:
             session = HarnessSession(spec, config, binding, root=self._root)

@@ -116,7 +116,16 @@ _DEMO_URL = "https://demo.aitherium.com"
 # returns empty content). Keyed by case-insensitive model-id substring, so it
 # holds whether qwen is served via the gateway or a local vLLM, and a non-qwen
 # model (e.g. gemma4 vision) on the same provider is unaffected.
-_DEFAULT_CTK_BY_MODEL = {"qwen": {"enable_thinking": False}}
+# bonsai (Bonsai 2 27B is a Qwen3.6 derivative with the same thinking template):
+# measured 2026-09-21 on the fleet lane (-c 32768 -np 2, --reasoning-budget 2048),
+# a 9k-token prompt with thinking ON spent all 1024 completion tokens thinking and
+# returned finish_reason=length with the reasoning prefix as content; the same
+# request with enable_thinking=false answered in 2.4 s. Every daemon turn to
+# bonsai2-27b read "model returned an empty completion" until this line.
+_DEFAULT_CTK_BY_MODEL = {
+    "qwen": {"enable_thinking": False},
+    "bonsai": {"enable_thinking": False},
+}
 
 # llmfit-derived model cache (populated lazily)
 _llmfit_models: dict[str, str] | None = None
@@ -1151,6 +1160,19 @@ class LLMRouter:
             if attachments:
                 return True
         return False
+
+    @property
+    def model(self) -> "str | None":
+        """The model name this router will send by default -- the pinned one, else the
+        active provider's default. The ReAct loop budgets context against THIS name
+        (``context_limit_for(getattr(self.llm, 'model', None))``). Measured 2026-09-21:
+        without it the loop saw ``None`` for every backend, budgeted DeepSeek v4-pro
+        (128k) and Bonsai (16k) alike as an unknown 32k, compacted DeepSeek at 16k
+        tokens and never compacted Bonsai before its slot overflowed."""
+        if self._model:
+            return self._model
+        prov = getattr(self, "_provider", None)
+        return getattr(prov, "default_model", None) or None
 
     def model_for_effort(self, effort: int) -> str:
         """Select model based on effort level (1-10).

@@ -340,6 +340,22 @@ register(
 
 register(
     HarnessSpec(
+        id="awdk",
+        label="awdk (local agent loop)",
+        description=(
+            "A sovereign agent run by THIS host's awdk loop (adk serve, default "
+            "127.0.0.1:9001): local tools, the model you chose, no fleet needed. "
+            "Same wire as `aither`, different brain -- the one the daily driver measures."
+        ),
+        transport=Transport.HTTP_STREAM,
+        binary="",
+        adapter="text",
+        supports_resume=True,
+    )
+)
+
+register(
+    HarnessSpec(
         id="group",
         label="Group Chat",
         description="Several sovereign agents in one room, answering concurrently",

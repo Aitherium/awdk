@@ -1155,8 +1155,20 @@ def create_app(
             return None
 
     def _handoff_identity_base(prof: dict[str, Any]) -> str:
+        # 🚩 "local" IS A SENTINEL, NOT A URL, AND IT IS TRUTHY.
+        # This guard listed two loopback PREFIXES, so the profile written by a local
+        # login -- endpoint "local" -- fell through every branch and the IdP fallback
+        # never fired. The daemon then POSTed to "local/auth/handoff/mint", which is
+        # not a URL at all: httpx raises, and the browser handoff answers 502.
+        # Measured 2026-09-20 on the owner's box, where auth.json's active profile is
+        # exactly {"endpoint": "local"} -- so the path that tells aitherium.com who
+        # you are has never worked here, and the page offered "Continue as root".
+        #
+        # Test for what a usable base IS (an absolute http(s) URL), not for the two
+        # unusable spellings someone happened to think of.
         base = (prof.get("endpoint") or "").rstrip("/")
-        if not base or base.startswith("http://127.0.0.1") or base.startswith("http://localhost"):
+        if (not base.startswith("http://") and not base.startswith("https://")) \
+                or base.startswith("http://127.0.0.1") or base.startswith("http://localhost"):
             base = os.getenv(
                 "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
             ).rstrip("/")

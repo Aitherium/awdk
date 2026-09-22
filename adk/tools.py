@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -166,12 +167,44 @@ class ToolRegistry:
             else:
                 result = td.fn(**arguments)
 
-            if isinstance(result, str):
-                return result
-            return json.dumps(result, default=str)
+            text = result if isinstance(result, str) else json.dumps(result, default=str)
+            return _compact_result(name, arguments, text)
         except Exception as e:
             logger.error(f"Tool {name} failed: {e}")
             return json.dumps({"error": str(e)})
+
+
+#: Compaction at the ONE point every tool result passes on its way into the
+#: conversation (native tool loop, ReAct loop, streaming -- all call execute()).
+#: This is append-time compaction: the result is shrunk BEFORE it becomes a
+#: message, so nothing above it in the history changes and no prompt-cache
+#: prefix is invalidated. Off with AITHER_COMPACT_TOOL_RESULTS=0; threshold
+#: AITHER_COMPACT_MIN_LINES (default 60). Every failure path returns the
+#: original text -- the door being away must never eat a tool result.
+_COMPACT_ENV = "AITHER_COMPACT_TOOL_RESULTS"
+
+
+def _compact_result(name: str, arguments: Any, text: str) -> str:
+    if os.environ.get(_COMPACT_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+        return text
+    try:
+        from adk.shell.mods.compact_tool_output import MIN_LINES, on_tool_result
+    except Exception:  # noqa: BLE001 -- the mod is optional
+        return text
+    if not text or text.count("\n") + 1 < MIN_LINES:
+        return text
+    hint = name
+    if isinstance(arguments, dict):
+        for key in ("command", "cmd", "script", "args"):
+            v = arguments.get(key)
+            if isinstance(v, str) and v.strip():
+                hint = f"{name} {v}"
+                break
+    try:
+        return on_tool_result(hint, text) or text
+    except Exception as exc:  # noqa: BLE001 -- never raise into the tool stream
+        logger.debug(f"compact left {name} result alone: {exc}")
+        return text
 
 
 # Module-level registry for the @tool decorator
@@ -353,6 +386,13 @@ def _extract_parameters(fn: Callable) -> dict:
 
     for param_name, param in sig.parameters.items():
         if param_name in ("self", "cls"):
+            continue
+        # *args / **kwargs are not parameters a caller names. Measured 2026-09-21
+        # on SWE-bench-Live: a wrapper `translated(*a, **kw)` advertised `a` and
+        # `kw`, and the builtin file tools' `**_ignored` advertised `_ignored`;
+        # the model passed exactly what it was shown and every call died in a
+        # TypeError. The schema is the only thing the model ever sees.
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
 
         hint = hints.get(param_name, str)

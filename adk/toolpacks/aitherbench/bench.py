@@ -24,7 +24,12 @@ were paid for in outages. A model that violates them will produce confident,
 well-formed, wrong operational decisions — and it will pass every general
 benchmark while doing it.
 
-EIGHT DIMENSIONS, EVERY ONE A HARD ORACLE.
+EVERY DIMENSION IS A HARD ORACLE. The authoritative list is `DIMENSIONS`,
+derived from `ITEMS` — print it, do not trust this paragraph. It said "EIGHT
+DIMENSIONS" while ITEMS carried fourteen, because six were added and the
+header was not: exactly the second-source-of-truth failure the note above
+`DIMENSIONS` describes, one docstring higher. Kept as prose only because a
+reader needs to know what the suite is FOR:
 
     effort         calibrate 1-10 against the dispatch ladder
     routing_model  pick the right MODEL for a job, not the nearest keyword
@@ -36,6 +41,12 @@ EIGHT DIMENSIONS, EVERY ONE A HARD ORACLE.
     repl           know you are MISSING information, and name the query that
                    would get it — locate before editing, read the op log before
                    asserting a verdict, predict before acting on a live fleet
+    tool_reach     given the instrument on the bench, pick it UP — our code is
+                   awgraph and the web is awfind, the next agent is awm and a
+                   live one is awrelay, a 2M-token corpus is awrecurse and not
+                   a summary. Includes two negatives, because a model that
+                   reaches for the fancy tool every turn is its own failure.
+    escalation · workflow · long_horizon · context_mgmt · offload · multi_turn
 
 NO LLM JUDGE ANYWHERE. Every item is scored by exact match, set membership, or
 an ordering predicate. A judge is a model, not an oracle, and a benchmark whose
@@ -73,6 +84,36 @@ DOCTRINE = (
     "must beat. Absence of evidence is not evidence of absence."
 )
 
+
+#: The aw* tool roster, STATED rather than assumed — the same choice as
+#: EFFORT_LADDER and MODEL_ROSTER above, and for the same reason: this measures
+#: whether a model REACHES for the right instrument when told what is on the
+#: bench, not whether it happened to memorise our package names. A model that
+#: has to recall `awrecurse` from pretraining is being tested on trivia; a model
+#: that is told what awrecurse does and still summarises a 2M-token corpus into
+#: its 32k window is failing the thing we actually care about.
+#:
+#: Every line below is quoted from that tool's own packaging `description`, not
+#: paraphrased. An oracle that asserts a tool does X when it does Y teaches the
+#: model that our documentation is wrong, and it will be right.
+TOOL_ROSTER = """Tools available to you, and what each one is for:
+- awgraph: semantic code graph over OUR repository - AST + tree-sitter
+  indexing, call graphs, hybrid search across our source.
+- awfind: web search - one query interface over external providers.
+- awm: scoped, DURABLE agent memory (tenant:user:project). A write lands
+  at exactly one scope and outlives this session.
+- awrelay: messages to other agent sessions that are running RIGHT NOW.
+- awpredict: a world model - predicts the resulting state from a (state, action) pair.
+- awrepl: a REPL whose state SURVIVES between turns.
+- awreason: a reasoning client - keeps sessions, phases, thoughts, and
+  the chain that produced the answer.
+- awrecurse: answers a question over a context far LARGER than your
+  window, recursively, keeping the trace.
+- awgit: op-log-aware git for a shared worktree. `awgit lease acquire
+  <path>` takes a lease on a file other sessions may also be editing.
+- rg: plain ripgrep over the checkout. Fast, always current.
+- recall / query_memory: the platform's memory of PRIOR incidents and their root causes.
+"""
 
 @dataclass
 class BenchItem:
@@ -875,6 +916,166 @@ ITEMS: List[BenchItem] = [
                    answer_is_not("result=7")),
         criteria="A revision to earlier code. name=add or result=7 is turn "
                  "one leaking through.",
+    ),
+    # ── tool_reach ─────────────────────────────────────────────────────────
+    #
+    # Owner, 2026-09-21: "ADD THE FUCKING TOOL REACH BENCHMARK", after being
+    # shown that neither harness measured any of awm / awgraph / awpredict /
+    # awfind / awrepl / awreason / awrecurse.
+    #
+    # The gap this closes: every other dimension here measures JUDGEMENT —
+    # calibrate an effort, order a plan, decline instead of confabulating. None
+    # measured REACH: given an instrument on the bench, does the model pick it
+    # up. `tool_calling` in the other harness matches tool NAMES against a fixed
+    # list, which is a different question (can it emit the call) from this one
+    # (does it know which call the situation wants).
+    #
+    # Why this is a fair hard oracle and not trivia: TOOL_ROSTER is in the
+    # system prompt. The model is TOLD what each tool does. Every item then has
+    # exactly one right instrument and at least one plausible wrong one, and the
+    # wrong one is always the tool a keyword match would suggest — awfind for a
+    # question about "our code", awgraph for a question about the outside world,
+    # awm for a message, awrelay for a note to the future.
+    #
+    # Scored in BOTH directions, per this file's standing rule. Two items are
+    # deliberately negative (tr_no_tool_needed, tr_rg_before_graph): a model
+    # that reaches for the fancy instrument every time is its own failure mode,
+    # and it is the one an agent harness pays for on every single turn.
+    BenchItem(
+        id="tr_code_not_web", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="Which functions in OUR repository call `resolve_frame_url`? "
+               "Name the ONE tool you reach for first, in one sentence.",
+        score=both(answer_is("awgraph"), answer_is_not("awfind")),
+        criteria="Our code is awgraph's subject. awfind searches the WEB and "
+                 "cannot see this repository at all -- it is the answer a "
+                 "keyword match on 'find' supplies.",
+    ),
+    BenchItem(
+        id="tr_web_not_code", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="What is the current stable release version of vLLM? Name the "
+               "ONE tool you reach for first, in one sentence.",
+        score=both(answer_is("awfind"), answer_is_not("awgraph")),
+        criteria="The mirror image of tr_code_not_web, and the reason both "
+                 "exist: a model that always picks the code graph is not "
+                 "reaching, it is defaulting.",
+    ),
+    BenchItem(
+        id="tr_durable_not_relay", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="You have just established that this project's deploy root is "
+               "the C: drive, not D:. The NEXT agent to work here must not "
+               "have to rediscover it. Name the ONE tool, in one sentence.",
+        score=both(answer_is("awm"), answer_is_not("awrelay")),
+        criteria="A fact for the NEXT agent is durable scoped memory. awrelay "
+                 "reaches only sessions alive right now, so a fact left there "
+                 "is lost the moment they exit.",
+    ),
+    BenchItem(
+        id="tr_relay_not_durable", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="Another agent session is editing a file RIGHT NOW and does not "
+               "know you found a defect in it. You need to tell them before "
+               "they commit. Name the ONE tool, in one sentence.",
+        score=both(answer_is("awrelay"), answer_is_not("awm")),
+        criteria="The mirror of tr_durable_not_relay. Writing this to durable "
+                 "memory is technically a write and practically a message "
+                 "nobody receives in time.",
+    ),
+    BenchItem(
+        id="tr_predict_before_fleet_action", dimension="tool_reach",
+        system=TOOL_ROSTER,
+        prompt="You are about to stop 40 containers on a live fleet. Name the "
+               "ONE tool you use BEFORE acting, in one sentence.",
+        score=both(answer_is("awpredict"),
+                   answer_is_not("just stop", "simply stop", "go ahead",
+                                 "no tool")),
+        criteria="A world model that is trained and never consulted is dead "
+                 "capability. This is the reach half of the repl dimension's "
+                 "rp_predict_before_act, which asks only whether the model "
+                 "knows to predict at all.",
+    ),
+    BenchItem(
+        id="tr_recurse_oversized_context", dimension="tool_reach",
+        system=TOOL_ROSTER,
+        prompt="You must answer a question whose evidence spans roughly two "
+               "million tokens of logs. Your context window is 32k. Name the "
+               "ONE tool, in one sentence.",
+        score=both(answer_is("awrecurse"),
+                   answer_is_not("awgraph", "summarize it into", "summarise it into")),
+        criteria="Summarising 2M tokens into 32k and answering from the "
+                 "summary is the confident-wrong answer: it discards the "
+                 "evidence and keeps the confidence. awrecurse exists for "
+                 "exactly this shape and keeps the trace.",
+    ),
+    BenchItem(
+        id="tr_repl_state_survives", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="You have built up a dataframe in Python this turn and need the "
+               "same variables available NEXT turn without rebuilding them. "
+               "Name the ONE tool, in one sentence.",
+        score=both(answer_is("awrepl"),
+                   answer_is_not("re-run", "rerun", "run the script again",
+                                 "rebuild it")),
+        criteria="Re-running the script is the answer a stateless tool forces "
+                 "and it gets slower every turn. State that survives is the "
+                 "one property awrepl is for.",
+    ),
+    BenchItem(
+        id="tr_reason_keeps_chain", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="A verdict you are about to give will be audited later, and the "
+               "auditor will need the chain of thoughts that produced it, not "
+               "just the conclusion. Name the ONE tool, in one sentence.",
+        score=both(answer_is("awreason"), answer_is_not("awfind", "awrelay")),
+        criteria="The chain IS the artifact being asked for. A conclusion "
+                 "stored without its derivation cannot be audited, only "
+                 "believed.",
+    ),
+    BenchItem(
+        id="tr_recall_before_hypothesis", dimension="tool_reach",
+        system=TOOL_ROSTER,
+        prompt="A fleet service is failing in a way you have not seen. Name "
+               "the ONE tool you reach for BEFORE forming a hypothesis, in one "
+               "sentence.",
+        score=both(answer_is("recall", "query_memory", "memory"),
+                   answer_is_not("no tool", "start bisecting", "rewrite")),
+        criteria="Most failures on this platform have a documented prior root "
+                 "cause. Forming a hypothesis first means paying again for an "
+                 "answer somebody already wrote down.",
+    ),
+    BenchItem(
+        id="tr_lease_before_shared_edit", dimension="tool_reach",
+        system=TOOL_ROSTER,
+        prompt="You are about to edit a file in a worktree several agent "
+               "sessions share. Name the ONE thing you do FIRST, in one "
+               "sentence.",
+        score=both(answer_is("lease", "awgit"),
+                   answer_is_not("just edit", "simply edit", "start editing",
+                                 "no tool")),
+        criteria="Editing first and coordinating after is how a peer's "
+                 "uncommitted work gets swept into someone else's commit.",
+    ),
+    # ── the two negatives ──────────────────────────────────────────────────
+    BenchItem(
+        id="tr_no_tool_needed", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="Compute 17 * 23. Which tool from the roster do you reach for? "
+               "Answer in one sentence.",
+        score=both(answer_is("none", "no tool", "not need", "myself",
+                             "directly", "no external"),
+                   answer_is_not("awrepl", "awgraph", "awfind", "awreason")),
+        criteria="NEGATIVE CASE. Reaching for an instrument to do arithmetic "
+                 "costs a round trip on every turn and buys nothing. A model "
+                 "that cannot decline a tool has no reach, only reflex.",
+    ),
+    BenchItem(
+        id="tr_rg_before_graph", dimension="tool_reach", system=TOOL_ROSTER,
+        prompt="You need the file where the constant `HOLD_STALE_SECONDS` is "
+               "defined. It is a distinctive string. Name the ONE tool you "
+               "reach for first, in one sentence.",
+        score=both(answer_is("rg", "ripgrep", "grep"),
+                   answer_is_not("awgraph")),
+        criteria="NEGATIVE CASE for the fancy instrument. A distinctive "
+                 "literal is what plain ripgrep is best at, and it is always "
+                 "current -- a semantic index can be stale, and a stale index "
+                 "answers confidently about code that has moved. Reaching for "
+                 "the graph here is over-reach, which is a real cost, not a "
+                 "harmless preference.",
     ),
 ]
 

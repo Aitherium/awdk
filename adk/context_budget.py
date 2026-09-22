@@ -71,6 +71,10 @@ _CONTEXT_LIMITS: tuple[tuple[str, int], ...] = (
     ("llama3", 128_000),
     ("mistral", 32_768),
     ("aither-orchestrator", 32_768),
+    # Bonsai 2 27B on the fleet serves `-c 32768 -np 2` = 16,384 PER SLOT. With
+    # no entry it fell to the 32k fallback, so compaction fired at twice the real
+    # window and a long turn died in a 400 instead of compacting (2026-09-21).
+    ("bonsai", 16_384),
 )
 
 # Fallback when the model id matches nothing known. Low on purpose: compacting a
@@ -171,6 +175,108 @@ def estimate_tokens(messages: Iterable[Any]) -> int:
 _SNIP_MARKER = re.compile(r"\[\.\.\. \d+ chars snipped \.\.\.\]")
 
 
+# ── Layer 1 policy: WHAT a tool result is decides how much of it is worth keeping ──
+# Measured 2026-09-21 (babel-1141 on a 16,384-token slot, 10 tools): the prompt grew
+# 3,256 -> 8,214 tokens over 7 calls, ~700 tokens per step, so a 40-step budget crosses
+# the slot near step 15. A flat 2,000-char cap on old results is the wrong shape: a
+# file_read the model has already acted on is worth a glance, a test run is worth its
+# LAST lines (the failure summary is at the end), and two results are worth keeping
+# whole however old they are -- the latest run_tests and the read of the file the model
+# is editing, because those are what the next edit is reasoned against.
+#: per-tool cap (chars) for results older than ``preserve_last_n``; absent = ``max_chars``
+TOOL_RESULT_POLICY: dict[str, int] = {
+    "file_read": 1200,
+    "file_search": 800,
+    "code_search": 800,
+    "code_symbols": 800,
+    "file_list": 600,
+    "git_diff": 1200,
+    "git_status": 400,
+    "shell_exec": 1200,
+    "python_exec": 1200,
+    "run_tests": 1600,
+}
+#: results whose useful part is at the END (a traceback, a pytest summary)
+TAIL_HEAVY_TOOLS: frozenset[str] = frozenset({"run_tests", "shell_exec", "python_exec"})
+
+
+def _tool_call_entries(message: Any) -> list[tuple[str, str, Any]]:
+    """(tool_call_id, tool name, arguments) for every tool_call an assistant declares."""
+    tool_calls = (
+        message.get("tool_calls")
+        if isinstance(message, dict)
+        else getattr(message, "tool_calls", None)
+    ) or []
+    out: list[tuple[str, str, Any]] = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            fn = call.get("function") or {}
+            out.append((call.get("id", ""), fn.get("name") or call.get("name", ""),
+                        fn.get("arguments", call.get("arguments"))))
+        else:
+            fn = getattr(call, "function", None)
+            name = getattr(fn, "name", None) or getattr(call, "name", "")
+            args = getattr(fn, "arguments", None) or getattr(call, "arguments", None)
+            out.append((getattr(call, "id", ""), name or "", args))
+    return out
+
+
+def tool_names_by_call_id(messages: list) -> dict[str, tuple[str, Any]]:
+    """tool_call_id -> (tool name, arguments), from every assistant message."""
+    names: dict[str, tuple[str, Any]] = {}
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", "")
+        if role != "assistant":
+            continue
+        for call_id, name, args in _tool_call_entries(message):
+            if call_id:
+                names[call_id] = (name, args)
+    return names
+
+
+def _arg_path(args: Any) -> str:
+    if isinstance(args, str):
+        try:
+            import json as _json
+            args = _json.loads(args)
+        except ValueError:
+            return ""
+    if isinstance(args, dict):
+        return str(args.get("path") or args.get("file") or "")
+    return ""
+
+
+def pinned_tool_call_ids(messages: list,
+                         names: dict[str, tuple[str, Any]] | None = None) -> set[str]:
+    """Results that stay whole however old: the LATEST run_tests, and the latest
+    file_read of the file the model most recently edited."""
+    names = names if names is not None else tool_names_by_call_id(messages)
+    last_tests = ""
+    last_edit_path = ""
+    reads: list[tuple[str, str]] = []   # (call_id, path) in order
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", "")
+        if role != "assistant":
+            continue
+        for call_id, name, args in _tool_call_entries(message):
+            if name == "run_tests":
+                last_tests = call_id
+            elif name == "file_edit":
+                last_edit_path = _arg_path(args) or last_edit_path
+            elif name == "file_read":
+                reads.append((call_id, _arg_path(args)))
+    pins: set[str] = set()
+    if last_tests:
+        pins.add(last_tests)
+    if last_edit_path:
+        for call_id, path in reversed(reads):
+            if path and (path == last_edit_path or path.endswith(last_edit_path)
+                         or last_edit_path.endswith(path)):
+                pins.add(call_id)
+                break
+    return pins
+
+
 def _is_already_snipped(content: str) -> bool:
     return bool(_SNIP_MARKER.search(content))
 
@@ -179,9 +285,17 @@ def snip_old_tool_results(
     messages: list,
     max_chars: int = 2000,
     preserve_last_n: int = 6,
+    policy: dict[str, int] | None = None,
+    pin: bool = True,
 ) -> int:
     """Layer 1: shorten oversized tool results older than the last ``preserve_last_n``
     messages, keeping a head and a tail with an explicit marker between them.
+
+    ``policy`` maps a tool name to its own cap (default ``TOOL_RESULT_POLICY``); a
+    result whose tool is unknown uses ``max_chars``. Tail-heavy tools keep three
+    quarters of the budget at the END. With ``pin``, the latest ``run_tests`` result
+    and the latest read of the file last edited are never snipped (see
+    ``pinned_tool_call_ids``). Pass ``policy={}`` and ``pin=False`` for the flat rule.
 
     Mutates ``messages`` in place. Returns the number of characters reclaimed.
 
@@ -191,6 +305,9 @@ def snip_old_tool_results(
     """
     cutoff = max(0, len(messages) - preserve_last_n)
     reclaimed = 0
+    policy = TOOL_RESULT_POLICY if policy is None else policy
+    names = tool_names_by_call_id(messages) if (policy or pin) else {}
+    pins = pinned_tool_call_ids(messages, names) if pin else set()
 
     for index in range(cutoff):
         message = messages[index]
@@ -198,18 +315,32 @@ def snip_old_tool_results(
         if role != "tool":
             continue
 
+        call_id = (
+            message.get("tool_call_id", "")
+            if isinstance(message, dict)
+            else getattr(message, "tool_call_id", "")
+        ) or ""
+        if call_id in pins:
+            continue
+        tool_name = names.get(call_id, ("", None))[0]
+        cap = policy.get(tool_name, max_chars) if tool_name else max_chars
+
         content = (
             message.get("content", "")
             if isinstance(message, dict)
             else getattr(message, "content", "")
         )
-        if not isinstance(content, str) or len(content) <= max_chars:
+        if not isinstance(content, str) or len(content) <= cap:
             continue
         if _is_already_snipped(content):
             continue
 
-        head = content[: max_chars // 2]
-        tail = content[-(max_chars // 4):]
+        if tool_name in TAIL_HEAVY_TOOLS:
+            head = content[: cap // 4]
+            tail = content[-(cap // 2):]
+        else:
+            head = content[: cap // 2]
+            tail = content[-(cap // 4):]
         dropped = len(content) - len(head) - len(tail)
         snipped = f"{head}\n[... {dropped} chars snipped ...]\n{tail}"
 
@@ -371,12 +502,27 @@ SUMMARY_INSTRUCTION = (
 )
 
 
+def calibrate_overhead(estimated_at_send: int, observed_prompt_tokens: int) -> int:
+    """How many tokens the provider counted that ``estimate_tokens`` cannot see: the
+    tool schema, the system prompt the provider injects, and the gap between 3.5
+    chars/token and the real tokenizer on code. Measured 2026-09-21 (mesa-2394, 10
+    tools on a 16,384 slot): the real prompt reached 15,953 tokens while the
+    message estimate alone stayed under the 0.7 threshold, so compaction never
+    fired and the slot was full at step 12 before any edit. Returns 0 when the
+    provider reported nothing (a fake, a stream without usage)."""
+    if not observed_prompt_tokens or observed_prompt_tokens <= 0:
+        return 0
+    return max(0, int(observed_prompt_tokens) - int(estimated_at_send))
+
+
 async def maybe_compact(
     messages: list,
     model: str | None,
     summarize: Callable[[str], Awaitable[str]] | None = None,
     budget_ratio: float = DEFAULT_BUDGET_RATIO,
     make_message: Callable[[str, str], Any] | None = None,
+    overhead_tokens: int = 0,
+    limit_override: int | None = None,
 ) -> tuple[list, bool]:
     """Bring ``messages`` under the model's context budget.
 
@@ -389,23 +535,43 @@ async def maybe_compact(
     ``make_message`` builds a message object of the caller's type from
     ``(role, content)``; defaults to a plain dict.
     """
-    limit = context_limit_for(model)
+    # ``limit_override`` is the slot size the PROVIDER stated in a refusal ("exceeds the
+    # available context size (16384 tokens)"): it beats the name table, which can be
+    # wrong (an unlisted model name, a served model smaller than its label).
+    limit = (int(limit_override) if limit_override and limit_override > 0
+             else context_limit_for(model))
     threshold = int(limit * budget_ratio)
-    current = estimate_tokens(messages)
+    overhead = max(0, int(overhead_tokens or 0))
+    current = estimate_tokens(messages) + overhead
 
     if current <= threshold:
         return messages, False
 
     logger.info(
-        "[CONTEXT] %d tokens over budget %d (model=%s, window=%d) — compacting",
-        current, threshold, model, limit,
+        "[CONTEXT] %d tokens over budget %d (model=%s, window=%d, overhead=%d) — compacting",
+        current, threshold, model, limit, overhead,
     )
 
     # ── Layer 1: snip old tool results ──
     reclaimed = snip_old_tool_results(messages)
     if reclaimed:
-        current = estimate_tokens(messages)
+        current = estimate_tokens(messages) + overhead
         logger.info("[CONTEXT] Layer 1 snipped %d chars → %d tokens", reclaimed, current)
+    if current <= threshold:
+        return messages, True
+
+    # ── Layer 1b: still over -- the RECENT results are what is over ──
+    # Measured 2026-09-21: one fresh 86,799-char file_read made the next request
+    # 24,571 tokens on a 16,384 slot; Layer 1 exempts the last six messages, so it
+    # could not touch the one message that mattered. Trim recent results to a cap
+    # sized from the slot (a quarter of the window, in chars) before summarizing.
+    recent_cap = max(2_000, int(limit * _CHARS_PER_TOKEN) // 4)
+    reclaimed_recent = snip_old_tool_results(messages, max_chars=recent_cap,
+                                             preserve_last_n=0, policy={}, pin=False)
+    if reclaimed_recent:
+        current = estimate_tokens(messages) + overhead
+        logger.info("[CONTEXT] Layer 1b trimmed recent results by %d chars → %d tokens",
+                    reclaimed_recent, current)
     if current <= threshold:
         return messages, True
 
@@ -439,11 +605,20 @@ async def maybe_compact(
         logger.warning("[CONTEXT] Summarizer returned nothing — keeping snipped history")
         return messages, True
 
-    compacted = [
-        build("user", f"[Earlier conversation, compacted]\n{summary}"),
-        build("assistant", "Understood — continuing from that context."),
-        *recent,
-    ]
+    # No synthetic assistant filler: a thinking-mode provider (DeepSeek v4-pro,
+    # measured 2026-09-21) refuses the next call when an assistant message inside
+    # the current round carries no reasoning_content, and a fabricated one is worse.
+    # The summary rides as a user message; when the kept history itself starts with
+    # a user message the two are merged so the roles still alternate.
+    summary_text = f"[Earlier conversation, compacted]\n{summary}"
+    first_role = (recent[0].get("role") if isinstance(recent[0], dict)
+                  else getattr(recent[0], "role", "")) if recent else ""
+    first_content = (recent[0].get("content") if isinstance(recent[0], dict)
+                     else getattr(recent[0], "content", "")) if recent else ""
+    if first_role == "user" and isinstance(first_content, str):
+        compacted = [build("user", f"{summary_text}\n\n{first_content}"), *recent[1:]]
+    else:
+        compacted = [build("user", summary_text), *recent]
     logger.info(
         "[CONTEXT] Layer 2 compacted %d messages → summary + %d recent (%d → %d tokens)",
         len(old), len(recent), current, estimate_tokens(compacted),

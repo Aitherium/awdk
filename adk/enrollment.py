@@ -93,6 +93,10 @@ def default_candidates(host: str = "127.0.0.1") -> List[Candidate]:
     3. 8090 — awnode; proven by ``/health`` AND ``/v1/models``.
     4. 11434 — Ollama, proven by its own ``/api/tags``.
     5. 8120 — vLLM.
+    6. 1234 — LM Studio's local server, proven by ``/v1/models`` (added
+       2026-09-21 from the Personal-AI-Router intake: it was the one desktop
+       engine no ladder here probed, so a laptop running only LM Studio
+       enrolled as ``inference_ready: false``).
 
     A duplicate port (``BONSAI_PORT=8099``) is probed once.
     """
@@ -103,6 +107,7 @@ def default_candidates(host: str = "127.0.0.1") -> List[Candidate]:
         Candidate(f"http://{host}:8090", "awnode"),
         Candidate(f"http://{host}:11434", "ollama"),
         Candidate(f"http://{host}:8120", "vllm"),
+        Candidate(f"http://{host}:1234", "lmstudio"),
     ]
     seen: set = set()
     return [c for c in ladder if not (c.url in seen or seen.add(c.url))]

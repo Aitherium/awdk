@@ -67,6 +67,7 @@ def cmd_shell(args: Any) -> int:
         "serve": _cmd_serve,
         "harnesses": _cmd_harnesses,
         "agents": _cmd_agents,
+        "skills": _cmd_skills,
         "profiles": _cmd_profiles,
         "list": _cmd_list,
         "new": _cmd_new,
@@ -132,6 +133,23 @@ def _cmd_agents(args: Any) -> int:
     return 0
 
 
+def _cmd_skills(args: Any) -> int:
+    cwd = os.path.abspath(getattr(args, "cwd", "") or os.getcwd())
+    status, payload = _request(args, "/skills?cwd=" + _quote(cwd))
+    _die_if_down(status, payload)
+    for s in payload["skills"]:
+        print(f"{s['name']:28} {s['kind']:8} {s['description'][:70]}")
+    for name, paths in (payload.get("collisions") or {}).items():
+        print(f"collision {name}: {' | '.join(paths)}")
+    return 0
+
+
+def _quote(s: str) -> str:
+    from urllib.parse import quote
+
+    return quote(s, safe="")
+
+
 def _cmd_profiles(args: Any) -> int:
     status, payload = _request(args, "/profiles")
     _die_if_down(status, payload)
@@ -163,6 +181,8 @@ def _cmd_new(args: Any) -> int:
         "permission_mode": getattr(args, "permission_mode", "") or "",
         "title": getattr(args, "title", "") or "",
         "agent": getattr(args, "agent", "") or "",
+        "skill": getattr(args, "skill", "") or "",
+        "skill_arguments": getattr(args, "skill_arguments", "") or "",
         "target": getattr(args, "target", "") or "",
         "participants": [p for p in (getattr(args, "participants", "") or "").split(",") if p],
         "extra_args": [str(a) for a in (getattr(args, "extra_args", None) or [])],

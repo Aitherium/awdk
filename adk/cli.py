@@ -12952,12 +12952,17 @@ def _register_commands(sub):
     sh_harnesses.add_argument("--versions", action="store_true", help="Probe versions too")
 
     shell_sub.add_parser("agents", help="Sovereign agent roster")
+    sh_skills = shell_sub.add_parser(
+        "skills", help="Skills and slash commands a session can be handed "
+                       "(<cwd>/.claude then ~/.claude)")
+    sh_skills.add_argument("--cwd", default="", help="Project whose .claude to read")
     shell_sub.add_parser("profiles", help="Model profiles usable per session")
     shell_sub.add_parser("list", help="Live sessions")
 
     sh_new = shell_sub.add_parser("new", help="Start a session")
     sh_new.add_argument("--harness", default="claude",
-                        help="claude|claude-tty|gemini|terminal|sandbox|aither|group "
+                        help="claude|claude-tty|gemini|terminal|sandbox|aither|awdk|group "
+                             "(awdk = this host's own agent loop on adk serve :9001) "
                              "(claude-tty = the real interactive Claude Code TUI, "
                              "daemon-owned and steerable immediately)")
     sh_new.add_argument("--cwd", default="", help="Working directory")
@@ -12969,6 +12974,11 @@ def _register_commands(sub):
     sh_new.add_argument("--title", default="", help="Tab title")
     sh_new.add_argument("--agent", default="", help="Sovereign agent id (harness=aither)")
     sh_new.add_argument("--participants", default="", help="Comma list of agents (harness=group)")
+    sh_new.add_argument("--skill", default="",
+                        help="Hand the session a skill or slash command by name "
+                             "(see `adk shell skills`)")
+    sh_new.add_argument("--skill-arguments", dest="skill_arguments", default="",
+                        help="Text substituted for $ARGUMENTS in the skill")
     sh_new.add_argument("--target", default="", help="Container name (harness=sandbox)")
     sh_new.add_argument("--attach", action="store_true", help="Attach after creating")
     sh_new.add_argument("--extra-args", dest="extra_args", nargs="*", default=[],
@@ -13631,7 +13641,9 @@ def _register_commands(sub):
     relay_prov_p = relay_sub.add_parser(
         "provision", help="Enroll a fleet agent so it may DM humans (binds nick -> your owner identity)")
     relay_prov_p.add_argument("nick", help="Agent nick to enroll (e.g. optiplex-agent)")
-    relay_prov_p.add_argument("--local", action="store_true", help="Use the local mesh ACTA/portal-gateway (https://127.0.0.1:8206)")
+    relay_prov_p.add_argument("--local", action="store_true",
+                              help="Use the local mesh ACTA/portal-gateway "
+                                   "(https://127.0.0.1:8206)")
     relay_prov_p.add_argument("--acta-url", help="ACTA/portal-gateway base URL (serves /v1/auth/keys)")
     relay_prov_p.add_argument("--roster", help="Path to the relay fleet_trust.json (default: ./AitherOS/config/relay/fleet_trust.json or $AITHER_RELAY_FLEET_TRUST_FILE)")
     relay_prov_p.add_argument("--user-id", help="Assert your owner user_id (skips ACTA lookup)")

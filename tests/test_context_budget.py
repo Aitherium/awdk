@@ -392,3 +392,40 @@ def test_budget_ceiling_still_uses_TOTAL_spend():
     proceed, _ = budget.should_continue(9_500, output_tokens_this_turn=200)
     assert proceed is False
     assert budget.stopped_for == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_layer2_emits_no_filler_assistant_message():
+    """DeepSeek v4-pro (thinking mode) refuses a round whose assistant messages lack
+    reasoning_content; the old rebuild inserted a synthetic "Understood" assistant
+    message with none (measured 2026-09-21 on the S2 harness: every task 400'd)."""
+    async def _sum(_prompt: str) -> str:
+        return "we read a.py and b.py"
+
+    messages = [{"role": "user", "content": "fix it"}]
+    for i in range(10):
+        messages.append({"role": "assistant", "content": "", "reasoning": "r",
+                         "tool_calls": [{"id": f"c{i}", "type": "function",
+                                         "function": {"name": "file_read", "arguments": "{}"}}]})
+        messages.append(_tool_result(f"c{i}", "x" * 20000))
+    result, compacted = await maybe_compact(messages, model="gemma-2b", summarize=_sum)
+    assert compacted is True
+    assert result[0]["role"] == "user"
+    assert "[Earlier conversation, compacted]" in result[0]["content"]
+    filler = [m for m in result if m.get("role") == "assistant"
+              and not m.get("tool_calls") and not m.get("reasoning")]
+    assert not filler, "a fabricated assistant message with no reasoning breaks thinking mode"
+
+
+@pytest.mark.asyncio
+async def test_layer2_merges_the_summary_into_a_leading_user_message():
+    async def _sum(_prompt: str) -> str:
+        return "summary"
+
+    messages = [_tool_result(f"c{i}", "x" * 20000) for i in range(10)]
+    messages += [{"role": "user", "content": "now what"}]
+    result, compacted = await maybe_compact(messages, model="gemma-2b", summarize=_sum)
+    assert compacted is True
+    users = [m for m in result if m.get("role") == "user"]
+    assert users and "now what" in users[0]["content"] and "summary" in users[0]["content"]
+    assert [m.get("role") for m in result][:2] != ["user", "user"]

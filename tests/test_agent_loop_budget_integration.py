@@ -296,13 +296,19 @@ async def test_compaction_engages_as_tool_results_accumulate(agent_factory, tmp_
 
     assert llm.call_count >= 4, "loop did not run enough iterations to accumulate"
     peak = max(llm.sizes)
-    assert peak > 40_000, (
-        f"tool results never accumulated (peak {peak} chars) — the fixture is not "
+    # What the loop would have carried with NO compaction: every tool result whole.
+    # Layer 1b (2026-09-21) trims a fresh oversized result as soon as the budget is
+    # crossed, so the prompt no longer climbs past 40k chars before shrinking -- the
+    # vacuity guard is therefore "raw growth would have exceeded the window", and the
+    # proof that compaction was REACHED is that the peak stayed well under it.
+    raw = len(bulk) * (llm.call_count - 1)
+    assert raw > 40_000, (
+        f"tool results never accumulated (raw {raw} chars) — the fixture is not "
         "exercising in-loop growth and the test would pass vacuously"
     )
-    assert llm.sizes[-1] < peak, (
-        f"history only ever grew (sizes: {llm.sizes}) — compaction is not being "
-        "reached from the loop"
+    assert peak < raw // 2, (
+        f"history grew unbounded (peak {peak} of raw {raw}; sizes: {llm.sizes}) — "
+        "compaction is not being reached from the loop"
     )
 
 

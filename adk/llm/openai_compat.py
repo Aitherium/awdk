@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import AsyncIterator
 
 import httpx
@@ -29,10 +30,128 @@ def _chat_template_kwargs() -> dict | None:
         return None
 
 _MAX_RETRIES = 3
+
+
+def _retry_budget() -> tuple[int, float]:
+    """(attempts, floor seconds) read at CALL time so a run can be told to WAIT for a
+    busy lane instead of dying. Measured 2026-09-21: a 27B lane with two slots held by
+    other callers answers 502 for 20-60 s at a time, and 3 attempts at 2 s / 4 s turned an
+    11-instance benchmark into UNJUDGED rows. ``ADK_LLM_MAX_RETRIES`` (default 3) and
+    ``ADK_LLM_RETRY_WAIT_S`` (default 0 = exponential 2^n capped at 30 s) size the wait;
+    a Retry-After header still wins. Both are clamped so a typo cannot hang a run."""
+    try:
+        attempts = int(os.environ.get("ADK_LLM_MAX_RETRIES", "") or _MAX_RETRIES)
+    except ValueError:
+        attempts = _MAX_RETRIES
+    try:
+        floor = float(os.environ.get("ADK_LLM_RETRY_WAIT_S", "") or 0)
+    except ValueError:
+        floor = 0.0
+    return max(1, min(attempts, 30)), max(0.0, min(floor, 120.0))
+
+
 # Transient statuses worth retrying: rate limit (429), Anthropic "overloaded"
 # (529), and gateway/server blips (500/502/503/504, 408). A single upstream
 # hiccup shouldn't kill a whole research run.
 _RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504, 529})
+
+# A context overflow is DETERMINISTIC: the same request will overflow the same slot
+# on every retry. Measured 2026-09-21 (Bonsai 2 on a 16,384 slot behind the fleet
+# scheduler): llama.cpp answered 400 "request (17415 tokens) exceeds the available
+# context size (16384 tokens)", the scheduler relayed it as a 502, and the client
+# retried it twelve times at 20-30 s -- eight minutes per instance spent re-sending
+# a prompt that could not fit, then a dead instance. The BODY names the class.
+_OVERFLOW_MARKERS = (
+    "exceeds the available context size",
+    "maximum context length",
+    "context_length_exceeded",
+    "exceed_context",
+    "context window",
+)
+_OVERFLOW_TOKENS = re.compile(r"request \((\d+) tokens\)|(\d+) tokens\b.*?exceeds", re.I)
+_OVERFLOW_LIMIT = re.compile(r"context size \((\d+) tokens\)|maximum context length is (\d+)", re.I)
+
+
+class ContextOverflowError(httpx.HTTPStatusError):
+    """The provider refused the request because the PROMPT does not fit the slot.
+    Subclasses ``HTTPStatusError`` so existing handlers keep working; carries what the
+    body said so the loop can size its compaction instead of guessing."""
+
+    def __init__(self, message: str, *, request, response,
+                 requested_tokens: int = 0, limit_tokens: int = 0):
+        super().__init__(message, request=request, response=response)
+        self.requested_tokens = requested_tokens
+        self.limit_tokens = limit_tokens
+
+
+def _overflow_from_body(body: str) -> tuple[bool, int, int]:
+    """(is_overflow, requested_tokens, limit_tokens) from a provider/gateway body."""
+    low = (body or "").lower()
+    if not any(m in low for m in _OVERFLOW_MARKERS):
+        return False, 0, 0
+    req = 0
+    m = _OVERFLOW_TOKENS.search(body or "")
+    if m:
+        req = int(next(g for g in m.groups() if g))
+    lim = 0
+    m = _OVERFLOW_LIMIT.search(body or "")
+    if m:
+        lim = int(next(g for g in m.groups() if g))
+    return True, req, lim
+
+
+def _body_of(resp: "httpx.Response") -> str:
+    try:
+        return (resp.text or "").strip()
+    except Exception:  # noqa: BLE001 - a body we cannot read is an empty body
+        return ""
+
+
+def request_shape(payload: dict) -> list[dict]:
+    """The REDACTED shape of a chat payload: per message its role, content length,
+    reasoning_content length, tool-call count and tool_call_id -- never the text.
+    This is what a provider's refusal is about (\"reasoning_content must be passed
+    back\" names a message, not a word), and it can be written to disk safely."""
+    out: list[dict] = []
+    for m in payload.get("messages") or []:
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
+        out.append({
+            "role": m.get("role"),
+            "content_len": len(c) if isinstance(c, str) else (len(c) if isinstance(c, list) else 0),
+            "reasoning_len": len(m.get("reasoning_content") or ""),
+            "tool_calls": len(m.get("tool_calls") or []),
+            "tool_call_id": m.get("tool_call_id") or "",
+        })
+    return out
+
+
+def dump_refusal(payload: dict, resp: "httpx.Response") -> "str | None":
+    """With ``ADK_LLM_DUMP_DIR`` set, write ``{status, body[:2000], model, shape}`` for a
+    4xx/5xx so a refusal twenty minutes into a run can be read instead of guessed at.
+    Returns the path written, or None. Never raises; never writes message text."""
+    d = os.environ.get("ADK_LLM_DUMP_DIR", "").strip()
+    if not d:
+        return None
+    try:
+        import pathlib as _pathlib
+        import time as _t
+        _pathlib.Path(d).mkdir(parents=True, exist_ok=True)
+        path = _pathlib.Path(d) / f"refusal-{_t.strftime('%Y%m%d-%H%M%S')}-{resp.status_code}.json"
+        body = ""
+        try:
+            body = (resp.text or "")[:2000]
+        except Exception:  # noqa: BLE001 - a body we cannot read is an empty body
+            body = ""
+        path.write_text(json.dumps({
+            "status": resp.status_code, "body": body,
+            "model": payload.get("model"), "tools": len(payload.get("tools") or []),
+            "shape": request_shape(payload),
+        }, indent=1), encoding="utf-8")
+        return str(path)
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the real error
+        return None
 
 
 def _ensure_ok(resp: "httpx.Response") -> None:
@@ -54,6 +173,10 @@ def _ensure_ok(resp: "httpx.Response") -> None:
     msg = f"{resp.status_code} {resp.reason_phrase} for {resp.request.url}"
     if body:
         msg += f"\nProvider response: {body[:1200]}"
+    overflow, req_tokens, lim_tokens = _overflow_from_body(body)
+    if overflow:
+        raise ContextOverflowError(msg, request=resp.request, response=resp,
+                                   requested_tokens=req_tokens, limit_tokens=lim_tokens)
     raise httpx.HTTPStatusError(msg, request=resp.request, response=resp)
 
 
@@ -258,7 +381,15 @@ class OpenAIProvider(LLMProvider):
                 arguments=args,
             ))
 
-        content = _content_or_reasoning(msg)
+        reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "") or ""
+        if tool_calls:
+            # A tool round: content is legitimately empty and the reasoning must
+            # travel back on the assistant turn as reasoning_content (DeepSeek
+            # v4-pro refuses the next round without it, 2026-09-21). Promoting it
+            # into content here would send it back in the wrong field.
+            content = msg.get("content") or ""
+        else:
+            content = _content_or_reasoning(msg)
 
         # Hermes XML fallback: if model emitted <tool_call> tags in content
         # but no structured tool_calls, parse them from text
@@ -280,6 +411,7 @@ class OpenAIProvider(LLMProvider):
             cache_status="hit" if cache_read else "",
             cache_read_tokens=cache_read,
             finish_reason=choice.get("finish_reason", "stop"),
+            reasoning=reasoning,
         )
 
     async def chat_stream(
@@ -399,24 +531,46 @@ class OpenAIProvider(LLMProvider):
         else exponential backoff. Surfaces the provider body on the final failure.
         """
         resp = None
-        for attempt in range(1, _MAX_RETRIES + 1):
-            resp = await client.post(url, json=payload)
+        max_retries, floor = _retry_budget()
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = await client.post(url, json=payload)
+            except httpx.TransportError as exc:
+                # A refused/reset/timed-out connection is the SAME transient as a 502
+                # (measured 2026-09-21: a scheduler restart mid-run answered
+                # "All connection attempts failed" and, unretried, killed the instance).
+                if attempt == max_retries:
+                    raise
+                wait = min(max(floor, min(2 ** attempt, 30)), 120)
+                logger.warning(
+                    "Transient %s from %s — retrying in %ds (%d/%d)...",
+                    type(exc).__name__, url, wait, attempt, max_retries,
+                )
+                await asyncio.sleep(wait)
+                continue
             if resp.status_code not in _RETRYABLE_STATUS:
+                if resp.status_code >= 400:
+                    dump_refusal(payload, resp)
                 _ensure_ok(resp)   # 2xx returns; non-retryable 4xx raises with body
                 return resp
-            if attempt == _MAX_RETRIES:
+            if _overflow_from_body(_body_of(resp))[0]:
+                _ensure_ok(resp)   # deterministic: a 5xx wrapping an overflow is not transient
+                return resp
+            if attempt == max_retries:
                 break  # exhausted — fall through and raise with body
             retry_after = resp.headers.get("retry-after", "")
             try:
-                wait = int(retry_after) if retry_after else min(2 ** attempt, 30)
+                wait = int(retry_after) if retry_after else max(floor, min(2 ** attempt, 30))
             except (ValueError, TypeError):
-                wait = min(2 ** attempt, 30)
+                wait = max(floor, min(2 ** attempt, 30))
             wait = min(wait, 120)  # cap at 2 minutes
             logger.warning(
                 "Transient %s from %s — retrying in %ds (%d/%d)...",
-                resp.status_code, url, wait, attempt, _MAX_RETRIES,
+                resp.status_code, url, wait, attempt, max_retries,
             )
             await asyncio.sleep(wait)
+        if resp is not None and resp.status_code >= 400:
+            dump_refusal(payload, resp)
         _ensure_ok(resp)   # all retries exhausted — raise with the provider's body
         return resp
 

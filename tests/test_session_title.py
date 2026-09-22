@@ -1,7 +1,7 @@
 """A session's row names the SESSION and its work, not the checkout.
 
-Owner, 2026-09-19: the room said "AitherOS-Fresh says:" and /sessions/unified
-listed ten rows all titled "AitherOS-Fresh", because both read Path(cwd).name.
+Owner, 2026-09-19: the room said "my-project says:" and /sessions/unified
+listed ten rows all titled "my-project", because both read Path(cwd).name.
 """
 from __future__ import annotations
 
@@ -31,18 +31,18 @@ def _assistant(text):
 
 
 def test_name_distinguishes_sessions_in_one_checkout():
-    a = session_display_title("6313fc71-06fc-4c44", r"C:\AitherOS-Fresh")
-    b = session_display_title("77db6255-4db2-4b40", r"C:\AitherOS-Fresh")
+    a = session_display_title("6313fc71-06fc-4c44", r"C:\work\my-project")
+    b = session_display_title("77db6255-4db2-4b40", r"C:\work\my-project")
     assert a != b, "two tabs of one checkout must not share a name"
-    assert a.startswith("AitherOS-Fresh#")
+    assert a.startswith("my-project#")
 
 
 def test_topic_comes_from_the_last_human_prompt(tmp_path):
     t = tmp_path / "s.jsonl"
     _write(t, [_user("fix the door plane"), _assistant("ok"),
                _user("now rebuild the gateway image"), _assistant("done")])
-    assert session_display_title("abcd1234", r"C:\AitherOS-Fresh", str(t)) == \
-        "AitherOS-Fresh#abcd1234 - now rebuild the gateway image"
+    assert session_display_title("abcd1234", r"C:\work\my-project", str(t)) == \
+        "my-project#abcd1234 - now rebuild the gateway image"
 
 
 @pytest.mark.parametrize("prompt", [
@@ -56,8 +56,8 @@ def test_topic_comes_from_the_last_human_prompt(tmp_path):
 def test_machine_turns_and_filler_never_become_the_topic(tmp_path, prompt):
     t = tmp_path / "s.jsonl"
     _write(t, [_user("build the relay door"), _assistant("ok"), _user(prompt)])
-    title = session_display_title("abcd1234", r"C:\AitherOS-Fresh", str(t))
-    assert title == "AitherOS-Fresh#abcd1234 - build the relay door", title
+    title = session_display_title("abcd1234", r"C:\work\my-project", str(t))
+    assert title == "my-project#abcd1234 - build the relay door", title
 
 
 def test_pasted_content_is_unwrapped_not_rejected(tmp_path):
@@ -65,7 +65,7 @@ def test_pasted_content_is_unwrapped_not_rejected(tmp_path):
     # the block, and rejecting every "<" prompt threw the whole turn away.
     t = tmp_path / "s.jsonl"
     _write(t, [_user('<pasted_content id="1">a path</pasted_content>\n\nfix the avatar overlap')])
-    assert session_display_title("abcd1234", r"C:\AitherOS-Fresh", str(t)).endswith(
+    assert session_display_title("abcd1234", r"C:\work\my-project", str(t)).endswith(
         "- fix the avatar overlap")
 
 
@@ -76,15 +76,15 @@ def test_a_tool_result_is_not_a_human_prompt(tmp_path):
     _write(t, [_user("deploy the gateway"),
                {"type": "user", "message": {"role": "user", "content": [
                    {"type": "tool_result", "tool_use_id": "x", "content": "rebuild the world"}]}}])
-    assert session_display_title("abcd1234", r"C:\AitherOS-Fresh", str(t)).endswith(
+    assert session_display_title("abcd1234", r"C:\work\my-project", str(t)).endswith(
         "- deploy the gateway")
 
 
 def test_no_topic_degrades_to_the_bare_name(tmp_path):
     t = tmp_path / "s.jsonl"
     _write(t, [_assistant("thinking")])
-    assert session_display_title("abcd1234", r"C:\AitherOS-Fresh", str(t)) == \
-        "AitherOS-Fresh#abcd1234"
+    assert session_display_title("abcd1234", r"C:\work\my-project", str(t)) == \
+        "my-project#abcd1234"
 
 
 def test_an_unchanged_transcript_is_not_re_read(tmp_path):
@@ -124,9 +124,9 @@ def test_claude_own_name_wins_over_the_derived_one(tmp_path):
     t = tmp_path / "s.jsonl"
     _write(t, [_user("carry the door gate")])
     _PROMPT_CACHE.pop(str(t), None)
-    title = session_display_title("abcd1234", r"C:\AitherOS-Fresh", str(t),
-                                  claude_name="AitherOS-Fresh develop 19:16")
-    assert title == "AitherOS-Fresh develop 19:16 - carry the door gate"
+    title = session_display_title("abcd1234", r"C:\work\my-project", str(t),
+                                  claude_name="my-project develop 19:16")
+    assert title == "my-project develop 19:16 - carry the door gate"
 
 
 def test_a_session_waiting_on_a_human_says_so(tmp_path):
@@ -156,13 +156,13 @@ def test_the_room_actor_uses_the_same_name_as_the_pane():
     # stays unanswerable. Both must resolve to Claude Code's own name.
     from adk.harnesses.transcript_bridge import events_from_entry
 
-    claude_name = "AitherOS-Fresh develop 21:54"
+    claude_name = "my-project develop 21:54"
     events = events_from_entry(
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
-        "6313fc71", r"C:\AitherOS-Fresh", "rebuild the gateway", claude_name)
+        "6313fc71", r"C:\work\my-project", "rebuild the gateway", claude_name)
     assert events and events[0]["actor"]["name"] == claude_name
     assert events[0]["actor"]["title"] == "rebuild the gateway"
-    assert session_display_title("6313fc71", r"C:\AitherOS-Fresh",
+    assert session_display_title("6313fc71", r"C:\work\my-project",
                                  claude_name=claude_name).startswith(claude_name)
 
 
@@ -171,8 +171,8 @@ def test_the_actor_falls_back_when_claude_names_nothing():
 
     events = events_from_entry(
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
-        "6313fc71", r"C:\AitherOS-Fresh")
-    assert events[0]["actor"]["name"] == "AitherOS-Fresh#6313fc71"
+        "6313fc71", r"C:\work\my-project")
+    assert events[0]["actor"]["name"] == "my-project#6313fc71"
 
 
 def test_a_rediscovered_session_already_has_its_topic(tmp_path):
@@ -188,14 +188,14 @@ def test_a_rediscovered_session_already_has_its_topic(tmp_path):
 
     class _Sess:
         id = "abcd1234"
-        cwd = r"C:\AitherOS-Fresh"
-        name = "AitherOS-Fresh develop 19:16"
+        cwd = r"C:\work\my-project"
+        name = "my-project develop 19:16"
         transcript_path = str(t)
 
     bridge = TranscriptBridge(discover_fn=lambda: [_Sess()])
     bridge.refresh_sessions()
     assert bridge._topics["abcd1234"] == "carry the door gate"
-    assert bridge._names["abcd1234"] == "AitherOS-Fresh develop 19:16"
+    assert bridge._names["abcd1234"] == "my-project develop 19:16"
 
 
 def test_the_room_keeps_what_the_session_is_working_on(tmp_path):
@@ -205,9 +205,9 @@ def test_the_room_keeps_what_the_session_is_working_on(tmp_path):
     from adk.harnesses.rooms import _normalise_actor
 
     kept = _normalise_actor("claude_code", "6313fc71",
-                            {"name": "AitherOS-Fresh develop 21:54", "title": "rebuild the gateway"})
+                            {"name": "my-project develop 21:54", "title": "rebuild the gateway"})
     assert kept == {"kind": "claude_code", "id": "6313fc71",
-                    "name": "AitherOS-Fresh develop 21:54", "title": "rebuild the gateway"}
+                    "name": "my-project develop 21:54", "title": "rebuild the gateway"}
     bare = _normalise_actor("claude_code", "6313fc71", {"name": "x"})
     assert "title" not in bare, "an absent title must leave the stored shape unchanged"
     assert "title" not in _normalise_actor("claude_code", "x", {"name": "x", "title": "   "})

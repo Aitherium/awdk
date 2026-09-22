@@ -34,6 +34,13 @@ class Message:
     # advisor (server_tool_use + advisor_tool_result) blocks, which can't be
     # reconstructed from the normalized fields. None → unchanged string path.
     content_blocks: list[dict] | None = None
+    # The model's reasoning for THIS assistant turn (OpenAI-compatible
+    # ``reasoning_content``). Kept because a thinking-mode API refuses the next
+    # tool round without it -- DeepSeek v4-pro, measured 2026-09-21: "The
+    # `reasoning_content` in the thinking mode must be passed back to the API".
+    # Emitted by messages_to_dicts only when set, so non-thinking backends
+    # never see the key.
+    reasoning: str | None = None
 
 
 @dataclass
@@ -57,6 +64,9 @@ class LLMResponse:
     finish_reason: str = "stop"
     effort_level: int = 0
     cache_status: str = ""
+    #: The reasoning channel of this response (``reasoning_content``), "" when the
+    #: model exposed none. Carried back on the assistant turn (see Message.reasoning).
+    reasoning: str = ""
     # Normalized prompt-cache accounting (provider-agnostic). Each provider maps
     # its own usage schema onto these so the "tokens saved" meter never has to
     # know which backend served the turn: Anthropic cache_read/creation_input,
@@ -513,5 +523,7 @@ def messages_to_dicts(messages: list[Message]) -> list[dict]:
             d["tool_call_id"] = m.tool_call_id
         if m.tool_calls:
             d["tool_calls"] = m.tool_calls
+        if m.reasoning:
+            d["reasoning_content"] = m.reasoning
         result.append(d)
     return result

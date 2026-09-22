@@ -199,6 +199,13 @@ _KEYS = [
 
 
 class GitHubApp(SlashCommand):
+    # Class-level name: PluginRegistry discovers a builtin by `attr.name` on the
+    # CLASS, so an instance-only name meant /github-app never registered
+    # (found 2026-09-21 by tests/test_shell_builtin_plugins_register.py).
+    name: str = "github-app"
+    aliases: List[str] = ["gha", "ghapp"]
+    description: str = "Manage GitHub App credentials for AitherFlow"
+
     def __init__(self):
         super().__init__()
         self.name = "github-app"

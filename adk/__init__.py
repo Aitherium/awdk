@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 try:  # single source of truth = the installed package metadata (pyproject version)
     __version__ = _pkg_version("awdk")
 except PackageNotFoundError:  # running from a source checkout without install
-    __version__ = "3.8.22"  # kept in sync by packaging/sync_versions.py
+    __version__ = "3.8.24"  # kept in sync by packaging/sync_versions.py
 
 from adk.agent import AitherAgent
 from adk.dispatch import MultiAgentDispatcher, DispatchSpec, DispatchResult

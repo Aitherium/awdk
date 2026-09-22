@@ -81,6 +81,15 @@ def render(result: Dict[str, Any]) -> str:
 
 
 class JudgePlugin(SlashCommand):
+    # Class attributes, not only __init__ kwargs: PluginRegistry discovers a
+    # builtin by `attr.name` on the CLASS, so a plugin that sets its name only
+    # in __init__ is silently never registered (measured 2026-09-21: /judge and
+    # /compact both absent while their modules imported cleanly).
+    name: str = "judge"
+    aliases: List[str] = ["grade"]
+    description: str = "Grade output against criteria on the decision door, and teach it"
+    category: str = "labs"
+
     def __init__(self) -> None:
         super().__init__(
             name="judge",
