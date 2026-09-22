@@ -23,13 +23,12 @@
 
   var HOST = "https://aitherium.github.io/";
   var REPOS = [
-    // GENERATED from AitherOS/config/ecosystem.yaml by
-    // AitherOS/dev/tools/gen_constellation.py -- do not hand-edit.
+    // GENERATED from the ecosystem registry by gen_constellation
+    // -- do not hand-edit.
     // Exactly the bricks whose registry status is `public`: anything else has no
     // page to point at, so listing it puts a 404 on every sibling's site at once.
     { id: "awdk", label: "awdk", blurb: "Build AI agent fleets — 3 lines, any..." },
     { id: "awskills", label: "awskills", blurb: "Portable agent skills — self-contained..." },
-    { id: "awpack", label: "awpack", blurb: "First-party agent packs — the ones we..." },
     { id: "awm", label: "awm", blurb: "A portable, scoped agent memory." },
     { id: "awdesk", label: "awdesk", blurb: "Aither World Desk -- the desktop body of..." },
     { id: "awnode", label: "awnode", blurb: "A lightweight local gateway — bridges your..." },
@@ -37,6 +36,8 @@
     { id: "awgraph", label: "awgraph", blurb: "A semantic code graph for agents — AST +..." },
     { id: "awgit", label: "awgit", blurb: "Semantic version control on top of git —..." },
     { id: "awdelphi", label: "awdelphi", blurb: "Anonymous multi-round expert panels — a..." },
+    { id: "awclassify", label: "awclassify", blurb: "Classify any document -- what it is, who..." },
+    { id: "awdecide", label: "awdecide", blurb: "One typed-decision contract -- choice /..." },
     { id: "awtoll", label: "awtoll", blurb: "What every tool call costs you in context,..." },
     { id: "awseal", label: "awseal", blurb: "Sign an artifact so a stranger can verify..." },
     { id: "awshare", label: "awshare", blurb: "Publish an artifact and fetch it back..." },
@@ -49,17 +50,21 @@
     { id: "awnboard", label: "awnboard", blurb: "A front gate you can put in front of..." },
     { id: "awnix", label: "awnix", blurb: "A Linux you can hand to an agent —..." },
     { id: "awrecover", label: "awrecover", blurb: "Labelled snapshots with an all-or-nothing..." },
-    { id: "awstorage", label: "awstorage", blurb: "Every drive on every node, indexed,..." },
     { id: "awrelay", label: "awrelay", blurb: "Portable agent messaging — findings,..." },
     { id: "awask", label: "awask", blurb: "Your agent asks you a question — and acts..." },
     { id: "awmail", label: "awmail", blurb: "Give an agent an email address — send, and..." },
     { id: "awnet", label: "awnet", blurb: "The agentic web — agents host a mesh, and..." },
+    { id: "awswarm", label: "awswarm", blurb: "Run one model too big for any single GPU..." },
     { id: "awfind", label: "awfind", blurb: "A portable search client — query, results,..." },
     { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
     { id: "awvoice", label: "awvoice", blurb: "Hear and speak — transcribe audio,..." },
     { id: "awvision", label: "awvision", blurb: "See an image — describe it, ask it a..." },
     { id: "awscreen", label: "awscreen", blurb: "See this machine — what is on screen, and..." },
+    { id: "awkit", label: "awkit", blurb: "Render an agent panel from a tool result —..." },
+    { id: "awbeads", label: "awbeads", blurb: "A spatial canvas for a page — arrange..." },
+    { id: "awbonsai", label: "awbonsai", blurb: "Run a real model in the visitor's own..." },
     { id: "awknowledge", label: "awknowledge", blurb: "How to run a coding agent so the result..." },
+    { id: "awbrain", label: "awbrain", blurb: "Your history as a wiki of linked markdown —..." },
     { id: "gawbbonet", label: "gawbbonet", blurb: "GobboNet campaigns with a real agent brain..." },
     { id: "aitherkvcache", label: "aitherkvcache", blurb: "Near-optimal KV cache quantization for LLM..." },
     { id: "awrtifact", label: "awrtifact", blurb: "Deliberately chunk artifacts into GitHub..." },
@@ -69,14 +74,18 @@
     { id: "awrecurse", label: "awrecurse", blurb: "Answer a question over a context far larger..." },
     { id: "awprism", label: "awprism", blurb: "Turn a failure into ranked hypotheses — and..." },
     { id: "awrepl", label: "awrepl", blurb: "A REPL an agent can actually use — state..." },
+    { id: "awreport", label: "awreport", blurb: "File a bug report that has already scrubbed..." },
     { id: "awresearch", label: "awresearch", blurb: "Ask a research question, get a cited report..." },
     { id: "awfocus", label: "awfocus", blurb: "See, search and steer every Claude session..." },
     { id: "awgym", label: "awgym", blurb: "An ARC training gym — a game a world model..." },
     { id: "awpredict", label: "awpredict", blurb: "Predict what your environment does next,..." },
+    { id: "awevolve", label: "awevolve", blurb: "Point an agent at a file and a command that..." },
     { id: "awsh", label: "awsh", blurb: "Your terminal answers you -- type a..." },
+    { id: "awmine", label: "awmine", blurb: "Mine what your agents did -- outcomes,..." },
     { id: "awrise", label: "awrise", blurb: "Wake an agent on a schedule, let it do one..." },
     { id: "awkno", label: "awkno", blurb: "The man page for the Aither World — every..." },
     { id: "awwall", label: "awwall", blurb: "Say what a workload may reach, and watch..." },
+    { id: "awrouter", label: "awrouter", blurb: "OpenRouter for your own fleet: pick a model..." },
     { id: "awembed", label: "awembed", blurb: "Train an embedding model that knows your..." },
     { id: "awtax", label: "awtax", blurb: "Turn any tax PDF -- returns, W-2, 1099,..." },
     { id: "awflow", label: "awflow", blurb: "A deterministic workflow runtime — chain..." },
