@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only (ruff F821 on the string form)
+    from adk.crystal import Crystal
     from adk.loop_policy import LoopPolicy
 
 from adk import coherence
@@ -346,12 +347,17 @@ class AitherAgent:
         memory_maintenance: bool = False,
         routines: bool = False,
         loop_policy: "LoopPolicy | None" = None,
+        crystal: "Crystal | None" = None,
     ):
         self.config = config or Config.from_env()
         # Opt-in loop policy (adk.loop_policy.LoopPolicy): the four measured nudges
         # that turn exploration into a landed, verified edit. None = off; the
         # ruler's promotion rule decides when it becomes the default.
         self.loop_policy = loop_policy
+        # Opt-in crystal (adk.crystal.Crystal, orchestration spec section 8): context
+        # is memory, not a window. Compaction WRITES its facts to awm; every turn
+        # starts by RECALLING them (+ code-graph symbols). None = off.
+        self.crystal = crystal
 
         # Identity
         if isinstance(identity, Identity):
@@ -1437,6 +1443,18 @@ class AitherAgent:
             except Exception:
                 pass
 
+        # Section 8: RECALL BEFORE ACT. What memory already knows about this task
+        # (crystallized facts + code-graph symbols) enters as one capped system block
+        # ahead of the first tool call. Non-fatal: a missing plane is counted in
+        # the crystal's telemetry, never raised here.
+        if getattr(self, "crystal", None) is not None:
+            try:
+                _crystal_block = await self.crystal.recall_block(message)
+                if _crystal_block:
+                    messages.insert(1, Message(role="system", content=_crystal_block))
+            except Exception as _cexc:  # noqa: BLE001
+                logger.warning("[CRYSTAL] recall failed: %s", _cexc)
+
         # Inject typed-memory: active decisions/corrections + authority-ranked
         # recall (non-fatal). Constraints go last so they sit closest to the user
         # turn the model reads.
@@ -1724,7 +1742,16 @@ class AitherAgent:
                     model=(getattr(self.llm, "model", None)
                            or getattr(self.llm, "_model", None)),
                 )
-                return _summary_resp.content or ""
+                _summary_text = _summary_resp.content or ""
+                # Section 8: compaction WRITES. The facts in this summary are
+                # crystallized into awm at the task's scope before the window
+                # forgets them; a memory fault is logged, never fatal to the turn.
+                if getattr(self, "crystal", None) is not None:
+                    try:
+                        await self.crystal.crystallize(_summary_text)
+                    except Exception as _cexc:  # noqa: BLE001
+                        logger.warning("[CRYSTAL] crystallize failed: %s", _cexc)
+                return _summary_text
 
             # L3b: the estimator sees message chars only; the provider's last real
             # prompt_tokens carries the schema + system prompt + tokenizer gap, so the
