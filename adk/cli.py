@@ -12969,6 +12969,17 @@ def _register_commands(sub):
                            help="scan | inventory | diff | propose | approve | apply | "
                                 "quarantine | revert | graph")
 
+    # adk bricks — see, upgrade, test and roll back the Aither World bricks on this
+    # machine. Same REMAINDER pass-through as `decide`/`storage`: adk/bricks.py owns
+    # its parser, so no flag is defined twice.
+    bricks_p = sub.add_parser(
+        "bricks",
+        help="Aither World bricks — list, outdated, upgrade (tested, auto-rollback), rollback",
+        add_help=False,
+    )
+    bricks_p.add_argument("bricks_args", nargs=argparse.REMAINDER,
+                          help="list | outdated | upgrade | test | rollback | history")
+
     # adk harness — AitherShell core: one shell that drives every coding shell
     shell_p = sub.add_parser(
         "harness",
@@ -15809,6 +15820,9 @@ def main():
     elif args.command == "decide":
         from adk.decisions.cli import main as decide_main
         sys.exit(decide_main(args.decide_args))
+    elif args.command == "bricks":
+        from adk.bricks import main as bricks_main
+        sys.exit(bricks_main(args.bricks_args))
     elif args.command == "harness":
         from adk.harnesses.cli import cmd_shell
         sys.exit(cmd_shell(args))

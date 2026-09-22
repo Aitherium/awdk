@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**109 commands.**
+**110 commands.**
 
 | command | what it does |
 |---|---|
@@ -35,6 +35,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
 | [`adk balance`](#adk-balance) | Show your Aitherium credit balance and earnings |
 | [`adk bonsai-local`](#adk-bonsai-local) | Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally |
+| [`adk bricks`](#adk-bricks) | Aither World bricks — list, outdated, upgrade (tested, auto-rollback), rollback |
 | [`adk briefs`](#adk-briefs) | List and read executive briefs |
 | [`adk chat`](#adk-chat) | Chat with a mesh agent by name (adk chat <agent> [msg]) |
 | [`adk claude`](#adk-claude) | Run scoped headless Claude Code subagents (serve/spawn/runs/kill) |
@@ -271,6 +272,14 @@ Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then
 | `--model` | str |  | `bonsai2-27b` | bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork >= prism-b10685) or bonsai-27b (the previous generation) |
 | `--dry-run` | str |  | `false` | Show what would run without starting anything |
 | `--stop` | str |  | `false` | Stop and remove the local Bonsai container |
+
+## `adk bricks`
+
+Aither World bricks — list, outdated, upgrade (tested, auto-rollback), rollback
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<bricks_args>` | str |  |  | list \| outdated \| upgrade \| test \| rollback \| history |
 
 ## `adk briefs`
 
