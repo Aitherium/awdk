@@ -1442,10 +1442,33 @@ def _cmd_sandbox_up(args) -> int:
         _sp.run(["docker", "rm", "-f", "aitheros-sandbox"], capture_output=True, text=True, timeout=20)
     except Exception:
         pass
+    # BYOK env for the stranger's own provider (P5006). Built as `-e NAME=value`
+    # rather than baked into the image or passed as argv: argv is visible in
+    # `docker inspect` and in `ps` on the host, and a key that leaks there leaks
+    # to every process on the box. Nothing is printed -- the summary below says
+    # which backend, never the key.
+    backend = (getattr(args, "backend", "") or "").strip()
+    base_url = (getattr(args, "base_url", "") or "").strip()
+    key_names = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
+                 "deepseek": "DEEPSEEK_API_KEY"}
+    env_args: list = []
+    if backend:
+        env_args += ["-e", f"AITHER_LLM_BACKEND={backend}"]
+        key_name = key_names.get(backend, "")
+        api_key = (getattr(args, "api_key", "") or "").strip() or (
+            os.environ.get(key_name, "") if key_name else "")
+        if key_name and api_key:
+            env_args += ["-e", f"{key_name}={api_key}"]
+        elif key_name:
+            print(f"  ! no {key_name} in the environment and no --api-key: the sandbox "
+                  f"will start, and {backend} calls from it will fail with no key")
+    if base_url:
+        env_args += ["-e", f"AITHER_LLM_BASE_URL={base_url}",
+                     "-e", f"OPENAI_BASE_URL={base_url}"]
     try:
         r = _sp.run(
             ["docker", "run", "-d", "--name", "aitheros-sandbox",
-             "--restart", "unless-stopped", "-p", f"{port}:8131", image],
+             "--restart", "unless-stopped", "-p", f"{port}:8131", *env_args, image],
             capture_output=True, text=True, timeout=300,
         )
     except FileNotFoundError:
@@ -12788,6 +12811,17 @@ def _register_commands(sub):
                        help="Local-only — no tunnel, no portal registration")
     sb_up.add_argument("--token", help="Portal token for registration (else $AITHER_PORTAL_TOKEN)")
     sb_up.add_argument("--portal", default=_control_plane(), help="Control-plane base URL")
+    # BYOK. A stranger arrives with OpenAI credits; without these the container
+    # started with no llm env at all and could only use what the image baked.
+    sb_up.add_argument("--backend", choices=["openai", "anthropic", "deepseek", "ollama",
+                                             "gateway"],
+                       help="LLM backend for the sandbox, e.g. --backend openai")
+    sb_up.add_argument("--base-url", dest="base_url",
+                       help="OpenAI-compatible base URL (default: the backend's own)")
+    sb_up.add_argument("--api-key", dest="api_key",
+                       help="Key for that backend; defaults to the matching "
+                            "*_API_KEY in your environment. Passed to the container "
+                            "as env, never on its command line.")
     sb_sub.add_parser("down", help="Stop the sandbox container + tunnel")
     sb_sub.add_parser("status", help="Show sandbox state + linked URL")
 
