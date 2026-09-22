@@ -63,6 +63,11 @@ class Awdk < Formula
     sha256 "6f836369c9d0ce4e8e9f85a8827210854681e5cbb1131817641a3863f95fc333"
   end
 
+  resource "awreport" do
+    url "https://files.pythonhosted.org/packages/1d/41/6ecfaa585abb4a8317058006c0e42728b3ad8318d971deb9aabf860897d6/awreport-0.2.0.tar.gz"
+    sha256 "fc2f7654b90b7cb20c1dbf33b1f5656cc52cfab7499bbe394b44ca32b8c661dc"
+  end
+
   resource "awgraph" do
     url "https://files.pythonhosted.org/packages/7b/b3/8fd2c3f816b0d5b2949cde7345a80432076f9b61ac80faec9d7862014643/awgraph-1.4.2.tar.gz"
     sha256 "f3469859e77bbcd9b3b0db90c7b0dd7e51288dd33c18fef48d11e695efa02a95"
