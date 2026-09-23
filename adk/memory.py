@@ -249,6 +249,19 @@ class Memory:
             headers["X-Tenant-ID"] = self._tenant_id
         return headers
 
+    def _fleet_via_gateway(self) -> bool:
+        """True when the fleet target is the gateway memory proxy
+        (``{gateway}/v1/memory``), which speaks teach/recall, not
+        Nexus' ingest/search."""
+        return self._fleet_url.rstrip("/").endswith("/v1/memory")
+
+    def _fleet_memory_id(self, key: str) -> str:
+        """Stable per-agent id for a KV key, so a re-sync upserts."""
+        import hashlib
+
+        digest = hashlib.sha256(f"{self._agent}|{key}".encode("utf-8"))
+        return f"adkkv_{digest.hexdigest()[:32]}"
+
     async def _fleet_push(
         self, key: str, content: str, category: str = "general",
         content_type: str = "text",
@@ -264,24 +277,39 @@ class Memory:
         try:
             import httpx
 
-            payload = {
-                "content": content,
-                "title": key,
-                "source_type": "manual",
-                "content_type": content_type,
-                "collection": self._fleet_collection,
-                "metadata": {
-                    "source_agent": self._agent,
-                    "category": category,
-                    "tenant_id": self._tenant_id,
-                    "workspace_id": self._workspace_id,
-                    "synced_from": "adk_memory",
-                },
-            }
-
             url = self._fleet_url.rstrip("/")
-            # Nexus uses /ingest, gateway uses /ingest too
-            ingest_url = f"{url}/ingest"
+            if self._fleet_via_gateway():
+                # The gateway memory proxy exposes ONLY /teach and /recall
+                # (mcp_gateway.py); /v1/memory/ingest is a 404 and every push
+                # was silently dropped. Tenant comes from the gateway's auth,
+                # never from this body. A stable memory_id + upsert keeps a
+                # re-push of the same key idempotent.
+                ingest_url = f"{url}/teach"
+                payload = {
+                    "content": content,
+                    "title": key,
+                    "category": category,
+                    "source_agent": self._agent,
+                    "scope": f"agent:{self._agent}",
+                    "memory_id": self._fleet_memory_id(key),
+                    "upsert": True,
+                }
+            else:
+                ingest_url = f"{url}/ingest"
+                payload = {
+                    "content": content,
+                    "title": key,
+                    "source_type": "manual",
+                    "content_type": content_type,
+                    "collection": self._fleet_collection,
+                    "metadata": {
+                        "source_agent": self._agent,
+                        "category": category,
+                        "tenant_id": self._tenant_id,
+                        "workspace_id": self._workspace_id,
+                        "synced_from": "adk_memory",
+                    },
+                }
 
             async with httpx.AsyncClient(
                 timeout=8.0,
@@ -291,7 +319,10 @@ class Memory:
                     ingest_url, json=payload, headers=self._fleet_headers(),
                 )
                 if resp.status_code in (200, 201):
-                    doc_ids = resp.json().get("document_ids", [])
+                    body = resp.json()
+                    doc_ids = body.get("document_ids") or (
+                        [body["memory_id"]] if body.get("memory_id") else []
+                    )
                     # Track sync in local DB
                     with self._connect() as conn:
                         conn.execute(
@@ -330,15 +361,23 @@ class Memory:
             import httpx
 
             url = self._fleet_url.rstrip("/")
-            search_url = f"{url}/search"
-
-            payload = {
-                "query": query,
-                "limit": limit,
-                "collection": self._fleet_collection,
-            }
-            if self._tenant_id:
-                payload["tenant_id"] = self._tenant_id
+            if self._fleet_via_gateway():
+                # Gateway proxy has /recall, not /search (see _fleet_push).
+                search_url = f"{url}/recall"
+                payload = {
+                    "query": query,
+                    "limit": limit,
+                    "agent_id": self._agent,
+                }
+            else:
+                search_url = f"{url}/search"
+                payload = {
+                    "query": query,
+                    "limit": limit,
+                    "collection": self._fleet_collection,
+                }
+                if self._tenant_id:
+                    payload["tenant_id"] = self._tenant_id
 
             async with httpx.AsyncClient(
                 timeout=5.0,
@@ -349,7 +388,12 @@ class Memory:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data.get("results", data.get("hits", []))
+                    return (
+                        data.get("results")
+                        or data.get("memories")
+                        or data.get("hits")
+                        or []
+                    )
         except Exception as e:
             logger.debug("Fleet search failed (non-fatal): %s", e)
         return []
