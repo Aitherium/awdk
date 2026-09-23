@@ -531,12 +531,15 @@ async def ingest_files(
     # Sync to brain hub if enabled
     if brain_sync and chunks_all:
         try:
-            from adk.sync.brain import BrainSyncClient, SyncDeltaItem
+            from adk.sync.brain import (
+                BrainSyncClient,
+                SyncDeltaItem,
+                resolve_brain_url,
+            )
 
-            # Get brain URL
-            if not brain_url:
-                brain_url = os.getenv("AITHER_BRAIN_HUB_URL",
-                                     "http://localhost:8001")
+            # AitherBrain serves /brain/sync (not Genesis, which publishes no
+            # host port); resolve it over https, never a localhost:8001 guess.
+            brain_url = resolve_brain_url(brain_url)
 
             client = BrainSyncClient(
                 brain_url=brain_url,

@@ -164,6 +164,7 @@ class TestBrainSyncPost:
         client = BrainSyncClient(
             brain_url="http://brain:8271",
             tenant_id="tnt_123",
+            bearer="node-key",
         )
 
         mock_response = MagicMock()
@@ -210,6 +211,7 @@ class TestBrainSyncPost:
         client = BrainSyncClient(
             brain_url="http://brain:8271",
             tenant_id="tnt_123",
+            bearer="node-key",
         )
 
         mock_response = MagicMock()
@@ -233,7 +235,7 @@ class TestBrainSyncPost:
     @pytest.mark.asyncio
     async def test_401_auth_error(self):
         """Test handling of 401 Unauthorized."""
-        client = BrainSyncClient(tenant_id="tnt_123")
+        client = BrainSyncClient(tenant_id="tnt_123", bearer="node-key")
 
         mock_response = MagicMock()
         mock_response.status_code = 401
@@ -255,7 +257,7 @@ class TestBrainSyncPost:
     @pytest.mark.asyncio
     async def test_503_service_unavailable(self):
         """Test handling of 503 Service Unavailable (graceful degradation)."""
-        client = BrainSyncClient(tenant_id="tnt_123")
+        client = BrainSyncClient(tenant_id="tnt_123", bearer="node-key")
 
         mock_response = MagicMock()
         mock_response.status_code = 503
@@ -278,7 +280,7 @@ class TestBrainSyncPost:
     @pytest.mark.asyncio
     async def test_gzip_compression(self):
         """Test that payload is compressed when compress=True."""
-        client = BrainSyncClient(tenant_id="tnt_123")
+        client = BrainSyncClient(tenant_id="tnt_123", bearer="node-key")
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -304,7 +306,7 @@ class TestBrainSyncPost:
         """Test handling of network errors (graceful degradation)."""
         import httpx
 
-        client = BrainSyncClient(tenant_id="tnt_123")
+        client = BrainSyncClient(tenant_id="tnt_123", bearer="node-key")
 
         with patch("httpx.AsyncClient") as mock_http_class:
             mock_http = AsyncMock()
@@ -340,6 +342,71 @@ class TestAitherBrainIntegration:
         # post_deltas builds its target as f"{brain_url}/brain/sync".
         assert client.brain_url == "http://localhost:8271"
         assert f"{client.brain_url}/brain/sync" == "http://localhost:8271/brain/sync"
+
+
+def _mock_http(status=200, body=None):
+    mock_response = MagicMock()
+    mock_response.status_code = status
+    mock_response.json.return_value = body or {"accepted": 1, "rejected": 0}
+    mock_http = AsyncMock()
+    mock_http.__aenter__.return_value = mock_http
+    mock_http.__aexit__.return_value = None
+    mock_http.post.return_value = mock_response
+    return mock_http
+
+
+class TestBrainSyncAuthAndRouting:
+    """The hub refuses an unauthenticated sync (403 without a tenant context),
+    and /brain/sync lives on AitherBrain over TLS, not on Genesis :8001."""
+
+    @pytest.mark.asyncio
+    async def test_node_bearer_is_attached(self, monkeypatch):
+        import adk.fleet_enroll as fe
+
+        monkeypatch.delenv("AITHER_SESSION_BEARER", raising=False)
+        monkeypatch.setattr(fe, "_load_node_auth",
+                            lambda: {"node_id": "n1", "api_key": "node-secret"})
+        client = BrainSyncClient(brain_url="https://brain:8271", tenant_id="tnt_123")
+        mock_http = _mock_http()
+        with patch("httpx.AsyncClient", return_value=mock_http):
+            await client.post_deltas([SyncDeltaItem(chunk_id="c1")])
+        headers = mock_http.post.call_args[1]["headers"]
+        assert headers.get("Authorization") == "Bearer node-secret"
+
+    @pytest.mark.asyncio
+    async def test_no_credential_fails_closed_without_sending(self, monkeypatch):
+        import adk.fleet_enroll as fe
+
+        monkeypatch.delenv("AITHER_SESSION_BEARER", raising=False)
+        monkeypatch.setattr(fe, "_load_node_auth", lambda: {})
+        client = BrainSyncClient(brain_url="https://brain:8271", tenant_id="tnt_123")
+        mock_http = _mock_http()
+        with patch("httpx.AsyncClient", return_value=mock_http):
+            result = await client.post_deltas([SyncDeltaItem(chunk_id="c1")])
+        assert mock_http.post.call_count == 0
+        assert result.accepted == 0 and result.rejected == 1
+
+    def test_default_url_is_aitherbrain_over_tls(self, monkeypatch):
+        from adk.sync import brain as brain_mod
+
+        for var in ("AITHER_BRAIN_URL", "AITHER_BRAIN_HUB_URL"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("adk.config.load_saved_config", lambda: {}, raising=False)
+        url = brain_mod.resolve_brain_url(None)
+        assert url.startswith("https://")
+        assert ":8001" not in url and "localhost" not in url
+        assert BrainSyncClient(tenant_id="t", bearer="k").brain_url == url
+
+    def test_ingest_does_not_default_to_genesis_http(self):
+        import inspect
+
+        import adk.ingest as ingest
+        from adk.shell import claude_ingest
+
+        for mod in (ingest, claude_ingest):
+            src = inspect.getsource(mod)
+            assert "http://localhost:8001" not in src, mod.__name__
+            assert "resolve_brain_url" in src, mod.__name__
 
 
 if __name__ == "__main__":

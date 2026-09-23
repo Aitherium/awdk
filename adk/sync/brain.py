@@ -32,7 +32,10 @@ Usage:
     # response.accepted, response.rejected, response.watermark
 
 Environment variables:
-  - AITHER_BRAIN_URL: Override AitherBrain service URL (default: http://localhost:8271)
+  - AITHER_BRAIN_URL: Override AitherBrain service URL
+    (default: https://aitheros-aitherbrain:8271 -- in-network, TLS)
+  - AITHER_BRAIN_HUB_URL: Hub URL used by ``adk ingest --brain`` when set
+  - AITHER_SESSION_BEARER: Fallback credential when the node is not enrolled
   - AITHER_BRAIN_TIMEOUT: HTTP timeout in seconds (default: 30)
 """
 
@@ -46,11 +49,45 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("adk.brain_sync")
 
+#: In-network default. AitherBrain speaks TLS; plain http into it hangs or
+#: closes the socket. Shared with ``adk.sync.federation`` so the two sync
+#: clients cannot disagree about where the brain is.
+DEFAULT_BRAIN_URL = "https://aitheros-aitherbrain:8271"
+
+
+def resolve_brain_url(explicit: Optional[str] = None) -> str:
+    """Resolve the AitherBrain URL: explicit > AITHER_BRAIN_HUB_URL >
+    AITHER_BRAIN_URL > saved config ``brain_url`` > in-network default."""
+    for candidate in (
+        explicit,
+        os.environ.get("AITHER_BRAIN_HUB_URL", ""),
+        os.environ.get("AITHER_BRAIN_URL", ""),
+    ):
+        if candidate and candidate.strip():
+            return candidate.strip().rstrip("/")
+    return BrainSyncClient._resolve_brain_service_url().rstrip("/")
+
+
+def _load_node_bearer() -> str:
+    """The enrolled node's credential (``api_key`` in node_auth.json), else
+    the session bearer. Empty string when neither exists."""
+    try:
+        from adk.fleet_enroll import _load_node_auth
+
+        key = str(_load_node_auth().get("api_key") or "").strip()
+        if key:
+            return key
+    except Exception as exc:  # enrollment module unavailable/unreadable
+        logger.debug("node auth unavailable for brain sync: %s", exc)
+    return os.environ.get("AITHER_SESSION_BEARER", "").strip()
+
 __all__ = [
     "SyncDeltaItem",
     "SyncRequest",
     "SyncResponse",
     "BrainSyncClient",
+    "DEFAULT_BRAIN_URL",
+    "resolve_brain_url",
 ]
 
 
@@ -185,6 +222,7 @@ class BrainSyncClient:
         tenant_id: str = "",
         workspace_id: str = "default",
         timeout: float = 30.0,
+        bearer: Optional[str] = None,
     ):
         """Initialize sync client.
 
@@ -193,6 +231,8 @@ class BrainSyncClient:
             tenant_id: Tenant identifier
             workspace_id: Workspace scope (default: 'default')
             timeout: HTTP timeout in seconds (default: 30)
+            bearer: Credential to present. Default: the enrolled node's
+                api_key from node_auth.json, else AITHER_SESSION_BEARER.
         """
         if not tenant_id:
             raise ValueError("tenant_id required")
@@ -206,9 +246,10 @@ class BrainSyncClient:
 
         if not self.brain_url:
             logger.warning("Brain sync: no brain_url configured; will fail at POST")
-            self.brain_url = "http://localhost:8271"  # Last fallback
+            self.brain_url = DEFAULT_BRAIN_URL  # Last fallback
 
         self.tenant_id = tenant_id
+        self.bearer = (bearer if bearer is not None else _load_node_bearer()).strip()
         self.workspace_id = workspace_id
         self.timeout = timeout
         self.watermark = ""
@@ -217,8 +258,7 @@ class BrainSyncClient:
     def _resolve_brain_service_url() -> str:
         """Resolve AitherBrain service URL via platform SDK if available.
 
-        Falls back to localhost:8271 (local development default).
-        In production, AITHER_BRAIN_URL env var should be set.
+        Falls back to the in-network https default (DEFAULT_BRAIN_URL).
         """
         try:
             from adk.config import load_saved_config
@@ -229,8 +269,7 @@ class BrainSyncClient:
         except Exception:
             pass
 
-        # Development default
-        return "http://localhost:8271"
+        return DEFAULT_BRAIN_URL
 
     async def post_deltas(
         self,
@@ -258,6 +297,15 @@ class BrainSyncClient:
             logger.error("httpx required for brain sync")
             return SyncResponse(accepted=0, rejected=0, watermark=watermark)
 
+        if not self.bearer:
+            # Fail closed locally: the hub refuses an unauthenticated sync, and
+            # sending one anyway only produces a 403 attributed to nobody.
+            logger.error(
+                "Brain sync: no credential (node not enrolled and no "
+                "AITHER_SESSION_BEARER); not sending. Run 'adk enroll'."
+            )
+            return SyncResponse(accepted=0, rejected=len(deltas), watermark=watermark)
+
         # Build request
         request = SyncRequest(
             tenant_id=self.tenant_id,
@@ -275,6 +323,10 @@ class BrainSyncClient:
             headers["Content-Encoding"] = "gzip"
 
         headers["Content-Type"] = "application/json"
+        headers["Authorization"] = (
+            self.bearer if self.bearer.lower().startswith("bearer ")
+            else f"Bearer {self.bearer}"
+        )
 
         url = f"{self.brain_url}/brain/sync"
 
