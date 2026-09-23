@@ -72,6 +72,12 @@ NODE_LINK_ALLOWED_PATHS = frozenset({
 #: inference server. Stripped before forwarding.
 HARNESS_PREFIX = "harness/"
 
+#: The tunnel's verdict that the caller is the user who holds this link, relayed
+#: to the daemon. Only a link-scoped bearer AND this header together let a remote
+#: caller type into a session (`adk.harnesses.daemon._peer_input_text`).
+LINK_ACTOR_HEADER = "x-aither-link-actor"
+LINK_ACTOR_OWNER = "owner"
+
 #: What a harness-scoped request may reach on the daemon. The daemon ALSO gates
 #: this with a scoped token, so a bug here is not a bypass -- it is the first of
 #: two independent gates.
@@ -295,6 +301,11 @@ class NodeLink:
             url += f"?{query}"
         method = str(frame.get("method") or "GET").upper()
         headers = self._local_headers(frame.get("headers") or {}, bearer)
+        if target == "harness" and frame.get("actor") == LINK_ACTOR_OWNER:
+            # The tunnel verified the caller is the USER who holds this link and
+            # said so in a FRAME field (a caller cannot set one; `_local_headers`
+            # already dropped any caller-sent copy of this header).
+            headers[LINK_ACTOR_HEADER] = LINK_ACTOR_OWNER
         body = _decode_body(frame.get("body_b64"))
 
         import httpx

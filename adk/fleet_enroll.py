@@ -72,6 +72,24 @@ def _should_enroll() -> bool:
     return False
 
 
+#: The bearer the local-root profile carries. It is NOT an identity: Identity 401s it.
+LOCAL_ROOT_TOKEN = "aither_root_local"
+
+
+def _is_local_root(profile: Dict[str, Any]) -> bool:
+    """The offline placeholder profile, in any of the shapes it has been written in.
+
+    Older writers set no ``is_local_root`` flag, only ``token_type: local`` and the
+    ``aither_root_local`` bearer. Measured 2026-09-22: such a file made ``adk rc``
+    believe it was signed in, and enrolment died on an opaque Identity 401.
+    """
+    return bool(
+        profile.get("is_local_root")
+        or profile.get("token_type") == "local"
+        or profile.get("access_token") == LOCAL_ROOT_TOKEN
+    )
+
+
 def _load_auth_config() -> Dict[str, Any]:
     """Load auth.json and return the ACTIVE identity as a flat dict.
 
@@ -99,14 +117,14 @@ def _load_auth_config() -> Dict[str, Any]:
         if not isinstance(profile, dict) and profiles:
             # No active marker: the only profile, or the first one, is the identity.
             profile = next((p for p in profiles.values() if isinstance(p, dict)), None)
-        if not isinstance(profile, dict) or profile.get("is_local_root"):
+        if not isinstance(profile, dict) or _is_local_root(profile):
             return {}
         flat = dict(profile)
         user = flat.get("user") if isinstance(flat.get("user"), dict) else {}
         if user.get("tenant_slug") and not flat.get("tenant_slug"):
             flat["tenant_slug"] = user["tenant_slug"]
         return flat
-    return data
+    return {} if _is_local_root(data) else data
 
 
 def _load_node_auth() -> Dict[str, Any]:

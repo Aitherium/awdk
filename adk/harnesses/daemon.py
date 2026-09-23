@@ -270,6 +270,11 @@ OWNER_PRINCIPAL = Principal(id="owner", plan="owner", entitlements=frozenset({"*
 #: token, which can spawn a coding agent with filesystem access on this machine.
 SCOPED_LINK_PATHS = ("/sessions", "/decisions", "/desk/fleet/status")
 
+#: Mirrors `adk.node_link.LINK_ACTOR_*` (pinned equal by a test; not imported, so
+#: the daemon does not pull the websocket client in).
+LINK_ACTOR_HEADER = "x-aither-link-actor"
+LINK_ACTOR_OWNER = "owner"
+
 
 def load_principals(path: Path = None) -> dict:
     """Read the token->principal registry. Unreadable or malformed = empty.
@@ -1017,8 +1022,18 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     @app.post("/sessions")
     def create_session(
         body: CreateSession,
+        request: Request,
         principal: Principal = Depends(auth),
     ) -> dict[str, Any]:
+        if principal.plan == "link" and (
+            request.headers.get(LINK_ACTOR_HEADER, "") != LINK_ACTOR_OWNER
+        ):
+            # Spawning a coding agent is the most powerful thing this daemon does.
+            # Over the reverse link it is the OWNER's act or nobody's.
+            raise HTTPException(
+                status_code=403,
+                detail="a link token may start a session only for the verified owner",
+            )
         # Enforce here as well as in the listing. Filtering /harnesses shapes the
         # PICKER; it is not access control, because the harness id arrives in this
         # body and a caller can name one the list never offered. A gate that only
@@ -1147,7 +1162,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    def _peer_input_text(session, session_id: str, principal: Principal, text: str) -> str:
+    def _peer_input_text(
+        session, session_id: str, principal: Principal, text: str, request: Request = None,
+    ) -> str:
         """The text a caller may put on this pty, or a 403.
 
         The steer dispatcher's tier-1 rule -- owner-plan AND (a human actor OR the
@@ -1159,6 +1176,14 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         the daemon's own principal id -- never a name the caller typed.
         """
         if principal.plan == "owner":
+            return text
+        if principal.plan == "link" and request is not None and (
+            request.headers.get(LINK_ACTOR_HEADER, "") == LINK_ACTOR_OWNER
+        ):
+            # The machine's owner, typing from another device. The link bearer
+            # lives only in this box's `adk rc` process; the header is set by
+            # node_link from a tunnel FRAME field, after the tunnel matched the
+            # caller to the USER holding the link (not merely the tenant).
             return text
         if not getattr(session.config, "allow_peer_input", False):
             raise HTTPException(
@@ -1173,13 +1198,14 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     @app.post("/sessions/{session_id}/input")
     def send_input(
-        session_id: str, body: SendInput, principal: Principal = Depends(auth),
+        session_id: str, body: SendInput, request: Request,
+        principal: Principal = Depends(auth),
     ) -> dict[str, Any]:
         try:
             session = mgr.get_session(session_id)
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        text = _peer_input_text(session, session_id, principal, body.text)
+        text = _peer_input_text(session, session_id, principal, body.text, request)
         accepted = session.submit(text) if body.submit else session.send(text)
         if not accepted:
             raise HTTPException(
@@ -1189,14 +1215,15 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     @app.post("/sessions/{session_id}/submit")
     def submit_input(
-        session_id: str, body: SendInput, principal: Principal = Depends(auth),
+        session_id: str, body: SendInput, request: Request,
+        principal: Principal = Depends(auth),
     ) -> dict[str, Any]:
         """``/input`` with the Enter key: one complete turn, whatever the transport."""
         try:
             session = mgr.get_session(session_id)
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        text = _peer_input_text(session, session_id, principal, body.text)
+        text = _peer_input_text(session, session_id, principal, body.text, request)
         if not session.submit(text):
             raise HTTPException(
                 status_code=409, detail=f"session {session.state} cannot accept input"

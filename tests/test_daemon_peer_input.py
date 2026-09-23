@@ -250,3 +250,76 @@ def test_a_payload_auth_block_over_http_is_stripped_before_the_room_sees_it(harn
     )
     assert resp.status_code == 403
     assert typed.get(target) is None
+
+
+# ── the owner on another device: a LINK token plus the tunnel's owner verdict ────
+#
+# ``adk rc`` advertises a plan="link" token over the reverse link. The tunnel only
+# stamps ``x-aither-link-actor: owner`` after matching the caller to the USER who
+# holds the link, so that pair -- and only that pair -- may type raw text.
+
+
+def _link_headers(harness, actor: str = "") -> dict:
+    token = harness["daemon"].mint_scoped_token(
+        principal_id="node:phone-test", path=harness["registry"],
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    if actor:
+        headers[harness["daemon"].LINK_ACTOR_HEADER] = actor
+    return headers
+
+
+def test_link_token_with_owner_verdict_types_raw_text(harness):
+    client, typed = harness["client"], harness["typed"]
+    target = _spawn(client)
+
+    resp = client.post(
+        f"/sessions/{target}/submit", json={"text": "ship it"},
+        headers=_link_headers(harness, actor="owner"),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert typed[target] == ["ship it"]
+
+
+@pytest.mark.parametrize("actor", ["", "Owner", "owner ", "admin"])
+def test_link_token_without_the_exact_owner_verdict_is_refused(harness, actor):
+    client, typed = harness["client"], harness["typed"]
+    target = _spawn(client)
+
+    for route in ("input", "submit"):
+        resp = client.post(
+            f"/sessions/{target}/{route}", json={"text": "hi", "submit": True},
+            headers=_link_headers(harness, actor=actor),
+        )
+        assert resp.status_code == 403, resp.text
+    assert typed.get(target) is None
+
+
+def test_an_agent_token_cannot_borrow_the_owner_verdict(harness):
+    client, typed = harness["client"], harness["typed"]
+    target = _spawn(client)
+    headers = _agent_headers(harness)
+    headers[harness["daemon"].LINK_ACTOR_HEADER] = "owner"
+
+    resp = client.post(f"/sessions/{target}/submit", json={"text": "hi"}, headers=headers)
+
+    assert resp.status_code == 403, resp.text
+    assert typed.get(target) is None
+
+
+def test_link_actor_constants_match_node_link():
+    import adk.harnesses.daemon as daemon
+    from adk import node_link
+
+    assert daemon.LINK_ACTOR_HEADER == node_link.LINK_ACTOR_HEADER
+    assert daemon.LINK_ACTOR_OWNER == node_link.LINK_ACTOR_OWNER
+
+
+def test_a_link_token_spawns_only_with_the_owner_verdict(harness):
+    client = harness["client"]
+    body = {"harness": "claude", "cwd": ""}
+    refused = client.post("/sessions", json=body, headers=_link_headers(harness))
+    assert refused.status_code == 403, refused.text
+    allowed = client.post("/sessions", json=body, headers=_link_headers(harness, "owner"))
+    assert allowed.status_code != 403, allowed.text

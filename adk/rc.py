@@ -105,12 +105,27 @@ def cmd_rc(args) -> int:
     #    unauthenticated enrol binds the device to the tenant "personal" and
     #    looks like it worked.
     if not _signed_in():
-        if getattr(args, "api_key", None):
+        import sys
+
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        if getattr(args, "api_key", None) or interactive:
+            # ONE command means rc signs you in itself: the device flow on a
+            # terminal, the key when one was passed. `cmd_login` reads flags the
+            # rc parser never defines (`portal_url` crashed the --api-key path
+            # with AttributeError), so it gets its own complete namespace.
+            import argparse
+
             from adk.cli import cmd_login  # local import: cli imports this module
 
-            rc = cmd_login(args)
+            rc = cmd_login(argparse.Namespace(
+                portal_url=None, api_key=getattr(args, "api_key", None),
+                email=None, password=None, github=False, no_sync=False,
+            ))
             if rc != 0:
                 return rc
+            if not _signed_in():
+                print("x Sign-in finished but no identity was saved; run `adk login`.")
+                return 1
         else:
             print("x Not signed in.")
             print()
