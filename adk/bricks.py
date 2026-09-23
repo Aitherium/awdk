@@ -30,6 +30,8 @@ import urllib.request
 from importlib import metadata as md
 from pathlib import Path
 
+from adk import bricks_os
+
 #: Frozen from the Aither World registry, ecosystem.yaml (every entry whose install line
 #: is ``pip install <dist>``). An installed package cannot read the registry,
 #: so the list travels with the code; tests/test_bricks.py fails when it drifts
@@ -37,7 +39,7 @@ from pathlib import Path
 FAMILY: tuple[tuple[str, str, str], ...] = (
     ("aitherkvcache", "aither-kvcache", "pypi"),
     ("awask", "awask", "pypi"),
-    ("awavatar", "awavatar", "git"),
+    ("awavatar", "awavatar", "pypi"),
     ("awbac", "awbac", "pypi"),
     ("awbrain", "awbrain", "pypi"),
     ("awbrowse", "awbrowse", "pypi"),
@@ -213,7 +215,10 @@ def status(check_latest: bool = True) -> list[dict]:
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        return list(pool.map(lambda t: _row(t[0], t[1], t[2], t[3], check_latest), todo))
+        rows = list(pool.map(lambda t: _row(t[0], t[1], t[2], t[3], check_latest), todo))
+    # The OS brick (awnix) is a bootc image, not a pip dist: its own module.
+    os_row = bricks_os.row(check_latest=check_latest)
+    return ([os_row] if os_row else []) + rows
 
 
 def _row(bid: str, dist: str, src: str, info: dict, check_latest: bool) -> dict:
@@ -286,6 +291,8 @@ def _pip(args: list[str], timeout: int = 900) -> tuple[int, str]:
 
 def test(name: str, timeout: int = 180) -> dict:
     """Fresh-process import, then the brick's own self-test if it has one."""
+    if name.lower() == bricks_os.OS_ID:
+        return bricks_os.test()
     bid, dist, _src = _resolve(name)
     info = installed(dist)
     if info is None:
@@ -332,6 +339,14 @@ def test(name: str, timeout: int = 180) -> dict:
 
 def upgrade(name: str, to: str | None = None, run_test: bool = True,
             auto_rollback: bool = True, dry_run: bool = False) -> dict:
+    if name.lower() == bricks_os.OS_ID:
+        if dry_run:
+            return {"id": bricks_os.OS_ID, "ok": True, "dry_run": True,
+                    "note": "would run: bootc upgrade (stages; reboot to switch)"}
+        res = bricks_os.upgrade()
+        record({"op": "upgrade", "dist": bricks_os.OS_ID, "from": res.get("from"),
+                "to": res.get("to"), "ok": res["ok"], "staged": res.get("staged", False)})
+        return res
     bid, dist, src = _resolve(name)
     info = installed(dist)
     if info is None:
@@ -375,6 +390,11 @@ def upgrade(name: str, to: str | None = None, run_test: bool = True,
 
 def rollback(name: str, run_test: bool = True) -> dict:
     """Reinstall the version this machine had before its last successful upgrade."""
+    if name.lower() == bricks_os.OS_ID:
+        res = bricks_os.rollback()
+        record({"op": "rollback", "dist": bricks_os.OS_ID, "from": res.get("from"),
+                "to": res.get("to"), "ok": res["ok"]})
+        return res
     bid, dist, _src = _resolve(name)
     info = installed(dist)
     if info and info["editable"]:
@@ -405,7 +425,7 @@ def _print_rows(rows: list[dict]) -> None:
     for r in rows:
         mark = "EDITABLE" if r["editable"] else ("OUTDATED" if r["outdated"] else "")
         latest_s = r["latest"] or ("?" if r["error"] else "-")
-        print(f"{r['id']:14s} {r['installed']:>10s} -> {latest_s:10s} {mark:8s} "
+        print(f"{r['id']:14s} {r['installed'] or '?':>10s} -> {latest_s:10s} {mark:8s} "
               f"{r['error'] or r['action']}")
 
 
@@ -426,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("name")
     rb = sub.add_parser("rollback", help="reinstall the version before the last upgrade")
     rb.add_argument("name")
+    sub.add_parser("os", help="the OS brick: this awnix host's image, or the newest awnix release")
     h = sub.add_parser("history", help="upgrades and rollbacks recorded on this machine")
     h.add_argument("name", nargs="?")
     # --json is accepted ANYWHERE: `adk bricks --json list` loses a leading flag
@@ -445,6 +466,25 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_rows(rows)
         return 0
+    if verb == "os":
+        if bricks_os.is_host():
+            res = {"host": True, **bricks_os.host_status()}
+        else:
+            res = {"host": False, "note": "not an awnix (bootc) host", **bricks_os.published()}
+        if args.json:
+            print(json.dumps(res, indent=2))
+        elif res["host"]:
+            b = res.get("booted") or {}
+            print(f"awnix {b.get('version') or '?'} ({b.get('ref') or '?'})"
+                  + (f", staged {res['staged']['version']}" if res.get("staged") else "")
+                  if res.get("ok") else res.get("error"))
+        elif res.get("ok"):
+            print("not an awnix host; newest published awnix images:")
+            for r in res["releases"]:
+                print(f"  {r['flavour']:12s} {r['version']}  {r['url']}")
+        else:
+            print(f"not an awnix host; {res.get('error')}")
+        return 0 if res.get("ok") else 1
     if verb == "history":
         rows = history(args.name)
         print(json.dumps(rows, indent=2) if args.json else

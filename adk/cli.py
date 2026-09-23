@@ -12974,11 +12974,14 @@ def _register_commands(sub):
     # its parser, so no flag is defined twice.
     bricks_p = sub.add_parser(
         "bricks",
-        help="Aither World bricks — list, outdated, upgrade (tested, auto-rollback), rollback",
+        help=(
+            "Aither World bricks and the awnix OS — list, outdated, "
+            "upgrade (tested, auto-rollback), rollback"
+        ),
         add_help=False,
     )
     bricks_p.add_argument("bricks_args", nargs=argparse.REMAINDER,
-                          help="list | outdated | upgrade | test | rollback | history")
+                          help="list | outdated | upgrade | test | rollback | os | history")
 
     # adk harness — AitherShell core: one shell that drives every coding shell
     shell_p = sub.add_parser(
