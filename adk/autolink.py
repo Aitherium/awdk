@@ -149,6 +149,8 @@ def _sign_in() -> bool:
         result = _device_flow_login(
             identity_url, client_name=f"adk-autolink ({socket.gethostname()})",
             on_code=announce_code,
+            # The IdP emails this account the one-tap link: open it on the phone.
+            email=(os.environ.get("AITHER_OWNER_EMAIL") or "").strip(),
         )
         complete_device_login(base, result)
     except (RuntimeError, OSError, KeyError, ValueError) as exc:

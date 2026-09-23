@@ -2137,7 +2137,9 @@ def _post_json_resilient(
         delay = min(delay * 1.5, 10.0)
 
 
-def _device_flow_login(identity_url: str, client_name: str = "adk", on_code=None) -> dict:
+def _device_flow_login(
+    identity_url: str, client_name: str = "adk", on_code=None, email: str = "",
+) -> dict:
     """Run RFC 8628 device code flow. Returns token response dict or raises.
 
     ``on_code(user_code, verification_uri, expires_in)``, when given, replaces the
@@ -2164,7 +2166,8 @@ def _device_flow_login(identity_url: str, client_name: str = "adk", on_code=None
     try:
         data = _post_json_resilient(
             f"{identity_url}/auth/device/code",
-            {"client_name": client_name, "scopes": "full"},
+            # `email`: the IdP mails that account the one-tap approve link.
+            {"client_name": client_name, "scopes": "full", **({"email": email} if email else {})},
             {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _ua},
         )
     except RuntimeError:
