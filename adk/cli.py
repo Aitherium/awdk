@@ -3301,6 +3301,11 @@ def cmd_agent(args) -> int:
 
     agent_cmd = getattr(args, "agent_command", None)
 
+    from adk.agent_binding_client import BINDING_VERBS
+    if agent_cmd in BINDING_VERBS:
+        from adk.agent_binding_client import run as _run_binding
+        return _run_binding(args)
+
     if agent_cmd == "run":
         agent_name = getattr(args, "name", None)
         if not agent_name:
@@ -3479,6 +3484,9 @@ def cmd_agent(args) -> int:
         print("  list            List running agent loops")
         print("  status <name>   Show status of an agent")
         print("  stop <name>     Stop a running agent")
+        print("  bind <listing>  Apply a pack to your agent binding")
+        print("  swap-brain <company> <pack> | backend <name>")
+        print("  managed status|chat|run|resync|byok   Managed (hosted twin) agent")
         return 1
 
 
@@ -13300,6 +13308,10 @@ def _register_commands(sub):
     # adk agent stop
     agent_stop_p = agent_sub.add_parser("stop", help="Stop a running agent loop")
     agent_stop_p.add_argument("name", help="Agent name")
+
+    # adk agent bind|swap-brain|backend|managed <verb> -- Genesis /v1/agent binding + managed twin
+    from adk.agent_binding_client import add_parsers as _add_binding_parsers
+    _add_binding_parsers(agent_sub)
 
     # aither chat — chat with a mesh agent by name (responds on its own inference)
     chat_p = sub.add_parser("chat", help="Chat with a mesh agent by name (adk chat <agent> [msg])")
