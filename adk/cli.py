@@ -15742,6 +15742,10 @@ def main():
         prog="adk",
         description="AitherADK — Build AI agent fleets with any LLM backend",
     )
+    # The public bootstrap (aitherium.com/AGENTS.md) verifies an install with
+    # `adk --version`; without this flag argparse exits 2 on a good install.
+    from adk import __version__ as _adk_version
+    parser.add_argument("--version", action="version", version=f"adk {_adk_version}")
     sub = parser.add_subparsers(dest="command")
     _register_commands(sub)
     _cached_parser = parser
