@@ -14923,6 +14923,10 @@ def _register_commands(sub):
                          help="Don't stream progress")
     forge_p.set_defaults(watch=True)
 
+    # adk mail — one-command sovereign mail setup (Proton Bridge -> MailCore)
+    from adk.commands.mail import register_parser as _register_mail_parser
+    _register_mail_parser(sub)
+
     # adk briefs — the executive-brief delivery plane (host store)
     briefs_p = sub.add_parser("briefs", help="List and read executive briefs")
     briefs_sub = briefs_p.add_subparsers(dest="briefs_command")
@@ -16098,6 +16102,9 @@ def main():
         sys.exit(cmd_forge(args))
     elif args.command == "notebook":
         sys.exit(cmd_notebook(args))
+    elif args.command == "mail":
+        from adk.commands.mail import cmd_mail
+        sys.exit(cmd_mail(args))
     elif args.command == "briefs":
         from adk.commands.briefs import cmd_briefs_list, cmd_briefs_show
 

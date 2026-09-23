@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**110 commands.**
+**111 commands.**
 
 | command | what it does |
 |---|---|
@@ -81,6 +81,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk listen`](#adk-listen) | Real-time audio intelligence — audiobook, meeting, voice notes |
 | [`adk login`](#adk-login) | Authenticate with Aitherium (browser device flow) |
 | [`adk logout`](#adk-logout) | Clear saved auth tokens |
+| [`adk mail`](#adk-mail) | Sovereign mail: one-command Proton Bridge setup |
 | [`adk mcp`](#adk-mcp) | MCP server, IDE setup, and cloud gateway connection |
 | [`adk mesh`](#adk-mesh) | AitherMesh overlay operations (onboard, list peers) |
 | [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
@@ -838,6 +839,14 @@ Authenticate with Aitherium (browser device flow)
 ## `adk logout`
 
 Clear saved auth tokens
+
+## `adk mail`
+
+Sovereign mail: one-command Proton Bridge setup
+
+**Subcommands**
+
+- `adk mail setup` — Bridge probe/seed -> MailCore bootstrap -> doctor -> test send
 
 ## `adk mcp`
 
