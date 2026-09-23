@@ -20,7 +20,11 @@ Resolution chain (first that works wins; resolved once per process, then cached)
   2. Local vLLM             — ``localhost:8209`` then ``:8120``, HTTPS then HTTP
                               (internal-TLS mesh serves :8209 over https).
   3. Local Ollama           — ``nomic-embed-text`` on ``:11434`` (768-d, dev box).
-  4. Gateway (metered)      — ``AITHER_GATEWAY_EMBEDDINGS_URL`` (managed fallback).
+  4. Gateway (metered)      — ``AITHER_GATEWAY_EMBEDDINGS_URL``, or — whenever
+                              ``AITHER_API_KEY`` is set — the managed v1 plane
+                              (``AITHER_MCP_URL`` | ``https://mcp.aitherium.com``).
+                              Sent with ``Authorization: Bearer <AITHER_API_KEY>``
+                              (the gateway 401s an unauthenticated embed).
   5. Auto-deploy local vLLM — if a GPU + Docker are present and nothing above is
                               reachable, spin up the embeddings container on :8209
                               (opt in with ``AITHER_EMBED_AUTODEPLOY=1``; disabled by default
@@ -81,6 +85,10 @@ _VLLM_EMBED_PORT = 8209  # dedicated embeddings worker (setup_cli 'full' tier)
 _VLLM_GENERIC_PORT = 8120
 _OLLAMA_PORT = 11434
 _OLLAMA_EMBED_MODEL = "nomic-embed-text"  # Ollama's name for the same 768-d model
+
+# The managed OpenAI-compatible v1 plane. gateway.aitherium.com answers 404 for
+# /v1/* (measured 2026-08-31, see adk.cli) — the v1 API lives on mcp.aitherium.com.
+_DEFAULT_MANAGED_V1 = "https://mcp.aitherium.com"
 
 _HTTP_TIMEOUT = 30.0
 # 15s, not 3s: backend RESOLUTION IS CACHED FOR THE PROCESS LIFETIME, so one
@@ -163,6 +171,7 @@ class AdkEmbeddings:
         self._degraded: bool = False
         self._st_model = None               # cached sentence-transformers model
         self._autodeploy_attempted = False
+        self._headers: dict = {}            # auth headers for the pinned endpoint
 
     # ── public state ────────────────────────────────────────────────────
     @property
@@ -227,8 +236,8 @@ class AdkEmbeddings:
             return "ollama"
 
         # 4. gateway (metered managed fallback)
-        gw = os.getenv("AITHER_GATEWAY_EMBEDDINGS_URL", "").strip()
-        if gw and await self._try_openai_endpoint(gw):
+        gw, gw_headers = _gateway_rung()
+        if gw and await self._try_openai_endpoint(gw, headers=gw_headers):
             return "gateway"
 
         # 5. auto-deploy a local vLLM embeddings container (GPU + Docker)
@@ -271,9 +280,12 @@ class AdkEmbeddings:
                 return True
         return False
 
-    async def _try_openai_endpoint(self, base: str) -> bool:
+    async def _try_openai_endpoint(self, base: str, headers: Optional[dict] = None) -> bool:
         """Probe an OpenAI-compatible ``/v1/embeddings`` endpoint with a real call
-        so we learn the actual dimension. Returns True and pins state on success."""
+        so we learn the actual dimension. Returns True and pins state on success.
+
+        ``headers`` (auth) are pinned alongside the URL so every later embed call
+        to that endpoint carries them — they are never sent to any other rung."""
         try:
             import httpx
         except ImportError:
@@ -285,6 +297,7 @@ class AdkEmbeddings:
                 r = await c.post(
                     f"{base}/v1/embeddings",
                     json={"input": ["ping"], "model": CANONICAL_MODEL},
+                    headers=dict(headers or {}),
                 )
                 if r.status_code != 200:
                     return False
@@ -295,6 +308,7 @@ class AdkEmbeddings:
                 if not vec:
                     return False
                 self._url = base
+                self._headers = dict(headers or {})
                 self._model = CANONICAL_MODEL
                 self._dim = len(vec)
                 self._degraded = self._dim != CANONICAL_DIM
@@ -321,6 +335,7 @@ class AdkEmbeddings:
                 if not vec:
                     return False
                 self._url = base
+                self._headers = {}
                 self._model = _OLLAMA_EMBED_MODEL
                 self._dim = len(vec)
                 self._degraded = self._dim != CANONICAL_DIM
@@ -476,6 +491,7 @@ class AdkEmbeddings:
                 r = await c.post(
                     f"{self._url}/v1/embeddings",
                     json={"input": batch, "model": self._model},
+                    headers=dict(self._headers),
                 )
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}: {r.text[:120]}")
@@ -506,6 +522,25 @@ class AdkEmbeddings:
 # ─────────────────────────────────────────────────────────────────────────────
 # Environment helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _gateway_rung() -> Tuple[str, dict]:
+    """The managed gateway rung: ``(base_url, auth_headers)`` or ``("", {})``.
+
+    An explicit ``AITHER_GATEWAY_EMBEDDINGS_URL`` wins. Otherwise the rung is ON
+    whenever the SDK holds an ``AITHER_API_KEY`` (the customer is enrolled), and
+    points at the managed v1 plane. The key rides as a Bearer — the gateway's
+    ``/v1/embeddings`` returns 401 without a tenant context.
+    """
+    key = os.getenv("AITHER_API_KEY", "").strip()
+    url = os.getenv("AITHER_GATEWAY_EMBEDDINGS_URL", "").strip()
+    if not url and key:
+        url = (os.getenv("AITHER_MCP_URL", "").strip() or _DEFAULT_MANAGED_V1)
+    url = url.rstrip("/")
+    if not url:
+        return "", {}
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    return url, headers
+
 
 def _tls_verify():
     """Trust the internal CA for mesh TLS (never disable verification). Falls
