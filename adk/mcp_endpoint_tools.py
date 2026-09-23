@@ -33,12 +33,72 @@ if TYPE_CHECKING:
 logger = logging.getLogger("adk.mcp_endpoint_tools")
 
 
+def _is_loopback_url(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+    except Exception:  # noqa: BLE001
+        return False
+    if host == "localhost":
+        return True
+    # An IP LITERAL only: a string prefix would pass a public DNS name such as
+    # ``127.evil.example`` and hand it this box's MCP bearer.
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _own_mcp_ports() -> set[int]:
+    """Ports THIS box's adk server (which mounts the MCP server at ``/mcp``) listens
+    on: ``AITHER_PORT`` / ``AITHER_DAEMON_PORT`` when set, else the defaults
+    (``adk.config`` server_port 8080, daemon 9001)."""
+    import os
+
+    ports: set[int] = set()
+    for var in ("AITHER_PORT", "AITHER_DAEMON_PORT"):
+        raw = (os.getenv(var) or "").strip()
+        if raw.isdigit():
+            ports.add(int(raw))
+    return ports or {8080, 9001}
+
+
+def _is_own_mcp_url(url: str) -> bool:
+    """True only for this box's own adk MCP server: a loopback host, one of the
+    adk server's ports, and the ``/mcp`` mount path. The local bearer is never
+    sent to any other loopback port, whatever a ``/stream`` body names."""
+    if not _is_loopback_url(url):
+        return False
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        port = parsed.port
+    except Exception:  # noqa: BLE001 - malformed port
+        return False
+    if port is None or port not in _own_mcp_ports():
+        return False
+    return (parsed.path or "").rstrip("/") == "/mcp"
+
+
 def _headers_for(ep: dict) -> dict[str, str]:
     h = {"Content-Type": "application/json"}
     extra = ep.get("headers") or {}
     if isinstance(extra, dict):
         h.update({str(k): str(v) for k, v in extra.items()})
     token = ep.get("token") or ep.get("bearer")
+    has_auth = "authorization" in {k.lower() for k in h}
+    if not token and not has_auth and _is_own_mcp_url(str(ep.get("url") or "")):
+        # The platform relays only {name, url} for self-hosted endpoints (auth is
+        # configured on the customer's box). THIS box's adk MCP server always
+        # enforces a bearer — use the local key it reads, but only for its own
+        # port and path, never for an arbitrary loopback URL.
+        import os
+
+        token = os.getenv("AITHER_MCP_KEY", "") or os.getenv("AITHER_SERVER_API_KEY", "")
     if token:
         h["Authorization"] = f"Bearer {token}"
     return h

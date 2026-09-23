@@ -41,12 +41,8 @@ def _control_plane() -> str:
     Order matches the one site in this file that was already correct, so
     there is now exactly one answer to "where is the control plane".
     """
-    import os as _os
-    return (
-        _os.environ.get("AITHER_PORTAL_URL")
-        or _os.environ.get("AITHER_ELYSIUM_URL")
-        or "https://api.aitherium.com"
-    ).rstrip("/")
+    from adk.control_plane import control_plane_url
+    return control_plane_url()
 
 def _fix_ollama_host(raw: str) -> str:
     """Rewrite Ollama's bind address (0.0.0.0) to connectable localhost."""
@@ -11425,6 +11421,7 @@ def _cmd_fleet(args) -> int:
             "loop": getattr(args, "loop", "") or "",
             "hands": getattr(args, "hands", "") or "",
             "image": getattr(args, "image", "") or "",
+            "agent_id": getattr(args, "agent_id", "") or "",
         }
         m = mgr.create(args.runtime, args.name, **{k: v for k, v in opts.items() if v != ""})
         status_icon = {"running": "✓", "pending_runtime": "…", "failed": "✗"}.get(m.status, "•")
@@ -11463,7 +11460,8 @@ def _cmd_fleet(args) -> int:
 
     if cmd == "connect-local":
         from adk.fleet_manager import connect_local_agent
-        result = connect_local_agent(args.agent_name, args.mcp_url)
+        result = connect_local_agent(args.agent_name, args.mcp_url,
+                                     token=getattr(args, "token", None))
         if result.get("ok"):
             endpoint_info = result.get("endpoint", {})
             human = f"✓ Registered local agent '{args.agent_name}' → {args.mcp_url}"
@@ -14601,6 +14599,9 @@ def _register_commands(sub):
     fleet_create_p.add_argument("--port", type=int, default=8080, help="Local runtime port")
     fleet_create_p.add_argument("--mcp-url", dest="mcp_url", default="", help="Gateway MCP url (managed)")
     fleet_create_p.add_argument("--model", default="", help="Model override (managed)")
+    fleet_create_p.add_argument("--agent-id", dest="agent_id", default="",
+                                help="Existing agent BINDING id to deploy (managed); "
+                                     "default: the tenant's primary binding")
     fleet_create_p.add_argument("--preset", default="",
                                 help="hosted placement preset: all-local | local-loop-rented-brain | "
                                      "hosted | all-cloud (hosted runtime only)")
@@ -14619,6 +14620,9 @@ def _register_commands(sub):
     fleet_connect_p = fleet_sub.add_parser("connect-local", help="Register this machine's local agent MCP endpoint with the gateway (bidirectional)")
     fleet_connect_p.add_argument("agent_name", help="Name/identifier for the local agent")
     fleet_connect_p.add_argument("mcp_url", help="Public URL where the local agent's MCP is reachable")
+    fleet_connect_p.add_argument("--token", default=None,
+                                 help="Bearer the MCP server enforces (default: AITHER_MCP_KEY); "
+                                      "stored in the vault, never echoed")
     fleet_connect_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     fleet_applypack_p = fleet_sub.add_parser(
         "apply-pack", help="Push+enable a bundled pack on a mesh agent (no SSH; 'self' = this node)")

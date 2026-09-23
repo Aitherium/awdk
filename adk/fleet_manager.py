@@ -257,48 +257,103 @@ class ManagedDriver:
         self,
         deploy_fn: Optional[Callable[[str, dict[str, Any]], dict[str, Any]]] = None,
         remove_fn: Optional[Callable[[str, dict[str, Any]], bool]] = None,
+        apply_fn: Optional[Callable[[str, str], dict[str, Any]]] = None,
     ) -> None:
         self._deploy_fn = deploy_fn or _http_managed_deploy
         self._remove_fn = remove_fn or _http_managed_demigrate
+        self._apply_fn = apply_fn or _http_apply_pack
 
     def create(self, member: FleetMember, opts: dict[str, Any]) -> dict[str, Any]:
-        agent = opts.get("pack") or member.name
-        res = self._deploy_fn(agent, opts)
+        # ``agent_id`` is a BINDING id in the tenant's agent-binding store. Genesis
+        # returns an explicit id as given and 404s when no binding has it, so a
+        # pack name or fleet name must never be sent as one. Only an explicit
+        # --agent-id is forwarded; otherwise Genesis resolves the tenant's primary
+        # (or auto-bound default) binding. A --pack is applied onto that binding
+        # first (``POST /v1/agent/binding/apply-pack``), then the binding deploys.
+        agent_id = str(opts.get("agent_id") or "").strip()
+        pack = str(opts.get("pack") or "").strip()
+        if pack:
+            applied = self._apply_fn(pack, agent_id)
+            if not applied.get("ok", False):
+                return {"status": "failed",
+                        "error": f"apply pack {pack!r}: {applied.get('error') or 'failed'}"}
+        res = self._deploy_fn(agent_id, opts)
         if not res.get("ok", res.get("deployed")):
             return {"status": "failed", "error": str(res.get("error") or "deploy failed")}
+        bound = ((res.get("binding") or {}).get("agent_id") if isinstance(res.get("binding"), dict)
+                 else "") or agent_id
         return {
             "status": "running" if res.get("deployed") else "pending_runtime",
             "ref": res.get("anthropic_agent_id", ""),
             "endpoint": res.get("endpoint", ""),
-            "meta": {"digest": res.get("digest", "")},
+            "meta": {"digest": res.get("digest", ""), "agent_id": bound or ""},
         }
 
     def status(self, member: FleetMember) -> str:
         return member.status  # authoritative state lives platform-side; refreshed on deploy
 
     def remove(self, member: FleetMember) -> bool:
-        agent = member.source or member.name
-        return bool(self._remove_fn(agent, member.meta or {}))
+        meta = member.meta or {}
+        if member.status == "failed":
+            # Nothing was deployed for this record (create or apply-pack failed),
+            # so there is nothing platform-side to tear down. Any DELETE here would
+            # hit a DIFFERENT, working deployment: a param-less one de-migrates the
+            # tenant's primary binding, a named one the binding of that name.
+            return True
+        if "agent_id" in meta:
+            # The binding id the deploy resolved (recorded in meta); empty = primary.
+            agent_id = str(meta.get("agent_id") or "")
+        else:
+            # A member created before meta carried agent_id: target what it was
+            # deployed under, exactly as before. Sending NO agent_id would make
+            # Genesis de-migrate the tenant's PRIMARY binding instead.
+            agent_id = str(member.source or member.name or "")
+        return bool(self._remove_fn(agent_id, meta))
 
 
 def _gateway_base() -> str:
-    return (
-        os.getenv("AITHER_API_URL")
-        or os.getenv("AITHER_GATEWAY_URL")
-        or "http://localhost:8001"
-    ).rstrip("/")
+    """Genesis API base: explicit AITHER_API_URL/AITHER_GATEWAY_URL, else the
+    portal's ``/api/genesis`` proxy (honours AITHER_PORTAL_URL). Never
+    ``http://localhost:8001`` — Genesis publishes no host port and speaks TLS."""
+    from adk.control_plane import genesis_api_base
+
+    return genesis_api_base()
 
 
 def _api_key() -> str:
     return os.getenv("AITHER_API_KEY", "")
 
 
+def _http_apply_pack(pack: str, agent_id: str) -> dict[str, Any]:
+    """Apply a pack onto the tenant's binding (``POST /v1/agent/binding/apply-pack``)."""
+    import httpx
+
+    body: dict[str, Any] = {"listing_id": pack}
+    if agent_id:
+        body["agent_id"] = agent_id
+    headers = {}
+    if _api_key():
+        headers["Authorization"] = f"Bearer {_api_key()}"
+    url = f"{_gateway_base()}/v1/agent/binding/apply-pack"
+    try:
+        r = httpx.post(url, json=body, headers=headers, timeout=60.0)
+        if r.status_code >= 400:
+            return {"ok": False, "error": f"{r.status_code}: {r.text[:200]}"}
+        data = r.json()
+        return data if isinstance(data, dict) and "ok" in data else {"ok": True, **(data or {})}
+    except Exception as exc:  # noqa: BLE001 - surface as a failed deploy, never crash the CLI
+        return {"ok": False, "error": str(exc)}
+
+
 def _http_managed_deploy(agent: str, opts: dict[str, Any]) -> dict[str, Any]:
     import httpx
 
-    # Genesis ``POST /v1/agent/managed/deploy`` takes ``ManagedDeployBody``:
-    # the agent is ``agent_id`` (``agent`` was silently dropped by pydantic).
-    body = {"agent_id": agent}
+    # Genesis ``POST /v1/agent/managed/deploy`` takes ``ManagedDeployBody``.
+    # ``agent_id`` is a binding id: send it only when one was given explicitly,
+    # else Genesis deploys the tenant's primary/default binding.
+    body: dict[str, Any] = {}
+    if agent:
+        body["agent_id"] = agent
     for k in ("mcp_url", "model", "system_prompt", "environment_id"):
         if opts.get(k):
             body[k] = opts[k]
@@ -323,7 +378,8 @@ def _http_managed_demigrate(agent: str, meta: dict[str, Any]) -> bool:
         headers["Authorization"] = f"Bearer {_api_key()}"
     url = f"{_gateway_base()}/v1/agent/managed"
     try:
-        r = httpx.request("DELETE", url, params={"agent_id": agent}, headers=headers, timeout=30.0)
+        params = {"agent_id": agent} if agent else None
+        r = httpx.request("DELETE", url, params=params, headers=headers, timeout=30.0)
         return r.status_code < 400
     except Exception:  # noqa: BLE001
         return False
@@ -520,16 +576,23 @@ def connect_local_agent(
     agent_name: str,
     mcp_url: str,
     *,
-    poster: Optional[Callable[[str, str], dict[str, Any]]] = None,
+    token: Optional[str] = None,
+    poster: Optional[Callable[[str, str, str], dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Register THIS machine's local agent MCP endpoint with the gateway so a
     hosted twin can call back to it (bidirectional). The MCP URL is stored in the
     tenant's endpoint registry and wired into managed twins at deploy/resync.
 
+    The adk MCP server ALWAYS enforces a bearer (``adk.mcp_server`` auto-generates
+    one when ``AITHER_MCP_KEY`` is unset), so an endpoint registered without its
+    bearer lists 0 tools (401). The bearer is ``token`` if given, else the local
+    ``AITHER_MCP_KEY`` / ``AITHER_SERVER_API_KEY``; Genesis stores it in the vault.
+
     Args:
         agent_name: Name/identifier for this local agent
         mcp_url: Public URL where the local agent's MCP is reachable
-        poster: Injected HTTP poster (default: httpx POST). Testable.
+        token: Bearer the MCP server expects (default: AITHER_MCP_KEY env)
+        poster: Injected HTTP poster ``(name, url, token)`` (default: httpx POST). Testable.
 
     Returns:
         {"ok": True, "endpoint": {...}} on success; {"ok": False, "error": "..."} on failure.
@@ -537,13 +600,19 @@ def connect_local_agent(
     """
     if not poster:
         poster = _http_register_mcp_endpoint
+    bearer = (token if token is not None else _local_mcp_key()).strip()
     try:
-        return poster(agent_name, mcp_url)
+        return poster(agent_name, mcp_url, bearer)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
 
-def _http_register_mcp_endpoint(name: str, mcp_url: str) -> dict[str, Any]:
+def _local_mcp_key() -> str:
+    """The bearer this box's adk MCP server enforces, when configured by env."""
+    return os.getenv("AITHER_MCP_KEY", "") or os.getenv("AITHER_SERVER_API_KEY", "")
+
+
+def _http_register_mcp_endpoint(name: str, mcp_url: str, token: str = "") -> dict[str, Any]:
     """POST to the gateway's MCP endpoint registration endpoint. Mirrors the
     ManagedDriver HTTP pattern: resilient, returns a dict, never crashes."""
     import httpx
@@ -551,11 +620,13 @@ def _http_register_mcp_endpoint(name: str, mcp_url: str) -> dict[str, Any]:
     if not mcp_url:
         return {"ok": False, "error": "mcp_url is required"}
 
-    body = {
+    body: dict[str, Any] = {
         "name": name.strip() or "local-agent",
         "url": mcp_url.strip(),
         "local": True,  # allow localhost/internal URLs (self-hosted agent)
     }
+    if token:
+        body["token"] = token  # Genesis stores it in the vault; never echoed back
 
     headers = {}
     if _api_key():
@@ -567,7 +638,15 @@ def _http_register_mcp_endpoint(name: str, mcp_url: str) -> dict[str, Any]:
         if r.status_code >= 400:
             return {"ok": False, "error": f"{r.status_code}: {r.text[:200]}"}
         result = r.json()
-        return {"ok": result.get("ok", True), "endpoint": result.get("endpoint", {})}
+        out = {"ok": result.get("ok", True), "endpoint": result.get("endpoint", {})}
+        if "secret_stored" in result:
+            out["secret_stored"] = bool(result.get("secret_stored"))
+        if result.get("hint"):
+            out["hint"] = result["hint"]
+        if not token:
+            out.setdefault("warning", "no bearer sent: the adk MCP server requires one "
+                                      "(pass --token or set AITHER_MCP_KEY)")
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 

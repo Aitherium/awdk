@@ -55,9 +55,12 @@ def test_create_managed_records_agent_id(tmp_path):
     def fake_deploy(agent, opts):
         calls["agent"] = agent
         return {"ok": True, "deployed": True, "anthropic_agent_id": "agent_LIVE123", "digest": "d1"}
-    mgr = _mgr(tmp_path, {"managed": ManagedDriver(deploy_fn=fake_deploy)})
+    applied = []
+    mgr = _mgr(tmp_path, {"managed": ManagedDriver(
+        deploy_fn=fake_deploy, apply_fn=lambda p, a: applied.append(p) or {"ok": True})})
     m = mgr.create("managed", "twin", pack="weather-eve-import", mcp_url="https://x/mcp")
-    assert calls["agent"] == "weather-eve-import"
+    # the pack is applied onto the binding; it is NOT a binding id
+    assert applied == ["weather-eve-import"] and calls["agent"] == ""
     assert m.runtime == "managed" and m.status == "running"
     assert m.ref == "agent_LIVE123" and m.meta.get("digest") == "d1"
     # persisted
@@ -184,7 +187,7 @@ def test_connect_local_agent_posts_mcp_endpoint():
     """connect_local_agent POSTs the agent's MCP URL to the gateway endpoint."""
     calls = []
 
-    def fake_poster(name, mcp_url):
+    def fake_poster(name, mcp_url, token=""):
         calls.append({"name": name, "mcp_url": mcp_url})
         return {
             "ok": True,
@@ -203,7 +206,7 @@ def test_connect_local_agent_posts_mcp_endpoint():
 def test_connect_local_agent_empty_url_fails():
     """connect_local_agent rejects an empty MCP URL."""
 
-    def fake_poster(name, mcp_url):
+    def fake_poster(name, mcp_url, token=""):
         return {"ok": False, "error": "mcp_url is required"}
 
     from adk.fleet_manager import connect_local_agent
@@ -217,7 +220,7 @@ def test_connect_local_agent_degrades_on_network_error():
     """When the gateway is down, connect_local_agent returns an error dict,
     never crashes."""
 
-    def failing_poster(name, mcp_url):
+    def failing_poster(name, mcp_url, token=""):
         raise ConnectionError("gateway unreachable")
 
     from adk.fleet_manager import connect_local_agent
