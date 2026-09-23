@@ -348,6 +348,22 @@ class LLMRouter:
                 ctk_by_model=_DEFAULT_CTK_BY_MODEL,
             )
             if await p.health_check():
+                # A configured model must actually be served here. Measured
+                # 2026-09-23: with the spine (:8150) unreachable, discovery found
+                # Ollama on :11434 and every turn asked it for bonsai2-27b ->
+                # 'model not found' -> 'empty completion' in awsh. Same rule the
+                # vLLM port scan already applies (Skipping localhost:%d).
+                if self._model:
+                    try:
+                        served = await p.list_models()
+                    except Exception:  # noqa: BLE001 — no list = cannot confirm
+                        served = []
+                    if served and self._model not in served:
+                        logger.info(
+                            "Skipping self-host %s: serves %s, not %s",
+                            base, ", ".join(served[:4]), self._model,
+                        )
+                        return None
                 self._provider_name = "local"
                 logger.info(
                     "Auto-detected self-hosted inference at %s (model: %s, via %s)",
@@ -366,6 +382,20 @@ class LLMRouter:
             model = self._model or ""
             p = OllamaProvider(host=host, default_model=model or "gemma4:4b")
             if await p.health_check():
+                if model:
+                    # An explicitly configured model Ollama does not have 404s every
+                    # chat; skip so the ladder can reach a backend that serves it.
+                    try:
+                        installed_all = await p.list_models()
+                    except Exception:  # noqa: BLE001 — no list = cannot confirm
+                        installed_all = []
+                    tagged = model if ":" in model else f"{model}:latest"
+                    if installed_all and model not in installed_all and tagged not in installed_all:
+                        logger.info(
+                            "Skipping Ollama at %s: has %s, not %s",
+                            host, ", ".join(installed_all[:4]), model,
+                        )
+                        return None
                 if not model:
                     # Validate against what is actually installed — a hardcoded
                     # default that does not exist on this host 404s every chat

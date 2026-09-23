@@ -186,3 +186,45 @@ def test_login_sets_url_on_unconfigured_box(monkeypatch):
 
     cli._persist_workspace_endpoints("https://idp.aitherium.com")
     assert saved_calls[0]["inference_url"] == "https://mcp.aitherium.com/v1"
+
+
+def _bare_cfg():
+    class _Cfg:  # minimal Config stand-in: nothing explicit, no keys
+        llm_backend = "auto"
+        llm_base_url = ""
+        aither_api_key = ""
+        cloud_mode = ""
+        vllm_extra_ports = ""
+        dgx_url = ""
+        inference_url = ""
+        core_llm_url = ""
+        ollama_host = ""
+        anthropic_api_key = ""
+        openai_api_key = ""
+        openai_base_url = ""
+        deepseek_api_key = ""
+
+    return _Cfg()
+
+
+def test_router_skips_selfhost_that_lacks_the_configured_model(monkeypatch, bonsai_like):
+    """Measured 2026-09-23: spine unreachable, discovery adopted Ollama and asked it
+    for bonsai2-27b on every turn -> 'model not found' -> 'empty completion'."""
+    import adk.local_inference as li
+    from adk.llm import LLMRouter
+
+    monkeypatch.delenv("AITHER_LOCAL_LLM_URL", raising=False)
+    monkeypatch.setattr(li, "SELFHOST_PORTS", (bonsai_like,))
+    router = LLMRouter(config=_bare_cfg(), model="bonsai2-27b")
+    assert asyncio.run(router._try_local_selfhost()) is None
+
+
+def test_router_keeps_selfhost_that_serves_the_configured_model(monkeypatch, bonsai_like):
+    import adk.local_inference as li
+    from adk.llm import LLMRouter
+
+    monkeypatch.delenv("AITHER_LOCAL_LLM_URL", raising=False)
+    monkeypatch.setattr(li, "SELFHOST_PORTS", (bonsai_like,))
+    router = LLMRouter(config=_bare_cfg(), model="bonsai-selfhost")
+    provider = asyncio.run(router._try_local_selfhost())
+    assert provider is not None and provider.default_model == "bonsai-selfhost"
