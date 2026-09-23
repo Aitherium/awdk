@@ -51,6 +51,65 @@ _BASE = os.getenv(
 _T_DISPATCH = 60     # the route returns a JOB; it must not block on the render
 _T_POLL = 30
 
+
+# --------------------------------------------------------------------------- #
+# /api/* is the media-forge OWNER's private surface
+# --------------------------------------------------------------------------- #
+#: media-forge serves two surfaces (see lib/integration/mediaforge_ops.py): the
+#: AitherSafety-curated twins (/ops, /op/{name}) and the owner's own UI surface under
+#: /api/*, which is ungated on the engine side. Every tool here that reaches /api/*
+#: therefore bypasses the curation, so on the MCP GATEWAY (the awnode copy, which sits
+#: beside `_tenant.py`) it is refused to anyone but a genuine platform caller -- a
+#: tenant admin included. The awdk copy has no `_tenant.py` beside it: it drives the
+#: operator's OWN engine (`availability: local`), where /api/* is theirs to call.
+_GATEWAY_COPY = os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "_tenant.py"))
+
+
+def _caller_may_reach_owner_api() -> bool:
+    """True when this call may reach media-forge's owner-private /api/* surface.
+
+    Two ways through, both on the gateway copy:
+
+    * an AUTHENTICATED platform operator -- ``caller_is_privileged`` on the caller the
+      gateway attached. The owner arrives through his Identity bearer as a TENANT caller
+      (his own tenant_id, tier ``platform``, roles ``[admin, super_admin]``), which
+      ``is_platform_caller`` alone refuses (the D-2044 false deny). The RAW caller
+      ContextVar is read, never ``get_current_caller()``: that fabricates a PLATFORM
+      caller when nobody is identified, which would re-open the anonymous path. A plain
+      tenant ``admin`` is not privileged and stays refused.
+    * a genuine internal/platform context -- ``is_platform_caller`` (X-Internal-Key,
+      tenant platform/system, or an absent caller only under internal trust).
+
+    Fails CLOSED: a `_tenant` or `AitherTenant` that will not import is a refusal,
+    never a pass."""
+    if not _GATEWAY_COPY:
+        return True
+    try:
+        if __package__:
+            from ._tenant import is_platform_caller
+        else:
+            from apps.awnode.tools.mcp._tenant import is_platform_caller
+        from lib.core.AitherTenant import _current_caller, caller_is_privileged
+        caller = _current_caller.get()
+        if caller is not None and caller_is_privileged(caller):
+            return True
+        return bool(is_platform_caller())
+    except Exception:                                   # noqa: BLE001 - fail closed
+        return False
+
+
+def _owner_api_refusal(tool: str):
+    """None when the caller may proceed, else the refusal envelope for `tool`."""
+    if _caller_may_reach_owner_api():
+        return None
+    return {
+        "error": f"{tool} reaches media-forge's owner-private /api/* surface, which is "
+                 "not curated by AitherSafety; it is platform-operator only",
+        "refused": True,
+        "reason": "owner_private_surface",
+    }
+
 #: Quality presets media-forge accepts on both 3D routes. Sent verbatim; an unknown
 #: value is refused HERE rather than 30s into a render on the far side.
 _QUALITY = ("fast", "balanced", "high")
@@ -218,6 +277,9 @@ def mediaforge_generate_3d(
     `place_a_backend` — a list of the lanes that would actually place one. That is a
     real answer, not a failure to try.
     """
+    refused = _owner_api_refusal("mediaforge_generate_3d")
+    if refused is not None:
+        return refused
     bad = _validate(prompt, media_id, quality)
     if bad is not None:
         return bad
@@ -252,6 +314,9 @@ def mediaforge_3d_status(job_id: str = "") -> dict:
     a multi-stage pipeline (shape, then texture, then GLB finalize), and watching it
     would report "done" at the end of the first stage.
     """
+    refused = _owner_api_refusal("mediaforge_3d_status")
+    if refused is not None:
+        return refused
     path = f"/api/jobs/{job_id}" if job_id else "/api/jobs"
     try:
         r = requests.get(f"{_BASE}{path}", timeout=_T_POLL)
@@ -272,6 +337,9 @@ def mediaforge_3d_backends() -> dict:
     probe of :8289 from wherever the agent happens to run answers a different question
     (whether THIS host can see the port) and has been wrong in both directions.
     """
+    refused = _owner_api_refusal("mediaforge_3d_backends")
+    if refused is not None:
+        return refused
     try:
         r = requests.get(f"{_BASE}/api/studio/models3d", timeout=_T_POLL)
         if r.status_code == 404:
@@ -390,12 +458,21 @@ def self_test() -> int:
                            "ids": [], "images": []},
             }]}
 
-    _real_get = requests.get
+    global _caller_may_reach_owner_api
+    _real_get, _real_gate = requests.get, _caller_may_reach_owner_api
     try:
         requests.get = lambda *a, **k: _StubResp()      # noqa: E731
+        _caller_may_reach_owner_api = lambda: True       # noqa: E731
         wired = mediaforge_3d_status()
+        # ...and the owner-private gate must refuse BEFORE any request is made.
+        _caller_may_reach_owner_api = lambda: False      # noqa: E731
+        calls = []
+        requests.get = lambda *a, **k: calls.append(a) or _StubResp()  # noqa: E731
+        denied = mediaforge_3d_status()
     finally:
-        requests.get = _real_get
+        requests.get, _caller_may_reach_owner_api = _real_get, _real_gate
+    if not denied.get("refused") or calls:
+        fails.append("a non-platform caller reached media-forge's owner-private /api/*")
     if not wired.get("jobs", [{}])[0].get("backend_absent"):
         fails.append("mediaforge_3d_status did not annotate a failed job -- the poll "
                      "is not wired to _annotate_jobs, however well the helper works")

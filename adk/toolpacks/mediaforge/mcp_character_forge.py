@@ -43,6 +43,65 @@ _T_TRAIN = 120      # train LAUNCH returns fast (the job itself is tracked/backg
 _T_LIBRARY = 21600  # a whole motion library = N back-to-back WAN renders (hours)
 
 
+# --------------------------------------------------------------------------- #
+# /api/* is the media-forge OWNER's private surface
+# --------------------------------------------------------------------------- #
+#: media-forge serves two surfaces (see lib/integration/mediaforge_ops.py): the
+#: AitherSafety-curated twins (/ops, /op/{name}) and the owner's own UI surface under
+#: /api/*, which is ungated on the engine side. Every tool here that reaches /api/*
+#: therefore bypasses the curation, so on the MCP GATEWAY (the awnode copy, which sits
+#: beside `_tenant.py`) it is refused to anyone but a genuine platform caller -- a
+#: tenant admin included. The awdk copy has no `_tenant.py` beside it: it drives the
+#: operator's OWN engine (`availability: local`), where /api/* is theirs to call.
+_GATEWAY_COPY = os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "_tenant.py"))
+
+
+def _caller_may_reach_owner_api() -> bool:
+    """True when this call may reach media-forge's owner-private /api/* surface.
+
+    Two ways through, both on the gateway copy:
+
+    * an AUTHENTICATED platform operator -- ``caller_is_privileged`` on the caller the
+      gateway attached. The owner arrives through his Identity bearer as a TENANT caller
+      (his own tenant_id, tier ``platform``, roles ``[admin, super_admin]``), which
+      ``is_platform_caller`` alone refuses (the D-2044 false deny). The RAW caller
+      ContextVar is read, never ``get_current_caller()``: that fabricates a PLATFORM
+      caller when nobody is identified, which would re-open the anonymous path. A plain
+      tenant ``admin`` is not privileged and stays refused.
+    * a genuine internal/platform context -- ``is_platform_caller`` (X-Internal-Key,
+      tenant platform/system, or an absent caller only under internal trust).
+
+    Fails CLOSED: a `_tenant` or `AitherTenant` that will not import is a refusal,
+    never a pass."""
+    if not _GATEWAY_COPY:
+        return True
+    try:
+        if __package__:
+            from ._tenant import is_platform_caller
+        else:
+            from apps.awnode.tools.mcp._tenant import is_platform_caller
+        from lib.core.AitherTenant import _current_caller, caller_is_privileged
+        caller = _current_caller.get()
+        if caller is not None and caller_is_privileged(caller):
+            return True
+        return bool(is_platform_caller())
+    except Exception:                                   # noqa: BLE001 - fail closed
+        return False
+
+
+def _owner_api_refusal(tool: str):
+    """None when the caller may proceed, else the refusal envelope for `tool`."""
+    if _caller_may_reach_owner_api():
+        return None
+    return {
+        "error": f"{tool} reaches media-forge's owner-private /api/* surface, which is "
+                 "not curated by AitherSafety; it is platform-operator only",
+        "refused": True,
+        "reason": "owner_private_surface",
+    }
+
+
 def _post(path: str, body: dict, timeout: int, tries: int = 3) -> dict:
     """POST with GateBusy backoff. media-forge signals errors as 200 + ok:false."""
     for attempt in range(tries):
@@ -90,6 +149,9 @@ def _one(d: dict):
 def mediaforge_status() -> dict:
     """media-forge health + whether the GPU is busy. ALWAYS check before a heavy render:
     the GPU is shared with the LLM fleet and a busy GPU rejects renders with GateBusy."""
+    refused = _owner_api_refusal("mediaforge_status")
+    if refused is not None:
+        return refused
     try:
         r = requests.get(f"{_BASE}/api/jobs", timeout=_T_FAST)
         r.raise_for_status()
@@ -106,6 +168,9 @@ def mediaforge_status() -> dict:
 
 def mediaforge_list_characters() -> dict:
     """List media-forge character spines (id, name, seed, face_refs, lora)."""
+    refused = _owner_api_refusal("mediaforge_list_characters")
+    if refused is not None:
+        return refused
     try:
         r = requests.get(f"{_BASE}/api/characters", timeout=_T_FAST)
         r.raise_for_status()
@@ -197,7 +262,7 @@ def mediaforge_flf2v(start_media_id: int, end_media_id: int, prompt: str = "",
     return _post("/op/flf2v", body, timeout=_T_HEAVY)
 
 
-def mediaforge_expression_set(character_id: str, emotions: list = None, seed: int = None) -> dict:
+def mediaforge_expression_set(character_id: str, emotions: list[str] = None, seed: int = None) -> dict:
     """Distinct emotion STILLS for a character spine (face-only cues + BiRefNet cut), written to
     <cid>/expressions/<emotion>.png.
 
@@ -229,7 +294,7 @@ def mediaforge_remove_bg(media_id: int) -> dict:
 # LoRA bootstrap — the durable fix for from-scratch generation
 # --------------------------------------------------------------------------- #
 
-def mediaforge_lora_dataset(character_id: str, frame_ids: list, trigger: str) -> dict:
+def mediaforge_lora_dataset(character_id: str, frame_ids: list[str], trigger: str) -> dict:
     """Build a LoRA dataset from i2v frames (gemma auto-captioned, trigger token prepended).
 
     Feed it the RAW frames from mediaforge_animate() across MANY motions — that variety is the whole
@@ -238,6 +303,9 @@ def mediaforge_lora_dataset(character_id: str, frame_ids: list, trigger: str) ->
     CURATE FIRST: view the frames and drop any that drifted off-model (strong motions like jump /
     dance / turn warp the body). 150 frames with 40 mutants trains a worse LoRA than 110 clean ones.
     """
+    refused = _owner_api_refusal("mediaforge_lora_dataset")
+    if refused is not None:
+        return refused
     if not frame_ids:
         return {"error": "frame_ids required — run mediaforge_animate() over several motions first"}
     return _post(f"/api/characters/{character_id}/dataset",
@@ -299,6 +367,9 @@ def mediaforge_lora_train(character_id: str, steps: int = 2000, dim: int = 32,
     scp'd up, .safetensors scp'd back + auto-attached to the spine, targeted teardown.
     After it lands, txt2img on this character stops drifting — that is the ONLY way to
     generate the character from scratch in arbitrary new poses."""
+    refused = _owner_api_refusal("mediaforge_lora_train")
+    if refused is not None:
+        return refused
     return _post(f"/api/characters/{character_id}/train",
                  {"steps": int(steps), "dim": int(dim), "alpha": int(dim),
                   "resolution": int(resolution)},
