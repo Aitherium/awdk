@@ -294,6 +294,51 @@ _MAX_RELATED_PER_NODE = 5
 _MAX_CANDIDATES_FOR_SIM = 50
 
 
+_SYNC_OFF_FLAGS = ("false", "0", "off", "no")
+
+
+def fleet_sync_config(fleet_url: Optional[str] = None) -> dict:
+    """Resolve the graph dataplane sync target from args + env (pure).
+
+    Returns ``{enabled, url, qdrant_url, reason}``. Sync is enabled only when
+    a target is configured (explicit ``fleet_url``, ``AITHER_FLEET_MEMORY_URL``
+    or ``AITHER_FLEET_QDRANT_URL``) and ``AITHER_FLEET_SYNC`` is not a
+    disable flag. No target is ever inferred.
+    """
+    url = (fleet_url if fleet_url is not None
+           else os.environ.get("AITHER_FLEET_MEMORY_URL", "")).strip()
+    qdrant = os.environ.get("AITHER_FLEET_QDRANT_URL", "").strip().rstrip("/")
+    flag = os.environ.get("AITHER_FLEET_SYNC", "auto").strip().lower()
+    if flag in _SYNC_OFF_FLAGS:
+        return {"enabled": False, "url": url, "qdrant_url": qdrant,
+                "reason": f"AITHER_FLEET_SYNC={flag}"}
+    if not (url or qdrant):
+        return {"enabled": False, "url": "", "qdrant_url": "",
+                "reason": "no target configured (set AITHER_FLEET_MEMORY_URL "
+                          "or AITHER_FLEET_QDRANT_URL)"}
+    return {"enabled": True, "url": url, "qdrant_url": qdrant, "reason": ""}
+
+
+def fleet_sync_status_path() -> Path:
+    """Where the last graph-sync outcome is recorded (read by ``adk doctor``)."""
+    return Path(
+        os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither"))
+    ) / "graph" / "fleet_sync_status.json"
+
+
+def _record_fleet_sync_status(target: str, pushed: int, failed: int,
+                              pending: int, error: str = "") -> None:
+    try:
+        p = fleet_sync_status_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "target": target, "pushed": pushed, "failed": failed,
+            "pending": pending, "error": error[:300], "at": time.time(),
+        }), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 — status is advisory
+        logger.debug("graph sync status write failed: %s", exc)
+
+
 class GraphMemory:
     """Local knowledge graph with embedding-based search.
 
@@ -380,22 +425,16 @@ class GraphMemory:
             fleet_url if fleet_url is not None
             else os.environ.get("AITHER_FLEET_MEMORY_URL", "")
         )
-        # Sync is ON BY DEFAULT — a sovereign agent's memory is meant to be
-        # durable in its dataplane, so this "just works" like the canonical
-        # embeddings provider. `auto` (default) = enabled; ONLY
-        # AITHER_FLEET_SYNC=false|0|off|no disables. When no explicit target is
-        # set we INFER one (local Nexus :8122, or the gateway in cloud mode).
-        # Push is always best-effort — if the target is unreachable it fails
-        # silently and the local SQLite graph remains fully functional.
-        _fleet_flag = os.environ.get("AITHER_FLEET_SYNC", "auto").strip().lower()
-        self._fleet_enabled = _fleet_flag not in ("false", "0", "off", "no")
-        if not self._fleet_url and self._fleet_enabled:
-            cloud_mode = os.environ.get("AITHER_CLOUD_MODE", "")
-            if cloud_mode in ("cloud_first", "cloud_only"):
-                gw = os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com")
-                self._fleet_url = f"{gw}/v1/memory"
-            else:
-                self._fleet_url = "http://localhost:8122"
+        # Sync runs ONLY against a target an operator named. There is no
+        # inferred default: the gateway serves no /v1/memory/ingest (404 on
+        # every ingest) and a customer machine runs no Nexus on :8122, so an
+        # inferred target only produced a doomed background push per ingest.
+        # AITHER_FLEET_SYNC=auto (default) → on iff a target is configured;
+        # false|0|off|no → off; true without a target → off, reason recorded.
+        _cfg = fleet_sync_config(fleet_url)
+        self._fleet_url = _cfg["url"]
+        self._fleet_enabled = _cfg["enabled"]
+        self._fleet_disabled_reason = _cfg["reason"]
         self._fleet_collection = os.environ.get(
             "AITHER_FLEET_GRAPH_COLLECTION", "graph_memory"
         )
@@ -407,8 +446,7 @@ class GraphMemory:
         # tenant's points exactly. Points are upserted with the node's OWN
         # embedding under a deterministic per-(tenant,node) id (idempotent);
         # fleet_pull scrolls the tenant's points back. Verified live.
-        self._qdrant_url = os.environ.get(
-            "AITHER_FLEET_QDRANT_URL", "").strip().rstrip("/")
+        self._qdrant_url = _cfg["qdrant_url"]
         self._fleet_backend = "qdrant" if self._qdrant_url else "nexus"
         # Auto-replicate new nodes to the dataplane after every ingest (on by
         # default). Runs as a tracked BACKGROUND task so ingest never blocks;
@@ -419,6 +457,7 @@ class GraphMemory:
             not in ("false", "0", "off", "no")
         )
         self._sync_tasks: set = set()
+        self._last_sync_error = ""
 
         self._init_db()
 
@@ -634,9 +673,13 @@ class GraphMemory:
                 resp = await client.post(
                     ingest_url, json=payload, headers=self._fleet_headers(),
                 )
-                return resp.status_code in (200, 201)
+                if resp.status_code in (200, 201):
+                    return True
+                self._last_sync_error = f"HTTP {resp.status_code} from {ingest_url}"
+                return False
         except Exception as exc:  # noqa: BLE001 — non-fatal, local is source of truth
             logger.debug("graph fleet push failed (non-fatal): %s", exc)
+            self._last_sync_error = f"{type(exc).__name__}: {exc}"
             return False
 
     async def fleet_sync_pending(self) -> int:
@@ -703,9 +746,19 @@ class GraphMemory:
                     failed += 1
         if pushed:
             await self._notify_synced(pushed)
+        pending = await self.fleet_sync_pending()
+        if rows:
+            if failed:
+                logger.warning(
+                    "graph fleet sync: %d/%d nodes failed to replicate to %s (%s)",
+                    failed, len(rows), self._qdrant_url or self._fleet_url,
+                    self._last_sync_error or "no detail")
+            _record_fleet_sync_status(
+                self._qdrant_url or self._fleet_url, pushed, failed, pending,
+                self._last_sync_error if failed else "")
         return {
             "pushed": pushed, "failed": failed,
-            "pending": await self.fleet_sync_pending(), "enabled": True,
+            "pending": pending, "enabled": True,
         }
 
     async def _notify_synced(self, count: int) -> None:
@@ -1062,7 +1115,8 @@ class GraphMemory:
         No running loop (a sync caller) → skipped; they can call
         :meth:`fleet_push_all_nodes` explicitly.
         """
-        if not (self._auto_sync and self._fleet_enabled and self._fleet_url):
+        if not (self._auto_sync and self._fleet_enabled
+                and (self._fleet_url or self._qdrant_url)):
             return
         try:
             loop = asyncio.get_running_loop()

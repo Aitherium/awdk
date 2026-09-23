@@ -397,6 +397,33 @@ def check_packs() -> bool:
 
 #: The checks `cmd_doctor` counts, as (label, callable).
 #:
+def check_graph_memory_sync() -> bool:
+    """Graph-memory dataplane sync: off (local only), or the last outcome."""
+    from adk.graph_memory import fleet_sync_config, fleet_sync_status_path
+
+    cfg = fleet_sync_config()
+    if not cfg["enabled"]:
+        _ok(f"Graph sync: off, local only ({cfg['reason']})")
+        return True
+    target = cfg["qdrant_url"] or cfg["url"]
+    try:
+        st = json.loads(fleet_sync_status_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        _ok(f"Graph sync: -> {target} (no sync attempted yet)")
+        return True
+    if st.get("target") != target:
+        _ok(f"Graph sync: -> {target} (no sync to this target yet)")
+        return True
+    failed = int(st.get("failed", 0) or 0)
+    if failed:
+        err = st.get("error") or "no detail"
+        _fail(f"Graph sync: last push to {target}: {failed} failed, "
+              f"{st.get('pending', '?')} pending ({err})")
+        return False
+    _ok(f"Graph sync: -> {target} (last push ok, {st.get('pushed', 0)} nodes)")
+    return True
+
+
 #: Module-level on purpose: the summary prints "<passed>/<len(DOCTOR_CHECKS)>",
 #: so a check that returns falsy WITHOUT printing anything is arithmetic the
 #: user cannot reconcile with the screen — measured 2026-08-07 as "8/11 checks
@@ -415,6 +442,7 @@ DOCTOR_CHECKS: list[tuple[str, object]] = [
     ("Cloud APIs", check_cloud_keys),
     ("Disk", check_disk),
     ("Packs", check_packs),
+    ("Graph sync", check_graph_memory_sync),
 ]
 
 
