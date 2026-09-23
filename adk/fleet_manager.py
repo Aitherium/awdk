@@ -296,14 +296,16 @@ def _api_key() -> str:
 def _http_managed_deploy(agent: str, opts: dict[str, Any]) -> dict[str, Any]:
     import httpx
 
-    body = {"agent": agent}
-    for k in ("mcp_url", "model", "company"):
+    # Genesis ``POST /v1/agent/managed/deploy`` takes ``ManagedDeployBody``:
+    # the agent is ``agent_id`` (``agent`` was silently dropped by pydantic).
+    body = {"agent_id": agent}
+    for k in ("mcp_url", "model", "system_prompt", "environment_id"):
         if opts.get(k):
             body[k] = opts[k]
     headers = {}
     if _api_key():
         headers["Authorization"] = f"Bearer {_api_key()}"
-    url = f"{_gateway_base()}/v1/agent/binding/managed-deploy"
+    url = f"{_gateway_base()}/v1/agent/managed/deploy"
     try:
         r = httpx.post(url, json=body, headers=headers, timeout=60.0)
         if r.status_code >= 400:
@@ -319,9 +321,9 @@ def _http_managed_demigrate(agent: str, meta: dict[str, Any]) -> bool:
     headers = {}
     if _api_key():
         headers["Authorization"] = f"Bearer {_api_key()}"
-    url = f"{_gateway_base()}/v1/agent/binding/managed?agent_id={agent}"
+    url = f"{_gateway_base()}/v1/agent/managed"
     try:
-        r = httpx.request("DELETE", url, headers=headers, timeout=30.0)
+        r = httpx.request("DELETE", url, params={"agent_id": agent}, headers=headers, timeout=30.0)
         return r.status_code < 400
     except Exception:  # noqa: BLE001
         return False
