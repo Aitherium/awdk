@@ -16,6 +16,10 @@ Behaviour:
   bad and does not spuriously terminate a rollout.
 * :meth:`is_uncertain` reports whether ``(state, action)`` is unseen, so a
   caller can bias exploration toward learning unknown transitions.
+* :meth:`path_to_reward` / :meth:`path_to_frontier` answer "reach a known
+  state" by BFS over the recorded graph: the shortest known action path to an
+  edge that paid (e.g. an observed level-up), or to the nearest state that
+  still has an untried action. No search, no rollout -- exact recorded edges.
 * :meth:`save` / :meth:`load` persist the table as JSONL for cross-run reuse.
 
 The engine calls ``step`` with a state **hash** as the ``state`` argument, so
@@ -26,8 +30,9 @@ next state's hash).
 from __future__ import annotations
 
 import json
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 
 def _action_key(action: Any) -> Any:
@@ -101,6 +106,72 @@ class ObservedTransitionModel:
 
     def __len__(self) -> int:
         return len(self._t)
+
+    def items(self) -> Iterator[Tuple[Tuple[Any, Any], Tuple[Any, float, bool]]]:
+        """Iterate ``((state_hash, action_key), (next, reward, done))``."""
+        return iter(list(self._t.items()))
+
+    # -- reach a known state ----------------------------------------------
+
+    def path_to_reward(
+        self, start: Any, min_reward: float = 0.5, max_depth: int = 64
+    ) -> Optional[List[Any]]:
+        """Shortest recorded action path from ``start`` ending on an edge whose
+        reward exceeds ``min_reward`` (default 0.5: a win, not a shaping bonus).
+
+        Returns ``None`` when no such edge is reachable through recorded,
+        non-terminal transitions within ``max_depth`` steps.
+        """
+        return self._bfs(start, lambda _s, edges: next(
+            (a for a, (_n, r, _d) in edges if r > min_reward), None), max_depth)
+
+    def path_to_frontier(
+        self, start: Any, actions: Iterable[Any], max_depth: int = 64
+    ) -> Optional[List[Any]]:
+        """Shortest recorded path to the nearest state with an UNTRIED action
+        from ``actions``, with that action appended (``[untried]`` when
+        ``start`` itself has one). ``None`` when every reachable state is
+        exhausted.
+        """
+        acts = list(actions)
+        return self._bfs(start, lambda s, _edges: next(
+            (a for a in acts if (s, _action_key(a)) not in self._t), None), max_depth)
+
+    def _bfs(
+        self,
+        start: Any,
+        goal: Callable[[Any, List[Tuple[Any, Tuple[Any, float, bool]]]], Any],
+        max_depth: int,
+    ) -> Optional[List[Any]]:
+        """BFS over recorded edges. ``goal(state, out_edges)`` returns the final
+        action to append, or ``None``. Terminal edges and self-loops are never
+        traversed (they can still BE the goal edge)."""
+        out: Dict[Any, List[Tuple[Any, Tuple[Any, float, bool]]]] = {}
+        for (s, a), hit in self._t.items():
+            out.setdefault(s, []).append((a, hit))
+        parent: Dict[Any, Tuple[Any, Any]] = {}
+        seen = {start}
+        frontier: deque = deque([(start, 0)])
+        while frontier:
+            state, depth = frontier.popleft()
+            edges = out.get(state, [])
+            final = goal(state, edges)
+            if final is not None:
+                path = [final]
+                while state != start:
+                    state, act = parent[state]
+                    path.append(act)
+                path.reverse()
+                return path
+            if depth >= max_depth:
+                continue
+            for a, (nxt, _r, done) in edges:
+                if done or nxt in seen:
+                    continue
+                seen.add(nxt)
+                parent[nxt] = (state, a)
+                frontier.append((nxt, depth + 1))
+        return None
 
     # -- persistence ------------------------------------------------------
 

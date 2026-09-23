@@ -2,10 +2,15 @@
 
 Ported from AitherOS ``lib/cognitive/UnifiedMCTS.py`` with every
 AitherOS-specific coupling either deleted or turned into an optional,
-default-off injected seam. With all seams left ``None`` the algorithm is
-byte-behaviour-identical to the original's no-world-model path:
+default-off injected seam:
 
     SELECT (UCT / PUCT)  ->  EXPAND  ->  SIMULATE  ->  BACKPROPAGATE
+
+Values are discounted returns (``MCTSConfig.discount``): edge rewards are kept
+on the nodes and folded in on backprop, and a rollout sums its rewards instead
+of averaging them into a clamped [0, 1] blend -- the original's blend made the
+search indifferent to reward scale. Selection min-max normalises Q over the
+observed range; the accumulated values are never rescaled.
 
 Seams (all on :class:`MCTSConfig`, all default ``None``):
 
@@ -137,6 +142,9 @@ class MCTSNode:
     terminal: bool = False
     depth: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Reward observed on the edge parent -> this node (sampled at expansion).
+    # Backprop folds it in, so ``avg_value`` is Q(parent, action), not V(state).
+    reward: float = 0.0
     # Optional embedding for the semantic-dedup seam (dedup_embedder).
     embedding: Optional[Any] = None
     # Actions that previously raised during expansion.
@@ -157,11 +165,16 @@ class MCTSNode:
         exploration_weight: float = 1.41,
         use_puct: bool = False,
         c_puct: float = 1.25,
+        q_bounds: Optional[Tuple[float, float]] = None,
     ) -> float:
         """UCT or PUCT selection score.
 
         UCT:  Q + c * sqrt(ln(N_parent) / n)
         PUCT: Q + c_puct * prior * sqrt(N_parent) / (1 + n)
+
+        ``q_bounds`` ``(lo, hi)`` min-max normalises Q for SELECTION only, so an
+        unbounded return does not drown the exploration term. The accumulated
+        ``value_sum`` is never rescaled.
         """
         if self.visits == 0:
             return float("inf")
@@ -169,6 +182,8 @@ class MCTSNode:
             return self.avg_value
 
         exploitation = self.avg_value
+        if q_bounds is not None and q_bounds[1] > q_bounds[0]:
+            exploitation = (exploitation - q_bounds[0]) / (q_bounds[1] - q_bounds[0])
 
         if use_puct:
             parent_visits = max(1, self.parent.visits)
@@ -275,6 +290,10 @@ class MCTSConfig:
     # Opt-in rollout / expansion tuning (env-agnostic, duck-typed action_type).
     rollout_avoid_early_stop: bool = False
     expand_defer_stop: bool = False
+    # Per-step discount for the backed-up return. A leaf's value is the
+    # discounted SUM of edge + rollout rewards plus the discounted evaluate()
+    # bootstrap -- never averaged over steps, never clamped.
+    discount: float = 0.97
 
     # -- Injected seams (all default None => identical to the base algorithm) --
     transition_model: Optional["TransitionModel"] = None
@@ -351,6 +370,10 @@ class UnifiedMCTS:
         self.config = config or MCTSConfig()
         # Per-search budget counter for the value_model seam.
         self._value_calls = 0
+        # Observed min/max of backed-up Q (MuZero-style MinMaxStats) for
+        # selection-only normalisation (see MCTSNode.uct_value). Reset per search.
+        self._q_lo = math.inf
+        self._q_hi = -math.inf
 
     # -- Entrypoints ------------------------------------------------------
 
@@ -358,6 +381,7 @@ class UnifiedMCTS:
         """Run a fresh search from ``env``'s current state."""
         cfg = self.config
         self._value_calls = 0
+        self._q_lo, self._q_hi = math.inf, -math.inf
         self._observe("search_started", self._start_payload(env))
 
         initial_actions = env.get_actions()
@@ -390,6 +414,10 @@ class UnifiedMCTS:
         """
         cfg = self.config
         self._value_calls = 0
+        self._q_lo, self._q_hi = math.inf, -math.inf
+        for child in root_node.children if root_node is not None else ():
+            if child.visits:
+                self._widen_q_bounds(child.avg_value)
 
         if root_node is None:
             initial_actions = env.get_actions()
@@ -465,12 +493,18 @@ class UnifiedMCTS:
             # 3. SIMULATE
             value = await self._simulate_async(node, sim_env)
 
-            if value > best_sim_value and node.action is not None:
-                best_sim_value = value
-                best_sim_action = node.action
-
             # 4. BACKPROPAGATE
             self._backpropagate(node, value)
+
+            # Track the best ROOT action by its backed-up Q. (This used to keep
+            # the raw leaf value and the LEAF's action, which could name a deep
+            # action as the root move.)
+            top = node
+            while top.parent is not None and top.parent is not root:
+                top = top.parent
+            if top.parent is root and top.avg_value > best_sim_value:
+                best_sim_value = top.avg_value
+                best_sim_action = top.action
 
             _completed = i + 1
             if _progress_cb and (_completed % _progress_every == 0):
@@ -499,7 +533,9 @@ class UnifiedMCTS:
             tree_action = best_sim_action
             tree_value = best_sim_value
 
-        if tree_value >= best_sim_value:
+        if root.children or tree_value >= best_sim_value:
+            # The most-visited root child IS the search's answer; one lucky
+            # sample must not override it now that values are unclamped.
             final_action, final_value = tree_action, tree_value
         else:
             final_action, final_value = best_sim_action, best_sim_value
@@ -548,11 +584,15 @@ class UnifiedMCTS:
 
     def _select(self, node: MCTSNode) -> MCTSNode:
         cfg = self.config
+        bounds = (self._q_lo, self._q_hi)
         while not node.terminal and node.is_fully_expanded and node.children:
             node = max(
                 node.children,
                 key=lambda c: c.uct_value(
-                    cfg.exploration_weight, use_puct=cfg.use_puct, c_puct=cfg.c_puct
+                    cfg.exploration_weight,
+                    use_puct=cfg.use_puct,
+                    c_puct=cfg.c_puct,
+                    q_bounds=bounds,
                 ),
             )
         return node
@@ -639,6 +679,7 @@ class UnifiedMCTS:
             terminal=terminal,
             depth=node.depth + 1,
             prior=node.metadata.get("policy_priors", {}).get(_action_key(action), 1.0),
+            reward=float(reward),
         )
 
         # Semantic dedup seam (default off): merge concept-equal siblings.
@@ -714,13 +755,19 @@ class UnifiedMCTS:
                 return _clamp01(float(v))
 
         try:
-            value = env.evaluate()
+            value = float(env.evaluate())
         except Exception:
             value = 0.0
+        if node.terminal:
+            # Nothing to roll out past a terminal; its edge reward is already on
+            # the node and _backpropagate folds it in.
+            return value
 
+        gamma = cfg.discount
         sim_env = env.clone()
         state_hash = sim_env.get_state_hash()
         total_reward = 0.0
+        disc = 1.0
         steps = 0
 
         for _ in range(cfg.simulation_depth):
@@ -745,26 +792,26 @@ class UnifiedMCTS:
 
             try:
                 state_hash, reward, done = self._rollout_step(sim_env, state_hash, action)
-                total_reward += reward
+                total_reward += disc * float(reward)
+                disc *= gamma
                 steps += 1
                 if done:
                     break
             except Exception:
-                total_reward -= 0.3
+                total_reward -= disc * 0.3
                 break
 
+        if steps == 0:
+            return value
         try:
-            final_eval = sim_env.evaluate()
+            final_eval = float(sim_env.evaluate())
         except Exception:
             final_eval = value
 
-        if steps > 0:
-            avg_rollout = total_reward / steps
-            blended = 0.4 * avg_rollout + 0.6 * final_eval
-        else:
-            blended = final_eval
-
-        return _clamp01(blended)
+        # Discounted return plus the discounted bootstrap. No mean over steps
+        # (that diluted a sparse +1 into invisibility) and no clamp (that made
+        # every rewarding path the same number).
+        return total_reward + disc * final_eval
 
     def _rollout_step(
         self, sim_env: MCTSEnvironment, state_hash: int, action: Any
@@ -786,12 +833,30 @@ class UnifiedMCTS:
         _obs, reward, done = sim_env.step(action)
         return sim_env.get_state_hash(), reward, done
 
-    def _backpropagate(self, node: MCTSNode, reward: float) -> None:
+    def _backpropagate(self, node: MCTSNode, value: float) -> None:
+        """Back up the leaf value as a discounted return.
+
+        ``value`` estimates V(leaf state). Every non-root node accumulates
+        ``Q = edge_reward + discount * V(below)``, so siblings compare on the
+        reward of reaching them plus what follows, and a reward k steps down is
+        worth ``discount ** k`` of itself one level above.
+        """
+        gamma = self.config.discount
+        g = float(value)
         current: Optional[MCTSNode] = node
         while current is not None:
+            if current.parent is not None:
+                g = current.reward + gamma * g
+                self._widen_q_bounds(g)
             current.visits += 1
-            current.value_sum += reward
+            current.value_sum += g
             current = current.parent
+
+    def _widen_q_bounds(self, q: float) -> None:
+        if q < self._q_lo:
+            self._q_lo = q
+        if q > self._q_hi:
+            self._q_hi = q
 
     # -- Trace / confidence ----------------------------------------------
 
