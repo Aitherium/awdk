@@ -517,6 +517,11 @@ class AitherAgent:
                     )
                     max_tokens = caps.context_window
                     logger.info("[capabilities] %s", caps.describe())
+                    # Compaction budgets against THIS, not the model-name table: the
+                    # table pins bonsai at 16,384, so a server relaunched with a larger
+                    # window (-c 131072 --kv-unified, 2026-09-22) was never used.
+                    if caps.discovered:
+                        self._context_limit_discovered = int(caps.context_window)
                 except Exception:
                     max_tokens = 8000     # last resort, never 0 (0 = no limit)
             self._context_mgr = ContextManager(max_tokens=max_tokens)
@@ -1763,7 +1768,7 @@ class AitherAgent:
                 summarize=_summarize_history,
                 make_message=lambda role, content: Message(role=role, content=content),
                 overhead_tokens=getattr(self, "_context_overhead", 0),
-                limit_override=getattr(self, "_context_limit_observed", None),
+                limit_override=self._compaction_limit(),
             )
             if _did_compact:
                 logger.info("[REACT] History compacted at iteration %d", _loop_idx)
@@ -1834,7 +1839,7 @@ class AitherAgent:
                     summarize=_summarize_history,
                     make_message=lambda role, content: Message(role=role, content=content),
                     overhead_tokens=self._context_overhead,
-                    limit_override=getattr(self, "_context_limit_observed", None),
+                    limit_override=self._compaction_limit(),
                 )
                 _est_at_send = estimate_tokens(messages)
                 resp = await self.llm.chat(
@@ -3014,6 +3019,16 @@ class AitherAgent:
             finish_reason="stop",
             effort_level=decision.effort,
         )
+
+    def _compaction_limit(self) -> "int | None":
+        """The window compaction budgets against. An explicit ``ADK_CONTEXT_LIMIT`` wins
+        (None here lets ``context_limit_for`` read it); then the size a provider stated
+        in a refusal; then the window the endpoint advertised at start (llama.cpp
+        /props, vLLM max_model_len); else None and the model-name table decides."""
+        if os.environ.get("ADK_CONTEXT_LIMIT", "").strip():
+            return None
+        return (getattr(self, "_context_limit_observed", None)
+                or getattr(self, "_context_limit_discovered", None))
 
     async def run(self, task: str, **kwargs) -> AgentResponse:
         """Execute a task with ReAct-style reasoning.

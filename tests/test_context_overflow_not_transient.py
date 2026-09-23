@@ -121,5 +121,17 @@ async def test_limit_override_beats_the_name_table():
 def test_the_loop_remembers_the_limit_the_provider_named():
     src = (Path(__file__).resolve().parents[1] / "adk" / "agent.py").read_text(encoding="utf-8")
     assert "_context_limit_observed" in src and "limit_tokens" in src
-    assert src.count("limit_override=getattr(self, \"_context_limit_observed\", None)") == 2, \
-        "both compaction calls must budget against the observed limit"
+    assert src.count("limit_override=self._compaction_limit()") == 2, \
+        "both compaction calls must budget through _compaction_limit"
+    # ...and that helper still honours the limit a provider named in a refusal.
+    from adk.agent import AitherAgent
+    agent = object.__new__(AitherAgent)
+    agent._context_limit_observed = 16384
+    agent._context_limit_discovered = 131072
+    import os
+    saved = os.environ.pop("ADK_CONTEXT_LIMIT", None)
+    try:
+        assert agent._compaction_limit() == 16384
+    finally:
+        if saved is not None:
+            os.environ["ADK_CONTEXT_LIMIT"] = saved
