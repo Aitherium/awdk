@@ -2137,8 +2137,13 @@ def _post_json_resilient(
         delay = min(delay * 1.5, 10.0)
 
 
-def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
-    """Run RFC 8628 device code flow. Returns token response dict or raises."""
+def _device_flow_login(identity_url: str, client_name: str = "adk", on_code=None) -> dict:
+    """Run RFC 8628 device code flow. Returns token response dict or raises.
+
+    ``on_code(user_code, verification_uri, expires_in)``, when given, replaces the
+    terminal print + browser open: a headless caller (the harness daemon's autolink)
+    hands the approve link to the owner's phone instead of a desktop nobody watches.
+    """
     import json as _json
     import time
     import urllib.request
@@ -2173,7 +2178,10 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     interval = max(2, int(data.get("interval", 5)))
     expires_in = int(data.get("expires_in", 900))
 
-    # Step 2: Show code + open browser
+    # Step 2: Show code + open browser -- or hand it to the caller.
+    if on_code is not None:
+        on_code(user_code, verification_uri, expires_in)
+        return _poll_device_token(identity_url, device_code, interval, expires_in, _ua)
     print()
     print(f"  Your code: {user_code}")
     print()
@@ -2233,6 +2241,73 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
 
     print()
     raise RuntimeError("Timed out waiting for approval. Run `adk login` again.")
+
+
+def _poll_device_token(
+    identity_url: str, device_code: str, interval: int, expires_in: int, ua: str,
+) -> dict:
+    """Quiet poll for the device-flow token. Raises RuntimeError on expiry/refusal."""
+    import json as _json
+    import time
+    import urllib.error
+    import urllib.request
+
+    deadline = time.time() + expires_in
+    body = _json.dumps({"device_code": device_code}).encode()
+    headers = {"Content-Type": "application/json", "Accept": "application/json",
+               "User-Agent": ua}
+    while time.time() < deadline:
+        time.sleep(interval)
+        req = urllib.request.Request(f"{identity_url}/auth/device/token", data=body,
+                                     headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = _json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            if exc.code == 400:
+                try:
+                    detail = _json.loads(exc.read()).get("detail", "")
+                except (ValueError, OSError):
+                    detail = ""
+            if detail in ("expired_token", "invalid_device_code", "access_denied"):
+                raise RuntimeError(f"device code {detail}") from exc
+            continue
+        except (urllib.error.URLError, OSError):
+            continue
+        if result.get("access_token"):
+            return result
+    raise RuntimeError("device code expired")
+
+
+def complete_device_login(identity_url: str, result: dict, sync: bool = True) -> str:
+    """Persist a device-flow token exactly as `adk login` does. Returns the username.
+
+    Shared by `adk login` and the daemon's autolink so a headless sign-in leaves the
+    SAME files behind (config, license, workspace endpoints, shell auth profile).
+    """
+    token = result.get("access_token", "")
+    if not token:
+        raise RuntimeError("no token in the device-flow response")
+    user = result.get("user", {}) if isinstance(result.get("user"), dict) else {}
+    config_update = {"api_key": token}
+    if user.get("tenant_id"):
+        config_update["tenant_id"] = user["tenant_id"]
+    if user.get("username"):
+        config_update["username"] = user["username"]
+    save_saved_config(config_update)
+    _save_account_license(result)
+    eps = _persist_workspace_endpoints(identity_url)
+    _persist_shell_auth(identity_url, eps, result)
+    if sync:
+        try:
+            import asyncio as _aio
+
+            from adk.sync.secrets import SecretsSync
+            _aio.run(SecretsSync(api_key=token).sync())
+        except Exception as exc:  # noqa: BLE001 -- sync is a convenience, not a gate
+            sys.stderr.write(f"  (vault sync skipped: {type(exc).__name__})" + chr(10))
+    return str(user.get("username") or "")
 
 
 def _github_device_flow_login(identity_url: str, client_name: str = "adk") -> dict:

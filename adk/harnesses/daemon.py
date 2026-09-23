@@ -3303,6 +3303,12 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
         f"  token: {TOKEN_PATH} (or $AITHER_HARNESS_TOKEN)\n"
         f"  cors : {', '.join(allowed_origins())}\n"
     )
+    # Opt-in (AITHER_AUTOLINK=1): sign in via the owner's phone and hold the
+    # reverse link from HERE, so no terminal and no second supervisor are needed.
+    from adk.autolink import start_autolink
+
+    if start_autolink(f"http://127.0.0.1:{bind_port}"):
+        sys.stderr.write("  autolink: on (sessions reachable at api.aitherium.com/code)\n")
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
     return 0
 
