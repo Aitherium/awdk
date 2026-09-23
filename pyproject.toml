@@ -133,6 +133,11 @@ dependencies = [
     # install would refuse to file any bug at all, which is the silent-quality-loss
     # shape the ddgs note above argues against.
     "awreport>=0.1.0",
+    # awsettings - the settings-sync rules (redact, union-merge, one-way denies).
+    # adk/sync/claude_settings.py carried a private copy that had already
+    # drifted (it never synced `sandbox`, so its sandbox.credentials guard was
+    # unreachable). Published on PyPI and pure-python, so hard like awreport.
+    "awsettings>=0.3.1",
 ]
 
 [project.optional-dependencies]

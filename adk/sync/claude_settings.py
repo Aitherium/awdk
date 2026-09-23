@@ -57,7 +57,6 @@ Environment:
 """
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import os
@@ -72,145 +71,32 @@ PREF_NAMESPACE = "claude_code"
 #: The file a pull writes. See the contract above — never ``settings.json``.
 LOCAL_SETTINGS = ".claude/settings.local.json"
 
-#: Array-valued keys that MERGE as a union rather than replacing.
-_UNION_ARRAYS = (
-    ("permissions", "allow"),
-    ("permissions", "deny"),
-    ("permissions", "ask"),
-    ("permissions", "additionalDirectories"),
-    ("enabledMcpjsonServers",),
-    ("disabledMcpjsonServers",),
+# The redaction and merge rules live in `awsettings.core` (its `claude` domain),
+# the published brick every aw* surface syncs through. This module kept a private
+# copy until 2026-09-22 and it had drifted: `sandbox` was missing from the synced
+# keys, so the `sandbox.credentials` guard here could never run and a sandbox
+# network allowlist never travelled. One implementation now; the underscored
+# names stay importable for existing callers.
+from awsettings.core import (  # noqa: E402
+    SECRET_KEYS as _SECRET_KEYS,
+    SECRET_SUBKEYS as _SECRET_SUBKEYS,
+    SYNCED_KEYS as _SYNCED_KEYS,
+    UNION_ARRAYS as _UNION_ARRAYS,
+    _get,
+    _set,
+    merge,
+    redact,
 )
 
-#: Keys whose VALUES are credentials or credential-fetching commands. Dropped
-#: wholesale from any snapshot that leaves this machine.
-_SECRET_KEYS = frozenset({
-    "env",                    # arbitrary values, routinely tokens
-    "apiKeyHelper",
-    "proxyAuthHelper",
-    "awsCredentialExport",
-    "awsAuthRefresh",
-    "gcpAuthRefresh",
-    "otelHeadersHelper",
-    "policyHelper",
-})
-
-#: Sub-object of `sandbox` that holds credential material.
-_SECRET_SUBKEYS = {"sandbox": frozenset({"credentials"})}
-
-#: Keys that are meaningful to sync. Anything else is left alone rather than
-#: guessed at — an unknown key is more likely a local experiment than a
-#: preference somebody wants pushed to every machine they own.
-_SYNCED_KEYS = frozenset({
-    "permissions",
-    "enabledMcpjsonServers",
-    "disabledMcpjsonServers",
-    "enableAllProjectMcpServers",
-    "hooks",
-    "outputStyle",
-    "statusLine",
-    "alwaysThinkingEnabled",
-    "autoCompactEnabled",
-    "spinnerTipsEnabled",
-    "todoFeatureEnabled",
-    "attribution",
-})
+__all__ = [
+    "LOCAL_SETTINGS", "PREF_NAMESPACE", "CouldNotRunError", "merge", "redact",
+    "read_settings", "write_settings", "sync_enabled", "self_test",
+    "_SECRET_KEYS", "_SECRET_SUBKEYS", "_SYNCED_KEYS", "_UNION_ARRAYS", "_get", "_set",
+]
 
 
 class CouldNotRunError(Exception):
     """No verdict is possible. Callers exit 2."""
-
-
-# ---------------------------------------------------------------------------
-# Pure functions. Everything below is offline-testable on purpose: the merge and
-# the redaction are where this can silently do harm, and neither needs a portal.
-# ---------------------------------------------------------------------------
-
-def redact(settings: dict[str, Any]) -> dict[str, Any]:
-    """Strip credential material and unsynced keys. Never mutates the input.
-
-    A key is dropped by NAME, not by sniffing the value: a heuristic that looks
-    for token-shaped strings passes every secret that does not look like one,
-    and that failure is invisible until the secret is already published.
-    """
-    out: dict[str, Any] = {}
-    for k, v in settings.items():
-        if k in _SECRET_KEYS or k not in _SYNCED_KEYS:
-            continue
-        if k in _SECRET_SUBKEYS and isinstance(v, dict):
-            v = {sk: sv for sk, sv in v.items() if sk not in _SECRET_SUBKEYS[k]}
-        out[k] = copy.deepcopy(v)
-    return out
-
-
-def _get(d: dict[str, Any], path: tuple[str, ...]):
-    cur: Any = d
-    for seg in path:
-        if not isinstance(cur, dict) or seg not in cur:
-            return None
-        cur = cur[seg]
-    return cur
-
-
-def _set(d: dict[str, Any], path: tuple[str, ...], value) -> None:
-    cur = d
-    for seg in path[:-1]:
-        nxt = cur.get(seg)
-        if not isinstance(nxt, dict):
-            nxt = {}
-            cur[seg] = nxt
-        cur = nxt
-    cur[path[-1]] = value
-
-
-def merge(local: dict[str, Any], remote: dict[str, Any], *,
-          prune_denies: bool = False) -> dict[str, Any]:
-    """Portal over local, with UNION on the array keys. Never mutates inputs.
-
-    `prune_denies` is the only way to remove a deny/ask rule through a sync, and
-    it is off by default: see the contract in the module docstring. A missing
-    allow rule costs a prompt; a missing deny rule costs the thing it prevented.
-    """
-    out = copy.deepcopy(local)
-
-    for k, v in remote.items():
-        if k in _SECRET_KEYS:
-            continue                      # a portal must not push credentials down
-        if k in _SECRET_SUBKEYS and isinstance(v, dict):
-            # ...and that includes the NESTED ones. `redact()` strips
-            # `sandbox.credentials` on the way out; nothing refused it on the way
-            # IN, so a profile carrying one was merged into the local file. A
-            # server-side filter may also drop it, but a client that relies on the
-            # server has no protection from any other source of that profile.
-            v = {sk: sv for sk, sv in v.items() if sk not in _SECRET_SUBKEYS[k]}
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            merged = dict(out[k])
-            merged.update(v)
-            out[k] = merged
-        else:
-            out[k] = copy.deepcopy(v)
-
-    for path in _UNION_ARRAYS:
-        lv, rv = _get(local, path), _get(remote, path)
-        if lv is None and rv is None:
-            continue
-        lv = lv if isinstance(lv, list) else []
-        rv = rv if isinstance(rv, list) else []
-        if prune_denies and path[-1] in ("deny", "ask"):
-            union = list(rv)
-        else:
-            union = list(lv)
-            union += [x for x in rv if x not in union]
-        _set(out, path, union)
-
-    # Anything local-only and secret stays exactly as it was: the loop above
-    # never reaches a key the remote does not carry, and redact() kept it out of
-    # what we send. Stated because "it is preserved by omission" is the kind of
-    # property that gets refactored away.
-    for k in _SECRET_KEYS:
-        if k in local:
-            out[k] = copy.deepcopy(local[k])
-    return out
 
 
 def read_settings(root: Path) -> dict[str, Any]:
