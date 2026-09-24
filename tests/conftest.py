@@ -66,6 +66,11 @@ def _isolate_env(monkeypatch, tmp_path):
     # graph — otherwise a memory-question recalls its own past asks and self-grounds.
     monkeypatch.setenv("AITHER_DATA_DIR", str(tmp_path / ".aither"))
 
+    # An auto-keyed MCPServer / /mcp-workstation mint persists its bearer to a
+    # file under ~/.aither. Without this every run of the suite writes into the
+    # developer's real home (same class as 'tests wrote the owner's card store').
+    monkeypatch.setenv("AITHER_MCP_KEY_FILE", str(tmp_path / ".aither" / "mcp-session-key"))
+
     # Isolate the operator-blind companion vault: tests must NOT read the dev
     # machine's ~/.aither persona, which would swap every agent's identity into
     # the companion. Tests that exercise the companion patch this explicitly.

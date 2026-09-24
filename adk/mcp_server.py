@@ -32,8 +32,10 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from adk.tools import ToolRegistry
@@ -53,6 +55,74 @@ except ImportError:  # pragma: no cover - fastapi optional until .mount() is use
     JSONResponse = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("adk.mcp_server")
+
+# Where an auto-generated session key is written (mode 600). Every server and
+# every /mcp-workstation mint gets its OWN file under ~/.aither/mcp-session-keys/
+# named <instance>-<pid>-<fingerprint>.key, created with O_EXCL: the key is never
+# logged, so this file is the only way to recover it, and a second process must
+# never overwrite the first one's. AITHER_MCP_KEY_FILE names an explicit file
+# instead; if that file already exists it is left alone and the key goes to a
+# per-instance sibling (<file>.<pid>-<fingerprint>).
+_SESSION_KEY_ENV = "AITHER_MCP_KEY_FILE"
+_SESSION_KEY_DIR = "mcp-session-keys"
+
+
+def key_fingerprint(key: str) -> str:
+    """A non-reversible, loggable identifier for a bearer (never the value)."""
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def _safe_instance(instance: str) -> str:
+    cleaned = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in instance)
+    return cleaned.strip("._")[:64] or "adk-mcp"
+
+
+def session_key_path(key: str, instance: str = "adk-mcp") -> Path:
+    """The per-instance file ``key`` is persisted to. Unique per (instance,
+    process, key), so two servers on one host never share a file."""
+    suffix = f"{os.getpid()}-{key_fingerprint(key).split(':', 1)[1]}"
+    override = os.getenv(_SESSION_KEY_ENV, "").strip()
+    if override:
+        return Path(override)
+    return (Path.home() / ".aither" / _SESSION_KEY_DIR
+            / f"{_safe_instance(instance)}-{suffix}.key")
+
+
+def _write_exclusive(path: Path, key: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(key)
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.debug("chmod 600 on %s failed: %s", path, exc)
+
+
+def persist_session_key(key: str, instance: str = "adk-mcp") -> Path | None:
+    """Write ``key`` to its own mode-600 file and return the path, or None when
+    it could not be written (the caller logs only a fingerprint). Never
+    truncates or replaces an existing file: that file holds another live
+    server's only copy of its bearer."""
+    path = session_key_path(key, instance)
+    try:
+        try:
+            _write_exclusive(path, key)
+        except FileExistsError:
+            if path.read_text(encoding="utf-8") == key:
+                return path
+            # An explicit AITHER_MCP_KEY_FILE already holds another server's
+            # key: keep it and write a per-instance sibling instead.
+            suffix = f"{os.getpid()}-{key_fingerprint(key).split(':', 1)[1]}"
+            path = path.with_name(f"{path.name}.{suffix}")
+            _write_exclusive(path, key)
+        return path
+    except OSError as exc:
+        logger.warning("could not persist MCP session key to %s: %s", path, exc)
+        return None
+
 
 # JSON-RPC 2.0 error codes
 PARSE_ERROR = -32700
@@ -110,9 +180,14 @@ class MCPServer:
                 # Auto-generate a session key so MCP is never wide-open
                 self._mcp_key = f"adk_mcp_{_secrets.token_hex(16)}"
                 self._require_auth = True
+                # Never log the bearer itself: write it to a mode-600 file and
+                # log only where it is plus a fingerprint.
+                key_path = persist_session_key(self._mcp_key, server_name)
                 logger.info(
-                    "Auto-generated MCP session key (pass via Authorization header): %s",
-                    self._mcp_key,
+                    "Auto-generated MCP session key %s (pass via Authorization header); "
+                    "stored at %s",
+                    key_fingerprint(self._mcp_key),
+                    key_path or "<not persisted: set AITHER_MCP_KEY>",
                 )
         else:
             self._require_auth = require_auth
@@ -274,16 +349,23 @@ class MCPServer:
             return JSONResponse(result)
 
         @app.get(path)
-        async def _mcp_info():
-            """GET /mcp returns server info (for discovery)."""
-            return {
+        async def _mcp_info(request: Request):
+            """GET /mcp returns server info (for discovery).
+
+            Anonymous callers get name/version/protocol only; the tool
+            inventory is disclosed only to a caller that passes ``_check_auth``.
+            """
+            info: dict[str, Any] = {
                 "name": self._info.name,
                 "version": self._info.version,
                 "protocol": "mcp",
                 "protocolVersion": "2025-03-26",
-                "tools_count": len(self._registry.list_tools()),
-                "tools": [td.name for td in self._registry.list_tools()],
             }
+            if self._check_auth(request) is None:
+                tools = self._registry.list_tools()
+                info["tools_count"] = len(tools)
+                info["tools"] = [td.name for td in tools]
+            return info
 
     # ── Status ────────────────────────────────────────────────────────────
 

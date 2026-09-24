@@ -85,14 +85,22 @@ class MCPWorkstationPlugin(SlashCommand):
                 "  adk install awnode"
             )
 
+        # The bearer the awnode SSE server enforces (AITHER_MCP_KEY). Reuse the
+        # configured one, else mint one, so the SAME key reaches the server and
+        # the portal registration (an endpoint registered without it is a 401).
+        mcp_key, key_note = self._resolve_mcp_key()
+
         # Start MCP server as subprocess
         try:
             cmd = [awnode, "mcp", "--transport", "sse", "--port", str(port)]
+            env = os.environ.copy()
+            env["AITHER_MCP_KEY"] = mcp_key
             self._running_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=env,
             )
         except Exception as e:
             return f"ERROR: Failed to start awnode: {e}"
@@ -104,7 +112,7 @@ class MCPWorkstationPlugin(SlashCommand):
         # Registration (optional)
         registration_status = ""
         if not no_register:
-            reg_result = self._register_endpoint(public_url, port)
+            reg_result = self._register_endpoint(public_url, port, mcp_key)
             registration_status = f"\n{reg_result}"
 
         # Format response
@@ -112,6 +120,7 @@ class MCPWorkstationPlugin(SlashCommand):
         lines.append(f"✓ MCP Workstation started on port {port}")
         lines.append(f"  URL: {public_url}")
         lines.append(f"  PID: {self._running_process.pid}")
+        lines.append(f"  Bearer: {key_note}")
         lines.append("")
         lines.append("Local agents can now discover tools from your workstation.")
         lines.append("To see available tools, run: /mcp-workstation --show-tools")
@@ -121,7 +130,24 @@ class MCPWorkstationPlugin(SlashCommand):
 
         return "\n".join(lines)
 
-    def _register_endpoint(self, public_url: str, port: int) -> str:
+    @staticmethod
+    def _resolve_mcp_key() -> Tuple[str, str]:
+        """(key, note). The note names a fingerprint and where the key lives,
+        never the key value itself."""
+        from adk.mcp_server import key_fingerprint, persist_session_key
+
+        for var in ("AITHER_MCP_KEY", "AITHER_SERVER_API_KEY"):
+            val = os.environ.get(var, "").strip()
+            if val:
+                return val, f"{key_fingerprint(val)} (from ${var})"
+        import secrets
+
+        key = f"adk_mcp_{secrets.token_hex(16)}"
+        path = persist_session_key(key, "mcp-workstation")
+        where = f"stored at {path}" if path else "not persisted; set AITHER_MCP_KEY"
+        return key, f"{key_fingerprint(key)} (generated, {where})"
+
+    def _register_endpoint(self, public_url: str, port: int, mcp_key: str = "") -> str:
         """Register MCP endpoint with portal (best-effort)."""
         try:
             from adk.fleet_enroll import _load_auth_config
@@ -140,19 +166,43 @@ class MCPWorkstationPlugin(SlashCommand):
             # Register endpoint
             portal_url = os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            body = {"name": endpoint_name, "url": public_url}
+            if mcp_key:
+                # Genesis stores it in the vault so the gateway can call back;
+                # without it the registered endpoint lists 0 tools (401).
+                body["token"] = mcp_key
+            if public_url.startswith(("http://localhost", "http://127.0.0.1")):
+                body["local"] = True
 
             try:
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(
                         f"{portal_url.rstrip('/')}/v1/agent/mcp-endpoints",
-                        json={"name": endpoint_name, "url": public_url},
+                        json=body,
                         headers=headers,
                     )
+                    hint = ""
+                    try:
+                        payload = resp.json()
+                        if isinstance(payload, dict):
+                            hint = str(payload.get("hint") or "")
+                            detail = payload.get("detail")
+                            if not hint and isinstance(detail, str):
+                                hint = detail
+                            elif not hint and isinstance(detail, dict):
+                                # Genesis 400s carry {error, detail}: show both.
+                                keys = ("hint", "error", "detail")
+                                parts = [str(detail.get(k) or "") for k in keys]
+                                hint = ": ".join(p for p in parts if p)
+                    except Exception:  # noqa: BLE001 - non-JSON body
+                        hint = ""
                     if resp.status_code in (200, 201):
-                        return f"✓ Registered with portal as '{endpoint_name}'"
+                        msg = f"✓ Registered with portal as '{endpoint_name}'"
                     else:
-                        detail = resp.text[:100]
-                        return f"Note: Portal registration failed (HTTP {resp.status_code})"
+                        msg = f"Note: Portal registration failed (HTTP {resp.status_code})"
+                    if hint:
+                        msg += f"\n  Hint: {hint[:300]}"
+                    return msg
             except Exception as e:
                 return f"Note: Portal registration unavailable ({e})"
         except Exception as e:
