@@ -41,6 +41,8 @@ from typing import Any, Dict, Optional
 DEFAULT_PORTAL = "https://portal.aitherium.com"
 BUNDLE_PATH = "/api/bridge/genesis/v1/link/bundle"
 UA = "adk-link"
+# Identity answered the device grant in 10.3 s on a loaded evening (measured
+# 2026-09-23); a 10 s budget read every such poll as a timeout.
 
 
 def home() -> Path:
@@ -65,7 +67,7 @@ def portal_url() -> str:
     return os.environ.get("AITHER_PORTAL_URL", DEFAULT_PORTAL).rstrip("/")
 
 
-def _post(url: str, body: Dict[str, Any], timeout: float = 15.0):
+def _post(url: str, body: Dict[str, Any], timeout: float = 25.0):
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
@@ -110,7 +112,7 @@ def poll(device_code: str) -> Dict[str, Any]:
     """One poll. On approval: persist the sign-in, fetch the bundle."""
     base = identity_url()
     try:
-        status, data = _post(f"{base}/auth/device/token", {"device_code": device_code}, timeout=10)
+        status, data = _post(f"{base}/auth/device/token", {"device_code": device_code}, timeout=25)
     except (urllib.error.URLError, OSError) as exc:
         # A dropped poll is not a verdict; the caller keeps polling.
         return {"ok": True, "status": "authorization_pending", "transient": type(exc).__name__}
@@ -170,7 +172,7 @@ def refresh(token: Optional[str] = None, fetch=None) -> Dict[str, Any]:
                 url, headers={"Authorization": f"Bearer {token}", "User-Agent": UA}
             )
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=25) as resp:
                     status, data = resp.status, json.loads(resp.read() or b"{}")
             except urllib.error.HTTPError as exc:
                 status, data = exc.code, {}
