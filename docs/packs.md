@@ -28,9 +28,9 @@ Built from `v3.8.25` (adk 3.8.25).
 
 | Pack | Version | Download | Size | What it is |
 |---|---|---|---|---|
-| **[Aither System Orchestrator](packs/aither.md)** | `3.8.25` | [aither-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/aither-3.8.25.tar.gz) | 9.8 KB | Aither — System Overseer & Orchestrator Brain Pack |
+| **[Aither System Orchestrator](packs/aither.md)** | `3.8.25` | [aither-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/aither-3.8.25.tar.gz) | 9.9 KB | Aither — System Overseer & Orchestrator Brain Pack |
 | **[Analyst Studio](packs/analyst.md)** | `3.8.25` | [analyst-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/analyst-3.8.25.tar.gz) | 5.3 KB | Analyst — Data & Structured-ML Agent Brain Pack |
-| **[BeadSpace](packs/bead-space.md)** | `3.8.25` | [bead-space-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/bead-space-3.8.25.tar.gz) | 1.6 KB | BeadSpace — an aither-adk agent pack for bead-space |
+| **[BeadSpace](packs/bead-space.md)** | `3.8.25` | [bead-space-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/bead-space-3.8.25.tar.gz) | 1.5 KB | BeadSpace — an aither-adk agent pack for bead-space |
 | **[Claude Code Studio](packs/claude-code.md)** | `3.8.25` | [claude-code-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/claude-code-3.8.25.tar.gz) | 5.0 KB | Claude Code — Software Development Agent Brain Pack |
 | **[DGG Research](packs/dgg_research.md)** | `3.8.25` | [dgg_research-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/dgg_research-3.8.25.tar.gz) | 7.2 KB | DGG Research — brain pack |
 | **[GobboPack](packs/gobbonet.md)** | `3.8.25` | [gobbonet-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/gobbonet-3.8.25.tar.gz) | 47.4 KB | GobboNet Companion — an agent harness for a local-first chat client |
@@ -42,22 +42,22 @@ Built from `v3.8.25` (adk 3.8.25).
 ## Contents
 
 - **aither** `3.8.25` — skills  
-  `sha256:5b34823482662d65…`
+  `sha256:85f680cfe122aa79…`
 - **analyst** `3.8.25` — agent config, skills  
-  `sha256:5c4c5a8cad466331…`
+  `sha256:633361cc8de994af…`
 - **bead-space** `3.8.25` — brain pack only  
-  `sha256:9beb5b8ca2bdf8c4…`
+  `sha256:fd6d8b6b256e828e…`
 - **claude-code** `3.8.25` — agent config, skills  
-  `sha256:35502d9b72b4b38d…`
+  `sha256:cc0731c677188abc…`
 - **dgg_research** `3.8.25` — agent config, skills  
-  `sha256:aa00656201a010df…`
+  `sha256:94095b585d5338ba…`
 - **gobbonet** `3.8.25` — agent config, Python  
-  `sha256:d878b39f00c09833…`
+  `sha256:fa2dd0890f6ee92d…`
 - **hermes** `3.8.25` — agent config, skills  
-  `sha256:aa60e645be956276…`
+  `sha256:1acca450debb3f32…`
 - **iris** `3.8.25` — skills  
-  `sha256:59072f030b475a05…`
+  `sha256:77399531fdf8e584…`
 - **openclaw** `3.8.25` — agent config, skills  
-  `sha256:c1d1f6646290d142…`
+  `sha256:4c00b6d8d950f34e…`
 - **persona** `3.8.25` — brain pack only  
-  `sha256:d1207820c959ce4e…`
+  `sha256:36ecbd45d02cfa58…`

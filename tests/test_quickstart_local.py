@@ -58,7 +58,40 @@ def _make_args(**kwargs) -> argparse.Namespace:
 
 
 class TestPickBackend:
-    """Test the backend picker logic."""
+    """Test the backend picker logic.
+
+    ``pick_backend`` first asks ``bonsai_available()``, which reads HOST state
+    (a running ``aither-bonsai-local`` container or a Bonsai GGUF under
+    ``~/.aither/models``). Unpatched, every auto-pick test returned "bonsai" on
+    any machine that had ever pulled Bonsai (D-2547) -- the picker was right,
+    the tests leaked the developer's box into the assertion. Pin it off here;
+    the bonsai branches have their own tests below.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_host_bonsai(self):
+        with patch("adk.local_backends.bonsai_available", return_value=False):
+            yield
+
+    def test_bonsai_available_wins_auto(self):
+        """A running/downloaded Bonsai is used before anything else."""
+        accel = MockAccelInfo(kind="cuda", vram_gb=32.0)
+        with patch("adk.local_backends.bonsai_available", return_value=True):
+            with patch("adk.ollama_setup.is_installed", return_value=True):
+                result = pick_backend(accel, prefer="auto", docker_available_override=True)
+        assert result == "bonsai"
+
+    def test_cpu_with_docker_no_ollama_recommends_bonsai(self):
+        """CPU-only + Docker + no Ollama -> bonsai (1-bit, runs anywhere)."""
+        accel = MockAccelInfo(kind="cpu")
+        with patch("adk.ollama_setup.is_installed", return_value=False):
+            result = pick_backend(accel, prefer="auto", docker_available_override=True)
+        assert result == "bonsai"
+
+    def test_explicit_prefer_beats_host_bonsai(self):
+        accel = MockAccelInfo(kind="cpu")
+        with patch("adk.local_backends.bonsai_available", return_value=True):
+            assert pick_backend(accel, prefer="llamacpp") == "llamacpp"
 
     def test_prefer_explicit_llamacpp(self):
         """Explicit prefer=llamacpp always wins."""
