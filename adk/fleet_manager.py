@@ -415,7 +415,13 @@ class HostedDriver:
     def create(self, member: FleetMember, opts: dict[str, Any]) -> dict[str, Any]:
         res = self._create_fn(member.name, opts)
         if not res.get("ok"):
-            return {"status": "failed", "error": str(res.get("error") or "instance create failed")}
+            out = {"status": "failed", "error": str(res.get("error") or "instance create failed")}
+            # A failed create can still leave a platform-side record (it counts
+            # toward the tenant's instance quota). Keep its id as the ref so
+            # `adk fleet rm` tears it down instead of orphaning it.
+            if res.get("instance_id"):
+                out["ref"] = str(res["instance_id"])
+            return out
         inst = res.get("instance") or {}
         return {
             "status": ("running" if inst.get("status") == "ready"
@@ -449,6 +455,24 @@ def _instance_headers() -> dict[str, str]:
     return headers
 
 
+def _failed_instance_id(resp: Any) -> str:
+    """The instance id a FAILED ``POST /v1/instances`` left behind, or ``""``.
+
+    Genesis saves the record as ``failed`` before raising (e.g. 504 not_ready)
+    and returns ``{"detail": {"instance": {"id": ...}}}``; that row still counts
+    toward the instance quota, so the caller must keep the id to delete it.
+    """
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001 - a non-JSON error body carries no id
+        return ""
+    detail = body.get("detail") if isinstance(body, dict) else None
+    inst = detail.get("instance") if isinstance(detail, dict) else None
+    if isinstance(inst, dict) and inst.get("id"):
+        return str(inst["id"])
+    return ""
+
+
 def _http_instance_create(name: str, opts: dict[str, Any]) -> dict[str, Any]:
     import httpx
 
@@ -467,7 +491,11 @@ def _http_instance_create(name: str, opts: dict[str, Any]) -> dict[str, Any]:
     try:
         r = httpx.post(url, json=body, headers=_instance_headers(), timeout=180.0)
         if r.status_code >= 400:
-            return {"ok": False, "error": f"{r.status_code}: {r.text[:300]}"}
+            out: dict[str, Any] = {"ok": False, "error": f"{r.status_code}: {r.text[:300]}"}
+            iid = _failed_instance_id(r)
+            if iid:
+                out["instance_id"] = iid
+            return out
         return r.json()
     except Exception as exc:  # noqa: BLE001 - surface as a failed create, never crash the CLI
         return {"ok": False, "error": str(exc)}

@@ -14469,6 +14469,15 @@ def _register_commands(sub):
         import logging as _logging
         _logging.getLogger("adk.cli").warning("adk spec unavailable: %s", _exc)
 
+    # adk embed / kb / memory — thin clients over the TENANT platform (Genesis
+    # /embeddings/* and /external/memory/*). Parser and handlers: adk/cloud_memory.py.
+    try:
+        from adk.cloud_memory import add_cloud_memory_parsers
+        add_cloud_memory_parsers(sub)
+    except ImportError as _exc:
+        import logging as _logging
+        _logging.getLogger("adk.cli").warning("adk embed/kb/memory unavailable: %s", _exc)
+
     # adk ingest — manually ingest files into knowledge graph
     ingest_p = sub.add_parser("ingest", help="Ingest files into the agent's knowledge graph")
     ingest_p.add_argument("path", nargs="?", default=".", help="File or directory to ingest")
@@ -15917,6 +15926,15 @@ def main():
     elif args.command == "patterns":
         from adk.patterns import cmd_patterns
         sys.exit(cmd_patterns(args))
+    elif args.command == "embed":
+        from adk.cloud_memory import cmd_embed
+        sys.exit(cmd_embed(args))
+    elif args.command == "kb":
+        from adk.cloud_memory import cmd_kb
+        sys.exit(cmd_kb(args))
+    elif args.command == "memory":
+        from adk.cloud_memory import cmd_memory
+        sys.exit(cmd_memory(args))
     elif args.command == "spec":
         from adk.toolpacks.specflow.cli import cmd_spec
         sys.exit(cmd_spec(args))
