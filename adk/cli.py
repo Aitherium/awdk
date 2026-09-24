@@ -8134,6 +8134,39 @@ def cmd_routing(args):
 _GRID_CONFIG_STRATA_PATH = "grid/config.json"
 
 
+def _grid_node_count(grid_nodes: dict) -> int:
+    """Nodes in the grid, the local orchestrator included (it is node 1)."""
+    return 1 + (1 if grid_nodes.get("reasoning") else 0) + len(grid_nodes.get("cluster") or [])
+
+
+def _grid_node_limit_refusal(grid_nodes: dict, role: str, host: str) -> str:
+    """Return a refusal message when adding *host* exceeds the licensed node limit.
+
+    Replacing the reasoning node or re-adding a known cluster host adds no node,
+    so it is never refused. Empty string == allowed.
+    """
+    from adk.licensing import get_license_manager
+
+    if role == "reasoning":
+        adds = 0 if grid_nodes.get("reasoning") else 1
+    else:
+        known = {n.get("host") for n in (grid_nodes.get("cluster") or [])}
+        adds = 0 if host in known else 1
+    if not adds:
+        return ""
+    plan = get_license_manager().grid_plan()
+    if plan.max_nodes < 0:
+        return ""
+    after = _grid_node_count(grid_nodes) + adds
+    if after <= plan.max_nodes:
+        return ""
+    return (
+        f"  {plan.name} allows {plan.max_nodes} nodes (this machine included); "
+        f"adding {host} would make {after}.\n"
+        "  Upgrade: adk upgrade grid-pro (10 nodes) or adk upgrade grid-enterprise (unlimited)"
+    )
+
+
 def cmd_grid(args) -> int:
     """Manage grid distributed inference nodes."""
     import asyncio
@@ -8216,6 +8249,11 @@ def cmd_grid(args) -> int:
         node_entry = {"host": host, "port": port}
         if model_override:
             node_entry["model"] = model_override
+
+        refusal = _grid_node_limit_refusal(grid_nodes, role, host)
+        if refusal:
+            print(refusal)
+            return 1
 
         if role == "reasoning":
             grid_nodes["reasoning"] = node_entry
@@ -8704,10 +8742,17 @@ _UPGRADE_URLS: dict[str, tuple[str, str]] = {
     # login gate and then 404 — measured 2026-08-31, gate RSU001. The id
     # slug is catalog data; if a slug ever stops resolving, the detail page
     # renders its own not-found state instead of a route-level 404.
-    "managed": ("https://api.aitherium.com/marketplace/app/grid?sku=grid_managed_monthly",
-        "Grid Managed ($49/mo)"),
-    "setup": ("https://api.aitherium.com/marketplace/app/grid?sku=grid_setup_onetime",
-        "Grid Setup Call ($199)"),
+    # Grid SKUs are the ONE `grid:` product in the billing book. The old
+    # grid_managed_monthly / grid_setup_onetime SKUs lived in a duplicate `grid:`
+    # key that YAML discarded, so those links never reached a buyable SKU.
+    "grid-pro": ("https://api.aitherium.com/marketplace/app/grid?sku=grid_pro_monthly",
+        "Grid Pro ($19/mo)"),
+    "grid-enterprise": (
+        "https://api.aitherium.com/marketplace/app/grid?sku=grid_enterprise_monthly",
+        "Grid Enterprise ($49/mo)"),
+    "managed": (
+        "https://api.aitherium.com/marketplace/app/grid?sku=grid_enterprise_monthly",
+        "Grid Enterprise ($49/mo)"),
     "grid": ("https://api.aitherium.com/marketplace/app/grid", "Grid Distributed Inference"),
     "demiurge": (
         "https://api.aitherium.com/marketplace/app/agent.demiurge", "Demiurge — Code Architect"),

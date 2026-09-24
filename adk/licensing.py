@@ -407,6 +407,81 @@ class LicenseManager:
         return False
 
 
+    # -- AitherGrid -------------------------------------------------------
+    def grid_plan(self) -> "GridPlan":
+        """The AitherGrid tier this license grants (Starter when it grants none).
+
+        A Grid purchase arrives as its SKU id in the signed payload's ``packs``
+        list (the minter's ``packs=`` field). The best owned tier wins.
+        Enforcement off, INTERNAL and SOVEREIGN resolve to Enterprise.
+        """
+        if not self._enforced() or self.license.tier in (Tier.INTERNAL, Tier.SOVEREIGN):
+            return GRID_PLANS[GRID_ENTERPRISE_SKU]
+        best = GRID_PLANS[GRID_STARTER_SKU]
+        for sku in self.license.packs:
+            canonical = GRID_SKU_ALIASES.get(str(sku), str(sku))
+            plan = GRID_PLANS.get(canonical)
+            if plan is not None and plan.rank > best.rank:
+                best = plan
+        return best
+
+    def grid_node_limit(self) -> int:
+        """Max grid nodes (the local node counts as one); -1 == unlimited."""
+        return self.grid_plan().max_nodes
+
+    def has_grid_feature(self, feature: str) -> bool:
+        return feature in self.grid_plan().features
+
+    def require_grid_feature(self, feature: str) -> None:
+        """Raise :class:`LicenseError` unless the Grid tier includes *feature*."""
+        plan = self.grid_plan()
+        if feature not in plan.features:
+            raise LicenseError(
+                f"Grid feature '{feature}' is not in {plan.name}. "
+                f"Upgrade: adk upgrade grid-pro (or grid-enterprise)"
+            )
+
+
+# ── AitherGrid tiers ────────────────────────────────────────────────────────
+# Mirrors the platform's Grid SKUs (node limits and entitlements). The wheel
+# cannot read the platform billing book, so the copy lives here; a platform-side
+# test fails when the two drift.
+GRID_STARTER_SKU = "grid_starter"
+GRID_PRO_SKU = "grid_pro_monthly"
+GRID_ENTERPRISE_SKU = "grid_enterprise_monthly"
+
+
+@dataclass(frozen=True)
+class GridPlan:
+    sku: str
+    name: str
+    rank: int
+    max_nodes: int  # -1 == unlimited
+    features: frozenset
+
+
+_GRID_STARTER_FEATURES = frozenset({"grid", "effort_routing", "gpu_orchestrator"})
+_GRID_PRO_FEATURES = _GRID_STARTER_FEATURES | {
+    "auto_failover", "health_dashboard", "alerts", "priority_cloud", "cloud_sync",
+}
+_GRID_ENTERPRISE_FEATURES = _GRID_PRO_FEATURES | {
+    "fleet_management", "multi_tenant", "mtls", "metering", "wan_support",
+}
+
+GRID_PLANS: dict[str, GridPlan] = {
+    GRID_STARTER_SKU: GridPlan(GRID_STARTER_SKU, "Grid Starter", 0, 2, _GRID_STARTER_FEATURES),
+    GRID_PRO_SKU: GridPlan(GRID_PRO_SKU, "Grid Pro", 1, 10, _GRID_PRO_FEATURES),
+    GRID_ENTERPRISE_SKU: GridPlan(
+        GRID_ENTERPRISE_SKU, "Grid Enterprise", 2, -1, _GRID_ENTERPRISE_FEATURES),
+}
+
+# Storefront listings sold as the same product (billing-book `alias_of`).
+GRID_SKU_ALIASES: dict[str, str] = {
+    "service.grid": GRID_PRO_SKU,
+    "infra.grid-distributed": GRID_ENTERPRISE_SKU,
+}
+
+
 _manager: LicenseManager | None = None
 
 
