@@ -14459,6 +14459,10 @@ def _register_commands(sub):
     ingest_p.add_argument("--dry-run", action="store_true",
                          help="Print what would be ingested without persisting")
 
+    # adk kb query|list, adk embed — read back what `adk ingest` stored
+    from adk.cli_knowledge import register as _register_knowledge_verbs
+    _register_knowledge_verbs(sub)
+
     # adk doctor — system health checks
     sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
 
@@ -16054,6 +16058,12 @@ def main():
         sys.exit(cmd_backup(args))
     elif args.command == "ingest":
         sys.exit(cmd_ingest(args))
+    elif args.command == "kb":
+        from adk.cli_knowledge import cmd_kb
+        sys.exit(cmd_kb(args))
+    elif args.command == "embed":
+        from adk.cli_knowledge import cmd_embed
+        sys.exit(cmd_embed(args))
     elif args.command == "disconnect":
         sys.exit(cmd_disconnect(args))
     elif args.command == "workflow":

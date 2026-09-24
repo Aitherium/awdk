@@ -17,20 +17,24 @@ index (which poisons cosine similarity).
 Resolution chain (first that works wins; resolved once per process, then cached):
   1. Explicit endpoint      — ``AITHER_EMBEDDINGS_URL`` (operator override; the
                               fleet/gateway/BYO OpenAI-compatible ``/v1/embeddings``).
-  2. Local vLLM             — ``localhost:8209`` then ``:8120``, HTTPS then HTTP
+  2. MicroScheduler         — ``AITHER_MICROSCHEDULER_URL`` | fleet name in-container
+                              | ``https://127.0.0.1:8150`` on the host. The route every
+                              fleet LLM call takes (``AITHER_EMBED_MICROSCHEDULER=0``
+                              skips it).
+  3. Local vLLM             — ``localhost:8209`` then ``:8120``, HTTPS then HTTP
                               (internal-TLS mesh serves :8209 over https).
-  3. Local Ollama           — ``nomic-embed-text`` on ``:11434`` (768-d, dev box).
-  4. Gateway (metered)      — ``AITHER_GATEWAY_EMBEDDINGS_URL``, or — whenever
+  4. Local Ollama           — ``nomic-embed-text`` on ``:11434`` (768-d, dev box).
+  5. Gateway (metered)      — ``AITHER_GATEWAY_EMBEDDINGS_URL``, or — whenever
                               ``AITHER_API_KEY`` is set — the managed v1 plane
                               (``AITHER_MCP_URL`` | ``https://mcp.aitherium.com``).
                               Sent with ``Authorization: Bearer <AITHER_API_KEY>``
                               (the gateway 401s an unauthenticated embed).
-  5. Auto-deploy local vLLM — if a GPU + Docker are present and nothing above is
+  6. Auto-deploy local vLLM — if a GPU + Docker are present and nothing above is
                               reachable, spin up the embeddings container on :8209
                               (opt in with ``AITHER_EMBED_AUTODEPLOY=1``; disabled by default
                               so resolution happens instantly offline).
-  6. CPU sentence-transformers (384-d, DEGRADED, dim-tagged) — offline last resort.
-  7. Feature-hash (384-d, DEGRADED) — always works, zero deps; keeps offline
+  7. CPU sentence-transformers (384-d, DEGRADED, dim-tagged) — offline last resort.
+  8. Feature-hash (384-d, DEGRADED) — always works, zero deps; keeps offline
                               semantic search alive when even ST is unavailable.
 
 Usage:
@@ -224,36 +228,43 @@ class AdkEmbeddings:
         if explicit and await self._try_openai_endpoint(explicit):
             return "vllm"
 
-        # 2. local vLLM — dedicated embeddings port, then generic. Try HTTPS first
+        # 2. MicroScheduler :8150 — the one route every fleet LLM call (embeddings
+        # included) is meant to take. Its /v1/embeddings accepts the OpenAI list
+        # form; the probe sends a list, so an older scheduler that 422s lists
+        # simply falls through to the direct vLLM rung below.
+        if _flag("AITHER_EMBED_MICROSCHEDULER", True) and await self._try_microscheduler():
+            return "microscheduler"
+
+        # 3. local vLLM — dedicated embeddings port, then generic. Try HTTPS first
         # (the internal TLS mesh serves :8209 over https w/ the internal CA), then
         # plain HTTP (a bare dev vLLM / our own auto-deployed container).
         for port in (_VLLM_EMBED_PORT, _VLLM_GENERIC_PORT):
             if await self._try_local_vllm(port):
                 return "vllm"
 
-        # 3. local Ollama (768-d, dev box)
+        # 4. local Ollama (768-d, dev box)
         if await self._try_ollama(f"http://localhost:{_OLLAMA_PORT}"):
             return "ollama"
 
-        # 4. gateway (metered managed fallback)
+        # 5. gateway (metered managed fallback)
         gw, gw_headers = _gateway_rung()
         if gw and await self._try_openai_endpoint(gw, headers=gw_headers):
             return "gateway"
 
-        # 5. auto-deploy a local vLLM embeddings container (GPU + Docker)
+        # 6. auto-deploy a local vLLM embeddings container (GPU + Docker)
         # NOTE: opt-IN (disabled by default) so resolution is instant offline
         if _flag("AITHER_EMBED_AUTODEPLOY", False) and await self._maybe_autodeploy():
             if await self._try_openai_endpoint(f"http://localhost:{_VLLM_EMBED_PORT}"):
                 return "vllm"
 
-        # 6. CPU sentence-transformers (DEGRADED 384-d)
+        # 7. CPU sentence-transformers (DEGRADED 384-d)
         if _flag("AITHER_EMBED_ALLOW_CPU", True) and self._probe_sentence_transformers():
             self._dim = _DEGRADED_DIM
             self._degraded = True
             self._model = os.getenv("AITHER_EMBED_ST_MODEL", "all-MiniLM-L6-v2")
             return "cpu"
 
-        # 7. feature-hash (DEGRADED 384-d) — never fails
+        # 8. feature-hash (DEGRADED 384-d) — never fails
         self._dim = _DEGRADED_DIM
         self._degraded = True
         self._model = "feature-hash"
@@ -265,6 +276,11 @@ class AdkEmbeddings:
         if base.endswith("/v1"):
             base = base[:-3]
         return base
+
+    async def _try_microscheduler(self) -> bool:
+        """Probe MicroScheduler's ``/v1/embeddings`` (HTTPS only — every fleet
+        service speaks TLS, and plain http into one hangs)."""
+        return await self._try_openai_endpoint(_microscheduler_url())
 
     async def _try_local_vllm(self, port: int) -> bool:
         """Probe a local vLLM embeddings worker on ``port``, HTTPS then HTTP.
@@ -452,7 +468,7 @@ class AdkEmbeddings:
             return [], self._dim
         await self._resolve()
         try:
-            if self._backend in ("vllm", "gateway"):
+            if self._backend in ("vllm", "microscheduler", "gateway"):
                 vecs = await self._embed_openai(texts)
             elif self._backend == "ollama":
                 vecs = await self._embed_ollama(texts)
@@ -542,9 +558,29 @@ def _gateway_rung() -> Tuple[str, dict]:
     return url, headers
 
 
+def _microscheduler_url() -> str:
+    """MicroScheduler base URL: ``AITHER_MICROSCHEDULER_URL``, else the fleet name
+    in-container, else the host loopback (``127.0.0.1``, never ``localhost``)."""
+    explicit = os.getenv("AITHER_MICROSCHEDULER_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    if os.path.exists("/run/.containerenv"):
+        return "https://aitheros-microscheduler:8150"
+    return "https://127.0.0.1:8150"
+
+
 def _tls_verify():
-    """Trust the internal CA for mesh TLS (never disable verification). Falls
-    back to default verification when the awkit TLS helper isn't importable."""
+    """Trust the internal CA for mesh TLS (never disable verification).
+
+    adk's own helper (``adk._tls``) ships with the SDK, so a pip-installed adk
+    finds the AitherNet CA bundle too; the awkit backend helper is NOT in the
+    awdk tree and was the only lookup before, leaving every internal-CA
+    endpoint to fail verification and silently drop to the next rung."""
+    try:
+        from adk._tls import tls_verify
+        return tls_verify()
+    except Exception as exc:  # noqa: BLE001 — fall through to the awkit helper
+        logger.debug("adk._tls unavailable: %s", exc)
     try:
         from portal_kit_backend.tls import internal_verify
         return internal_verify()
