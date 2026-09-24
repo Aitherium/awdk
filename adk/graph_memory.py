@@ -382,6 +382,9 @@ class GraphMemory:
         # 384-d hash) is refused rather than silently mixed (poisons cosine sim).
         self._embed_dim: int | None = None
         self._dim_warned = False
+        # Dim of the vector the LAST add_node stored (0 = stored without one).
+        # Read by callers that report how many nodes were actually embedded.
+        self.last_embedding_dim: int = 0
         if db_path is None:
             data_dir = Path(
                 os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither"))
@@ -1157,6 +1160,7 @@ class GraphMemory:
         now = time.time()
         tags = tags or []
         embedding = await self._embed(f"{label} {content}")
+        self.last_embedding_dim = len(embedding) if embedding else 0
 
         # Resolve typed-activation classification (cheap, deterministic).
         if role is None:

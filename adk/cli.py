@@ -14455,7 +14455,7 @@ def _register_commands(sub):
     ingest_p.add_argument("--workspace", default="default",
                          help="Workspace ID for brain sync (default: default)")
     ingest_p.add_argument("--skip-embeddings", action="store_true",
-                         help="Skip embedding if brain unreachable")
+                         help="Store chunks without computing embeddings")
     ingest_p.add_argument("--dry-run", action="store_true",
                          help="Print what would be ingested without persisting")
 

@@ -394,7 +394,7 @@ async def ingest_files(
         workspace_id: Workspace ID for brain sync (default: 'default')
         chunk_size: Bytes per chunk (default: 2000)
         chunk_overlap: Overlap bytes (default: 200)
-        skip_embeddings: Skip embedding if brain unreachable (default: False)
+        skip_embeddings: Store chunks without computing embeddings (default: False)
         dry_run: Print chunks, don't persist/sync (default: False)
         agent_name: Agent name for local storage (default: 'default')
 
@@ -486,7 +486,6 @@ async def ingest_files(
                 }
 
                 chunks_all.append(chunk_entry)
-                result.chunks_embedded += 1
 
         except Exception as exc:
             logger.error("Error processing %s: %s", file_path, exc)
@@ -507,7 +506,17 @@ async def ingest_files(
     # Store locally
     try:
         from adk.graph_memory import GraphMemory
-        graph = GraphMemory(agent_name=agent_name)
+
+        embedder = None
+        if skip_embeddings:
+            # Store the chunks as plain nodes: an embedder that yields nothing
+            # makes GraphMemory skip the vector (it never falls back to a
+            # different-dim model when an embedder is injected).
+            async def _no_embed(_text: str) -> List[float]:
+                return []
+
+            embedder = _no_embed
+        graph = GraphMemory(agent_name=agent_name, embedder=embedder)
 
         for chunk in chunks_all:
             # Store as a fact node
@@ -523,9 +532,19 @@ async def ingest_files(
                     "brain_synced": False,
                 },
             )
+            # Count only chunks that were stored WITH a vector.
+            if getattr(graph, "last_embedding_dim", 0) > 0:
+                result.chunks_embedded += 1
     except Exception as exc:
         logger.error("Failed to store chunks locally: %s", exc)
         result.errors.append(f"Local storage failed: {exc}")
+
+    if not skip_embeddings and result.chunks_embedded:
+        try:
+            from adk.embeddings import get_provider
+            result.embedding_degraded = bool(get_provider().degraded)
+        except Exception as exc:  # noqa: BLE001 - reporting only
+            logger.debug("embedding provider state unavailable: %s", exc)
 
     # Sync to brain hub if enabled
     if brain_sync and chunks_all:
