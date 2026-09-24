@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**111 commands.**
+**112 commands.**
 
 | command | what it does |
 |---|---|
@@ -78,6 +78,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk jobs`](#adk-jobs) | Manage background jobs — LOCAL by default, --remote for the portal/cloud |
 | [`adk join`](#adk-join) | One-command community node onboarding (GitHub auth + hardware detection + serve + mesh join + earnings) |
 | [`adk keys`](#adk-keys) | Manage cloud provider API keys (set, list, test, remove) |
+| [`adk link`](#adk-link) | link this machine to aitherium.com (one sign-in, role-aware bundle) |
 | [`adk listen`](#adk-listen) | Real-time audio intelligence — audiobook, meeting, voice notes |
 | [`adk login`](#adk-login) | Authenticate with Aitherium (browser device flow) |
 | [`adk logout`](#adk-logout) | Clear saved auth tokens |
@@ -191,6 +192,10 @@ Run/manage host-tier agent loops (run, list, status, stop)
 - `adk agent list` — List running agent loops
 - `adk agent status` — Show status of an agent loop
 - `adk agent stop` — Stop a running agent loop
+- `adk agent bind` — Apply a pack (listing or license) to your agent binding
+- `adk agent swap-brain` — Swap the agent's brain pack
+- `adk agent backend` — Set the agent's backend (local \| managed \| ...)
+- `adk agent managed` — Managed (hosted twin) agent: status\|chat\|run\|resync\|byok
 
 ## `adk agent-prompt`
 
@@ -809,6 +814,14 @@ Manage cloud provider API keys (set, list, test, remove)
 - `adk keys pull` — Sync DOWN from AitherOS: show which providers have keys in your workspace vault
 - `adk keys test` — Test API keys (all or specific)
 - `adk keys remove` — Remove a provider key
+
+## `adk link`
+
+link this machine to aitherium.com (one sign-in, role-aware bundle)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<link_args>` | str |  |  | start \| poll <device_code> \| status \| refresh |
 
 ## `adk listen`
 

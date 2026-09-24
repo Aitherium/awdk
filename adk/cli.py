@@ -13067,6 +13067,17 @@ def _register_commands(sub):
     bricks_p.add_argument("bricks_args", nargs=argparse.REMAINDER,
                           help="list | outdated | upgrade | test | rollback | os | history")
 
+    # adk link — ONE way to link this machine to aitherium.com for every surface on
+    # it (awdesk, awsh, adk): device grant -> the shared sign-in -> the role-aware
+    # link bundle. adk/link.py owns its parser (REMAINDER, like `bricks`).
+    link_p = sub.add_parser(
+        "link",
+        help="link this machine to aitherium.com (one sign-in, role-aware bundle)",
+        add_help=False,
+    )
+    link_p.add_argument("link_args", nargs=argparse.REMAINDER,
+                        help="start | poll <device_code> | status | refresh")
+
     # adk harness — AitherShell core: one shell that drives every coding shell
     shell_p = sub.add_parser(
         "harness",
@@ -15928,6 +15939,9 @@ def main():
     elif args.command == "bricks":
         from adk.bricks import main as bricks_main
         sys.exit(bricks_main(args.bricks_args))
+    elif args.command == "link":
+        from adk.link import main as link_main
+        sys.exit(link_main(args.link_args))
     elif args.command == "harness":
         from adk.harnesses.cli import cmd_shell
         sys.exit(cmd_shell(args))
