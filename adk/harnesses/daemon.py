@@ -3309,6 +3309,11 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
 
     if start_autolink(f"http://127.0.0.1:{bind_port}"):
         sys.stderr.write("  autolink: on (sessions reachable at api.aitherium.com/code)\n")
+    # One client reset during AcceptEx otherwise closes the listener for good
+    # (the process lives on, deaf, and the starter never restarts it).
+    from adk.harnesses._win_accept import install as _keep_listening
+
+    _keep_listening()
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
     return 0
 
