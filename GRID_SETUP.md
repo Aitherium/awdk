@@ -69,14 +69,22 @@ adk deploy grid \
   --mac-host 192.168.1.100 \
   --cluster-nodes '["192.168.1.10","192.168.1.11"]'
 
-# Auto-discover Mac on LAN (scans your /24 subnet for Ollama)
+# Auto-discover the reasoning node on LAN (TCP scan of your /24 subnet for
+# llama.cpp on :8121 -- or $LLAMACPP_PORT -- that answers /v1/models)
 adk deploy grid --cluster-nodes '["192.168.1.10"]'
 
 # GPU only (add Mac/cluster later)
 adk deploy grid
 ```
 
-If `--mac-host` is omitted, the deploy scans your LAN for Ollama instances automatically.
+If `--mac-host` is omitted, the deploy scans your LAN automatically. Discovery is a
+plain subnet scan, not mDNS/Avahi: it probes every address in the local /24 for an
+OpenAI-compatible llama.cpp server (`--api-oai`) on the grid port and uses the first
+one that answers. Nodes on another subnet or behind a firewall must be given explicitly.
+
+Node health is available two ways: `adk grid status` in a terminal, or
+`GET /grid/status` on the ADK server (same auth as every other data route), which
+returns `{configured, total, healthy, nodes: [{role, host, port, state, models}]}`.
 
 ### 4. Start using it
 

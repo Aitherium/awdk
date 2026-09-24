@@ -1967,6 +1967,24 @@ def create_app(
         _save_backup_config(cfg)
         return JSONResponse({"ok": True})
 
+    # ── AitherGrid node status ───────────────────────────────────────────────
+    # The CLI's `adk grid status` probe, as JSON. Same gate as every other data
+    # route (the global middleware: loopback, or the server bearer). Probing is
+    # blocking urllib with a 5 s timeout per hop, so it runs off the loop.
+
+    @app.get("/grid/status")
+    async def grid_status(host: Optional[str] = None):
+        """Health of every configured grid node (or only ``?host=``)."""
+        from adk.config import load_saved_config
+        from adk.grid_status import collect_grid_status
+
+        saved = load_saved_config() or {}
+        grid_nodes = saved.get("grid_nodes", {}) or {}
+        status = await asyncio.to_thread(
+            collect_grid_status, saved, grid_nodes, host,
+        )
+        return JSONResponse(status)
+
     # ── Secrets vault ────────────────────────────────────────────────────────
     # Backed by adk.vault_lockbox (the local encrypted store at
     # ~/.aither/secrets.enc, or the platform vault in remote mode) so the bundled

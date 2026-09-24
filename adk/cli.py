@@ -8563,84 +8563,39 @@ def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_ke
         return False, f"Gateway unreachable: {str(e)[:120]}"
 
 
-def _grid_test_node(host: str, port: int) -> bool:
-    """Test connectivity and API compatibility of a single grid node."""
-    from urllib.request import Request, urlopen
-
-    try:
-        req = Request(
-            f"http://{host}:{port}/health",
-            headers={"User-Agent": "AitherADK/1.0"},
-        )
-        with urlopen(req, timeout=5):
-            pass
-    except Exception:
-        print(f"  [x] {host}:{port} — unreachable")
-        return False
-
-    try:
-        req = Request(
-            f"http://{host}:{port}/v1/models",
-            headers={"User-Agent": "AitherADK/1.0"},
-        )
-        with urlopen(req, timeout=5) as resp:
-            if resp.status == 200:
-                import json as _json
-                data = _json.loads(resp.read())
-                models = [m.get("id", "") for m in data.get("data", [])]
-                print(f"  [+] {host}:{port} — healthy, models: {', '.join(models[:3]) or 'default'}")
-                return True
-    except Exception:
+def _print_grid_probe(host: str, port: int, result: dict) -> bool:
+    state = result.get("state")
+    if state == "healthy":
+        models = result.get("models") or []
+        print(f"  [+] {host}:{port} — healthy, models: {', '.join(models[:3]) or 'default'}")
+        return True
+    if state == "no_api":
         print(f"  [!] {host}:{port} — healthy but no /v1 API (missing --api-oai?)")
         return False
-
+    print(f"  [x] {host}:{port} — unreachable")
     return False
 
 
-def _grid_health_check(saved: dict, grid_nodes: dict, target_host: str | None = None):
-    """Run health checks on all or a specific grid node."""
-    checked = False
+def _grid_test_node(host: str, port: int) -> bool:
+    """Test connectivity and API compatibility of a single grid node."""
+    from adk.grid_status import probe_node
 
-    # Reasoning node
-    r_node = grid_nodes.get("reasoning")
-    if r_node and (target_host is None or target_host == r_node.get("host")):
-        _grid_test_node(r_node["host"], r_node.get("port", 8121))
-        checked = True
+    return _print_grid_probe(host, port, probe_node(host, port))
 
-    # Cluster nodes
-    for node in grid_nodes.get("cluster", []):
-        if target_host is None or target_host == node.get("host"):
-            _grid_test_node(node["host"], node.get("port", 8121))
-            checked = True
 
-    # Fallback: check flat config URLs if no grid_nodes
-    if not checked and not target_host:
-        r_url = saved.get("reasoning_url", "")
-        if r_url:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(r_url)
-                host = parsed.hostname or ""
-                port = parsed.port or 8121
-                if host:
-                    _grid_test_node(host, port)
-            except Exception:
-                pass
+def _grid_health_check(saved: dict, grid_nodes: dict, target_host: str | None = None) -> dict:
+    """Run health checks on all or a specific grid node; print and return the status.
 
-        c_url = saved.get("cluster_url", "")
-        if c_url:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(c_url)
-                host = parsed.hostname or ""
-                port = parsed.port or 8121
-                if host:
-                    _grid_test_node(host, port)
-            except Exception:
-                pass
+    The same ``collect_grid_status`` backs ``GET /grid/status`` on the node server.
+    """
+    from adk.grid_status import collect_grid_status
 
-    if not checked and target_host:
+    status = collect_grid_status(saved, grid_nodes, target_host=target_host)
+    for node in status["nodes"]:
+        _print_grid_probe(node["host"], node["port"], node)
+    if not status["nodes"] and target_host:
         print(f"  No node found with host: {target_host}")
+    return status
 
 
 # ── Phase 3.6: adk explore — marketplace browser ─────────────────────────
