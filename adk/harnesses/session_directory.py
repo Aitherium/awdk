@@ -115,6 +115,14 @@ class UnifiedSession:
     steer_capability: str = "none"  # "full" | "turn-boundary" | "none"
     #: Extra fields from the original session (HarnessSession.info() fields or DiscoveredSession)
     extras: Optional[dict[str, Any]] = None
+    #: Git branch the session is on, from the transcript's own `gitBranch` field
+    #: (Claude Code stamps it on every entry). "" when the transcript names none.
+    branch: str = ""
+    #: Tokens this session has SPENT: input + cache-creation + output summed over
+    #: every assistant message in the transcript. Cache READS are excluded on
+    #: purpose -- they re-count the same context every turn and would make a long
+    #: session look 20x more expensive than it was.
+    tokens_spent: int = 0
 
 
 #: How far back a COLD read looks for the last human prompt. One tail window is
@@ -239,6 +247,80 @@ def _last_human_prompt(transcript_path: str, topic_of=None) -> str:
             for stale in list(_PROMPT_CACHE)[:64]:
                 _PROMPT_CACHE.pop(stale, None)
     return found
+
+
+#: transcript path -> (bytes_scanned, branch, tokens_spent, last_message_id).
+#: The first look reads the whole file once; every later poll reads only the
+#: appended bytes, so a 2 s poll over a 20 MB transcript costs nothing.
+_USAGE_CACHE: dict[str, tuple[int, str, int, str]] = {}
+_USAGE_CACHE_LOCK = threading.Lock()
+
+
+def _transcript_usage(transcript_path: str) -> tuple[str, int]:
+    """(branch, tokens_spent) for a transcript, read incrementally.
+
+    Claude Code writes one JSONL entry per content BLOCK and repeats the whole
+    message's `usage` on each, so usage is counted once per `message.id` --
+    summing per line over-counts a multi-block turn by the block count.
+    """
+    if not transcript_path:
+        return "", 0
+    try:
+        path = Path(transcript_path)
+        size = path.stat().st_size
+    except OSError:
+        return "", 0
+    with _USAGE_CACHE_LOCK:
+        cached = _USAGE_CACHE.get(transcript_path)
+    offset, branch, tokens, last_id = 0, "", 0, ""
+    if cached and cached[0] <= size:
+        offset, branch, tokens, last_id = cached
+        if offset == size:
+            return branch, tokens
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            chunk = fh.read(size - offset)
+    except OSError:
+        return branch, tokens
+    # Only whole lines are consumed; a line still being written is re-read next time.
+    end = chunk.rfind(b"\n")
+    if end < 0:
+        return branch, tokens
+    consumed = chunk[: end + 1]
+    seen: set[str] = {last_id} if last_id else set()
+    for raw in consumed.split(b"\n"):
+        if b'"gitBranch"' not in raw and b'"usage"' not in raw:
+            continue
+        try:
+            obj = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        gb = obj.get("gitBranch")
+        if isinstance(gb, str) and gb.strip():
+            branch = gb.strip()
+        msg = obj.get("message")
+        usage = msg.get("usage") if isinstance(msg, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        mid = str(msg.get("id") or "")
+        if mid and mid in seen:
+            continue
+        if mid:
+            seen.add(mid)
+            last_id = mid
+        for key in ("input_tokens", "cache_creation_input_tokens", "output_tokens"):
+            val = usage.get(key)
+            if isinstance(val, int) and val > 0:
+                tokens += val
+    with _USAGE_CACHE_LOCK:
+        _USAGE_CACHE[transcript_path] = (offset + len(consumed), branch, tokens, last_id)
+        if len(_USAGE_CACHE) > 256:
+            for stale in list(_USAGE_CACHE)[:64]:
+                _USAGE_CACHE.pop(stale, None)
+    return branch, tokens
 
 
 def _derive_status_from_transcript(transcript_path: str) -> tuple[str, float, str]:
@@ -437,6 +519,7 @@ class SessionDirectory:
             dead = str(info.get("state") or "") in ("exited", "failed")
             if dead:
                 status = "exited"
+            branch, tokens_spent = _transcript_usage(transcript)
 
             out.append(
                 UnifiedSession(
@@ -453,6 +536,8 @@ class SessionDirectory:
                     pid=None,
                     steer_capability="none" if dead else "full",
                     extras=info,
+                    branch=branch,
+                    tokens_spent=tokens_spent,
                 )
             )
         return out
@@ -468,6 +553,7 @@ class SessionDirectory:
                 status, activity_at, activity_summary = _derive_status_from_transcript(
                     disc.transcript_path
                 )
+            branch, tokens_spent = _transcript_usage(disc.transcript_path)
 
             out.append(
                 UnifiedSession(
@@ -488,6 +574,8 @@ class SessionDirectory:
                     pid=disc.pid,
                     steer_capability="turn-boundary",  # Can interrupt but not full control
                     extras=asdict(disc),
+                    branch=branch,
+                    tokens_spent=tokens_spent,
                 )
             )
         return out

@@ -1156,6 +1156,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 "transcript_path": s.transcript_path,
                 "pid": s.pid,
                 "steer_capability": s.steer_capability,
+                # Cockpit grid columns: the branch the session works on and the
+                # tokens it has spent (input + cache-creation + output).
+                "branch": s.branch,
+                "tokens_spent": s.tokens_spent,
                 # The id the PROGRAM carries (claude-tty's --session-id). Every other
                 # surface knows a tab by it; without it a client cannot resolve an
                 # awsh-opened tab by the id its own transcript is named after.
