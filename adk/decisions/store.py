@@ -1185,6 +1185,33 @@ class DecisionStore:
             self._write(card)
             return card
 
+    def resolve(self, card_id: str, *, note: str = "") -> DecisionCard:
+        """Close a card the raising agent has fulfilled itself: a promise KEPT,
+        or a `blocked` card whose blocker went away.
+
+        The CLI verb `awask resolve` shipped calling this method before it
+        existed (measured 2026-09-21: `'DecisionStore' object has no attribute
+        'resolve'`), so every kept promise had to be left open or `cancel`led --
+        and a cancelled promise reads as WITHDRAWN, the opposite of kept. It
+        closes as ANSWERED with the answer "kept": the one closed status that
+        means success, and the one the promise sweep (which judges only open,
+        overdue promises) will never breach. Idempotent on an already-closed
+        card, like `cancel`, so a resolve racing a sweep has one clear winner.
+        """
+        with self._lock:
+            card = self.get(card_id)
+            if card is None:
+                raise DecisionError(f"no such card: {card_id}")
+            if card.status in CLOSED_STATUSES:
+                return card
+            card.status = STATUS_ANSWERED
+            card.answer = "kept"
+            card.answer_note = note or "resolved by the agent that raised it"
+            card.answered_at = time.time()
+            card.answered_via = "agent"
+            self._write(card)
+            return card
+
     def steer(self, card_id: str, text: str, *, via: str = "popup") -> DecisionCard:
         """Send the owner's OWN words to the raising session, card still open.
 
@@ -1331,7 +1358,8 @@ class DecisionStore:
 
     # ── housekeeping ──────────────────────────────────────────────────────────
 
-    def sweep(self, *, keep_closed_seconds: float = 7 * 24 * 3600) -> int:
+    def sweep(self, *, keep_closed_seconds: float = 7 * 24 * 3600,
+              archive: Optional[Path] = None) -> int:
         """Delete closed cards older than the retention window. Returns the count.
 
         Open cards are NEVER swept regardless of age — an unanswered question does
@@ -1346,7 +1374,14 @@ class DecisionStore:
         counted in :attr:`last_sweep_busy` and retried next time; anything that is
         NOT a transient busy/permission error still raises, because a sweep that
         swallowed every OSError would be indistinguishable from one that ran.
+
+        With ``archive`` (a directory) each swept card is first appended to
+        ``<archive>/cards-YYYY-MM.zip`` and only removed once the zip holds it, so
+        an unattended sweep keeps the owner's answer history and stays reversible
+        (``unzip`` puts a card back). The zip is read back before the unlink.
         """
+        import zipfile
+
         removed = 0
         busy = 0
         cutoff = time.time() - keep_closed_seconds
@@ -1355,6 +1390,22 @@ class DecisionStore:
             if card is None:
                 continue
             if card.status in CLOSED_STATUSES and (card.answered_at or card.created_at) < cutoff:
+                if archive is not None:
+                    closed_at = card.answered_at or card.created_at
+                    month = time.strftime("%Y-%m", time.gmtime(closed_at))
+                    bundle = Path(archive) / f"cards-{month}.zip"
+                    try:
+                        bundle.parent.mkdir(parents=True, exist_ok=True)
+                        data = target.read_bytes()
+                        with zipfile.ZipFile(bundle, "a", zipfile.ZIP_DEFLATED) as zf:
+                            if target.name not in zf.namelist():
+                                zf.writestr(target.name, data)
+                        with zipfile.ZipFile(bundle) as zf:
+                            if zf.read(target.name) != data:
+                                raise DecisionError(f"archive mismatch for {target.name}")
+                    except (OSError, zipfile.BadZipFile) as exc:
+                        raise DecisionError(
+                            f"could not archive {target} into {bundle}: {exc}") from exc
                 try:
                     target.unlink()
                     removed += 1

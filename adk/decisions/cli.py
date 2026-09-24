@@ -177,7 +177,66 @@ def _resolve_session_pid(explicit: int = 0) -> int:
 # ── commands ────────────────────────────────────────────────────────────────────
 
 
+def _cmd_ask_card_recipe(args: argparse.Namespace, store: DecisionStore) -> int:
+    """`ask --card-recipe ID --var k=v ...`: raise the card a recipe describes.
+
+    A producer (a scheduler, a watchdog) calls this on EVERY failing pass, so the
+    store's dedupe key is what keeps a streak at one card; the output says which
+    happened (``deduped``) so the producer can tell "raised" from "already asked".
+    A recipe card carries its own options, default and kind, so the flags that
+    would build a different card are refused rather than silently ignored.
+    """
+    clashes = [flag for flag, used in (
+        ("--option", bool(args.option)),
+        ("--credential", bool(args.credential)),
+        ("--recipe", bool((getattr(args, "recipe", "") or "").strip())),
+    ) if used]
+    if clashes:
+        print(f"--card-recipe cannot be combined with {', '.join(clashes)}", file=sys.stderr)
+        return 2
+    variables: dict[str, str] = {}
+    for spec in args.var or []:
+        name, sep, value = spec.partition("=")
+        if not sep or not name.strip():
+            print(f"--var {spec!r} must be NAME=VALUE", file=sys.stderr)
+            return 2
+        variables[name.strip()] = value
+    from adk.decisions.card_recipes import CardRecipeError, build_card
+
+    try:
+        card = build_card(args.card_recipe.strip(), variables)
+    except CardRecipeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        created = store.create(card)
+    except DecisionError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    # create() returns the card it wrote, or the one that already answers this
+    # dedupe key -- a different object, and no notification is owed for it.
+    deduped = created is not card
+    describe = ""
+    if not deduped:
+        describe = notify(created, store).describe()
+    if args.json:
+        print(json.dumps({
+            "id": created.id,
+            "status": created.status,
+            "deduped": deduped,
+            "notify": describe,
+            "card": created.to_dict(),
+        }, indent=2))
+    else:
+        print_card(created)
+        if not args.quiet:
+            print(f"  {'deduped: already asked' if deduped else describe}", file=sys.stderr)
+    return 0
+
+
 def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
+    if (getattr(args, "card_recipe", "") or "").strip():
+        return _cmd_ask_card_recipe(args, store)
     options = [parse_option(spec) for spec in (args.option or [])]
     if args.recommend:
         wanted = args.recommend.strip().lower()
@@ -564,8 +623,16 @@ def cmd_sweep(args: argparse.Namespace, store: DecisionStore) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    removed = store.sweep(keep_closed_seconds=keep)
-    print(f"swept {removed} closed card(s) older than {args.keep}")
+    archive = Path(args.archive).expanduser() if args.archive else None
+    try:
+        removed = store.sweep(keep_closed_seconds=keep, archive=archive)
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    where = f", archived under {archive}" if archive else ""
+    busy = getattr(store, "last_sweep_busy", 0)
+    tail = f"; {busy} busy, left for next time" if busy else ""
+    print(f"swept {removed} closed card(s) older than {args.keep}{where}{tail}")
     return 0
 
 
@@ -822,6 +889,11 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--branch", default="", help="git branch (auto-detected when omitted)")
     ask.add_argument("--wait", default="", metavar="30m",
                      help="block until answered, then print the answer")
+    ask.add_argument("--card-recipe", default="", metavar="ID",
+                     help="raise the card a registered card recipe describes (e.g. wake-failed); "
+                          "exclusive with --option/--credential/--recipe")
+    ask.add_argument("--var", action="append", metavar="NAME=VALUE",
+                     help="repeatable; a variable for --card-recipe")
     ask.add_argument("--json", action="store_true")
     ask.add_argument("--quiet", action="store_true", help="suppress the notify report")
 
@@ -886,6 +958,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sweep = sub.add_parser("sweep", help="delete old CLOSED cards (open cards are kept)")
     sweep.add_argument("--keep", default="7d")
+    sweep.add_argument(
+        "--archive", default=None, metavar="DIR",
+        help="zip each swept card into DIR/cards-YYYY-MM.zip before removing it (reversible)")
 
     return parser
 

@@ -2211,21 +2211,44 @@ def find_search(query: str, limit: int = 5) -> str:
     This tool requires pip install awdk[senses] and a search-shaped service.
     Returns ranked results sorted by relevance.
     """
+    # awfind exports FindClient (+ resolve_url/resolve_token/resolve_ca_bundle),
+    # never a `Finder`. Importing a name the package does not have raised
+    # ImportError on EVERY box, so this tool reported "awfind not available"
+    # even where awfind was installed and configured.
     try:
-        from awfind import Finder
+        from awfind import FindClient, resolve_ca_bundle, resolve_token, resolve_url
     except ImportError:
         return json.dumps({"error": "awfind not available", "fix": "pip install awdk[senses]"})
 
-    finder = Finder()
     try:
-        results = finder.search(query, limit=limit)
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 5
+    if limit < 1:
+        limit = 5
+
+    try:
+        # The ADK's own env names first (the ones web_search honours), then
+        # awfind's resolution ladder (AWFIND_* env, then ~/.config/awfind).
+        url = os.environ.get("ADK_SEARCH_URL") or os.environ.get("AITHER_SEARCH_URL")
+        if not url:
+            url, _ = resolve_url()
+        token = os.environ.get("ADK_SEARCH_TOKEN") or resolve_token()[0]
+        ca = os.environ.get("ADK_SEARCH_CA_BUNDLE")
+        verify = ca if ca else resolve_ca_bundle()[0]
+    except Exception as e:  # UnresolvedError / ConfigError name every rung tried
+        return json.dumps({"error": str(e), "query": query})
+
+    try:
+        answer = FindClient(url, token=token or None, verify=verify).quick(query, limit=limit)
+        results = list(answer)[:limit]
         return json.dumps({
             "query": query,
             "count": len(results),
             "results": [
-                {"title": r.title, "url": r.url, "snippet": r.snippet, "rank": i+1}
+                {"title": r.title, "url": r.url, "snippet": r.snippet, "rank": i + 1}
                 for i, r in enumerate(results)
-            ]
+            ],
         })
     except Exception as e:
         return json.dumps({"error": str(e), "query": query})
