@@ -933,24 +933,6 @@ def cmd_up(args):
     name = (getattr(args, "name", "") or "").strip() or re.sub(
         r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-adk".lower())
     port = getattr(args, "port", None) or 8080
-    # :8080 is also where install-bonsai.sh / phone.sh put llama-server, and its
-    # /health answered our poll — so `adk up` on such a box reported "healthy"
-    # for a child that died on EADDRINUSE (2026-09-12). If someone ELSE owns the
-    # requested port and the user did not pin it explicitly, step to the next
-    # free one and say so; an explicit --port that is taken is an error.
-    _owner = daemon.port_owner(port)
-    if _owner == "other":
-        if getattr(args, "port", None):
-            print(f"  [x] :{port} is already served by another process "
-                  f"(a llama-server / Bonsai answers /health there). Pick another --port.")
-            return 3
-        _orig = port
-        for _cand in range(port + 1, port + 20):
-            if daemon.port_owner(_cand) is None:
-                port = _cand
-                break
-        print(f"  [i] :{_orig} is in use by another server (your local Bonsai?); "
-              f"starting the agent on :{port} instead")
     foreground = bool(getattr(args, "foreground", False))
     persist = not getattr(args, "no_persist", False)
     force = bool(getattr(args, "force", False))
@@ -995,6 +977,26 @@ def cmd_up(args):
                       f"(pid {existing.get('server_pid')}). "
                       "Use --force to restart, or 'adk down' to stop.")
             return 0
+    if existing and force:
+        # Give the server we just killed a moment to release its port, so the
+        # owner probe below does not mistake our own dying daemon for a squatter.
+        _deadline = time.time() + 10
+        while daemon.port_owner(port) == "adk" and time.time() < _deadline:
+            time.sleep(0.5)
+
+    # :8080 is also where install-bonsai.sh / phone.sh put llama-server, and its
+    # /health answered our poll — so `adk up` on such a box reported "healthy"
+    # for a child that died on EADDRINUSE (2026-09-12). The same happens when
+    # ANOTHER adk daemon holds the port (a WSL-side one behind wslrelay): it
+    # passes the adk-body check, so the owner probe runs AFTER the idempotency
+    # check above — any answer here is not ours. An explicit --port that is
+    # taken is an error; otherwise step to the next free port and say so.
+    port, _port_note, _port_err = _pick_up_port(
+        daemon, port, explicit=bool(getattr(args, "port", None)))
+    if _port_err:
+        return _fail(3, _port_err, "Pick another --port, or stop the process holding it.")
+    if _port_note and not non_interactive:
+        print(f"  [i] {_port_note}")
 
     # ── Portal token (used for BOTH the hosted brain and registration) ──
     portal = (getattr(args, "portal", "") or _control_plane()).rstrip("/")
@@ -1176,11 +1178,17 @@ def cmd_up(args):
     if not non_interactive:
         _brain = "hosted Aither brain" if use_gateway else (provider or "local")
         print(f"  Starting agent ({_brain}, :{port}) …")
+    spawned_at = time.time()
     server_pid = daemon.spawn_detached(serve_argv, agent_log, env=child_env)
 
-    if not daemon.wait_for_health(port, timeout=60):
+    # pid + not_before: only OUR child counts as healthy. A foreign daemon that
+    # grabbed the port first answers /health with an older started_at, and a
+    # child that lost the bind exits — both fail here instead of "healthy".
+    if not daemon.wait_for_health(port, timeout=60, pid=server_pid,
+                                  not_before=spawned_at):
         daemon.kill_pid(server_pid)
-        return _fail(1, "agent did not become healthy in 60s",
+        return _fail(1, f"agent did not become healthy on :{port} in 60s "
+                        "(or another server answered that port)",
                      f"see {agent_log}")
     if not non_interactive:
         print(f"  [+] Agent healthy on :{port}")
@@ -1293,6 +1301,7 @@ def cmd_up(args):
         "backend": "local" if have_backend else provider,
         "autostart": autostart, "portal": portal, "chat_url": chat_url,
         "log_path": str(agent_log),
+        "spawned_at": spawned_at,
     }
     daemon.write_status(status)
 
@@ -1339,6 +1348,26 @@ def cmd_up(args):
             daemon.kill_pid(server_pid)
             daemon.clear_status()
     return 0
+
+
+def _pick_up_port(daemon, port: int, explicit: bool) -> tuple[int, str, str]:
+    """Choose the port `adk up` binds: (port, note, error).
+
+    Any answer on the port counts as taken — a llama-server ('other') or an adk
+    daemon that is not ours ('adk'; ours was already handled by the caller's
+    idempotency check). An explicit --port that is taken is an error; the
+    default steps to the next free port within 20 and notes it.
+    """
+    owner = daemon.port_owner(port)
+    if owner is None:
+        return port, "", ""
+    what = "another adk agent" if owner == "adk" else "another server (your local Bonsai?)"
+    if explicit:
+        return port, "", f":{port} is already served by {what}."
+    for cand in range(port + 1, port + 20):
+        if daemon.port_owner(cand) is None:
+            return cand, f":{port} is in use by {what}; starting the agent on :{cand} instead", ""
+    return port, "", f":{port} is in use by {what} and no free port in :{port + 1}-:{port + 19}."
 
 
 def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool) -> list[str]:
@@ -9932,7 +9961,10 @@ def cmd_status(args):
     agent_state = None
     if st:
         alive = daemon.pid_alive(st.get("server_pid"))
-        healthy = daemon.wait_for_health(st.get("port", 8080), timeout=3) if alive else False
+        # not_before: a foreign daemon answering our port is not our health.
+        healthy = daemon.wait_for_health(
+            st.get("port", 8080), timeout=3,
+            not_before=st.get("spawned_at")) if alive else False
         agent_state = {
             **st,
             "running": alive,

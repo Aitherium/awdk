@@ -188,22 +188,51 @@ def port_owner(port: int) -> Optional[str]:
     return "adk" if is_adk_health(body) else "other"
 
 
-def wait_for_health(port: int, timeout: float = 60.0) -> bool:
+def is_our_health(body, not_before: Optional[float]) -> bool:
+    """True only for an adk /health body from a server started at/after ``not_before``.
+
+    is_adk_health() cannot tell OUR daemon from ANOTHER adk daemon on the same
+    port (measured 2026-08-26: a WSL-side adk behind wslrelay held :8080, the freshly spawned
+    aither-serve lost the bind, and `adk up`/`adk status` verified the foreign
+    one). adk/server.py reports ``started_at`` (its import-time wall clock), so a
+    body whose server started BEFORE we spawned ours is not ours. A body with no
+    usable ``started_at`` cannot prove it is ours and is refused when a floor is
+    given. 2 s of slack absorbs clock granularity between parent and child.
+    """
+    if not is_adk_health(body):
+        return False
+    if not_before is None:
+        return True
+    started = body.get("started_at")
+    if isinstance(started, bool) or not isinstance(started, (int, float)):
+        return False
+    return float(started) >= float(not_before) - 2.0
+
+
+def wait_for_health(port: int, timeout: float = 60.0, *,
+                    pid: Optional[int] = None,
+                    not_before: Optional[float] = None) -> bool:
     """Poll ``http://127.0.0.1:<port>/health`` until OUR server answers, or timeout.
 
     A 200 from a different process on the same port (a llama-server, a dev web
-    app) is not health — see is_adk_health.
+    app) is not health — see is_adk_health. With ``not_before`` a 200 from a
+    DIFFERENT adk daemon (one started before ours) is not health either — see
+    is_our_health. With ``pid``, a spawned child that has exited (e.g. it lost
+    the bind to a foreign port owner) fails fast instead of being "healthy"
+    through whoever else answers the port.
     """
     import httpx
 
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if pid is not None and not pid_alive(pid):
+            return False
         try:
             r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=3)
             if r.status_code == 200:
                 try:
-                    if is_adk_health(r.json()):
-                        return True
+                    if is_our_health(r.json(), not_before):
+                        return pid is None or pid_alive(pid)
                 except ValueError:
                     pass
         except (httpx.HTTPError, OSError):
