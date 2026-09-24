@@ -35,41 +35,23 @@ import logging
 import os
 from typing import Any, Optional
 
+# One resolver for both sync clients (knowledge sync and agent federation), so
+# they cannot disagree about where the brain is. Import, never copy: a copied
+# default or a copied env ladder drifts (it did -- federation read only
+# AITHER_BRAIN_URL while knowledge sync preferred AITHER_BRAIN_HUB_URL).
+from adk.sync.brain import resolve_brain_url as _resolve_brain_url
+
 logger = logging.getLogger("adk.federation")
 
 __all__ = ["FederationClient", "sync_agent"]
-
-#: In-network default. Never plain http to an internal service.
-_DEFAULT_BRAIN = "https://aitheros-aitherbrain:8271"
 
 _TIMEOUT = float(os.environ.get("AITHER_FEDERATION_TIMEOUT", "20"))
 
 
 def _brain_url() -> str:
-    """Resolve the hub, preferring explicit configuration.
-
-    Mirrors the resolution ladder the knowledge-sync client uses, so the two
-    cannot disagree about where the brain is — a class of defect that has
-    already cost this codebase a silently misaddressed sync.
-    """
-    explicit = os.environ.get("AITHER_BRAIN_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    try:
-        from adk.config import load_saved_config
-
-        saved = (load_saved_config() or {}).get("brain_url", "")
-        if saved:
-            return str(saved).rstrip("/")
-    except ImportError:
-        # Expected when the SDK is embedded without its config module.
-        logger.debug("adk.config unavailable — using the in-network brain default")
-    except Exception as exc:
-        # NOT expected: config exists and could not be read. Distinct from the
-        # above, because "no config" and "unreadable config" want different
-        # fixes and a bare `pass` makes them the same event.
-        logger.debug("could not read saved brain_url (%s) — using the default", exc)
-    return _DEFAULT_BRAIN
+    """Resolve the hub with the SAME ladder as ``adk.sync.brain``:
+    AITHER_BRAIN_HUB_URL > AITHER_BRAIN_URL > saved ``brain_url`` > default."""
+    return _resolve_brain_url(None)
 
 
 class FederationClient:

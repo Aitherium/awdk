@@ -411,9 +411,8 @@ async def ingest_files(
     # Load node auth for tenant_id
     tenant_id = ""
     if brain_sync:
-        from adk.fleet_enroll import _load_node_auth
-        node_auth = _load_node_auth()
-        tenant_id = node_auth.get("tenant_id", "")
+        from adk.fleet_enroll import node_tenant_id
+        tenant_id = node_tenant_id()
         if not tenant_id:
             logger.warning("Node not enrolled; brain sync disabled. Run 'adk enroll'.")
             brain_sync = False

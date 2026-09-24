@@ -50,7 +50,8 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("adk.brain_sync")
 
 #: In-network default. AitherBrain speaks TLS; plain http into it hangs or
-#: closes the socket. Shared with ``adk.sync.federation`` so the two sync
+#: closes the socket. ``adk.sync.federation`` imports this constant AND
+#: ``resolve_brain_url`` (it does not keep its own copy), so the two sync
 #: clients cannot disagree about where the brain is.
 DEFAULT_BRAIN_URL = "https://aitheros-aitherbrain:8271"
 
@@ -266,8 +267,10 @@ class BrainSyncClient:
             # If config has a brain endpoint, use it
             if config.get("brain_url"):
                 return config.get("brain_url")
-        except Exception:
-            pass
+        except ImportError:
+            logger.debug("adk.config unavailable; using the in-network brain default")
+        except Exception as exc:  # config exists but could not be read
+            logger.debug("could not read saved brain_url (%s); using the default", exc)
 
         return DEFAULT_BRAIN_URL
 

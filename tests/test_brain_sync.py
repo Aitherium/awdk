@@ -409,5 +409,108 @@ class TestBrainSyncAuthAndRouting:
             assert "resolve_brain_url" in src, mod.__name__
 
 
+
+class TestEnrollPersistsTenantId:
+    """Enrollment used to write only tenant_slug, so every enrolled node read
+    tenant_id == "" and ``adk ingest --brain`` silently disabled brain sync."""
+
+    @staticmethod
+    def _point_at(tmp_path, monkeypatch, auth=None, node=None):
+        import json
+
+        import adk.fleet_enroll as fe
+
+        auth_file = tmp_path / "auth.json"
+        node_file = tmp_path / "node_auth.json"
+        if auth is not None:
+            auth_file.write_text(json.dumps(auth), encoding="utf-8")
+        if node is not None:
+            node_file.write_text(json.dumps(node), encoding="utf-8")
+        monkeypatch.setattr(fe, "_AITHER_DIR", tmp_path)
+        monkeypatch.setattr(fe, "_AUTH_FILE", auth_file)
+        monkeypatch.setattr(fe, "_NODE_AUTH_FILE", node_file)
+        return fe, node_file
+
+    _AUTH = {
+        "active_profile": "cloud",
+        "profiles": {"cloud": {
+            "access_token": "user-tok",
+            "user": {"username": "u", "tenant_id": "tnt_login", "tenant_slug": "acme"},
+        }},
+    }
+
+    @pytest.mark.asyncio
+    async def test_rich_enroll_writes_identity_tenant_id(self, tmp_path, monkeypatch):
+        import json
+
+        import adk.enrollment as enr
+
+        fe, node_file = self._point_at(tmp_path, monkeypatch, auth=self._AUTH)
+
+        async def fake_rich(*a, **k):
+            return {"enrolled": True, "tenant_id": "tnt_identity",
+                    "registration": {}, "bearer_token": ""}
+
+        async def _none(*a, **k):
+            return (0, 0)
+
+        async def _false(*a, **k):
+            return False
+
+        monkeypatch.setattr(enr, "rich_enroll", fake_rich)
+        monkeypatch.setattr(fe, "_sync_entitled_packs_best_effort", _none)
+        monkeypatch.setattr(fe, "_upsert_agents_to_portal", _false)
+        monkeypatch.setattr(fe, "_enable_session_sync_default", lambda: None)
+        monkeypatch.setenv("AITHER_FLEET_ENROLL", "1")
+        out = await fe.enroll_on_boot(enable_heartbeat=False, start_link=False)
+        assert out["enrolled"] is True
+        saved = json.loads(node_file.read_text(encoding="utf-8"))
+        assert saved["tenant_id"] == "tnt_identity"
+        assert fe.node_tenant_id() == "tnt_identity"
+
+    def test_node_tenant_id_falls_back_to_signed_in_identity(self, tmp_path, monkeypatch):
+        fe, _ = self._point_at(tmp_path, monkeypatch, auth=self._AUTH,
+                               node={"node_id": "n1", "api_key": "k"})
+        assert fe.node_tenant_id() == "tnt_login"
+
+    def test_no_identity_means_no_tenant(self, tmp_path, monkeypatch):
+        fe, _ = self._point_at(tmp_path, monkeypatch, node={"node_id": "n1"})
+        assert fe.node_tenant_id() == ""
+
+    def test_backfill_keeps_enrolled_at(self, tmp_path, monkeypatch):
+        import json
+
+        node = {"node_id": "n1", "api_key": "k", "enrolled_at": "2026-01-01T00:00:00Z"}
+        fe, node_file = self._point_at(tmp_path, monkeypatch, auth=self._AUTH, node=node)
+        fe._backfill_node_tenant_id(fe._load_node_auth())
+        saved = json.loads(node_file.read_text(encoding="utf-8"))
+        assert saved["tenant_id"] == "tnt_login"
+        assert saved["enrolled_at"] == "2026-01-01T00:00:00Z"
+
+    def test_ingest_readers_use_node_tenant_id(self):
+        import inspect
+
+        import adk.ingest as ingest
+        from adk.shell import claude_ingest
+
+        for mod in (ingest, claude_ingest):
+            src = inspect.getsource(mod)
+            assert "node_tenant_id" in src, mod.__name__
+            assert '_load_node_auth().get("tenant_id"' not in src, mod.__name__
+
+
+class TestOneBrainResolver:
+    def test_federation_and_knowledge_sync_agree(self, monkeypatch):
+        from adk.sync import brain as brain_mod
+        from adk.sync import federation
+
+        monkeypatch.setattr("adk.config.load_saved_config", lambda: {}, raising=False)
+        monkeypatch.setenv("AITHER_BRAIN_HUB_URL", "https://hub.example:8271")
+        monkeypatch.setenv("AITHER_BRAIN_URL", "https://other.example:8271")
+        assert federation._brain_url() == brain_mod.resolve_brain_url(None)
+        monkeypatch.delenv("AITHER_BRAIN_HUB_URL")
+        assert federation._brain_url() == brain_mod.resolve_brain_url(None)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

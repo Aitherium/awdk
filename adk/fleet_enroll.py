@@ -145,6 +145,46 @@ def _save_node_auth(data: Dict[str, Any]) -> None:
     _NODE_AUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _extract_tenant_id() -> str:
+    """The signed-in identity's tenant_id from auth.json, or "".
+
+    ``adk login`` stores it under ``user.tenant_id``; a legacy flat file may
+    carry it at the top level. Never invented: no identity means no tenant.
+    """
+    auth = _load_auth_config()
+    user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
+    return str(auth.get("tenant_id") or user.get("tenant_id") or "").strip()
+
+
+def node_tenant_id() -> str:
+    """The tenant this node syncs as: node_auth.json ``tenant_id``, else the
+    signed-in identity's tenant from auth.json. Empty when neither has one.
+
+    Enrollment used to persist only ``tenant_slug``, so every reader that
+    needed ``tenant_id`` (``adk ingest --brain``, session ingest) saw "" and
+    silently turned brain sync off on every enrolled node.
+    """
+    tid = str(_load_node_auth().get("tenant_id") or "").strip()
+    return tid or _extract_tenant_id()
+
+
+def _backfill_node_tenant_id(node_auth: Dict[str, Any]) -> None:
+    """Add a missing ``tenant_id`` to an existing node_auth.json in place,
+    keeping every other field (including ``enrolled_at``) unchanged."""
+    if str(node_auth.get("tenant_id") or "").strip():
+        return
+    tid = _extract_tenant_id()
+    if not tid:
+        return
+    data = dict(node_auth)
+    data["tenant_id"] = tid
+    try:
+        _NODE_AUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        node_auth["tenant_id"] = tid
+    except OSError as exc:
+        log.warning("Could not backfill tenant_id into node_auth.json: %s", exc)
+
+
 def _load_agents_registry() -> Dict[str, Any]:
     """Load agents.json (local agent registry)."""
     if not _AGENTS_FILE.exists():
@@ -716,6 +756,7 @@ async def enroll_on_boot(
     node_auth = _load_node_auth()
     if node_auth.get("node_id"):
         log.info("Node already enrolled: %s", node_auth["node_id"])
+        _backfill_node_tenant_id(node_auth)
         # Still upsert agents and start heartbeat if enabled
         if enable_heartbeat:
             if node_auth.get("mode") == "rich":
@@ -824,6 +865,9 @@ async def enroll_on_boot(
             "hub_url": portal_url,
             "enroll_base": enroll_base,
             "tenant_slug": _extract_tenant_slug(),
+            # Identity's registration answer is authoritative; the signed-in
+            # identity's tenant is the fallback for an older control plane.
+            "tenant_id": str(rich.get("tenant_id") or "").strip() or _extract_tenant_id(),
             "mode": "rich",
             # The url the probe SETTLED on (explicit or the ladder's hit), so the
             # heartbeat re-probes this exact server instead of walking again.
@@ -890,6 +934,7 @@ async def enroll_on_boot(
         "api_key": api_key,
         "hub_url": hub_url,
         "tenant_slug": _extract_tenant_slug(),
+        "tenant_id": str(result.get("tenant_id") or "").strip() or _extract_tenant_id(),
     })
 
     # Enable session sync by default (post-enrollment)

@@ -154,8 +154,8 @@ async def ingest_sessions(
     tenant_id = ""
     if brain_sync and not dry_run:
         try:
-            from adk.fleet_enroll import _load_node_auth
-            tenant_id = _load_node_auth().get("tenant_id", "")
+            from adk.fleet_enroll import node_tenant_id
+            tenant_id = node_tenant_id()
         except Exception as exc:
             logger.debug("node auth unavailable: %s", exc)
         if not tenant_id:
