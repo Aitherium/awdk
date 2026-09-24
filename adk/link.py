@@ -205,6 +205,14 @@ def status() -> Dict[str, Any]:
         bundle = None
     ok_bundle = bundle if _is_bundle(bundle) else None
     ident = (ok_bundle or {}).get("identity") or {}
+    # A tenant user (garg, dgg, jgames, ...) is homed on THEIR portal; the server
+    # decides that from the verified token and says so in the bundle.
+    tenant = (
+        (ok_bundle or {}).get("tenant")
+        if isinstance((ok_bundle or {}).get("tenant"), dict)
+        else None
+    )
+    home = ((ok_bundle or {}).get("endpoints") or {}).get("portal")
     return {
         # LINKED means the server answered with a bundle for our credential. A
         # stored key alone is only SIGNED IN -- it may be a local-only token that
@@ -214,7 +222,9 @@ def status() -> Dict[str, Any]:
         "username": ident.get("username") or ident.get("email") or None,
         "role": (ok_bundle or {}).get("role"),
         "fetched_at": (ok_bundle or {}).get("fetched_at"),
-        "portal": portal_url(),
+        "tenant": (tenant or {}).get("id") or None,
+        "tenant_name": (tenant or {}).get("name") or None,
+        "portal": home or portal_url(),
     }
 
 
@@ -248,7 +258,8 @@ def main(argv=None) -> int:
         who = res.get("username") or "unknown"
         role = res.get("role") or "role not fetched"
         if res["linked"]:
-            print(f"linked as {who} ({role})")
+            where = f" on {res['tenant_name']}" if res.get("tenant_name") else ""
+            print(f"linked as {who} ({role}){where} -- home: {res['portal']}")
         elif res["signed_in"]:
             print("signed in, but not linked to aitherium.com -- run: adk link start")
         else:

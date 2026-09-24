@@ -147,3 +147,27 @@ def test_a_stored_key_without_a_bundle_is_signed_in_not_linked(monkeypatch):
     monkeypatch.setattr(link, "_stored_token", lambda: "local-token")
     st = link.status()
     assert (st["linked"], st["signed_in"]) == (False, True)
+
+
+def test_a_tenant_bundle_homes_the_device_on_the_tenant_portal(monkeypatch):
+    monkeypatch.setattr(link, "_stored_token", lambda: "tok")
+    garg = {
+        "role": "user",
+        "identity": {"username": "gamer"},
+        "tenant": {"id": "garg", "name": "GARG", "portal": "https://garg.aitherium.com"},
+        "endpoints": {"portal": "https://garg.aitherium.com"},
+    }
+    assert link.refresh(fetch=lambda url, token: (200, garg))["ok"]
+    st = link.status()
+    assert (st["tenant"], st["tenant_name"], st["portal"]) == (
+        "garg",
+        "GARG",
+        "https://garg.aitherium.com",
+    )
+
+
+def test_a_platform_bundle_has_no_tenant(monkeypatch):
+    monkeypatch.setattr(link, "_stored_token", lambda: "tok")
+    assert link.refresh(fetch=lambda url, token: (200, USER))["ok"]
+    st = link.status()
+    assert st["tenant"] is None and st["portal"] == "https://portal.example"
