@@ -782,6 +782,19 @@ if BaseModel is not None:
         priority: int
 
 
+def unified_diff(
+    prev: dict[str, dict[str, Any]], cur: dict[str, dict[str, Any]],
+) -> dict[str, list]:
+    """What changed between two session-directory views keyed by row id.
+
+    ``upserted`` carries every row that is new or differs in any field; ``removed``
+    carries the ids that are gone. Applying both to ``prev`` yields ``cur``.
+    """
+    upserted = [row for sid, row in cur.items() if prev.get(sid) != row]
+    removed = [sid for sid in prev if sid not in cur]
+    return {"upserted": upserted, "removed": removed}
+
+
 def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     """Build the FastAPI app. Raises if no token can be resolved (fail-closed)."""
     if BaseModel is None:
@@ -789,6 +802,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     from fastapi import Depends, FastAPI, Header, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
+    from starlette.concurrency import run_in_threadpool
 
     mgr = manager or default_manager()
     bearer = resolve_token(token)
@@ -1118,42 +1132,94 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         - transcript_path (for reading transcript)
         - steer_capability (full/turn-boundary/none)
         """
+        return {"sessions": _unified_rows()}
+
+    def _unified_rows() -> list[dict[str, Any]]:
+        """The ``/sessions/unified`` rows, shared by the list and the stream."""
         from adk.harnesses.session_directory import default_directory
 
         directory = default_directory()
         daemon_sessions = mgr.list_sessions()
         unified = directory.list_sessions_sync(daemon_sessions)
 
-        return {
-            "sessions": [
-                {
-                    "id": s.id,
-                    "title": s.title,
-                    "cwd": s.cwd,
-                    "harness": s.harness,
-                    "harness_label": s.harness_label,
-                    "origin": s.origin,
-                    "status": s.status,
-                    "last_activity_at": s.last_activity_at,
-                    "last_activity_summary": s.last_activity_summary,
-                    "transcript_path": s.transcript_path,
-                    "pid": s.pid,
-                    "steer_capability": s.steer_capability,
-                    # The id the PROGRAM carries (claude-tty's --session-id). Every other
-                    # surface knows a tab by it; without it a client cannot resolve an
-                    # awsh-opened tab by the id its own transcript is named after.
-                    "harness_session_id": str(
-                        (s.extras or {}).get("harness_session_id") or ""
-                    ),
-                    # Which tabs opted in to PEER input on their pty at spawn. Only a
-                    # daemon-owned row can be True; a discovered tab has no config.
-                    "allow_peer_input": bool(
-                        (s.extras or {}).get("allow_peer_input") or False
-                    ),
-                }
-                for s in unified
-            ]
-        }
+        return [
+            {
+                "id": s.id,
+                "title": s.title,
+                "cwd": s.cwd,
+                "harness": s.harness,
+                "harness_label": s.harness_label,
+                "origin": s.origin,
+                "status": s.status,
+                "last_activity_at": s.last_activity_at,
+                "last_activity_summary": s.last_activity_summary,
+                "transcript_path": s.transcript_path,
+                "pid": s.pid,
+                "steer_capability": s.steer_capability,
+                # The id the PROGRAM carries (claude-tty's --session-id). Every other
+                # surface knows a tab by it; without it a client cannot resolve an
+                # awsh-opened tab by the id its own transcript is named after.
+                "harness_session_id": str(
+                    (s.extras or {}).get("harness_session_id") or ""
+                ),
+                # Which tabs opted in to PEER input on their pty at spawn. Only a
+                # daemon-owned row can be True; a discovered tab has no config.
+                "allow_peer_input": bool(
+                    (s.extras or {}).get("allow_peer_input") or False
+                ),
+            }
+            for s in unified
+        ]
+
+    @app.get("/sessions/unified/stream", dependencies=[Depends(auth)])
+    async def unified_stream(
+        interval: float = Query(default=2.0, ge=0.25, le=60.0),
+        max_frames: int = Query(default=0, ge=0),
+    ):
+        """Server-sent events over the whole session directory.
+
+        The first frame is ``event: snapshot`` with every row (the same rows
+        ``GET /sessions/unified`` returns). After that, a frame is sent only when
+        something changed: ``event: diff`` with ``{"upserted": [rows], "removed":
+        [ids]}``. A cockpit that applies the snapshot and then each diff holds the
+        same list a poll would, without re-fetching every row every tick.
+        ``max_frames`` > 0 ends the stream after that many data frames (a one-shot
+        client, or a test); 0 streams until the client disconnects.
+        """
+
+        async def gen():
+            prev: Optional[dict[str, dict[str, Any]]] = None
+            frames = 0
+            idle_ticks = 0
+            while True:
+                # The directory tails transcripts and probes pids: blocking I/O,
+                # so it runs on the threadpool exactly as the sync list route does.
+                rows = await run_in_threadpool(_unified_rows)
+                cur = {r["id"]: r for r in rows}
+                if prev is None:
+                    kind, payload = "snapshot", {"sessions": rows}
+                else:
+                    kind, payload = "diff", unified_diff(prev, cur)
+                prev = cur
+                if kind == "snapshot" or payload["upserted"] or payload["removed"]:
+                    idle_ticks = 0
+                    yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+                    frames += 1
+                    if max_frames and frames >= max_frames:
+                        return
+                else:
+                    idle_ticks += 1
+                    # Keep proxies (and the tunnel) from closing an idle stream.
+                    if idle_ticks % 10 == 0:
+                        yield ": keepalive\n\n"
+                await asyncio.sleep(interval)
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
 
     @app.get("/sessions/{session_id}", dependencies=[Depends(auth)])
     def get_session(session_id: str) -> dict[str, Any]:
