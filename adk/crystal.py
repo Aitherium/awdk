@@ -139,11 +139,34 @@ class AwgraphIndex:
         return out
 
 
+def _gateway_embed_fallback() -> tuple[str, dict]:
+    """The managed ``/v1/embeddings`` rung for a box with no MicroScheduler:
+    ``(base_with_/v1, auth_headers)`` or ``("", {})`` when not enrolled."""
+    try:
+        from adk.embeddings import _gateway_rung
+    except Exception:  # noqa: BLE001 -- no embeddings module means no managed rung
+        return "", {}
+    base, headers = _gateway_rung()
+    if not base:
+        return "", {}
+    base = base.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return base, headers
+
+
 def make_scheduler_embedder(url: str | None = None, model: str | None = None) -> Embedder:
     """An OpenAI-compatible ``/v1/embeddings`` embedder (MicroScheduler serves
-    ``nomic-embed-text``; measured 2026-09-22 at https://127.0.0.1:8150/v1)."""
-    base = (url or os.environ.get("ADK_EMBED_URL") or "https://127.0.0.1:8150/v1").rstrip("/")
+    ``nomic-embed-text``; measured 2026-09-22 at https://127.0.0.1:8150/v1).
+
+    With no explicit ``url``/``ADK_EMBED_URL`` the loopback scheduler is only the
+    FIRST choice: a hosted tenant's box has nothing on :8150, so an unreachable
+    scheduler falls back (once, then sticky) to the managed gateway rung that
+    :mod:`adk.embeddings` uses, carrying the tenant bearer."""
+    explicit = url or os.environ.get("ADK_EMBED_URL")
+    base = (explicit or "https://127.0.0.1:8150/v1").rstrip("/")
     name = model or os.environ.get("ADK_EMBED_MODEL") or "nomic-embed-text"
+    state: dict[str, Any] = {"base": base, "headers": {}, "fell_back": bool(explicit)}
 
     async def _embed(texts: list[str]) -> list[Optional[list[float]]]:
         import httpx
@@ -158,15 +181,32 @@ def make_scheduler_embedder(url: str | None = None, model: str | None = None) ->
         # string and 422s the OpenAI list form (measured 2026-09-22). Sent concurrently.
         import asyncio
 
-        async with httpx.AsyncClient(timeout=30.0, verify=verify) as client:
-            async def _one(text: str) -> Optional[list[float]]:
-                r = await client.post(f"{base}/embeddings", json={"model": name, "input": text})
-                r.raise_for_status()
-                data = r.json().get("data") or []
-                vec = data[0].get("embedding") if data else None
-                return [float(x) for x in vec] if vec else None
+        async def _run() -> list[Optional[list[float]]]:
+            async with httpx.AsyncClient(timeout=30.0, verify=verify) as client:
+                async def _one(text: str) -> Optional[list[float]]:
+                    r = await client.post(f"{state['base']}/embeddings",
+                                          json={"model": name, "input": text},
+                                          headers=state["headers"])
+                    r.raise_for_status()
+                    data = r.json().get("data") or []
+                    vec = data[0].get("embedding") if data else None
+                    return [float(x) for x in vec] if vec else None
 
-            return list(await asyncio.gather(*(_one(t) for t in texts)))
+                return list(await asyncio.gather(*(_one(t) for t in texts)))
+
+        try:
+            return await _run()
+        except httpx.TransportError:
+            if state["fell_back"]:
+                raise
+            state["fell_back"] = True
+            gw, headers = _gateway_embed_fallback()
+            if not gw:
+                raise
+            logger.info("crystal: scheduler %s unreachable; embedding via gateway %s",
+                        state["base"], gw)
+            state["base"], state["headers"] = gw, headers
+            return await _run()
 
     return _embed
 
