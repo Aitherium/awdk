@@ -5826,7 +5826,13 @@ def create_app(
             app.include_router(create_formbridge_router())
             logger.info("FormBridge routes mounted (/formbridge/*)")
         except ImportError as e:
-            logger.debug("FormBridge routes not available: %s", e)
+            # The public wheel excludes adk/formbridge; an engine installed for a
+            # FormBridge office without the private distribution has NO routes.
+            # Say so loudly -- a debug line here hid a dead install.
+            logger.warning(
+                "FormBridge routes NOT mounted (adk.formbridge missing -- install the "
+                "FormBridge engine distribution, not the public awdk wheel): %s", e,
+            )
 
     # ── Local AI UI routes (the `local` UI pack: tasks, images, mail) ──
     # Mounted on the main app so the pack served at "/" has ONE origin and
