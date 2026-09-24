@@ -1,6 +1,6 @@
 # Aither System Orchestrator
 
-`aither` · version `3.8.25` · 9.9 KB
+`aither` · version `3.8.25` · 9.8 KB
 
 **[Download aither-3.8.25.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/aither-3.8.25.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/aither-3.8.25.sha256)
 
@@ -46,5 +46,5 @@ skills/memory-recall.md
 
 ---
 
-sha256 `85f680cfe122aa7906e6515b6d555180cd6f1bec31277a8f8469e3f51219f5f1`  
+sha256 `7fed073638665ba1792cbe9e5c5c90b66d6f8f4b518187e3eca8c7eaa4176f0a`  
 Built from `v3.8.25` (adk 3.8.25). [All packs](../packs.md)
