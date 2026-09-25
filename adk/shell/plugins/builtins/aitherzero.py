@@ -25,27 +25,37 @@ from dataclasses import dataclass, field
 from adk.shell.plugins import SlashCommand
 
 
+_SCRIPTS_REL = Path("library") / "automation-scripts"
+
+
 def _find_aitherzero_root() -> Optional[Path]:
     """Locate the AitherZero automation-scripts directory."""
     candidates = []
 
+    # In the monorepo AitherZero lives at <repo>/.PRODUCTS/.AITHERZERO; a standalone
+    # clone is <parent>/AitherZero. Probing only the standalone layout meant /zero found
+    # NO scripts in the monorepo unless AITHERZERO_ROOT was set by hand.
+    def _layouts(base: Path) -> List[Path]:
+        return [
+            base / ".PRODUCTS" / ".AITHERZERO" / _SCRIPTS_REL,
+            base / "AitherZero" / _SCRIPTS_REL,
+        ]
+
     # Check env var
     root = os.environ.get("AITHERZERO_ROOT")
     if root:
-        candidates.append(Path(root) / "library" / "automation-scripts")
-        candidates.append(Path(root) / "AitherZero" / "library" / "automation-scripts")
+        candidates.append(Path(root) / _SCRIPTS_REL)
+        candidates.append(Path(root) / "AitherZero" / _SCRIPTS_REL)
 
-    # Check common locations relative to AITHEROS_ROOT
+    # Check common locations relative to AITHEROS_ROOT (<repo>/AitherOS)
     aitheros = os.environ.get("AITHEROS_ROOT")
     if aitheros:
-        candidates.append(Path(aitheros) / ".." / "AitherZero" / "library" / "automation-scripts")
+        candidates.extend(_layouts(Path(aitheros) / ".."))
 
     # Check relative to CWD
     cwd = Path.cwd()
-    candidates.extend([
-        cwd / "AitherZero" / "library" / "automation-scripts",
-        cwd / ".." / "AitherZero" / "library" / "automation-scripts",
-    ])
+    candidates.extend(_layouts(cwd))
+    candidates.extend(_layouts(cwd / ".."))
 
     # Home- and drive-root checkouts, DISCOVERED rather than hardcoded. This used to
     # name an absolute drive path explicitly — one developer's drive layout, shipped in a
@@ -53,9 +63,9 @@ def _find_aitherzero_root() -> Optional[Path]:
     from adk.shell._repo_roots import candidate_repo_roots
 
     home = Path.home()
-    candidates.append(home / "AitherZero" / "library" / "automation-scripts")
+    candidates.append(home / "AitherZero" / _SCRIPTS_REL)
     for root in candidate_repo_roots(include_cwd=False):
-        candidates.append(root / "AitherZero" / "library" / "automation-scripts")
+        candidates.extend(_layouts(root))
 
     for c in candidates:
         resolved = c.resolve()
