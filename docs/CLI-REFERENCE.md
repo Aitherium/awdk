@@ -628,6 +628,7 @@ Manage grid distributed nodes (add, remove, list, test, sync)
 - `adk grid pull` — Pull grid config from your Aitherium workspace
 - `adk grid enroll` — Mint a single-use token to onboard a remote machine as a mesh node
 - `adk grid ls` — List enrolled mesh nodes (GPU, memory, containers, status)
+- `adk grid activate` — Activate a Grid Pro/Enterprise license key
 - `adk grid deregister` — Remove an enrolled mesh node from the registry
 
 ## `adk harness`

@@ -8553,6 +8553,9 @@ def cmd_grid(args) -> int:
         print()
         return 0
 
+    elif sub == "activate":
+        return _grid_activate(getattr(args, "license_key", "") or "")
+
     elif sub == "deregister":
         node_id = args.node_id
         ok, data = _grid_mesh_request("DELETE", f"/nodes/{node_id}", need_key=True)
@@ -8575,6 +8578,7 @@ def cmd_grid(args) -> int:
         print("    adk grid test <ip>           Test specific node")
         print("    adk grid sync                Push config to your Aitherium workspace")
         print("    adk grid pull                Pull config from workspace (new machine)")
+        print("    adk grid activate <key>      Activate a Grid Pro/Enterprise license key")
         print()
         print("  Mesh registry (enrolled nodes via the gateway tunnel):")
         print("    adk grid ls                  List enrolled mesh nodes")
@@ -8586,6 +8590,60 @@ def cmd_grid(args) -> int:
         print("    adk login                    Auth for cloud sync")
         print()
         return 0
+
+
+def _grid_activate(license_key: str) -> int:
+    """`adk grid activate <license-key>` -- install a purchased Grid license.
+
+    The key is the portal's base64 ``{payload, signature}`` envelope (the same
+    shape AitherIdentity returns at login). It is VERIFIED before anything is
+    written: an unsigned, tampered or expired key is refused and the existing
+    ``~/.aither/license.json`` is left untouched (fail-closed). ``-`` reads the
+    key from stdin so it need not sit in shell history.
+    """
+    import base64 as _b64
+    import json as _json
+
+    from adk import licensing as _lic
+
+    key = (license_key or "").strip()
+    if key == "-":
+        key = sys.stdin.read().strip()
+    if not key:
+        print("  Usage: adk grid activate <license-key>   (or '-' to read it from stdin)")
+        return 1
+    try:
+        envelope = _json.loads(_b64.b64decode(key, validate=True).decode("utf-8"))
+    except Exception:  # noqa: BLE001 -- any decode failure is the same refusal
+        print("  Refused: not a license key (expected the base64 envelope from your purchase).")
+        return 1
+    if not (isinstance(envelope, dict) and "payload" in envelope and "signature" in envelope):
+        print("  Refused: license key is missing its payload/signature.")
+        return 1
+    try:
+        verified = _lic._license_from_envelope(envelope, source="grid-activate")
+    except Exception:  # noqa: BLE001
+        verified = None
+    if verified is None:
+        print("  Refused: license signature did not verify (or the license expired).")
+        print("  Nothing was written; your current license is unchanged.")
+        return 1
+
+    if not _save_account_license({"license_key": key, "tier": verified.tier.value}):
+        # _save_account_license returns "" on a failed write (tier is always set here).
+        print("  Error: could not write ~/.aither/license.json")
+        return 1
+    _lic.reset_license_manager()
+    plan = _lic.get_license_manager().grid_plan()
+    limit = "unlimited" if plan.max_nodes < 0 else str(plan.max_nodes)
+    print(f"  License activated (tier '{verified.tier.value}') -> ~/.aither/license.json")
+    print(f"  Grid plan: {plan.name} ({limit} nodes)")
+    if plan.sku == _lic.GRID_STARTER_SKU:
+        print("  Note: this license carries no Grid Pro/Enterprise SKU; the grid stays on Starter.")
+    if os.environ.get("AITHER_LICENSE_KEY") or os.environ.get("AITHER_LICENSE_FILE"):
+        print("  Warning: AITHER_LICENSE_KEY/AITHER_LICENSE_FILE is set and takes"
+              " precedence over this file.")
+    return 0
 
 
 def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_key: bool = False,
@@ -12857,6 +12915,42 @@ def get_parser() -> argparse.ArgumentParser:
     return _cached_parser
 
 
+def _register_grid_parser(sub):
+    """Register `adk grid ...` on *sub*. Shared by the CLI and the /grid shell
+    plugin, which builds its own small parser so it never depends on the
+    whole `adk` parser constructing cleanly."""
+    grid_p = sub.add_parser(
+        "grid", help="Manage grid distributed nodes (add, remove, list, test, sync)")
+    grid_sub = grid_p.add_subparsers(dest="grid_command")
+    grid_sub.add_parser("status", help="Show grid topology and health of all nodes")
+    grid_add_p = grid_sub.add_parser("add", help="Add a node to the grid")
+    grid_add_p.add_argument("role", choices=["reasoning", "cluster"], help="Node role")
+    grid_add_p.add_argument("host", help="Hostname or IP address")
+    grid_add_p.add_argument("--port", type=int, default=8121, help="llama.cpp port (default: 8121)")
+    grid_add_p.add_argument("--model", help="Model name override")
+    grid_rm_p = grid_sub.add_parser("remove", help="Remove a node from the grid")
+    grid_rm_p.add_argument("host", help="Hostname or IP to remove")
+    grid_test_p = grid_sub.add_parser("test", help="Test connectivity to all or specific nodes")
+    grid_test_p.add_argument("host", nargs="?", help="Specific host to test (default: all)")
+    grid_sub.add_parser(
+        "sync", help="Sync grid config to your Aitherium workspace (requires login)")
+    grid_sub.add_parser("pull", help="Pull grid config from your Aitherium workspace")
+    # Mesh registry (the platform's enrolled nodes, via the AitherGateway tunnel)
+    grid_enroll_p = grid_sub.add_parser(
+        "enroll", help="Mint a single-use token to onboard a remote machine as a mesh node")
+    grid_enroll_p.add_argument(
+        "--ttl", type=float, default=1.0, help="Token lifetime in hours (default 1, max 24)")
+    grid_enroll_p.add_argument("--tenant", default="", help="Attribute the node to a tenant slug")
+    grid_enroll_p.add_argument("--label", default="", help="Human label for the node")
+    grid_sub.add_parser("ls", help="List enrolled mesh nodes (GPU, memory, containers, status)")
+    grid_act_p = grid_sub.add_parser("activate", help="Activate a Grid Pro/Enterprise license key")
+    grid_act_p.add_argument(
+        "license_key", help="License key from your purchase ('-' reads it from stdin)")
+    grid_rm_mesh_p = grid_sub.add_parser(
+        "deregister", help="Remove an enrolled mesh node from the registry")
+    grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
+
+
 def _register_commands(sub):
     """Register all CLI subcommands on the given subparsers group.
 
@@ -14040,28 +14134,7 @@ def _register_commands(sub):
     voice_serve_p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1 — localhost only)")
 
     # adk grid — manage grid distributed infrastructure
-    grid_p = sub.add_parser("grid", help="Manage grid distributed nodes (add, remove, list, test, sync)")
-    grid_sub = grid_p.add_subparsers(dest="grid_command")
-    grid_sub.add_parser("status", help="Show grid topology and health of all nodes")
-    grid_add_p = grid_sub.add_parser("add", help="Add a node to the grid")
-    grid_add_p.add_argument("role", choices=["reasoning", "cluster"], help="Node role")
-    grid_add_p.add_argument("host", help="Hostname or IP address")
-    grid_add_p.add_argument("--port", type=int, default=8121, help="llama.cpp port (default: 8121)")
-    grid_add_p.add_argument("--model", help="Model name override")
-    grid_rm_p = grid_sub.add_parser("remove", help="Remove a node from the grid")
-    grid_rm_p.add_argument("host", help="Hostname or IP to remove")
-    grid_test_p = grid_sub.add_parser("test", help="Test connectivity to all or specific nodes")
-    grid_test_p.add_argument("host", nargs="?", help="Specific host to test (default: all)")
-    grid_sub.add_parser("sync", help="Sync grid config to your Aitherium workspace (requires login)")
-    grid_sub.add_parser("pull", help="Pull grid config from your Aitherium workspace")
-    # Mesh registry (the platform's enrolled nodes, via the AitherGateway tunnel)
-    grid_enroll_p = grid_sub.add_parser("enroll", help="Mint a single-use token to onboard a remote machine as a mesh node")
-    grid_enroll_p.add_argument("--ttl", type=float, default=1.0, help="Token lifetime in hours (default 1, max 24)")
-    grid_enroll_p.add_argument("--tenant", default="", help="Attribute the node to a tenant slug")
-    grid_enroll_p.add_argument("--label", default="", help="Human label for the node")
-    grid_sub.add_parser("ls", help="List enrolled mesh nodes (GPU, memory, containers, status)")
-    grid_rm_mesh_p = grid_sub.add_parser("deregister", help="Remove an enrolled mesh node from the registry")
-    grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
+    _register_grid_parser(sub)
 
     # adk approvals — decide the permission cards blocking federated agents.
     # Same cards as the portal tray and the Awconnect popup; approving here
