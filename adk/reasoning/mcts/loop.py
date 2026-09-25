@@ -23,8 +23,10 @@ package if the agent surface changes.
 from __future__ import annotations
 
 import copy
-from typing import Any, List, Optional
+import dataclasses
+from typing import Any, Dict, List, Optional
 
+from .adapters.observed_value import ObservedValueModel
 from .core import MCTSConfig, UnifiedMCTS
 
 try:  # pragma: no cover - guarded against agent-surface drift
@@ -97,10 +99,25 @@ class MctsPlanLoop:
         config: Optional[MCTSConfig] = None,
         max_plan_len: int = 6,
         execute: bool = True,
+        learn_values: bool = True,
     ) -> None:
         self.config = config or MCTSConfig(iterations=64)
         self.max_plan_len = max_plan_len
         self.execute = execute
+        # The value_model seam, wired to a learned scorer: each search's
+        # backed-up values train an ObservedValueModel per tool set, which the
+        # NEXT search on that tool set consults past the depth gate. An unseen
+        # state returns None, so the first search is the base algorithm. A
+        # caller-supplied config.value_model always wins.
+        self.learn_values = learn_values and self.config.value_model is None
+        self._value_models: Dict[frozenset, ObservedValueModel] = {}
+
+    def value_model_for(self, tool_names: List[str]) -> ObservedValueModel:
+        key = frozenset(tool_names)
+        vm = self._value_models.get(key)
+        if vm is None:
+            vm = self._value_models[key] = ObservedValueModel()
+        return vm
 
     async def run(self, agent: "Agent", prompt: str) -> "AgentResult":
         if not _AGENT_OK:  # pragma: no cover
@@ -111,8 +128,15 @@ class MctsPlanLoop:
         tools_by_name = {t.name: t for t in getattr(agent, "tools", [])}
         env = ToolChainEnv(list(tools_by_name), max_len=self.max_plan_len)
 
-        engine = UnifiedMCTS(self.config)
+        config = self.config
+        vm: Optional[ObservedValueModel] = None
+        if self.learn_values:
+            vm = self.value_model_for(list(tools_by_name))
+            config = dataclasses.replace(self.config, value_model=vm)
+        engine = UnifiedMCTS(config)
         result = await engine.search(env)
+        if vm is not None:
+            vm.learn_from_result(result, discount=config.discount)
         plan: List[str] = [str(a) for a in result.best_action_path] or (
             [str(result.best_action)] if result.best_action else []
         )

@@ -11,7 +11,7 @@ Public API::
     from adk.reasoning.mcts import (
         UnifiedMCTS, MCTSConfig, MCTSResult, MCTSTrace, MCTSNode, search,
         MCTSEnvironment, TransitionModel, PolicyModel, ValueModel,
-        ObservedTransitionModel,
+        ObservedTransitionModel, ObservedValueModel,
     )
 """
 
@@ -28,7 +28,7 @@ from .core import (
 )
 from .env import MCTSEnvironment
 from .models import PolicyModel, TransitionModel, ValueModel
-from .adapters import ObservedTransitionModel
+from .adapters import ObservedTransitionModel, ObservedValueModel
 
 __all__ = [
     "MCTSConfig",
@@ -43,4 +43,5 @@ __all__ = [
     "PolicyModel",
     "ValueModel",
     "ObservedTransitionModel",
+    "ObservedValueModel",
 ]

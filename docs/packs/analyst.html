@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed analyst -&gt; ~\.aither\packs\analyst</span>
 <span class="o">verified: adk discovers &#x27;analyst&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.25</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>c9079bc9aec9faac…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.25</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>5ef4a233b8b21959…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,12 +314,12 @@ set) instead of gradient training.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>c9079bc9aec9faacd9761442b4015fd94ec2209f80eb58ed321a4258e04fc354</code></p>
+    <p class="sub">sha256 <code>5ef4a233b8b21959b4f64be22b4470cf1f109004c3fc99498a9aa6b40f658466</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c analyst-3.8.25.sha256
 <span class="o">analyst-3.8.25.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;C9079BC9AEC9FAACD9761442B4015FD94EC2209F80EB58ED321A4258E04FC354&#x27;
+<span class="p">$</span> $want = &#x27;5EF4A233B8B21959B4F64BE22B4470CF1F109004C3FC99498A9AA6B40F658466&#x27;
 <span class="p">$</span> (Get-FileHash analyst-3.8.25.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
