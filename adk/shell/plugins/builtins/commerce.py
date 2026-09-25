@@ -19,6 +19,8 @@ Usage:
     /commerce revenue [--period current_month|last_30d]
     /commerce payouts [--limit N]
     /commerce storefront          # View storefront config
+    /commerce storefront set [--name N] [--logo URL] [--color HEX] [--tax inclusive|exclusive]
+                                  [--success-url URL] [--cancel-url URL]
     /commerce coupons             # List coupons
     /commerce coupons create NAME --percent N | --amount CENTS
 
@@ -39,7 +41,20 @@ except ImportError:
 
 
 def _genesis_url() -> str:
-    return os.environ.get("AITHER_GENESIS_URL", "http://localhost:8100")
+    """Genesis API base.
+
+    An explicit ``AITHER_GENESIS_URL`` wins (legacy override); otherwise the
+    shared control-plane resolver: ``AITHER_API_URL`` / ``AITHER_GATEWAY_URL``,
+    else the portal's ``https://api.aitherium.com/api/genesis`` proxy. The old
+    default ``http://localhost:8100`` was the wrong port, plain http, and
+    Genesis publishes no host port -- every call failed without the env var.
+    """
+    explicit = os.environ.get("AITHER_GENESIS_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    from adk.control_plane import genesis_api_base
+
+    return genesis_api_base()
 
 
 def _api_headers() -> Dict[str, str]:
@@ -273,6 +288,8 @@ class CommercePlugin(SlashCommand):
         return f"Payouts ({len(payouts)}):\n{_fmt_table(rows, ['amount', 'status', 'currency'])}"
 
     async def _storefront(self, args: List[str]) -> str:
+        if args and args[0] in ("set", "update"):
+            return await self._storefront_set(args[1:])
         data = await _get(f"{BASE}/storefront")
         return (
             f"Storefront Config:\n"
@@ -281,6 +298,27 @@ class CommercePlugin(SlashCommand):
             f"  Tax:       {data.get('tax_behavior', 'unspecified')}\n"
             f"  Fee (bps): {data.get('platform_fee_bps', 0)}"
         )
+
+    async def _storefront_set(self, args: List[str]) -> str:
+        flags = {
+            "--name": "store_name",
+            "--logo": "logo_url",
+            "--color": "accent_color",
+            "--tax": "tax_behavior",
+            "--success-url": "success_url",
+            "--cancel-url": "cancel_url",
+        }
+        body = {field: _parse_flag(args, flag) for flag, field in flags.items()}
+        body = {k: v for k, v in body.items() if v}
+        if not body:
+            return (
+                "Usage: /commerce storefront set [--name N] [--logo URL] [--color HEX] "
+                "[--tax inclusive|exclusive] [--success-url URL] [--cancel-url URL]"
+            )
+        data = await _post(f"{BASE}/storefront", body)
+        sf = data.get("storefront", {}) if isinstance(data, dict) else {}
+        changed = ", ".join(sorted(body))
+        return f"Storefront updated ({changed}). Name: {sf.get('store_name', body.get('store_name', ''))}"
 
     async def _coupons(self, args: List[str]) -> str:
         if args and args[0] == "create":
@@ -350,6 +388,7 @@ class CommercePlugin(SlashCommand):
   /commerce revenue                 Revenue summary
   /commerce payouts                 List payouts
   /commerce storefront              View storefront config
+  /commerce storefront set --name N Update storefront (--logo --color --tax --success-url --cancel-url)
   /commerce coupons                 List coupons
   /commerce coupons create N        Create coupon
   /commerce template list           List product templates
