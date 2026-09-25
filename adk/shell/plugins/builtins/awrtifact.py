@@ -30,8 +30,27 @@ except ImportError:
     AuthStore = None  # type: ignore
 
 
+_DEFAULT_GENESIS = "https://localhost:8001"
+
+
 def _genesis_url() -> str:
-    return os.environ.get("AITHER_GENESIS_URL", "http://localhost:8100")
+    """Genesis base URL: env, then the URL enrollment saved, then Genesis's own
+    TLS port. Never localhost:8100 -- nothing serves this router there, so
+    every subcommand failed unless AITHER_GENESIS_URL was set."""
+    explicit = os.environ.get("AITHER_GENESIS_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    try:
+        from adk.config import load_saved_config
+
+        saved = load_saved_config() or {}
+    except Exception:  # noqa: BLE001 -- an unreadable config falls to the default
+        saved = {}
+    for key in ("genesis_url", "elysium_url"):
+        value = str(saved.get(key) or "").strip()
+        if value:
+            return value.rstrip("/")
+    return _DEFAULT_GENESIS
 
 
 def _api_headers() -> Dict[str, str]:
