@@ -27,6 +27,7 @@ Pattern follows mcp_aither_sprite.py — synchronous requests, JSON returns.
 """
 
 import os
+import re
 import time
 
 import requests
@@ -293,6 +294,94 @@ def mediaforge_remove_bg(media_id: int) -> dict:
 # --------------------------------------------------------------------------- #
 # LoRA bootstrap — the durable fix for from-scratch generation
 # --------------------------------------------------------------------------- #
+
+def mediaforge_list_ops(group: str = "") -> dict:
+    """Every op media-forge ships, discovered LIVE from its curated catalog (GET /ops).
+
+    The fixed mediaforge_* tools cover the common paths; this is the rest. A new op
+    becomes callable the moment media-forge deploys it -- list it here, then call it with
+    mediaforge_run_op(name, params). Restricted ops are already filtered out server-side
+    by the AitherSafety tier, so everything listed is callable.
+
+    group  optional filter (e.g. "image", "video", "color", "audio", "3d").
+    Returns {ops: [{name, group, label, summary, params: [names], cost}], count, groups}."""
+    try:
+        r = requests.get(f"{_BASE}/ops", timeout=_T_FAST)
+        r.raise_for_status()
+        data = r.json()
+    except (requests.RequestException, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}", "ops": []}
+    ops = data.get("ops") if isinstance(data, dict) else None
+    if not isinstance(ops, list):
+        return {"error": "media-forge /ops returned no op list", "ops": []}
+    rows = []
+    for op in ops:
+        if not isinstance(op, dict) or not op.get("name"):
+            continue
+        if group and op.get("group") != group:
+            continue
+        rows.append({
+            "name": op.get("name"),
+            "group": op.get("group", ""),
+            "label": op.get("label", ""),
+            "summary": op.get("summary", ""),
+            "params": [p.get("name") for p in (op.get("params") or [])
+                       if isinstance(p, dict) and p.get("name")],
+            "cost": op.get("cost", ""),
+        })
+    return {"ops": rows, "count": len(rows),
+            "groups": sorted({str(o.get("group", "")) for o in ops if isinstance(o, dict)})}
+
+
+#: An op name is one path segment on the curated surface. Anything else ("../api/...",
+#: "a/b", a query string) would let a caller walk out of /op/ onto the owner's /api/*.
+_OP_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+#: Body keys the ENGINE reads as trust decisions, not op knobs: the AitherSafety tier
+#: (aither_safety.resolve_level honours body.safety_level off public mode) and the
+#: caller identity/role. A caller of this curated tool never gets to name them -- they
+#: are dropped before the POST so the engine's own default tier applies.
+_TRUST_KEYS = frozenset({"safety_level", "safety_tier", "user", "username", "user_id",
+                         "role", "roles"})
+
+
+def mediaforge_run_op(name: str, params: dict = None) -> dict:
+    """Run ONE media-forge op by name through the curated POST /op/{name}.
+
+    `name` comes from mediaforge_list_ops; `params` are that op's knobs plus its media
+    refs (usually `image` / `video` = a gallery media id). A restricted op, or a
+    restricted mode of one, comes back as {error} rather than executing -- the engine's
+    AitherSafety tier decides, not this tool. Heavy ops (video) take minutes.
+    Returns media-forge's result ({ok, head_ids, images, ...}) or {error}."""
+    if not isinstance(name, str) or not _OP_NAME.fullmatch(name):
+        return {"error": f"invalid op name {name!r}: expected a lowercase op id "
+                         "from mediaforge_list_ops"}
+    body = dict(params or {}) if isinstance(params, dict) or params is None else None
+    if body is None:
+        return {"error": "params must be an object of the op's knobs"}
+    body = {k: v for k, v in body.items()
+            if not (isinstance(k, str) and k.strip().lower() in _TRUST_KEYS)}
+    try:
+        probe = requests.post(f"{_BASE}/op/{name}", json=body, timeout=_T_HEAVY)
+    except requests.Timeout:
+        return {"error": f"timed out after {_T_HEAVY}s running op {name!r}"}
+    except requests.RequestException as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if probe.status_code == 404:
+        return {"error": f"unknown media-forge op {name!r} (see mediaforge_list_ops)"}
+    try:
+        probe.raise_for_status()
+        data = probe.json()
+    except (requests.RequestException, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if isinstance(data, dict) and (data.get("ok") is False or data.get("success") is False):
+        err = str(data.get("error", ""))
+        if "busy" in err.lower():
+            # Same GateBusy discipline as every other op: back off and retry.
+            return _post(f"/op/{name}", body, timeout=_T_HEAVY, tries=2)
+        return {"error": err or "rejected"}
+    return data if isinstance(data, dict) else {"error": "non-object result", "raw": data}
+
 
 def mediaforge_lora_dataset(character_id: str, frame_ids: list[str], trigger: str) -> dict:
     """Build a LoRA dataset from i2v frames (gemma auto-captioned, trigger token prepended).

@@ -8,7 +8,8 @@ description: >-
   (_animate, _flf2v, _expression_set, _export_avatar), train and feed LoRAs
   (_lora_dataset, _lora_train), and burst capacity up and down on demand
   (_burst_up, _burst_status, _burst_down, _burst_sweep), and turn a picture or a
-  prompt into textured geometry (_generate_3d, _3d_status, _3d_backends).
+  prompt into textured geometry (_generate_3d, _3d_status, _3d_backends), and
+  reach every other op the engine ships (_list_ops, then _run_op).
   The engine runs on the
   operator's own machine; this pack is what an agent and a launcher use to reach
   it.
@@ -30,7 +31,8 @@ tags: [creative, render, video, 3d, avatar, lora, comfyui, local-first]
 # ComfyUI-3D. That existed as aitheros-meshgen and was deleted as "a pointless
 # proxy", so adding one back would have re-made a decision already taken.
 #
-# The claim is now 27 tools, not 24. Keep this pairing: if the 3D tools are ever
+# The claim is now 29 tools (27 + mediaforge_list_ops / mediaforge_run_op, the
+# dynamic curated-op door added 2026-09-25), not 24. Keep this pairing: if the 3D tools are ever
 # removed, the word comes out of the description and the tags in the SAME commit.
 mcp_tools:
   - "mediaforge_*"
@@ -87,4 +89,4 @@ desktop_app:
   keywords: [media-forge, mediaforge, studio, render, image, video, comfyui]
 
 persona_fragments:
-  - "You can drive media-forge with mediaforge_* tools: _color_grade / _apply_lut / _color_convert for grading, _video_master and _exr_master for mastering, _animate / _flf2v / _expression_set / _export_avatar for motion and avatars, _lora_dataset and _lora_train to build a style, and _burst_up / _burst_status / _burst_down to rent capacity only while it is needed. The engine runs on the operator's machine — check mediaforge_status before promising a render."
+  - "You can drive media-forge with mediaforge_* tools: _color_grade / _apply_lut / _color_convert for grading, _video_master and _exr_master for mastering, _animate / _flf2v / _expression_set / _export_avatar for motion and avatars, _lora_dataset and _lora_train to build a style, and _burst_up / _burst_status / _burst_down to rent capacity only while it is needed, and mediaforge_list_ops + mediaforge_run_op for any other op the engine ships. The engine runs on the operator's machine — check mediaforge_status before promising a render."
