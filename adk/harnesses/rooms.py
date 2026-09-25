@@ -605,7 +605,8 @@ class Room:
         with self._lock:
             for event in self._events:
                 pillar = event.get("pillar")
-                if pillar in counts:
+                # A malformed transcript line may carry an unhashable pillar.
+                if isinstance(pillar, str) and pillar in counts:
                     counts[pillar] += 1
         return counts
 

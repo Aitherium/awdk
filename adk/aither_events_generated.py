@@ -107,6 +107,7 @@ SHELL_EVENT_PILLARS: Dict[str, str] = {
     'artifact_delivered': 'automation',
     'kernel.node_started': 'automation',
     'kernel.node_ready': 'automation',
+    'outcome_recorded': 'learning',
 }
 
 #: FluxEmitter EventType value -> pillar. Partial by design.
