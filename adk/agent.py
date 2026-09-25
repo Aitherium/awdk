@@ -956,8 +956,12 @@ class AitherAgent:
         """The system prompt for ONE turn: identity (``system_prompt``) with the
         live situation block and any caller ``system_additions`` appended at the
         END (cache-prefix-safe). Every turn path builds from this, so an agent
-        always knows the time, host and -- via AitherShell -- the user's shell."""
-        return (self.system_prompt or "").rstrip() + self._situation_suffix(system_additions)
+        always knows the time, host and -- via AitherShell -- the user's shell.
+        The reasoning doctrine sits between the two: static, so the cache
+        prefix still ends before the live block."""
+        from adk.reasoning_doctrine import with_doctrine
+
+        return with_doctrine(self.system_prompt or "") + self._situation_suffix(system_additions)
 
     @property
     def system_prompt(self) -> str:

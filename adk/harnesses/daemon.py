@@ -1092,6 +1092,14 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 fields["system_prompt_append"] = (
                     persona + "\n\n" + (fields.get("system_prompt_append") or "").strip()
                 ).strip()
+        if body.harness not in ("aither", "awdk", "group"):
+            # Every other harness (claude, codex, gemini, opencode, ...) is a
+            # foreign agent: it gets the reasoning doctrine here. awdk adds it in
+            # Agent._turn_system_prompt and Genesis in build_system_message, so
+            # the agent harnesses are skipped to avoid a double copy.
+            from adk.reasoning_doctrine import with_doctrine
+
+            fields["system_prompt_append"] = with_doctrine(fields.get("system_prompt_append") or "")
         if body.skill:
             from adk.harnesses import skills_local
 
