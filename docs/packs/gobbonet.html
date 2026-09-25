@@ -282,23 +282,23 @@ a:focus-visible, .jump a:focus-visible {
     <p class="eyebrow">An agent pack for <b>GobboNet</b></p>
     <h1>GobboNet</h1>
     <p class="lede">A local-first AI chat client. No account, no sign-up, no email.</p>
-    <nav class="jump"><a href="https://goblincorps.com/gobbonet">Project site</a><a href="https://github.com/ElodineOfficial/GobboNet">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/gobbonet-3.8.25.tar.gz">Download</a></nav>
+    <nav class="jump"><a href="https://goblincorps.com/gobbonet">Project site</a><a href="https://github.com/ElodineOfficial/GobboNet">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.26/gobbonet-3.8.26.tar.gz">Download</a></nav>
   </header>
 
   <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">gobbonet — install</span></div><pre class="term-body"><span class="c"># one command each; nothing else to configure</span>
-<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/gobbonet-3.8.25.tar.gz
-<span class="p">$</span> tar xzf gobbonet-3.8.25.tar.gz
+<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.26/gobbonet-3.8.26.tar.gz
+<span class="p">$</span> tar xzf gobbonet-3.8.26.tar.gz
 <span class="p">$</span> python gobbonet/install.py
 <span class="o">installed gobbonet -&gt; ~/.aither/packs/gobbonet</span>
 <span class="o">verified: adk discovers &#x27;gobbonet&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">gobbonet — install</span></div><pre class="term-body"><span class="c"># PowerShell. curl.exe and tar ship with Windows 10 1803+</span>
-<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.25/gobbonet-3.8.25.tar.gz
-<span class="p">$</span> tar -xzf gobbonet-3.8.25.tar.gz
+<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.26/gobbonet-3.8.26.tar.gz
+<span class="p">$</span> tar -xzf gobbonet-3.8.26.tar.gz
 <span class="p">$</span> python gobbonet\install.py
 <span class="o">installed gobbonet -&gt; ~\.aither\packs\gobbonet</span>
 <span class="o">verified: adk discovers &#x27;gobbonet&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.25</dd></div><div><dt>Size</dt><dd>47 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>8cb0a61e96507073…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.26</dd></div><div><dt>Size</dt><dd>47 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>65228095ac783f96…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -326,13 +326,13 @@ than a broken feature.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>8cb0a61e9650707301fde8b10866cb6bd4edbccd2efca001d0f97a56d0aa515e</code></p>
+    <p class="sub">sha256 <code>65228095ac783f961644eef2796824c09e95534b94db5e2f87e52ae16e1a6e50</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
-<span class="p">$</span> sha256sum -c gobbonet-3.8.25.sha256
-<span class="o">gobbonet-3.8.25.tar.gz: OK</span>
+<span class="p">$</span> sha256sum -c gobbonet-3.8.26.sha256
+<span class="o">gobbonet-3.8.26.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;8CB0A61E9650707301FDE8B10866CB6BD4EDBCCD2EFCA001D0F97A56D0AA515E&#x27;
-<span class="p">$</span> (Get-FileHash gobbonet-3.8.25.tar.gz -Algorithm SHA256).Hash -eq $want
+<span class="p">$</span> $want = &#x27;65228095AC783F961644EEF2796824C09E95534B94DB5E2F87E52AE16E1A6E50&#x27;
+<span class="p">$</span> (Get-FileHash gobbonet-3.8.26.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
   </section>
@@ -340,7 +340,7 @@ than a broken feature.</p></div></section>
   <div class="colophon"><p><a href="https://github.com/ElodineOfficial/GobboNet">GobboNet</a> is created by <strong>Elodine / GoblinCorps</strong>. Licensed MIT. This pack is an engine that runs behind it — their application is not modified, not redistributed here, and not affiliated with us. If you like what you see, the credit belongs upstream.</p></div>
 
   <footer>
-    Built from <code>v3.8.25</code> · adk 3.8.25 ·
+    Built from <code>v3.8.26</code> · adk 3.8.26 ·
     <a href="../packs.html">All packs</a> ·
     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a><br>GobboNet is an independent project. This page links to it; it does not speak for it.
   </footer>

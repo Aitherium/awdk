@@ -4,6 +4,19 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.26] - 2026-09-25
+
+### Added
+
+- **Every agent reasons the same way.** `AitherAgent` turns now carry a short
+  reasoning doctrine (the Six Pillars as habits: understand the problem, start
+  from what you know, break it down and predict, choose the tool that fits,
+  make the smallest test, compare the result with the prediction). It sits
+  between the identity and the live host block, so the cache prefix is stable.
+  The harness daemon adds it for foreign harnesses (claude, codex, ...).
+  `ADK_REASONING_DOCTRINE=0` turns it off.
+
+
 ### Fixed
 
 - **A self-hosted Bonsai is now found without `adk backend set`.** A server
