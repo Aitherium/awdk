@@ -1177,6 +1177,24 @@ def create_app(
             base += "/identity"
         return base
 
+    def _handoff_local_only(prof: dict[str, Any]) -> bool:
+        """True when the active profile is the offline root login, not an Identity account.
+
+        The local sentinel (endpoint/token_type "local", the ``root`` user every fresh
+        install starts with) holds no token Identity will honour, so it can never mint
+        a handoff ticket. Reporting it as signed in made aitherium.com offer
+        "Continue as root", a button that could only fail. A profile with neither an
+        absolute Identity endpoint nor an email is treated the same way.
+        """
+        if prof.get("token_type") == "local" or (prof.get("endpoint") or "") == "local":
+            return True
+        endpoint = (prof.get("endpoint") or "").strip()
+        has_base = endpoint.startswith("http://") or endpoint.startswith("https://")
+        email = ((prof.get("user") or {}).get("email") or "").strip()
+        return not has_base and not email
+
+    _local_only_hint = "run `adk login` to link this device to your Aitherium account"
+
     @app.get("/identity/whoami")
     async def identity_whoami(request: Request):
         """Who is signed in on this device — a NAME, never a credential."""
@@ -1184,6 +1202,11 @@ def create_app(
         prof = _handoff_profile()
         if not prof:
             return {"logged_in": False, "handoff": True}
+        if _handoff_local_only(prof):
+            return {
+                "logged_in": False, "handoff": False,
+                "reason": "local-only", "hint": _local_only_hint,
+            }
         user = prof.get("user") or {}
         return {
             "logged_in": True,
@@ -1206,6 +1229,8 @@ def create_app(
             raise HTTPException(
                 status_code=401, detail="no signed-in identity on this device — run `adk login`",
             )
+        if _handoff_local_only(prof):
+            raise HTTPException(status_code=401, detail=f"local-only sign-in — {_local_only_hint}")
         base = _handoff_identity_base(prof)
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
