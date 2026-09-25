@@ -2561,6 +2561,15 @@ def cmd_login(args) -> int:
     print("  Token saved to ~/.aither/config.json")
     if license_tier:
         print(f"  License saved → tier '{license_tier}' (pack entitlements active)")
+        # Post-purchase: a Grid checkout lands here as a SKU in the licence.
+        try:
+            from adk.licensing import reset_license_manager
+            reset_license_manager()  # the cached manager predates the new licence
+            for line in _grid_post_purchase_steps():
+                print(line)
+        except Exception as exc:  # noqa: BLE001 — a nudge must never fail login
+            import logging as _logging
+            _logging.getLogger("adk.cli").debug("grid post-purchase hint skipped: %s", exc)
     if eps:
         print(f"  Workspace endpoints configured → {eps['api_url']} (inference + MCP)")
     if synced_count is not None and synced_count >= 0:
@@ -8167,6 +8176,47 @@ def _grid_node_limit_refusal(grid_nodes: dict, role: str, host: str) -> str:
     )
 
 
+def _grid_purchased_plan(manager=None):
+    """The paid Grid plan this licence actually carries, or None.
+
+    Read from the licence's ``packs`` (the SKUs a checkout minted), not from
+    ``grid_plan()``: with enforcement off that resolves to Enterprise for every
+    install, and a post-purchase nudge must fire only on a real purchase.
+    """
+    from adk.licensing import GRID_PLANS, GRID_SKU_ALIASES, GRID_STARTER_SKU, get_license_manager
+
+    lm = manager or get_license_manager()
+    best = None
+    for sku in getattr(lm.license, "packs", None) or []:
+        canonical = GRID_SKU_ALIASES.get(str(sku), str(sku))
+        plan = GRID_PLANS.get(canonical)
+        if plan is None or canonical == GRID_STARTER_SKU:
+            continue
+        if best is None or plan.rank > best.rank:
+            best = plan
+    return best
+
+
+def _grid_post_purchase_steps(saved: dict | None = None, manager=None) -> list:
+    """Post-purchase wizard lines: a Grid plan was bought but no grid is deployed.
+
+    Empty when the licence carries no paid Grid SKU, or when this machine
+    already runs the grid profile (``adk deploy grid`` saves it).
+    """
+    plan = _grid_purchased_plan(manager)
+    if plan is None:
+        return []
+    saved = saved if saved is not None else load_saved_config()
+    if (saved or {}).get("profile") == "grid_distributed":
+        return []
+    limit = "unlimited nodes" if plan.max_nodes < 0 else f"up to {plan.max_nodes} nodes"
+    return [
+        f"  {plan.name} is active on this licence ({limit}).",
+        "  Next: adk deploy grid              # GPU orchestrator + routing config",
+        "        adk grid add reasoning <ip>  # then add your Mac / CPU nodes",
+    ]
+
+
 def cmd_grid(args) -> int:
     """Manage grid distributed inference nodes."""
     import asyncio
@@ -8265,17 +8315,22 @@ def cmd_grid(args) -> int:
                 "grid_nodes": grid_nodes,
             }
         else:  # cluster
-            cluster_list = grid_nodes.get("cluster", [])
-            # Deduplicate by host
-            cluster_list = [n for n in cluster_list if n["host"] != host]
-            cluster_list.append(node_entry)
+            cluster_list = list(grid_nodes.get("cluster", []))
+            # Re-adding a known host replaces it IN PLACE: moving it to the end
+            # would silently re-point routing at whichever node is now first.
+            idx = next((i for i, n in enumerate(cluster_list) if n.get("host") == host), None)
+            if idx is None:
+                cluster_list.append(node_entry)
+            else:
+                cluster_list[idx] = node_entry
             grid_nodes["cluster"] = cluster_list
-            # Use the first cluster node for routing
+            # Routing uses the FIRST cluster node, so the model must be that
+            # node's model -- not the one just added (it may run another model).
             first = cluster_list[0]
             update = {
                 "cluster_backend": "openai",
                 "cluster_url": f"http://{first['host']}:{first.get('port', 8121)}/v1",
-                "cluster_model": model_override or "qwen2.5-32b",
+                "cluster_model": first.get("model") or "qwen2.5-32b",
                 "grid_nodes": grid_nodes,
             }
 
@@ -8313,6 +8368,7 @@ def cmd_grid(args) -> int:
             if new_cluster:
                 first = new_cluster[0]
                 update["cluster_url"] = f"http://{first['host']}:{first.get('port', 8121)}/v1"
+                update["cluster_model"] = first.get("model") or "qwen2.5-32b"
             else:
                 update["cluster_backend"] = ""
                 update["cluster_url"] = ""
@@ -8787,6 +8843,12 @@ def cmd_upgrade(args) -> int:
 
     print(f"\n  Opening: {label}")
     print(f"  {url}\n")
+    if target.startswith("grid") or target == "managed":
+        # The purchase reaches this machine as a licence SKU on the next login;
+        # login then prints the deploy steps (_grid_post_purchase_steps).
+        print("  After checkout:")
+        print("    adk login          # pulls the licence that carries your Grid plan")
+        print("    adk deploy grid    # sets up the GPU orchestrator and routing\n")
 
     import webbrowser
     try:
