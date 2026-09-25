@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from adk.decisions.quiet import is_quiet, quiet_reason
 from adk.decisions.render import human_age, render_summary
 from adk.decisions.store import STATUS_OPEN, DecisionCard, DecisionStore, decisions_dir
 
@@ -138,6 +139,11 @@ def native_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[
         return "windows toast channel removed 2026-08-31 (owner decision)"
     if not toast_enabled():
         return "off by default (set AITHER_DECISIONS_TOAST=1 to enable)"
+    # Quiet (Do-not-disturb, or a full-screen app): the card stays in the store
+    # and the badge; only the interruption is held.
+    quiet, why = is_quiet()
+    if quiet:
+        return f"held while quiet: {why}"
     if sys.platform == "darwin":
         return _macos_toast(title, body)
     return _linux_toast(title, body, urgency=urgency)
@@ -174,9 +180,17 @@ def popup_enabled() -> bool:
     that started before the env was set — measured 2026-08-29: 18 long-lived
     sessions could not see the env var, and each card raise still popped a
     focus-stealing topmost window on the desktop.
+
+    A third, automatic one: QUIET (``adk.decisions.quiet`` -- Do-not-disturb, or a
+    full-screen game/app/presentation in front). Owner, 2026-09-23: cards kept
+    popping up over a game. A held card is not dropped -- it stays open in the
+    store and the badge -- and because this answers False the at-desk DM
+    suppression in ``channels`` no longer applies, so the DM carries it.
     """
     flag = os.getenv("AITHER_DECISIONS_POPUP", "").strip().lower()
     if flag in ("0", "false", "no", "off"):
+        return False
+    if is_quiet()[0]:
         return False
     try:
         if (Path.home() / ".aither" / "decisions" / ".popup-off").is_file():
@@ -301,7 +315,9 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     # produces one window showing eight in turn, not eight stacked windows
     # fighting for the same corner of the screen.
     if not popup_enabled():
-        skipped.append("card window (disabled or no display)")
+        held = quiet_reason()
+        skipped.append(f"card window (held while quiet: {held})" if held
+                       else "card window (disabled or no display)")
     elif not card.options:
         # A window with nothing to click is not a decision surface, it is an
         # interruption. Optionless cards (a bare "waiting for input") stay in the

@@ -302,6 +302,11 @@ class DecisionChannelBridge:
             # owner's background-first preference, 2026-08-29), an at-desk
             # card must reach the DM instead of vanishing into a suppressed
             # silence — the exact "the feature is just off" shape.
+            #
+            # QUIET counts as away (2026-09-23): during a full-screen game the
+            # owner is "at the desk" by input time, but the popup is HELD, so
+            # nothing on screen has them. popup_enabled() is False while quiet,
+            # which is what lets the DM through here.
             try:
                 from adk.decisions.notify import popup_enabled
                 from adk.decisions.presence import is_at_desk, presence_note

@@ -61,7 +61,13 @@ import sys
 import time
 from typing import Optional
 
+from adk.decisions.quiet import is_quiet
 from adk.decisions.store import CLOSED_STATUSES, DecisionCard, DecisionStore
+
+#: While quiet (Do-not-disturb, or a full-screen game/app in front) a window that
+#: was about to appear stays withdrawn and re-asks this often. Owner, 2026-09-23:
+#: "cards popping up on my main screen while im playing games".
+QUIET_POLL_MS = 3000
 
 # ── palette (matches the AitherShell app in AitherVeil) ─────────────────────────
 
@@ -206,6 +212,15 @@ class CardWindow:
         #: deciding.
         self._mode = "card"
         self._context: dict = {}
+        #: Whether the window WANTS to be above everything (on by default; the
+        #: pin button owns it). Quiet overrides it for an unpinned window, so a
+        #: game started while the card is open is not covered by it.
+        self._topmost = True
+        self._topmost_applied: Optional[bool] = None
+        #: Non-empty while the window is HELD: it was due to appear while quiet,
+        #: so it stays withdrawn until quiet ends. The cards are untouched.
+        self._held_reason = ""
+        self._hold_job = None
 
         self.queue: list[DecisionCard] = self._refresh_queue()
         self.index = 0
@@ -223,9 +238,17 @@ class CardWindow:
             # BEFORE any render, lift or focus_force — withdrawing afterwards is
             # what made the old self-test flash a window and take focus.
             root.withdraw()
+        else:
+            # Same rule, same moment: BEFORE any render or lift. Whoever spawned
+            # this window (a raise, the desk, a `show`), it does not land on top
+            # of a game -- it waits, withdrawn, and appears when quiet ends.
+            quiet, why = is_quiet()
+            if quiet:
+                root.withdraw()
+                self._held_reason = why or "quiet"
         root.title(f"AitherOS · {KIND_HEADER.get(self.card.kind, 'DECISION')}")
         root.configure(bg=BG)
-        root.attributes("-topmost", True)
+        self._apply_topmost(bool(self._held_reason))
         if use_native_chrome():
             _apply_dark_titlebar(root)
         else:
@@ -236,6 +259,36 @@ class CardWindow:
 
         self._bind_keys()
         self._render()
+        if self._held_reason:
+            self._hold_job = root.after(QUIET_POLL_MS, self._release_when_not_quiet)
+
+    # ── quiet ─────────────────────────────────────────────────────────────────
+
+    def _apply_topmost(self, quiet: bool) -> None:
+        """Above everything only when wanted AND not quiet -- or when pinned."""
+        want = bool(self._pinned or (self._topmost and not quiet))
+        if want != self._topmost_applied:
+            self.root.attributes("-topmost", want)
+            self._topmost_applied = want
+
+    def _release_when_not_quiet(self) -> None:
+        """Poll while held; show the window once quiet ends. Never answers anything."""
+        self._hold_job = None
+        quiet, why = is_quiet()
+        if quiet:
+            self._held_reason = why or self._held_reason
+            self._hold_job = self.root.after(QUIET_POLL_MS, self._release_when_not_quiet)
+            return
+        held_for = self._held_reason
+        self._held_reason = ""
+        waiting = len(self.queue)
+        if not self._status:
+            self._status = (f"held while {held_for} — "
+                            f"{waiting} decision{'s' if waiting != 1 else ''} waiting")
+            self._status_colour = GOLD
+        self._apply_topmost(False)
+        self.root.deiconify()
+        self._rerender_preserving_reply()
 
     # ── queue ─────────────────────────────────────────────────────────────────
 
@@ -330,14 +383,18 @@ class CardWindow:
             self._drain_context()
 
         self.root.title(f"AitherOS · {KIND_HEADER.get(card.kind, 'DECISION')}")
-        if not self._headless:
+        if not self._headless and not self._held_reason:
             self._place()
 
-            if card.urgency in ("high", "critical"):
+            # Never lift or take focus while quiet: a re-render (a new card from
+            # another session, an answer, a steer) used to jump the window back
+            # above a full-screen game every time.
+            quiet = is_quiet()[0]
+            self._apply_topmost(quiet)
+            if not quiet:
                 self.root.lift()
-                self.root.focus_force()
-            else:
-                self.root.lift()
+                if card.urgency in ("high", "critical"):
+                    self.root.focus_force()
 
         # Always poll, deadline or not. The first version only ticked when the
         # card had a deadline, so a card answered from the phone, the cockpit or
@@ -1124,9 +1181,12 @@ class CardWindow:
 
     def _toggle_pin(self) -> None:
         self._pinned = not self._pinned
-        self.root.attributes("-topmost", True if self._pinned else True)
+        # Unpin used to be `True if self._pinned else True` -- a no-op that left
+        # the window above everything while saying it was unpinned.
+        self._topmost = self._pinned
+        self._apply_topmost(is_quiet()[0])
         self._flash("pinned — stays above everything" if self._pinned
-                    else "unpinned (still on top until answered)", MUTED)
+                    else "unpinned — other windows can cover it", MUTED)
         self._render()
 
     # ── actions ───────────────────────────────────────────────────────────────
@@ -1373,6 +1433,10 @@ class CardWindow:
             countdown = getattr(self, "countdown", None)
             if countdown is not None:
                 countdown.configure(text=_fmt_left(card.seconds_left))
+        if not self._headless and not self._held_reason:
+            # A game started while the card is open: stop sitting above it
+            # (unless pinned), and come back on top when it ends. Never a lift.
+            self._apply_topmost(is_quiet()[0])
         self._tick_job = self.root.after(1000, self._tick)
 
     def run(self) -> Optional[str]:

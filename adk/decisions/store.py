@@ -45,6 +45,7 @@ import re
 import secrets
 import socket
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -227,10 +228,31 @@ def _dir_lock(path: Path) -> _DirLock:
         return lock
 
 
+_TEST_DECISIONS_DIR: Path | None = None
+
+
+def _under_pytest() -> bool:
+    return bool(os.getenv("PYTEST_CURRENT_TEST")) or "pytest" in sys.modules
+
+
 def decisions_dir() -> Path:
-    """The card directory, honouring ``AITHER_DECISIONS_DIR`` for tests and tenants."""
+    """The card directory, honouring ``AITHER_DECISIONS_DIR`` for tests and tenants.
+
+    Under pytest with no explicit dir, a per-process TEMP store -- never the owner's.
+    Measured 2026-09-24: one night of test runs (expedition-gate tests in a worktree,
+    the card-plane suites) raised 322 cards into ~/.aither/decisions, doubling the
+    owner's inbox to 608 and feeding the popups that interrupt games.
+    """
+    global _TEST_DECISIONS_DIR
     env = os.getenv("AITHER_DECISIONS_DIR", "").strip()
-    base = Path(env) if env else (Path.home() / ".aither" / "decisions")
+    if env:
+        base = Path(env)
+    elif _under_pytest():
+        if _TEST_DECISIONS_DIR is None:
+            _TEST_DECISIONS_DIR = Path(tempfile.mkdtemp(prefix="aither-decisions-test-"))
+        base = _TEST_DECISIONS_DIR
+    else:
+        base = Path.home() / ".aither" / "decisions"
     base.mkdir(parents=True, exist_ok=True)
     return base
 

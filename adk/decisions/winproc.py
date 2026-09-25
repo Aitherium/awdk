@@ -256,6 +256,31 @@ def find_terminal_window(pid: int) -> Optional[tuple[int, int, str]]:
     return fallback
 
 
+def _quiet_now() -> bool:
+    """``quiet.is_quiet()`` loaded BY PATH from the sibling file.
+
+    This module must import nothing from the package (it runs under
+    ``python -S`` from a hook), so the sibling ``quiet.py`` -- itself stdlib
+    only -- is loaded by file path. Any failure is "not quiet": the gate never
+    breaks the focus path it guards.
+    """
+    try:
+        import importlib.util
+
+        mod = sys.modules.get("_aither_quiet")
+        if mod is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quiet.py")
+            spec = importlib.util.spec_from_file_location("_aither_quiet", path)
+            if spec is None or spec.loader is None:
+                return False
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            sys.modules["_aither_quiet"] = mod
+        return bool(mod.is_quiet()[0])
+    except Exception:  # noqa: BLE001 - the gate must never break focus
+        return False
+
+
 def focus_window(hwnd: int) -> bool:
     """Bring ``hwnd`` to the front. False when Windows refused.
 
@@ -265,6 +290,11 @@ def focus_window(hwnd: int) -> bool:
     input queue to the foreground thread's for the duration of the call.
     """
     if not IS_WINDOWS or not hwnd:
+        return False
+    if _quiet_now():
+        # Never pull a window over a full-screen game or through Do not disturb
+        # (owner, 2026-09-23). False reads as "Windows refused", which every
+        # caller already handles by leaving the owner where they are.
         return False
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
