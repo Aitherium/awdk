@@ -42,13 +42,14 @@ except ImportError:
     class ActorKind(str, Enum):
         ADK_AGENT = "adk_agent"
 
-    class Pillar(str, Enum):
-        INTENT = "intent"
-        CONTEXT = "context"
-        REASONING = "reasoning"
-        ORCHESTRATION = "orchestration"
-        LEARNING = "learning"
-        AUTOMATION = "automation"
+    # The pillar vocabulary is NOT hand-copied here: it is built from the generated
+    # mirror of the spine's Pillar enum, so a rename reaches a monorepo-less install
+    # the moment the mirror is regenerated.
+    from adk.aither_events_generated import PILLARS as _SPINE_PILLARS
+
+    Pillar = Enum(  # type: ignore[misc]
+        "Pillar", {value.upper(): value for value in _SPINE_PILLARS}, type=str
+    )
 
     class Tier(str, Enum):
         HOST = "host"
