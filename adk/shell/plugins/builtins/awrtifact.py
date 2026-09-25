@@ -74,6 +74,31 @@ async def _get(path: str) -> dict:
 BASE = "/api/v1/awrtifact"
 
 
+def _parse_mirror_args(args: List[str]) -> "tuple[str, Optional[str]]":
+    """(release, source) from `URL|FILE --release TAG` in any order.
+
+    The value after --release is consumed, never re-read as the source: the
+    old loop let `TAG` overwrite `URL`, so `mirror URL --release v1` mirrored
+    a file named `v1`.
+    """
+    release = ""
+    source: Optional[str] = None
+    skip = False
+    for i, arg in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if arg == "--release":
+            if i + 1 < len(args):
+                release = args[i + 1]
+                skip = True
+        elif arg.startswith("--release="):
+            release = arg.split("=", 1)[1]
+        elif not arg.startswith("--") and source is None:
+            source = arg
+    return release, source
+
+
 class AwrtifactPlugin(SlashCommand):
     name: str = "awrtifact"
     aliases: List[str] = ["artifacts"]
@@ -159,13 +184,7 @@ class AwrtifactPlugin(SlashCommand):
         """Feed it a URL or file — mirrors to GitHub. Needs the awrtifact CLI."""
         if not args:
             return "Usage: /awrtifact mirror URL|FILE --release TAG"
-        release = ""
-        source = None
-        for i, arg in enumerate(args):
-            if arg == "--release" and i + 1 < len(args):
-                release = args[i + 1]
-            elif not arg.startswith("--"):
-                source = arg
+        release, source = _parse_mirror_args(args)
         if not source or not release:
             return "Usage: /awrtifact mirror URL|FILE --release TAG"
         import shutil
