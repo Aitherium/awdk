@@ -24,10 +24,14 @@ reconcile retries. CONFLICT actions preserve divergent content in a copy.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import os
+import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -113,6 +117,126 @@ def _get_actionkind():
                 f"{exc}") from exc
         _ACTIONKIND = ActionKind
     return _ACTIONKIND
+
+
+# ── SQLite-safe file IO ────────────────────────────────────────────────
+# A live SQLite DB in WAL mode is THREE files: the main file lags the -wal
+# until a checkpoint, and a raw byte copy taken mid-checkpoint is a torn,
+# corrupt database. Sync therefore never reads a SQLite main file as raw
+# bytes: it takes a transactionally consistent snapshot via the online
+# backup API, and never syncs the -wal/-shm/-journal sidecars themselves.
+
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def is_sqlite_sidecar(path: Path) -> bool:
+    """True for a SQLite WAL/shared-memory/rollback-journal sidecar file."""
+    return path.name.endswith(_SQLITE_SIDECAR_SUFFIXES)
+
+
+def drop_sqlite_sidecars(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """``manifest`` without SQLite sidecar paths.
+
+    Applied to the REMOTE and BASE manifests too, not only the local scan: a
+    -wal/-shm uploaded before sidecars were excluded would otherwise be
+    DOWNLOADED onto a fresh device, and because ``x.db`` sorts before
+    ``x.db-wal`` it could land after the main DB's sidecar cleanup and be
+    replayed onto the snapshot.
+    """
+    return {
+        p: v for p, v in manifest.items()
+        if not str(p).endswith(_SQLITE_SIDECAR_SUFFIXES)
+    }
+
+
+def is_sqlite_file(path: Path) -> bool:
+    """True when the file starts with the SQLite 3 header magic."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
+
+def _sqlite_snapshot_bytes(path: Path) -> bytes:
+    """Consistent point-in-time copy of a (possibly live, WAL-mode) SQLite DB."""
+    with tempfile.TemporaryDirectory(prefix="adk-sync-") as tmp:
+        dest_path = Path(tmp) / "snapshot.db"
+        try:
+            src = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        except sqlite3.Error:
+            src = sqlite3.connect(str(path))
+        try:
+            dst = sqlite3.connect(str(dest_path))
+            try:
+                src.backup(dst)
+                # A standalone snapshot must not claim WAL mode: its -wal
+                # sidecar is never shipped with it.
+                dst.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        return _normalize_sqlite_header(dest_path.read_bytes())
+
+
+# Header fields that ``backup()`` rewrites on every copy: the file change
+# counter (offset 24), version-valid-for (offset 92) and SQLITE_VERSION_NUMBER
+# of the library that last wrote the file (offset 96). Left as-is, a snapshot
+# of a freshly DOWNLOADED snapshot hashes differently from what was downloaded
+# -- and offset 96 differs between devices whose Python bundles a different
+# SQLite -- so the next reconcile sees a local edit on top of the cloud copy
+# and re-uploads (or conflicts) the DB every cycle. Offsets 24 and 92 are
+# pinned to the same value, which keeps the in-header page count valid
+# (trusted only when the two match); offset 96 is informational only.
+_SQLITE_PINNED_HEADER_FIELDS = (
+    (24, 28, 1),
+    (92, 96, 1),
+    (96, 100, 3000000),
+)
+
+
+def _normalize_sqlite_header(content: bytes) -> bytes:
+    if len(content) < 100 or content[: len(_SQLITE_MAGIC)] != _SQLITE_MAGIC:
+        return content
+    buf = bytearray(content)
+    for start, end, value in _SQLITE_PINNED_HEADER_FIELDS:
+        buf[start:end] = value.to_bytes(end - start, "big")
+    return bytes(buf)
+
+
+def read_sync_bytes(path: Path) -> bytes:
+    """Bytes to hash/upload for ``path``: a consistent snapshot for SQLite."""
+    if is_sqlite_file(path):
+        return _sqlite_snapshot_bytes(path)
+    return path.read_bytes()
+
+
+def write_sync_bytes(path: Path, content: bytes) -> None:
+    """Write downloaded content atomically; drop stale SQLite sidecars.
+
+    A leftover -wal/-shm from the PREVIOUS database would be replayed onto
+    the newly downloaded main file on next open and corrupt it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError as exc:
+            log.warning("could not remove temp file %s: %s", tmp_name, exc)
+        raise
+    if content[: len(_SQLITE_MAGIC)] == _SQLITE_MAGIC:
+        for suffix in ("-wal", "-shm"):
+            sidecar = path.with_name(path.name + suffix)
+            if sidecar.exists():
+                sidecar.unlink()
+                log.info("removed stale SQLite sidecar %s", sidecar)
 
 
 class BaseManifestDB:
@@ -205,6 +329,9 @@ class ADKSyncEngine:
             for local_path in sync_dir.rglob("*"):
                 if local_path.is_dir():
                     continue
+                if is_sqlite_sidecar(local_path):
+                    # Folded into the main DB's snapshot; never synced alone.
+                    continue
 
                 # Compute path relative to ~/.aither
                 try:
@@ -217,11 +344,10 @@ class ADKSyncEngine:
 
                 # Compute hash and size
                 try:
-                    with open(local_path, "rb") as f:
-                        content = f.read()
-                        file_hash = hashlib.sha256(content).hexdigest()
-                        file_size = len(content)
-                        file_mtime = local_path.stat().st_mtime
+                    content = read_sync_bytes(local_path)
+                    file_hash = hashlib.sha256(content).hexdigest()
+                    file_size = len(content)
+                    file_mtime = local_path.stat().st_mtime
 
                     manifest[rel_path] = FileState(
                         hash=file_hash,
@@ -230,7 +356,7 @@ class ADKSyncEngine:
                         version=0,  # Local files have version=0 until uploaded
                         deleted=False,
                     )
-                except (IOError, OSError) as e:
+                except (IOError, OSError, sqlite3.Error) as e:
                     log.warning(f"Failed to scan {local_path}: {e}")
 
         log.debug(f"Scanned local adk data: {len(manifest)} files")
@@ -258,8 +384,8 @@ class ADKSyncEngine:
         reconcile = _get_reconcile()
         ActionKind = _get_actionkind()
 
-        # Step 1: Scan local
-        local = self.scan_local()
+        # Step 1: Scan local (disk + SQLite snapshot IO -> off the event loop)
+        local = await asyncio.to_thread(self.scan_local)
 
         # Step 2: Get remote changes (use full manifest from list_changes)
         try:
@@ -267,9 +393,10 @@ class ADKSyncEngine:
         except Exception as e:
             log.error(f"Failed to fetch remote changes: {e}")
             raise
+        remote = drop_sqlite_sidecars(remote)
 
         # Step 3: Load base
-        base_dict = self.manifest_db.get_base()
+        base_dict = drop_sqlite_sidecars(self.manifest_db.get_base())
         FileState = _get_filestate()
         base = {
             path: FileState(
@@ -325,12 +452,15 @@ class ADKSyncEngine:
         ActionKind = _get_actionkind()
         path = action.path
         local_path = self.aither_root / path
+        if is_sqlite_sidecar(local_path):
+            # Defence in depth behind drop_sqlite_sidecars(): never sync one.
+            log.info("SKIP %s %s (SQLite sidecar, never synced)", action.kind, path)
+            return
 
         if action.kind == ActionKind.UPLOAD:
             # Upload local file to cloud
             log.info(f"UPLOAD {path}")
-            with open(local_path, "rb") as f:
-                content = f.read()
+            content = await asyncio.to_thread(read_sync_bytes, local_path)
             await self.drive_client.upload(
                 path, content, version=action.base_version
             )
@@ -339,8 +469,7 @@ class ADKSyncEngine:
             # Download cloud file to local
             log.info(f"DOWNLOAD {path}")
             content = await self.drive_client.download(path)
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            local_path.write_bytes(content)
+            write_sync_bytes(local_path, content)
 
         elif action.kind == ActionKind.DELETE_LOCAL:
             # Cloud deleted — remove local file
@@ -361,8 +490,10 @@ class ADKSyncEngine:
             local_content: Optional[bytes] = None
             if local_path.exists():
                 try:
-                    local_content = local_path.read_bytes()
-                except (IOError, OSError) as e:
+                    local_content = await asyncio.to_thread(
+                        read_sync_bytes, local_path
+                    )
+                except (IOError, OSError, sqlite3.Error) as e:
                     log.warning(
                         f"Failed to read local {path} before conflict "
                         f"resolution: {e}"
@@ -370,15 +501,13 @@ class ADKSyncEngine:
 
             # Download cloud version as canonical
             content = await self.drive_client.download(path)
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            local_path.write_bytes(content)
+            write_sync_bytes(local_path, content)
 
             # Preserve local divergent copy under conflict name
             # (only if we successfully read the original local version)
             if action.conflict_copy and local_content is not None:
                 conflict_path = self.aither_root / action.conflict_copy
-                conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                conflict_path.write_bytes(local_content)
+                write_sync_bytes(conflict_path, local_content)
 
         elif action.kind == ActionKind.NOOP:
             log.debug(f"NOOP {path}")
