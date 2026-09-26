@@ -165,6 +165,8 @@ FLUX_PILLARS: Dict[str, str] = {
     'day.w': 'learning',
     'user.feedback': 'learning',
     'user.bug_report': 'learning',
+    'evolution.task_outcome': 'learning',
+    'evolution.quality_regression': 'learning',
     'svc.r': 'automation',
     'svc.e': 'automation',
     'gpu.ml': 'automation',
