@@ -371,6 +371,10 @@ class AitherAgent:
 
         self.name = name or self._identity.name
         self._system_prompt = system_prompt
+        if self.crystal is None:
+            # `adk run --crystal SCOPE` exports ADK_CRYSTAL_SCOPE; unset = no crystal.
+            from adk.crystal import crystal_from_env
+            self.crystal = crystal_from_env(self.name)
 
         # Default persona from the discovered brain PACK — but ONLY when the pack's
         # declared `identity:` matches THIS agent. This makes the shipped default

@@ -33,6 +33,13 @@ _ISOLATION_VARS = [
     "AITHERNET_RELAY_URL",
     "AITHER_INFERENCE_URL",
     "AITHER_OFFLINE",
+    # `adk run --crystal` exports these and AitherAgent reads them on construction
+    # (crystal_from_env): a developer shell with ADK_CRYSTAL_SCOPE set would bind
+    # every test agent to the real ~/.aither/awm/memory.db.
+    "ADK_CRYSTAL_SCOPE",
+    "ADK_CRYSTAL_DB",
+    "ADK_CRYSTAL_GRAPH_ROOT",
+    "ADK_CRYSTAL_NO_EMBED",
 ]
 
 

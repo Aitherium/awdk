@@ -211,6 +211,30 @@ def make_scheduler_embedder(url: str | None = None, model: str | None = None) ->
     return _embed
 
 
+def crystal_from_env(agent_name: str) -> "Optional[Crystal]":
+    """Bind a crystal when ``ADK_CRYSTAL_SCOPE`` is set (``adk run --crystal SCOPE``).
+
+    ``{agent}`` in the scope is replaced by the agent's name, so one server hosting
+    several agents keeps one scope per agent. Unset, or an unbuildable crystal,
+    returns None: the agent runs without it and the reason is logged.
+    """
+    raw = os.environ.get("ADK_CRYSTAL_SCOPE", "").strip()
+    if not raw:
+        return None
+    scope = raw.replace("{agent}", agent_name or "assistant")
+    try:
+        return build_crystal(
+            scope,
+            db=os.environ.get("ADK_CRYSTAL_DB") or None,
+            graph_root=os.environ.get("ADK_CRYSTAL_GRAPH_ROOT") or None,
+            embed=os.environ.get("ADK_CRYSTAL_NO_EMBED", "").strip().lower()
+            not in ("1", "true", "yes", "on"),
+        )
+    except Exception as exc:  # noqa: BLE001 -- a memory fault must not stop the agent
+        logger.warning("[CRYSTAL] could not bind scope %s: %s", scope, exc)
+        return None
+
+
 # ── pure helpers ─────────────────────────────────────────────────────────────
 
 def split_facts(summary: str, *, limit: int = MAX_FACTS_PER_COMPACTION) -> list[str]:
@@ -342,7 +366,9 @@ class Crystal:
         scored: list[tuple[float, float, str]] = []
         for _key, value, meta in rows:
             vec = meta.get("vec") if isinstance(meta, dict) else None
-            if qvec is not None and vec:
+            # A vector from another embedder (a different dimension) cannot be
+            # compared; keyword overlap still can, so fall back to it.
+            if qvec is not None and vec and len(vec) == len(qvec):
                 s = cosine(qvec, vec)
             else:
                 s = keyword_score(message, value)

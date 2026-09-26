@@ -672,9 +672,27 @@ def cmd_run(args):
         sys_args += ["--fleet", args.fleet]
     if args.agents:
         sys_args += ["--agents", args.agents]
+    _export_crystal_env(args)
 
     sys.argv = sys_args
     server_main()
+
+
+def _export_crystal_env(args) -> None:
+    """``--crystal SCOPE`` -> ADK_CRYSTAL_* so every Agent the server builds binds
+    ``adk.crystal.build_crystal`` (see ``adk.crystal.crystal_from_env``)."""
+    scope = str(getattr(args, "crystal", "") or "").strip()
+    if not scope:
+        return
+    if len(scope.split(":")) != 3 or not all(scope.split(":")):
+        raise SystemExit(f"--crystal {scope!r}: an awm scope is tenant:user:project")
+    os.environ["ADK_CRYSTAL_SCOPE"] = scope
+    if getattr(args, "crystal_db", ""):
+        os.environ["ADK_CRYSTAL_DB"] = args.crystal_db
+    if getattr(args, "crystal_graph", ""):
+        os.environ["ADK_CRYSTAL_GRAPH_ROOT"] = args.crystal_graph
+    if getattr(args, "crystal_no_embed", False):
+        os.environ["ADK_CRYSTAL_NO_EMBED"] = "1"
 
 
 def _sync_entitled_packs_quiet() -> None:
@@ -13034,6 +13052,15 @@ def _register_commands(sub):
     run_p.add_argument("-a", "--agents", help="Comma-separated agent identities")
     run_p.add_argument("--mesh", action="store_true",
                        help="Enable mesh hosting (advertise tools/inference to connected desktop)")
+    run_p.add_argument("--crystal", metavar="SCOPE", default="",
+                       help="Crystallize compacted context into awm at SCOPE and recall it "
+                            "every turn ({agent} = the agent name), e.g. "
+                            "'aitherium:{agent}:myproject'")
+    run_p.add_argument("--crystal-db", default="", help="awm SQLite path for --crystal")
+    run_p.add_argument("--crystal-graph", default="", metavar="ROOT",
+                       help="with --crystal: also recall awgraph symbols from ROOT's index")
+    run_p.add_argument("--crystal-no-embed", action="store_true",
+                       help="with --crystal: keyword recall only, no embedder")
 
     # adk image — generate on local backends (ComfyUI/Sana/SD.Next). The handler
     # lives in adk/images.py (cmd_image) so the daemon and the CLI share one
