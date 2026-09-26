@@ -134,6 +134,11 @@ def build_core_loop(
         first = loop.prism.best(initial=True)
         if first is not None:
             loop.prism.active = BY_ID[first]
+    if cfg.context != "off" or cfg.invariants is not None:
+        from ._context_gate import install_context_gate
+
+        install_context_gate(loop, mode=cfg.context, invariants=cfg.invariants,
+                             level_support=cfg.context_level_support)
     return loop
 
 

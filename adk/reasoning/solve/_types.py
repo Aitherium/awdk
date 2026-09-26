@@ -219,6 +219,14 @@ class LoopConfig:
     plan_states: int = 5000
     #: sase mode: h31 evidence table + induced candidate rules + cited rules.
     grounded: bool = False
+    #: Context permission (``context.py``, ``_context_gate.py``): ``"off"`` | ``"shadow"``
+    #: (record what the context WOULD refuse) | ``"enforce"``. plan() needs a predict rule
+    #: replay-verified on ``context_level_support`` of THIS level's transitions.
+    context: str = "off"
+    context_level_support: int = 2
+    #: :class:`adk.reasoning.solve.context.Invariants`, built by the host; enforced in
+    #: every ``context`` mode, including ``"off"``.
+    invariants: Optional[Any] = None
 
 
 #: Every value ``SolveResult.finish_reason`` can take.
