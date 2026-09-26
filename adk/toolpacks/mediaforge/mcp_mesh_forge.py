@@ -27,8 +27,9 @@ blob down a tool channel would be wrong twice over, so the contract is
 dispatch → `job_id` → `mediaforge_3d_status(job_id)`.
 
 🚨 "NO BACKEND HERE" IS A CORRECT ANSWER, AND ON THIS FLEET IT IS THE COMMON ONE.
-`aitheros-hunyuan3d` (:8290) and `comfyui-3d` (:8289) both sit behind the
-`creative-full` / `dgx-hybrid` compose profiles and neither runs by default. Measured
+`comfyui-3d` (:8289) is compose `profiles: ["disabled"]` (parked; no quadlet) and
+`aitheros-hunyuan3d` (:8290) sits behind the non-default `creative-full` / `dgx-hybrid`
+profiles, so neither runs by default. Measured
 2026-08-24, BOTH candidate hosts were full: the 5090 had 4,792 MiB free of 32,607
 against a 6-16 GB need, and the DGX Spark had 1 GB available of 121 GB with its own
 3D container already at Exit (137) from a prior OOM. A tool that answers a 3D request
@@ -131,7 +132,8 @@ _QUALITY = ("fast", "balanced", "high")
 #: Re-measure before trusting any number here; the point is that a stale number is
 #: visible as stale, not that these particular ones stay true.
 _PLACEMENT_LANES = [
-    "comfyui-3d (:8289) — the canonical engine; compose profile `creative-full`. "
+    "comfyui-3d (:8289) — the canonical engine; PARKED: compose `profiles: [\"disabled\"]` "
+    "and no quadlet, so placing it means re-enabling the compose service first. "
     "Needs ~6 GB VRAM for shape, ~16 GB for shape+texture. "
     "MEASURED 2026-08-24: the 5090 had 4,792 MiB free of 32,607 — below even the "
     "shape-only floor, so this lane does not fit today.",
@@ -189,7 +191,7 @@ def _annotate_backend(res: dict) -> dict:
         res["place_a_backend"] = list(_PLACEMENT_LANES)
         res["note"] = (
             "No 3D backend answered. This is expected on the reference box: both 3D "
-            "services sit behind non-default compose profiles, and the local card does "
+            "services are parked or behind non-default compose profiles, and the local card does "
             "not have the headroom to start one on demand."
         )
     return res
