@@ -254,3 +254,27 @@ class TestPackVerifierErrorHandling:
             sample_pack_data, bad_sig, "not-hex-key"
         )
         assert verified is False
+
+
+def test_signed_pack_verifies_with_the_shipped_key_when_none_is_configured(
+        sample_pack_data, monkeypatch):
+    """A stock install sets no AITHER_PACK_PUBLIC_KEY. A pack the platform signed
+    must still verify, and a forged signature must still be refused."""
+    from adk import pack_verifier
+
+    monkeypatch.delenv("AITHER_PACK_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("AITHER_PACK_REQUIRE_SIGNING", raising=False)
+    calls = []
+    real = pack_verifier.verify_bytes
+
+    def spy(data, sig, pub=None):
+        calls.append(pub)
+        return real(data, sig, pub)
+
+    monkeypatch.setattr(pack_verifier, "verify_bytes", spy)
+    ok, _ = pack_verifier.verify_pack_tarball(sample_pack_data, "ab" * 64)
+    assert ok is False
+    assert calls == [pack_verifier._DEFAULT_PUBLIC_KEY_HEX]
+    # unsigned packs keep their old policy when no key is configured
+    ok, _ = pack_verifier.verify_pack_tarball(sample_pack_data, None)
+    assert ok is True

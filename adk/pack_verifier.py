@@ -139,7 +139,12 @@ def verify_pack_tarball(
         logger.debug("Pack verification skipped: no signature provided (unsafe mode)")
         return True, "No signature provided (unsigned pack, unsafe mode)"
 
-    if not verify_bytes(tarball_bytes, signature_hex, pub_hex):
+    # A PRESENT signature is checked against the platform key that ships in this
+    # module when nothing else is configured. Without this fallback verify_bytes has
+    # no key and returns False, so every correctly signed pack was refused on a
+    # stock install. The require-policy above is unchanged: an unsigned pack is
+    # still accepted unless signing is required.
+    if not verify_bytes(tarball_bytes, signature_hex, pub_hex or _DEFAULT_PUBLIC_KEY_HEX):
         logger.warning("Pack signature verification failed: invalid signature")
         return False, "Pack signature verification failed"
 

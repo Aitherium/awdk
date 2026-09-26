@@ -12049,6 +12049,20 @@ def _cmd_pack(args) -> int:
             print(f"SHA256 mismatch: expected {expected_sha[:16]}..., got {actual_sha[:16]}...")
             return 1
 
+        # Ed25519 signature, the same check `adk pack sync` runs. A signature that is
+        # present and wrong is always refused; an absent one follows the verifier's
+        # policy (AITHER_PACK_REQUIRE_SIGNING, else required when a key is pinned).
+        try:
+            from adk.pack_verifier import verify_pack_tarball
+        except ImportError:
+            verify_pack_tarball = None
+        if verify_pack_tarball is not None:
+            verified, vmsg = verify_pack_tarball(
+                resp.content, resp.headers.get("X-Aither-Pack-Signature"))
+            if not verified:
+                print(f"Signature check failed for '{pack_id}': {vmsg}")
+                return 1
+
         # Extract
         if target.exists():
             shutil.rmtree(target)
