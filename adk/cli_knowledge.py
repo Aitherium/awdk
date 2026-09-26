@@ -19,7 +19,20 @@ from typing import Any, Dict, List, Optional
 
 
 def register(sub: Any) -> None:
-    """Add the ``kb`` and ``embed`` sub-commands to an argparse subparsers object."""
+    """Add the ``kb`` and ``embed`` sub-commands to an argparse subparsers object.
+
+    ``adk/cloud_memory.py`` registers ``kb`` and ``embed`` on the same subparsers
+    first, and ``main()`` dispatches both names to cloud_memory. Registering them
+    a second time raised ``conflicting subparser: kb`` while the parser was being
+    BUILT, so every ``adk`` command -- ``adk --version``, ``adk up`` -- died
+    before parsing. A name already present is left to its first owner.
+    """
+    taken = set(getattr(sub, "choices", None) or ())
+    if "kb" in taken and "embed" in taken:
+        return
+    if "kb" in taken or "embed" in taken:
+        raise RuntimeError("adk kb/embed half-registered by another module; "
+                           "one owner must register both")
     kb_p = sub.add_parser("kb", help="Query or list the agent's local knowledge graph")
     kb_sub = kb_p.add_subparsers(dest="kb_action")
     q = kb_sub.add_parser("query", help="Hybrid (keyword + semantic) search")
