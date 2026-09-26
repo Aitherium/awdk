@@ -943,6 +943,12 @@ def cmd_up(args):
     reach = (getattr(args, "reach", "") or "tunnel").lower()
     mesh_overlay_ip = None  # Set below if reach == "mesh"
     will_register = not getattr(args, "no_register", False) and not offline
+    # The brain pack the served agent loads. The server reads AGENT_BRAIN_PACK
+    # first (adk.pack_discovery), so pin it explicitly: --brain-pack wins, else a
+    # brain_pack.yaml in the cwd `adk up` was run from. Pinning (rather than
+    # relying on the child inheriting the cwd) keeps the pack across the
+    # reboot-autostart re-run, which starts in an arbitrary directory.
+    brain_pack, _bp_err = _resolve_up_brain_pack(getattr(args, "brain_pack", "") or "")
 
     def _fail(code: int, error: str, hint: str = "", next_action: str = "") -> int:
         obj = {"ok": False, "error": error, "error_code": code}
@@ -959,6 +965,10 @@ def cmd_up(args):
             if next_action:
                 print(f"      -> {next_action}")
         return code
+
+    if _bp_err:
+        return _fail(2, _bp_err, "pass a brain_pack.yaml, or a directory that contains one",
+                     next_action="fix --brain-pack, or omit it to use --identity alone")
 
     # ── Idempotency: already running? ──
     existing = daemon.read_status()
@@ -1140,7 +1150,8 @@ def cmd_up(args):
         plan = {"ok": True, "dry_run": True, "identity": identity, "name": name,
                 "port": port, "will_register": will_register, "offline": offline,
                 "detached": not foreground, "persist": persist,
-                "backend": "local" if have_backend else provider}
+                "backend": "local" if have_backend else provider,
+                "brain_pack": str(brain_pack) if brain_pack else None}
         print(json.dumps(plan) if non_interactive else f"  [dry-run] {json.dumps(plan)}")
         return 0
 
@@ -1151,6 +1162,8 @@ def cmd_up(args):
     child_env = dict(os.environ)
     child_env["AITHER_SERVER_API_KEY"] = auth_token
     child_env["AITHER_TOOL_APPROVAL"] = approval or ""
+    if brain_pack:
+        child_env["AGENT_BRAIN_PACK"] = str(brain_pack)
     if offline:
         child_env["AITHER_OFFLINE"] = "1"
     if reach == "mesh":
@@ -1286,7 +1299,8 @@ def cmd_up(args):
     # ── Persist (autostart) ──
     autostart = None
     if persist:
-        up_argv = _autostart_up_argv(identity, port, provider, offline)
+        up_argv = _autostart_up_argv(identity, port, provider, offline,
+                                     brain_pack=str(brain_pack) if brain_pack else "")
         autostart = daemon.install_autostart(up_argv)
 
     # ── Status file (single source of truth for status/down) ──
@@ -1370,10 +1384,36 @@ def _pick_up_port(daemon, port: int, explicit: bool) -> tuple[int, str, str]:
     return port, "", f":{port} is in use by {what} and no free port in :{port + 1}-:{port + 19}."
 
 
-def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool) -> list[str]:
+def _resolve_up_brain_pack(raw: str) -> tuple[Path | None, str]:
+    """(absolute brain_pack.yaml, error) for ``adk up``.
+
+    ``raw`` is the ``--brain-pack`` value: a brain_pack.yaml, or a directory that
+    holds one. Empty ``raw`` falls back to ``./brain_pack.yaml`` when present
+    (the documented "run adk up from the pack dir" path) unless
+    ``AGENT_BRAIN_PACK`` is already set, which the server honours on its own.
+    An explicit value that does not resolve is an error, never a silent default.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        if os.environ.get("AGENT_BRAIN_PACK", "").strip():
+            return None, ""
+        cwd_pack = Path.cwd() / "brain_pack.yaml"
+        return (cwd_pack.resolve(), "") if cwd_pack.is_file() else (None, "")
+    p = Path(raw).expanduser()
+    if p.is_dir():
+        p = p / "brain_pack.yaml"
+    if not p.is_file():
+        return None, f"brain pack not found: {raw}"
+    return p.resolve(), ""
+
+
+def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool,
+                       brain_pack: str = "") -> list[str]:
     """Build the command the autostart entry re-runs at logon (unattended, detached)."""
     argv = [sys.executable, "-m", "adk.cli", "up",
             "--identity", identity, "--port", str(port), "--yes"]
+    if brain_pack:
+        argv += ["--brain-pack", brain_pack]
     # 'gateway' is the hosted-brain sentinel, not a real --provider — at reboot the
     # saved portal token is re-resolved and the hosted brain is chosen again.
     if provider and provider != "gateway":
@@ -13008,6 +13048,9 @@ def _register_commands(sub):
     up_p = sub.add_parser(
         "up", help="Run a persistent agent connected to your AitherOS fleet (one command)")
     up_p.add_argument("--identity", default="aither", help="Agent identity (default: aither)")
+    up_p.add_argument("--brain-pack", dest="brain_pack", default="",
+                      help="brain_pack.yaml (or a directory holding one) the agent loads; "
+                           "default: ./brain_pack.yaml when present")
     up_p.add_argument("--name", help="Fleet label for this agent (default: <hostname>-adk)")
     up_p.add_argument("--provider", help="Cloud provider if no local LLM: deepseek/openai/anthropic")
     up_p.add_argument("--model", help="Model name (default: the provider's default)")

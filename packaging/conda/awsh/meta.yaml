@@ -1,0 +1,57 @@
+# conda-build recipe for awsh (AitherShell CLI) -- a repackaged binary.
+#
+#   conda build awdk/packaging/conda/awsh
+#
+# awsh is a bun-compiled single executable, so this recipe builds nothing: it
+# fetches the released binary for the target platform and installs it as
+# `awsh` plus the `aither` / `aither-shell` aliases package.json ships.
+# Not conda-forge: its policy requires an OSI licence and this is BUSL-1.1, so
+# the venue is an Aitherium channel, the same reasoning as the Homebrew tap.
+#
+# Source of truth for version and digests is the public release
+# (Aitherium/awdk, tag shell-v<version>, SHA256SUMS.txt). Keep it in lockstep
+# with brew/awsh.rb -- test_awsh_packaging_manifests.py fails when they drift.
+{% set version = "1.17.0" %}
+{% set base = "https://github.com/Aitherium/awdk/releases/download/shell-v" + version %}
+
+package:
+  name: awsh
+  version: {{ version }}
+
+source:
+  - url: {{ base }}/aither-shell-linux-x64  # [linux64]
+    sha256: af0e3c756730993d3c605fdaa7b6aa126f31ccd3ca64ea5eac428c29c73266b4  # [linux64]
+  - url: {{ base }}/aither-shell-macos-arm64  # [osx and arm64]
+    sha256: ae5eba5ca1c344cfa55913c03bd893f2761461db40ca425b2c0a8cfdc87d19a9  # [osx and arm64]
+  - url: {{ base }}/aither-shell-win64.exe  # [win64]
+    sha256: eaaa43611b28dc6ecf07ef1750833b28407796e3ff4fb000f05d9f3e07e4d19c  # [win64]
+
+build:
+  number: 0
+  # Only these three platforms have a released binary.
+  skip: true  # [not (linux64 or (osx and arm64) or win64)]
+  binary_relocation: false
+  script:
+    - install -d "$PREFIX/bin"  # [unix]
+    - install -m 755 aither-shell-* "$PREFIX/bin/awsh"  # [unix]
+    - ln -s awsh "$PREFIX/bin/aither"  # [unix]
+    - ln -s awsh "$PREFIX/bin/aither-shell"  # [unix]
+    - if not exist "%LIBRARY_BIN%" mkdir "%LIBRARY_BIN%"  # [win]
+    - copy aither-shell-win64.exe "%LIBRARY_BIN%\awsh.exe"  # [win]
+    - copy aither-shell-win64.exe "%LIBRARY_BIN%\aither.exe"  # [win]
+
+test:
+  commands:
+    - awsh --version
+    - aither --version
+
+about:
+  home: https://aitherium.com
+  license: BUSL-1.1
+  license_family: OTHER
+  summary: "awsh - your terminal answers you"
+  description: |
+    Type a question where a command would go and get an answer instead of
+    "command not found". The same binary as the GitHub release, npm
+    (@aitherium/awsh), Homebrew (aitherium/tap/awsh) and winget
+    (Aitherium.AitherShell).
