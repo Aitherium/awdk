@@ -132,10 +132,17 @@ export function register(on: On) {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    ;({ tool: progressTool } = await $.tool.register({
-      name: PROGRESS_TOOL,
-      description: 'Internal to aw subagents: marks an awsh turn still in progress. Never call it.',
-    }))
+    try {
+      ;({ tool: progressTool } = await $.tool.register({
+        name: PROGRESS_TOOL,
+        description: 'Internal to aw subagents: marks an awsh turn still in progress. Never call it.',
+      }))
+    } catch {
+      // The plugin shares its name with an `awsh` MCP server in the session's
+      // config, and the engine refuses to replace that server. Leave the
+      // session alone; aw subagents report the collision instead of chaining.
+      progressTool = ''
+    }
     return started
   })
 
@@ -213,6 +220,12 @@ export function register(on: On) {
     }
 
     const { shown, blocks, lastKind } = yield* pump($, run, deadline, next.signal)
+    if (!run.ended && progressTool === '') {
+      runs.delete(agentId)
+      const text = shown + '\n\nawsh: turn outran one step and cannot chain: an MCP server named '
+        + '"awsh" in this session\'s config blocked registering aw_progress.'
+      return yield* finish(e, agentId, text, text, 1, run.handback, [{ kind: 'text', index: 0, text }])
+    }
     if (!run.ended) {
       const input = {}
       return yield* respond(e, [
