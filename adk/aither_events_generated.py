@@ -188,6 +188,17 @@ FLUX_PILLARS: Dict[str, str] = {
     'retr.e': 'orchestration',
     'retr.i': 'learning',
     'retr.p': 'learning',
+    'context.token_scale_calculated': 'context',
+    'context.segment_added': 'context',
+    'context.segment_loaded': 'context',
+    'context.segment_unloaded': 'context',
+    'context.segment_evicted': 'context',
+    'context.cache_assembled': 'context',
+    'context.cache_cleared': 'context',
+    'context.cache_injected': 'context',
+    'context.injected': 'context',
+    'context.weeded': 'context',
+    'context.quick_recall': 'context',
 }
 
 #: SixPillarsKernel tick phase -> pillar (P5 is 'Creation' there).

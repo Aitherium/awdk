@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed bead-space -&gt; ~\.aither\packs\bead-space</span>
 <span class="o">verified: adk discovers &#x27;bead-space&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.26</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>d936aaa11db3df56…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.26</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>ae26cbbc1eb9baca…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,12 +314,12 @@ not affiliated with or endorsed by them.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>d936aaa11db3df56d996657096a387a79794d7ae86dff1462df7479c314a0e39</code></p>
+    <p class="sub">sha256 <code>ae26cbbc1eb9bacaae258a413a7933577a6fad2c5cebffef29d1ce582a5d53ac</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c bead-space-3.8.26.sha256
 <span class="o">bead-space-3.8.26.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;D936AAA11DB3DF56D996657096A387A79794D7AE86DFF1462DF7479C314A0E39&#x27;
+<span class="p">$</span> $want = &#x27;AE26CBBC1EB9BACAAE258A413A7933577A6FAD2C5CEBFFEF29D1CE582A5D53AC&#x27;
 <span class="p">$</span> (Get-FileHash bead-space-3.8.26.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
