@@ -208,10 +208,15 @@ docs = ["docling-slim[convert-core,format-pdf,format-office,format-web]>=2.0", "
 # bot wall; a stealth browser only when asked). Opt-in: the fetchers extra pulls
 # curl_cffi and Playwright, and Playwright downloads a browser on first use.
 scrape = ["scrapling[fetchers]>=0.4", "markdownify>=1.0"]
-# ARC world-model contribution: the bundled arc-brainpack pack registers/streams
-# transitions with only core deps (httpx); PLAYING ARC to generate transitions
-# (arc_contribute / `adk contribute play`) needs the real game client.
-arc = ["arcengine>=0.9.3", "requests>=2.28.0"]
+# The general reasoning loop (adk.reasoning.solve) runs on numpy arrays for grid
+# domains; `import adk.reasoning` itself never needs it.
+reason = ["numpy>=1.24.0"]
+# ARC-AGI-3: the bundled arc-brainpack pack registers/streams transitions with only
+# core deps (httpx); PLAYING ARC (arc_contribute, `adk contribute play`, and the
+# offline eval in adk.evalharness.arc_agi3) needs the real game client. The engine
+# pair is pinned EXACTLY: the scorecard's RESET and level accounting differ across
+# versions, and the RHAE eval is calibrated against these two.
+arc = ["arc-agi==0.9.9", "arcengine==0.9.3", "numpy>=1.24.0", "requests>=2.28.0"]
 sync = ["watchdog>=3.0.0"]
 federation = ["cryptography>=41.0.0"]
 addons = ["docker>=7.0"]

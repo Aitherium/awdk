@@ -434,11 +434,14 @@ class TypedMemory:
         confidence: float = 0.7,
         related_ids: Sequence[str] = (),
         metadata: dict[str, Any] | None = None,
+        id_: str | None = None,
     ) -> str:
         """Store ``content`` with a typed role/tier and activation metadata.
 
-        Returns the generated record id (use it for :meth:`reinforce` /
-        :meth:`supersede`).
+        Returns the record id (use it for :meth:`reinforce` /
+        :meth:`supersede`): ``id_`` when given -- a keyed write that replaces
+        the record under that id, which is how a keyed store is layered on
+        typed memory -- otherwise a generated one.
         """
         md = dict(metadata or {})
         resolved_role = role or md.get(_K_ROLE) or infer_role(content, md)
@@ -454,7 +457,7 @@ class TypedMemory:
             _K_LAST_REINF: now,
             _K_RELATED: list(related_ids) or list(md.get(_K_RELATED, []) or []),
         })
-        rec_id = f"tm_{uuid.uuid4().hex[:16]}"
+        rec_id = id_ or f"tm_{uuid.uuid4().hex[:16]}"
         await self._mem.remember(rec_id, content, category=resolved_role, metadata=md)
         return rec_id
 

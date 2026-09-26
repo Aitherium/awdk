@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**112 commands.**
+**116 commands.**
 
 | command | what it does |
 |---|---|
@@ -56,6 +56,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk doc`](#adk-doc) | Manage encrypted documents (upload, list, download, delete) |
 | [`adk doctor`](#adk-doctor) | Check system health (Python, GPU, LLM backends, API keys) |
 | [`adk down`](#adk-down) | Stop the agent + tunnel and remove its autostart |
+| [`adk embed`](#adk-embed) | Embed text with the tenant platform's embedding engine |
 | [`adk enroll`](#adk-enroll) | Register this workstation with the control plane |
 | [`adk eval`](#adk-eval) | Evaluate MCP tools and packs on a connected gateway |
 | [`adk explore`](#adk-explore) | Browse packs, agents, and skills in the Aitherium marketplace |
@@ -77,6 +78,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk invoke`](#adk-invoke) | Invoke a tool on a mesh agent over signed A2A (adk invoke <agent> <skill>) |
 | [`adk jobs`](#adk-jobs) | Manage background jobs — LOCAL by default, --remote for the portal/cloud |
 | [`adk join`](#adk-join) | One-command community node onboarding (GitHub auth + hardware detection + serve + mesh join + earnings) |
+| [`adk kb`](#adk-kb) | Tenant knowledge base on the platform: ingest, query |
 | [`adk keys`](#adk-keys) | Manage cloud provider API keys (set, list, test, remove) |
 | [`adk link`](#adk-link) | link this machine to aitherium.com (one sign-in, role-aware bundle) |
 | [`adk listen`](#adk-listen) | Real-time audio intelligence — audiobook, meeting, voice notes |
@@ -84,6 +86,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk logout`](#adk-logout) | Clear saved auth tokens |
 | [`adk mail`](#adk-mail) | Sovereign mail: one-command Proton Bridge setup |
 | [`adk mcp`](#adk-mcp) | MCP server, IDE setup, and cloud gateway connection |
+| [`adk memory`](#adk-memory) | Tenant memory on the platform: remember, recall |
 | [`adk mesh`](#adk-mesh) | AitherMesh overlay operations (onboard, list peers) |
 | [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
 | [`adk notebook`](#adk-notebook) | Plan, run, and inspect Agent Notebooks (.anb) on Genesis |
@@ -109,6 +112,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk setup-all`](#adk-setup-all) | Install/set up all AitherOS client products (adk + shell + node + connect) |
 | [`adk shell`](#adk-shell) | Launch AitherShell interactive terminal |
 | [`adk skills`](#adk-skills) | Manage learned skills |
+| [`adk solve`](#adk-solve) | Run the reasoning loop on an environment (toy or ARC-AGI-3) with a model backend |
 | [`adk soul`](#adk-soul) | Import/export SOUL.md identity files |
 | [`adk spec`](#adk-spec) | Spec-driven change workflow: proposal -> delta specs -> tasks -> archive |
 | [`adk ssh`](#adk-ssh) | Open a remote terminal into a prod/dev environment via the tunnel |
@@ -512,6 +516,17 @@ Stop the agent + tunnel and remove its autostart
 |---|---|---|---|---|
 | `--keep-autostart` | str |  | `false` | Stop now but leave the reboot-autostart entry in place |
 
+## `adk embed`
+
+Embed text with the tenant platform's embedding engine
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<text>` | str | yes |  | Text to embed |
+| `--dim` | int |  | `768` | MRL dimension (64-3072, default 768) |
+| `--modality` | str |  | `text` |  |
+| `--json` | str |  | `false` | Print the full JSON response |
+
 ## `adk enroll`
 
 Register this workstation with the control plane
@@ -535,6 +550,7 @@ Evaluate MCP tools and packs on a connected gateway
 - `adk eval tools` — Evaluate all available tools
 - `adk eval pack` — Evaluate a specific pack's declared tools
 - `adk eval self-test` — Run offline self-test (proves the harness can fail)
+- `adk eval arc` — ARC-AGI-3 suite: a policy over games x seeds, scored by RHAE
 
 ## `adk explore`
 
@@ -718,7 +734,7 @@ Ingest files into the agent's knowledge graph
 | `--chunk-size` | int |  | `2000` | Bytes per chunk (default: 2000) |
 | `--chunk-overlap` | int |  | `200` | Overlap bytes between chunks (default: 200) |
 | `--workspace` | str |  | `default` | Workspace ID for brain sync (default: default) |
-| `--skip-embeddings` | str |  | `false` | Skip embedding if brain unreachable |
+| `--skip-embeddings` | str |  | `false` | Store chunks without computing embeddings |
 | `--dry-run` | str |  | `false` | Print what would be ingested without persisting |
 
 ## `adk init`
@@ -804,6 +820,15 @@ One-command community node onboarding (GitHub auth + hardware detection + serve 
 | `--no-browser` | str |  | `false` | Do not attempt browser open for GitHub auth |
 | `--dry-run` | str |  | `false` | Walk the full plan without side effects |
 
+## `adk kb`
+
+Tenant knowledge base on the platform: ingest, query
+
+**Subcommands**
+
+- `adk kb ingest` — Embed a document and store it in the tenant KB
+- `adk kb query` — Search the tenant knowledge base
+
 ## `adk keys`
 
 Manage cloud provider API keys (set, list, test, remove)
@@ -873,6 +898,15 @@ MCP server, IDE setup, and cloud gateway connection
 - `adk mcp setup` — Generate IDE config (.mcp.json) for MCP gateway
 - `adk mcp node` — Start lightweight local MCP server
 - `adk mcp status` — Check MCP gateway connectivity and tier
+
+## `adk memory`
+
+Tenant memory on the platform: remember, recall
+
+**Subcommands**
+
+- `adk memory remember` — Store a memory in the tenant graph
+- `adk memory recall` — Recall memories from the tenant graph
 
 ## `adk mesh`
 
@@ -1184,6 +1218,29 @@ Manage learned skills
 - `adk skills search` — Search skills
 - `adk skills export` — Export skills in agentskills.io format
 
+## `adk solve`
+
+Run the reasoning loop on an environment (toy or ARC-AGI-3) with a model backend
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--env` | str |  | `counter` | Environment adapter (default: counter) |
+| `--game` | str |  |  | --env arc: game id (e.g. ls20) |
+| `--seed` | int |  | `0` | --env arc: seed (10-69 is held out) |
+| `--env-dir` | str |  |  | --env arc: games directory (default $ADK_ARC_ENV_DIR) |
+| `--backend` | str |  | `microscheduler` | Model backend profile: microscheduler (default, :8150) or a reasoning.json tier (fast\|orchestrator\|reasoning) |
+| `--model` | str |  |  | Model id (microscheduler: default auto) |
+| `--scheduler-url` | str |  |  | MicroScheduler base URL (default $AITHER_MICROSCHEDULER_URL or https://127.0.0.1:8150) |
+| `--mode` | str |  | `sase` | sase (4-phase, predictions) or plain (one code block per reply) |
+| `--prism` | str |  | `on` | PRISM strategy rotation (default: on) |
+| `--budget` | int |  | `40` | Max model calls (default: 40) |
+| `--max-actions` | int |  |  | Max environment actions |
+| `--wall-s` | float |  |  | Max wall-clock seconds |
+| `--goal` | str |  |  | Goal text appended to the environment primer |
+| `--run-dir` | str |  |  | Write the JSONL turn log here |
+| `--json` | str |  | `false` | Print the SolveResult as JSON |
+| `--live-url` | str |  |  | --env arc: stream the run to the ARC Theater (default $ADK_ARC_LIVE_URL; 'off' disables); token from $ADK_ARC_LIVE_TOKEN or $ARC_THEATER_INGEST_TOKEN |
+
 ## `adk soul`
 
 Import/export SOUL.md identity files
@@ -1332,6 +1389,7 @@ Run a persistent agent connected to your AitherOS fleet (one command)
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `--identity` | str |  | `aither` | Agent identity (default: aither) |
+| `--brain-pack` | str |  |  | brain_pack.yaml (or a directory holding one) the agent loads; default: ./brain_pack.yaml when present |
 | `--name` | str |  |  | Fleet label for this agent (default: <hostname>-adk) |
 | `--provider` | str |  |  | Cloud provider if no local LLM: deepseek/openai/anthropic |
 | `--model` | str |  |  | Model name (default: the provider's default) |

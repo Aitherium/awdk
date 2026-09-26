@@ -15065,6 +15065,8 @@ def _register_commands(sub):
     eval_sub.add_parser(
         "self-test", help="Run offline self-test (proves the harness can fail)"
     )
+    from adk.commands.eval_arc import register_parser as _register_eval_arc
+    _register_eval_arc(eval_sub)
 
     # adk acp — Agent Client Protocol. Two directions:
     #   serve    — expose an AitherOS agent to ACP editors (JetBrains/Zed/...).
@@ -15319,6 +15321,10 @@ def _register_commands(sub):
     nb_export_p = nb_sub.add_parser("export", help="Export a notebook to a Jupyter .ipynb file")
     nb_export_p.add_argument("notebook_id", help="Notebook id")
     nb_export_p.add_argument("-o", "--output", default="", help="Output path (default: ./<id>.ipynb)")
+
+    # adk solve — the reasoning loop on a named environment (adk/commands/solve.py)
+    from adk.commands.solve import register_parser as _register_solve
+    _register_solve(sub)
 
     # adk wm — world model management (status, inspect, train, reset)
     wm_p = sub.add_parser("wm", help="World model management (status, inspect, train, reset)")
@@ -16405,12 +16411,16 @@ def main():
         elif eval_cmd == "self-test":
             from adk.evalharness.cli import cmd_eval_self_test
             sys.exit(asyncio.run(cmd_eval_self_test(args)))
+        elif eval_cmd == "arc":
+            from adk.commands.eval_arc import cmd_eval_arc
+            sys.exit(cmd_eval_arc(args))
         else:
-            print("Usage: adk eval [tools|pack|self-test]")
+            print("Usage: adk eval [tools|pack|self-test|arc]")
             print()
             print("  tools      Evaluate all available tools on a gateway")
             print("  pack       Evaluate a specific pack's declared tools")
             print("  self-test  Run offline self-test (proves it can fail)")
+            print("  arc        ARC-AGI-3 suite scored by RHAE")
             sys.exit(1)
     elif args.command == "acp":
         acp_cmd = getattr(args, "acp_command", None)
@@ -16483,6 +16493,9 @@ def main():
         if brief_cmd == "show":
             sys.exit(cmd_briefs_show(args))
         sys.exit(cmd_briefs_list(args))
+    elif args.command == "solve":
+        from adk.commands.solve import cmd_solve
+        sys.exit(cmd_solve(args))
     elif args.command == "wm":
         wm_cmd = getattr(args, "wm_command", None)
         if wm_cmd == "status":

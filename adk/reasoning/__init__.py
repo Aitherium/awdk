@@ -67,3 +67,18 @@ __all__ = [
 ]
 
 from .mcts import UnifiedMCTS, MCTSConfig, MCTSResult, MCTSEnvironment  # noqa: E402,F401
+
+
+def __getattr__(name: str):  # PEP 562: lazy subpackages
+    """``adk.reasoning.solve`` loads on first access, never at ``import adk.reasoning``.
+
+    The general reasoning loop (and the ARC eval behind it) may pull numpy; the
+    tiered router above must stay importable without it.
+    """
+    if name == "solve":
+        import importlib
+
+        module = importlib.import_module(".solve", __name__)
+        globals()[name] = module
+        return module
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))

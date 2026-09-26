@@ -883,6 +883,16 @@ def _awsh_wake_verb(verb: str):
     return _fn
 
 
+def _solve(args: dict) -> dict:
+    """One bounded ``adk solve`` run (child process), summarised.
+
+    Imported lazily so the server's startup stays stdlib-only and fast; the
+    helper itself is stdlib-only too (adk.reasoning.solve._shell)."""
+    from adk.reasoning.solve._shell import run_bounded_solve
+
+    return run_bounded_solve(args)
+
+
 TOOLS: list = [
     {"name": "awsh_health",
      "description": "Is the AitherShell harness daemon up, and what does it allow.",
@@ -1074,6 +1084,27 @@ TOOLS: list = [
      "schema": {"type": "object", "properties": {"name": {"type": "string"},
                 "note": {"type": "string"}}, "required": ["name"]},
      "fn": _awsh_wake_verb("run")},
+
+    {"name": "awsh_solve",
+     "description": "Run the general reasoning loop (adk solve) once, BOUNDED, and "
+                    "return its summary: won, finish_reason, levels, actions, llm "
+                    "calls, hypothesis counts, exit_code (0 won, 1 ran and lost, 2 "
+                    "could not run -- dead model backend, missing extra, timeout). "
+                    "Runs as a child process and blocks until it ends; limits are "
+                    "clamped to max_calls<=60, max_actions<=500, wall_s<=900.",
+     "schema": {"type": "object", "properties": {
+         "env": {"type": "string", "enum": ["toy", "arc"],
+                 "description": "toy (default, no extras) or arc (needs the arc extra)"},
+         "game": {"type": "string", "description": "arc game id, e.g. ls20"},
+         "env_dir": {"type": "string", "description": "arc environment files directory"},
+         "max_calls": {"type": "integer", "description": "model calls (default 20, max 60)"},
+         "max_actions": {"type": "integer", "description": "env actions (default 100, max 500)"},
+         "wall_s": {"type": "number", "description": "wall-clock seconds (default 300, max 900)"},
+         "tier": {"type": "string", "description": "model tier, e.g. reasoning (the CLI default)"},
+         "backend": {"type": "string", "description": "a backend preset instead of --tier"},
+         "model": {"type": "string", "description": "model id for --backend"},
+         "run_dir": {"type": "string", "description": "where the JSONL log and memory go"}}},
+     "fn": _solve},
 
     {"name": "awsh_awrun_queue",
      "description": "The awrun job queue.",
