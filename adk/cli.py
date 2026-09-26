@@ -4703,6 +4703,16 @@ def cmd_enroll(args) -> int:
                   + "\n         (the link attaches in the background; re-check with "
                     "`adk devices status`)")
         print()
+        # Enrolled = this device has an identity, so turn on everything that
+        # needs one: settings follow you (signed), Claude Code hooks installed.
+        try:
+            from adk.device_identity import configure_settings_sync
+            from adk.fleet_enroll import enroll_base_url
+            _rc, _line = configure_settings_sync(portal_url, enroll_base_url())
+            print(_line)
+        except Exception as _e:  # noqa: BLE001
+            print(f"Settings sync: not configured ({_e})")
+        print()
         print("See it in your fleet:  adk devices status")
         print(f"View in portal: {portal_url.rstrip('/')}/settings/connected-devices")
         print()

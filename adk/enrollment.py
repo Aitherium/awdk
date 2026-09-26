@@ -325,7 +325,19 @@ def build_registration(
         "inference_url": probe.inference_url,
         "inference_kind": probe.inference_kind,
         "node_class": node_class,
+        # This device's signing key (public half); the user's other devices trust
+        # what it signs while it stays enrolled. Absent without awseal.
+        **_identity_fields(),
     }
+
+
+def _identity_fields() -> dict:
+    try:
+        from adk.device_identity import registration_fields
+        return registration_fields()
+    except Exception as e:  # noqa: BLE001 -- identity must never block enrollment
+        log.debug("device identity unavailable: %s", e)
+        return {}
 
 
 def _save_workspace(workspace: Dict[str, Any]) -> None:
