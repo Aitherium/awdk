@@ -504,6 +504,15 @@ if BaseModel is not None:
         skill: str = ""
         skill_arguments: str = ""
 
+    class AutopilotConfig(BaseModel):  # type: ignore[misc]
+        """``POST /sessions/{id}/autopilot`` body. Module level for the same
+        ``from __future__ import annotations`` reason as every model here."""
+
+        enabled: bool
+        text: str = "continue"
+        max_steers: int = 20
+        min_interval_s: float = 120.0
+
     class SendInput(BaseModel):  # type: ignore[misc]
         text: str
         #: True = deliver as a COMPLETE turn (a pty adds the Enter). False = raw
@@ -2932,6 +2941,54 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         send_managed_input=_send_managed_input_for_dispatch,
         tier1_opt_in=_tier1_opt_in_for_dispatch,
     )
+
+    # Cockpit autopilot: opt-in (OFF by default) per-session auto-steer. It reads the
+    # same rows /sessions/unified serves and steers only through the managed-pty submit
+    # above, so it can reach nothing the daemon does not own. Stall ALERTS are a
+    # separate read-only watcher's job; this only continues finished turns.
+    from adk.harnesses.autopilot import AutopilotWatch
+
+    autopilot_watch = AutopilotWatch(
+        list_rows=_unified_rows, submit=_send_managed_input_for_dispatch,
+    )
+    app.state.autopilot_watch = autopilot_watch
+    if os.environ.get("AITHER_AUTOPILOT_WATCH", "1") != "0":
+        autopilot_watch.start()
+
+    @app.get("/sessions/{session_id}/autopilot", dependencies=[Depends(auth)])
+    def get_autopilot(session_id: str) -> dict[str, Any]:
+        return autopilot_watch.autopilot.get(session_id)
+
+    @app.post("/sessions/{session_id}/autopilot")
+    def put_autopilot(
+        session_id: str, body: AutopilotConfig,
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """Opt one managed session in to (or out of) auto-steer.
+
+        OWNER only: autopilot types into a pty on a timer, which is exactly the
+        power ``_peer_input_text`` withholds from a non-owner bearer. And only a
+        session THIS daemon owns -- a discovered tab has no pty to submit to.
+        Disabling an unknown id is allowed (it clears a stale entry).
+        """
+        if principal.plan != "owner":
+            raise HTTPException(
+                status_code=403,
+                detail=f"principal {principal.id!r} may not configure autopilot",
+            )
+        try:
+            mgr.get_session(session_id)
+        except ManagerError as exc:
+            if body.enabled:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        try:
+            return autopilot_watch.autopilot.configure(
+                session_id, enabled=body.enabled, text=body.text,
+                max_steers=body.max_steers, min_interval_s=body.min_interval_s,
+                by=principal.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # The ambient context well. Background-computed so a draw is O(1) — an agent that
     # pays 2s of discovery before its first useful thought pays it on every turn.
