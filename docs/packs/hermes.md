@@ -41,5 +41,5 @@ skills/trade-off-analysis.md
 
 ---
 
-sha256 `afeb0a2833f79a6c01671fc2c2411162b6c0f161d965cdc2339ec6541bbf6312`  
+sha256 `2cd6394c6682cc26a0e09f447a9d0ce61fec79a9d13f13336cae67df9ddb295d`  
 Built from `v3.8.26` (adk 3.8.26). [All packs](../packs.md)
