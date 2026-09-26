@@ -4,6 +4,22 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.27] - 2026-09-26
+
+### Added
+
+- **Pack authoring.** `adk pack new`, `adk pack validate`, `adk pack dev` and
+  `adk pack build` take a tool pack from an empty folder to a reproducible
+  tarball with its sha256. `validate` never runs the pack's code; `dev` loads it
+  through the same loader an agent uses and lists its tools.
+
+### Fixed
+
+- **`adk` starts again.** 3.8.26 registered the `kb` subcommand twice and every
+  `adk` command exited with `conflicting subparser: kb`.
+- A file-loaded pack whose id contains a dot (`yourname.weather`) now registers
+  its tools; its relative imports used to fail and it registered none.
+
 ## [3.8.26] - 2026-09-25
 
 ### Added
