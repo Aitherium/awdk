@@ -28,6 +28,7 @@ import importlib
 import importlib.util
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _TIER_ORDER = ["community", "free", "builder", "professional", "enterprise", "internal"]
+
+
+def _module_name(pack_id: str) -> str:
+    """A flat, importable sys.modules key for a file-loaded pack."""
+    return "_toolpack_" + re.sub(r"\W", "_", pack_id)
 
 
 @dataclass
@@ -361,7 +367,10 @@ class ToolPackLoader:
             # relative imports within the pack (__init__.py → "from . import tools")
             # can resolve. Register in sys.modules BEFORE exec_module so Python
             # can find sibling modules during import.
-            mod_name = f"_toolpack_{manifest.id}"
+            # A dotted id (yourname.clock) would make "_toolpack_yourname.clock",
+            # which Python reads as submodule "clock" of a package that does not
+            # exist -- so the pack's own "from . import tools" fails. Flatten it.
+            mod_name = _module_name(manifest.id)
             spec = importlib.util.spec_from_file_location(
                 mod_name, init,
                 submodule_search_locations=[str(manifest.path)],
@@ -377,7 +386,7 @@ class ToolPackLoader:
             # Clean up sys.modules on failure: remove main module and all submodules
             try:
                 import sys
-                mod_name = f"_toolpack_{manifest.id}"
+                mod_name = _module_name(manifest.id)
                 # Remove the main module
                 sys.modules.pop(mod_name, None)
                 # Remove all submodules (e.g., _toolpack_myapp.tools, .config)

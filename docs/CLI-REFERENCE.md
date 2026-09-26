@@ -984,6 +984,10 @@ Manage ToolPack extensions (list, search, install, remove, info)
 - `adk pack info` — Show pack details
 - `adk pack customize` — Customize installed pack (system_prompt, capabilities, domains)
 - `adk pack import` — Import an external agent (e.g., Eve) to AitherADK pack
+- `adk pack new` — Scaffold a working tool pack (manifest, tool, test, README)
+- `adk pack validate` — Static checks on a pack folder -- imports nothing
+- `adk pack dev` — Load a pack through the real loader and list its tools
+- `adk pack build` — Reproducible .tar.gz + .sha256 ready to publish
 
 ## `adk packs`
 
@@ -1135,6 +1139,10 @@ Start the agent server
 | `-f`, `--fleet` | str |  |  | Fleet YAML config |
 | `-a`, `--agents` | str |  |  | Comma-separated agent identities |
 | `--mesh` | str |  | `false` | Enable mesh hosting (advertise tools/inference to connected desktop) |
+| `--crystal` | str |  |  | Crystallize compacted context into awm at SCOPE and recall it every turn ({agent} = the agent name), e.g. 'aitherium:{agent}:myproject' |
+| `--crystal-db` | str |  |  | awm SQLite path for --crystal |
+| `--crystal-graph` | str |  |  | with --crystal: also recall awgraph symbols from ROOT's index |
+| `--crystal-no-embed` | str |  | `false` | with --crystal: keyword recall only, no embedder |
 
 ## `adk sandbox`
 

@@ -11810,6 +11810,10 @@ def _cmd_instance(args) -> int:
 def _cmd_pack(args) -> int:
     """Handle `adk pack` subcommands."""
     sub = getattr(args, "pack_command", None)
+    if sub in ("new", "validate", "dev", "build"):
+        # Author verbs are local: no Genesis lookup, no network.
+        from adk.pack_author import cli as _pack_author_cli
+        return _pack_author_cli(sub, args)
     genesis_url = _get_genesis_url()
 
     if sub == "list" or sub is None:
@@ -14857,6 +14861,26 @@ def _register_commands(sub):
     # adk pack import — import external agents (e.g., Eve agents)
     pack_import_p = pack_sub.add_parser("import", help="Import an external agent (e.g., Eve) to AitherADK pack")
     pack_import_p.add_argument("agent_path", help="Path to agent directory (must have .compiled-manifest.json)")
+
+    # adk pack new|validate|dev|build -- the AUTHOR half (adk/pack_author.py)
+    pack_new_p = pack_sub.add_parser(
+        "new", help="Scaffold a working tool pack (manifest, tool, test, README)")
+    pack_new_p.add_argument("pack_id", help="Namespaced id, e.g. yourname.weather")
+    pack_new_p.add_argument("--dest", default=".", help="Parent directory (default: .)")
+    pack_new_p.add_argument("--author", default="", help="Author shown in the manifest")
+    pack_val_p = pack_sub.add_parser(
+        "validate", help="Static checks on a pack folder -- imports nothing")
+    pack_val_p.add_argument("pack_dir", help="Pack directory")
+    pack_val_p.add_argument("--first-party", action="store_true",
+                            help="Allow reserved namespaces")
+    pack_dev_p = pack_sub.add_parser(
+        "dev", help="Load a pack through the real loader and list its tools")
+    pack_dev_p.add_argument("pack_dir", help="Pack directory")
+    pack_build_p = pack_sub.add_parser(
+        "build", help="Reproducible .tar.gz + .sha256 ready to publish")
+    pack_build_p.add_argument("pack_dir", help="Pack directory")
+    pack_build_p.add_argument("-o", "--output", default=None,
+                              help="Output directory (default: <pack>/dist)")
 
     # adk fleet — create & manage agents across runtimes (local | managed | hosted | cloud-run)
     fleet_p = sub.add_parser("fleet", help="Create & manage a fleet of agents (local | managed | hosted | cloud-run)")
