@@ -743,7 +743,12 @@ def create_app(
     # authenticates to the gated /chat/stream with the bearer from its URL fragment.
     # Similarly, "/aeon" serves the group-chat UI; "/aeon/stream" is bearer-gated.
     _skip_auth_paths = {"/", "/chat", "/aeon", "/ui", "/local", "/health", "/docs",
-                        "/openapi.json", "/metrics", "/demo", "/redoc"}
+                        "/openapi.json", "/metrics", "/demo", "/redoc",
+                        # The landpage's community shelf. Public by construction:
+                        # it proxies a directory that is already public, holds no
+                        # secret, and is read by visitors with no session. Listed
+                        # EXACTLY, never as a prefix -- /api/* is otherwise gated.
+                        "/api/demos/community.json"}
 
     def _is_pack_ui_asset(path: str) -> bool:
         """Pack-UI static assets are unauthenticated like the console shell at "/".
@@ -2831,6 +2836,85 @@ def create_app(
         # pack (the app itself) lives at /local; `adk ui set <pack>` still
         # chooses it. Never blank — falls back console -> minimal.
         return _pack_html("switcher")
+
+    # ─── Same-origin directory proxy (for a landpage that shows other people's work) ───
+
+    _directory_env = "ADK_COMMUNITY_DIRECTORY_URL"
+    _directory_cache: dict = {"at": 0.0, "body": None}
+    _directory_ttl = 60.0
+
+    @app.get("/api/demos/community.json")
+    async def demos_community_directory():
+        """Fetch a community directory upstream and serve it from THIS origin.
+
+        A landpage that lists other people's projects has to read them from
+        wherever they are registered, and that is a different origin. Doing it
+        from the browser needs CORS on the upstream, and granting an origin there
+        is not free: a service whose CORS list is non-empty commonly also sets
+        Access-Control-Allow-Credentials, and a cookie scoped to the parent
+        domain then rides along -- handing a page that renders text other people
+        submitted an authenticated channel to the API that stores it. Measured on
+        one such deployment, a per-route header could not opt out either, because
+        the credentials header is set once at middleware init and applied to
+        every response.
+
+        Fetching server-side removes the question. The browser makes a
+        same-origin request, no CORS header is involved anywhere, and no cookie
+        is ever in scope.
+
+        The upstream is OPERATOR CONFIGURATION, never a request parameter -- a
+        proxy that forwards to a caller-named URL is an SSRF hole. Unset is a
+        501 that names the variable rather than a 404: "not configured" and "no
+        such route" are different answers and only one of them tells the operator
+        what to do.
+        """
+        upstream = os.environ.get(_directory_env, "").strip()
+        if not upstream:
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "detail": "no community directory configured",
+                    "set": _directory_env,
+                },
+            )
+        if not upstream.startswith("https://"):
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "detail": _directory_env + " must be an absolute https URL",
+                },
+            )
+
+        now = time.time()
+        cached = _directory_cache.get("body")
+        if cached is not None and (now - _directory_cache["at"]) < _directory_ttl:
+            return JSONResponse(content=cached)
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(upstream)
+            if resp.status_code != 200:
+                raise RuntimeError("upstream answered " + str(resp.status_code))
+            body = resp.json()
+        except Exception as exc:
+            # A STALE shelf beats an empty one: the page says "could not reach the
+            # registry" and shows nothing, which reads as the platform being
+            # broken rather than as one upstream being briefly unavailable.
+            if cached is not None:
+                logging.getLogger("adk.server").warning(
+                    "community directory refresh failed (%s); serving cached copy", exc
+                )
+                return JSONResponse(content=cached)
+            logging.getLogger("adk.server").warning(
+                "community directory unavailable: %s", exc
+            )
+            return JSONResponse(
+                status_code=502, content={"detail": "community directory unavailable"}
+            )
+
+        _directory_cache["at"] = now
+        _directory_cache["body"] = body
+        return JSONResponse(content=body)
 
     @app.get("/local", response_class=HTMLResponse)
     async def console_page_local():
