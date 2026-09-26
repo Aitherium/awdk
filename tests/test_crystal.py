@@ -195,3 +195,60 @@ def test_the_turn_recalls_before_the_typed_memory_injection():
     i_typed = src.index("if self._typed:")
     assert i_recall < i_typed, "recall must precede the typed-memory injection"
     assert "AitherAgent" in src and "crystal: \"Crystal | None\" = None" in src
+
+
+class LandedStore(FakeStore):
+    """A store that also carries memory files landed by ``awm land``."""
+
+    def __init__(self, landed):
+        super().__init__()
+        self.landed = landed
+
+    def scan_landed(self, limit):
+        return self.landed[:limit]
+
+
+@pytest.mark.asyncio
+async def test_landed_memory_that_matches_rides_in_a_memory_block():
+    store = LandedStore([
+        ("fleet-overload-is-io", "When fleet load is high, read /proc/pressure/io first.",
+         {"source": "memory-file"}),
+        ("blog-voice", "Blog posts state a verdict, never a postmortem.",
+         {"source": "memory-file"}),
+    ])
+    c = Crystal(scope="aitherium:david:proj", store=store)
+    block = await c.recall_block("why is fleet load so high?")
+    assert "[MEMORY]" in block and "fleet-overload-is-io" in block
+    assert "blog-voice" not in block  # no keyword overlap -> not injected
+    assert c.telemetry["recalled_memory"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_store_without_landed_memory_changes_nothing():
+    c = Crystal(scope="aitherium:david:proj", store=FakeStore())
+    assert await c.recall_block("why is fleet load so high?") == ""
+    assert c.telemetry["recalled_memory"] == 0
+
+
+@pytest.mark.asyncio
+async def test_awm_land_end_to_end_reaches_the_turn(tmp_path):
+    awm_land = pytest.importorskip("awm.land")
+    from awm import MemoryStore, Scope
+
+    from adk.crystal import AwmFactStore
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "fleet-overload-is-io.md").write_text(
+        "---\nname: fleet-overload-is-io\ndescription: fleet load 200 was IO\n"
+        "type: feedback\n---\n\nRead /proc/pressure/io first.\n", encoding="utf-8")
+    db = tmp_path / "m.db"
+    with MemoryStore(db) as st:
+        awm_land.land_dir(st, Scope.parse("aitherium:david:*"), mem, {})
+    store = AwmFactStore("aitherium:david:proj", db)  # a project read sees the user's rules
+    try:
+        block = await Crystal(scope="aitherium:david:proj", store=store).recall_block(
+            "fleet load is high again")
+    finally:
+        store.close()
+    assert "[MEMORY]" in block and "fleet-overload-is-io" in block

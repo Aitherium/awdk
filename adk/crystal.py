@@ -91,6 +91,13 @@ class AwmFactStore:
         rows = self._store.recall(self._scope, limit=limit, kind="crystal")
         return [(m.key, m.value, dict(m.meta or {})) for m in rows]
 
+    def scan_landed(self, limit: int) -> list[tuple[str, str, dict]]:
+        """Memory files landed by ``awm land`` at this scope or an ancestor
+        (owner rules, project facts) -- any kind, tagged ``source: memory-file``."""
+        rows = self._store.recall(self._scope, limit=limit)
+        return [(m.key, m.value, dict(m.meta or {})) for m in rows
+                if (m.meta or {}).get("source") == "memory-file"]
+
     def close(self) -> None:
         try:
             self._store.close()
@@ -295,7 +302,7 @@ class Crystal:
     max_graph_hits: int = 6
     telemetry: dict = field(default_factory=lambda: {
         "writes": 0, "compactions": 0, "recalls": 0, "recalled_facts": 0,
-        "graph_hits": 0, "degraded": [], "planes": {},
+        "recalled_memory": 0, "graph_hits": 0, "degraded": [], "planes": {},
     })
 
     def __post_init__(self) -> None:
@@ -378,6 +385,22 @@ class Crystal:
         scored.sort(key=lambda t: (-t[0], -t[1]))
         return [v for _s, _ts, v in scored[:limit]]
 
+    async def recall_landed(self, message: str, *, limit: int = 6) -> list[str]:
+        """Landed memory files that match this turn's message by keyword; [] when the
+        store cannot scan landed memory (a fake, an old awm) or nothing matches."""
+        scan = getattr(self.store, "scan_landed", None)
+        if scan is None:
+            return []
+        try:
+            rows = scan(SCAN_LIMIT)
+        except Exception as exc:  # noqa: BLE001
+            self._degrade(f"awm-landed:{type(exc).__name__}")
+            return []
+        scored = [(keyword_score(message, v), k, v) for k, v, _m in rows]
+        scored = [t for t in scored if t[0] > 0]
+        scored.sort(key=lambda t: -t[0])
+        return [f"{k}: {v.splitlines()[0][:240]}" for _s, k, v in scored[:limit]]
+
     async def recall_graph(self, message: str) -> list[dict]:
         if self.graph is None:
             return []
@@ -407,6 +430,21 @@ class Crystal:
                 parts.append(line)
                 used += len(line) + 1
                 kept_facts += 1
+        kept_mem = 0
+        landed = await self.recall_landed(message)
+        if landed:
+            head = ("[MEMORY] Owner and project memory that matches this request. Treat "
+                    "owner rules as standing instructions.")
+            if used + len(head) + 1 <= self.max_chars:
+                parts.append(head)
+                used += len(head) + 1
+                for m in landed:
+                    line = f"- {m}"
+                    if used + len(line) + 1 > self.max_chars:
+                        break
+                    parts.append(line)
+                    used += len(line) + 1
+                    kept_mem += 1
         kept_hits = 0
         if hits:
             head = ("[CODE GRAPH] Symbols the code graph matched for this request. Open these "
@@ -424,7 +462,8 @@ class Crystal:
                     kept_hits += 1
         self.telemetry["recalled_facts"] += kept_facts
         self.telemetry["graph_hits"] += kept_hits
-        if kept_facts == 0 and kept_hits == 0:
+        self.telemetry["recalled_memory"] += kept_mem
+        if kept_facts == 0 and kept_hits == 0 and kept_mem == 0:
             return ""
         return "\n".join(parts)
 
