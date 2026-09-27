@@ -82,6 +82,14 @@ def register_parser(sub: Any) -> None:
         "--prism", default="on", choices=["on", "off"], help="PRISM strategy rotation (default: on)"
     )
     p.add_argument(
+        "--door",
+        default="off",
+        choices=["on", "off"],
+        help="PRISM asks the decision door (adk.choose) which strategy to run next and "
+        "reports each window's outcome; falls back to the scorer when the door is down "
+        "(default: off)",
+    )
+    p.add_argument(
         "--budget", type=int, default=40, metavar="N", help="Max model calls (default: 40)"
     )
     p.add_argument("--max-actions", type=int, default=None, help="Max environment actions")
@@ -107,7 +115,11 @@ def _config(args: Any) -> Any:
         max_llm_calls=int(args.budget), max_actions=args.max_actions, max_wall_s=args.wall_s
     )
     return LoopConfig(
-        budget=budget, sase=args.mode == "sase", prism=args.prism == "on", run_dir=args.run_dir
+        budget=budget,
+        sase=args.mode == "sase",
+        prism=args.prism == "on",
+        run_dir=args.run_dir,
+        door=getattr(args, "door", "off") == "on",
     )
 
 
@@ -173,8 +185,9 @@ def cmd_solve(args: Any) -> int:
         return cannot("backend", exc)
     b = cfg.budget
     say(
-        "solve: env=%s mode=%s prism=%s model=%s budget(calls=%s actions=%s wall_s=%s)"
-        % (args.env, args.mode, args.prism, label, b.max_llm_calls, b.max_actions, b.max_wall_s)
+        "solve: env=%s mode=%s prism=%s door=%s model=%s budget(calls=%s actions=%s wall_s=%s)"
+        % (args.env, args.mode, args.prism, getattr(args, "door", "off"), label,
+           b.max_llm_calls, b.max_actions, b.max_wall_s)
     )
     live = tee = None
     if args.env == "arc":

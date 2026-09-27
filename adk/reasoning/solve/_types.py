@@ -236,6 +236,11 @@ class LoopConfig:
     #: hypotheses and provenance. Every reply must be served by the requested model
     #: (a mismatch is FATAL). ``None`` = off.
     harvest: Optional[str] = None
+    #: Decision door on PRISM's strategy pick (``_door.py``): the door chooses among the
+    #: strategies ``permits()`` allows and learns from each strategy window's outcome;
+    #: the scorer answers when the door is down. Off by default until measured.
+    door: bool = False
+    door_fork: str = "solve.prism"
 
 
 #: Every value ``SolveResult.finish_reason`` can take.

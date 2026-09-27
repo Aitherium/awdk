@@ -143,6 +143,10 @@ def build_core_loop(
 
         install_context_gate(loop, mode=cfg.context, invariants=cfg.invariants,
                              level_support=cfg.context_level_support)
+    if cfg.door and loop.prism is not None:
+        from ._door import install_door
+
+        install_door(loop, fork=cfg.door_fork, invariants=cfg.invariants)
     return loop
 
 
