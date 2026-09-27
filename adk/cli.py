@@ -13091,7 +13091,7 @@ def _register_commands(sub):
     # adk image — generate on local backends (ComfyUI/Sana/SD.Next). The handler
     # lives in adk/images.py (cmd_image) so the daemon and the CLI share one
     # implementation; this was the wiring the local-image-generation skill
-    # advertised for months while nothing registered it (ONB006, 2026-08-25).
+    # advertised for months while nothing registered it (2026-08-25).
     image_p = sub.add_parser(
         "image", help="Generate an image on a local backend (ComfyUI/Sana/SD.Next)")
     image_p.add_argument("--backends", action="store_true",

@@ -63,7 +63,7 @@ class TestPickBackend:
     ``pick_backend`` first asks ``bonsai_available()``, which reads HOST state
     (a running ``aither-bonsai-local`` container or a Bonsai GGUF under
     ``~/.aither/models``). Unpatched, every auto-pick test returned "bonsai" on
-    any machine that had ever pulled Bonsai (D-2547) -- the picker was right,
+    any machine that had ever pulled Bonsai -- the picker was right,
     the tests leaked the developer's box into the assertion. Pin it off here;
     the bonsai branches have their own tests below.
     """

@@ -75,7 +75,7 @@ def _caller_may_reach_owner_api() -> bool:
     * an AUTHENTICATED platform operator -- ``caller_is_privileged`` on the caller the
       gateway attached. The owner arrives through his Identity bearer as a TENANT caller
       (his own tenant_id, tier ``platform``, roles ``[admin, super_admin]``), which
-      ``is_platform_caller`` alone refuses (the D-2044 false deny). The RAW caller
+      ``is_platform_caller`` alone refuses (a known false deny). The RAW caller
       ContextVar is read, never ``get_current_caller()``: that fabricates a PLATFORM
       caller when nobody is identified, which would re-open the anonymous path. A plain
       tenant ``admin`` is not privileged and stays refused.

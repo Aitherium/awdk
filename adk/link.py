@@ -205,7 +205,7 @@ def status() -> Dict[str, Any]:
         bundle = None
     ok_bundle = bundle if _is_bundle(bundle) else None
     ident = (ok_bundle or {}).get("identity") or {}
-    # A tenant user (garg, dgg, jgames, ...) is homed on THEIR portal; the server
+    # A customer-tenant user is homed on THEIR portal; the server
     # decides that from the verified token and says so in the bundle.
     tenant = (
         (ok_bundle or {}).get("tenant")

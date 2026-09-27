@@ -751,7 +751,7 @@ def create_app(
         "fleet": None,
         "is_fleet": is_fleet,
         "service_bridge": None,
-        # Per-name agent cache (D-2170) — see get_agent() below. Without this,
+        # Per-name agent cache — see get_agent() below. Without this,
         # every /chat/stream for a non-default name (e.g. "aither") rebuilt a
         # brand-new AitherAgent from scratch: pack discovery, all built-in +
         # tool-pack tools, MCP gateway attach, MicroScheduler connect, skill
@@ -904,7 +904,7 @@ def create_app(
         agent = _state["agent"]
 
         # If a different agent is requested in single mode, reuse it if we
-        # already built one (D-2170). Rebuilding on every call redid pack
+        # already built one. Rebuilding on every call redid pack
         # discovery + tool registration + MCP/MicroScheduler reattach on
         # every single message — this cache is what makes the 2nd+ message
         # to the same named agent fast instead of paying that tax again.

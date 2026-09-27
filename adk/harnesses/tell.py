@@ -22,7 +22,7 @@ The daemon can only type into sessions IT started (``adk harness new``) —
 a live session that is not harness-managed resolves cleanly and fails with
 that sentence, never with a guess.
 
-Relay transport: the host-side rule from the program doc (D-2217) — the
+Relay transport: the host-side rule from the program doc — the
 host-published loopback ``https://127.0.0.1:8205``; the wire nick comes from
 the relay's own ``POST /v1/auth/relay-token`` mint (decoding one's OWN
 freshly-minted token is identity lookup, not impersonation). This mirrors

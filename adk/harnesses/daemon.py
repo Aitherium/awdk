@@ -1829,7 +1829,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             want = recipe_entitlement(recipe_id)
         except ImportError:
             # No registry in this build: DENY, said out loud rather than by
-            # declining to overwrite (the shape security_lint SEC019 exists for).
+            # declining to overwrite (the shape a security lint exists for).
             want = UNKNOWN_RECIPE_ENTITLEMENT
         except Exception:  # noqa: BLE001 - a broken registry must not open the door
             want = UNKNOWN_RECIPE_ENTITLEMENT

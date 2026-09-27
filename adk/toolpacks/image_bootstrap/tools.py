@@ -656,7 +656,7 @@ def _render_quadlet(recipe_id: str, recipe: dict, env: dict) -> str:
 def _run(cmd: list, timeout: int = 1800) -> tuple:
     """Run a command; return (rc, tail_of_output). Never raises."""
     try:
-        # encoding= is NOT optional (PQ009). Without it the child's output is decoded
+        # encoding= is NOT optional. Without it the child's output is decoded
         # with the LOCALE codec -- cp1252 on Windows -- and a single non-ASCII byte
         # from docker raises UnicodeDecodeError. That is a ValueError, which the
         # OSError/SubprocessError guard below does NOT catch, so the tool crashes
