@@ -131,8 +131,17 @@ def test_tls_verify_uses_ca_bundle_when_present(monkeypatch, tmp_path):
     monkeypatch.delenv("AITHER_CA_BUNDLE", raising=False)
     monkeypatch.setenv("AITHER_HOME", str(tmp_path))
     bundle = tmp_path / "aithernet-ca-bundle.pem"
-    bundle.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
-    assert tls_verify() == str(bundle)
+    bundle.write_text("-----BEGIN CERTIFICATE-----\nINTERNAL\n", encoding="utf-8")
+    verify = tls_verify()
+    assert isinstance(verify, str) and Path(verify).is_file()
+    merged = Path(verify).read_bytes()
+    # The internal CA is trusted...
+    assert merged.endswith(bundle.read_bytes())
+    # ...WITHOUT dropping the public roots: an internal-only bundle as verify=
+    # replaced the trust store and broke every public-CA host (idp, tunnel).
+    import certifi
+
+    assert Path(certifi.where()).read_bytes().rstrip(b"\n") in merged
 
 
 def test_explicit_ca_bundle_env_wins(monkeypatch, tmp_path):

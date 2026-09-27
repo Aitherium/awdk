@@ -513,11 +513,19 @@ def cmd_workspace(args):
         req = urllib.request.Request(url, data=data, method=method, headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Cloudflare's bot screen answers the default Python-urllib agent 403
+            # before the tunnel ever sees the request.
+            "User-Agent": "adk-workspace",
         })
         import ssl
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        # Verify. The tunnel serves a public-CA cert; tls_verify() also trusts the
+        # AitherNet CA for a self-hosted tunnel. CERT_NONE here exposed the bearer.
+        _verify = tls_verify()
+        ctx = (ssl.create_default_context(cafile=_verify) if isinstance(_verify, str)
+               else ssl.create_default_context())
+        if _verify is False:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
         try:
             with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
                 return _json.loads(resp.read()), resp.status

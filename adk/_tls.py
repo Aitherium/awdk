@@ -10,8 +10,9 @@ AitherNet internal CA when its bundle is installed.
 Policy (``tls_verify()``):
   * ``AITHER_TLS_VERIFY`` in {false,0,no,off}  -> ``False`` (disable checks;
     isolated dev box only — never for auth/secret traffic in production).
-  * else, if the AitherNet CA bundle is present -> the bundle path, so internal
-    self-signed certs are trusted *with* verification.
+  * else, if ``AITHER_CA_BUNDLE`` names a file -> exactly that file.
+  * else, if the AitherNet CA bundle is present -> a file holding the public
+    roots PLUS that bundle, so internal AND public-CA hosts both verify.
   * else -> ``True`` (verify against the system trust store).
 """
 
@@ -92,5 +93,40 @@ def tls_verify() -> Union[bool, str]:
                 flag,
             )
         return False
+    explicit = os.getenv("AITHER_CA_BUNDLE", "").strip()
     bundle = _ca_bundle_path()
-    return bundle if bundle else True
+    if not bundle:
+        return True
+    if explicit and bundle == explicit:
+        return bundle  # an explicit override is the caller's whole trust decision
+    return _merged_with_public_roots(bundle)
+
+
+def _merged_with_public_roots(bundle: str) -> str:
+    """Return a CA file trusting the public roots AND the internal bundle.
+
+    The discovered AitherNet bundle holds only the internal CA. Handing it to
+    httpx/requests as ``verify=`` REPLACES the public trust store, so every call
+    to a public-CA host (idp.aitherium.com, tunnel.aitherium.com behind
+    Cloudflare) failed CERTIFICATE_VERIFY_FAILED -- `adk devices status` and
+    `adk rc` could not reach the control plane from any box that ran setup.
+    The merged file is content-addressed, so a changed bundle yields a new file.
+    Never raises: on any failure the bare bundle is returned (old behaviour).
+    """
+    try:
+        import hashlib
+        import tempfile
+
+        import certifi  # httpx depends on it, so it is always importable
+
+        public = Path(certifi.where()).read_bytes()
+        internal = Path(bundle).read_bytes()
+        digest = hashlib.sha256(public + b"|" + internal).hexdigest()[:16]
+        out = Path(tempfile.gettempdir()) / ("adk-ca-merged-" + digest + ".pem")
+        if not out.is_file():
+            tmp = out.with_suffix(".tmp" + str(os.getpid()))
+            tmp.write_bytes(public.rstrip(b"\n") + b"\n" + internal)
+            os.replace(tmp, out)
+        return str(out)
+    except Exception:
+        return bundle
