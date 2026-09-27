@@ -13579,6 +13579,15 @@ def _register_commands(sub):
     cl_kill_p.add_argument("--url", default="", help="Runner URL")
     cl_kill_p.add_argument("--token", default="", help="Bearer token")
 
+    from adk.claude_code_doctor import add_arguments_doctor, add_arguments_setup
+
+    add_arguments_setup(
+        claude_sub.add_parser("setup", help="Install the awsh plugin + apply the awsettings preset")
+    )
+    add_arguments_doctor(
+        claude_sub.add_parser("doctor", help="Audit Claude Code settings/hooks/MCP (CCD001-006)")
+    )
+
     # adk agent-prompt
     ap_p = sub.add_parser("agent-prompt", help="Print the setup prompt for AI coding agents")
     ap_p.add_argument("--raw", action="store_true", help="Print raw prompt without footer")

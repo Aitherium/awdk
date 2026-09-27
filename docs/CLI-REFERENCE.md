@@ -319,6 +319,8 @@ Run scoped headless Claude Code subagents (serve/spawn/runs/kill)
 - `adk claude spawn` — Spawn a scoped subagent run
 - `adk claude runs` — List subagent runs
 - `adk claude kill` — Cancel a run
+- `adk claude setup` — Install the awsh plugin + apply the awsettings preset
+- `adk claude doctor` — Audit Claude Code settings/hooks/MCP (CCD001-006)
 
 ## `adk claude-account`
 

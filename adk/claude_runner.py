@@ -2109,7 +2109,11 @@ def cmd_claude(args: Any) -> int:
             return _cmd_runs(args)
         if sub == "kill":
             return _cmd_kill(args)
-        print("Usage: adk claude [serve|spawn|runs|kill]")
+        if sub in ("setup", "doctor"):
+            from adk import claude_code_doctor
+
+            return getattr(claude_code_doctor, f"cmd_{sub}")(args)
+        print("Usage: adk claude [serve|spawn|runs|kill|setup|doctor]")
         return 1
     except (RunnerError, ScopeError) as e:
         print(f"Error: {e}", file=sys.stderr)
