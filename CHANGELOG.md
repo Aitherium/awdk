@@ -4,6 +4,23 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.28] - 2026-09-27
+
+### Added
+
+- **Per-turn memory.** Each turn's recall block now includes owner and project memory
+  landed with `awm land` (the scope and its ancestors) that matches the message, under
+  the same character cap. Without awm, nothing changes.
+- `adk claude setup` / `adk claude doctor`; `/sprite` in `adk shell`; pack authoring
+  follow-ups; solve() harvest, calibrated prediction ledger and decision-door strategy
+  pick (off by default).
+
+### Fixed
+
+- The daemon attaches with the session bearer; the remote tunnel accepts identity's
+  `auth/me`; public TLS roots kept; skilltask sandbox hardening; the ARC live client
+  sends a named User-Agent.
+
 ## [3.8.27] - 2026-09-26
 
 ### Added
