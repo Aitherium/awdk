@@ -1243,6 +1243,7 @@ Run the reasoning loop on an environment (toy or ARC-AGI-3) with a model backend
 | `--scheduler-url` | str |  |  | MicroScheduler base URL (default $AITHER_MICROSCHEDULER_URL or https://127.0.0.1:8150) |
 | `--mode` | str |  | `sase` | sase (4-phase, predictions) or plain (one code block per reply) |
 | `--prism` | str |  | `on` | PRISM strategy rotation (default: on) |
+| `--door` | str |  | `off` | PRISM asks the decision door (adk.choose) which strategy to run next and reports each window's outcome; falls back to the scorer when the door is down (default: off) |
 | `--budget` | int |  | `40` | Max model calls (default: 40) |
 | `--max-actions` | int |  |  | Max environment actions |
 | `--wall-s` | float |  |  | Max wall-clock seconds |
