@@ -175,6 +175,46 @@ _KNOWLEDGE_KINDS = ("fact", "skill", "link", "lore")
 _KIND_ICONS = {"fact": "💡", "skill": "🛠", "link": "🔗", "lore": "📜"}
 
 
+def _render_guide(v: Dict[str, Any], note: str = "") -> str:
+    """The spirit guide + training view (server: lib/companion/SpriteGuide.py)."""
+    icon = {"bright": "✨", "wavering": "🌗", "shadowed": "🌑"}.get(v.get("temperament"), "•")
+    acts = ", ".join(v.get("available_acts") or []) or "already acted today"
+    lines = [note] if note else []
+    lines.append(f"  {icon} Guide: {v.get('temperament')} · today: {acts}")
+    offer = v.get("offer")
+    if offer:
+        what = (f"spar ({offer.get('stat')})" if offer.get("act") == "spar"
+                else f"venture ({offer.get('foe')})")
+        lines.append(f"  ❔ Offer: {what} — /sprite answer yes|no")
+    st, cap = v.get("stats") or {}, v.get("stat_cap")
+    lines.append("  " + "  ".join(f"{k} {st.get(k, 0)}/{cap}"
+                                  for k in ("strength", "dexterity", "speed")))
+    lad = v.get("ladder") or {}
+    record = f"{lad.get('wins', 0)}W {lad.get('losses', 0)}L"
+    lines.append(f"  ⚔ Ladder {lad.get('rung')}/{lad.get('of')}: "
+                 f"{lad.get('next_foe') or 'cleared'} · {record}")
+    if v.get("charms"):
+        worn = ", ".join(v.get("equipped") or []) or "-"
+        lines.append(f"  🔮 Charms: {', '.join(v['charms'])} (worn: {worn})")
+    return "\n".join(lines)
+
+
+def _guide_note(result: Dict[str, Any]) -> str:
+    if result.get("line"):
+        return f"  {result['line']}"
+    out = result.get("outcome") or result
+    if out.get("foe"):
+        if out.get("won"):
+            return f"  🏆 Beat {out['foe']} in {out.get('rounds')} rounds!"
+        found = f" — found a {out['charm']} charm" if out.get("charm") else ""
+        return f"  💥 Lost to {out['foe']}{found}"
+    if out.get("stat") and "gain" in out:
+        return f"  💪 {out['stat']} +{out['gain']} → {out['value']}/{out['cap']}"
+    if result.get("accepted") is False:
+        return "  Declined."
+    return ""
+
+
 def _parse_teach(rest: List[str]) -> Optional[Dict[str, str]]:
     """`teach [KIND] <title> :: <content>` — kind optional, content optional."""
     if not rest:
@@ -277,6 +317,26 @@ class SpritePlugin(SlashCommand):
                     detail = f" {e['detail']}" if e.get("detail") else ""
                     lines.append(f"   {ts}  {e['kind']}{detail}")
                 return "\n".join(lines)
+            if sub == "guide":
+                return _render_guide(await _get(f"{BASE}/me/guide"))
+            if sub == "beat":
+                act = args[1] if len(args) > 1 else None
+                v = await _post(f"{BASE}/me/guide/beat", {"act": act})
+                return _render_guide(v, _guide_note(v.get("result") or {}))
+            if sub == "answer":
+                if len(args) < 2 or args[1].lower() not in ("yes", "no", "y", "n"):
+                    return "Usage: /sprite answer yes|no"
+                v = await _post(f"{BASE}/me/guide/answer",
+                                {"accept": args[1].lower() in ("yes", "y")})
+                return _render_guide(v, _guide_note(v.get("result") or {}))
+            if sub == "train":
+                if len(args) < 2 or args[1].lower() not in ("strength", "dexterity", "speed"):
+                    return "Usage: /sprite train strength|dexterity|speed"
+                v = await _post(f"{BASE}/me/train", {"stat": args[1].lower()})
+                return _render_guide(v, _guide_note(v.get("result") or {}))
+            if sub in ("challenge", "fight"):
+                v = await _post(f"{BASE}/me/challenge")
+                return _render_guide(v, _guide_note(v.get("result") or {}))
             if sub == "revive":
                 s = await _post(f"{BASE}/me/revive")
                 return "💫 Revived!\n" + _render_status(s)
