@@ -227,6 +227,11 @@ class LoopConfig:
     #: :class:`adk.reasoning.solve.context.Invariants`, built by the host; enforced in
     #: every ``context`` mode, including ``"off"``.
     invariants: Optional[Any] = None
+    #: Episode capture (``harvest.py``): a JSONL path; each run appends one record of
+    #: every model call (context + decision + served model), the outcome, the verified
+    #: hypotheses and provenance. Every reply must be served by the requested model
+    #: (a mismatch is FATAL). ``None`` = off.
+    harvest: Optional[str] = None
 
 
 #: Every value ``SolveResult.finish_reason`` can take.

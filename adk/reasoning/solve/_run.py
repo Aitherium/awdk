@@ -339,8 +339,15 @@ class SolveRun:
     def _worker(self) -> None:
         from ._bridge import as_llm
 
+        model = self.model
+        recorder = None
+        if self.config.harvest and hasattr(model, "generate"):
+            from .harvest import HarvestingBackend
+
+            recorder = HarvestingBackend(model)
+            model = recorder
         llm = as_llm(
-            self.model,
+            model,
             loop=self._loop,
             governor=self.governor,
             timeout_s=self.config.budget.llm_timeout_s,
@@ -357,6 +364,8 @@ class SolveRun:
             governor=self.governor,
             sink=self._emit,
         )
+        if recorder is not None:
+            self._harvest(recorder, res)
         self.result = res
         loop = self._loop
         if loop is not None and not loop.is_closed():
@@ -364,6 +373,24 @@ class SolveRun:
                 loop.call_soon_threadsafe(self._finish, res)
             except RuntimeError:
                 _log.debug("caller loop closed before the result could be posted", exc_info=True)
+
+    def _harvest(self, recorder: Any, res: SolveResult) -> None:
+        """Append this run's episode record; a failure is reported, never raised."""
+        from .harvest import build_episode, write_episode
+
+        path = str(self.config.harvest)
+        try:
+            reward = None
+            hook = getattr(getattr(self.env, "_env", self.env), "reward", None)
+            if callable(hook):
+                reward = float(hook())
+            ep = build_episode(recorder, res, episode_id=self.run_id, env=self.env,
+                               goal=self.goal, config=self.config, reward=reward)
+            write_episode(path, ep)
+            res.stats["harvest"] = {"path": path, "calls": len(ep["calls"]),
+                                    "trainable": ep["trainable"], "reward": ep["reward"]}
+        except Exception as exc:  # noqa: BLE001 - capture never costs the run
+            res.stats["harvest_error"] = "%s: %s" % (type(exc).__name__, str(exc)[:200])
 
     def _finish(self, res: SolveResult) -> None:
         self.session.emit(
