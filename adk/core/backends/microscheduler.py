@@ -186,9 +186,18 @@ class MicroSchedulerBackend:
                 % (self.base_url, type(exc).__name__, exc)
             ) from exc
         if r.status_code >= 500:
+            # the scheduler's own error sits AFTER a long route header in the body; a plain
+            # 200-char prefix cut it off, so "upstream timed out" read like any other 5xx
+            why = ""
+            try:
+                err = r.json().get("error")
+                if isinstance(err, dict):
+                    why = " [error: %s]" % str(err.get("message", ""))[:200]
+            except (ValueError, AttributeError):
+                why = " [error body is not a JSON object]"
             raise SchedulerUnavailableError(
-                "MicroScheduler %s %s returned %d: %s"
-                % (method, path, r.status_code, r.text[:200]),
+                "MicroScheduler %s %s returned %d%s: %s"
+                % (method, path, r.status_code, why, r.text[:200]),
                 status=r.status_code,
             )
         if r.status_code >= 400:

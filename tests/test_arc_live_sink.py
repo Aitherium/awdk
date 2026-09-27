@@ -31,6 +31,9 @@ def test_posts_batches_with_bearer_and_ingest_path():
     assert url == "http://theater.test/api/ingest"
     assert headers["Authorization"] == "Bearer tok"
     assert body["events"][0]["type"] == "run_start"
+    # Cloudflare in front of arc.aitherium.com refuses urllib's default
+    # "Python-urllib/3.x" with 403: every public post failed (sent=0, failed=4).
+    assert headers.get("User-Agent", "").startswith("awdk-arc-live/")
 
 
 def test_overflow_drops_and_never_blocks():

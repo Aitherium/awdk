@@ -48,6 +48,7 @@ __all__ = [
 ]
 
 URL_ENV = "ADK_ARC_LIVE_URL"
+USER_AGENT = "awdk-arc-live/1 (+https://github.com/Aitherium/awdk)"
 TOKEN_ENVS = ("ADK_ARC_LIVE_TOKEN", "ARC_THEATER_INGEST_TOKEN")
 _OFF = ("", "0", "off", "none", "false", "no")
 
@@ -167,7 +168,12 @@ class LiveSink:
                 code = self._opener(
                     self.url,
                     body,
-                    {"Content-Type": "application/json", "Authorization": "Bearer " + self._token},
+                    {"Content-Type": "application/json", "Authorization": "Bearer " + self._token,
+                     # urllib's default "Python-urllib/3.x" is refused 403 by the
+                     # Cloudflare edge in front of arc.aitherium.com, so every post
+                     # to the public Theater failed (measured 2026-09-26: sent=0
+                     # failed=4). A named agent is let through.
+                     "User-Agent": USER_AGENT},
                     self.timeout_s,
                 )
                 if 200 <= code < 300:

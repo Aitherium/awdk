@@ -92,11 +92,15 @@ class SyncModel:
         self.calls += 1
         if self.governor is not None:
             self.governor.charge_llm(prompt, completion, estimated)
-        return ChatReply(
+        reply = ChatReply(
             content,
             {"prompt_tokens": prompt, "completion_tokens": completion},
             time.perf_counter() - t0,
         )
+        # the core books ``reply.model`` per call (stats["served_models"]); without it every
+        # call was booked as "?" and a served-model check had nothing to check
+        reply.model = str(getattr(text, "model", "") or "")  # type: ignore[attr-defined]
+        return reply
 
     # -- internals -------------------------------------------------------------
     async def _generate(

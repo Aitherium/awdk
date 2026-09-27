@@ -25,7 +25,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     r.add_argument("--wall-s", type=float, default=900.0)
     r.add_argument("--scheduler-url", default=None)
     r.add_argument("--run-dir", default=None)
-    r.add_argument("--mode", choices=("plain", "sase"), default="plain")
+    r.add_argument("--mode", choices=("plain", "sase", "terminal-plain", "terminal-sase"),
+                   default="plain")
     args = p.parse_args(argv)
 
     if args.cmd == "gate":
