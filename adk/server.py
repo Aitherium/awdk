@@ -66,6 +66,30 @@ _WEBUI_CACHE: str | None = None
 # trusting whatever the browser sends.
 _SECRET_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
+
+def _local_gateway_api_key(config) -> str:
+    """Credential for the loopback MCP gateway attach.
+
+    Order: the configured API key, AITHER_INTERNAL_KEY, AITHER_MCP_KEY, then the
+    session bearer a local login writes to ~/.aither/session-bearer. The attach is
+    explicit about the file rather than relying on the client's own resolver, so a
+    daemon with no key configured still attaches. The value is never logged.
+    """
+    key = (
+        (getattr(config, "aither_api_key", "") or "")
+        or os.getenv("AITHER_INTERNAL_KEY", "")
+        or os.getenv("AITHER_MCP_KEY", "").strip()
+    )
+    if key:
+        return key
+    try:
+        from pathlib import Path
+
+        return (Path.home() / ".aither" / "session-bearer").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 # Resolved base URL per fleet service, so the probe cost is paid once.
 _OPERATOR_BASE_CACHE: dict[str, str] = {}
 
@@ -4542,7 +4566,7 @@ def create_app(
 
             mcp_client = await create_gateway_mcp_client(
                 gateway_url=target,
-                api_key=config.aither_api_key or os.getenv("AITHER_INTERNAL_KEY", ""),
+                api_key=_local_gateway_api_key(config),
             )
             if not mcp_client:
                 logger.info("Sovereign mode: local MCP gateway %s unavailable — built-in tools only", target)
