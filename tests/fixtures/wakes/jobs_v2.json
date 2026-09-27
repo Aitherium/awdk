@@ -1,0 +1,57 @@
+{
+  "schema": 2,
+  "jobs": {
+    "nightly-sync": {
+      "every": "1h",
+      "interval_s": 3600.0,
+      "run": "python sync.py",
+      "timeout_s": 300,
+      "overlap": "skip",
+      "detach": false,
+      "enabled": true,
+      "cwd": null,
+      "missed": "catch_up_once",
+      "at": null,
+      "report": {"relay": null, "on": ["failure", "timeout", "error", "orphaned"], "card_after": 3, "card_id": "d-x7k2"},
+      "executor": "shell",
+      "last_wake_id": "w-7hk2m9pq",
+      "last_started_at": "2026-09-18T07:00:01+00:00",
+      "last_finished_at": "2026-09-18T07:00:14+00:00",
+      "last_state": "failure",
+      "last_reason": "exit 1",
+      "consecutive_failures": 3,
+      "created_at": "2026-09-01T00:00:00+00:00",
+      "updated_at": "2026-09-18T07:00:14+00:00"
+    },
+    "daily-report": {
+      "every": "1d",
+      "interval_s": 86400.0,
+      "run": "python report.py",
+      "timeout_s": 600,
+      "overlap": "skip",
+      "detach": false,
+      "enabled": true,
+      "cwd": null,
+      "missed": "catch_up_once",
+      "at": "07:00",
+      "report": {"relay": null, "on": ["failure"], "card_after": 3, "card_id": null},
+      "executor": "shell",
+      "last_wake_id": "w-a2b3c4d5",
+      "last_started_at": "2026-09-18T07:00:00+00:00",
+      "last_finished_at": "2026-09-18T07:00:05+00:00",
+      "last_state": "success",
+      "last_reason": "exit 0",
+      "consecutive_failures": 0,
+      "created_at": "2026-09-01T00:00:00+00:00",
+      "updated_at": "2026-09-18T07:00:05+00:00"
+    },
+    "never-ran": {
+      "every": "30m",
+      "interval_s": 1800.0,
+      "run": "echo hi",
+      "timeout_s": 300,
+      "enabled": false,
+      "at": null
+    }
+  }
+}

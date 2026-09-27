@@ -1,0 +1,7 @@
+{"schema": 1, "wake_id": null, "pass_id": "p-2a3b4c5d", "ts": "2026-09-18T07:00:00.000000+00:00", "invoker": "cron", "host": "box", "pid": 100, "job": null, "event": "tick", "reason": "pass start"}
+{"schema": 1, "wake_id": "w-7hk2m9pq", "pass_id": "p-2a3b4c5d", "ts": "2026-09-18T07:00:01.000000+00:00", "job": "nightly-sync", "event": "started", "reason": "due", "pid": 4242}
+{"schema": 1, "wake_id": "w-7hk2m9pq", "pass_id": "p-2a3b4c5d", "ts": "2026-09-18T07:00:14.000000+00:00", "job": "nightly-sync", "event": "finished", "state": "failure", "reason": "exit 1", "duration_s": 13.2, "exit_code": 1, "output_tail": "Traceback: boom"}
+{"schema": 1, "wake_id": "w-a2b3c4d5", "pass_id": "p-2a3b4c5d", "ts": "2026-09-18T07:00:02.000000+00:00", "job": "daily-report", "event": "started", "reason": "due", "pid": 4243}
+{"schema": 1, "wake_id": "w-a2b3c4d5", "pass_id": "p-2a3b4c5d", "ts": "2026-09-18T07:00:05.000000+00:00", "job": "daily-report", "event": "finished", "state": "success", "reason": "exit 0", "duration_s": 3.0, "exit_code": 0, "output_tail": "ok"}
+{"schema": 1, "wake_id": null, "pass_id": "p-2a3b4c5d", "ts": "2026-09-18T07:00:15.000000+00:00", "job": null, "event": "tick_end", "reason": "pass end", "jobs": 3, "fired": 2}
+{"schema": 1, "wake_id": null, "pass_id": "p-9z8y7x6w", "ts": "2026-09-18T07:41:00.000000+00:00", "invoker": "cron", "host": "box", "pid": 101, "job": null, "event": "tick", "reason": "pass start"}

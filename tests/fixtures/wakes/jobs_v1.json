@@ -1,0 +1,14 @@
+{
+  "job1": {
+    "interval": "900.0",
+    "command": "echo job1 running",
+    "last_run": "2026-08-24T19:54:11.513973",
+    "last_status": "success"
+  },
+  "job2": {
+    "interval": "7200.0",
+    "command": "echo job2",
+    "last_run": "2026-08-24T19:54:11.513973",
+    "last_status": "success"
+  }
+}
