@@ -134,6 +134,10 @@ def build_core_loop(
         first = loop.prism.best(initial=True)
         if first is not None:
             loop.prism.active = BY_ID[first]
+    if cfg.ledger:
+        from ._ledger import install_ledger
+
+        install_ledger(loop, cfg.ledger, episode_id)
     if cfg.context != "off" or cfg.invariants is not None:
         from ._context_gate import install_context_gate
 

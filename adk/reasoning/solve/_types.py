@@ -219,6 +219,10 @@ class LoopConfig:
     plan_states: int = 5000
     #: sase mode: h31 evidence table + induced candidate rules + cited rules.
     grounded: bool = False
+    #: Calibrated prediction ledger (``_ledger.py``): an awdecide SQLite path. Every
+    #: scored prediction and the identity baseline on the same transition are booked
+    #: with a Brier score; ``stats["ledger"]`` says which sources beat "nothing changes".
+    ledger: Optional[str] = None
     #: Context permission (``context.py``, ``_context_gate.py``): ``"off"`` | ``"shadow"``
     #: (record what the context WOULD refuse) | ``"enforce"``. plan() needs a predict rule
     #: replay-verified on ``context_level_support`` of THIS level's transitions.
