@@ -62,3 +62,11 @@ def test_merge_never_mutates_its_inputs():
     merge(local, remote)
     assert local == {"sandbox": {"enabled": True}}
     assert remote == {"sandbox": {"credentials": {"x": 1}}}
+
+
+def test_the_namespace_is_awsettings_own_user_and_per_project(tmp_path, monkeypatch):
+    from adk.sync.claude_settings import PREF_NAMESPACE, pref_namespace
+    from awsettings.domains import USER_NAMESPACE, claude_namespace
+    assert PREF_NAMESPACE == USER_NAMESPACE == pref_namespace(None)
+    monkeypatch.setenv("AWSETTINGS_PROJECT", "example.invalid/one")
+    assert pref_namespace(tmp_path) == claude_namespace(tmp_path) != PREF_NAMESPACE

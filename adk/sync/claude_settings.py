@@ -65,8 +65,12 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-#: Portal namespace. Sibling of ``preferences.adk`` so the two never stomp.
-PREF_NAMESPACE = "claude_code"
+#: Portal namespace for USER-level settings: the one awsettings reads and writes,
+#: so the two tools share one blob instead of each keeping its own (this was
+#: ``claude_code``, a namespace nothing else read). Project-level settings use one
+#: namespace PER PROJECT -- ``pref_namespace(root)`` -- so a pull in one repo never
+#: merges another repo's permission rules.
+PREF_NAMESPACE = "claude_user"
 
 #: The file a pull writes. See the contract above — never ``settings.json``.
 LOCAL_SETTINGS = ".claude/settings.local.json"
@@ -88,8 +92,18 @@ from awsettings.core import (  # noqa: E402
     redact,
 )
 
+
+
+def pref_namespace(root: Path | None = None) -> str:
+    """The hub namespace for the settings at ``root`` (None = user level), exactly
+    as awsettings computes it."""
+    from awsettings.domains import claude_namespace
+    return claude_namespace(root)
+
+
 __all__ = [
     "LOCAL_SETTINGS", "PREF_NAMESPACE", "CouldNotRunError", "merge", "redact",
+    "pref_namespace",
     "read_settings", "write_settings", "sync_enabled", "self_test",
     "_SECRET_KEYS", "_SECRET_SUBKEYS", "_SYNCED_KEYS", "_UNION_ARRAYS", "_get", "_set",
 ]

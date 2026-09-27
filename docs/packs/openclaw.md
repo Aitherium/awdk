@@ -1,6 +1,6 @@
 # OpenClaw Research Studio
 
-`openclaw` · version `3.8.27` · 5.2 KB
+`openclaw` · version `3.8.27` · 5.1 KB
 
 **[Download openclaw-3.8.27.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.27/openclaw-3.8.27.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.27/openclaw-3.8.27.sha256)
 
@@ -40,5 +40,5 @@ skills/web-research.md
 
 ---
 
-sha256 `3091048b335e19ace8ced22d3072e90b8c0cec520448e16384e942970185505c`  
+sha256 `4935279c1baff3840ddc078b2f6d54da1c2525a761294da69c5eac8d95fb33bc`  
 Built from `v3.8.27` (adk 3.8.27). [All packs](../packs.md)
