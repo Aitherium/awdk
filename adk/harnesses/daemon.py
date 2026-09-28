@@ -75,9 +75,30 @@ DEFAULT_HOST = os.environ.get("AITHER_HARNESS_HOST", "127.0.0.1")
 #: one value to `0.0.0.0` would point every local client at a bind-all address, which is
 #: not connectable. `daemon_endpoint.py` already draws this distinction the same way
 #: (`advertised_host = DEFAULT_HOST if host in ("0.0.0.0", "::", "")`).
-DEFAULT_BIND_HOST = os.environ.get(
-    "AITHER_HARNESS_BIND_HOST", os.environ.get("AITHER_HARNESS_HOST", "0.0.0.0"),
-)  # noqa: S104
+def _default_bind_host(env: Optional[dict] = None) -> str:
+    """The bind address when nothing on the command line names one.
+
+    An explicit AITHER_HARNESS_BIND_HOST or AITHER_HARNESS_HOST always wins. With neither
+    set, an OFFLINE box (AITHER_OFFLINE=1: an air-gapped appliance, where no container
+    needs the fleet path described above) binds loopback only, so the harness adds no
+    listener outside 127.0.0.1. Everywhere else the fleet-reachable default stands.
+    """
+    env = os.environ if env is None else env
+    explicit = (env.get("AITHER_HARNESS_BIND_HOST") or env.get("AITHER_HARNESS_HOST") or "")
+    if explicit.strip():
+        return explicit.strip()
+    if (env.get("AITHER_OFFLINE") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return "127.0.0.1"
+    return "0.0.0.0"  # noqa: S104
+
+
+def _is_offline(env: Optional[dict] = None) -> bool:
+    """AITHER_OFFLINE=1|true|yes|on: an air-gapped box (no cloud, no portal link)."""
+    env = os.environ if env is None else env
+    return (env.get("AITHER_OFFLINE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+DEFAULT_BIND_HOST = _default_bind_host()
 DEFAULT_PORT = int(os.environ.get("AITHER_HARNESS_PORT", "8362"))
 TOKEN_PATH = Path.home() / ".aither" / "harness_token"
 
@@ -150,9 +171,18 @@ DEFAULT_ORIGINS = (
 )
 
 
+def _is_loopback_origin(origin: str) -> bool:
+    host = origin.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].strip("[]")
+    return host in ("localhost", "::1") or host.startswith("127.")
+
+
 def allowed_origins() -> list[str]:
     raw = os.environ.get("AITHER_HARNESS_ALLOWED_ORIGINS", "")
     if not raw.strip():
+        if _is_offline():
+            # An offline (air-gapped) box trusts no public origin by default: only
+            # pages served from this machine. An operator may still list origins.
+            return [o for o in DEFAULT_ORIGINS if _is_loopback_origin(o)]
         return list(DEFAULT_ORIGINS)
     origins = [o.strip() for o in raw.split(",") if o.strip()]
     if "*" in origins:
@@ -3851,7 +3881,10 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     # reverse link from HERE, so no terminal and no second supervisor are needed.
     from adk.autolink import start_autolink
 
-    if start_autolink(f"http://127.0.0.1:{bind_port}"):
+    if _is_offline():
+        # An offline box never dials a portal, whatever AITHER_AUTOLINK says.
+        sys.stderr.write("  autolink: off (AITHER_OFFLINE)\n")
+    elif start_autolink(f"http://127.0.0.1:{bind_port}"):
         sys.stderr.write("  autolink: on (sessions reachable at api.aitherium.com/code)\n")
     # One client reset during AcceptEx otherwise closes the listener for good
     # (the process lives on, deaf, and the starter never restarts it).
@@ -3868,12 +3901,14 @@ if __name__ == "__main__":
     # this daemon has therefore been a `python -c "from ... import serve"`
     # incantation, which is why nothing supervises it and why it was found down
     # today. Bind 0.0.0.0 by default: the WSL socat bridge that publishes this
-    # to containers dials the Windows host address, not loopback.
+    # to containers dials the Windows host address, not loopback. "" defers to
+    # DEFAULT_BIND_HOST, which is that 0.0.0.0 -- except on an AITHER_OFFLINE box,
+    # where it is 127.0.0.1; a hardcoded default here would bypass that.
     import argparse as _argparse
 
     _ap = _argparse.ArgumentParser(prog="adk.harnesses.daemon",
                                    description="Run the AitherShell harness daemon.")
-    _ap.add_argument("--host", default="0.0.0.0")
+    _ap.add_argument("--host", default="")
     _ap.add_argument("--port", type=int, default=0)
     _args = _ap.parse_args()
     raise SystemExit(serve(host=_args.host, port=_args.port))

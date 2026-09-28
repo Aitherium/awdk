@@ -1081,6 +1081,8 @@ def create_app(
             # Turns being served right now. The watchdog defers a replace (and a
             # fingerprint-drift reload) while this is non-zero.
             "chat": _chat_inflight.snapshot(),
+            # AFRL G10: is this process sealed? (awnix awdk health reads this)
+            "air_gap": air_gap_health(),
         }
 
         # Capability, not liveness. `status: healthy` is TRUE of a daemon serving
@@ -6837,12 +6839,90 @@ def _mount_workspace_routers(app: FastAPI, port: int) -> None:
     _ws_log.info("Workspace mode: %d portal-kit routers mounted, store=%s", mounted, store_path)
 
 
+_OFFLINE_TRUE = ("1", "true", "yes", "on")
+
+
+def _is_offline(env: Optional[dict] = None) -> bool:
+    env = os.environ if env is None else env
+    return str(env.get("AITHER_OFFLINE", "")).strip().lower() in _OFFLINE_TRUE
+
+
+def resolve_bind_host(cli_host: Optional[str], config_host: str,
+                      env: Optional[dict] = None) -> str:
+    """The address the daemon binds.
+
+    ``--host`` always wins. Otherwise AITHER_OFFLINE=1 (air-gap / sovereign mode)
+    binds loopback only, whatever AITHER_HOST says: the AFRL claim is zero open
+    ports, and a 0.0.0.0 default would falsify it on every appliance.
+    """
+    if cli_host:
+        return cli_host
+    if _is_offline(env):
+        return "127.0.0.1"
+    return config_host
+
+
+def _install_air_gap_guard() -> bool:
+    """Install the egress guard when enforcement is on. Never raises."""
+    try:
+        from adk.compliance.egress_guard import install_if_enforced
+    except ImportError:
+        return False
+    try:
+        return bool(install_if_enforced())
+    except Exception:  # noqa: BLE001 - the guard must never stop the daemon
+        return False
+
+
+def air_gap_health() -> dict:
+    """The /health ``air_gap`` block: {enforced, mode, guard_installed, violations_total}."""
+    out: dict = {"enforced": False, "mode": "disabled", "guard_installed": False,
+                 "violations_total": 0, "offline": _is_offline()}
+    try:
+        from adk.compliance.egress_guard import status as _guard_status
+    except ImportError:
+        out["guard_available"] = False
+        return out
+    try:
+        st = _guard_status()
+    except Exception as exc:  # noqa: BLE001 - health must answer
+        out["error"] = str(exc)
+        return out
+    installed = st.get("installed") or {}
+    out.update({
+        "guard_available": True,
+        "enforced": bool(st.get("enforced")),
+        "mode": st.get("mode") or "disabled",
+        "guard_installed": bool(installed.get("socket")) if isinstance(installed, dict)
+        else bool(installed),
+        "violations_total": int(st.get("violations") or 0),
+    })
+    return out
+
+
+def _uvicorn_loop() -> str:
+    """``loop=`` for uvicorn: "asyncio" under the air gap (uvloop dials past the
+    socket backstop), "auto" otherwise. Never raises."""
+    try:
+        from adk.compliance.egress_guard import uvicorn_loop
+    except ImportError:
+        return "auto"
+    try:
+        return uvicorn_loop()
+    except Exception:  # noqa: BLE001 - a loop choice must never stop the daemon
+        return "asyncio"
+
+
 def main():
     """CLI entry point: aither-serve"""
+    # Air gap first: no client may be built before the egress guard is in place.
+    _install_air_gap_guard()
     parser = argparse.ArgumentParser(description="AitherADK Agent Server")
     parser.add_argument("--identity", "-i", default="aither", help="Agent identity to load (single-agent mode)")
     parser.add_argument("--port", "-p", type=int, default=None, help="Port (default: 8080)")
-    parser.add_argument("--host", default=None, help="Host (default: 0.0.0.0)")
+    parser.add_argument("--host", default=None,
+                        help="Host (default: $AITHER_HOST or 0.0.0.0; "
+                             "127.0.0.1 when AITHER_OFFLINE=1)")
     parser.add_argument("--backend", "-b", help="LLM backend: ollama, openai, anthropic")
     parser.add_argument("--model", "-m", help="Model name override")
     parser.add_argument("--fleet", "-f", default=None, help="Fleet YAML config file for multi-agent mode")
@@ -6859,7 +6939,11 @@ def main():
         config.model = args.model
 
     port = args.port or config.server_port
-    host = args.host or config.server_host
+    host = resolve_bind_host(args.host, config.server_host)
+    if (not args.host and _is_offline()
+            and config.server_host not in ("127.0.0.1", "::1", "localhost")):
+        logger.info("AITHER_OFFLINE=1: binding %s (ignoring AITHER_HOST=%s; "
+                    "pass --host to override)", host, config.server_host)
     # Write the resolved port/host back so lifespan helpers (_join_aithernet,
     # invoke_url, gateway/fleet registration) all see the actual bound port —
     # not the config default. Without this, --port diverges from config.server_port
@@ -6960,7 +7044,7 @@ def main():
     except Exception:  # noqa: BLE001 — discovery is an optimisation, never fatal
         clear_daemon_url = None
     try:
-        uvicorn.run(app, host=host, port=port, log_level="info")
+        uvicorn.run(app, host=host, port=port, log_level="info", loop=_uvicorn_loop())
     finally:
         if clear_daemon_url:
             clear_daemon_url()

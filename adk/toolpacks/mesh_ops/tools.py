@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 from typing import Any
@@ -165,6 +166,41 @@ def mesh_register_endpoint(name: str, invoke_url: str, reach: str = "mesh",
         return {"error": "register failed", "detail": str(e)}
 
 
+_HEADSCALE_CONTAINER = os.getenv("AITHER_HEADSCALE_CONTAINER", "aitheros-headscale")
+
+
+def _engine_argv() -> list[str]:
+    """The container engine argv on this host, in order:
+
+    1. ``AITHER_ENGINE_ARGV`` -- a JSON list (the form check_fleet_capabilities passes,
+       e.g. ``["wsl","-d","awnix","-u","root","podman"]``) or a shell-quoted string;
+    2. ``podman`` on PATH (the fleet engine);
+    3. ``docker`` on PATH (transitional hosts);
+    4. on Windows, rootful podman inside the fleet distro via ``wsl``.
+
+    Returns [] when none is found; callers report that instead of raising.
+    """
+    raw = os.environ.get("AITHER_ENGINE_ARGV", "").strip()
+    if raw:
+        parsed: Any = None
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                parsed = None  # not JSON after all: fall through to the shell-quoted form
+        if isinstance(parsed, list) and parsed and all(isinstance(x, str) for x in parsed):
+            return parsed
+        parts = shlex.split(raw)
+        if parts:
+            return parts
+    for exe in ("podman", "docker"):
+        if shutil.which(exe):
+            return [exe]
+    if os.name == "nt" and shutil.which("wsl"):
+        return ["wsl", "-d", os.environ.get("AITHER_FLEET_DISTRO", "awnix"), "-u", "root", "podman"]
+    return []
+
+
 def mesh_enroll_node(node_host: str, ssh_user: str, ssh_key_path: str,
                      controller_lan_ip: str, hostname: str = "",
                      control_port: int = 8443, timeout_s: int = 120) -> dict:
@@ -178,24 +214,37 @@ def mesh_enroll_node(node_host: str, ssh_user: str, ssh_key_path: str,
     if not (node_host and ssh_user and ssh_key_path and controller_lan_ip):
         return {"error": "node_host, ssh_user, ssh_key_path, controller_lan_ip required"}
     hostname = hostname or node_host.replace(".", "-")
-    # Mint a short-lived reusable preauth key from the headscale container.
+    # Mint a short-lived preauth key from the headscale container, through whatever
+    # engine this host runs. The fleet is rootful podman in a WSL distro now; a hardcoded
+    # `docker exec` fails on every such host with FileNotFoundError.
+    engine = _engine_argv()
+    if not engine:
+        return {"error": "no container engine found",
+                "hint": "set AITHER_ENGINE_ARGV (JSON list, e.g. [\"podman\"]) "
+                        "or install podman/docker"}
     try:
         pak = subprocess.run(
-            ["docker", "exec", "aitheros-headscale", "headscale", "preauthkeys",
-             "create", "--user", "aither-nodes", "--reusable", "--expiration", "1h"],
-            capture_output=True, text=True, timeout=30).stdout.strip().splitlines()[-1].strip()
+            engine + ["exec", _HEADSCALE_CONTAINER, "headscale", "preauthkeys",
+                      "create", "--user", "aither-nodes", "--expiration", "1h"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30).stdout.strip().splitlines()[-1].strip()
     except Exception as e:  # noqa: BLE001
-        return {"error": "preauth key mint failed", "detail": str(e),
-                "hint": "is aitheros-headscale running on this host?"}
+        return {"error": "preauth key mint failed", "detail": str(e), "engine": engine,
+                "hint": f"is {_HEADSCALE_CONTAINER} running on this host?"}
     if not pak or len(pak) < 20:
         return {"error": "preauth key mint returned nothing"}
+    # The key never rides on an argv (ps on either host would show it): it is piped over
+    # ssh STDIN into a 0600 file that tailscale reads with --auth-key=file:, then removed.
     remote = (
+        "umask 077; cat > /tmp/aither-pak; "
         "sudo cp /tmp/aither-ca.pem /usr/local/share/ca-certificates/aither-internal.crt; "
         "sudo update-ca-certificates >/dev/null 2>&1; "
         "grep -q headscale.aitherium.com /etc/hosts || echo "
         f"'{controller_lan_ip} headscale.aitherium.com' | sudo tee -a /etc/hosts >/dev/null; "
         f"sudo tailscale up --login-server=https://headscale.aitherium.com:{control_port} "
-        f"--authkey={pak} --force-reauth --accept-routes --hostname={hostname} 2>&1 | tail -3; "
+        "--auth-key=file:/tmp/aither-pak --force-reauth --accept-routes "
+        f"--hostname={hostname} 2>&1 | tail -3; "
+        "rm -f /tmp/aither-pak; "
         "tailscale ip -4 2>/dev/null | head -1"
     )
     ssh_base = ["ssh", "-i", ssh_key_path, "-o", "BatchMode=yes",
@@ -207,9 +256,10 @@ def mesh_enroll_node(node_host: str, ssh_user: str, ssh_key_path: str,
             subprocess.run(["scp", "-i", ssh_key_path, "-o", "BatchMode=yes",
                             "-o", "StrictHostKeyChecking=accept-new", ca,
                             f"{ssh_user}@{node_host}:/tmp/aither-ca.pem"],
-                           capture_output=True, text=True, timeout=30)
-        out = subprocess.run(ssh_base + [remote], capture_output=True, text=True,
-                             timeout=timeout_s)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30)
+        out = subprocess.run(ssh_base + [remote], input=pak + "\n", capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=timeout_s)
         return {"ok": out.returncode == 0, "output": (out.stdout or "") + (out.stderr or ""),
                 "hostname": hostname}
     except subprocess.TimeoutExpired:

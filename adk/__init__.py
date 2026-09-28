@@ -7,6 +7,16 @@ try:  # single source of truth = the installed package metadata (pyproject versi
 except PackageNotFoundError:  # running from a source checkout without install
     __version__ = "3.8.29"  # kept in sync by packaging/sync_versions.py
 
+# Air gap: when enforcement is configured (AITHER_AIR_GAP, or an
+# air_gap.yaml at $AITHER_AIR_GAP_CONFIG / ~/.aither / /etc/aither), patch every
+# process-wide egress choke point before any client is built. No config => no-op.
+try:
+    from adk.compliance._egress_guard import autoinstall as _airgap_autoinstall
+
+    _airgap_autoinstall()
+except Exception:  # noqa: BLE001 - the guard must never break `import adk`
+    _airgap_autoinstall = None  # type: ignore[assignment]
+
 from adk.agent import AitherAgent
 from adk.dispatch import MultiAgentDispatcher, DispatchSpec, DispatchResult
 from adk.gate import CompletionGate, GateVerdict, gated_run, hard_checks

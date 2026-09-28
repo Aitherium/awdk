@@ -54,8 +54,12 @@ logger = logging.getLogger("adk.local_inference")
 #   11434 Ollama (serves /v1/models since 0.1.x; also GobboNet's default)
 #   1234  LM Studio's local server (OpenAI-compatible; added 2026-09-21 from the
 #         Personal-AI-Router intake -- it was the one desktop engine no ladder here probed)
+#   8199  the awnix image's own local model server (base / ai-full variants)
+#   8089  the appliance variant's llama-server
 # Edit this tuple, not the callers.
-SELFHOST_PORTS: tuple[int, ...] = (8080, 8090, 8092, 8889, 8081, 8000, 11434, 1234)
+SELFHOST_PORTS: tuple[int, ...] = (
+    8080, 8090, 8092, 8889, 8081, 8000, 11434, 1234, 8199, 8089,
+)
 
 
 @dataclass

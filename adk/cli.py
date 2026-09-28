@@ -9033,7 +9033,17 @@ def _version_is_newer(latest: str, current: str) -> bool:
 
 
 def _check_for_updates() -> None:
-    """Check PyPI for newer awdk version. Runs at most once per day."""
+    """Check PyPI for newer awdk version. Runs at most once per day.
+
+    Never on an offline box (AITHER_OFFLINE=1|true|yes|on) or with
+    ADK_NO_UPDATE_CHECK=1: measured 2026-09-28 in the awsh offline proof, this
+    was the only off-box attempt `adk harness serve` made (a DNS lookup of
+    pypi.org under --network=none).
+    """
+    truthy = ("1", "true", "yes", "on")
+    if (os.environ.get("AITHER_OFFLINE") or "").strip().lower() in truthy or \
+            (os.environ.get("ADK_NO_UPDATE_CHECK") or "").strip().lower() in truthy:
+        return
     marker = Path.home() / ".aither" / ".last_update_check"
     now = time.time()
 
@@ -16168,6 +16178,22 @@ def _cmd_desk(args) -> int:
     return 1
 
 
+def _install_air_gap_guard() -> bool:
+    """Install the process-wide egress guard when air-gap enforcement is on.
+
+    Returns True when the guard is installed. Never raises: an awdk without
+    ``adk.compliance.egress_guard`` simply runs unguarded.
+    """
+    try:
+        from adk.compliance.egress_guard import install_if_enforced
+    except ImportError:
+        return False
+    try:
+        return bool(install_if_enforced())
+    except Exception:  # noqa: BLE001 - the guard must never break the CLI
+        return False
+
+
 def main():
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
     _dv = locals().get("argv")
@@ -16183,6 +16209,10 @@ def main():
         _sv = locals().get("argv")
         if _aw_state.cli_banner(_sv if _sv is not None else __import__("sys").argv[1:]):
             return 0
+    # Air gap (AFRL G10): patch every egress choke point BEFORE any subcommand
+    # builds a client. `import adk` already autoinstalls; this is the explicit,
+    # checkable call (AWK006). A missing guard module never breaks the CLI.
+    _install_air_gap_guard()
     global _cached_parser
     # Windows consoles default to a legacy code page (cp1252) that cannot encode
     # the Unicode glyphs (arrows, box-drawing, emoji) the CLI prints — which
