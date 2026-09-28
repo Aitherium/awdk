@@ -13477,6 +13477,13 @@ def _register_commands(sub):
     sh_mod.add_argument("--harness", default="opencode",
                         help="smoke: which harness the live run must be answered by")
 
+    sh_pair = shell_sub.add_parser(
+        "pair", help="Pair the awconnect browser extension: approve a code, list, revoke")
+    sh_pair.add_argument("pair_action", nargs="?", default="pending",
+                         choices=["pending", "approve", "revoke"],
+                         help="pending (default), approve <code>, revoke (all awconnect tokens)")
+    sh_pair.add_argument("code", nargs="?", default="", help="the 6-digit code awconnect shows")
+
     # adk claude-model — switch Claude Code backend (DeepSeek/Kimi/local/Anthropic)
     claude_model_p = sub.add_parser(
         "claude-model",

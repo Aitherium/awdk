@@ -226,7 +226,7 @@ class Principal:
     def has(self, entitlement: str) -> bool:
         return "*" in self.entitlements or entitlement in self.entitlements
 
-    def may_reach(self, path: str) -> bool:
+    def may_reach(self, path: str, method: Optional[str] = None) -> bool:
         """Is ``path`` inside this principal's scope?
 
         FAIL CLOSED for a scoped principal: an unrecognised path is refused, so
@@ -239,6 +239,10 @@ class Principal:
         `/sessions/x`, never `/sessions-admin`), and any `..` segment is refused
         outright rather than normalised -- normalising is where traversal bugs
         live.
+
+        An entry may carry a METHOD prefix (``"GET /sessions"``): it then matches
+        that method only (HEAD counts as GET). Without a known ``method`` such an
+        entry matches nothing -- fail closed, never "any method".
         """
         if not self.paths:
             return True
@@ -246,8 +250,17 @@ class Principal:
         if ".." in p.split("/"):
             return False
         low = p.lower()
+        verb = (method or "").strip().upper()
+        if verb == "HEAD":
+            verb = "GET"
         for allowed in self.paths:
-            a = "/" + str(allowed).strip("/").lower()
+            entry = str(allowed).strip()
+            want, sep, rest = entry.partition(" ")
+            if sep and not want.startswith("/"):
+                if not verb or want.upper() != verb:
+                    continue
+                entry = rest
+            a = "/" + entry.strip().strip("/").lower()
             if a == "/":
                 continue
             if low == a or low.startswith(a + "/"):
@@ -312,6 +325,7 @@ def mint_scoped_token(
     plan: str = "link",
     entitlements: tuple = (),
     path: Path = None,
+    label: str = "",
 ) -> str:
     """Mint a PATH-SCOPED bearer for this daemon and persist its hash.
 
@@ -333,7 +347,8 @@ def mint_scoped_token(
     now = time.time()
     target.parent.mkdir(parents=True, exist_ok=True)
     with _registry_lock(target):
-        _mint_locked(target, digest, principal_id, paths, plan, entitlements, ttl_days, now)
+        _mint_locked(target, digest, principal_id, paths, plan, entitlements, ttl_days, now,
+                     label=label)
     return token
 
 
@@ -375,8 +390,17 @@ def _registry_lock(target: Path, timeout: float = 10.0):
     return _held()
 
 
+def _write_registry(target: Path, reg: dict) -> None:
+    """Write the registry atomically: a concurrent reader sees old or new, never half."""
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(reg, indent=2))
+    os.replace(tmp, target)
+
+
 def _mint_locked(target: Path, digest: str, principal_id: str, paths, plan: str,
-                 entitlements, ttl_days, now: float) -> None:
+                 entitlements, ttl_days, now: float, label: str = "") -> None:
     """Read STRICTLY, add one entry, write atomically. Called under the lock."""
     if target.exists():
         # load_principals() degrades a bad file to {} so the daemon stays reachable;
@@ -398,15 +422,42 @@ def _mint_locked(target: Path, digest: str, principal_id: str, paths, plan: str,
         "paths": list(paths),
         "expires_at": now + ttl_days * 86400 if ttl_days else 0,
     }
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(reg, indent=2))
-    os.replace(tmp, target)  # atomic: a concurrent reader sees old or new, never half
+    if label:
+        reg[digest]["label"] = label
+    _write_registry(target, reg)
     try:
         os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
     except OSError as exc:
         sys.stderr.write(f"[harness] could not restrict {target}: {exc}\n")
+
+
+def revoke_label(label: str, *, path: Path = None) -> int:
+    """Drop every registry entry carrying ``label``. Returns how many went.
+
+    ``adk harness pair revoke`` uses it to unpair every Awconnect install at once;
+    the owner bearer is not in the registry, so it can never be revoked here.
+    """
+    target = path or PRINCIPALS_PATH
+    if not target.exists():
+        return 0
+    with _registry_lock(target):
+        reg = load_principals(target)
+        keep = {k: v for k, v in reg.items()
+                if not (isinstance(v, dict) and v.get("label") == label)}
+        removed = len(reg) - len(keep)
+        if removed:
+            _write_registry(target, keep)
+    if removed:
+        try:
+            os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError as exc:
+            sys.stderr.write(f"[harness] could not restrict {target}: {exc}\n")
+    return removed
+
+
+def is_owner(principal: "Principal") -> bool:
+    """The unrestricted caller: the owner bearer, or an unscoped "*" entry."""
+    return principal is OWNER_PRINCIPAL or (not principal.paths and principal.has("*"))
 
 
 def resolve_principal(value: str, bearer: str, registry: dict = None) -> Optional[Principal]:
@@ -856,6 +907,16 @@ if BaseModel is not None:
     class BumpRun(BaseModel):  # type: ignore[misc]
         priority: int
 
+    class PairPoll(BaseModel):  # type: ignore[misc]
+        """Body for POST /pair/poll (Awconnect pairing)."""
+
+        pair_id: str
+
+    class PairApprove(BaseModel):  # type: ignore[misc]
+        """Body for POST /pair/approve (owner only)."""
+
+        code: str
+
 
 def unified_diff(
     prev: dict[str, dict[str, Any]], cur: dict[str, dict[str, Any]],
@@ -922,7 +983,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         # the handler runs. 403, not 404: a caller holding a valid credential for
         # a narrower surface should learn it was refused, not that the route is
         # missing, or it will retry forever against a decision that never changes.
-        if not principal.may_reach(request.url.path):
+        if not principal.may_reach(request.url.path, request.method):
             raise HTTPException(
                 status_code=403,
                 detail=f"principal {principal.id!r} is not scoped to "
@@ -1083,6 +1144,116 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             ],
             "rooms": [],
         }
+
+    # ── PAIRING (Awconnect) ────────────────────────────────────────────────
+    # The browser extension gets a NARROW registry token, never the root bearer
+    # and never a CORS grant: an MV3 extension with host permissions is not
+    # subject to CORS, so this adds no chrome-extension origin to the CORS list.
+    # The gate is the exact pinned Origin + a loopback Host (DNS-rebinding guard)
+    # + an owner approval out of band. See adk.harnesses.pairing.
+    from adk.harnesses import pairing as _pairing
+
+    pair_book = _pairing.PairingBook()
+
+    def _pair_gate(request: Request) -> str:
+        origin = request.headers.get("origin", "")
+        if not origin or origin not in _pairing.trusted_extension_origins():
+            raise HTTPException(status_code=403, detail="origin not allowed to pair")
+        if not _pairing.is_loopback_host(request.headers.get("host", "")):
+            raise HTTPException(status_code=403, detail="loopback host required")
+        return origin
+
+    def _require_owner(principal: Principal = Depends(auth)) -> Principal:
+        if not is_owner(principal):
+            raise HTTPException(status_code=403, detail="owner credential required")
+        return principal
+
+    @app.post("/pair/start")
+    def pair_start(request: Request) -> dict[str, Any]:
+        origin = _pair_gate(request)
+        try:
+            started = pair_book.start(origin)
+        except OverflowError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        # The card is how the owner hears about it; failing to raise one must not
+        # fail the pairing, since the CLI and awdesk can still approve by code.
+        try:
+            from adk.decisions.store import DecisionCard, DecisionOption, DecisionSource
+
+            card = _store_and_notify(DecisionCard(
+                id="",
+                title="Allow awconnect?",
+                summary=(f"The awconnect browser extension asks to pair with this "
+                         f"machine. Code {started['code']}. Allow only if the "
+                         f"extension shows the same code."),
+                kind="decision",
+                urgency="high",
+                options=[DecisionOption(key="allow", label=f"Allow ({started['code']})"),
+                         DecisionOption(key="deny", label="Deny")],
+                default_key="deny",
+                facts=[f"code: {started['code']}",
+                       "scope: decisions, read sessions, read rooms"],
+                source=DecisionSource(agent="awconnect-pairing"),
+                dedupe_key=f"awconnect-pair:{started['pair_id']}",
+            ))
+            pair_book.attach_card(started["pair_id"], str(card.get("id") or ""))
+        except Exception as exc:  # noqa: BLE001 - never fail the pairing on notify
+            sys.stderr.write(f"[harness] pairing card not raised: {type(exc).__name__}\n")
+        return started
+
+    @app.post("/pair/poll")
+    def pair_poll(body: PairPoll, request: Request) -> dict[str, Any]:
+        _pair_gate(request)
+        entry = pair_book.peek(body.pair_id)
+        if entry is None:
+            raise HTTPException(status_code=410, detail="pairing expired or unknown")
+        if entry["status"] == "pending" and entry.get("card_id"):
+            try:
+                from adk.decisions.store import get_store
+
+                card = get_store().get(entry["card_id"])
+            except Exception:  # noqa: BLE001
+                card = None
+            if card is not None and card.answer == "allow":
+                pair_book.approve(entry["code"])
+            elif card is not None and card.answer:
+                pair_book.deny(body.pair_id)
+            entry = pair_book.peek(body.pair_id) or entry
+        if entry["status"] == "denied":
+            raise HTTPException(status_code=403, detail="pairing denied")
+        if entry["status"] != "approved":
+            return {"status": "pending",
+                    "expires_in": max(0, int(entry["expires_at"] - _time.time()))}
+        taken = pair_book.take(body.pair_id)
+        if taken is None:
+            raise HTTPException(status_code=410, detail="pairing already completed")
+        ext_id = str(taken["origin"]).rsplit("/", 1)[-1]
+        tok = mint_scoped_token(
+            f"awconnect:{ext_id}",
+            paths=_pairing.AWCONNECT_PATHS,
+            ttl_days=_pairing.AWCONNECT_TTL_DAYS,
+            plan="awconnect",
+            label=_pairing.LABEL,
+        )
+        return {"status": "approved", "token": tok,
+                "scope": ["decisions:read", "decisions:write",
+                          "sessions:read", "rooms:read"]}
+
+    @app.post("/pair/approve")
+    def pair_approve(body: PairApprove,
+                     principal: Principal = Depends(_require_owner)) -> dict[str, Any]:
+        origin = pair_book.approve(body.code)
+        if origin is None:
+            raise HTTPException(status_code=404, detail="no pending pairing with that code")
+        return {"ok": True, "origin": origin}
+
+    @app.get("/pair/pending")
+    def pair_pending(principal: Principal = Depends(_require_owner)) -> dict[str, Any]:
+        return {"pending": pair_book.pending()}
+
+    @app.post("/pair/revoke")
+    def pair_revoke(principal: Principal = Depends(_require_owner)) -> dict[str, Any]:
+        return {"ok": True, "revoked": revoke_label(_pairing.LABEL)}
 
     # ── discovery ───────────────────────────────────────────────────────────
 
@@ -2374,6 +2545,12 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         except DecisionError:
             _existing = None
         _recipe_via = None
+        # A pairing card grants a token: only the owner may answer it, never a
+        # scoped caller -- least of all a paired extension approving another.
+        if (_existing is not None and not is_owner(principal)
+                and str(getattr(_existing, "dedupe_key", "") or "").startswith("awconnect-pair:")):
+            raise HTTPException(status_code=403,
+                                detail="only the owner can answer a pairing card")
         if _existing is not None:
             _recipe_via = _guard_recipe_answer(principal, _existing, body.choice, body)
         try:

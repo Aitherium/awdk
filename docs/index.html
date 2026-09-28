@@ -2,495 +2,354 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Aither ADK — build AI agent fleets</title>
 <meta name="description" content="Build single agents or coordinated fleets in a few lines. Any backend — local GPU, Ollama or cloud APIs — with effort-based routing and real memory.">
 <meta property="og:title" content="Aither ADK — build AI agent fleets">
 <meta property="og:description" content="Build single agents or coordinated fleets in a few lines. Any backend — local GPU, Ollama or cloud APIs — with effort-based routing and real memory.">
 <meta property="og:type" content="website">
-<meta name="theme-color" content="#0A0F1E">
+<meta name="theme-color" content="#050507">
+<meta name="generator" content="aitherium family kit b6a7c2826ea554ee">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='Georgia,serif' font-weight='700' fill='%237FDBEA'>Ai</text></svg>">
-<style>/* ═══════════════════════════════════════════════════════════════════════════
-   AITHERIUM WEB DESIGN LANGUAGE — canonical static-page stylesheet
-   @element-tokens v2
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpolygon points='256,110 390,350 122,350' fill='none' stroke='%235EC9CC' stroke-width='30' stroke-linejoin='round'/%3E%3Ccircle cx='256' cy='262' r='50' fill='%235EC9CC'/%3E%3Ccircle cx='256' cy='262' r='24' fill='%23050507'/%3E%3C/svg%3E">
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   AITHERIUM FAMILY KIT — tokens (static flavour)   @family-kit v1
+   One palette for every static page in the family: the org hub, every aw*
+   brick's Pages site, the awdk docs, the Guide. Values are the same as the
+   React flavour of the kit on aitherium.com; a parity check (FK001) asserts
+   the two agree.
 
-   Source of truth for every public-facing STATIC page (GitHub Pages landing
-   sites, generated docs). Tokens are extracted from the live aitherium.com
-   design system (the dark-glass OKLch theme) so static pages match the estate
-   instead of inventing a look. NOTE: this file is INLINED VERBATIM into public
-   pages, so it must name no internal path — publish_gate scans for them.
-
-   Consumed by tools/gen_public_pages.py, which INLINES this file verbatim into
-   each generated page and fails loudly if it is missing. Edit HERE, then
-   regenerate; never restyle a generated docs/index.html by hand.
-
-   Class contract (the generator's template depends on these):
-     .wrap nav .brand .eyebrow .lede .cta .btn .btn-p .btn-s
-     .code .grid .card .stats .stat .note footer .el h1 .g
-   v2 adds:
-     --accent (+ -a04/-a10/-a30/-a50/-glow) .... per-experience accent, set per repo
-     .uni .uni-stage .uni-canvas .uni-nodes .orb .orb.here ... the universe strip
-     .exp .exp .glyph ......................... the experience badge
-     .panel .panel-hd .field .field-row .chips .chip
-     .rows .row-item .empty .kv .bar-cmp .steps  live artifacts
+   Rules this sheet exists to hold: ONE accent, no gradients, no glass, Inter
+   for the product voice and JetBrains Mono for the system voice.
+   This file is INLINED VERBATIM into public pages: name no internal path here.
    ═══════════════════════════════════════════════════════════════════════════ */
-
-*,*::before,*::after{box-sizing:border-box}
-
 :root{
-  /* ─── core surfaces (dark glass, OKLch — verbatim from Veil) ─── */
-  --background:oklch(0.07 0.015 250);
-  --surface:oklch(0.12 0.02 250);
-  --surface-2:oklch(0.15 0.025 250);
-  --foreground:oklch(0.95 0 0);
-  --tx-2:oklch(0.72 0.02 250);
-  --tx-muted:oklch(0.55 0.02 250);
-  --border:oklch(0.25 0.03 250);
+  /* palette */
+  --fk-bg:#050507;
+  --fk-ink:#EDEFF5;
+  --fk-dim:rgba(237,239,245,.55);
+  --fk-faint:rgba(237,239,245,.35);
+  --fk-hairline:rgba(255,255,255,.08);
+  --fk-raise:rgba(255,255,255,.025);
+  --fk-accent:#5EC9CC;
+  --fk-accent-glow:rgba(94,201,204,.35);
+  --fk-accent-wash:rgba(94,201,204,.08);
 
-  /* ─── accents ─── */
-  --primary:oklch(0.50 0.16 250);
-  --cyan:oklch(0.80 0.13 195);
-  --accent-warm:oklch(0.75 0.16 45);
-  --lavender:oklch(0.78 0.12 290);
-  --mint:oklch(0.82 0.12 165);
-  --coral:oklch(0.78 0.14 25);
-  --ok:var(--mint);
-  --warn:oklch(0.80 0.15 85);
+  /* type */
+  --fk-sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --fk-mono:'JetBrains Mono',ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,'Liberation Mono',monospace;
 
-  /* ─── per-experience accent ───────────────────────────────────────────
-     Each public repo is a named EXPERIENCE with its own accent, the same way
-     every sovereign agent on aitherium.com has one (agent-theme.ts: demiurge
-     is "The Forge", #f97316). The generator overrides this whole block per
-     repo; everything below themes off it, so a repo's identity is one edit
-     rather than a forked stylesheet. Defaults are the cyan house colour, so
-     an un-themed page still looks correct. */
-  --accent:oklch(0.80 0.13 195);
-  --accent-a04:oklch(0.80 0.13 195 / 4%);
-  --accent-a10:oklch(0.80 0.13 195 / 10%);
-  --accent-a30:oklch(0.80 0.13 195 / 30%);
-  --accent-a50:oklch(0.80 0.13 195 / 50%);
-  --accent-glow:oklch(0.80 0.13 195 / 18%);
+  /* shape + motion */
+  --fk-radius:12px;
+  --fk-radius-sm:8px;
+  --fk-ease:cubic-bezier(.2,.8,.2,1);
+  --fk-menubar-h:44px;
+  --fk-maxw:1180px;
+  --fk-dock-h:52px;
 
-  /* ─── signature gradients (cyan → blue → purple) ─── */
-  --creation:linear-gradient(135deg,oklch(0.75 0.14 195),oklch(0.60 0.16 250),oklch(0.65 0.16 290));
-  --cta-gradient:linear-gradient(to right,oklch(0.55 0.15 200),oklch(0.45 0.18 240));
-
-  /* ─── type ─── */
-  --font-display:'Cinzel',Georgia,serif;
-  --font:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
-  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
-
-  /* ─── shape & layout ─── */
-  --radius:14px;
-  --radius-xl:0.75rem;
-  --maxw:1080px;
+  /* Aliases, so content written against older class contracts and the
+     constellation widget (which themes off --ink/--dim/--line/--panel) land on
+     THIS palette instead of their own fallbacks. Every one is the same colour
+     as a --fk-* token above; none is a second accent. */
+  --background:var(--fk-bg);
+  --foreground:var(--fk-ink);
+  --surface:var(--fk-raise);
+  --surface-2:var(--fk-raise);
+  --tx-2:var(--fk-dim);
+  --tx-muted:var(--fk-faint);
+  --border:var(--fk-hairline);
+  --accent:var(--fk-accent);
+  --accent-a04:rgba(94,201,204,.04);
+  --accent-a10:rgba(94,201,204,.10);
+  --accent-a30:rgba(94,201,204,.30);
+  --accent-a50:rgba(94,201,204,.50);
+  --accent-glow:var(--fk-accent-glow);
+  --cyan:var(--fk-accent);
+  --ink:var(--fk-ink);
+  --dim:var(--fk-dim);
+  --line:var(--fk-hairline);
+  --panel:var(--fk-bg);
+  --warn:var(--fk-dim);
+  --font:var(--fk-sans);
+  --sans:var(--fk-sans);
+  --mono:var(--fk-mono);
 }
-
-html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;color-scheme:dark}
-body{
-  margin:0;background:var(--background);color:var(--foreground);
-  font-family:var(--font);font-weight:400;line-height:1.65;letter-spacing:-0.011em;
-  -webkit-font-smoothing:antialiased;overflow-x:hidden;
-}
-
-/* ─── ambient field: cyan grid + blurred glow orbs (aitherium.com hero) ─── */
-body::before{
-  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
-  background-image:
-    linear-gradient(var(--accent-a04) 1px,transparent 1px),
-    linear-gradient(90deg,var(--accent-a04) 1px,transparent 1px);
-  background-size:80px 80px;
-  -webkit-mask-image:radial-gradient(ellipse 60% 40% at 50% 12%,black 20%,transparent 70%);
-  mask-image:radial-gradient(ellipse 60% 40% at 50% 12%,black 20%,transparent 70%);
-}
-body::after{
-  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
-  background:
-    radial-gradient(900px 600px at 50% -10%,oklch(0.55 0.15 200 / 6%),transparent 60%),
-    radial-gradient(400px 400px at 18% 45%,oklch(0.50 0.18 280 / 4%),transparent 65%),
-    radial-gradient(300px 300px at 88% 70%,oklch(0.45 0.18 240 / 4%),transparent 65%);
-}
-
-.wrap{position:relative;z-index:1;max-width:var(--maxw);margin:0 auto;padding:0 24px}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
-
-/* ─── nav: sticky glass panel ─── */
-nav{
-  position:sticky;top:0;z-index:20;
-  background:oklch(0.06 0.015 250 / 65%);
-  backdrop-filter:blur(24px) saturate(180%);
-  -webkit-backdrop-filter:blur(24px) saturate(180%);
-  border-bottom:1px solid oklch(1 0 0 / 8%);
-}
-nav .wrap{display:flex;align-items:center;gap:18px;height:60px}
-.brand{display:flex;align-items:center;gap:10px;font-weight:500;color:var(--foreground)}
-.brand:hover{text-decoration:none}
-.brand .ai{
-  font-family:var(--font-display);font-weight:700;font-size:1.35rem;line-height:1;
-  background:var(--creation);
-  -webkit-background-clip:text;background-clip:text;color:transparent;
-}
-nav .sp{flex:1}
-nav a.nl{color:var(--tx-2);font-size:.9rem;font-weight:500}
-nav a.nl:hover{color:var(--accent);text-decoration:none}
-@media(max-width:640px){nav a.nl.hide-sm{display:none}}
-
-/* ─── hero ─── */
-header{padding:88px 0 64px;position:relative}
-.eyebrow{
-  display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);
-  font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);
-  border:1px solid var(--accent-a30);border-radius:999px;padding:5px 12px;
-  margin-bottom:22px;
-  background:oklch(0.12 0.02 250 / 60%);
-  backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
-}
-.eyebrow .dot{
-  width:6px;height:6px;border-radius:50%;background:var(--accent);
-  box-shadow:0 0 8px var(--accent);
-  animation:pulse-dot 2.4s ease-in-out infinite;
-}
-@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.45}}
-h1{
-  font-family:var(--font-display);
-  font-size:clamp(2.4rem,6vw,4rem);font-weight:700;line-height:1.08;
-  letter-spacing:-0.01em;margin:0 0 18px;
-}
-h1 .g{
-  background:var(--creation);
-  -webkit-background-clip:text;background-clip:text;color:transparent;
-}
-.lede{font-size:clamp(1.03rem,2.1vw,1.22rem);color:var(--tx-2);max-width:62ch;margin:0 0 30px;line-height:1.8}
-.cta{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:34px}
-.btn{
-  display:inline-flex;align-items:center;gap:8px;padding:12px 22px;
-  border-radius:var(--radius-xl);font-weight:600;font-size:.94rem;
-  border:1px solid transparent;cursor:pointer;
-  transition:all .25s cubic-bezier(0.16,1,0.3,1);
-}
-.btn:hover{text-decoration:none;transform:translateY(-2px)}
-.btn-p{
-  background:var(--cta-gradient);color:#fff;
-  box-shadow:0 8px 24px oklch(0.55 0.15 200 / 25%);
-}
-.btn-p:hover{box-shadow:0 8px 32px oklch(0.55 0.15 200 / 40%)}
-.btn-s{
-  background:oklch(1 0 0 / 5%);color:var(--foreground);
-  border-color:oklch(1 0 0 / 8%);
-  backdrop-filter:blur(8px);
-  -webkit-backdrop-filter:blur(8px);
-}
-.btn-s:hover{background:oklch(1 0 0 / 10%);border-color:var(--accent-a50);color:var(--accent)}
-
-/* ─── code blocks: glass with gradient hairline ─── */
-.code{
-  position:relative;
-  background:oklch(0.06 0.015 250 / 65%);
-  backdrop-filter:blur(20px) saturate(180%);
-  -webkit-backdrop-filter:blur(20px) saturate(180%);
-  border:1px solid oklch(1 0 0 / 8%);
-  border-radius:var(--radius);overflow:hidden;
-  box-shadow:0 8px 32px oklch(0 0 0 / 40%),inset 0 1px 0 oklch(1 0 0 / 5%);
-}
-.code::before{content:"";position:absolute;inset:0 0 auto;height:1px;background:var(--creation)}
-.code .bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid oklch(1 0 0 / 8%)}
-.code .bar > span:not(.t){width:9px;height:9px;flex:none;border-radius:50%;background:var(--border)}
-.code .bar .t{
-  line-height:1;margin-left:6px;font-family:var(--mono);font-size:.73rem;
-  color:var(--tx-muted);letter-spacing:.04em;
-}
-.code pre{
-  margin:0;padding:16px 18px;overflow-x:auto;font-family:var(--mono);
-  font-size:.845rem;line-height:1.75;color:var(--foreground);
-}
-.code .c{color:var(--tx-muted)}
-.code .k{color:var(--accent)}
-.code .s{color:var(--mint)}
-.copy{
-  position:absolute;top:8px;right:10px;background:transparent;
-  border:1px solid oklch(1 0 0 / 12%);color:var(--tx-muted);border-radius:7px;
-  padding:4px 9px;font-size:.7rem;cursor:pointer;font-family:var(--mono);transition:.16s;
-}
-.copy:hover{color:var(--accent);border-color:var(--accent-a50)}
-
-/* ─── sections ─── */
-section{padding:64px 0;border-top:1px solid oklch(1 0 0 / 6%)}
-h2{
-  font-family:var(--font-display);
-  font-size:clamp(1.55rem,3vw,2.1rem);font-weight:700;letter-spacing:-0.01em;
-  margin:0 0 10px;
-}
-.sub{color:var(--tx-2);margin:0 0 30px;max-width:64ch;line-height:1.8}
-.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(258px,1fr))}
-
-/* ─── cards: glass surface, glow on hover ─── */
-.card{
-  background:oklch(0.12 0.02 250 / 60%);
-  backdrop-filter:blur(20px) saturate(180%);
-  -webkit-backdrop-filter:blur(20px) saturate(180%);
-  border:1px solid oklch(0.40 0.05 250 / 20%);
-  border-radius:var(--radius);padding:22px;position:relative;overflow:hidden;
-  box-shadow:0 8px 32px oklch(0 0 0 / 30%),inset 0 1px 0 oklch(1 0 0 / 5%);
-  transition:all .25s cubic-bezier(0.16,1,0.3,1);
-}
-.card:hover{
-  transform:translateY(-2px);
-  border-color:var(--accent-a30);
-  box-shadow:0 8px 32px oklch(0 0 0 / 40%),0 0 20px var(--accent-glow),
-    inset 0 1px 0 oklch(1 0 0 / 8%);
-}
-.card h3{margin:0 0 8px;font-size:1.03rem;font-weight:600;letter-spacing:-0.012em}
-.card p{margin:0;color:var(--tx-2);font-size:.92rem;line-height:1.7}
-.card .ico{
-  font-family:var(--mono);font-size:.7rem;color:var(--accent);letter-spacing:.14em;
-  text-transform:uppercase;display:block;margin-bottom:10px;
-}
-
-/* ─── stat tiles ─── */
-.stats{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:30px}
-.stat{
-  background:oklch(0.12 0.02 250 / 60%);
-  backdrop-filter:blur(12px) saturate(150%);
-  -webkit-backdrop-filter:blur(12px) saturate(150%);
-  border:1px solid oklch(1 0 0 / 8%);
-  border-radius:var(--radius);padding:18px;text-align:center;
-}
-.stat .v{
-  font-family:var(--mono);font-size:1.55rem;font-weight:700;display:block;line-height:1.2;
-  background:var(--creation);-webkit-background-clip:text;background-clip:text;color:transparent;
-}
-.stat .l{font-size:.76rem;color:var(--tx-muted);text-transform:uppercase;letter-spacing:.1em;margin-top:5px;display:block}
-
-/* ─── callout note ─── */
-.note{
-  background:oklch(0.12 0.02 250 / 60%);
-  backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
-  border:1px solid oklch(1 0 0 / 8%);border-left:3px solid var(--warn);
-  border-radius:10px;padding:16px 18px;color:var(--tx-2);font-size:.92rem;line-height:1.7;
-}
-.note strong{color:var(--foreground)}
-
-/* ─── footer ─── */
-footer{border-top:1px solid oklch(1 0 0 / 6%);padding:34px 0 46px;color:var(--tx-muted);font-size:.86rem}
-footer .row{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
-footer .sp{flex:1}
-footer a{color:var(--tx-2)}
-.el{
-  display:inline-flex;flex-direction:column;align-items:center;justify-content:center;
-  width:56px;height:56px;border-radius:10px;
-  border:1px solid oklch(1 0 0 / 8%);
-  background:oklch(0.12 0.02 250 / 60%);
-  backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
-  position:relative;overflow:hidden;
-}
-.el::before{content:"";position:absolute;inset:0 0 auto;height:1px;background:var(--creation)}
-.el .n{font-family:var(--mono);font-size:.56rem;color:var(--tx-muted);line-height:1}
-.el .s{
-  font-family:var(--font-display);font-weight:700;font-size:1.2rem;line-height:1.2;
-  background:var(--creation);-webkit-background-clip:text;background-clip:text;color:transparent;
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════
-   THE UNIVERSE STRIP
-   The four public repos are organs of one system, and until now nothing on
-   the pages said so — the nav linked Features / Quick start / GitHub and
-   stopped. This renders the constellation on EVERY page: the current repo lit
-   and centred, its siblings dimmed but reachable. The links are real anchors
-   in the HTML, so it works with JS off; universe.js only adds the drifting
-   flight paths behind them.
+   AITHERIUM FAMILY KIT — the OS frame (static flavour)   @family-kit v1
+   Menubar (mark · app · live · clock · ignite), ONE focused window with a mono
+   title, a dock, and the "About this OS" panel. Then the content contract the
+   generated pages already emit (.wrap .card .code .panel .orb ...), restyled
+   onto the kit so no generator keeps a palette of its own.
+   Needs tokens.css first. Zero JS required: spotlight.js only adds ⌘K.
    ═══════════════════════════════════════════════════════════════════════════ */
-.uni{position:relative;padding:38px 0 30px;border-top:1px solid oklch(1 0 0 / 6%)}
-.uni h2{font-size:clamp(1.15rem,2.2vw,1.4rem);margin-bottom:4px}
-.uni .sub{margin-bottom:22px;font-size:.92rem}
-/* The top band is deliberate empty room: the flight paths arc UP out of the orb
-   row into it. Without it the curves are drawn underneath the cards and are
-   invisible except in the 12px gutters, which looked like the canvas was dead. */
-.uni-stage{position:relative;min-height:190px;padding-top:52px}
-.uni-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}
-.uni-nodes{
-  position:relative;z-index:1;display:grid;gap:12px;
-  grid-template-columns:repeat(auto-fit,minmax(146px,1fr));
-}
-.orb{
-  position:relative;
-  display:flex;flex-direction:column;gap:6px;padding:15px 14px;
-  border-radius:var(--radius);text-align:left;
-  background:oklch(0.12 0.02 250 / 55%);
-  backdrop-filter:blur(14px) saturate(160%);
-  -webkit-backdrop-filter:blur(14px) saturate(160%);
-  border:1px solid oklch(1 0 0 / 7%);
-  transition:all .28s cubic-bezier(0.16,1,0.3,1);
-}
-.orb:hover{
-  text-decoration:none;transform:translateY(-3px);
-  border-color:var(--accent-a30);
-  box-shadow:0 10px 30px oklch(0 0 0 / 40%),0 0 22px var(--accent-glow);
-}
-.orb .k{
-  font-family:var(--mono);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--tx-muted);display:flex;align-items:center;gap:7px;
-}
-.orb .k::before{
-  content:"";width:7px;height:7px;border-radius:50%;flex:none;
-  background:var(--orb,var(--tx-muted));box-shadow:0 0 9px var(--orb,transparent);
-}
-.orb .n{font-weight:600;font-size:.96rem;color:var(--foreground);letter-spacing:-0.01em}
-.orb .d{font-size:.79rem;color:var(--tx-muted);line-height:1.5}
-/* you are here */
-.orb.here{
-  border-color:var(--accent-a50);
-  background:oklch(0.14 0.03 250 / 70%);
-  box-shadow:0 0 0 1px var(--accent-a30),0 10px 34px var(--accent-glow);
-}
-.orb.here .n{color:var(--accent)}
-/* A pill on the top edge, not an ::after inside .k — inline it wrapped onto
-   three lines and made the lit card taller than every sibling. */
-.orb.here::after{
-  content:"you are here";position:absolute;top:-8px;left:14px;
-  font-family:var(--mono);font-size:.56rem;letter-spacing:.13em;text-transform:uppercase;
-  color:var(--background);background:var(--accent);
-  padding:3px 8px;border-radius:999px;white-space:nowrap;
-}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;color-scheme:dark;background:var(--fk-bg)}
+body{margin:0;background:var(--fk-bg);color:var(--fk-ink);font:400 15px/1.65 var(--fk-sans);
+  letter-spacing:-.006em;-webkit-font-smoothing:antialiased}
+::selection{background:rgba(94,201,204,.28);color:var(--fk-ink)}
+a{color:var(--fk-ink);text-decoration-color:var(--fk-faint);text-underline-offset:3px}
+a:hover{color:var(--fk-accent)}
+:focus-visible{outline:1px solid var(--fk-accent);outline-offset:2px;border-radius:4px}
+img,svg,video{max-width:100%}
+code,pre,kbd,samp{font-family:var(--fk-mono)}
+.fk-mark{width:18px;height:18px;color:var(--fk-accent);flex:none;display:block}
+.fk-caps{font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.fk-skip{position:absolute;left:-9999px}
+.fk-skip:focus{left:12px;top:8px;z-index:60;background:var(--fk-bg);padding:6px 10px}
 
-/* ─── experience badge: this repo's name in the estate ─── */
-/* display:flex, not inline-flex — inline it sat on the same line as .eyebrow
-   and the two badges read as one run-on chip. */
-.exp{
-  display:flex;align-items:center;gap:10px;margin-bottom:16px;
-  font-family:var(--font-display);font-size:.9rem;letter-spacing:.04em;
-  color:var(--tx-2);
-}
-.exp .glyph{
-  display:inline-flex;align-items:center;justify-content:center;
-  width:30px;height:30px;border-radius:9px;font-size:.95rem;
-  background:var(--accent-a10);border:1px solid var(--accent-a30);
-}
-.exp b{color:var(--accent);font-weight:700}
+/* ─── menubar ─────────────────────────────────────────────────────────── */
+.fk-menubar{position:sticky;top:0;z-index:40;height:var(--fk-menubar-h);display:flex;align-items:center;
+  gap:18px;padding:0 20px;background:var(--fk-bg);border-bottom:1px solid var(--fk-hairline)}
+.fk-brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--fk-ink);min-width:0}
+.fk-app{font:600 14px/1 var(--fk-sans);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fk-sp{flex:1}
+.fk-links{display:flex;gap:18px}
+.fk-links a{font:400 13px/1 var(--fk-sans);color:var(--fk-dim);text-decoration:none;white-space:nowrap}
+.fk-links a:hover{color:var(--fk-ink)}
+.fk-k{display:inline-flex;align-items:center;gap:6px;font:400 12px/1 var(--fk-mono);color:var(--fk-dim);
+  text-decoration:none;background:none;border:0;padding:4px;cursor:pointer}
+.fk-k svg{width:14px;height:14px}
+.fk-live{display:inline-flex;align-items:center;gap:7px;font:400 12px/1 var(--fk-mono);color:var(--fk-dim)}
+.fk-dot{width:6px;height:6px;border-radius:50%;background:var(--fk-accent);box-shadow:0 0 8px var(--fk-accent-glow)}
+.fk-clock{font:500 12px/1 var(--fk-mono);color:var(--fk-ink);letter-spacing:.02em;min-width:9ch}
+.fk-clock:empty{display:none}
+.fk-ignite{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 14px;border-radius:999px;
+  background:var(--fk-accent);color:var(--fk-bg);font:500 13px/1 var(--fk-mono);text-transform:lowercase;text-decoration:none;white-space:nowrap}
+.fk-ignite:hover{color:var(--fk-bg);box-shadow:0 0 0 3px var(--fk-accent-wash)}
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   LIVE ARTIFACTS
-   Each repo's page carries one real, interactive thing built from the payload
-   being published — a browsable catalogue, a composer, a calculator — instead
-   of six paragraphs of feature copy telling you to go and run `ls`.
-   ═══════════════════════════════════════════════════════════════════════════ */
-.panel{
-  background:oklch(0.10 0.02 250 / 60%);
-  backdrop-filter:blur(20px) saturate(170%);
-  -webkit-backdrop-filter:blur(20px) saturate(170%);
-  border:1px solid oklch(1 0 0 / 8%);
-  border-radius:var(--radius);overflow:hidden;
-  box-shadow:0 8px 32px oklch(0 0 0 / 30%);
-}
-.panel-hd{
-  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-  padding:13px 16px;border-bottom:1px solid oklch(1 0 0 / 8%);
-  background:oklch(0.08 0.02 250 / 50%);
-}
-.panel-hd .t{font-family:var(--mono);font-size:.74rem;color:var(--tx-muted);letter-spacing:.06em}
+/* ─── the window ──────────────────────────────────────────────────────── */
+.fk-window{max-width:var(--fk-maxw);margin:20px auto 0;border:1px solid var(--fk-hairline);
+  border-radius:var(--fk-radius);background:var(--fk-bg);overflow:hidden}
+.fk-titlebar{position:relative;height:40px;display:flex;align-items:center;justify-content:center;
+  padding:0 44px;border-bottom:1px solid var(--fk-hairline)}
+.fk-titlebar::before{content:"";position:absolute;left:16px;top:50%;width:11px;height:11px;margin-top:-6px;
+  border:1px solid var(--fk-faint);border-radius:50%}
+.fk-title{font:400 12px/1 var(--fk-mono);color:var(--fk-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fk-title b{color:var(--fk-ink);font-weight:500}
+/* The dock is a bar pinned to the bottom edge, full width and opaque, and the
+   page reserves its height: the viewport simply ends above it, so no content ever
+   sits half-visible beside or under a floating pill. The window also ends with a
+   dock-height of clear space, so its last line is never under it. */
+.fk-body{padding:8px 0 calc(var(--fk-dock-h) + 24px)}
+body{padding-bottom:calc(var(--fk-dock-h) + 24px)}
+
+/* ─── dock ────────────────────────────────────────────────────────────── */
+.fk-dock{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;justify-content:center;gap:2px;
+  min-height:var(--fk-dock-h);align-items:center;padding:6px 12px calc(6px + env(safe-area-inset-bottom));
+  background:var(--fk-bg);border-top:1px solid var(--fk-hairline);overflow-x:auto;scrollbar-width:none}
+.fk-dock::-webkit-scrollbar{display:none}
+.fk-dock a{position:relative;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;
+  font:400 12px/1 var(--fk-mono);color:var(--fk-dim);text-decoration:none;white-space:nowrap}
+.fk-dock a:hover{color:var(--fk-ink);background:var(--fk-raise)}
+.fk-dock a[aria-current]{color:var(--fk-ink)}
+.fk-dock a[aria-current]::after{content:"";position:absolute;left:50%;bottom:2px;width:3px;height:3px;
+  margin-left:-1.5px;border-radius:50%;background:var(--fk-accent)}
+.fk-dock .fk-mark{width:15px;height:15px}
+.fk-dock .fk-sep{width:1px;margin:6px 4px;background:var(--fk-hairline);flex:none}
+
+/* ─── About this OS ───────────────────────────────────────────────────── */
+.fk-about{max-width:var(--fk-maxw);margin:20px auto 0;padding:28px 32px 30px;border:1px solid var(--fk-hairline);
+  border-radius:var(--fk-radius)}
+.fk-about-hd{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.fk-about-hd .fk-mark{width:26px;height:26px}
+.fk-about-hd h2{margin:0;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim);border:0;padding:0}
+.fk-brandlines{display:flex;flex-wrap:wrap;gap:6px 28px;margin:0 0 22px;font:300 clamp(1.05rem,2vw,1.3rem)/1.4 var(--fk-sans);letter-spacing:-.01em;color:var(--fk-ink)}
+.fk-brandlines span+span{color:var(--fk-dim)}
+/* Element 0: the brand's own motif (aitherium.org, owner ruling 2026-09-13). */
+.fk-element{display:inline-grid;grid-template-rows:auto 1fr auto;width:84px;height:92px;margin:0 0 16px;padding:8px 10px;border:1px solid var(--fk-accent);border-radius:var(--fk-radius-sm);box-shadow:0 0 24px var(--fk-accent-wash)}
+.fk-el-no{font:400 11px/1 var(--fk-mono);color:var(--fk-dim)}
+.fk-el-sy{font:200 38px/1 var(--fk-sans);color:var(--fk-accent);align-self:center;letter-spacing:-.02em}
+.fk-el-nm{font:400 9px/1 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.fk-family{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:0;margin:0;
+  border-top:1px solid var(--fk-hairline)}
+.fk-family a{display:block;padding:14px 16px 14px 0;border-bottom:1px solid var(--fk-hairline);text-decoration:none}
+.fk-family .n{display:block;font:500 15px/1.3 var(--fk-sans);color:var(--fk-ink)}
+.fk-family .n.m{font:500 14px/1.3 var(--fk-mono)}
+.fk-family .r{display:block;font:400 12px/1.5 var(--fk-mono);color:var(--fk-dim);margin-top:2px}
+.fk-family a:hover .n{color:var(--fk-accent)}
+.fk-colophon{margin:18px 0 0;font:400 12px/1.6 var(--fk-mono);color:var(--fk-faint)}
+.fk-colophon a{color:var(--fk-dim)}
+
+/* ─── spotlight (⌘K) ──────────────────────────────────────────────────── */
+.fk-spot{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;
+  padding:12vh 16px 16px;background:rgba(5,5,7,.86)}
+.fk-spot.open{display:flex}
+.fk-spot-box{width:100%;max-width:620px;background:var(--fk-bg);border:1px solid var(--fk-hairline);
+  border-radius:var(--fk-radius);box-shadow:0 0 0 1px var(--fk-accent-wash),0 24px 80px rgba(0,0,0,.6);overflow:hidden}
+.fk-spot-in{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--fk-hairline)}
+.fk-spot-in input{flex:1;height:52px;background:none;border:0;outline:0;color:var(--fk-ink);font:400 15px/1 var(--fk-mono)}
+.fk-spot-in input::placeholder{color:var(--fk-faint)}
+.fk-spot-in input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+.fk-spot ul{list-style:none;margin:0;padding:6px;max-height:52vh;overflow-y:auto}
+.fk-spot li a{display:flex;align-items:baseline;gap:12px;padding:10px 12px;border-radius:var(--fk-radius-sm);
+  text-decoration:none;color:var(--fk-ink)}
+.fk-spot li a .k{margin-left:auto;font:400 11px/1 var(--fk-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--fk-faint)}
+.fk-spot li a .d{font:400 12px/1.4 var(--fk-mono);color:var(--fk-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fk-spot li[aria-selected="true"] a{background:var(--fk-accent-wash)}
+.fk-spot li[aria-selected="true"] a .t{color:var(--fk-accent)}
+.fk-spot .fk-none{padding:18px;font:400 12px/1 var(--fk-mono);color:var(--fk-faint)}
+
+/* ─── content contract ────────────────────────────────────────────────── */
+.wrap{max-width:1040px;margin:0 auto;padding:0 40px}
+header,section{padding:36px 0}
+.fk-body > header:first-child,.fk-body > .wrap:first-child > header:first-child{padding-top:52px}
+h1{font:300 clamp(2.2rem,5.2vw,3.6rem)/1.06 var(--fk-sans);letter-spacing:-.03em;margin:0 0 18px;color:var(--fk-ink)}
+h1 .g,.g{color:var(--fk-accent);background:none;-webkit-text-fill-color:currentColor}
+h2{font:400 clamp(1.4rem,2.6vw,1.9rem)/1.2 var(--fk-sans);letter-spacing:-.02em;margin:0 0 10px;color:var(--fk-ink)}
+section h2:not(:first-child),.readme h2{margin-top:36px}
+h3{font:500 16px/1.35 var(--fk-sans);letter-spacing:-.01em;margin:0 0 6px}
+h4{font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim);margin:22px 0 8px}
+p{margin:0 0 14px}
+.lede{font:300 clamp(1.05rem,1.8vw,1.25rem)/1.6 var(--fk-sans);color:var(--fk-dim);max-width:62ch;margin:0 0 28px}
+.sub{color:var(--fk-dim);max-width:66ch;margin:0 0 22px}
+.eyebrow,.pill{display:inline-flex;align-items:center;gap:10px;margin:0 0 22px;font:500 11px/1.4 var(--fk-mono);
+  letter-spacing:.18em;text-transform:uppercase;color:var(--fk-accent)}
+.eyebrow .dot{width:5px;height:5px;border-radius:50%;background:var(--fk-accent)}
+.exp{display:flex;align-items:center;gap:10px;margin:0 0 16px;font:400 12px/1.5 var(--fk-mono);color:var(--fk-dim)}
+.exp .glyph{color:var(--fk-accent)}
+.exp b{color:var(--fk-ink);font-weight:500}
+.cta{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 32px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 18px;border-radius:999px;
+  font:500 14px/1 var(--fk-sans);text-decoration:none;border:1px solid var(--fk-hairline);color:var(--fk-ink);background:none;cursor:pointer}
+.btn-p{background:var(--fk-accent);border-color:var(--fk-accent);color:var(--fk-bg)}
+.btn-p:hover{color:var(--fk-bg);box-shadow:0 0 0 3px var(--fk-accent-wash)}
+.btn-s{border-color:transparent;padding:0 6px;color:var(--fk-dim);text-decoration:underline;text-decoration-color:var(--fk-faint);text-underline-offset:4px}
+.btn-s:hover{color:var(--fk-ink)}
+.hide-sm{}
+code{font-size:.88em;color:var(--fk-ink);background:var(--fk-raise);border:1px solid var(--fk-hairline);border-radius:5px;padding:.08em .38em}
+pre{margin:0 0 16px;padding:14px 16px;border:1px solid var(--fk-hairline);border-radius:var(--fk-radius-sm);
+  background:var(--fk-raise);overflow-x:auto;font:400 13px/1.6 var(--fk-mono);color:var(--fk-ink)}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+.code{position:relative;margin:0 0 28px;border:1px solid var(--fk-hairline);border-radius:var(--fk-radius);overflow:hidden}
+.code .bar{display:flex;align-items:center;gap:6px;height:34px;padding:0 14px;border-bottom:1px solid var(--fk-hairline)}
+.code .bar > span:not(.t){display:none}
+.code .bar .t{font:400 12px/1 var(--fk-mono);color:var(--fk-dim)}
+.code pre{margin:0;border:0;border-radius:0;background:none;padding:16px 18px}
+.code pre.prose{white-space:pre-wrap;font-family:var(--fk-sans);font-size:14px;color:var(--fk-dim)}
+.code pre .c{color:var(--fk-faint)}
+.code pre .k{color:var(--fk-accent)}
+.code pre .s{color:var(--fk-ink)}
+.code .copy{position:absolute;top:6px;right:8px;height:22px;padding:0 8px;border:1px solid var(--fk-hairline);border-radius:6px;
+  background:var(--fk-bg);color:var(--fk-dim);font:400 11px/1 var(--fk-mono);letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
+.grid{display:grid;gap:0;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));border-top:1px solid var(--fk-hairline);
+  border-left:1px solid var(--fk-hairline);margin:0 0 8px}
+.card{padding:20px 22px;border-right:1px solid var(--fk-hairline);border-bottom:1px solid var(--fk-hairline);background:none}
+.card .ico,.card .l{display:block;margin:0 0 10px;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-accent)}
+.card p{color:var(--fk-dim);font-size:14px;margin:0 0 10px}
+.card h3 a{text-decoration:none}
+.card h3 em{display:block;margin-top:6px;font:400 11px/1.4 var(--fk-mono);font-style:normal;color:var(--fk-faint);letter-spacing:.04em}
+.card h3.m,.m{font-family:var(--fk-mono);letter-spacing:0}
+.card.pending{opacity:.55}
+.card pre{font-size:12px;padding:9px 12px;margin:0}
+.stats{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--fk-hairline);margin:8px 0 0}
+.stat{flex:1 1 150px;padding:18px 20px 4px 0}
+.stat .v{display:block;font:300 1.9rem/1.1 var(--fk-sans);letter-spacing:-.03em;color:var(--fk-ink)}
+.stat .l{display:block;margin-top:6px;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.note{margin:18px 0 0;padding:12px 16px;border-left:2px solid var(--fk-accent);color:var(--fk-dim);font-size:14px;background:none}
+blockquote{margin:0 0 16px;padding:4px 16px;border-left:2px solid var(--fk-hairline);color:var(--fk-dim)}
+table{border-collapse:collapse;width:100%;margin:0 0 18px;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--fk-hairline);vertical-align:top}
+th{font:500 11px/1.4 var(--fk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--fk-dim)}
+hr{border:0;border-top:1px solid var(--fk-hairline);margin:28px 0}
+ul,ol{padding-left:1.3em;margin:0 0 14px}
+li{margin:0 0 4px}
+.panel{border:1px solid var(--fk-hairline);border-radius:var(--fk-radius);padding:0 0 12px;overflow:hidden}
+.panel-hd{display:flex;align-items:center;gap:10px;height:40px;padding:0 16px;border-bottom:1px solid var(--fk-hairline)}
+.panel-hd .t{font:400 12px/1 var(--fk-mono);color:var(--fk-dim)}
 .panel-hd .sp{flex:1}
-.count{font-family:var(--mono);font-size:.74rem;color:var(--accent)}
+.panel-hd .count{font:400 12px/1 var(--fk-mono);color:var(--fk-faint)}
+.field-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;padding:14px 16px 0}
+.field-row label{display:block;margin:0 0 6px;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.field{width:100%;height:38px;padding:0 12px;border:1px solid var(--fk-hairline);border-radius:var(--fk-radius-sm);
+  background:none;color:var(--fk-ink);font:400 14px/1 var(--fk-mono)}
+.field:focus{outline:0;border-color:var(--fk-accent)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:12px 16px 0}
+.chip{height:26px;padding:0 10px;border:1px solid var(--fk-hairline);border-radius:999px;background:none;color:var(--fk-dim);
+  font:400 12px/1 var(--fk-mono);cursor:pointer}
+.chip[aria-pressed="true"]{color:var(--fk-bg);background:var(--fk-accent);border-color:var(--fk-accent)}
+.rows{margin:12px 0 0;max-height:520px;overflow-y:auto;border-top:1px solid var(--fk-hairline)}
+.row-item{display:grid;grid-template-columns:minmax(0,14rem) minmax(0,1fr) auto;gap:16px;align-items:baseline;
+  padding:10px 16px;border-bottom:1px solid var(--fk-hairline);text-decoration:none;color:var(--fk-ink)}
+.row-item:hover{background:var(--fk-raise)}
+.row-item .n{font:500 13px/1.4 var(--fk-mono);overflow:hidden;text-overflow:ellipsis}
+.row-item .d{font-size:13px;color:var(--fk-dim)}
+.row-item .tag{font:400 11px/1 var(--fk-mono);color:var(--fk-faint)}
+.empty{padding:16px;font:400 12px/1.4 var(--fk-mono);color:var(--fk-faint)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0;margin:16px 16px 0;border-top:1px solid var(--fk-hairline)}
+.cell{padding:14px 12px 0 0}
+.cell .l{display:block;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.cell .v{display:block;margin-top:6px;font:300 1.6rem/1.1 var(--fk-sans);color:var(--fk-ink)}
+.cell.flat .v{color:var(--fk-dim)}
+.bar-cmp{display:flex;flex-direction:column;gap:6px;margin:16px 16px 0}
+.bar-cmp .track{height:6px;border-radius:3px;background:var(--fk-hairline);overflow:hidden}
+.bar-cmp .fill{height:100%;background:var(--fk-accent)}
+.bar-cmp .lbl{display:flex;justify-content:space-between;font:400 11px/1 var(--fk-mono);color:var(--fk-faint)}
 
-.field{
-  width:100%;padding:10px 13px;border-radius:9px;font-family:var(--font);font-size:.9rem;
-  background:oklch(0.06 0.015 250 / 70%);color:var(--foreground);
-  border:1px solid oklch(1 0 0 / 10%);
+/* the estate strip: flat doors, the page you are on lit. No canvas: the mark
+   is the only ornament in this family. */
+.uni-canvas,#aither-constellation canvas{display:none!important}
+.uni-nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));border-top:1px solid var(--fk-hairline);
+  border-left:1px solid var(--fk-hairline)}
+.orb{display:block;padding:16px 18px;border-right:1px solid var(--fk-hairline);border-bottom:1px solid var(--fk-hairline);text-decoration:none}
+.orb .k{display:block;font:500 10px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-faint)}
+.orb .n{display:block;margin:4px 0;font:500 14px/1.3 var(--fk-mono);color:var(--fk-ink)}
+.orb .d{display:block;font-size:13px;line-height:1.5;color:var(--fk-dim)}
+.orb.here{box-shadow:inset 2px 0 0 var(--fk-accent)}
+.orb.here .n,.orb:hover .n{color:var(--fk-accent)}
+
+/* hub + brick-page vocabulary */
+.tag{color:var(--fk-ink);font-size:14px;margin:0 0 10px}
+.why,.adopt{color:var(--fk-dim);font-size:13.5px;margin:0 0 10px}
+.adopt strong{color:var(--fk-ink);font-weight:500}
+.members a{display:inline-block;margin:0 6px 6px 0;padding:3px 9px;border:1px solid var(--fk-hairline);border-radius:999px;
+  font:400 12px/1.4 var(--fk-mono);text-decoration:none;color:var(--fk-dim)}
+.members a:hover{color:var(--fk-accent);border-color:var(--fk-accent)}
+.fk-section-h{display:flex;align-items:baseline;gap:12px;margin:0 0 16px}
+.fk-section-h .n{font:400 12px/1 var(--fk-mono);color:var(--fk-faint)}
+
+/* ─── phone ───────────────────────────────────────────────────────────── */
+@media (max-width:760px){
+  body{font-size:15px}
+  .fk-menubar{gap:12px;padding:0 14px}
+  .fk-links,.fk-clock,.fk-live span,.fk-k span,.hide-sm{display:none}
+  .fk-window{margin:0;border-left:0;border-right:0;border-radius:0}
+  .fk-about{margin:0;border-left:0;border-right:0;border-radius:0;padding:24px 20px}
+  .wrap{padding:0 20px}
+  header,section{padding:26px 0}
+  .fk-body > header:first-child,.fk-body > .wrap:first-child > header:first-child{padding-top:34px}
+  .grid,.uni-nodes{grid-template-columns:1fr}
+  .row-item{grid-template-columns:minmax(0,1fr) auto}
+  .row-item .d{grid-column:1 / -1;grid-row:2}
+  .fk-dock{justify-content:flex-start;padding-left:8px;padding-right:8px}
 }
-.field::placeholder{color:var(--tx-muted)}
-.field:focus{outline:none;border-color:var(--accent-a50);box-shadow:0 0 0 3px var(--accent-a10)}
-.field-row{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));padding:16px}
-.field-row label{display:block;font-size:.74rem;color:var(--tx-muted);margin-bottom:6px;
-  text-transform:uppercase;letter-spacing:.09em;font-family:var(--mono)}
 
-.chips{display:flex;flex-wrap:wrap;gap:7px;padding:12px 16px;border-bottom:1px solid oklch(1 0 0 / 6%)}
-.chip{
-  font-family:var(--mono);font-size:.71rem;padding:5px 11px;border-radius:999px;cursor:pointer;
-  background:oklch(1 0 0 / 4%);border:1px solid oklch(1 0 0 / 9%);color:var(--tx-2);
-  transition:.18s;
+/* ─── motion: only when the reader has not asked for less ─────────────── */
+@media (prefers-reduced-motion:no-preference){
+  a,.btn,.chip,.fk-dock a,.fk-ignite{transition:color .18s var(--fk-ease),background-color .18s var(--fk-ease),
+    border-color .18s var(--fk-ease),box-shadow .18s var(--fk-ease)}
+  .fk-spot.open .fk-spot-box{animation:fk-rise .22s var(--fk-ease)}
+  @keyframes fk-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 }
-.chip:hover{border-color:var(--accent-a30);color:var(--accent)}
-.chip[aria-pressed="true"]{background:var(--accent-a10);border-color:var(--accent-a50);color:var(--accent)}
-
-.rows{max-height:432px;overflow-y:auto}
-.row-item{
-  display:block;width:100%;text-align:left;padding:13px 16px;cursor:pointer;
-  border:0;border-bottom:1px solid oklch(1 0 0 / 5%);
-  background:transparent;color:inherit;font-family:var(--font);transition:.16s;
-}
-.row-item:hover{background:var(--accent-a10);text-decoration:none}
-.row-item .n{display:block;font-weight:600;font-size:.9rem;color:var(--foreground)}
-.row-item .d{display:block;font-size:.8rem;color:var(--tx-muted);line-height:1.55;margin-top:3px}
-.row-item .tag{
-  font-family:var(--mono);font-size:.65rem;color:var(--accent);
-  letter-spacing:.1em;text-transform:uppercase;
-}
-.empty{padding:34px 16px;text-align:center;color:var(--tx-muted);font-size:.88rem}
-
-/* key→value readout (calculator results, composed manifests) */
-.kv{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));padding:16px}
-.kv .cell{padding:13px;border-radius:10px;background:oklch(1 0 0 / 3%);border:1px solid oklch(1 0 0 / 7%)}
-.kv .cell .l{display:block;font-size:.68rem;color:var(--tx-muted);text-transform:uppercase;
-  letter-spacing:.1em;font-family:var(--mono)}
-.kv .cell .v{display:block;font-family:var(--mono);font-size:1.22rem;font-weight:700;margin-top:5px;
-  background:var(--creation);-webkit-background-clip:text;background-clip:text;color:transparent}
-.kv .cell.flat .v{background:none;color:var(--foreground);-webkit-text-fill-color:currentColor}
-
-/* compression / ratio bar */
-.bar-cmp{padding:0 16px 16px}
-.bar-cmp .track{height:9px;border-radius:99px;background:oklch(1 0 0 / 6%);overflow:hidden;margin-bottom:7px}
-.bar-cmp .fill{height:100%;background:var(--creation);border-radius:99px;transition:width .35s ease}
-.bar-cmp .lbl{display:flex;justify-content:space-between;font-family:var(--mono);
-  font-size:.71rem;color:var(--tx-muted)}
-
-/* ordered step sequence (playbooks) */
-.steps{list-style:none;margin:0;padding:16px;display:flex;flex-direction:column;gap:0}
-.steps li{position:relative;padding:0 0 16px 26px;font-size:.87rem;color:var(--tx-2)}
-.steps li:last-child{padding-bottom:0}
-.steps li::before{
-  content:"";position:absolute;left:0;top:5px;width:9px;height:9px;border-radius:50%;
-  background:var(--accent);box-shadow:0 0 8px var(--accent-glow);
-}
-.steps li:not(:last-child)::after{
-  content:"";position:absolute;left:4px;top:16px;bottom:2px;width:1px;background:oklch(1 0 0 / 12%);
-}
-.steps li b{color:var(--foreground);font-weight:600}
-
-/* ─── motion ─── */
-@keyframes fade-in-up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-header .wrap>*{animation:fade-in-up .6s ease-out both}
-header .wrap>*:nth-child(2){animation-delay:.05s}
-header .wrap>*:nth-child(3){animation-delay:.1s}
-header .wrap>*:nth-child(4){animation-delay:.15s}
-header .wrap>*:nth-child(5){animation-delay:.2s}
-header .wrap>*:nth-child(6){animation-delay:.25s}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-
-/* ─── scrollbar ─── */
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-track{background:oklch(0.08 0.015 250)}
-::-webkit-scrollbar-thumb{background:oklch(0.25 0.03 250);border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:oklch(0.35 0.05 260)}
+@media print{.fk-menubar,.fk-dock,.fk-spot{display:none}}
 </style>
-<style>:root{--accent:oklch(0.75 0.16 45);--accent-a04:oklch(0.75 0.16 45 / 4%);--accent-a10:oklch(0.75 0.16 45 / 10%);--accent-a30:oklch(0.75 0.16 45 / 30%);--accent-a50:oklch(0.75 0.16 45 / 50%);--accent-glow:oklch(0.75 0.16 45 / 18%);}</style>
 </head>
 <body>
-<nav><div class="wrap">
-  <a class="brand" href="https://aitherium.com"><span class="ai">Ai</span><span>Aitherium</span></a>
-  <span class="sp"></span>
-  <a class="nl hide-sm" href="#catalogue">Packs</a>
-  <a class="nl hide-sm" href="#start">Quick start</a>
-  <a class="nl" href="#universe">The estate</a>
-  
-  <a class="nl" href="https://github.com/Aitherium/awdk">GitHub</a>
-</div></nav>
-
+<a class="fk-skip" href="#fk-main">Skip to content</a>
+<header class="fk-menubar" role="banner">
+  <a class="fk-brand" href="index.html" aria-label="awdk home"><svg class="fk-mark" viewBox="0 0 512 512" fill="none" aria-hidden="true"><g transform="translate(256 256) scale(0.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="currentColor" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="52" fill="currentColor"/><circle cx="256" cy="262" r="26" fill="#050507"/><circle cx="256" cy="262" r="10" fill="currentColor"/></g></svg><span class="fk-app m">awdk</span></a>
+  <span class="fk-sp"></span>
+  <nav class="fk-links" aria-label="awdk"><a href="#catalogue">Packs</a><a href="#start">Quick start</a><a href="#universe">The estate</a><a href="https://github.com/Aitherium/awdk">GitHub</a></nav>
+  <a class="fk-k" href="#fk-about" data-fk-spotlight aria-label="Search (Ctrl K)"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.4"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span>⌘K</span></a>
+  <span class="fk-live"><i class="fk-dot" aria-hidden="true"></i><span>live</span></span>
+  <time class="fk-clock" data-fk-clock></time>
+  <a class="fk-ignite" href="https://aitherium.com/">ignite <span aria-hidden="true">→</span></a>
+</header>
+<main class="fk-window" id="fk-main">
+  <div class="fk-titlebar"><span class="fk-title"><b>awdk</b> — the forge</span></div>
+  <div class="fk-body">
 <header><div class="wrap">
   <div class="eyebrow"><span class="dot"></span>Python · pip install awdk</div>
   <div class="exp"><span class="glyph">⬢</span>
@@ -536,35 +395,33 @@ header .wrap>*:nth-child(6){animation-delay:.25s}
 
 
 
-<section class="uni" id="universe" data-derived="ecosystem.yaml"><div class="wrap"><h2>One estate, 8 doors</h2><p class="sub">These projects are organs of the same system — the same identity plane, the same agent runtime, the same operational discipline. Follow any of them.</p><div class="uni-stage"><canvas class="uni-canvas" aria-hidden="true"></canvas><div class="uni-nodes"><a class="orb" href="https://aitherium.com" data-id="aitherium" data-kind="the os" style="--orb:var(--cyan)"><span class="k">the os</span><span class="n">aitherium.com</span><span class="d">The Living OS these four repos are cut from. Open, no login.</span></a><a class="orb here" href="https://aitherium.github.io/awdk/" data-id="awdk" data-kind="python" style="--orb:var(--accent-warm)"><span class="k">python</span><span class="n">awdk</span><span class="d">Build AI agent fleets — 3 lines, any backend, local or cloud.</span></a><a class="orb" href="https://aitherium.github.io/awskills/" data-id="awskills" data-kind="markdown" style="--orb:var(--cyan)"><span class="k">markdown</span><span class="n">awskills</span><span class="d">Portable agent skills — self-contained procedures an agent loads on demand.</span></a><a class="orb" href="https://aitherium.github.io/awknowledge/" data-id="awknowledge" data-kind="markdown" style="--orb:var(--accent-warm)"><span class="k">markdown</span><span class="n">awknowledge</span><span class="d">How to run a coding agent so the result survives — the laws, with evidence.</span></a><a class="orb" href="https://aitherium.github.io/aitherkvcache/" data-id="aitherkvcache" data-kind="cuda" style="--orb:var(--lavender)"><span class="k">cuda</span><span class="n">aitherkvcache</span><span class="d">Near-optimal KV cache quantization for LLM inference — sub-byte compression.</span></a><a class="orb" href="https://aitherium.github.io/AitherZero/" data-id="AitherZero" data-kind="powershell" style="--orb:var(--mint)"><span class="k">powershell</span><span class="n">AitherZero</span><span class="d">PowerShell 7+ automation framework — numbered, self-describing scripts.</span></a><a class="orb" href="https://blog.aitherium.com" data-id="blog" data-kind="writing" style="--orb:var(--coral)"><span class="k">writing</span><span class="n">The Blog</span><span class="d">How all of it is actually built, measured and operated.</span></a><a class="orb" href="https://aitherium.github.io/awrun/" data-id="awrun" data-kind="python" style="--orb:var(--coral)"><span class="k">python</span><span class="n">awrun</span><span class="d">A priority-aware queue and dispatcher for agentic runs and ad-hoc CI builds. It also judges whether the runner pool is big enough for the queue it is draining, and can ask a host to grow it -- reserving capacity is zero-sum, so a saturated pool needs more of it, not a different share of it.</span></a></div></div></div></section>
+<section class="uni" id="universe" data-derived="ecosystem.yaml"><div class="wrap"><h2>One estate, 8 doors</h2><p class="sub">These projects are organs of the same system — the same identity plane, the same agent runtime, the same operational discipline. Follow any of them.</p><div class="uni-stage"><div class="uni-nodes"><a class="orb" href="https://aitherium.com" data-id="aitherium" data-kind="the os"><span class="k">the os</span><span class="n">aitherium.com</span><span class="d">The Living OS these four repos are cut from. Open, no login.</span></a><a class="orb here" href="https://aitherium.github.io/awdk/" data-id="awdk" data-kind="python"><span class="k">python</span><span class="n">awdk</span><span class="d">Build AI agent fleets — 3 lines, any backend, local or cloud.</span></a><a class="orb" href="https://aitherium.github.io/awskills/" data-id="awskills" data-kind="markdown"><span class="k">markdown</span><span class="n">awskills</span><span class="d">Portable agent skills — self-contained procedures an agent loads on demand.</span></a><a class="orb" href="https://aitherium.github.io/awknowledge/" data-id="awknowledge" data-kind="markdown"><span class="k">markdown</span><span class="n">awknowledge</span><span class="d">How to run a coding agent so the result survives — the laws, with evidence.</span></a><a class="orb" href="https://aitherium.github.io/aitherkvcache/" data-id="aitherkvcache" data-kind="cuda"><span class="k">cuda</span><span class="n">aitherkvcache</span><span class="d">Near-optimal KV cache quantization for LLM inference — sub-byte compression.</span></a><a class="orb" href="https://aitherium.github.io/AitherZero/" data-id="AitherZero" data-kind="powershell"><span class="k">powershell</span><span class="n">AitherZero</span><span class="d">PowerShell 7+ automation framework — numbered, self-describing scripts.</span></a><a class="orb" href="https://blog.aitherium.com" data-id="blog" data-kind="writing"><span class="k">writing</span><span class="n">The Blog</span><span class="d">How all of it is actually built, measured and operated.</span></a><a class="orb" href="https://aitherium.github.io/awrun/" data-id="awrun" data-kind="python"><span class="k">python</span><span class="n">awrun</span><span class="d">A priority-aware queue and dispatcher for agentic runs and ad-hoc CI builds. It also judges whether the runner pool is big enough for the queue it is draining, and can ask a host to grow it -- reserving capacity is zero-sum, so a saturated pool needs more of it, not a different share of it.</span></a></div></div></div></section>
 
 <!-- The ecosystem constellation. It lives HERE, in the generator, because
      these pages are regenerated on every sync: a mount hand-added to a repo's
      docs/index.html is overwritten on the next run and looks like it was never
      applied. Every generated page therefore carries it, and a repo that
      publishes no manifest renders as `unknown` rather than vanishing. -->
-<section class="wrap" style="margin:3rem auto">
+<section class="wrap">
   <h2>The ecosystem this belongs to</h2>
-  <p>Every Aitherium repository publishes an <code>aither-manifest.json</code> beside its
+  <p class="sub">Every Aitherium repository publishes an <code>aither-manifest.json</code> beside its
   page, and each surface reads all of them — so the network is browsable from any node in
   it. A repository that publishes nothing shows as <em>unknown</em>, never as zero.</p>
-  <div id="aither-constellation"
-       data-self="awdk"></div>
+  <div id="aither-constellation" data-self="awdk"></div>
 </section>
-<script src="aither-constellation.js"></script>
+</div>
+</main>
 
-<footer><div class="wrap"><div class="row">
-  <span class="el"><span class="n">47</span><span class="s">Ai</span></span>
-  <div>
-    <div style="color:var(--foreground);font-weight:500">Aitherium — The Element of Creation</div>
-    <div>Agent Development Kit · MIT licensed</div>
-  </div>
-  <span class="sp"></span>
-  <a href="https://github.com/Aitherium/awdk">GitHub</a>
-  <a href="https://github.com/Aitherium/awdk/blob/main/LICENSE">License</a>
-  <a href="https://blog.aitherium.com">Blog</a>
-  <a href="https://aitherium.com">aitherium.com</a>
-</div></div></footer>
+<footer class="fk-about" id="fk-about" aria-labelledby="fk-about-h">
+  <div class="fk-about-hd"><svg class="fk-mark" viewBox="0 0 512 512" fill="none" aria-hidden="true"><g transform="translate(256 256) scale(0.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="currentColor" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="52" fill="currentColor"/><circle cx="256" cy="262" r="26" fill="#050507"/><circle cx="256" cy="262" r="10" fill="currentColor"/></g></svg><h2 id="fk-about-h">About this OS</h2></div>
+  <div class="fk-element" aria-label="Aitherium, element 0, symbol Ai, the element of creation"><span class="fk-el-no">0</span><span class="fk-el-sy">Ai</span><span class="fk-el-nm">aitherium</span></div>
+  <p class="fk-brandlines"><span>Aitherium · the element of creation</span><span>Aither — the medium creation moves through</span></p>
+  <div class="fk-family"><a href="https://aitherium.com/about"><span class="n">Aitherium</span><span class="r">the company</span></a><a href="https://aitherium.com/"><span class="n">AitherOS</span><span class="r">the OS</span></a><a href="https://aitherium.github.io/awnix/"><span class="n m">awnix</span><span class="r">the base</span></a><a href="https://aitherium.github.io/awdk/"><span class="n m">awdk</span><span class="r">the SDK</span></a><a href="https://aitherium.github.io/awsh/"><span class="n m">awsh</span><span class="r">the shell</span></a><a href="https://aitherium.github.io/"><span class="n m">aw* bricks</span><span class="r">the frameworks</span></a><a href="https://aitherium.com/studio"><span class="n">The Studio</span><span class="r">build apps, agents, workflows</span></a></div>
+  <p class="fk-colophon">Agent Development Kit · MIT licensed &middot; <a href="https://github.com/Aitherium/awdk">source</a> &middot; <a href="https://github.com/Aitherium/awdk/blob/main/LICENSE">license</a></p>
+</footer>
+<nav class="fk-dock" aria-label="The family"><a href="https://aitherium.com/" aria-label="AitherOS"><svg class="fk-mark" viewBox="0 0 512 512" fill="none" aria-hidden="true"><g transform="translate(256 256) scale(0.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="currentColor" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="52" fill="currentColor"/><circle cx="256" cy="262" r="26" fill="#050507"/><circle cx="256" cy="262" r="10" fill="currentColor"/></g></svg></a><span class="fk-sep" aria-hidden="true"></span><a href="https://aitherium.github.io/">bricks</a><a href="https://aitherium.github.io/awdk/" aria-current="page">awdk</a><a href="https://aitherium.github.io/awsh/">awsh</a><a href="https://aitherium.github.io/awnix/">awnix</a><a href="https://aitherium.github.io/awknowledge/">guide</a><a href="https://blog.aitherium.com/">journal</a></nav>
+<script type="application/json" id="fk-index">[{"t":"Packs","h":"#catalogue","k":"awdk","d":""},{"t":"Quick start","h":"#start","k":"awdk","d":""},{"t":"The estate","h":"#universe","k":"awdk","d":""},{"t":"GitHub","h":"https://github.com/Aitherium/awdk","k":"awdk","d":""},{"t":"aitherium.com","h":"https://aitherium.com","k":"estate","d":"The Living OS these four repos are cut from. Open, no login."},{"t":"awdk","h":"https://aitherium.github.io/awdk/","k":"estate","d":"Build AI agent fleets — 3 lines, any backend, local or cloud."},{"t":"awskills","h":"https://aitherium.github.io/awskills/","k":"estate","d":"Portable agent skills — self-contained procedures an agent loads on demand."},{"t":"awknowledge","h":"https://aitherium.github.io/awknowledge/","k":"estate","d":"How to run a coding agent so the result survives — the laws, with evidence."},{"t":"aitherkvcache","h":"https://aitherium.github.io/aitherkvcache/","k":"estate","d":"Near-optimal KV cache quantization for LLM inference — sub-byte compression."},{"t":"AitherZero","h":"https://aitherium.github.io/AitherZero/","k":"estate","d":"PowerShell 7+ automation framework — numbered, self-describing scripts."},{"t":"The Blog","h":"https://blog.aitherium.com","k":"estate","d":"How all of it is actually built, measured and operated."},{"t":"awrun","h":"https://aitherium.github.io/awrun/","k":"estate","d":"A priority-aware queue and dispatcher for agentic runs and ad-hoc CI builds. It also judges whether the runner pool is b"},{"t":"Aitherium","h":"https://aitherium.com/about","k":"family","d":"the company"},{"t":"AitherOS","h":"https://aitherium.com/","k":"family","d":"the OS"},{"t":"awnix","h":"https://aitherium.github.io/awnix/","k":"family","d":"the base"},{"t":"awdk","h":"https://aitherium.github.io/awdk/","k":"family","d":"the SDK"},{"t":"awsh","h":"https://aitherium.github.io/awsh/","k":"family","d":"the shell"},{"t":"aw* bricks","h":"https://aitherium.github.io/","k":"family","d":"the frameworks"},{"t":"The Studio","h":"https://aitherium.com/studio","k":"family","d":"build apps, agents, workflows"},{"t":"journal","h":"https://blog.aitherium.com/","k":"family","d":"how all of it is built, measured and operated"}]</script>
+<script src="aither-constellation.js"></script>
 <script>
 document.querySelectorAll('.code').forEach(function(box){
   var pre = box.querySelector('pre'); if(!pre) return;
@@ -656,237 +513,97 @@ document.querySelectorAll('.code').forEach(function(box){
   calc();
 })();
 </script>
-<script>/* ═══════════════════════════════════════════════════════════════════════════
-   AITHERIUM UNIVERSE STRIP — flight paths between the public repos
-   @element-universe v1
-
-   Source of truth for the motion layer of the universe strip on every public
-   static page. tools/gen_public_pages.py INLINES this file verbatim, the same
-   way it inlines .ELEMENT/web/aitherium.css, and check_pages_truth.py asserts
-   a published page still carries the current copy.
-
-   WHY THIS IS NOT @aitheros/bead-space
-       bead-space is the real thing: a d3-force universe explorer with live
-       AitherOS adapters (agents, compute, mesh, platform, work). Using it here
-       would mean npm-installing seven d3 packages and running esbuild inside
-       four sync workflows, then inlining ~60-80KB into every landing page — to
-       lay out SIX fixed navigational nodes that never move and carry no live
-       data. That is the wrong trade: it adds a build dependency to a pipeline
-       whose whole virtue is that it is pure static generation.
-       So this is a purpose-built ~4KB renderer that deliberately speaks
-       bead-space's node shape ({id, label, kind, href}), read straight off the
-       rendered DOM. If the strip ever needs live fleet data, swap this for the
-       real bead-space bundle without touching the markup or the CSS.
-
-   PROGRESSIVE ENHANCEMENT, NOT A DEPENDENCY
-       The orbs are real <a> elements emitted in the HTML. Navigation works with
-       JavaScript off, with canvas unsupported, and if this file fails to parse.
-       Everything below only draws the connective tissue between them. Under
-       prefers-reduced-motion it renders the paths once, statically, and stops —
-       it never animates.
-   ═══════════════════════════════════════════════════════════════════════════ */
+<script>
+/* AITHERIUM FAMILY KIT — spotlight + clock (static flavour)   @family-spotlight v1
+   ⌘K / Ctrl+K (or "/") opens a search over the JSON index the page ships in
+   its application/json element #fk-index: [{t: title, h: href, k: kind, d: detail}].
+   This file is inlined into a script element, so it must never contain a
+   closing script tag, even in a comment.
+   No dependencies, nothing fetched. With JS off the ⌘K control is a plain link
+   to the page's "About this OS" panel, so every destination stays reachable. */
 (function () {
-  'use strict';
+  var d = document;
+  var clock = d.querySelector("[data-fk-clock]");
+  function tick() {
+    var n = new Date();
+    var day = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][n.getDay()];
+    var p = function (x) { return (x < 10 ? "0" : "") + x; };
+    clock.textContent = day + " " + p(n.getHours()) + ":" + p(n.getMinutes());
+  }
+  if (clock) { tick(); setInterval(tick, 15000); }
 
-  var stage = document.querySelector('.uni-stage');
-  if (!stage) return;
+  var src = d.getElementById("fk-index");
+  var items = [];
+  try { items = JSON.parse(src ? src.textContent : "[]"); } catch (e) { items = []; }
+  if (!items.length) return;
 
-  var canvas = stage.querySelector('.uni-canvas');
-  if (!canvas || typeof canvas.getContext !== 'function') return;
+  var box = d.createElement("div");
+  box.className = "fk-spot";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  box.setAttribute("aria-label", "Search");
+  box.innerHTML = '<div class="fk-spot-box"><label class="fk-spot-in"><span class="fk-caps">⌘K</span>' +
+    '<input type="search" autocomplete="off" spellcheck="false" placeholder="jump to a page, a brick, a command" ' +
+    'aria-controls="fk-spot-list"></label><ul id="fk-spot-list" role="listbox"></ul></div>';
+  d.body.appendChild(box);
+  var input = box.querySelector("input"), list = box.querySelector("ul"), sel = 0, shown = [], last = null;
 
-  var ctx = canvas.getContext('2d');
-  if (!ctx) return;
-
-  var reduced =
-    window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  var orbEls = Array.prototype.slice.call(stage.querySelectorAll('.orb'));
-  if (orbEls.length < 2) return;
-
-  var accent =
-    (getComputedStyle(document.documentElement).getPropertyValue('--accent') || '').trim() ||
-    '#2AD7D7';
-
-  var nodes = [];
-  var here = null;
-  var paths = [];
-  var W = 0;
-  var H = 0;
-  var raf = 0;
-
-  // ── layout ───────────────────────────────────────────────────────────────
-  function measure() {
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
-    var sr = stage.getBoundingClientRect();
-    W = sr.width;
-    H = sr.height;
-    if (W < 2 || H < 2) return false;
-
-    canvas.width = Math.max(1, Math.round(W * dpr));
-    canvas.height = Math.max(1, Math.round(H * dpr));
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    nodes = orbEls.map(function (el) {
-      var r = el.getBoundingClientRect();
-      return {
-        el: el,
-        // bead-space node shape, read off the DOM rather than a second data blob
-        id: el.getAttribute('data-id') || '',
-        kind: el.getAttribute('data-kind') || 'repo',
-        href: el.getAttribute('href') || '',
-        x: r.left - sr.left + r.width / 2,
-        y: r.top - sr.top + r.height / 2,
-        // Paths anchor to the TOP EDGE, not the centre. A quadratic only reaches
-        // half its control-point offset, so centre-anchored arcs peaked inside
-        // the orb row and were covered by the cards (which sit at z-index 1).
-        ty: r.top - sr.top + 5,
-        here: el.classList.contains('here')
-      };
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
     });
-
-    here =
-      nodes.filter(function (n) {
-        return n.here;
-      })[0] || nodes[0];
-
-    // One flight path from the lit node to each sibling. The control point is
-    // pushed perpendicular to the chord so paths bow instead of overlapping
-    // into a single straight bar when the orbs wrap onto one row.
-    paths = nodes
-      .filter(function (n) {
-        return n !== here;
-      })
-      .map(function (n, i) {
-        var mx = (here.x + n.x) / 2;
-        var my = (here.ty + n.ty) / 2;
-        var dx = n.x - here.x;
-        var dy = n.ty - here.ty;
-        var len = Math.sqrt(dx * dx + dy * dy) || 1;
-        // Always bow toward the top of the stage (canvas y grows downward), into
-        // the padding band .uni-stage reserves. Alternating the sign put half the
-        // arcs underneath the orb row where they were invisible.
-        var bow = Math.min(78, 26 + len * 0.22) * (dx >= 0 ? -1 : 1);
-        return {
-          a: here,
-          b: n,
-          cx: mx + (-dy / len) * bow,
-          cy: my + (dx / len) * bow,
-          // deterministic offsets: no Math.random, so the strip looks identical
-          // on every load and in every screenshot
-          seeds: [i * 0.37 % 1, (i * 0.37 + 0.5) % 1]
-        };
-      });
-
-    return true;
+  }
+  function score(it, q) {
+    if (!q) return 1;
+    var t = (it.t || "").toLowerCase(), hay = t + " " + (it.k || "") + " " + (it.d || "").toLowerCase();
+    if (t.indexOf(q) === 0) return 3;
+    if (t.indexOf(q) > -1) return 2;
+    return hay.indexOf(q) > -1 ? 1 : 0;
+  }
+  function render() {
+    var q = input.value.trim().toLowerCase();
+    shown = items.map(function (it, i) { return { it: it, s: score(it, q), i: i }; })
+      .filter(function (x) { return x.s > 0; })
+      .sort(function (a, b) { return b.s - a.s || a.i - b.i; })
+      .slice(0, 40);
+    sel = Math.min(sel, Math.max(0, shown.length - 1));
+    list.innerHTML = shown.length ? shown.map(function (x, i) {
+      return '<li role="option" aria-selected="' + (i === sel) + '"><a href="' + esc(x.it.h) + '">' +
+        '<span class="t' + (/^aw/.test(x.it.t || "") ? " m" : "") + '">' + esc(x.it.t) + '</span>' +
+        (x.it.d ? '<span class="d">' + esc(x.it.d) + '</span>' : '') +
+        '<span class="k">' + esc(x.it.k || "") + '</span></a></li>';
+    }).join("") : '<li class="fk-none">nothing matches that</li>';
+  }
+  function open() {
+    last = d.activeElement;
+    box.classList.add("open");
+    input.value = ""; sel = 0; render(); input.focus();
+  }
+  function close() {
+    box.classList.remove("open");
+    if (last && last.focus) last.focus();
+  }
+  function move(n) {
+    if (!shown.length) return;
+    sel = (sel + n + shown.length) % shown.length; render();
+    var li = list.children[sel]; if (li && li.scrollIntoView) li.scrollIntoView({ block: "nearest" });
   }
 
-  function pointAt(p, t) {
-    var u = 1 - t;
-    return {
-      x: u * u * p.a.x + 2 * u * t * p.cx + t * t * p.b.x,
-      y: u * u * p.a.ty + 2 * u * t * p.cy + t * t * p.b.ty
-    };
-  }
-
-  // ── paint ────────────────────────────────────────────────────────────────
-  function draw(now) {
-    ctx.clearRect(0, 0, W, H);
-
-    for (var i = 0; i < paths.length; i++) {
-      var p = paths[i];
-
-      ctx.globalAlpha = 0.16;
-      ctx.strokeStyle = accent;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(p.a.x, p.a.ty);
-      ctx.quadraticCurveTo(p.cx, p.cy, p.b.x, p.b.ty);
-      ctx.stroke();
-
-      if (reduced) continue;
-
-      // travellers: small motes drifting out along each path
-      for (var s = 0; s < p.seeds.length; s++) {
-        var t = (p.seeds[s] + now / 7400) % 1;
-        var pt = pointAt(p, t);
-        // fade in and out at the endpoints so motes do not pop
-        var fade = Math.sin(t * Math.PI);
-        ctx.globalAlpha = 0.5 * fade;
-        ctx.fillStyle = accent;
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 1.9, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    // the lit node's halo
-    if (here) {
-      ctx.globalAlpha = reduced ? 0.13 : 0.1 + 0.045 * Math.sin(now / 1150);
-      ctx.fillStyle = accent;
-      ctx.beginPath();
-      ctx.arc(here.x, here.y, 46, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.globalAlpha = 1;
-  }
-
-  function frame(ts) {
-    draw(ts || 0);
-    raf = window.requestAnimationFrame(frame);
-  }
-
-  function start() {
-    if (!measure()) return;
-    if (raf) window.cancelAnimationFrame(raf);
-    // Paint one frame SYNCHRONOUSLY before scheduling the loop. measure() has
-    // just resized the canvas, which clears it, and requestAnimationFrame does
-    // not fire in a background tab -- so without this the strip renders blank
-    // and only appears once the tab is focused. Measured 2026-08-02: a
-    // backgrounded tab painted 0 pixels indefinitely.
-    draw(0);
-    if (reduced || !window.requestAnimationFrame) return;
-    raf = window.requestAnimationFrame(frame);
-  }
-
-  // Pause when the strip is off-screen or the tab is hidden — a landing page
-  // has no business burning a phone battery on a decoration nobody is looking at.
-  function stop() {
-    if (raf) {
-      window.cancelAnimationFrame(raf);
-      raf = 0;
-    }
-  }
-
-  var visible = true;
-  if (window.IntersectionObserver) {
-    new window.IntersectionObserver(
-      function (entries) {
-        visible = entries[0].isIntersecting;
-        if (visible && !document.hidden) start();
-        else stop();
-      },
-      { threshold: 0.02 }
-    ).observe(stage);
-  }
-
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden || !visible) stop();
-    else start();
+  d.addEventListener("keydown", function (e) {
+    var k = e.key, isOpen = box.classList.contains("open");
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || "") || (e.target && e.target.isContentEditable);
+    if ((e.metaKey || e.ctrlKey) && (k === "k" || k === "K")) { e.preventDefault(); if (isOpen) close(); else open(); return; }
+    if (!isOpen) { if (k === "/" && !typing) { e.preventDefault(); open(); } return; }
+    if (k === "Escape") { e.preventDefault(); close(); }
+    else if (k === "ArrowDown") { e.preventDefault(); move(1); }
+    else if (k === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (k === "Enter" && shown[sel]) { e.preventDefault(); location.href = shown[sel].it.h; }
   });
-
-  var resizeTimer = 0;
-  window.addEventListener('resize', function () {
-    window.clearTimeout(resizeTimer);
-    resizeTimer = window.setTimeout(start, 140);
-  });
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
-  } else {
-    start();
+  input.addEventListener("input", function () { sel = 0; render(); });
+  box.addEventListener("click", function (e) { if (e.target === box) close(); });
+  var triggers = d.querySelectorAll("[data-fk-spotlight]");
+  for (var i = 0; i < triggers.length; i++) {
+    triggers[i].addEventListener("click", function (e) { e.preventDefault(); open(); });
   }
 })();
 </script>

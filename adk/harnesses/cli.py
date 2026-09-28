@@ -77,12 +77,40 @@ def cmd_shell(args: Any) -> int:
         "wrap": _cmd_wrap,
         "tell": _cmd_tell,
         "mod": _cmd_mod,
+        "pair": _cmd_pair,
     }.get(command)
     if handler is None:
         print(f"Unknown subcommand: {command}", file=sys.stderr)
         _print_help()
         return 2
     return handler(args)
+
+
+def _cmd_pair(args: Any) -> int:
+    """Awconnect pairing: approve a code, list pending pairings, revoke all."""
+    action = getattr(args, "pair_action", "") or "pending"
+    if action == "approve":
+        code = (getattr(args, "code", "") or "").strip()
+        if not code:
+            print("usage: adk harness pair approve <code>", file=sys.stderr)
+            return 2
+        status, payload = _request(args, "/pair/approve", "POST", {"code": code})
+        _die_if_down(status, payload)
+        print(f"approved awconnect pairing for {payload.get('origin', '?')}")
+        return 0
+    if action == "revoke":
+        status, payload = _request(args, "/pair/revoke", "POST", {})
+        _die_if_down(status, payload)
+        print(f"revoked {payload.get('revoked', 0)} awconnect token(s)")
+        return 0
+    status, payload = _request(args, "/pair/pending")
+    _die_if_down(status, payload)
+    rows = payload.get("pending") or []
+    if not rows:
+        print("no pending pairings")
+    for row in rows:
+        print(f"{row['code']}  {row['status']:9} {row['expires_in']:>4}s  {row['origin']}")
+    return 0
 
 
 def _cmd_mod(args: Any) -> int:
