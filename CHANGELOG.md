@@ -4,6 +4,25 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **An awm-backed world model.** `AITHER_AGENT_WM_BACKEND=awm` selects
+  `adk.world.AwmWorldModelBackend`. It records tool transitions in its own awm file
+  (schema v3, awm >= 0.6.0) and ranks tools by recalled or generalized success.
+  It degrades with a stated reason when awm is missing or the file is older, and it
+  never migrates the file. `adk wm status|inspect|train|reset` understand its
+  checkpoint.
+- **`WorldModelAgent`** (`adk/world.py`): understand / predict / plan / step / run over
+  any environment adapter. It has beam and CEM MPC with subgoals, returns `NO_MODEL`
+  instead of a guess, and keeps the provenance of each prediction. `learner="auto"`
+  or `"factored"` warm-starts a learned tail from the store's transitions
+  (`adk/world_adapters.py`).
+- **`CodeWorld`** (`adk/world_code.py`): predicts which files a change touches by
+  fusing awgraph structure, git co-change and an optional localizer.
+- `adk.crystal` reconciles facts through awm `reconcile_and_remember` when the file
+  supports it, so a changed fact supersedes the old value and keeps it in history.
+  An older file falls back to the legacy write and says why.
+
 ### Fixed
 
 - **`/health` answers during a `/chat` turn.** The first turn after a daemon start

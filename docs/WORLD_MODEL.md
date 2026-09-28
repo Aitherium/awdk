@@ -307,6 +307,44 @@ Enabling MODE_STEER (AITHER_AGENT_WM=steer) allows the world model to reorder to
 - Use the world model to gate agent autonomy (advice only, no blocking)
 - Assume the model is correct (always validate; it can learn pathological patterns)
 
+## The awm backend (`AITHER_AGENT_WM_BACKEND=awm`)
+
+`adk/world.py` provides `AwmWorldModelBackend`, a tabular dynamics model over an
+[awm](https://pypi.org/project/awm/) transition table. It needs awm with schema v3
+(awm >= 0.6.0). awm is imported guarded: when it is missing, or the file is an older
+schema, the backend degrades and `stats()` / `adk wm status` names the reason. It
+never migrates a file; run `awm migrate --db <file>` yourself.
+
+| variable | default | meaning |
+|---|---|---|
+| `AITHER_AGENT_WM_BACKEND` | builtin | `awm` selects this backend by name |
+| `AITHER_AGENT_WM_AWM_DB` | `<wm root>/awm_world.db` | its own file, never your memory store |
+| `AITHER_AGENT_WM_AWM_SCOPE` | `local:<agent_id>:wm` | must contain `{agent}`, or the backend refuses a shared scope |
+
+`advise()` ranks tools by success rate: RECALLED for this exact state, else
+GENERALIZED over all states with the confidence halved. It abstains per tool below
+the support floor. An untried tool sits between a mostly-succeeding and a
+mostly-failing one. Persisted action names are redacted with a per-install key.
+
+## WorldModelAgent (`adk/world.py`)
+
+`WorldModelAgent(store, scope, adapter)` runs understand / predict / plan / step / run
+over any `EnvironmentAdapter` (`observe`, `actions`, `step`). Predictions keep their
+provenance: RECALLED, GENERALIZED, PREDICTED (a learner answered a table miss) or
+NONE. `plan()` is receding-horizon MPC: beam search for small action sets, seeded
+CEM for large ones. It takes ordered `subgoals`, and it returns `NO_MODEL` rather
+than a guess when nothing is known. `step()` executes only the first action.
+
+`learner=` takes a learner object, `None`, or a name (`"auto"` or `"factored"`). A name
+builds one with `world_adapters.make_learner` and warm-starts it from every
+transition already in the store. `"auto"` chains an awpredict engine in front of
+the stdlib factored learner when awpredict imports. The warm-start report is in
+`agent.learner_training`.
+
+`world_code.CodeWorld` predicts the files a change will touch. It fuses awgraph
+structure, git co-change history and an optional localizer with reciprocal-rank
+fusion, and it labels which source voted for each file.
+
 ## Aither-OS Integration
 
 The awdk world model is designed to be complemented by a richer AitherOS backend (in `lib/cognitive/adk_wm_backend.py`) that:

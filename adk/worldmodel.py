@@ -18,13 +18,16 @@ HARD CONSTRAINTS:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+import math
 import os
-import re
-from dataclasses import dataclass, field
+import secrets
+import threading
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, Protocol
 
 logger = logging.getLogger("adk.worldmodel")
 
@@ -57,6 +60,214 @@ STATE_DIMS = ["tools", "errors", "latency", "tokens", "recall", "depth", "novelt
 
 
 # ============================================================================
+# Redaction -- the ONE rule for what a transition may carry off this process
+# ============================================================================
+#
+# record() accepts any non-empty string as an action and never bounds-checks the
+# vectors it stores, so an action named after a client file, or a float with enough
+# precision to smuggle text, is reachable from the ordinary recording path. Every
+# surface that persists or exports transition text goes through these helpers:
+# BuiltinWorldModel.export_redacted_transitions (federation) and the awm backend in
+# adk/world.py (on-disk dynamics). Tests: adk/tests/test_worldmodel_redaction.py,
+# tests/test_world_backend.py.
+
+#: The only keys an exported transition may carry. A key added to the in-memory row
+#: later does NOT ride along.
+EXPORT_KEYS = ("action", "state_before", "state_after", "delta", "ok")
+
+#: Prefix of a hashed (non-whitelisted) action name. Stable, so a tabular model can
+#: still learn from it; content-free, so nothing about the name leaves.
+REDACTED_PREFIX = "redacted:"
+
+
+def _parse_allowed(allowed_actions: Any) -> frozenset | None:
+    if allowed_actions is None:
+        return None
+    if isinstance(allowed_actions, str):
+        allowed_actions = [allowed_actions]
+    try:
+        return frozenset(str(a).strip() for a in allowed_actions if str(a).strip())
+    except TypeError:
+        return frozenset()
+
+
+def allowed_actions_from_env() -> frozenset | None:
+    """AITHER_AGENT_WM_ALLOWED_ACTIONS (comma list), or None when unset."""
+    raw = os.environ.get("AITHER_AGENT_WM_ALLOWED_ACTIONS")
+    if raw is None:
+        return None
+    return frozenset(a.strip() for a in raw.split(",") if a.strip())
+
+
+#: Env override for the redaction key (e.g. one key shared by an HA pair).
+REDACTION_SALT_ENV = "AITHER_AGENT_WM_REDACTION_SALT"
+#: Per-install secret key file under the world-model root (32 random bytes, mode 600).
+REDACTION_SALT_FILE = ".redaction_salt"
+#: The awm backend's checkpoint suffix (``<agent_id>.awm.json``); the builtin owns
+#: ``<agent_id>.wm.json``. Separate files, so switching backends never overwrites one.
+AWM_CKPT_SUFFIX = ".awm.json"
+#: A salt (file or env) shorter than this is not a key: a file is replaced, an env
+#: value is refused (logged, counted in ``SALT_TELEMETRY``) and the file key used.
+SALT_MIN_BYTES = 16
+#: Counters a host can read: ``env_rejected`` = times a too-short env salt was refused.
+SALT_TELEMETRY: dict = {"env_rejected": 0}
+_SALTS: dict = {}
+_SALT_LOCK = threading.Lock()
+
+
+def redaction_salt(root: str | None = None) -> bytes:
+    """The per-install secret that keys ``redacted:<token>``. Never raises.
+
+    ``AITHER_AGENT_WM_REDACTION_SALT`` if set and at least ``SALT_MIN_BYTES`` long
+    (a shorter one is refused, logged and counted); else ``<root>/.redaction_salt``
+    (``root`` defaults to ``wm_root()``), created once with 32 random bytes. An
+    unsalted sha256 of a low-entropy tool name is reversible by dictionary
+    ("acme_payroll_export" was); an HMAC under a secret the reader does not hold is
+    not. When the file cannot be read or written the salt is process-local random
+    (logged): tokens then stay unlinkable, only not stable across processes.
+    """
+    env = os.environ.get(REDACTION_SALT_ENV, "")
+    if env.strip():
+        raw = env.strip().encode("utf-8")
+        if len(raw) >= SALT_MIN_BYTES:
+            return raw
+        # The same floor as the file: an HMAC under a 1-byte key is reversible by
+        # dictionary. Refused loudly, never adopted; the per-install file key is used.
+        with _SALT_LOCK:
+            SALT_TELEMETRY["env_rejected"] = SALT_TELEMETRY.get("env_rejected", 0) + 1
+        logger.warning("[WM] %s is %d bytes, under the %d-byte floor; ignoring it and "
+                       "using the per-install salt file", REDACTION_SALT_ENV, len(raw),
+                       SALT_MIN_BYTES)
+    path = Path(root or wm_root()) / REDACTION_SALT_FILE
+    key = str(path.resolve()) if path.parent.exists() else str(path)
+    with _SALT_LOCK:
+        hit = _SALTS.get(key)
+        if hit is not None:
+            return hit
+        salt = b""
+        try:
+            existed = path.is_file()
+            if existed:
+                salt = path.read_bytes()
+            if len(salt) < SALT_MIN_BYTES:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                salt = secrets.token_bytes(32)
+                tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+                fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(salt)
+                if existed:
+                    # A short (e.g. empty) salt is not a key: an HMAC under b"" is
+                    # reversible by dictionary. Replaced, never adopted.
+                    logger.warning("[WM] redaction salt at %s is %d bytes; replacing it",
+                                   path, len(path.read_bytes()) if path.is_file() else 0)
+                    os.replace(str(tmp), str(path))
+                    tmp = None  # type: ignore[assignment]
+                else:
+                    try:
+                        # A concurrent creator may have won: keep ITS salt, not ours
+                        # -- if it is a real one.
+                        os.link(str(tmp), str(path))
+                    except FileExistsError:
+                        won = path.read_bytes()
+                        if len(won) >= SALT_MIN_BYTES:
+                            salt = won
+                        else:
+                            os.replace(str(tmp), str(path))
+                            tmp = None  # type: ignore[assignment]
+                    except OSError:
+                        os.replace(str(tmp), str(path))
+                        tmp = None  # type: ignore[assignment]
+                if tmp is not None and Path(tmp).exists():
+                    os.unlink(str(tmp))
+        except OSError as exc:
+            logger.warning("[WM] redaction salt unavailable at %s (%s): using a "
+                           "process-local key; redacted tokens are not stable across "
+                           "processes", path, exc)
+            salt = secrets.token_bytes(32)
+        _SALTS[key] = salt
+        return salt
+
+
+def redaction_token(name: str, salt: bytes) -> str:
+    """``redacted:<hmac-sha256(salt, name)[:12]>``."""
+    return REDACTED_PREFIX + hmac.new(salt, name.encode("utf-8"),
+                                      hashlib.sha256).hexdigest()[:12]
+
+
+def redact_action(action: Any, allowed_actions: Any = None, *, on_miss: str = "drop",
+                  salt: bytes | None = None) -> str | None:
+    """Action text as it may be persisted or exported. Never raises.
+
+    A whitelisted name passes verbatim. Anything else is dropped (``on_miss="drop"``,
+    the export rule: fail closed) or replaced by ``redacted:<hmac[:12]>``
+    (``on_miss="hash"``, the persistence rule: same name + same install -> same
+    token; keyed by ``redaction_salt()`` unless ``salt`` is given, so the token is
+    not reversible by hashing a dictionary of likely tool names).
+    No whitelist at all (None or empty) whitelists nothing.
+    """
+    if not isinstance(action, str):
+        return None
+    name = action.strip()
+    if not name:
+        return None
+    allowed = _parse_allowed(allowed_actions)
+    if allowed and name in allowed:
+        return name
+    if on_miss == "hash":
+        try:
+            key = salt if salt is not None else redaction_salt()
+            return redaction_token(name, key)
+        except Exception:  # noqa: BLE001 -- never raises; fail closed
+            return None
+    return None
+
+
+def bounded_vector(vec: Any, dim: int | None = None) -> list[float] | None:
+    """``vec`` as a list of finite floats in [0, 1] (length ``dim`` if given), else None.
+
+    Unbounded numbers are a covert channel; a vector that fails is refused whole,
+    never clamped into looking valid.
+    """
+    if not isinstance(vec, list) or not vec:
+        return None
+    if dim is not None and len(vec) != dim:
+        return None
+    out: list[float] = []
+    for v in vec:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        f = float(v)
+        if math.isnan(f) or not 0.0 <= f <= 1.0:
+            return None
+        out.append(f)
+    return out
+
+
+def redact_transition(row: Any, allowed_actions: Any, dim: int | None = None) -> dict | None:
+    """One transition reduced to EXPORT_KEYS, or None when any part fails. Never raises."""
+    try:
+        if not isinstance(row, dict):
+            return None
+        action = redact_action(row.get("action"), allowed_actions, on_miss="drop")
+        if action is None:
+            return None
+        before = bounded_vector(row.get("state_before"), dim)
+        after = bounded_vector(row.get("state_after"), dim)
+        if before is None or after is None or len(before) != len(after):
+            return None
+        ok = row.get("ok")
+        if not isinstance(ok, bool):
+            return None
+        # Recomputed, never copied: a stored delta is one more unbounded field.
+        delta = [a - b for a, b in zip(after, before)]
+        return {"action": action, "state_before": before, "state_after": after,
+                "delta": delta, "ok": ok}
+    except Exception:  # noqa: BLE001 -- an export must never break a turn
+        return None
+
+
+# ============================================================================
 # Module-level Functions
 # ============================================================================
 
@@ -69,12 +280,20 @@ def wm_mode() -> str:
 
 
 def wm_agent_id(agent_name: str) -> str:
-    """Normalize agent name to canonical id: mirror lib/cognitive/agent_action_feed.py agent_id_of.
+    """Normalize agent name to canonical id: EXACTLY lib/cognitive/agent_action_feed.py agent_id_of.
 
     Examples:
       "AitherAgent" -> "agent.aither"
       "Atlas Agent" -> "agent.atlas"
       "iris" -> "agent.iris"
+
+    The rule is the host's, letter for letter, and must stay so: this id names the
+    checkpoint files on disk (``<id>.wm.json``) and is the ``agent_id`` the host's
+    FleetWorldModel and its action feeds write into one shared corpus. A "better" rule
+    here orphans every existing checkpoint and splits the join. Its known collision
+    ("Reagent" and "Re" both -> ``agent.re``) is the host's too; changing it means
+    changing both at once, with a checkpoint migration. It is NOT idempotent on an id
+    (``agent.atlas`` -> ``agent..atlas``): code holding an id passes ``agent_id=``.
     """
     slug = (agent_name or "unknown").lower().replace("agent", "").replace(" ", "-").strip("-")
     return "agent." + (slug or "unknown")
@@ -163,6 +382,9 @@ def registered_backend_name() -> str | None:
 #: AITHER_AGENT_WM_BACKEND; set it empty to disable the autoload entirely.
 HOST_BACKEND_MODULE = "lib.cognitive.adk_wm_backend"
 
+#: AITHER_AGENT_WM_BACKEND value that selects adk.world.AwmWorldModelBackend.
+AWM_BACKEND_NAME = "awm"
+
 _autoload_attempted = False
 
 
@@ -178,6 +400,18 @@ def _autoload_host_backend() -> None:
     _autoload_attempted = True
     module = os.environ.get("AITHER_AGENT_WM_BACKEND", HOST_BACKEND_MODULE).strip()
     if not module:
+        return
+    if module.lower() == AWM_BACKEND_NAME:
+        # The awm-backed tabular dynamics model (adk/world.py). Selected by NAME, not
+        # module path. It degrades inside the backend (stats() says why) when awm is
+        # missing or the file needs migration, so selecting it is never silent.
+        try:
+            from adk.world import register_awm_backend
+            register_awm_backend()
+            logger.info("World-model backend 'awm' selected by AITHER_AGENT_WM_BACKEND")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("AITHER_AGENT_WM_BACKEND=awm but adk.world failed to load (%s); "
+                           "using builtin", e)
         return
     try:
         import importlib
@@ -264,8 +498,10 @@ class BuiltinWorldModel:
     #: what is ACTUALLY serving rather than always claiming "builtin".
     backend_name = "builtin"
 
-    def __init__(self, agent_name: str, root: str | None = None) -> None:
-        self.agent_id = wm_agent_id(agent_name)
+    def __init__(self, agent_name: str, root: str | None = None, *,
+                 agent_id: str | None = None) -> None:
+        # `agent_id` = an id already canonical (the CLI holds ids, not names).
+        self.agent_id = agent_id or wm_agent_id(agent_name)
         self.agent_name = agent_name
         self._root = root or wm_root()
         self._stage = "cold"
@@ -701,6 +937,28 @@ class BuiltinWorldModel:
                 logger.debug("Loaded %d transitions for %s", len(self._transitions), self.agent_id)
         except Exception as e:
             logger.debug("load() failed for %s: %s", self.agent_id, e)
+
+    def export_redacted_transitions(self, allowed_actions: Any = None,
+                                    limit: int | None = None) -> list[dict]:
+        """Transitions safe to federate: whitelisted actions, bounded vectors, EXPORT_KEYS only.
+
+        Fail closed: no whitelist exports nothing. A row that fails any check is dropped
+        whole. ``limit`` keeps the most recent survivors. Never raises.
+        """
+        try:
+            if not _parse_allowed(allowed_actions):
+                return []
+            out = []
+            for row in list(self._transitions):
+                red = redact_transition(row, allowed_actions, self._state_dim)
+                if red is not None:
+                    out.append(red)
+            if limit is not None and limit >= 0:
+                out = out[-limit:] if limit else []
+            return out
+        except Exception as e:  # noqa: BLE001
+            logger.debug("export_redacted_transitions() failed for %s: %s", self.agent_id, e)
+            return []
 
     def stats(self) -> dict:
         """Return statistics dict."""
