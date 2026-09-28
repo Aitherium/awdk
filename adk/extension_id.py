@@ -20,6 +20,12 @@ from typing import FrozenSet, Optional
 
 _ID_RE = re.compile(r"^[a-p]{32}$")
 
+# The id every Awconnect install has: both manifests carry the same public "key",
+# so store and unpacked builds alike get this id. It is the default of
+# AITHER_TRUSTED_EXTENSION_IDS, the only extension origins that may take part in
+# sign-in handoff. Mirrors awconnect/shared/extension-id.js.
+PINNED_EXTENSION_ID = "hlmfknhcfhjjngckfpacgleffckpmphe"
+
 
 def allowlist_path() -> Path:
     base = os.environ.get("AITHER_HOME")
@@ -51,10 +57,24 @@ def allow_extension_id(ext_id: str, path: Optional[Path] = None) -> Path:
     return path
 
 
+def trusted_extension_ids() -> FrozenSet[str]:
+    """Ids allowed to mint a sign-in handoff: ``AITHER_TRUSTED_EXTENSION_IDS``
+    (comma-separated) when set, else the pinned Awconnect id. Exact ids only;
+    anything malformed is ignored, so a typo can never widen the set."""
+    env = os.environ.get("AITHER_TRUSTED_EXTENSION_IDS")
+    raw = env.split(",") if env is not None else [PINNED_EXTENSION_ID]
+    return frozenset(i.strip() for i in raw if _ID_RE.match(i.strip()))
+
+
+def trusted_extension_origins() -> FrozenSet[str]:
+    return frozenset(f"chrome-extension://{i}" for i in trusted_extension_ids())
+
+
 def allowed_extension_ids() -> FrozenSet[str]:
-    """Ids from ``AITHER_EXTENSION_IDS`` (comma-separated) plus the allowlist file.
-    Anything that is not a well-formed id is ignored."""
+    """Ids from ``AITHER_EXTENSION_IDS`` (comma-separated), the allowlist file and
+    the trusted set. Anything that is not a well-formed id is ignored."""
     raw = [s.strip() for s in os.environ.get("AITHER_EXTENSION_IDS", "").split(",")]
+    raw += list(trusted_extension_ids())
     try:
         raw += [ln.strip() for ln in allowlist_path().read_text(encoding="utf-8").splitlines()]
     except OSError:

@@ -707,6 +707,9 @@ def create_app(
         None if _cors_origins
         else r"^https://[a-z0-9][a-z0-9-]*\.aitherium\.com$"
     )
+    _cors_allowed = frozenset(_cors_origins or [
+        *_aitherium_origins, "http://localhost:3000", "http://localhost:8080",
+    ])
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=_tenant_origin_rule,
@@ -796,6 +799,47 @@ def create_app(
 
     # Valid caller types for header validation (prevents spoofing)
     _valid_caller_types = {"PLATFORM", "PUBLIC", "DEMO", "TENANT", "ANONYMOUS"}
+
+    # ── CSRF: a cross-site page may not drive a mutating route ──────────────────
+    # Loopback is trusted by the auth middleware below, so a browser tab on any
+    # site could otherwise fire a "simple" (no-preflight) POST at 127.0.0.1 and
+    # have it executed; CORS only hides the RESPONSE. When a browser sends an
+    # Origin it must be one we serve (the CORS allowlist, a first-party surface,
+    # the daemon itself / another loopback port, or an allowed extension). The
+    # chat and execute routes additionally require a JSON body, which a simple
+    # cross-site form or text/plain fetch cannot send. No Origin (curl, the CLI,
+    # awsh, awdesk's main process) is unchanged.
+    _csrf_methods = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+    _csrf_loopback_origin = re.compile(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$")
+    _csrf_json_only = re.compile(
+        r"^/(chat(/.*)?|v1/chat/completions|agents/[^/]+/chat(/.*)?|cli/execute|x-session/import)$"
+    )
+
+    def _csrf_origin_ok(origin: str) -> bool:
+        if origin in _cors_allowed or origin in _handoff_origins:
+            return True
+        if _tenant_origin_rule and re.match(_tenant_origin_rule, origin):
+            return True
+        if _handoff_origin_rule.match(origin) or _csrf_loopback_origin.match(origin):
+            return True
+        from adk.extension_id import allowed_extension_origins
+        return origin in allowed_extension_origins()
+
+    @app.middleware("http")
+    async def _csrf_middleware(request: Request, call_next):
+        if request.method not in _csrf_methods:
+            return await call_next(request)
+        origin = request.headers.get("origin")
+        if origin is None:
+            return await call_next(request)
+        if not _csrf_origin_ok(origin):
+            return JSONResponse(status_code=403, content={"error": "cross-origin request refused"})
+        if _csrf_json_only.match(request.url.path):
+            ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if ctype != "application/json":
+                return JSONResponse(status_code=415,
+                                    content={"error": "application/json required"})
+        return await call_next(request)
 
     @app.middleware("http")
     async def _auth_middleware(request: Request, call_next):
@@ -969,6 +1013,14 @@ def create_app(
     # list and none derived from the registry. Loopback peer + first-party Origin
     # only: this enumerates local services and their ports, which a stranger's page
     # must not be able to read. 127.0.0.1 answers; a tab on youtube.com does not.
+    def _trusted_extension_origins() -> frozenset[str]:
+        """The pinned Awconnect origin(s): exact chrome-extension://<32 a-p>, never
+        a pattern. Read per request so AITHER_TRUSTED_EXTENSION_IDS applies live.
+        A web page cannot send a chrome-extension Origin, and Chrome's CORS keeps
+        any OTHER extension from reading the answer (its origin is not listed)."""
+        from adk.extension_id import trusted_extension_origins
+        return trusted_extension_origins()
+
     _components_origins = frozenset({
         "https://aitherium.com", "https://www.aitherium.com",
         "http://localhost:3000", "http://127.0.0.1:3000",
@@ -983,7 +1035,8 @@ def create_app(
         origin = request.headers.get("origin", "")
         # No Origin = a native client on this machine (curl, awsh, awdesk); allowed.
         if origin and origin not in _components_origins \
-                and not _components_origin_rule.match(origin):
+                and not _components_origin_rule.match(origin) \
+                and origin not in _trusted_extension_origins():
             raise HTTPException(status_code=403, detail="origin not allowed for components")
 
     @app.get("/components")
@@ -1166,7 +1219,8 @@ def create_app(
         if peer not in _handoff_loopback:
             raise HTTPException(status_code=403, detail="identity handoff is loopback-only")
         origin = request.headers.get("origin", "")
-        if origin not in _handoff_origins and not _handoff_origin_rule.match(origin):
+        if origin not in _handoff_origins and not _handoff_origin_rule.match(origin) \
+                and origin not in _trusted_extension_origins():
             raise HTTPException(status_code=403, detail="origin not allowed for identity handoff")
         return origin
 
