@@ -85,7 +85,20 @@ AGENT_TOKEN_FILE_ENV = "AITHER_HARNESS_AGENT_TOKEN_FILE"
 #: Paths a scoped agent token may reach. The session plane and the room, nothing
 #: under ``/fs`` or ``/awrun`` -- an agent tab must not be one stolen header away from
 #: the filesystem routes the root bearer opens.
-AGENT_TOKEN_PATHS = ("/sessions", "/events", "/rooms", "/harnesses", "/steer")
+#: ``/profiles`` (one GET, non-secret fields) and ``/health`` (unauthenticated anyway)
+#: are the only additions. ``/decisions`` is deliberately ABSENT: under it an agent
+#: could answer, cancel, steer or raise any card, including a credential card.
+#: ``/wakes`` and ``/awrun`` stay root-only because both schedule or run commands.
+AGENT_TOKEN_PATHS = ("/sessions", "/events", "/rooms", "/harnesses", "/steer",
+                     "/profiles", "/health")
+
+#: Hosts where minting is meaningful: the token lands in THIS machine's registry, so
+#: a daemon elsewhere would never know it and every call would 403.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+#: Set when a scoped token was refused as invalid even after one re-mint; from then on
+#: this process presents the root bearer (announced) rather than failing every call.
+_SCOPED_DISABLED = False
 
 #: Set once the root-bearer fallback has been announced, so the downgrade is ONE
 #: stderr line per process rather than one per tool call.
@@ -119,11 +132,29 @@ def _token() -> str:
     global _ROOT_FALLBACK_WARNED
     scoped_path = agent_token_path()
     try:
-        scoped = scoped_path.read_text(encoding="utf-8").strip()
+        scoped = "" if _SCOPED_DISABLED else scoped_path.read_text(encoding="utf-8").strip()
     except OSError:
         scoped = ""
     if scoped:
         return scoped
+    # Mint on first use. Until 2026-09-27 nothing ever called mint_agent_token, so
+    # ~/.aither/agent-tokens did not exist and EVERY tab presented the root bearer:
+    # the daemon could not tell the owner from an agent, and the owner's own words
+    # from the phone had to be treated as a peer's. A scoped token only ever
+    # REMOVES reach, so minting it is the safe direction; a failed mint falls back
+    # to the root bearer, announced below. AITHER_AGENT_TOKEN_AUTOMINT=0 disables.
+    if _SCOPED_DISABLED:
+        scoped = ""
+    elif (os.environ.get("AITHER_AGENT_TOKEN_AUTOMINT", "1").strip() != "0"
+            and HOST in _LOOPBACK_HOSTS  # a remote daemon never sees a local mint
+            and TOKEN_PATH.is_file()):  # no root token = no daemon set up here
+        try:
+            minted = mint_agent_token().read_text(encoding="utf-8").strip()
+        except Exception as exc:  # noqa: BLE001 - the root fallback below is announced
+            sys.stderr.write("[awsh-mcp] could not mint a scoped agent token: %s\n" % exc)
+            minted = ""
+        if minted:
+            return minted
     try:
         root = TOKEN_PATH.read_text(encoding="utf-8").strip()
     except OSError:
@@ -158,15 +189,15 @@ def mint_agent_token(sender: str | None = None, *, path: Path | None = None,
         path=registry,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(token, encoding="utf-8")
-    try:
-        os.chmod(target, 0o600)
-    except OSError:
-        sys.stderr.write("[awsh-mcp] could not restrict %s to owner-only\n" % target)
+    # Created 0600 from the first byte (write-then-chmod leaves a readable window).
+    fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(token)
     return target
 
 
-def _req(method: str, path: str, body: Any = None, timeout: float = 20.0) -> dict:
+def _req(method: str, path: str, body: Any = None, timeout: float = 20.0,
+         _retried: bool = False) -> dict:
     """One call to the daemon. Errors are RETURNED, never swallowed into {}.
 
     A tool that answers `{}` for "the daemon is down", "the token is wrong" and
@@ -187,6 +218,18 @@ def _req(method: str, path: str, body: Any = None, timeout: float = 20.0) -> dic
         conn.request(method, path, body=payload, headers=headers)
         r = conn.getresponse()
         raw = r.read().decode("utf-8", "replace")
+        if r.status == 403 and "invalid token" in raw and not _retried:
+            _recover_from_invalid_token(tok)
+            return _req(method, path, body, timeout, _retried=True)
+        if r.status == 403 and "is not scoped to" in raw:
+            return {"error": "harness %s %s: this agent tab's scoped token does not "
+                             "reach %s" % (method, path, path),
+                    "detail": raw[:400],
+                    "why": "agent tabs hold a narrow token so the daemon can tell the "
+                           "owner from an agent; wakes and awrun run commands and stay "
+                           "owner-only",
+                    "fix": "ask the owner, or run this tab with "
+                           "AITHER_AGENT_TOKEN_AUTOMINT=0 to present the root bearer"}
         if r.status >= 400:
             return {"error": "harness %s %s: HTTP %d" % (method, path, r.status),
                     "detail": raw[:400]}
@@ -199,6 +242,30 @@ def _req(method: str, path: str, body: Any = None, timeout: float = 20.0) -> dic
         return {"error": "harness returned non-JSON: %s" % exc}
     finally:
         conn.close()
+
+
+def _recover_from_invalid_token(presented: str) -> None:
+    """The daemon no longer knows the token we presented (expired, or its registry
+    entry was lost). If it was our scoped token: mint a fresh one; if THAT is what was
+    just refused, give up on scoped for this process and present the root bearer."""
+    global _SCOPED_DISABLED
+    path = agent_token_path()
+    try:
+        current = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        current = ""
+    if not current or current != presented:
+        return  # it was the root bearer (or someone else's); nothing to re-mint
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    if getattr(_recover_from_invalid_token, "reminted", False):
+        _SCOPED_DISABLED = True
+        sys.stderr.write("[awsh-mcp] scoped agent token refused twice; presenting the "
+                         "ROOT bearer for the rest of this process\n")
+        return
+    _recover_from_invalid_token.reminted = True  # type: ignore[attr-defined]
 
 
 def _sessions(harness: str = "", status: str = "") -> dict:

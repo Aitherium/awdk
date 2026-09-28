@@ -331,7 +331,61 @@ def mint_scoped_token(
     token = secrets.token_urlsafe(32)
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     now = time.time()
-    reg = load_principals(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _registry_lock(target):
+        _mint_locked(target, digest, principal_id, paths, plan, entitlements, ttl_days, now)
+    return token
+
+
+def _registry_lock(target: Path, timeout: float = 10.0):
+    """An exclusive lock beside the registry (O_CREAT|O_EXCL, portable). Two tabs
+    minting at once each read-modify-wrote the file with no lock; a read that hit
+    the other's half-written file parsed as {} and the next write wiped every entry,
+    phone-link tokens included. A lock older than 60 s is a crashed holder: taken over."""
+    import contextlib
+
+    lock = target.with_name(target.name + ".lock")
+
+    @contextlib.contextmanager
+    def _held():
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(fd)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > 60:
+                        lock.unlink()
+                        continue
+                except OSError:
+                    pass
+                if time.time() > deadline:
+                    raise TimeoutError(f"registry lock {lock} held for {timeout}s")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+
+    return _held()
+
+
+def _mint_locked(target: Path, digest: str, principal_id: str, paths, plan: str,
+                 entitlements, ttl_days, now: float) -> None:
+    """Read STRICTLY, add one entry, write atomically. Called under the lock."""
+    if target.exists():
+        # load_principals() degrades a bad file to {} so the daemon stays reachable;
+        # a WRITER must not, or rewriting that {} erases every principal.
+        reg = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(reg, dict):
+            raise ValueError(f"{target} is not a JSON object; refusing to rewrite it")
+    else:
+        reg = {}
     reg = {
         k: v for k, v in reg.items()
         if not (isinstance(v, dict) and v.get("expires_at")
@@ -344,13 +398,15 @@ def mint_scoped_token(
         "paths": list(paths),
         "expires_at": now + ttl_days * 86400 if ttl_days else 0,
     }
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(reg, indent=2), encoding="utf-8")
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(reg, indent=2))
+    os.replace(tmp, target)  # atomic: a concurrent reader sees old or new, never half
     try:
         os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
     except OSError as exc:
         sys.stderr.write(f"[harness] could not restrict {target}: {exc}\n")
-    return token
 
 
 def resolve_principal(value: str, bearer: str, registry: dict = None) -> Optional[Principal]:

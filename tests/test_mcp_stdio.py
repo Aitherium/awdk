@@ -455,6 +455,9 @@ def token_files(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_stdio, "TOKEN_PATH", root)
     monkeypatch.setenv(mcp_stdio.AGENT_TOKEN_FILE_ENV, str(scoped))
     monkeypatch.setattr(mcp_stdio, "_ROOT_FALLBACK_WARNED", False)
+    # These arms pin the ROOT fallback itself; auto-mint (which would also write the
+    # live principals registry) is exercised by the dedicated tests further down.
+    monkeypatch.setenv("AITHER_AGENT_TOKEN_AUTOMINT", "0")
     return {"root": root, "scoped": scoped}
 
 
@@ -586,3 +589,97 @@ def test_the_mailbox_detail_does_not_promise_a_prompt_wait(monkeypatch, steer_ro
 def test_a_short_session_id_has_no_relay_channel():
     """`#session-<id8>` needs eight hex; a stub id must not become `#session-abc`."""
     assert mcp_stdio._relay_channel_fallback("abc", "x") == ""
+
+
+# ── scoped agent token: minted on first use (2026-09-27) ─────────────────────
+
+
+def _token_env(tmp_path, monkeypatch):
+    from adk.harnesses import mcp_stdio
+    root = tmp_path / "harness_token"
+    root.write_text("ROOT-BEARER", encoding="utf-8")
+    monkeypatch.setattr(mcp_stdio, "TOKEN_PATH", root)
+    monkeypatch.setenv(mcp_stdio.AGENT_TOKEN_FILE_ENV, str(tmp_path / "agent-tokens" / "me"))
+    monkeypatch.setattr(mcp_stdio, "_ROOT_FALLBACK_WARNED", True)
+    return mcp_stdio
+
+
+def test_token_prefers_an_existing_scoped_token(tmp_path, monkeypatch):
+    m = _token_env(tmp_path, monkeypatch)
+    p = m.agent_token_path()
+    p.parent.mkdir(parents=True)
+    p.write_text("SCOPED", encoding="utf-8")
+    monkeypatch.setattr(m, "mint_agent_token", lambda *a, **k: pytest.fail("minted twice"))
+    assert m._token() == "SCOPED"
+
+
+def test_token_mints_a_scoped_token_instead_of_presenting_root(tmp_path, monkeypatch):
+    m = _token_env(tmp_path, monkeypatch)
+
+    def fake_mint(*_a, **_k):
+        p = m.agent_token_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("MINTED", encoding="utf-8")
+        return p
+
+    monkeypatch.setattr(m, "mint_agent_token", fake_mint)
+    assert m._token() == "MINTED"
+
+
+def test_token_falls_back_to_root_when_the_mint_fails(tmp_path, monkeypatch):
+    m = _token_env(tmp_path, monkeypatch)
+
+    def broken_mint(*_a, **_k):
+        raise OSError("registry unwritable")
+
+    monkeypatch.setattr(m, "mint_agent_token", broken_mint)
+    assert m._token() == "ROOT-BEARER"
+
+
+def test_token_automint_can_be_disabled(tmp_path, monkeypatch):
+    m = _token_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("AITHER_AGENT_TOKEN_AUTOMINT", "0")
+    monkeypatch.setattr(m, "mint_agent_token", lambda *a, **k: pytest.fail("minted while off"))
+    assert m._token() == "ROOT-BEARER"
+
+
+def test_scoped_paths_never_reach_command_surfaces():
+    from adk.harnesses.mcp_stdio import AGENT_TOKEN_PATHS
+    for forbidden in ("/wakes", "/awrun", "/fs"):
+        assert not any(p == forbidden or forbidden.startswith(p + "/") for p in AGENT_TOKEN_PATHS)
+
+
+def test_decisions_is_not_in_the_scoped_reach():
+    # answer / cancel / steer / raise (incl. credential cards) all live under it
+    from adk.harnesses.mcp_stdio import AGENT_TOKEN_PATHS
+    assert "/decisions" not in AGENT_TOKEN_PATHS
+
+
+def test_token_does_not_mint_for_a_remote_daemon(tmp_path, monkeypatch):
+    m = _token_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "HOST", "100.64.0.31")
+    monkeypatch.setattr(m, "mint_agent_token", lambda *a, **k: pytest.fail("minted for remote"))
+    assert m._token() == "ROOT-BEARER"
+
+
+def test_invalid_scoped_token_is_reminted_then_abandoned(tmp_path, monkeypatch):
+    m = _token_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "_SCOPED_DISABLED", False)
+    if hasattr(m._recover_from_invalid_token, "reminted"):
+        monkeypatch.delattr(m._recover_from_invalid_token, "reminted")
+    p = m.agent_token_path()
+    p.parent.mkdir(parents=True)
+    p.write_text("DEAD", encoding="utf-8")
+    m._recover_from_invalid_token("DEAD")          # first refusal: drop it, allow a re-mint
+    assert not p.exists() and m._SCOPED_DISABLED is False
+    p.write_text("DEAD-AGAIN", encoding="utf-8")
+    m._recover_from_invalid_token("DEAD-AGAIN")    # second refusal: give up on scoped
+    assert m._SCOPED_DISABLED is True
+    assert m._token() == "ROOT-BEARER"
+
+
+def test_invalid_root_token_is_not_treated_as_a_scoped_failure(tmp_path, monkeypatch):
+    m = _token_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "_SCOPED_DISABLED", False)
+    m._recover_from_invalid_token("ROOT-BEARER")   # no scoped file: nothing to do
+    assert m._SCOPED_DISABLED is False
