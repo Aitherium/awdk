@@ -198,7 +198,7 @@ embedding = [
 ]
 node = ["mcp>=1.28,<2", "starlette>=0.36"]
 # `adk storage` is a pass-through to the awstorage brick (adk/storage_cmd.py).
-storage = ["awstorage>=0.1.0"]
+storage = ["awstorage>=0.3.0"]
 pdf = ["pypdf>=4.0", "fpdf2>=2.7"]
 # Document conversion for `adk ingest` (PDF/DOCX/PPTX/XLSX -> text). The slim
 # distribution with format extras only: the model-free native PDF pipeline, no

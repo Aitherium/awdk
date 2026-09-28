@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed gobbonet -&gt; ~\.aither\packs\gobbonet</span>
 <span class="o">verified: adk discovers &#x27;gobbonet&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.29</dd></div><div><dt>Size</dt><dd>47 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>32950e4d36a3a7d5…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.29</dd></div><div><dt>Size</dt><dd>47 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>28127b66ecfac2b1…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -326,12 +326,12 @@ than a broken feature.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>32950e4d36a3a7d5329f5d086b4adbda0c0e60e23037fa37b803899760a66fe8</code></p>
+    <p class="sub">sha256 <code>28127b66ecfac2b1f93048c9a9d666c939c0b9f085f43bf7a7aa4514913637d5</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c gobbonet-3.8.29.sha256
 <span class="o">gobbonet-3.8.29.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;32950E4D36A3A7D5329F5D086B4ADBDA0C0E60E23037FA37B803899760A66FE8&#x27;
+<span class="p">$</span> $want = &#x27;28127B66ECFAC2B1F93048C9A9D666C939C0B9F085F43BF7A7AA4514913637D5&#x27;
 <span class="p">$</span> (Get-FileHash gobbonet-3.8.29.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>

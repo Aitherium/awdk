@@ -5,6 +5,8 @@ Detects:
   - CPU cores
   - GPU (reuses setup_cli GPU detection)
   - Ollama installation status
+  - Disks: every mounted volume with its size, free space and filesystem
+    (stdlib only; the storage plane's `awstorage files scan` indexes them)
 
 Provides: recommend_setup() → recommendation dict with rationale.
 """
@@ -16,7 +18,7 @@ import os
 import platform
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +36,8 @@ class SystemInfo:
     gpu_vram_mb: int = 0
     ollama_installed: bool = False
     python_version: str = ""
+    # [{"mount": "C:/", "device": ..., "fs": "NTFS", "total_bytes": ..., "free_bytes": ...}]
+    disks: list = field(default_factory=list)
 
 
 def _detect_ram() -> float:
@@ -123,6 +127,98 @@ def _detect_ollama() -> bool:
     return bool(shutil.which("ollama"))
 
 
+# Pseudo / virtual filesystems: not disks, and statvfs on some of them hangs or lies.
+_PSEUDO_FS = frozenset({
+    "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2", "securityfs",
+    "pstore", "debugfs", "tracefs", "configfs", "fusectl", "mqueue", "hugetlbfs",
+    "bpf", "autofs", "binfmt_misc", "overlay", "squashfs", "nsfs", "ramfs", "rpc_pipefs",
+    "efivarfs", "selinuxfs", "fuse.gvfsd-fuse", "fuse.portal", "devfs", "nullfs",
+})
+
+
+def _disk_usage(mount: str) -> tuple[int, int] | None:
+    try:
+        u = shutil.disk_usage(mount)
+    except OSError:
+        return None
+    return int(u.total), int(u.free)
+
+
+def _windows_disks() -> list[dict]:
+    import ctypes  # noqa: PLC0415
+    import string  # noqa: PLC0415
+
+    out: list[dict] = []
+    k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    mask = k32.GetLogicalDrives()
+    for i, letter in enumerate(string.ascii_uppercase):
+        if not mask & (1 << i):
+            continue
+        root = f"{letter}:\\"
+        dtype = k32.GetDriveTypeW(root)  # 2 removable, 3 fixed, 4 remote, 5 cdrom, 6 ramdisk
+        if dtype not in (2, 3, 4, 6):
+            continue
+        fs_buf = ctypes.create_unicode_buffer(64)
+        name_buf = ctypes.create_unicode_buffer(256)
+        ok = k32.GetVolumeInformationW(root, name_buf, 256, None, None, None, fs_buf, 64)
+        usage = _disk_usage(root)
+        if not ok or usage is None:
+            continue  # an empty card reader / a disconnected share
+        out.append({"mount": f"{letter}:/", "device": name_buf.value or f"{letter}:",
+                    "fs": fs_buf.value, "total_bytes": usage[0], "free_bytes": usage[1],
+                    "kind": {2: "removable", 3: "fixed", 4: "network", 6: "ramdisk"}[dtype]})
+    return out
+
+
+def _posix_disks() -> list[dict]:
+    lines: list[str] = []
+    try:
+        with open("/proc/mounts", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        try:  # macOS / BSD: "dev on /mnt (apfs, local, ...)"
+            out = subprocess.run(["mount"], capture_output=True, text=True, timeout=5,
+                                 encoding="utf-8", errors="replace")
+            for ln in out.stdout.splitlines():
+                if " on " in ln and " (" in ln:
+                    dev, rest = ln.split(" on ", 1)
+                    mnt, opts = rest.rsplit(" (", 1)
+                    mnt = mnt.replace(" ", r"\040")  # same escaping as /proc/mounts
+                    lines.append(f"{dev} {mnt} {opts.split(',')[0].strip(')')} -")
+        except Exception:  # noqa: BLE001 -- no mount table == no disks reported
+            return []
+    disks: list[dict] = []
+    seen: set[str] = set()
+    for ln in lines:
+        parts = ln.split()
+        if len(parts) < 3:
+            continue
+        dev, mnt, fs = parts[0], parts[1].replace(r"\040", " "), parts[2]
+        if fs in _PSEUDO_FS or mnt.startswith(("/proc", "/sys", "/dev", "/run")):
+            continue
+        if dev in seen:  # a bind mount of a device already listed
+            continue
+        usage = _disk_usage(mnt)
+        if usage is None or usage[0] == 0:
+            continue
+        seen.add(dev)
+        disks.append({"mount": mnt, "device": dev, "fs": fs, "total_bytes": usage[0],
+                      "free_bytes": usage[1], "kind": "network" if fs in (
+                          "nfs", "nfs4", "cifs", "smb3", "9p", "drvfs") else "fixed"})
+    return disks
+
+
+def detect_disks() -> list[dict]:
+    """Every mounted volume: mount, device, fs, total/free bytes, kind. Never raises."""
+    try:
+        if platform.system() == "Windows":
+            return _windows_disks()
+        return _posix_disks()
+    except Exception as e:  # noqa: BLE001 -- a probe must never break the wizard
+        logger.debug("disk detection failed: %s", e)
+        return []
+
+
 def detect_system() -> SystemInfo:
     """Probe the system and return detected hardware info."""
     ram = _detect_ram()
@@ -138,6 +234,7 @@ def detect_system() -> SystemInfo:
         gpu_vram_mb=gpu_vram,
         ollama_installed=ollama,
         python_version=platform.python_version(),
+        disks=detect_disks(),
     )
 
 
