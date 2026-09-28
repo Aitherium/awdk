@@ -80,7 +80,7 @@ __all__ = [
 # The SERVED model id (vLLM --served-model-name), NOT the HF root. The fleet's
 # vLLM embeddings worker serves nomic-ai/nomic-embed-text-v1.5 UNDER the id
 # "nomic-embed-text" — requesting "nomic-embed-text-v1.5" returns 404. Verified
-# live against aither-vllm-embeddings :8209.
+# live against the fleet's vLLM embeddings worker.
 CANONICAL_MODEL = os.getenv("AITHER_EMBED_MODEL", "nomic-embed-text")
 CANONICAL_DIM = 768  # nomic-ai/nomic-embed-text-v1.5
 _DEGRADED_DIM = 384  # all-MiniLM-L6-v2 / feature-hash — DIM-INCOMPATIBLE, tagged

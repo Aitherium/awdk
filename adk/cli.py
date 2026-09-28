@@ -2747,8 +2747,8 @@ def cmd_logout(args) -> int:
 
         if clear_active_profile():
             print("  Cleared active profile in ~/.aither/auth.json")
-    except Exception:  # noqa: BLE001 — logout of a missing/corrupt store is a no-op
-        pass
+    except Exception as exc:  # noqa: BLE001 — logout must finish; say what was left
+        print(f"  Could not clear the active profile in ~/.aither/auth.json: {exc}")
     return 0
 
 
@@ -14637,7 +14637,7 @@ def _register_commands(sub):
         "serve", help="Download model and start llama-server")
     volunteer_serve_p.add_argument(
         "--model", default="aither-code-embed-0.6b",
-        help="Model name (default: aither-code-embed-0.6b)")
+        help="Model name (default: %(default)s)")
     volunteer_serve_p.add_argument(
         "--device", default="auto", choices=["auto", "cpu", "gpu"],
         help="Device (default: auto)")

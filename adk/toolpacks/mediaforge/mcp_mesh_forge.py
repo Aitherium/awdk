@@ -125,7 +125,7 @@ _QUALITY = ("fast", "balanced", "high")
 #: when the local card is committed", which was written from its spec (large unified
 #: memory) and not from a probe. Measured 2026-08-24 the DGX had **1 GB available of
 #: 121 GB** -- fully committed to the serving stack -- and its own
-#: `aither-comfyui-3d-dgx` container sits at **Exit (137)**, i.e. it has ALREADY been
+#: 3D ComfyUI container sits at **Exit (137)**, i.e. it has ALREADY been
 #: OOM-killed there once. Sending someone to that box would have reproduced the exact
 #: incident this tool refuses to cause on the 5090.
 #:

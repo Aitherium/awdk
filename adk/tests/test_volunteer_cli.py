@@ -76,8 +76,8 @@ class TestVolunteerArgparse:
         sub = parser.add_subparsers(dest="command")
         _register_commands(sub)
 
-        args = parser.parse_args(["volunteer", "serve", "--model", "aither-code-embed-0.6b", "--device", "gpu"])
-        assert args.model == "aither-code-embed-0.6b"
+        args = parser.parse_args(["volunteer", "serve", "--model", "example-embed-model", "--device", "gpu"])
+        assert args.model == "example-embed-model"
         assert args.device == "gpu"
 
     def test_volunteer_start_args(self):
