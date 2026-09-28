@@ -4,6 +4,21 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/health` answers during a `/chat` turn.** The first turn after a daemon start
+  could fall through to the CPU sentence-transformers embeddings rung, which imported
+  torch, loaded the model and encoded on the event loop (54-82 s measured). `/health`
+  went silent and a watchdog killed the daemon mid-turn. The rung now checks the
+  package with `find_spec` (no import) and embeds in a one-worker child process.
+  `/health` reports `chat.inflight` so a supervisor can tell busy from wedged.
+- **A trivial turn no longer ships every tool schema.** An unclassified turn (no or
+  `DEFAULT` intent) sends a core set (files, shell, web, gateway `search_tools` /
+  `call_tool`) plus `load_tools(category)`, whose description lists every other
+  category. `ADK_TOOL_SELECTION=all` restores the old behaviour. The recalled
+  `# MEMORY` block is capped at 2,000 chars (500 per item). "reply ok" measured
+  ~9.7k prompt tokens before, ~2.2k after.
+
 ## [3.8.29] - 2026-09-27
 
 ### Fixed

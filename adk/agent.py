@@ -1559,12 +1559,18 @@ class AitherAgent:
             pass  # Non-fatal — persistent store is best-effort
 
         # Call LLM (with tool loop if tools registered). Intent-narrow the tool
-        # set first (fail-open: no/unknown intent → all tools; unmarked tools stay
-        # available for every intent). This is the dominant path — stream_react()
-        # applies the same filter (a review found chat() had been left ungated).
-        _all_tools = self._tools.list_tools()
-        _filtered_tools = _filter_tools_by_intent(_all_tools, self._current_intent)
-        tools_schema = self._tools.to_openai_format(_filtered_tools) if _filtered_tools else None
+        # set first (a classified intent keeps _filter_tools_by_intent; unmarked
+        # tools stay available for every intent). This is the dominant path —
+        # stream_react() applies the same selection (a review found chat() had
+        # been left ungated).
+        # UNCLASSIFIED turns (intent None/""/DEFAULT — most real input) no longer
+        # ship every schema: a core set + a `load_tools(category)` meta-tool whose
+        # description names every other category (adk.tool_selection). Measured
+        # 2026-09-27: "reply ok" carried 55 schemas, ~5.2k of an 8k window.
+        from adk.tool_selection import LOAD_TOOLS_NAME, TurnToolSelection
+        _tool_sel = TurnToolSelection(
+            self._tools.list_tools(), self._current_intent, _filter_tools_by_intent)
+        tools_schema = _tool_sel.schemas(self._tools.to_openai_format)
         tool_calls_made = []
         # Human-in-the-loop approval state. ``_pending_approvals`` collects gated tool
         # calls awaiting a customer decision; ``_paused`` short-circuits the turn so the
@@ -2240,7 +2246,12 @@ class AitherAgent:
                 # absent (auth=None) the call is identical to before — preserved
                 # as a separate path so app-side execute wrappers that take only
                 # (name, args) are unaffected.
-                if _auth is not None:
+                if tc.name == LOAD_TOOLS_NAME and _tool_sel.active:
+                    # Meta-tool: widen THIS turn's offer; the next iteration's
+                    # llm.chat() reads the rebuilt tools_schema.
+                    result = _tool_sel.load(tc.arguments)
+                    tools_schema = _tool_sel.schemas(self._tools.to_openai_format)
+                elif _auth is not None:
                     result = await self._tools.execute(tc.name, tc.arguments, auth=_auth)
                 else:
                     result = await self._tools.execute(tc.name, tc.arguments)
@@ -2693,14 +2704,20 @@ class AitherAgent:
             pass
 
         # System prompt = agent instructions + the ReAct text protocol + tools.
-        # Filter tools by intent before building tool_lines (fail-open: no intent → all tools).
-        all_tools = self._tools.list_tools()
-        filtered_tools = _filter_tools_by_intent(all_tools, _intent)
+        # Same selection as chat(): an unclassified turn lists the core set plus
+        # load_tools (adk.tool_selection); the ACTION handler below expands it.
+        from adk.tool_selection import LOAD_TOOLS_NAME, TurnToolSelection
+        _tool_sel = TurnToolSelection(
+            self._tools.list_tools(), _intent, _filter_tools_by_intent)
 
-        tool_lines = []
-        for td in filtered_tools:
+        def _tool_line(td) -> str:
             props = (td.parameters or {}).get("properties", {}) if isinstance(td.parameters, dict) else {}
-            tool_lines.append(f"- {td.name}({', '.join(props.keys())}) -> {td.description}")
+            return f"- {td.name}({', '.join(props.keys())}) -> {td.description}"
+
+        tool_lines = [_tool_line(td) for td in _tool_sel.offered]
+        if _tool_sel.active and _tool_sel.categories:
+            _meta = _tool_sel.meta_schema()["function"]
+            tool_lines.append(f"- {LOAD_TOOLS_NAME}(category) -> {_meta['description']}")
         tools_block = "\n".join(tool_lines) if tool_lines else "(no tools available)"
         sys_prompt = (
             (self.system_prompt or "").rstrip() + "\n\n"
@@ -2835,7 +2852,14 @@ class AitherAgent:
             # Knowledge graph tracking
             _kg_tools.add(str(name).lower())
             try:
-                obs = str(await self._tools.execute(name, args))
+                if name == LOAD_TOOLS_NAME and _tool_sel.active:
+                    _before = {t.name for t in _tool_sel.offered}
+                    obs = _tool_sel.load(args)
+                    _new = [t for t in _tool_sel.offered if t.name not in _before]
+                    if _new:
+                        obs += "\n" + "\n".join(_tool_line(t) for t in _new)
+                else:
+                    obs = str(await self._tools.execute(name, args))
             except Exception as exc:
                 obs = f"(tool error: {type(exc).__name__}: {exc})"
             tools_made.append(name)

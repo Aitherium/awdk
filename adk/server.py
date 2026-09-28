@@ -753,6 +753,13 @@ def create_app(
     # Trace ID middleware — generates/propagates X-Request-ID on every request
     app.add_middleware(TraceMiddleware)
 
+    # In-flight chat turns, reported by /health so the :9001 watchdog can tell a
+    # BUSY daemon from a wedged one and never kill a turn it could simply wait out.
+    from adk.inflight import InflightChatMiddleware, InflightTracker
+    _chat_inflight = InflightTracker()
+    app.state.chat_inflight = _chat_inflight
+    app.add_middleware(InflightChatMiddleware, tracker=_chat_inflight)
+
     # State shared across endpoints
     _state: dict[str, Any] = {
         "agent": agent,
@@ -1071,6 +1078,9 @@ def create_app(
             # Code currency: what is RUNNING, not what is on disk (see code_fingerprint).
             "code_fingerprint": _CODE_FINGERPRINT,
             "started_at": _STARTED_AT,
+            # Turns being served right now. The watchdog defers a replace (and a
+            # fingerprint-drift reload) while this is non-zero.
+            "chat": _chat_inflight.snapshot(),
         }
 
         # Capability, not liveness. `status: healthy` is TRUE of a daemon serving

@@ -188,6 +188,21 @@ async def test_context_block_empty_when_no_memories(typed):
     assert await typed.context_block("nothing stored yet") == ""
 
 
+async def test_context_block_is_bounded(typed):
+    """Measured 2026-09-27: five whole incident notes (14,265 chars, ~3.6k tokens)
+    rode a trivial "reply ok" into an 8k-token window. Items are clipped and the
+    block stops at its budget, best-ranked first."""
+    from adk.typed_memory import CONTEXT_BLOCK_CHARS, CONTEXT_ITEM_CHARS
+    for i in range(5):
+        await typed.remember(f"widget incident {i} " + "long detail " * 400, role=Role.FACT)
+    block = await typed.context_block("widget incident", limit=5)
+    assert block.startswith("# MEMORY (ranked by authority)")
+    assert len(block) <= CONTEXT_BLOCK_CHARS
+    lines = block.splitlines()[1:]
+    assert lines and all(len(ln) <= CONTEXT_ITEM_CHARS + 2 for ln in lines)
+    assert all(ln.endswith("…") for ln in lines)
+
+
 # ── persistence across wrapper instances (SQLite write-back) ───────────────────
 
 

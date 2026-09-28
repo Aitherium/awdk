@@ -384,6 +384,10 @@ class RecalledItem:
 # Constraint extraction (decision/correction → prompt preamble)
 # ---------------------------------------------------------------------------
 
+#: Budget for the recalled-memory block injected into every turn (chars; ~/4 = tokens).
+CONTEXT_ITEM_CHARS = 500
+CONTEXT_BLOCK_CHARS = 2000
+
 _MUST_NOT_RE = re.compile(r"\b(?:must not|do not|don'?t|never|avoid)\s+(.+)", re.I)
 _MUST_RE = re.compile(r"\b(?:must|always|should)\s+(.+)", re.I)
 _PREFER_RE = re.compile(r"\b(?:prefer|use)\s+(.+?)(?:\s+(?:over|instead of)\s+(.+))?$", re.I)
@@ -593,13 +597,38 @@ class TypedMemory:
 
     # ----- prompt-injection helpers (consumed by the agent loop) ----------
 
-    async def context_block(self, query: str, *, limit: int = 5) -> str:
-        """A ready-to-inject ``# MEMORY`` block, or ``''`` if nothing recalled."""
+    async def context_block(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        max_item_chars: int = CONTEXT_ITEM_CHARS,
+        max_chars: int = CONTEXT_BLOCK_CHARS,
+    ) -> str:
+        """A ready-to-inject ``# MEMORY`` block, or ``''`` if nothing recalled.
+
+        BOUNDED. Until 2026-09-27 each recalled entry went in whole: on the :9001
+        daemon a trivial "reply ok" recalled five multi-paragraph incident notes —
+        14,265 chars (~3.6k tokens) of an 8,192-token window, more than the tool
+        schemas. Each item is clipped to ``max_item_chars`` (whitespace collapsed)
+        and items, ranked best-first, stop once the block reaches ``max_chars``.
+        """
         items = await self.recall(query, limit=limit)
         if not items:
             return ""
-        lines = "\n".join(f"- {it.labelled_content()}" for it in items)
-        return f"# MEMORY (ranked by authority)\n{lines}"
+        header = "# MEMORY (ranked by authority)"
+        lines: list[str] = []
+        used = len(header)
+        for it in items:
+            text = " ".join(it.labelled_content().split())
+            if len(text) > max_item_chars:
+                text = text[: max_item_chars - 1].rstrip() + "…"
+            line = f"- {text}"
+            if lines and used + 1 + len(line) > max_chars:
+                break
+            lines.append(line)
+            used += 1 + len(line)
+        return header + "\n" + "\n".join(lines)
 
     async def constraints_block(self, *, limit: int = 20) -> str:
         """A ready-to-inject decisions/corrections block, or ``''`` if none."""

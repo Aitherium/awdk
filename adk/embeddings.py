@@ -56,6 +56,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from typing import Awaitable, Callable, List, Optional, Tuple
 
@@ -173,7 +174,9 @@ class AdkEmbeddings:
         self._model: str = CANONICAL_MODEL
         self._dim: int = 0
         self._degraded: bool = False
-        self._st_model = None               # cached sentence-transformers model
+        # CPU rung: the model lives in ONE child process (see _embed_st), never here.
+        self._st_pool = None
+        self._st_pool_lock = threading.Lock()
         self._autodeploy_attempted = False
         self._headers: dict = {}            # auth headers for the pinned endpoint
 
@@ -361,10 +364,21 @@ class AdkEmbeddings:
             return False
 
     def _probe_sentence_transformers(self) -> bool:
-        try:
-            import sentence_transformers  # noqa: F401
+        """Is the package INSTALLED? Answered without importing it.
+
+        Until 2026-09-27 this ran ``import sentence_transformers`` on the event loop
+        -- torch + transformers, measured 66 s cold on the owner's Windows host. The
+        :9001 daemon's first /chat stalled its loop 54-82 s, /health missed the
+        watchdog's ``curl -m 8`` and the daemon was killed mid-turn. ``find_spec``
+        only walks the import path.
+        """
+        import importlib.util
+        import sys
+        if "sentence_transformers" in sys.modules:
             return True
-        except ImportError:
+        try:
+            return importlib.util.find_spec("sentence_transformers") is not None
+        except (ImportError, ValueError):
             return False
 
     # ── auto-deploy ─────────────────────────────────────────────────────
@@ -473,7 +487,7 @@ class AdkEmbeddings:
             elif self._backend == "ollama":
                 vecs = await self._embed_ollama(texts)
             elif self._backend == "cpu":
-                vecs = self._embed_st(texts)
+                vecs = await self._embed_st(texts)
             else:
                 vecs = [_feature_hash(t) for t in texts]
             if vecs is not None:
@@ -528,11 +542,46 @@ class AdkEmbeddings:
                 out.append(r.json().get("embedding") or [])
         return out
 
-    def _embed_st(self, texts: List[str]) -> List[List[float]]:
-        if self._st_model is None:
-            from sentence_transformers import SentenceTransformer
-            self._st_model = SentenceTransformer(self._model)
-        return self._st_model.encode(texts, show_progress_bar=False).tolist()
+    def _st_executor(self):
+        """The one-worker process pool that owns the CPU model (created lazily)."""
+        with self._st_pool_lock:
+            if self._st_pool is None:
+                import sys
+                if getattr(sys, "frozen", False):
+                    # A frozen (PyInstaller) build re-runs its OWN entry point in a
+                    # spawned child unless main calls freeze_support() -- that would
+                    # start a second server. Off-loop in a thread there instead.
+                    from concurrent.futures import ThreadPoolExecutor
+                    self._st_pool = ThreadPoolExecutor(max_workers=1)
+                else:
+                    import multiprocessing
+                    from concurrent.futures import ProcessPoolExecutor
+                    self._st_pool = ProcessPoolExecutor(
+                        max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+            return self._st_pool
+
+    async def _embed_st(self, texts: List[str]) -> List[List[float]]:
+        """CPU sentence-transformers embed, in a CHILD PROCESS.
+
+        Not a thread: importing torch in a worker thread still starves the loop of
+        the GIL -- measured 2026-09-27, a thread-offloaded first embed left 13.5 s
+        loop stalls, over half the watchdog's 8 s probe budget. A process owns its
+        own GIL, so the import, the model load and every encode cost the daemon's
+        loop nothing. A broken pool raises; embed_texts degrades that call to the
+        feature hash and re-resolves on the next one.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._st_executor(), _st_encode_in_child, self._model, list(texts))
+        except Exception:
+            # A dead worker (BrokenProcessPool) poisons the pool for good: drop it
+            # so the next call spawns a fresh one, then let embed_texts degrade.
+            with self._st_pool_lock:
+                pool, self._st_pool = self._st_pool, None
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -645,7 +694,22 @@ async def embed_one(text: str) -> List[float]:
     return await get_provider().embed_one(text)
 
 
+_CHILD_ST_MODELS: dict = {}
+
+
+def _st_encode_in_child(model_name: str, texts: List[str]) -> List[List[float]]:
+    """Runs INSIDE the CPU-embedding worker process; the model is cached per process."""
+    model = _CHILD_ST_MODELS.get(model_name)
+    if model is None:
+        from sentence_transformers import SentenceTransformer
+        model = _CHILD_ST_MODELS[model_name] = SentenceTransformer(model_name)
+    return model.encode(texts, show_progress_bar=False).tolist()
+
+
 def reset_provider() -> None:
     """Drop the cached provider so the next call re-probes the resolution chain."""
     global _provider
-    _provider = None
+    old, _provider = _provider, None
+    pool = getattr(old, "_st_pool", None)
+    if pool is not None:  # do not orphan the CPU-embedding child process
+        pool.shutdown(wait=False, cancel_futures=True)
