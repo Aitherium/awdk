@@ -5,18 +5,22 @@ owned via HarnessSession and discovered from interactive tabs) to clients. It
 derives session status from transcript tails and assigns steering capability
 based on origin.
 
-All I/O (file reading, process probing) runs on threads to protect the async
-event loop. Status derivation is cached with a short TTL to avoid re-walking
-the filesystem on every poll.
+All I/O (file reading, process probing) runs off the event loop. A server
+calls `SessionDirectory.start_refresher()` once: a background thread then owns
+every rebuild and `list_sessions_sync` returns the last snapshot without doing
+any transcript I/O, so no caller ever waits on a rebuild. Without a refresher
+(tests, one-shot CLI use) the directory rebuilds inline behind a short TTL.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import random
+import re
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -24,8 +28,25 @@ from adk.harnesses.discovery import DiscoveredSession, discover_live_sessions
 
 logger = logging.getLogger(__name__)
 
-#: Cache TTL: how long to hold session directory state before re-probing.
+#: Cache TTL: how long to hold session directory state before re-probing
+#: (inline mode only -- with a refresher running, the snapshot is always served).
 CACHE_TTL_SECONDS = 2.0
+
+#: Background refresher cadence. Each wait is jittered by +/-20 % so several
+#: daemons on one host do not hit the disk in lockstep.
+REFRESH_INTERVAL_SECONDS = 2.0
+
+#: Bytes of any ONE transcript the usage scan reads per refresh tick. A 130 MB
+#: transcript therefore catches up in ~16 ticks in the background instead of
+#: being read in one go on somebody's request.
+USAGE_BYTES_PER_TICK = 8 * 1024 * 1024
+
+#: How long a caller that finds NO snapshot yet waits for the first (cheap) one
+#: before answering with an empty, stale list.
+FIRST_SNAPSHOT_WAIT_SECONDS = 0.75
+
+#: A snapshot older than this many refresh intervals is reported as stale.
+STALE_AFTER_INTERVALS = 5
 
 #: Tail read size for transcript analysis. Most metadata lives in the last 256KB.
 TRANSCRIPT_TAIL_SIZE = 262144
@@ -68,7 +89,9 @@ def _pending_tool_use(lines: list[str]) -> tuple[Optional[str], float]:
     satisfied: set[str] = set()
     for line in lines:
         line = line.strip()
-        if not line:
+        # Only lines naming a tool block can matter; skipping the rest unparsed
+        # keeps a busy session's 256 KB tail from being JSON-decoded every tick.
+        if not line or ('"tool_use"' not in line and '"tool_result"' not in line):
             continue
         try:
             obj = json.loads(line)
@@ -122,7 +145,9 @@ class UnifiedSession:
     #: every assistant message in the transcript. Cache READS are excluded on
     #: purpose -- they re-count the same context every turn and would make a long
     #: session look 20x more expensive than it was.
-    tokens_spent: int = 0
+    #: None while a background usage scan has not yet caught up with the file:
+    #: a partial sum would read as a real (too small) spend.
+    tokens_spent: Optional[int] = 0
 
 
 #: How far back a COLD read looks for the last human prompt. One tail window is
@@ -138,15 +163,50 @@ _PROMPT_SCAN_BYTES = 12_000_000
 _PROMPT_CACHE: dict[str, tuple[int, str]] = {}
 _PROMPT_CACHE_LOCK = threading.Lock()
 
+#: A JSONL line carrying a plain-string `content` somewhere (a typed prompt).
+_STRING_CONTENT = re.compile(rb'"content":\s*"')
+
+#: The entry-level `gitBranch` field, read without parsing the line.
+_GIT_BRANCH = re.compile(rb'"gitBranch":\s*"([^"\\]*)"')
+
 
 #: Statuses worth SAYING on a surface the owner watches. "working" and "idle"
 #: are the ordinary states and add noise; these two mean the session is stuck
 #: on a human.
-NEEDS_OWNER = {"waiting-input": "waiting for you", "blocked?": "maybe blocked"}
+NEEDS_OWNER = {
+    "waiting-input": "waiting for you",
+    "waiting-permission": "waiting for approval",
+    "blocked?": "maybe blocked",
+}
+
+
+def merge_registry_status(registry_status: str, transcript_status: str) -> str:
+    """Combine Claude Code's own status with the one read from the transcript.
+
+    Claude Code writes ``status`` into ``~/.claude/sessions/<pid>.json`` itself
+    ("busy" | "idle" | "waiting"), so it outranks the transcript inference:
+
+    - ``busy`` -> ``working``
+    - ``waiting`` -> ``waiting-permission`` (it is showing the human a prompt)
+    - ``idle`` -> the transcript's ``waiting-input`` / ``blocked?`` when it says
+      so (both are finer-grained idle states), else ``idle``
+    - anything else (older Claude Code, no field) -> the transcript value
+    """
+    reg = (registry_status or "").strip().lower()
+    if reg == "busy":
+        return "working"
+    if reg == "waiting":
+        return "waiting-permission"
+    if reg == "idle":
+        if transcript_status in ("waiting-input", "blocked?"):
+            return transcript_status
+        return "idle"
+    return transcript_status
 
 
 def session_display_title(session_id: str, cwd: str, transcript_path: str = "",
-                          claude_name: str = "", status: str = "") -> str:
+                          claude_name: str = "", status: str = "",
+                          prompt_scan: bool = True) -> str:
     """`<repo>#<8 hex> - <what the human last asked for>`.
 
     The repo alone collided across every parallel tab in one checkout, which is
@@ -155,7 +215,8 @@ def session_display_title(session_id: str, cwd: str, transcript_path: str = "",
     Claude Code sends machine turns (system reminders, hook feedback, task
     notifications) down the same channel, and those are filtered by
     `session_topic`, so an absent topic degrades to the bare name and is never
-    guessed.
+    guessed. ``prompt_scan=False`` uses only an already-cached prompt (no
+    file read), for a first listing that must not walk a cold transcript.
     """
     from adk.harnesses.transcript_bridge import session_topic
 
@@ -168,7 +229,14 @@ def session_display_title(session_id: str, cwd: str, transcript_path: str = "",
     name = " ".join(str(claude_name or "").split())
     if not name:
         name = f"{repo}#{short}" if repo and short else (repo or short or "session")
-    prompt = _last_human_prompt(transcript_path, session_topic) if transcript_path else ""
+    if not transcript_path:
+        prompt = ""
+    elif prompt_scan:
+        prompt = _last_human_prompt(transcript_path, session_topic)
+    else:
+        with _PROMPT_CACHE_LOCK:
+            hit = _PROMPT_CACHE.get(transcript_path)
+        prompt = hit[1] if hit else ""
     topic = session_topic(prompt) if prompt else ""
     need = NEEDS_OWNER.get(status or "")
     parts = [name]
@@ -177,6 +245,22 @@ def session_display_title(session_id: str, cwd: str, transcript_path: str = "",
     if topic:
         parts.append(topic)
     return " - ".join(parts)
+
+
+def cached_last_prompt(transcript_path: str, max_chars: int = 400) -> str:
+    """The last human prompt already found for ``transcript_path``, or "".
+
+    Reads NO file: the background refresh fills the cache while it names the
+    session, and a request path must never walk a cold transcript. Whitespace
+    is folded and the text clipped to ``max_chars`` -- a row carries a line,
+    not the whole prompt.
+    """
+    if not transcript_path:
+        return ""
+    with _PROMPT_CACHE_LOCK:
+        hit = _PROMPT_CACHE.get(transcript_path)
+    text = " ".join(str(hit[1] if hit else "").split())
+    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
 
 
 def _last_human_prompt(transcript_path: str, topic_of=None) -> str:
@@ -193,9 +277,12 @@ def _last_human_prompt(transcript_path: str, topic_of=None) -> str:
     cached = None
     try:
         path = Path(transcript_path)
-        if not path.exists():
+        try:
+            # One stat, not exists() + stat(): on Windows each is a file open,
+            # and this runs for every session on every refresh tick.
+            size = path.stat().st_size
+        except (FileNotFoundError, NotADirectoryError):
             return ""
-        size = path.stat().st_size
         with _PROMPT_CACHE_LOCK:
             cached = _PROMPT_CACHE.get(transcript_path)
         # Warm: read only what was appended since the last look. A file that
@@ -205,26 +292,37 @@ def _last_human_prompt(transcript_path: str, topic_of=None) -> str:
         # bound made the cache inert (measured: warm was 1x cold).
         if cached and cached[0] == size:
             return cached[1]
-        limit = min(size, size - cached[0]) if cached and 0 < cached[0] < size else min(size, _PROMPT_SCAN_BYTES)
+        if cached and 0 < cached[0] < size:
+            limit = size - cached[0]
+        else:
+            limit = min(size, _PROMPT_SCAN_BYTES)
         found = ""
         with open(path, "rb") as fh:
-            scanned, buf = 0, b""
+            # Each window's complete lines are parsed exactly ONCE; only the
+            # partial first line is carried into the next (earlier) window.
+            # Re-decoding the whole accumulated buffer per window made a cold
+            # 12 MB scan quadratic -- hundreds of MB decoded per transcript.
+            scanned, carry = 0, b""
             while scanned < limit:
                 step = min(TRANSCRIPT_TAIL_SIZE, size - scanned)
                 scanned += step
                 fh.seek(size - scanned)
-                buf = fh.read(step) + buf
-                text = buf.decode("utf-8", errors="replace")
-                lines = text.split("\n")
-                # The first line of a mid-file window is almost always partial;
-                # keep it in `buf` for the next, wider pass instead of parsing it.
-                for line in reversed(lines[1:] if scanned < size else lines):
-                    line = line.strip()
-                    if not line or '"user"' not in line:
+                lines = (fh.read(step) + carry).split(b"\n")
+                if scanned < size:
+                    carry, lines = lines[0], lines[1:]
+                else:
+                    carry = b""
+                for raw in reversed(lines):
+                    # Cheap byte filters first: a typed prompt is a user entry
+                    # whose content is a plain STRING. Tool results (the bulk of
+                    # the bytes) have list content and are skipped unparsed.
+                    if b'"user"' not in raw or not _STRING_CONTENT.search(raw):
                         continue
                     try:
-                        entry = json.loads(line)
+                        entry = json.loads(raw.decode("utf-8", errors="replace"))
                     except ValueError:
+                        continue
+                    if not isinstance(entry, dict):
                         continue
                     if entry.get("type") != "user":
                         continue
@@ -257,40 +355,73 @@ _USAGE_CACHE_LOCK = threading.Lock()
 
 
 def _transcript_usage(transcript_path: str) -> tuple[str, int]:
-    """(branch, tokens_spent) for a transcript, read incrementally.
+    """(branch, tokens_spent) for a transcript, read to the end in one call.
 
     Claude Code writes one JSONL entry per content BLOCK and repeats the whole
     message's `usage` on each, so usage is counted once per `message.id` --
     summing per line over-counts a multi-block turn by the block count.
     """
+    branch, tokens, _ = _scan_usage(transcript_path, max_bytes=None)
+    return branch, tokens
+
+
+def _scan_usage(transcript_path: str, max_bytes: Optional[int]) -> tuple[str, int, bool]:
+    """Advance the usage scan of one transcript by at most ``max_bytes``.
+
+    Returns ``(branch, tokens_so_far, caught_up)``. ``caught_up`` is True once
+    every complete line up to EOF has been counted; until then ``tokens_so_far``
+    is a PARTIAL sum and must not be shown as the session's spend. Transcripts
+    here reach 130 MB, and reading one from byte 0 on a request path is what
+    made a cold directory listing take most of a minute; a per-tick budget turns
+    that into a background catch-up that no caller waits on.
+
+    ``max_bytes=None`` reads everything available (the one-shot behaviour).
+    A single line longer than the budget is still consumed whole -- otherwise
+    the scan would stall on it forever.
+    """
     if not transcript_path:
-        return "", 0
+        return "", 0, True
     try:
         path = Path(transcript_path)
         size = path.stat().st_size
     except OSError:
-        return "", 0
+        return "", 0, True
     with _USAGE_CACHE_LOCK:
         cached = _USAGE_CACHE.get(transcript_path)
     offset, branch, tokens, last_id = 0, "", 0, ""
     if cached and cached[0] <= size:
         offset, branch, tokens, last_id = cached
         if offset == size:
-            return branch, tokens
+            return branch, tokens, True
+    remaining = size - offset
+    budget = remaining if max_bytes is None else max(1, min(remaining, max_bytes))
     try:
         with open(path, "rb") as fh:
             fh.seek(offset)
-            chunk = fh.read(size - offset)
+            chunk = fh.read(budget)
+            while len(chunk) < remaining and b"\n" not in chunk:
+                more = fh.read(min(budget, remaining - len(chunk)))
+                if not more:
+                    break
+                chunk += more
     except OSError:
-        return branch, tokens
+        return branch, tokens, False
+    read_to_eof = len(chunk) >= remaining
     # Only whole lines are consumed; a line still being written is re-read next time.
     end = chunk.rfind(b"\n")
     if end < 0:
-        return branch, tokens
+        return branch, tokens, read_to_eof
     consumed = chunk[: end + 1]
     seen: set[str] = {last_id} if last_id else set()
     for raw in consumed.split(b"\n"):
-        if b'"gitBranch"' not in raw and b'"usage"' not in raw:
+        if b'"usage"' not in raw:
+            # Most bytes are tool results with no usage: take the branch with a
+            # regex instead of JSON-parsing megabytes per line. Claude Code
+            # writes the top-level `gitBranch` before `message`, so the first
+            # match is the entry's own field.
+            m = _GIT_BRANCH.search(raw)
+            if m and m.group(1).strip():
+                branch = m.group(1).decode("utf-8", errors="replace").strip()
             continue
         try:
             obj = json.loads(raw.decode("utf-8", errors="replace"))
@@ -320,10 +451,102 @@ def _transcript_usage(transcript_path: str) -> tuple[str, int]:
         if len(_USAGE_CACHE) > 256:
             for stale in list(_USAGE_CACHE)[:64]:
                 _USAGE_CACHE.pop(stale, None)
-    return branch, tokens
+    return branch, tokens, read_to_eof
+
+
+def _cached_usage(transcript_path: str) -> tuple[str, Optional[int]]:
+    """What the usage scan already knows, with NO file I/O beyond one stat.
+
+    Tokens are None unless the scan has caught up to the current file size.
+    """
+    if not transcript_path:
+        return "", 0
+    with _USAGE_CACHE_LOCK:
+        cached = _USAGE_CACHE.get(transcript_path)
+    if not cached:
+        return "", None
+    try:
+        size = Path(transcript_path).stat().st_size
+    except OSError:
+        return cached[1], None
+    # A trailing partial line is never consumed, so "caught up" is "within one
+    # unfinished line of EOF"; the next refresh tick settles it exactly.
+    return cached[1], (cached[2] if cached[0] == size else None)
+
+
+#: transcript path -> (size, mtime_ns, result). A 2 s refresh over ~20 tabs
+#: re-parsed ~5 MB of unchanged tails per tick; an unchanged file now costs one
+#: stat. Only results that do not depend on the clock are kept: a pending tool
+#: turns "working" into "blocked?" by AGE alone, with no byte written.
+_STATUS_CACHE: dict[str, tuple[int, int, tuple[str, float, str]]] = {}
+_STATUS_CACHE_LOCK = threading.Lock()
+_CLOCK_DEPENDENT_STATUSES = ("working", "blocked?", "unknown")
+
+
+#: transcript path -> (size, mtime_ns, tool_name, tool_started). A session with a
+#: pending tool is the one case ``_STATUS_CACHE`` cannot hold (its status ages
+#: from "working" to "blocked?" with no byte written), so it used to re-read and
+#: re-parse a 256 KB tail every refresh tick for as long as the tool ran. What
+#: the BYTES say -- which tool, since when -- is cached here instead, and only
+#: the clock-dependent classification is recomputed per tick.
+_PENDING_CACHE: dict[str, tuple[int, int, str, float]] = {}
+
+
+def _classify_pending(tool_name: str, tool_started: float) -> tuple[str, float, str]:
+    """Status of a session whose newest tool_use has no tool_result yet."""
+    waited = time.time() - tool_started if tool_started else 0.0
+    if tool_started and waited >= PENDING_TOOL_STALE_SECONDS:
+        return (
+            "idle",
+            tool_started,
+            f"{tool_name} pending since {int(waited // 3600)}h ago (abandoned turn)",
+        )
+    if tool_started and waited >= PENDING_TOOL_BLOCKED_SECONDS:
+        mins = int(waited // 60)
+        age = f"{mins}m" if mins else f"{int(waited)}s"
+        return (
+            "blocked?",
+            tool_started,
+            f"{tool_name} pending {age} — may need approval",
+        )
+    return "working", tool_started or time.time(), f"running {tool_name}"
+
+
+def _bounded_put(cache: dict[str, Any], key: str, value: Any) -> None:
+    cache[key] = value
+    if len(cache) > 256:  # bounded: sessions come and go
+        for stale in list(cache)[:64]:
+            cache.pop(stale, None)
 
 
 def _derive_status_from_transcript(transcript_path: str) -> tuple[str, float, str]:
+    """`_derive_status_uncached`, skipped when the transcript has not changed."""
+    try:
+        st = Path(transcript_path).stat()
+    except OSError:
+        return _derive_status_uncached(transcript_path)
+    key = (st.st_size, st.st_mtime_ns)
+    with _STATUS_CACHE_LOCK:
+        hit = _STATUS_CACHE.get(transcript_path)
+        pending_hit = _PENDING_CACHE.get(transcript_path)
+    if hit and (hit[0], hit[1]) == key:
+        return hit[2]
+    if pending_hit and (pending_hit[0], pending_hit[1]) == key:
+        return _classify_pending(pending_hit[2], pending_hit[3])
+    pending: list[tuple[str, float]] = []
+    result = _derive_status_uncached(transcript_path, pending_out=pending)
+    with _STATUS_CACHE_LOCK:
+        if pending:
+            _bounded_put(_PENDING_CACHE, transcript_path,
+                         (key[0], key[1], pending[0][0], pending[0][1]))
+        elif result[0] not in _CLOCK_DEPENDENT_STATUSES:
+            _bounded_put(_STATUS_CACHE, transcript_path, (key[0], key[1], result))
+    return result
+
+
+def _derive_status_uncached(
+    transcript_path: str, pending_out: Optional[list[tuple[str, float]]] = None,
+) -> tuple[str, float, str]:
     """Derive session status from transcript tail.
 
     Returns:
@@ -341,11 +564,12 @@ def _derive_status_from_transcript(transcript_path: str) -> tuple[str, float, st
     """
     try:
         path = Path(transcript_path)
-        if not path.exists():
+        try:
+            file_size = path.stat().st_size  # one stat doubles as the existence check
+        except (FileNotFoundError, NotADirectoryError):
             return "unknown", time.time(), "(transcript not found)"
 
         # Read the tail
-        file_size = path.stat().st_size
         tail_size = min(TRANSCRIPT_TAIL_SIZE, file_size)
         tail_text = ""
         if tail_size > 0:
@@ -365,22 +589,9 @@ def _derive_status_from_transcript(transcript_path: str) -> tuple[str, float, st
         # which would otherwise read as plain "working".
         tool_name, tool_started = _pending_tool_use(lines)
         if tool_name:
-            waited = time.time() - tool_started if tool_started else 0.0
-            if tool_started and waited >= PENDING_TOOL_STALE_SECONDS:
-                return (
-                    "idle",
-                    tool_started,
-                    f"{tool_name} pending since {int(waited // 3600)}h ago (abandoned turn)",
-                )
-            if tool_started and waited >= PENDING_TOOL_BLOCKED_SECONDS:
-                mins = int(waited // 60)
-                age = f"{mins}m" if mins else f"{int(waited)}s"
-                return (
-                    "blocked?",
-                    tool_started,
-                    f"{tool_name} pending {age} — may need approval",
-                )
-            return "working", tool_started or time.time(), f"running {tool_name}"
+            if pending_out is not None:
+                pending_out.append((tool_name, tool_started))
+            return _classify_pending(tool_name, tool_started)
 
         # Look for terminal events
         for line in reversed(lines):
@@ -478,6 +689,29 @@ def _derive_status_from_transcript(transcript_path: str) -> tuple[str, float, st
         return "unknown", time.time(), f"(error: {exc})"
 
 
+@dataclass
+class _Snapshot:
+    """One background-built view of the directory.
+
+    Daemon rows are kept by id and re-joined with the manager's CURRENT session
+    list on every read, so a session spawned or stopped a moment ago is never
+    missing or resurrected just because the snapshot is two seconds old.
+    """
+
+    generated_at: float
+    daemon_rows: dict[str, UnifiedSession]
+    discovered: list[UnifiedSession]
+    #: False for the quick first pass (no usage scan, no deep prompt scan).
+    complete: bool
+
+
+#: How a builder obtains `tokens_spent`:
+#: "full"   -- read the transcript to EOF now (inline mode; exact, can be slow)
+#: "budget" -- advance by at most USAGE_BYTES_PER_TICK; None until caught up
+#: "cached" -- no read at all; whatever the scan already knows, else None
+_USAGE_MODES = ("full", "budget", "cached")
+
+
 class SessionDirectory:
     """Unified view of all Claude sessions."""
 
@@ -496,56 +730,93 @@ class SessionDirectory:
         self._cache: Optional[list[UnifiedSession]] = None
         self._cache_time: float = 0.0
         self._discover = discover_fn or discover_live_sessions
+        # ── background mode (start_refresher) ──
+        self.interval: float = REFRESH_INTERVAL_SECONDS
+        self.usage_budget: int = USAGE_BYTES_PER_TICK
+        self._snap_lock = threading.Lock()
+        self._snapshot: Optional[_Snapshot] = None
+        self._daemon_sessions_fn: Optional[Callable[[], list[dict[str, Any]]]] = None
+        self._latest_daemon: list[dict[str, Any]] = []
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._first = threading.Event()
+        self.builds = 0
+        self.last_build_ms = 0.0
+        self.last_error = ""
 
-    def _build_from_daemon(self, daemon_sessions: list[dict[str, Any]]) -> list[UnifiedSession]:
+    # ── row builders ────────────────────────────────────────────────────────
+
+    def _daemon_row(
+        self, info: dict[str, Any], usage_mode: str = "full", derive: bool = True,
+    ) -> UnifiedSession:
+        """One daemon HarnessSession.info() dict as a UnifiedSession.
+
+        ``derive=False`` reads no file at all (a session the snapshot has not
+        seen yet): status comes from the session's own state.
+        """
+        session_id = info.get("id", "")
+        transcript = info.get("transcript", "")
+        state = str(info.get("state") or "")
+        status, activity_at, activity_summary = "idle", time.time(), ""
+        if transcript and derive:
+            status, activity_at, activity_summary = _derive_status_from_transcript(transcript)
+        elif not derive and state:
+            status = state
+        # The session's OWN state outranks anything inferred from its transcript.
+        # Measured 2026-09-19: a killed claude-tty (state=exited, exit 2) was listed
+        # as `idle` with steer_capability `full`, because a transcript that simply
+        # stopped growing reads as an idle tab -- so `tell` could address a corpse
+        # and the desk could keep a body on stage for it.
+        dead = state in ("exited", "failed")
+        if dead:
+            status = "exited"
+        branch, tokens_spent = self._usage(transcript, usage_mode if derive else "cached")
+        return UnifiedSession(
+            id=session_id,
+            title=info.get("title", ""),
+            cwd=info.get("cwd", ""),
+            harness=info.get("harness", ""),
+            harness_label=info.get("harness_label", ""),
+            origin="daemon",
+            status=status,
+            last_activity_at=activity_at,
+            last_activity_summary=activity_summary,
+            transcript_path=transcript,
+            pid=None,
+            steer_capability="none" if dead else "full",
+            extras=info,
+            branch=branch,
+            tokens_spent=tokens_spent,
+        )
+
+    def _usage(self, transcript: str, mode: str) -> tuple[str, Optional[int]]:
+        if mode not in _USAGE_MODES:
+            raise ValueError(f"unknown usage mode {mode!r}")
+        if mode == "full":
+            return _transcript_usage(transcript)
+        if mode == "cached":
+            return _cached_usage(transcript)
+        branch, tokens, caught_up = _scan_usage(transcript, max_bytes=self.usage_budget)
+        return branch, (tokens if caught_up else None)
+
+    def _build_from_daemon(
+        self, daemon_sessions: list[dict[str, Any]], usage_mode: str = "full",
+    ) -> list[UnifiedSession]:
         """Convert daemon HarnessSession.info() dicts to UnifiedSession."""
-        out = []
-        for info in daemon_sessions:
-            session_id = info.get("id", "")
-            transcript = info.get("transcript", "")
-            cwd = info.get("cwd", "")
-            title = info.get("title", "")
-
-            status, activity_at, activity_summary = "idle", time.time(), ""
-            if transcript:
-                status, activity_at, activity_summary = _derive_status_from_transcript(
-                    transcript
-                )
-            # The session's OWN state outranks anything inferred from its transcript.
-            # Measured 2026-09-19: a killed claude-tty (state=exited, exit 2) was listed
-            # as `idle` with steer_capability `full`, because a transcript that simply
-            # stopped growing reads as an idle tab -- so `tell` could address a corpse
-            # and the desk could keep a body on stage for it.
-            dead = str(info.get("state") or "") in ("exited", "failed")
-            if dead:
-                status = "exited"
-            branch, tokens_spent = _transcript_usage(transcript)
-
-            out.append(
-                UnifiedSession(
-                    id=session_id,
-                    title=title,
-                    cwd=cwd,
-                    harness=info.get("harness", ""),
-                    harness_label=info.get("harness_label", ""),
-                    origin="daemon",
-                    status=status,
-                    last_activity_at=activity_at,
-                    last_activity_summary=activity_summary,
-                    transcript_path=transcript,
-                    pid=None,
-                    steer_capability="none" if dead else "full",
-                    extras=info,
-                    branch=branch,
-                    tokens_spent=tokens_spent,
-                )
-            )
-        return out
+        return [self._daemon_row(info, usage_mode) for info in daemon_sessions]
 
     def _build_from_discovered(
-        self, discovered: list[DiscoveredSession]
+        self,
+        discovered: list[DiscoveredSession],
+        usage_mode: str = "full",
+        prompt_scan: bool = True,
     ) -> list[UnifiedSession]:
-        """Convert DiscoveredSession to UnifiedSession."""
+        """Convert DiscoveredSession to UnifiedSession.
+
+        ``prompt_scan=False`` names the session from the prompt cache only, so a
+        first listing never walks megabytes back through a cold transcript.
+        """
         out = []
         for disc in discovered:
             status, activity_at, activity_summary = "idle", time.time(), ""
@@ -553,7 +824,11 @@ class SessionDirectory:
                 status, activity_at, activity_summary = _derive_status_from_transcript(
                     disc.transcript_path
                 )
-            branch, tokens_spent = _transcript_usage(disc.transcript_path)
+            status = merge_registry_status(disc.status, status)
+            waiting_for = getattr(disc, "waiting_for", "")
+            if status == "waiting-permission" and waiting_for:
+                activity_summary = f"waiting: {waiting_for}"
+            branch, tokens_spent = self._usage(disc.transcript_path, usage_mode)
 
             out.append(
                 UnifiedSession(
@@ -562,7 +837,8 @@ class SessionDirectory:
                     # the helper adds what the session is doing and whether it
                     # is stuck on a human.
                     title=session_display_title(disc.id, disc.cwd, disc.transcript_path,
-                                                claude_name=disc.name, status=status),
+                                                claude_name=disc.name, status=status,
+                                                prompt_scan=prompt_scan),
                     cwd=disc.cwd,
                     harness="claude",  # Discovered sessions are always Claude
                     harness_label="Claude Code",
@@ -580,8 +856,38 @@ class SessionDirectory:
             )
         return out
 
+    @staticmethod
+    def _combine(
+        daemon_unified: list[UnifiedSession], discovered_unified: list[UnifiedSession],
+    ) -> list[UnifiedSession]:
+        """Merge, deduplicating by id (daemon takes precedence), newest first.
+
+        A daemon-owned claude-tty session is ALSO discovered from Claude's own
+        state files under the --session-id the daemon minted for it -- fold that
+        row into the daemon row, or one Claude Code lists twice: once steerable,
+        once not.
+        """
+        daemon_ids = {s.id for s in daemon_unified}
+        daemon_ids |= {
+            str((s.extras or {}).get("harness_session_id") or "") for s in daemon_unified
+        } - {""}
+        combined = daemon_unified + [d for d in discovered_unified if d.id not in daemon_ids]
+        combined.sort(key=lambda s: s.last_activity_at, reverse=True)
+        return combined
+
+    # ── reads ───────────────────────────────────────────────────────────────
+
+    @property
+    def refreshing(self) -> bool:
+        """True once a background refresher owns the rebuilds."""
+        return self._thread is not None
+
     def list_sessions_sync(self, daemon_sessions: list[dict[str, Any]]) -> list[UnifiedSession]:
-        """List all sessions (daemon + discovered), with caching.
+        """List all sessions (daemon + discovered).
+
+        With a refresher running this never does transcript I/O: it re-joins the
+        last snapshot with ``daemon_sessions`` and returns. Without one it
+        rebuilds inline behind a CACHE_TTL_SECONDS cache.
 
         Args:
             daemon_sessions: Output of SessionManager.list_sessions()
@@ -589,34 +895,170 @@ class SessionDirectory:
         Returns:
             Unified list sorted by last activity time (newest first).
         """
+        return self.list_with_meta(daemon_sessions)[0]
+
+    def list_with_meta(
+        self, daemon_sessions: list[dict[str, Any]],
+    ) -> tuple[list[UnifiedSession], dict[str, Any]]:
+        """The rows plus ``{"generated_at", "stale"}`` describing them.
+
+        ``generated_at`` is when the rows were built (None: nothing built yet);
+        ``stale`` is True when they are older than STALE_AFTER_INTERVALS refresh
+        intervals or no snapshot exists yet.
+        """
+        if not self.refreshing:
+            rows = self._list_inline(daemon_sessions)
+            return rows, {"generated_at": self._cache_time or time.time(), "stale": False}
+        self._latest_daemon = list(daemon_sessions)
+        snap = self._snapshot
+        if snap is None:
+            # First caller after start: the refresher's first pass is the cheap
+            # one (registry files + transcript tails), so a short wait usually
+            # gets it. If discovery itself is slow, answer empty and stale
+            # rather than hold the caller.
+            self._first.wait(FIRST_SNAPSHOT_WAIT_SECONDS)
+            snap = self._snapshot
+        rows = self._join(snap, daemon_sessions)
+        if snap is None:
+            return rows, {"generated_at": None, "stale": True}
+        age = time.time() - snap.generated_at
+        stale = age > self.interval * STALE_AFTER_INTERVALS
+        return rows, {"generated_at": snap.generated_at, "stale": stale}
+
+    def _list_inline(self, daemon_sessions: list[dict[str, Any]]) -> list[UnifiedSession]:
         now = time.time()
         with self._lock:
-            # Return cached list if fresh
             if self._cache is not None and (now - self._cache_time) < CACHE_TTL_SECONDS:
                 return self._cache
-
-            # Rebuild cache: daemon sessions + discovered tab sessions
             daemon_unified = self._build_from_daemon(daemon_sessions)
-            discovered = self._discover()
-            discovered_unified = self._build_from_discovered(discovered)
-
-            # Merge, deduplicating by id (daemon takes precedence). A daemon-owned
-            # claude-tty session is ALSO discovered from Claude's own state files under
-            # the --session-id the daemon minted for it -- fold that row into the daemon
-            # row, or one Claude Code lists twice: once steerable, once not.
-            daemon_ids = {s.id for s in daemon_unified}
-            daemon_ids |= {
-                str((s.extras or {}).get("harness_session_id") or "") for s in daemon_unified
-            } - {""}
-            combined = daemon_unified + [d for d in discovered_unified if d.id not in daemon_ids]
-
-            # Sort by last activity (newest first)
-            combined.sort(key=lambda s: s.last_activity_at, reverse=True)
-
-            self._cache = combined
+            discovered_unified = self._build_from_discovered(self._discover())
+            self._cache = self._combine(daemon_unified, discovered_unified)
             self._cache_time = now
-
         return self._cache or []
+
+    def _join(
+        self, snap: Optional[_Snapshot], daemon_sessions: list[dict[str, Any]],
+    ) -> list[UnifiedSession]:
+        """Snapshot rows + the manager's CURRENT daemon sessions. No file I/O."""
+        known = snap.daemon_rows if snap else {}
+        daemon_rows: list[UnifiedSession] = []
+        unseen = False
+        for info in daemon_sessions:
+            base = known.get(info.get("id", ""))
+            if base is None:
+                unseen = True
+                daemon_rows.append(self._daemon_row(info, derive=False))
+                continue
+            dead = str(info.get("state") or "") in ("exited", "failed")
+            daemon_rows.append(replace(
+                base,
+                title=info.get("title", ""),
+                cwd=info.get("cwd", ""),
+                extras=info,
+                status="exited" if dead else base.status,
+                steer_capability="none" if dead else base.steer_capability,
+            ))
+        if unseen and self.refreshing:
+            self._wake.set()  # a new session: refresh now, not in 2 s
+        return self._combine(daemon_rows, list(snap.discovered) if snap else [])
+
+    # ── background refresher ────────────────────────────────────────────────
+
+    def start_refresher(
+        self,
+        daemon_sessions_fn: Optional[Callable[[], list[dict[str, Any]]]] = None,
+        interval: Optional[float] = None,
+    ) -> None:
+        """Hand every rebuild to a background thread. Idempotent.
+
+        Args:
+            daemon_sessions_fn: returns the manager's current session infos. When
+                omitted the refresher uses whatever the last reader passed in.
+            interval: seconds between refreshes (jittered +/-20 %).
+        """
+        with self._snap_lock:
+            if self._thread is not None:
+                return
+            if interval is not None:
+                self.interval = max(0.05, float(interval))
+            self._daemon_sessions_fn = daemon_sessions_fn
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run, name="session-directory-refresh", daemon=True,
+            )
+            self._thread.start()
+
+    def stop_refresher(self, timeout: float = 2.0) -> None:
+        """Stop the refresher; the directory falls back to inline rebuilds."""
+        self._stop.set()
+        self._wake.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+        with self._snap_lock:
+            self._thread = None
+            self._snapshot = None
+            self._first.clear()
+
+    def _run(self) -> None:
+        deep = False
+        while not self._stop.is_set():
+            try:
+                self.refresh(deep=deep)
+                deep = True
+            except Exception as exc:  # noqa: BLE001 - the thread must outlive one bad pass
+                # If this thread died the directory would freeze at its last
+                # snapshot while `stale` climbed; logging keeps it visible.
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("session directory refresh failed: %s", self.last_error)
+            finally:
+                self._first.set()
+            if self._stop.is_set():
+                break
+            if self._wake.wait(self.interval * random.uniform(0.8, 1.2)):
+                self._wake.clear()
+
+    def refresh(self, deep: bool = True) -> _Snapshot:
+        """Build and publish one snapshot. Runs on the refresher thread.
+
+        ``deep=False`` is the quick first pass: discovery and transcript tails
+        only, with no usage scan and no deep prompt scan.
+        """
+        started = time.time()
+        if self._daemon_sessions_fn is not None:
+            infos = list(self._daemon_sessions_fn())
+        else:
+            infos = list(self._latest_daemon)
+        usage_mode = "budget" if deep else "cached"
+        daemon_rows = {r.id: r for r in self._build_from_daemon(infos, usage_mode=usage_mode)}
+        discovered = self._build_from_discovered(
+            self._discover(), usage_mode=usage_mode, prompt_scan=deep,
+        )
+        snap = _Snapshot(
+            generated_at=time.time(), daemon_rows=daemon_rows,
+            discovered=discovered, complete=deep,
+        )
+        with self._snap_lock:
+            self._snapshot = snap
+        self.builds += 1
+        self.last_build_ms = (time.time() - started) * 1000.0
+        self.last_error = ""
+        return snap
+
+    def stats(self) -> dict[str, Any]:
+        """O(1) liveness of the refresher, for a health probe."""
+        snap = self._snapshot
+        rows = (list(snap.daemon_rows.values()) + snap.discovered) if snap else []
+        return {
+            "running": self._thread is not None and self._thread.is_alive(),
+            "builds": self.builds,
+            "last_build_ms": round(self.last_build_ms, 1),
+            "generated_at": snap.generated_at if snap else None,
+            "complete": bool(snap and snap.complete),
+            "rows": len(rows),
+            "usage_pending": sum(1 for r in rows if r.tokens_spent is None),
+            "last_error": self.last_error,
+        }
 
 
 #: Global singleton

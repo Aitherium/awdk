@@ -30,8 +30,8 @@ class Awdk < Formula
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
   homepage "https://aitherium.com"
-  url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.8.28.tar.gz"
-  sha256 "ea7b3cc3c62bc9e07620020287c953e7cca754942f67b2aabceb1a1581734575"
+  url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.8.29.tar.gz"
+  sha256 "0c41f8bf9e37005e26bdad8bc7342db74c7de6c699e00af66c6e503e46824123"
   # SPDX. "Proprietary" is not an SPDX identifier and `brew audit` rejects it;
   # the LICENSE file is Business Source License 1.1.
   license "BUSL-1.1"
@@ -76,6 +76,11 @@ class Awdk < Formula
   resource "awrelay" do
     url "https://files.pythonhosted.org/packages/ce/f1/043a284568254e22288103c26ac8798cca92c2165139b8ed77114027d01e/awrelay-0.3.1.tar.gz"
     sha256 "29acbe033474278d240f08eabc5fb2bf3aab7f68774b990571d3abd04688b419"
+  end
+
+  resource "awsettings" do
+    url "https://files.pythonhosted.org/packages/bf/b5/a90fa7fecd1e9425855fb2407819bc7edf3e077289f7cd9c7f009de26970/awsettings-0.3.3.tar.gz"
+    sha256 "102c1416e22a854e84627acb22b7eb6eef5370c184c6f54be2c1620a2f08e577"
   end
 
   resource "certifi" do

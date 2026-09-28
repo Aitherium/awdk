@@ -4,6 +4,21 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.29] - 2026-09-27
+
+### Fixed
+
+- **`adk onboard` writes an MCP config that starts.** It wrote
+  `npx -y aither-mcp-server`, a package that was never published, so the MCP
+  step failed for every new user. It now writes the hosted gateway
+  (`https://mcp.aitherium.com/mcp`, streamable HTTP, bearer read from
+  `$AITHER_API_KEY` -- the key is never written into the file), plus a local
+  `awnode mcp` entry when awnode is installed, and repairs an old broken entry
+  in place. `adk shell` `/setup mcp` pointed at a second unpublished package
+  (`@aitheros/mcp-server`) and now shows the same entries.
+- Onboarding and the other API-key status lines no longer print the first
+  12-16 characters of your key; they show the last 4.
+
 ## [3.8.28] - 2026-09-27
 
 ### Added

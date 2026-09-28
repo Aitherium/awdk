@@ -77,3 +77,26 @@ def test_handoff_refuses_local_only_without_calling_identity(client):
     assert r.status_code == 401
     assert "adk login" in r.json()["detail"]
     ac.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://api.aitherium.com", "https://api.aitherium.com/",
+    "https://portal.aitherium.com", "https://gateway.aitherium.com",
+    "https://mcp.aitherium.com", "https://aitherium.com",
+])
+def test_handoff_from_control_plane_login_goes_to_the_idp(client, endpoint, monkeypatch):
+    """A shell login writes endpoint api.aitherium.com; that host is Veil, which 404s the mint."""
+    monkeypatch.delenv("AITHER_IDP_URL", raising=False)
+    monkeypatch.delenv("AITHER_IDP_BASE_URL", raising=False)
+    prof = {"endpoint": endpoint, "token_type": "bearer", "access_token": "x",
+            "user": {"username": "david", "email": "d@example.com", "tenant_slug": "david"}}
+    a, b = _with_profile(prof)
+    with a, b, patch("adk.server.httpx.AsyncClient") as ac:
+        http = ac.return_value.__aenter__.return_value
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"ticket": "t", "expires_in": 60}
+        http.post.return_value = resp
+        client.post("/identity/handoff", headers=ORIGIN, json={})
+    urls = [c.args[0] for c in http.post.call_args_list]
+    assert urls, "the daemon never called Identity"
+    assert urls[0] == "https://idp.aitherium.com/identity/auth/handoff/mint"

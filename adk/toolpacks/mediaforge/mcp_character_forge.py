@@ -345,7 +345,7 @@ _TRUST_KEYS = frozenset({"safety_level", "safety_tier", "user", "username", "use
                          "role", "roles"})
 
 
-def mediaforge_run_op(name: str, params: dict = None) -> dict:
+def mediaforge_run_op(name: str, params: dict[str, object] | None = None) -> dict:
     """Run ONE media-forge op by name through the curated POST /op/{name}.
 
     `name` comes from mediaforge_list_ops; `params` are that op's knobs plus its media

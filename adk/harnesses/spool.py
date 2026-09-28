@@ -117,17 +117,35 @@ class SpoolTailer:
         """Read every new line in the spool. Returns how many events published."""
         if not self.dir.is_dir():
             return 0
-        published = 0
-        for path in sorted(self.dir.glob("*.jsonl")):
-            published += self._drain_file(path)
-        return published
-
-    def _drain_file(self, path: Path) -> int:
-        key = str(path)
+        # os.scandir, not glob + a stat per file: this runs twice a second over
+        # every spool file ever written (~150 on a busy host), and on Windows the
+        # directory listing already carries each file's size, so DirEntry.stat()
+        # costs no extra syscall. glob + stat was the daemon's largest idle CPU
+        # cost once the decision and wake reads were cached (measured 2026-09-27).
+        entries: list[tuple[str, Optional[int]]] = []
         try:
-            size = path.stat().st_size
+            with os.scandir(self.dir) as it:
+                for entry in it:
+                    if not entry.name.endswith(".jsonl"):
+                        continue
+                    try:
+                        entries.append((entry.name, entry.stat().st_size))
+                    except OSError:
+                        entries.append((entry.name, None))
         except OSError:
             return 0
+        published = 0
+        for name, size in sorted(entries):
+            published += self._drain_file(self.dir / name, size)
+        return published
+
+    def _drain_file(self, path: Path, size: Optional[int] = None) -> int:
+        key = str(path)
+        if size is None:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                return 0
 
         if key not in self._offsets:
             # First sight of this file: start at the end unless explicitly replaying,

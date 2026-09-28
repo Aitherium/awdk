@@ -39,6 +39,7 @@ Design notes that are consequences of real constraints, not preference:
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -51,6 +52,29 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+
+def scrub_surrogates(value: Any) -> Any:
+    """Replace lone UTF-16 surrogates in every string of a JSON-shaped value.
+
+    A terminal reply pasted into a card's answer can carry HALF of an emoji (a
+    lone surrogate such as U+DC9D). ``json.dumps`` escapes it on the way to disk
+    and ``json.loads`` hands it straight back, but it cannot be encoded as UTF-8,
+    so the daemon's FastAPI serializer raised ``PydanticSerializationError`` on
+    ANY list containing that card. Measured 2026-09-27: one answered card's
+    ``answer_note`` made ``GET /decisions?status=answered`` a 500 for every
+    caller, which Genesis surfaced as a 503 on ``/api/v1/decisions``. Scrubbing
+    on read heals cards already on disk; scrubbing on write stops new ones.
+    """
+    if isinstance(value, str):
+        if any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
+            return value.encode("utf-8", "replace").decode("utf-8")
+        return value
+    if isinstance(value, dict):
+        return {k: scrub_surrogates(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_surrogates(v) for v in value]
+    return value
 
 #: Exactly one of these exists on any platform this runs on. Imported at module
 #: level rather than inside the lock so a platform with NEITHER is discovered
@@ -78,6 +102,15 @@ URGENCIES = ("low", "normal", "high", "critical")
 #: and use an unambiguous alphabet — no 0/o/1/l.
 _ID_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
 _ID_RE = re.compile(r"^d-[" + _ID_ALPHABET + r"]{4,12}$")
+
+#: directory -> {file name -> (mtime_ns, size, parsed raw dict)}. The daemon serves
+#: ``/decisions`` to every desk surface on a poll, and ``list()`` used to read and
+#: JSON-parse every card file (~1400 on the owner's box) per call -- the daemon's
+#: second-largest idle CPU cost (measured 2026-09-27). A file is re-read only when
+#: its (mtime, size) changed; ``os.scandir`` supplies both from the directory
+#: listing itself on Windows, so an unchanged directory costs one enumeration.
+_RAW_CACHE: dict[str, dict[str, tuple[int, int, dict[str, Any]]]] = {}
+_RAW_CACHE_LOCK = threading.Lock()
 
 #: A dedupe key is a producer-chosen identity for the QUESTION, not for the card
 #: ("this job, this failure streak"). It is compared, never joined onto a path,
@@ -744,7 +777,8 @@ class DecisionStore:
     def _write(self, card: DecisionCard) -> None:
         target = self._file(card.id)
         tmp = target.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(card.to_dict(), indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(scrub_surrogates(card.to_dict()), indent=2),
+                       encoding="utf-8")
         # Writers are serialised by the directory lock, but READERS are not: the
         # cockpit, the desk tray and the popup poll this directory constantly and
         # take no lock, by design. On Windows a reader with the file momentarily
@@ -852,8 +886,8 @@ class DecisionStore:
         want = (key or "").strip()
         if not want:
             return None
-        for target in sorted(self.path.glob("d-*.json")):
-            card = self._read_file(target)
+        for target, st in self._scan():
+            card = self._read_file(target, st)
             if card is not None and card.dedupe_key == want:
                 return card
         return None
@@ -863,8 +897,8 @@ class DecisionStore:
         want = (prefix or "").strip()
         if not want:
             return None
-        for target in sorted(self.path.glob("d-*.json")):
-            card = self._read_file(target)
+        for target, st in self._scan():
+            card = self._read_file(target, st)
             if card is None or not card.is_open:
                 continue
             if card.dedupe_key.startswith(want):
@@ -953,17 +987,82 @@ class DecisionStore:
         return self._read_file(target)
 
     @staticmethod
-    def _read_file(target: Path) -> Optional[DecisionCard]:
+    def _read_raw(target: Path, st: Optional[os.stat_result] = None) -> Optional[dict[str, Any]]:
+        """The parsed, surrogate-scrubbed JSON of one card file, or None.
+
+        Served from ``_RAW_CACHE`` while the file's (mtime, size) is unchanged.
+        The returned dict is SHARED with the cache: never mutate it (callers go
+        through :meth:`_read_file`, which builds the card from a deep copy).
+        A stat taken just before a concurrent rewrite can pair the old signature
+        with the new content; the next call sees a different signature and
+        re-reads, so a stale entry can never outlive one call.
+        """
+        folder, name = str(target.parent), target.name
         try:
-            raw = json.loads(target.read_text(encoding="utf-8"))
+            st = st if st is not None else target.stat()
+        except OSError:
+            with _RAW_CACHE_LOCK:
+                _RAW_CACHE.get(folder, {}).pop(name, None)
+            return None
+        sig = (st.st_mtime_ns, st.st_size)
+        with _RAW_CACHE_LOCK:
+            hit = _RAW_CACHE.get(folder, {}).get(name)
+        if hit is not None and (hit[0], hit[1]) == sig:
+            return hit[2]
+        try:
+            raw = scrub_surrogates(json.loads(target.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             # A half-written or hand-mangled card must not take the list down with
-            # it. The caller sees one fewer card, not zero cards.
+            # it. The caller sees one fewer card, not zero cards. Not cached: the
+            # next call retries, and a writer finishing makes it readable.
             return None
         if not isinstance(raw, dict):
             return None
+        raw = scrub_surrogates(raw)
+        with _RAW_CACHE_LOCK:
+            _RAW_CACHE.setdefault(folder, {})[name] = (sig[0], sig[1], raw)
+        return raw
+
+    def _scan(self) -> list[tuple[Path, Optional[os.stat_result]]]:
+        """Every ``d-*.json`` card file, sorted by name, with its stat when known.
+
+        ``os.scandir`` rather than ``glob`` + a stat per file: on Windows the
+        directory listing already carries size and mtime, so ``DirEntry.stat()``
+        makes no extra syscall. Also prunes cache entries for deleted cards.
+        """
+        found: list[tuple[Path, Optional[os.stat_result]]] = []
         try:
-            card = DecisionCard.from_dict(raw)
+            with os.scandir(self.path) as it:
+                for entry in it:
+                    name = entry.name
+                    if not (name.startswith("d-") and name.endswith(".json")):
+                        continue
+                    try:
+                        st: Optional[os.stat_result] = entry.stat()
+                    except OSError:
+                        st = None
+                    found.append((self.path / name, st))
+        except OSError:
+            return []
+        found.sort(key=lambda pair: pair[0].name)
+        names = {p.name for p, _ in found}
+        with _RAW_CACHE_LOCK:
+            cached = _RAW_CACHE.get(str(self.path))
+            if cached:
+                for gone in [n for n in cached if n not in names]:
+                    cached.pop(gone, None)
+        return found
+
+    @classmethod
+    def _read_file(cls, target: Path,
+                   st: Optional[os.stat_result] = None) -> Optional[DecisionCard]:
+        raw = cls._read_raw(target, st)
+        if raw is None:
+            return None
+        try:
+            # A deep copy: callers mutate the card they get (answer, expire),
+            # and the cached dict must stay what is on disk.
+            card = DecisionCard.from_dict(copy.deepcopy(raw))
         except Exception:
             # from_dict trusts the SHAPE of every inner field: a non-dict
             # ``source`` or ``options`` entry raises AttributeError, a
@@ -999,8 +1098,17 @@ class DecisionStore:
             wanted = set(status)
 
         out: list[DecisionCard] = []
-        for target in sorted(self.path.glob("d-*.json")):
-            card = self._read_file(target)
+        for target, st in self._scan():
+            if wanted is not None:
+                # Pre-filter on the cached raw status so a poll for open cards
+                # does not build ~1400 closed ones to throw away. An OPEN card is
+                # never skipped here: it may expire into a wanted status below;
+                # a closed card cannot change status by being read.
+                raw = self._read_raw(target, st)
+                status_raw = str((raw or {}).get("status") or STATUS_OPEN)
+                if raw is None or (status_raw != STATUS_OPEN and status_raw not in wanted):
+                    continue
+            card = self._read_file(target, st)
             if card is None:
                 continue
             if self._expire_if_due(card):
@@ -1407,8 +1515,8 @@ class DecisionStore:
         removed = 0
         busy = 0
         cutoff = time.time() - keep_closed_seconds
-        for target in self.path.glob("d-*.json"):
-            card = self._read_file(target)
+        for target, st in self._scan():
+            card = self._read_file(target, st)
             if card is None:
                 continue
             if card.status in CLOSED_STATUSES and (card.answered_at or card.created_at) < cutoff:

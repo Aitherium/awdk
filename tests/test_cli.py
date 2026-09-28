@@ -438,8 +438,9 @@ class TestCmdConnect:
 
         assert rc == 0
         out = capsys.readouterr().out
-        # Should show the saved key (truncated to first 16 chars)
-        assert "aither_sk_live_f" in out
+        # Should show the saved key as a last-4 hint, never its leading characters
+        assert "****file" in out
+        assert "aither_sk_live_f" not in out
 
     def test_connect_gateway_down_skips_tenant(self, capsys, monkeypatch):
         """If gateway health fails, tenant info fetch is skipped."""

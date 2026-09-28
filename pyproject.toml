@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.28"
+version = "3.8.29"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -180,8 +180,12 @@ queue = ["awrun>=0.1.0"]
 # connector `adk up` will move onto). awtunnel 0.1.0 is on PyPI; the connector
 # arrived in 0.2.0, so this extra resolves once the mirror lane publishes it.
 tunnel = ["awtunnel>=0.2.0"]
+# Mail for the local UI pack (adk/local_routes.py /api/local/mail*). awmail 0.1.0 is
+# on PyPI; the import is lazy and an absent awmail is reported as "pip install
+# awmail", so this is an extra rather than a hard dependency.
+mail = ["awmail>=0.1.0"]
 # Everything the family offers, for an agent that wants the lot.
-aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0", "awtunnel>=0.2.0"]
+aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0", "awtunnel>=0.2.0", "awmail>=0.1.0"]
 
 anthropic = ["anthropic>=0.18.0"]
 openai = ["openai>=1.0.0"]

@@ -9,10 +9,15 @@ answer here (``installed: false``), never an exception.
 
 Mutation is not done through the files either. The only way this module changes
 anything is by building an argv LIST for the awrise CLI (``enable``, ``disable``,
-``run``); the daemon spawns that list and propagates the exit code. A shell
-string is never built, and a job name is validated by ``_NAME_RE`` before it
-reaches a path join or an argv element, so a name can never become an option or
-a traversal.
+``run``, and — for create/update — ``add``/``set``); the daemon spawns that list
+and propagates the exit code. A shell string is never built, and a job name is
+validated by ``_NAME_RE`` before it reaches a path join or an argv element, so a
+name can never become an option or a traversal. ``add``/``set`` carry more than a
+name: every string field (``command``, ``every``, ``cwd``) is checked by
+``valid_payload`` — non-empty, bounded, free of control bytes — before it becomes
+an argv element, same discipline as ``_NAME_RE`` for the name itself. awrise's OWN
+grammar check for ``every``/``timeout`` still runs inside the spawned process, so
+a malformed interval is a 502 (the CLI's exit code), never a silent daemon accept.
 
 Two ``jobs.json`` shapes exist on disk and both are read:
 
@@ -35,6 +40,7 @@ import math
 import os
 import re
 import shutil
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -42,16 +48,23 @@ from typing import Any, Optional
 __all__ = [
     "AWRISE_HOME",
     "CLOCK_STALE_S",
+    "MAX_COMMAND_LEN",
+    "MAX_CWD_LEN",
+    "MAX_EVERY_LEN",
     "MAX_INTERVAL_S",
+    "MUTATE_VERBS",
     "VERBS",
     "awrise_home",
+    "build_add_argv",
     "build_argv",
+    "build_set_argv",
     "get_wake",
     "read_jobs",
     "read_ledger",
     "resolve_bin",
     "snapshot",
     "valid_name",
+    "valid_payload",
 ]
 
 #: Job names accepted anywhere a name reaches a path or an argv. First character
@@ -61,6 +74,18 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 #: The awrise CLI verbs the daemon may spawn. Anything else is refused by name.
 VERBS = ("enable", "disable", "run")
+
+#: The awrise CLI verbs a create/update route may spawn. Separate from ``VERBS``
+#: because ``build_add_argv``/``build_set_argv`` take field arguments the plain
+#: name-only ``build_argv`` verbs never need.
+MUTATE_VERBS = ("add", "set")
+
+#: Longest a ``command``/``every``/``cwd`` payload the daemon will build into an
+#: ``add``/``set`` argv element. Wide enough for any real wake, far short of
+#: anything that would make an argv list itself the attack surface.
+MAX_COMMAND_LEN = 4096
+MAX_EVERY_LEN = 256
+MAX_CWD_LEN = 1024
 
 #: The host clock fires every minute; five minutes without a ``tick`` row is a
 #: clock that has stopped, whatever ``jobs.json`` says.
@@ -139,6 +164,89 @@ def build_argv(binary: str, verb: str, name: str) -> list[str]:
     if not valid_name(name):
         raise ValueError("invalid wake name")
     return [binary, verb, "--name", name]
+
+
+def valid_payload(value: Any, max_len: int) -> bool:
+    """True only for a non-empty str, at or under *max_len*, free of control bytes.
+
+    Every ``command``/``every``/``cwd`` field a create/update route builds into an
+    argv element is checked with this FIRST — before any argv is built and before
+    the origin re-authorization touches network I/O. A NUL, an embedded newline or
+    any other byte in ``0x00-0x1F``/``0x7F`` can never reach ``subprocess.Popen``
+    from this module. Emptiness is refused too: the awrise CLI itself refuses an
+    empty command, so refusing it here means the daemon's own 400 fires before a
+    spawn that would fail anyway, not instead of a real check on the CLI side.
+    """
+    if not isinstance(value, str) or isinstance(value, bool) or not value:
+        return False
+    if len(value) > max_len:
+        return False
+    return not any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+
+
+def _valid_timeout(timeout: Any) -> bool:
+    """True only for a positive int (``bool`` is a ``int`` subclass — excluded)."""
+    return isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0
+
+
+def build_add_argv(binary: str, name: str, *, command: str, every: str,
+                    timeout: Optional[int] = None, cwd: Optional[str] = None) -> list[str]:
+    """argv for ``awrise add`` — registers a NEW job. Validates every field before
+    building anything, same discipline ``build_argv`` applies to the name alone:
+    a command/interval/cwd this module refuses never reaches an argv element.
+    awrise's own grammar check for ``every``/``timeout`` still runs in the spawned
+    process, so a malformed-but-payload-safe value is a 502, not a silent accept.
+    """
+    if not valid_name(name):
+        raise ValueError("invalid wake name")
+    if not valid_payload(command, MAX_COMMAND_LEN):
+        raise ValueError("invalid or oversized command")
+    if not valid_payload(every, MAX_EVERY_LEN):
+        raise ValueError("invalid or oversized every")
+    if cwd is not None and not valid_payload(cwd, MAX_CWD_LEN):
+        raise ValueError("invalid or oversized cwd")
+    if timeout is not None and not _valid_timeout(timeout):
+        raise ValueError("timeout must be a positive integer")
+    argv = [binary, "add", "--name", name, "--every", every, "--run", command]
+    if timeout is not None:
+        argv += ["--timeout", str(timeout)]
+    if cwd is not None:
+        argv += ["--cwd", cwd]
+    return argv
+
+
+def build_set_argv(binary: str, name: str, *, command: Optional[str] = None,
+                    every: Optional[str] = None, timeout: Optional[int] = None,
+                    cwd: Optional[str] = None) -> list[str]:
+    """argv for ``awrise set`` — CHANGES an existing job. At least one field is
+    required (``ValueError`` otherwise); each supplied field is validated exactly
+    like ``build_add_argv`` validates it before becoming a ``key=value`` argv
+    element. Keys match ``store.SETTABLE`` (``run``, ``every``, ``timeout_s``,
+    ``cwd``) — not the wire field names — because that is what ``awrise set``
+    itself accepts.
+    """
+    if not valid_name(name):
+        raise ValueError("invalid wake name")
+    if command is None and every is None and timeout is None and cwd is None:
+        raise ValueError("no fields to update")
+    if command is not None and not valid_payload(command, MAX_COMMAND_LEN):
+        raise ValueError("invalid or oversized command")
+    if every is not None and not valid_payload(every, MAX_EVERY_LEN):
+        raise ValueError("invalid or oversized every")
+    if cwd is not None and not valid_payload(cwd, MAX_CWD_LEN):
+        raise ValueError("invalid or oversized cwd")
+    if timeout is not None and not _valid_timeout(timeout):
+        raise ValueError("timeout must be a positive integer")
+    argv = [binary, "set", "--name", name]
+    if every is not None:
+        argv.append(f"every={every}")
+    if command is not None:
+        argv.append(f"run={command}")
+    if timeout is not None:
+        argv.append(f"timeout_s={timeout}")
+    if cwd is not None:
+        argv.append(f"cwd={cwd}")
+    return argv
 
 
 # ── time helpers ─────────────────────────────────────────────────────────────
@@ -353,39 +461,144 @@ def ledger_files(home: Optional[Path] = None) -> list[Path]:
         return []
 
 
-def _iter_file_rows(path: Path) -> tuple[list[dict[str, Any]], int]:
-    """(rows oldest-first, skipped count). A half-written line is skipped."""
+def _parse_lines(lines: list[bytes]) -> tuple[list[dict[str, Any]], int]:
+    """Parse JSONL byte lines into (rows, skipped). Blank lines are neither."""
     rows: list[dict[str, Any]] = []
     skipped = 0
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    skipped += 1
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
-                else:
-                    skipped += 1
-    except OSError:
-        return rows, skipped
+    for raw in lines:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            skipped += 1
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+        else:
+            skipped += 1
     return rows, skipped
+
+
+class _FileRows:
+    """Parsed rows of ONE ledger file, up to its last complete line.
+
+    awrise only appends, so a file that grew is parsed from the byte offset this
+    entry already consumed; a file that shrank or was rewritten in place (same or
+    smaller size, new mtime) is parsed from scratch. The trailing fragment after
+    the last newline is never cached -- it is a line awrise is still writing --
+    and is re-judged on every read, exactly as a full parse would judge it.
+    """
+
+    __slots__ = ("consumed", "mtime_ns", "size", "rows", "skipped", "tail_rows", "tail_skipped")
+
+    def __init__(self) -> None:
+        self.consumed = 0
+        self.mtime_ns = -1
+        self.size = -1
+        self.rows: list[dict[str, Any]] = []
+        self.skipped = 0
+        self.tail_rows: list[dict[str, Any]] = []
+        self.tail_skipped = 0
+
+
+#: path -> parsed rows. The harness daemon serves ``/wakes`` to every desk surface
+#: on a poll; re-parsing ~10 MB of ledger per poll was the daemon's largest idle
+#: CPU cost (measured 2026-09-27). Keyed by path; an entry is revalidated by
+#: ``stat`` on every read, so the cache can never serve a stale file.
+_FILE_CACHE: dict[str, _FileRows] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def _iter_file_rows(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """(rows oldest-first, skipped count). A half-written line is skipped.
+
+    The returned rows are shared with the cache: callers must treat them as
+    read-only (every caller in this module projects or reads them).
+    """
+    key = str(path)
+    try:
+        st = path.stat()
+    except OSError:
+        with _CACHE_LOCK:
+            _FILE_CACHE.pop(key, None)
+        return [], 0
+    with _CACHE_LOCK:
+        entry = _FILE_CACHE.get(key)
+        if entry is not None and entry.mtime_ns == st.st_mtime_ns and entry.size == st.st_size:
+            return entry.rows + entry.tail_rows, entry.skipped + entry.tail_skipped
+        if entry is None or st.st_size <= entry.consumed or st.st_size < entry.size:
+            entry = _FileRows()
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(entry.consumed)
+                data = fh.read()
+        except OSError:
+            _FILE_CACHE.pop(key, None)
+            return [], 0
+        cut = data.rfind(b"\n") + 1
+        if cut:
+            rows, bad = _parse_lines(data[:cut].split(b"\n"))
+            entry.rows = entry.rows + rows
+            entry.skipped += bad
+            entry.consumed += cut
+        entry.tail_rows, entry.tail_skipped = _parse_lines([data[cut:]])
+        entry.mtime_ns = st.st_mtime_ns
+        entry.size = entry.consumed + (len(data) - cut)
+        _FILE_CACHE[key] = entry
+        return entry.rows + entry.tail_rows, entry.skipped + entry.tail_skipped
+
+
+#: The combined newest-first view, keyed by every ledger file's (path, mtime, size).
+_VIEW_CACHE: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]], int,
+                             dict[str, dict[str, Any]]]] = {}
+
+
+def _ledger_view(home: Optional[Path]) -> tuple[list[dict[str, Any]], int,
+                                                 dict[str, dict[str, Any]]]:
+    """(rows NEWEST-first, skipped, open wakes by job), rebuilt only on a change.
+
+    When no ledger file changed since the last call this is a handful of
+    ``stat`` calls: no read, no parse, no walk over tens of thousands of rows.
+    The returned structures are shared: callers must not mutate them.
+    """
+    files = ledger_files(home)
+    sig: list[Any] = []
+    for path in files:
+        try:
+            st = path.stat()
+        except OSError:
+            sig.append((str(path), None, None))
+            continue
+        sig.append((str(path), st.st_mtime_ns, st.st_size))
+    signature = tuple(sig)
+    base_key = str(home or awrise_home())
+    cached = _VIEW_CACHE.get(base_key)
+    if cached is not None and cached[0] == signature:
+        return cached[1], cached[2], cached[3]
+    live = {str(p) for p in files}
+    folders = {str(p.parent) for p in files}
+    with _CACHE_LOCK:
+        # A daily file awrise pruned must not pin its rows in memory forever.
+        for gone in [k for k in _FILE_CACHE
+                     if k not in live and str(Path(k).parent) in folders]:
+            _FILE_CACHE.pop(gone, None)
+    out: list[dict[str, Any]] = []
+    skipped = 0
+    for path in files:
+        rows, bad = _iter_file_rows(path)
+        skipped += bad
+        out.extend(reversed(rows))
+    open_by_job = _open_wakes(out)
+    _VIEW_CACHE[base_key] = (signature, out, skipped, open_by_job)
+    return out, skipped, open_by_job
 
 
 def _all_rows(home: Optional[Path]) -> tuple[list[dict[str, Any]], int]:
     """Every ledger row NEWEST-first, plus how many lines were unreadable."""
-    out: list[dict[str, Any]] = []
-    skipped = 0
-    for path in ledger_files(home):
-        rows, bad = _iter_file_rows(path)
-        skipped += bad
-        out.extend(reversed(rows))
-    return out, skipped
+    rows, skipped, _open = _ledger_view(home)
+    return rows, skipped
 
 
 def project_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -492,8 +705,10 @@ def snapshot(home: Optional[Path] = None, now: Optional[datetime] = None,
     base = home or awrise_home()
     current = now or _now()
     jobs = read_jobs(base)
-    rows, skipped = _all_rows(base) if jobs["installed"] else ([], 0)
-    open_by_job = _open_wakes(rows)
+    if jobs["installed"]:
+        rows, skipped, open_by_job = _ledger_view(base)
+    else:
+        rows, skipped, open_by_job = [], 0, {}
     wakes = [_decorate(j, open_by_job) for j in jobs["jobs"].values()]
     wakes.sort(key=lambda j: j["name"])
 
@@ -549,8 +764,8 @@ def get_wake(name: str, home: Optional[Path] = None, now: Optional[datetime] = N
     job = jobs["jobs"].get(name)
     if job is None:
         return None
-    rows, _skipped = _all_rows(base)
-    job = _decorate(job, _open_wakes(rows))
+    rows, _skipped, open_by_job = _ledger_view(base)
+    job = _decorate(job, open_by_job)
     job["recent"] = [project_row(r) for r in rows if r.get("job") == name][:max(0, recent)]
     job["schema"] = jobs["schema"]
     return job

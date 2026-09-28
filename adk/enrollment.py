@@ -402,6 +402,35 @@ async def heartbeat_loop(
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = base_url.rstrip("/")
     log.info("Starting endpoint heartbeat loop (interval=%ds)", interval)
+    # ONE client for the loop's lifetime. A fresh AsyncClient per beat built a
+    # fresh SSL context per beat, and on Windows that walks the system
+    # certificate store -- the daemon's largest remaining idle CPU cost once its
+    # file polls were cached (measured 2026-09-27). Same verify policy as before.
+    client = httpx.AsyncClient(timeout=10.0)
+    try:
+        await _heartbeat_beats(
+            client, base, headers, node_id, interval=interval,
+            inference_url=inference_url, node_class=node_class, max_beats=max_beats,
+            reach_provider=reach_provider, harness_provider=harness_provider,
+        )
+    finally:
+        await client.aclose()
+
+
+async def _heartbeat_beats(
+    client: Any,
+    base: str,
+    headers: Dict[str, str],
+    node_id: str,
+    *,
+    interval: int,
+    inference_url: Optional[str],
+    node_class: str,
+    max_beats: Optional[int],
+    reach_provider: Optional[Callable[[], str]],
+    harness_provider: Optional[Callable[[], Tuple[str, bool]]],
+) -> None:
+    """The beat loop of :func:`heartbeat_loop`, on a caller-owned client."""
     beats = 0
     while max_beats is None or beats < max_beats:
         try:
@@ -411,8 +440,11 @@ async def heartbeat_loop(
             break
         beats += 1
         try:
-            reg = build_registration(
-                node_id, inference_url=inference_url, node_class=node_class
+            # build_registration probes the inference server with a blocking
+            # urlopen; off the loop so a slow probe never stalls the daemon.
+            reg = await asyncio.to_thread(
+                build_registration,
+                node_id, inference_url=inference_url, node_class=node_class,
             )
             hb = {
                 "node_id": node_id,
@@ -434,15 +466,14 @@ async def heartbeat_loop(
                     hb["harness_ready"] = bool(h_ready)
                 except Exception as e:  # noqa: BLE001
                     log.debug("harness_provider failed: %s", e)
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    f"{base}/v1/nodes/heartbeat", json=hb, headers=headers
+            resp = await client.post(
+                f"{base}/v1/nodes/heartbeat", json=hb, headers=headers
+            )
+            if resp.status_code == 200 and resp.json().get("status") == "unknown_node":
+                # Registry lost us — re-register with the full payload.
+                await client.post(
+                    f"{base}/v1/nodes/register", json=reg, headers=headers
                 )
-                if resp.status_code == 200 and resp.json().get("status") == "unknown_node":
-                    # Registry lost us — re-register with the full payload.
-                    await client.post(
-                        f"{base}/v1/nodes/register", json=reg, headers=headers
-                    )
         except asyncio.CancelledError:
             log.info("Heartbeat loop cancelled")
             break

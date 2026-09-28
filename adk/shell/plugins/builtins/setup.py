@@ -439,41 +439,21 @@ class SetupPlugin(SlashCommand):
     async def _setup_mcp(self, args: List[str], ctx: Dict[str, Any]) -> str:
         lines = ["🔧 **MCP Server Configuration**\n"]
 
-        repo = _find_repo_root()
-        base = ctx.get("config", {})
-        url = getattr(base, "url", "http://localhost:8001") if hasattr(base, "url") else "http://localhost:8001"
+        # One generator for every MCP client entry awdk emits (adk/mcp_entries.py);
+        # the stdio option names awnode, which is published on PyPI.
+        from adk.mcp_entries import hosted_entry
 
-        # Generate MCP config for common editors
-        mcp_config = {
-            "mcpServers": {
-                "aitheros": {
-                    "command": "npx",
-                    "args": ["-y", "@aitheros/mcp-server"],
-                    "env": {
-                        "AITHEROS_URL": url,
-                        "AITHEROS_API_KEY": "${AITHER_API_KEY}",
-                    },
-                }
-            }
-        }
-
-        # Also show direct HTTP config
-        lines.append("**Option 1: HTTP MCP (recommended)**")
-        lines.append("Add to your editor's MCP settings:\n")
+        lines.append("**Option 1: hosted MCP (recommended)**")
+        lines.append("Add to your editor's MCP settings (reads your key from $AITHER_API_KEY):\n")
         lines.append("```json")
-        lines.append(json.dumps({
-            "mcpServers": {
-                "aitheros": {
-                    "url": f"{url.rstrip('/')}/mcp",
-                    "transport": "streamable-http",
-                }
-            }
-        }, indent=2))
+        lines.append(json.dumps({"mcpServers": {"aitheros": hosted_entry("claude-code")}},
+                                indent=2))
         lines.append("```\n")
 
-        lines.append("**Option 2: stdio MCP**")
+        lines.append("**Option 2: local node (stdio, `pip install awnode`)**")
         lines.append("```json")
-        lines.append(json.dumps(mcp_config, indent=2))
+        lines.append(json.dumps({"mcpServers": {"awnode": {
+            "type": "stdio", "command": "awnode", "args": ["mcp"]}}}, indent=2))
         lines.append("```\n")
 
         # Try to auto-write for VS Code

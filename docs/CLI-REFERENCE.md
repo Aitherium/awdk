@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**116 commands.**
+**119 commands.**
 
 | command | what it does |
 |---|---|
@@ -31,6 +31,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk agents`](#adk-agents) | Discover agents in the mesh (ls) |
 | [`adk ambient`](#adk-ambient) | Make the agent an expert on what you're doing in this terminal |
 | [`adk approvals`](#adk-approvals) | List/approve/deny A2A permission cards blocking federated agents |
+| [`adk awconnect`](#adk-awconnect) | Install / check the Awconnect browser extension |
 | [`adk backend`](#adk-backend) | Manage LLM backends (list, set, test, switch, status) |
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
 | [`adk balance`](#adk-balance) | Show your Aitherium credit balance and earnings |
@@ -67,6 +68,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk graph`](#adk-graph) | Provenance graph management (status, drain, claim, ground, context, leaves, lineage, runs, show, purge) |
 | [`adk grid`](#adk-grid) | Manage grid distributed nodes (add, remove, list, test, sync) |
 | [`adk harness`](#adk-harness) | AitherShell — drive Claude Code, other coding harnesses, agents and real terminals |
+| [`adk home`](#adk-home) | Agent Home: host your own agent, pick its model and harness, and let it join games |
 | [`adk host`](#adk-host) | Host a self-hosted agent (your model key) + connect it to your fleet — one command |
 | [`adk image`](#adk-image) | Generate an image on a local backend (ComfyUI/Sana/SD.Next) |
 | [`adk index`](#adk-index) | Index a codebase for code search (CodeGraph) |
@@ -80,6 +82,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk join`](#adk-join) | One-command community node onboarding (GitHub auth + hardware detection + serve + mesh join + earnings) |
 | [`adk kb`](#adk-kb) | Tenant knowledge base on the platform: ingest, query |
 | [`adk keys`](#adk-keys) | Manage cloud provider API keys (set, list, test, remove) |
+| [`adk license`](#adk-license) | Show or sync your license (purchases follow your Aitherium account) |
 | [`adk link`](#adk-link) | link this machine to aitherium.com (one sign-in, role-aware bundle) |
 | [`adk listen`](#adk-listen) | Real-time audio intelligence — audiobook, meeting, voice notes |
 | [`adk login`](#adk-login) | Authenticate with Aitherium (browser device flow) |
@@ -243,6 +246,16 @@ List/approve/deny A2A permission cards blocking federated agents
 |---|---|---|---|---|
 | `--url` | str |  |  | A2A gateway base URL (default $AITHER_A2A_URL or https://127.0.0.1:8766) |
 | `--json` | str |  | `false` | Emit raw JSON |
+
+## `adk awconnect`
+
+Install / check the Awconnect browser extension
+
+**Subcommands**
+
+- `adk awconnect install` — Stage the extension, open the browser's extensions page, copy the folder path, and watch for the load
+- `adk awconnect status` — Is Awconnect loaded, enabled and current in any browser?
+- `adk awconnect path` — Print the folder to Load unpacked
 
 ## `adk backend`
 
@@ -674,6 +687,23 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 | `--url` | str |  |  | Harness daemon URL (default 127.0.0.1:8362) |
 | `--token` | str |  |  | Daemon bearer token |
 
+## `adk home`
+
+Agent Home: host your own agent, pick its model and harness, and let it join games
+
+**Subcommands**
+
+- `adk home init` — Create your agent's home folder
+- `adk home persona` — Show or edit the persona files
+- `adk home model` — Choose the model: local or bring-your-own-key
+- `adk home harness` — Choose who runs the agent loop
+- `adk home status` — Setup, model, harness and license at a glance
+- `adk home signin` — Sign in with Aitherium -- what you bought unlocks here (device code, no license to paste)
+- `adk home license` — Offline activation: install a license (file or text)
+- `adk home chat` — Send one message to your agent
+- `adk home join` — Join a game: observe, act, chat, learn
+- `adk home enroll` — World-model enrollment of a game room (pack)
+
 ## `adk host`
 
 Host a self-hosted agent (your model key) + connect it to your fleet — one command
@@ -842,6 +872,16 @@ Manage cloud provider API keys (set, list, test, remove)
 - `adk keys pull` — Sync DOWN from AitherOS: show which providers have keys in your workspace vault
 - `adk keys test` — Test API keys (all or specific)
 - `adk keys remove` — Remove a provider key
+
+## `adk license`
+
+Show or sync your license (purchases follow your Aitherium account)
+
+**Subcommands**
+
+- `adk license sync` — Refresh the license from your account
+- `adk license status` — Tier and packs in effect
+- `adk license install` — Offline activation: install a license key ('-' reads stdin)
 
 ## `adk link`
 

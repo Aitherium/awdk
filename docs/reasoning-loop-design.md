@@ -96,7 +96,7 @@ awdk/adk/reasoning/solve/                 NEW. Never imported eagerly: reasoning
   _events.py       EventSink protocol; NullSink, JsonlSink(path), SessionSink(session, loop).
                    The worker thread only ever uses call_soon_threadsafe / run_coroutine_threadsafe.
   _vendor/         Vendored h30 core. Each file carries the header
-                   `# vendored from aither-kaggle-agent@<sha>:agent/repl/core/<file>`
+                   `# vendored from <upstream>@<sha>:agent/repl/core/<file>` (upstream named in _provenance.py)
     loop.py        ReasoningLoop, verbatim plus 3 keyword-only seams: sink=None, governor=None,
                    and Sandbox cancel_check=None
     intent.py      IntentClassifier (explore / exploit / test-hypothesis / plan / recover)
@@ -130,7 +130,7 @@ awdk/adk/evalharness/arc_agi3/            NEW (slice 2). ARC lives here and NEVE
                    numpy; imported only when an environment is built.
   llm_policy.py    a minimal model-in-the-loop policy (render -> up to N actions per
                    call) that proves the model path and its token counts end to end.
-  rhae.py          verbatim port of aither-kaggle-agent/eval/rhae.py (self-test + break arm)
+  rhae.py          verbatim port of the upstream agent's eval/rhae.py (self-test + break arm)
   suite.py         run_suite(games, model, *, seeds=1, env_dir, out, learn_scope=None) -> rows
   fixtures/metadata.json   so rhae self-test arm G cannot silently skip in CI
 

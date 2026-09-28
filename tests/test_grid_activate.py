@@ -3,8 +3,8 @@
 AitherGrid's billing model says a
 purchase returns a license key and `adk grid activate <key>` unlocks Pro /
 Enterprise. The subcommand did not exist. These tests pin the contract:
-a VERIFIED key is written to ~/.aither/license.json and lifts the grid plan;
-an unsigned/tampered key is refused and never overwrites the current license.
+a VERIFIED key is kept under ~/.aither/licenses/ (beside, never over, the account
+license) and lifts the grid plan; an unsigned/tampered key is refused and writes nothing.
 """
 
 from __future__ import annotations
@@ -69,8 +69,8 @@ def test_parser_has_activate():
 def test_valid_key_is_written_and_unlocks_grid_pro(signer, tmp_path, capsys):
     assert licensing.get_license_manager().grid_plan().sku == licensing.GRID_STARTER_SKU
     assert _activate(_key(signer, [licensing.GRID_PRO_SKU])) == 0
-    lic_file = tmp_path / ".aither" / "license.json"
-    assert lic_file.is_file()
+    assert not (tmp_path / ".aither" / "license.json").exists()  # account file untouched
+    assert len(list((tmp_path / ".aither" / "licenses").glob("*.json"))) == 1
     assert licensing.get_license_manager().grid_plan().sku == licensing.GRID_PRO_SKU
     assert "Grid Pro" in capsys.readouterr().out
 
@@ -82,6 +82,7 @@ def test_forged_key_refused_and_existing_license_untouched(signer, tmp_path):
     forged = _key(signer, [licensing.GRID_ENTERPRISE_SKU], sign_with=Ed25519PrivateKey.generate())
     assert _activate(forged) == 1
     assert lic_file.read_text(encoding="utf-8") == "ORIGINAL"
+    assert not (tmp_path / ".aither" / "licenses").exists()
 
 
 def test_garbage_key_refused(signer, tmp_path):

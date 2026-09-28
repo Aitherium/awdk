@@ -63,21 +63,42 @@ def _default_portal_url() -> str:
     ).rstrip("/")
 
 
+_SYNC_TOKEN_ENVS = ("AITHER_PORTAL_TOKEN", "AITHER_SYNC_TOKEN")
+_API_KEY_ENVS = ("AITHERIUM_API_KEY", "AITHER_API_KEY")
+
+
+def _login_token() -> str:
+    """The bearer ``adk login`` stored in auth.json's active profile, or ""."""
+    try:
+        from adk.auth import AuthStore
+        profile = AuthStore().get_active_profile() or {}
+    except Exception:  # noqa: BLE001 — a missing/corrupt auth.json means signed out
+        return ""
+    tok = (profile.get("access_token") or "").strip()
+    # A local-root placeholder token isn't a real portal credential.
+    return "" if tok == "aither_root_local" else tok
+
+
 def _resolve_token() -> str:
-    """Resolve the portal bearer (env → auth.json active profile)."""
-    for env in ("AITHER_PORTAL_TOKEN", "AITHERIUM_API_KEY", "AITHER_API_KEY", "AITHER_SYNC_TOKEN"):
+    """Resolve the portal bearer that identifies the USER to the settings hub.
+
+    Order: an explicit sync override, then the ``adk login`` session, then an
+    API key. The hub resolves the caller through Identity, which accepts the
+    login session but not a gateway API key; putting the key first made every
+    machine with ``AITHERIUM_API_KEY`` exported sync as nobody (401). The key
+    stays as the last resort for headless machines that never ran ``adk login``.
+    """
+    for env in _SYNC_TOKEN_ENVS:
         val = os.environ.get(env, "").strip()
         if val:
             return val
-    try:
-        from adk.auth import resolve_credentials
-        creds = resolve_credentials()
-        tok = (creds.access_token or "").strip()
-        # A local-root placeholder token isn't a real portal credential.
-        if tok and tok != "aither_root_local":
-            return tok
-    except Exception:  # noqa: BLE001 — auth resolution is best-effort
-        pass
+    tok = _login_token()
+    if tok:
+        return tok
+    for env in _API_KEY_ENVS:
+        val = os.environ.get(env, "").strip()
+        if val:
+            return val
     return ""
 
 

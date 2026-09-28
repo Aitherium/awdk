@@ -66,6 +66,13 @@ _WEBUI_CACHE: str | None = None
 # trusting whatever the browser sends.
 _SECRET_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
+# Public hosts that hold an Identity login but do not serve /auth/handoff/mint:
+# a handoff aimed at one is redirected to the IdP (see _handoff_identity_base).
+_HANDOFF_NON_IDP_HOSTS = frozenset({
+    "api.aitherium.com", "portal.aitherium.com", "gateway.aitherium.com",
+    "mcp.aitherium.com", "aitherium.com", "www.aitherium.com",
+})
+
 
 def _local_gateway_api_key(config) -> str:
     """Credential for the loopback MCP gateway attach.
@@ -1201,6 +1208,17 @@ def create_app(
             base = os.getenv(
                 "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
             ).rstrip("/")
+        # 🚩 THE CONTROL-PLANE HOSTS ARE NOT IDENTITY. `aither login` from the shell
+        # writes endpoint https://api.aitherium.com, and api./portal./gateway./mcp.
+        # route to Veil (Next.js) or the MCP gateway -- neither serves
+        # /auth/handoff/mint, so "Continue as David" answered "identity refused
+        # handoff (404)". Measured 2026-09-26 on the owner's box. The token those
+        # logins hold IS an Identity token, so send it to the IdP.
+        host = base.split("://", 1)[-1].split("/", 1)[0].lower()
+        if host in _HANDOFF_NON_IDP_HOSTS:
+            base = os.getenv(
+                "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
+            ).rstrip("/")
         # The IdP mounts Identity under /identity on the public host.
         if "idp.aitherium.com" in base and not base.endswith("/identity"):
             base += "/identity"
@@ -1224,10 +1242,32 @@ def create_app(
 
     _local_only_hint = "run `adk login` to link this device to your Aitherium account"
 
+    def _whoami_guard(request: Request) -> None:
+        """The handoff guard, plus the Awconnect extension the installer allowed.
+
+        Only this read-only route (it returns a NAME, never a credential) accepts
+        an extension origin; ticket minting stays first-party only. The extension
+        id must be on the allowlist (adk.extension_id), so no other installed
+        extension can read who is signed in."""
+        origin = request.headers.get("origin", "")
+        if origin.startswith("chrome-extension://"):
+            from adk.extension_id import allowed_extension_origins
+            if origin in allowed_extension_origins():
+                if os.getenv("AITHER_BROWSER_HANDOFF", "1").strip().lower() in {
+                        "0", "false", "no", "off"}:
+                    raise HTTPException(status_code=404,
+                                        detail="browser handoff disabled on this node")
+                peer = getattr(getattr(request, "client", None), "host", None)
+                if peer not in _handoff_loopback:
+                    raise HTTPException(status_code=403,
+                                        detail="identity handoff is loopback-only")
+                return
+        _handoff_guard(request)
+
     @app.get("/identity/whoami")
     async def identity_whoami(request: Request):
         """Who is signed in on this device — a NAME, never a credential."""
-        _handoff_guard(request)
+        _whoami_guard(request)
         prof = _handoff_profile()
         if not prof:
             return {"logged_in": False, "handoff": True}

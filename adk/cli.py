@@ -2488,36 +2488,17 @@ def _github_device_flow_login(identity_url: str, client_name: str = "adk") -> di
 
 
 def _save_account_license(result: dict) -> str:
-    """Persist the account's signed license from a login result to
-    ``~/.aither/license.json`` so LicenseManager gates packs on the user's real
-    AitherIdentity/ACTA entitlements. Returns the tier (or "" if none/failed).
+    """Persist the account's signed license from a login/sync result.
 
-    The ``license_key`` from AitherIdentity is the base64 outer envelope
-    (base64(json({payload, signature}))); LicenseManager's file path expects the
-    decoded {payload, signature} envelope. Fail-soft: a bad/absent key just leaves
-    the runtime on its prior tier (COMMUNITY) — never blocks login.
+    Delegates to :func:`adk.account_license.save_account_license`: the base64 outer
+    ``license_key`` becomes ``~/.aither/license.json`` (the ACCOUNT license), and a
+    verified OFFLINE license already there is moved to ``~/.aither/licenses/`` first
+    so its packs stay active. Returns the tier, or "" if none/failed. Fail-soft.
     """
-    import base64 as _b64
-    import json as _json
-    from pathlib import Path as _Path
+    from adk.account_license import save_account_license
 
-    license_key = (result.get("license_key") or "").strip()
-    if not license_key:
-        return ""
-    try:
-        envelope = _json.loads(_b64.b64decode(license_key).decode("utf-8"))
-        if not (isinstance(envelope, dict) and "payload" in envelope and "signature" in envelope):
-            return ""
-        lic_path = _Path.home() / ".aither" / "license.json"
-        lic_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = lic_path.with_suffix(".json.tmp")
-        tmp.write_text(_json.dumps(envelope), encoding="utf-8")
-        tmp.replace(lic_path)
-        return str(result.get("tier") or "")
-    except Exception as exc:  # never break login over license persistence
-        import logging as _logging
-        _logging.getLogger("adk.cli").debug("license persistence skipped: %s", exc)
-        return ""
+    return save_account_license(str(result.get("license_key") or ""),
+                                str(result.get("tier") or ""))
 
 
 def cmd_login(args) -> int:
@@ -2602,6 +2583,15 @@ def cmd_login(args) -> int:
     # LicenseManager fell back to COMMUNITY (free) and every premium pack gated closed.
     # LicenseManager reads ~/.aither/license.json as the {payload, signature} envelope.
     license_tier = _save_account_license(result)
+    if not license_tier:
+        # An Identity that predates the account license returns an HMAC string
+        # (or nothing); ask for the signed account license with the new session.
+        try:
+            from adk.account_license import sync_account_license
+            _sync = sync_account_license(_resolve_identity_url(identity_url), token)
+            license_tier = _sync.get("tier") or ""
+        except Exception:  # noqa: BLE001 -- a license hiccup never fails login
+            license_tier = ""
 
     eps = _persist_workspace_endpoints(identity_url)
     _persist_shell_auth(identity_url, eps, result)
@@ -2647,26 +2637,20 @@ def cmd_login(args) -> int:
 
 
 def _local_license_tier() -> str:
-    """Entitlement tier from the saved account license, or "" if none.
+    """Entitlement tier the pack gates actually use, or "" when only the free tier.
 
-    Reads the same `~/.aither/license.json` that `adk login` writes via
-    `_save_account_license`, so `whoami` reports the tier the pack gates
-    actually use rather than a second, differently-derived answer.
+    Resolved by adk.licensing (account license + offline licenses, verified), so
+    `whoami` never reports a second, differently-derived answer.
     """
-    import json as _json
-    from pathlib import Path as _Path
-
-    path = _Path.home() / ".aither" / "license.json"
-    if not path.exists():
-        return ""
     try:
-        env = _json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        from adk.licensing import LicenseManager, Tier
+
+        lic = LicenseManager().license
+    except Exception:  # noqa: BLE001
         return ""
-    payload = env.get("payload") if isinstance(env, dict) else None
-    if not isinstance(payload, dict):
+    if lic.source == "default" and lic.tier is Tier.COMMUNITY:
         return ""
-    return str(payload.get("tier") or payload.get("plan_tier") or "").strip()
+    return lic.tier.value
 
 
 def cmd_whoami(args) -> int:
@@ -2679,14 +2663,8 @@ def cmd_whoami(args) -> int:
     backend = saved.get("setup_backend", saved.get("default_backend", ""))
     inference_url = saved.get("inference_url", "")
 
-    # NOTE on the absent --refresh: the portal advertised
-    # `aither entitlement --refresh --json`, and a refresh cannot be honoured —
-    # the signed license is minted ONLY inside the device-flow token exchange
-    # (`/auth/device/token`), and AitherIdentity exposes no license endpoint to
-    # re-fetch from. Shipping a `--refresh` that quietly did nothing would be
-    # the silent-no-op pattern: a user who just paid would run it, see the old
-    # tier, and conclude the purchase failed. Until such an endpoint exists,
-    # `adk login` is the way to pick up a new plan, and this says so below.
+    # `adk license sync` refreshes the account license (GET /auth/license on
+    # AitherIdentity); `whoami` only reports what is installed.
     tier = _local_license_tier()
 
     if getattr(args, "json", False):
@@ -2721,7 +2699,7 @@ def cmd_whoami(args) -> int:
     if api_key:
         # Mask the key
         if len(api_key) > 16:
-            print(f"  API key:   {api_key[:12]}...{api_key[-4:]}")
+            print(f"  API key:   {_key_hint(api_key)}")
         else:
             print("  API key:   (set)")
     if tenant_id:
@@ -3114,7 +3092,7 @@ def cmd_connect(args):
         balance_info = {}
 
         if api_key:
-            print(f"  [OK] API key: {api_key[:16]}...")
+            print(f"  [OK] API key: {_key_hint(api_key)}")
 
             # Test inference endpoint
             try:
@@ -4316,7 +4294,7 @@ def cmd_onboard(args):
             api_key = config.get("api_key", "")
 
         if api_key:
-            print(f"  [OK] API key: {api_key[:16]}...")
+            print(f"  [OK] API key: {_key_hint(api_key)}")
         else:
             print("  [--] No API key — run 'aither register' for cloud access")
 
@@ -4427,128 +4405,84 @@ def cmd_onboard(args):
         # ── 3. Auto-configure IDE MCP servers ────────────────
         print()
         print("  CONFIGURING MCP SERVERS")
-        print("  ���─────────────────────")
+        print("  ───────────────────────")
 
-        mcp_url = "http://localhost:8080"
+        from adk.mcp_entries import (
+            API_KEY_ENV,
+            HOSTED_MCP_URL,
+            awnode_entry,
+            hosted_entry,
+            is_broken_entry,
+        )
+
         mcp_configured = []
+        local_node = awnode_entry()
 
-        # Claude Code — .mcp.json goes in PROJECT ROOT (CWD), not ~/.claude/
-        # Claude Code reads MCP config from the working directory, not global.
-        claude_dir = home / ".claude"
-        mcp_json = {
-            "mcpServers": {
-                "aitheros": {
-                    "command": "npx",
-                    "args": ["-y", "aither-mcp-server"],
-                    "disabled": False,
-                }
-            }
-        }
-
-        def _write_mcp(target: Path, label: str):
-            """Write or merge MCP config into a .mcp.json file."""
+        def _merge_servers(target: Path, key: str, servers: dict, label: str) -> bool:
+            """Merge ``servers`` into ``target[key]``; repair entries an older awdk broke."""
             try:
+                existing = {}
                 if target.exists():
-                    existing = _json.loads(target.read_text(encoding="utf-8"))
-                    servers = existing.get("mcpServers", {})
-                    if "aitheros" not in servers:
-                        servers["aitheros"] = mcp_json["mcpServers"]["aitheros"]
-                        existing["mcpServers"] = servers
-                        target.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
-                        print(f"  [OK] {label} — AitherOS MCP added to existing config")
-                        return True
-                    else:
-                        print(f"  [OK] {label} — AitherOS MCP already configured")
-                        return True
+                    existing = _json.loads(target.read_text(encoding="utf-8") or "{}")
+                current = existing.setdefault(key, {})
+                changed = []
+                for name, entry in servers.items():
+                    if name not in current or is_broken_entry(current[name]):
+                        current[name] = entry
+                        changed.append(name)
+                if changed:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
+                    print(f"  [OK] {label} — {', '.join(changed)} written to {target}")
                 else:
-                    target.write_text(_json.dumps(mcp_json, indent=2), encoding="utf-8")
-                    print(f"  [OK] {label} — MCP configured at {target}")
-                    return True
+                    print(f"  [OK] {label} — AitherOS MCP already configured")
+                return True
             except Exception as e:
                 print(f"  [!!] {label} — failed: {e}")
                 return False
 
-        # 1. Write to current project directory (primary — Claude Code reads from CWD)
-        cwd_mcp = Path.cwd() / ".mcp.json"
-        if _write_mcp(cwd_mcp, "Claude Code (project)"):
+        def _servers_for(client: str) -> dict:
+            servers = {"aitheros": hosted_entry(client)}
+            if local_node:
+                servers["awnode"] = local_node
+            return servers
+
+        # Claude Code — .mcp.json in the PROJECT ROOT (CWD); Claude Code reads it there.
+        if _merge_servers(Path.cwd() / ".mcp.json", "mcpServers",
+                          _servers_for("claude-code"), "Claude Code (project)"):
             mcp_configured.append("claude-code")
 
-        # 2. Also write to ~/.claude/.mcp.json as global fallback
-        if claude_dir.exists():
-            _write_mcp(claude_dir / ".mcp.json", "Claude Code (global)")
-        else:
-            print("  [--] Claude Code global — ~/.claude/ not found (project-level config is sufficient)")
-
-        # Cursor — write to ~/.cursor/mcp.json
+        # Cursor — ~/.cursor/mcp.json
         cursor_dir = home / ".cursor"
         if cursor_dir.exists():
-            cursor_mcp = cursor_dir / "mcp.json"
-            cursor_config = {
-                "mcpServers": {
-                    "aitheros": {
-                        "url": f"{mcp_url}/sse",
-                    }
-                }
-            }
-            try:
-                if cursor_mcp.exists():
-                    existing = _json.loads(cursor_mcp.read_text(encoding="utf-8"))
-                    if "aitheros" not in existing.get("mcpServers", {}):
-                        existing.setdefault("mcpServers", {})["aitheros"] = cursor_config["mcpServers"]["aitheros"]
-                        cursor_mcp.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
-                        print("  [OK] Cursor — AitherOS MCP added")
-                        mcp_configured.append("cursor")
-                    else:
-                        print("  [OK] Cursor — AitherOS MCP already configured")
-                        mcp_configured.append("cursor")
-                else:
-                    cursor_mcp.write_text(_json.dumps(cursor_config, indent=2), encoding="utf-8")
-                    print(f"  [OK] Cursor — MCP configured at {cursor_mcp}")
-                    mcp_configured.append("cursor")
-            except Exception as e:
-                print(f"  [!!] Cursor — failed to write config: {e}")
+            if _merge_servers(cursor_dir / "mcp.json", "mcpServers",
+                              _servers_for("cursor"), "Cursor"):
+                mcp_configured.append("cursor")
         else:
             print("  [--] Cursor — not detected (~/.cursor/ not found)")
 
-        # OpenClaw — use adk integrate openclaw
+        # OpenClaw
         if openclaw_detected and not aither_integrated:
-            try:
-                oc_config_path = openclaw_dir / "openclaw.json"
-                if oc_config_path.exists():
-                    oc_config = _json.loads(oc_config_path.read_text(encoding="utf-8"))
-                    oc_config.setdefault("mcpServers", {})["aither_mcp_configured"] = {
-                        "command": "npx",
-                        "args": ["-y", "aither-mcp-server"],
-                        "disabled": False,
-                    }
-                    oc_config_path.write_text(_json.dumps(oc_config, indent=2), encoding="utf-8")
-                    print("  [OK] OpenClaw — AitherOS MCP added")
-                    mcp_configured.append("openclaw")
-            except Exception as e:
-                print(f"  [!!] OpenClaw — failed to integrate: {e}")
+            oc_config_path = openclaw_dir / "openclaw.json"
+            if oc_config_path.exists() and _merge_servers(
+                    oc_config_path, "mcpServers", _servers_for("openclaw"), "OpenClaw"):
+                mcp_configured.append("openclaw")
         elif openclaw_detected and aither_integrated:
             print("  [OK] OpenClaw — already integrated")
             mcp_configured.append("openclaw")
 
-        # VS Code — write to .vscode/mcp.json in current dir
-        vscode_dir = Path.cwd() / ".vscode"
-        if vscode_dir.exists():
-            vscode_mcp = vscode_dir / "mcp.json"
-            if not vscode_mcp.exists():
-                try:
-                    vscode_mcp.write_text(_json.dumps({
-                        "servers": {
-                            "aitheros": {"url": f"{mcp_url}/sse"}
-                        }
-                    }, indent=2), encoding="utf-8")
-                    print("  [OK] VS Code — MCP configured in .vscode/mcp.json")
-                    mcp_configured.append("vscode")
-                except Exception:
-                    pass
+        # VS Code — .vscode/mcp.json in the current dir
+        if (Path.cwd() / ".vscode").exists():
+            if _merge_servers(Path.cwd() / ".vscode" / "mcp.json", "servers",
+                              _servers_for("vscode"), "VS Code"):
+                mcp_configured.append("vscode")
 
         if not mcp_configured:
             print("  [--] No IDE detected — configure manually:")
-            print(f"       MCP server URL: {mcp_url}/sse")
+            print(f"       MCP server URL: {HOSTED_MCP_URL}  (streamable HTTP)")
+        if not os.environ.get(API_KEY_ENV):
+            print(f"  [!!] The MCP entry reads your key from ${API_KEY_ENV}; set it in your")
+            print("       shell profile (the key itself is never written into these files).")
 
         # ── 4. Quick actions ──────────────────────────────────
         print()
@@ -5346,7 +5280,7 @@ def _integrate_openclaw(args):
         if local_running:
             print("  [OK] AitherOS Node running locally (port 8080)")
         if api_key:
-            print(f"  [OK] API key: {api_key[:16]}...")
+            print(f"  [OK] API key: {_key_hint(api_key)}")
 
         # 3. Generate MCP config
         print()
@@ -6943,6 +6877,19 @@ def _save_provider_keys(data: dict) -> None:
     # Restrict permissions on Unix
     if sys.platform != "win32":
         os.chmod(p, 0o600)
+
+
+def _key_hint(key: str) -> str:
+    """Operator-facing hint for a credential: the last 4 characters, nothing else.
+
+    Onboarding used to print ``key[:16]``; that is the non-secret
+    ``aither_sk_live_`` prefix plus real key material, in a terminal that
+    lands in screen shares and pasted logs.
+    """
+    key = str(key or "")
+    if len(key) < 12:
+        return "(set)"
+    return "****" + key[-4:]
 
 
 def _mask_key(key: str) -> str:
@@ -8673,8 +8620,9 @@ def _grid_activate(license_key: str) -> int:
 
     The key is the portal's base64 ``{payload, signature}`` envelope (the same
     shape AitherIdentity returns at login). It is VERIFIED before anything is
-    written: an unsigned, tampered or expired key is refused and the existing
-    ``~/.aither/license.json`` is left untouched (fail-closed). ``-`` reads the
+    written: an unsigned, tampered or expired key is refused (fail-closed). A good
+    key is kept under ``~/.aither/licenses/`` beside -- never over -- the account
+    license, and its packs are unioned with it. ``-`` reads the
     key from stdin so it need not sit in shell history.
     """
     import base64 as _b64
@@ -8705,20 +8653,70 @@ def _grid_activate(license_key: str) -> int:
         print("  Nothing was written; your current license is unchanged.")
         return 1
 
-    if not _save_account_license({"license_key": key, "tier": verified.tier.value}):
-        # _save_account_license returns "" on a failed write (tier is always set here).
-        print("  Error: could not write ~/.aither/license.json")
+    try:
+        _verified, saved_to = _lic.install_offline_license(envelope)
+    except (ValueError, OSError) as exc:
+        print(f"  Error: could not save the license ({exc})")
         return 1
     _lic.reset_license_manager()
     plan = _lic.get_license_manager().grid_plan()
     limit = "unlimited" if plan.max_nodes < 0 else str(plan.max_nodes)
-    print(f"  License activated (tier '{verified.tier.value}') -> ~/.aither/license.json")
+    print(f"  License activated (tier '{verified.tier.value}') -> {saved_to}")
     print(f"  Grid plan: {plan.name} ({limit} nodes)")
     if plan.sku == _lic.GRID_STARTER_SKU:
         print("  Note: this license carries no Grid Pro/Enterprise SKU; the grid stays on Starter.")
-    if os.environ.get("AITHER_LICENSE_KEY") or os.environ.get("AITHER_LICENSE_FILE"):
-        print("  Warning: AITHER_LICENSE_KEY/AITHER_LICENSE_FILE is set and takes"
-              " precedence over this file.")
+    return 0
+
+
+def cmd_license(args) -> int:
+    """`adk license status|sync|install` -- the license follows your Aitherium account.
+
+    `sync` refreshes ~/.aither/license.json from your account (the packs you bought
+    there); it also runs on `adk login`. `install` keeps an OFFLINE key (pasted
+    from an email, '-' reads stdin) under ~/.aither/licenses/. Packs from every
+    verified license are unioned.
+    """
+    import json as _json
+
+    from adk import account_license as _acct
+    from adk import licensing as _lic
+
+    sub = getattr(args, "license_command", None) or "status"
+    as_json = bool(getattr(args, "json", False))
+    if sub == "sync":
+        res = _acct.sync_account_license(getattr(args, "portal_url", "") or "")
+        if as_json:
+            print(_json.dumps(res, indent=2))
+        elif res["ok"]:
+            packs = ", ".join(res["packs"]) or "no packs"
+            print(f"  License synced from your account -> tier '{res['tier']}' ({packs})")
+        else:
+            print(f"  License not synced: {res['error']}")
+        return 0 if res["ok"] else 1
+    if sub == "install":
+        raw = (getattr(args, "license_key", "") or "").strip()
+        if raw == "-":
+            raw = sys.stdin.read()
+        try:
+            lic, path = _lic.install_offline_license(_lic.parse_license_text(raw))
+        except ValueError as exc:
+            print(f"  Refused: {exc}. Nothing was written.")
+            return 1
+        print(f"  Offline license installed (tier '{lic.tier.value}', packs: "
+              f"{', '.join(lic.packs) or 'none'}) -> {path}")
+        return 0
+    info = _acct.account_summary()
+    if as_json:
+        print(_json.dumps(info, indent=2))
+        return 0
+    who = (info["username"] or "signed in") if info["signed_in"] else "not signed in"
+    print(f"  Account:  {who}")
+    print(f"  Tier:     {info['tier']}")
+    print(f"  Packs:    {', '.join(info['packs']) or '(none)'}")
+    age = info["synced_seconds_ago"]
+    print(f"  Synced:   {'never' if age is None else f'{age // 60} min ago'}")
+    if not info["signed_in"]:
+        print("  Sign in with `adk login` -- your purchases then sync automatically.")
     return 0
 
 
@@ -10279,18 +10277,18 @@ def cmd_status(args):
 
         api_key = os.environ.get("AITHER_API_KEY", "")
         if api_key:
-            print(f"\n  Portal API Key: {api_key[:16]}...{api_key[-4:]}")
+            print(f"\n  Portal API Key: {_key_hint(api_key)}")
         elif saved.get("api_key"):
-            print(f"\n  Portal API Key (saved): {saved['api_key'][:16]}...")
+            print(f"\n  Portal API Key (saved): {_key_hint(saved['api_key'])}")
         else:
             print("\n  Portal: No API key. Run: adk connect --api-key <key>")
 
         # Qdrant API key check
         qdrant_key = os.environ.get("AITHER_FLEET_QDRANT_API_KEY", "")
         if qdrant_key:
-            print(f"  Qdrant API Key: {qdrant_key[:16]}...{qdrant_key[-4:]}")
+            print(f"  Qdrant API Key: {_key_hint(qdrant_key)}")
         elif saved.get("qdrant_api_key"):
-            print(f"  Qdrant API Key (saved): {saved['qdrant_api_key'][:16]}...")
+            print(f"  Qdrant API Key (saved): {_key_hint(saved['qdrant_api_key'])}")
         else:
             if qdrant_url:
                 print("  Qdrant: No API key configured. Run: adk stack qdrant")
@@ -13240,6 +13238,14 @@ def _register_commands(sub):
     register_p.add_argument("--email", help="Account email (prompted if omitted)")
     register_p.add_argument("--password", help="Account password (prompted if omitted)")
 
+    # adk home (Agent Home: host your own agent, join games)
+    from adk.home.cli import register_parser as _register_home
+    _register_home(sub)
+
+    # adk awconnect install|status|path (the browser extension; `connect` is taken)
+    from adk.awconnect_setup import register_parser as _register_awconnect
+    _register_awconnect(sub)
+
     # adk login
     login_p = sub.add_parser("login", help="Authenticate with Aitherium (browser device flow)")
     login_p.add_argument("--email", help="Use email/password instead of browser flow")
@@ -13251,6 +13257,19 @@ def _register_commands(sub):
                          help="Skip auto-syncing your secrets vault after login")
     login_p.add_argument("--portal-url", default="",
                          help="Portal/Identity URL (default: api.aitherium.com)")
+
+    # adk license — the license follows the Aitherium account
+    license_p = sub.add_parser(
+        "license", help="Show or sync your license (purchases follow your Aitherium account)")
+    license_sub = license_p.add_subparsers(dest="license_command")
+    lic_sync_p = license_sub.add_parser("sync", help="Refresh the license from your account")
+    lic_sync_p.add_argument("--portal-url", default="", help="Portal/Identity URL")
+    lic_sync_p.add_argument("--json", action="store_true")
+    lic_status_p = license_sub.add_parser("status", help="Tier and packs in effect")
+    lic_status_p.add_argument("--json", action="store_true")
+    lic_inst_p = license_sub.add_parser(
+        "install", help="Offline activation: install a license key ('-' reads stdin)")
+    lic_inst_p.add_argument("license_key", help="The license text or key")
 
     # adk pair — node-initiated pairing (the code IS the credential; no login here)
     pair_p = sub.add_parser(
@@ -16248,6 +16267,12 @@ def main():
         sys.exit(cmd_wizard(args))
     elif args.command == "register":
         sys.exit(cmd_register(args))
+    elif args.command == "home":
+        from adk.home.cli import cmd_home
+        sys.exit(cmd_home(args))
+    elif args.command == "awconnect":
+        from adk.awconnect_setup import cmd_awconnect
+        sys.exit(cmd_awconnect(args))
     elif args.command == "login":
         sys.exit(cmd_login(args))
     elif args.command == "pair":
@@ -16520,6 +16545,8 @@ def main():
         sys.exit(cmd_sync(args))
     elif args.command == "grid":
         sys.exit(cmd_grid(args))
+    elif args.command == "license":
+        sys.exit(cmd_license(args))
     elif args.command == "explore":
         sys.exit(cmd_explore(args))
     elif args.command == "upgrade":

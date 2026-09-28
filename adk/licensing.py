@@ -24,12 +24,16 @@ Design rules (do not regress):
    402.  Local checks exist to give *clear errors and good UX*, not to be the
    only wall.
 
-Resolution order (first hit wins):
+Resolution:
     AITHER_LICENSE_ENFORCE=0          -> enforcement disabled (returns allow)
     AITHER_TENANT_SLUG=aitherium      -> INTERNAL
-    AITHER_LICENSE_KEY=<b64 payload>  -> verified tier (or COMMUNITY if invalid)
-    ~/.aither/license.json            -> verified tier (or COMMUNITY if invalid)
-    (nothing)                         -> COMMUNITY
+    otherwise every VERIFIED, unexpired license among
+      AITHER_LICENSE_KEY=<b64 envelope>
+      ~/.aither/license.json            (the ACCOUNT license: `adk login` / `adk license sync`)
+      ~/.aither/licenses/*.json         (OFFLINE licenses: pasted keys, one file each)
+    counts: the highest tier wins, and the packs are the UNION of them all, so
+    an account sync never switches off a pack bought offline and vice versa.
+    (nothing verifies)                -> COMMUNITY
 """
 
 from __future__ import annotations
@@ -260,8 +264,128 @@ def _license_from_envelope(envelope: dict[str, Any], source: str) -> License | N
     return lic
 
 
+def license_file_path() -> Path:
+    """The ACCOUNT license (``AITHER_LICENSE_FILE`` overrides ``~/.aither/license.json``).
+
+    Written only by an account sign-in / sync. Offline keys go to :func:`licenses_dir`.
+    """
+    return Path(
+        os.environ.get("AITHER_LICENSE_FILE")
+        or (Path.home() / ".aither" / "license.json")
+    ).expanduser()
+
+
+def licenses_dir() -> Path:
+    """OFFLINE licenses, one ``<fingerprint>.json`` per key, beside the account file.
+
+    ``AITHER_LICENSES_DIR`` overrides. Every verified file here is unioned into the
+    active license, so installing one never replaces another.
+    """
+    raw = os.environ.get("AITHER_LICENSES_DIR", "").strip()
+    return Path(raw).expanduser() if raw else license_file_path().parent / "licenses"
+
+
+def envelope_fingerprint(envelope: dict[str, Any]) -> str:
+    """Stable file name for an envelope (same scheme Saga used for its copies)."""
+    import hashlib
+
+    return hashlib.sha256(str(envelope.get("payload", "")).encode("utf-8")).hexdigest()[:16]
+
+
+def parse_license_text(text: str) -> dict[str, Any]:
+    """Normalise any license shape Aitherium hands out to the inner envelope.
+
+    Accepts the ``{payload, signature}`` JSON, a ``{"license": ...}`` wrapper, the
+    base64 outer key, or an ``AITHER_LICENSE_KEY=<key>`` line. Raises ValueError.
+    """
+    t = (text or "").strip().lstrip("﻿")
+    if not t:
+        raise ValueError("empty license")
+    if t.upper().startswith("AITHER_LICENSE_KEY="):
+        t = t.split("=", 1)[1].strip()
+    t = t.strip().strip('"').strip("'")
+    try:
+        if t.startswith("{"):
+            env = json.loads(t)
+        else:
+            env = json.loads(base64.b64decode("".join(t.split()), validate=True).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 -- every decode failure is the same answer
+        raise ValueError("not an Aitherium license") from exc
+    if isinstance(env, dict) and isinstance(env.get("license"), dict):
+        env = env["license"]
+    if not (isinstance(env, dict) and isinstance(env.get("payload"), str)
+            and isinstance(env.get("signature"), str)):
+        raise ValueError("license is missing its payload or signature")
+    return {"payload": env["payload"], "signature": env["signature"]}
+
+
+def install_offline_license(envelope: dict[str, Any]) -> tuple[License, Path]:
+    """Verify *envelope* and keep it under :func:`licenses_dir`. Never touches others.
+
+    Raises ValueError when it does not verify (nothing is written). Returns the
+    verified License and the file it was saved to.
+    """
+    lic = _license_from_envelope(envelope, source="offline")
+    if lic is None:
+        raise ValueError("license signature did not verify (or it has expired)")
+    dest = licenses_dir() / f"{envelope_fingerprint(envelope)}.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(json.dumps({"payload": envelope["payload"],
+                               "signature": envelope["signature"]}, indent=2),
+                   encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, dest)
+    reset_license_manager()
+    return lic, dest
+
+
+def _candidate_licenses() -> list[License]:
+    """Every verified, unexpired license this runtime can see (env, account, offline)."""
+    found: list[License] = []
+
+    env_key = os.environ.get("AITHER_LICENSE_KEY", "").strip()
+    if env_key:
+        try:
+            envelope = json.loads(base64.b64decode(env_key).decode("utf-8"))
+            lic = _license_from_envelope(envelope, source="env")
+            if lic:
+                found.append(lic)
+        except Exception as exc:
+            logger.warning("AITHER_LICENSE_KEY unparseable (%s) — free tier.", exc)
+
+    path = license_file_path()
+    try:
+        if path.is_file():
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+            lic = _license_from_envelope(envelope, source="file")
+            if lic:
+                found.append(lic)
+    except Exception as exc:
+        logger.warning("Could not read license file %s (%s) — free tier.", path, exc)
+
+    try:
+        ldir = licenses_dir()
+        offline = sorted(ldir.glob("*.json")) if ldir.is_dir() else []
+    except OSError:
+        offline = []
+    for extra in offline:
+        try:
+            envelope = json.loads(extra.read_text(encoding="utf-8"))
+            lic = _license_from_envelope(envelope, source="offline")
+        except Exception as exc:  # noqa: BLE001 -- one bad file never hides the rest
+            logger.debug("offline license %s skipped (%s)", extra, exc)
+            continue
+        if lic:
+            found.append(lic)
+    return found
+
+
 def _resolve_license() -> License:
-    """Resolve the active license per the documented order. Fail-closed."""
+    """Resolve the active license. Fail-closed; union of packs across sources."""
     # Internal dogfood — unrestricted.
     if os.environ.get("AITHER_TENANT_SLUG", "").lower() == "aitherium":
         return License(
@@ -271,37 +395,24 @@ def _resolve_license() -> License:
             source="internal",
         )
 
-    # 1) Env-provided signed envelope (base64 of the {payload,signature} JSON).
-    env_key = os.environ.get("AITHER_LICENSE_KEY", "").strip()
-    if env_key:
-        try:
-            envelope = json.loads(base64.b64decode(env_key).decode("utf-8"))
-            lic = _license_from_envelope(envelope, source="env")
-            if lic:
-                return lic
-        except Exception as exc:
-            logger.warning("AITHER_LICENSE_KEY unparseable (%s) — free tier.", exc)
-
-    # 2) ~/.aither/license.json
-    path = Path(
-        os.environ.get("AITHER_LICENSE_FILE")
-        or (Path.home() / ".aither" / "license.json")
-    )
-    try:
-        if path.is_file():
-            envelope = json.loads(path.read_text(encoding="utf-8"))
-            lic = _license_from_envelope(envelope, source="file")
-            if lic:
-                return lic
-    except Exception as exc:
-        logger.warning("Could not read license file %s (%s) — free tier.", path, exc)
-
-    # 3) Default: free tier.
-    return License(
-        tier=Tier.COMMUNITY,
-        entitlements=Entitlements.for_tier(Tier.COMMUNITY),
-        source="default",
-    )
+    found = _candidate_licenses()
+    if not found:
+        return License(
+            tier=Tier.COMMUNITY,
+            entitlements=Entitlements.for_tier(Tier.COMMUNITY),
+            source="default",
+        )
+    # Highest tier wins (earliest source on a tie: env, then account, then offline);
+    # packs are the union, so no source can switch off a pack another one grants.
+    best = max(range(len(found)), key=lambda i: (_TIER_RANK[found[i].tier], -i))
+    primary = found[best]
+    packs: list[str] = []
+    for lic in [primary, *found]:
+        for pack in lic.packs:
+            if pack not in packs:
+                packs.append(pack)
+    primary.packs = packs
+    return primary
 
 
 class LicenseManager:

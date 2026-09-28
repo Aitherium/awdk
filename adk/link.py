@@ -38,7 +38,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-DEFAULT_PORTAL = "https://portal.aitherium.com"
+DEFAULT_PORTAL = "https://api.aitherium.com"  # the retired portal host 301s; /api breaks
 BUNDLE_PATH = "/api/bridge/genesis/v1/link/bundle"
 UA = "adk-link"
 # Identity answered the device grant in 10.3 s on a loaded evening (measured

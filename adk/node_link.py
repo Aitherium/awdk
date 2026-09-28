@@ -88,6 +88,22 @@ HARNESS_ALLOWED_PREFIXES = ("sessions", "decisions", "desk/fleet/status")
 _BACKOFF_START = 1.0
 _BACKOFF_MAX = 60.0
 
+#: One client SSL context for every reconnect attempt. websockets builds
+#: ``ssl.create_default_context()`` per ``wss://`` connect when none is passed,
+#: and on Windows that walks the system certificate store -- while the tunnel is
+#: down that ran on every backoff tick (measured 2026-09-27). Same defaults.
+_SSL_CONTEXT: Optional[Any] = None
+
+
+def _client_ssl_context() -> Any:
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        import ssl
+
+        _SSL_CONTEXT = ssl.create_default_context()
+    return _SSL_CONTEXT
+
+
 #: Hard cap on one frame's body in either direction.
 MAX_FRAME_BYTES = 8 * 1024 * 1024
 
@@ -221,15 +237,18 @@ class NodeLink:
         # The bearer rides in the handshake and NOWHERE else. websockets renamed
         # this parameter, so try both rather than silently falling back to an
         # unauthenticated connect (which would 4401 and read as "tunnel down").
+        tls: Dict[str, Any] = (
+            {"ssl": _client_ssl_context()} if url.lower().startswith("wss://") else {}
+        )
         try:
             conn = websockets.connect(
                 url, additional_headers={"Authorization": f"Bearer {self.token}"},
-                max_size=MAX_FRAME_BYTES * 2, open_timeout=20,
+                max_size=MAX_FRAME_BYTES * 2, open_timeout=20, **tls,
             )
         except TypeError:
             conn = websockets.connect(
                 url, extra_headers={"Authorization": f"Bearer {self.token}"},
-                max_size=MAX_FRAME_BYTES * 2, open_timeout=20,
+                max_size=MAX_FRAME_BYTES * 2, open_timeout=20, **tls,
             )
         async with conn as ws:
             self.connected = True

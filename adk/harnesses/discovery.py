@@ -30,6 +30,11 @@ EXCLUDE_ENTRYPOINT_PATTERN = r"^(sdk|api)"
 #: (PowerShell: 100000000L ticks = 10 seconds.) The tolerance covers clock skew.
 PROCSTART_TOLERANCE_SECONDS = 10.0
 
+#: session id -> transcript path found by the directory-scan fallback. A session
+#: whose cwd encoding is not reproduced exactly would otherwise re-scan every
+#: project directory on each refresh (measured: ~450 stats per pass).
+_FALLBACK_TRANSCRIPTS: dict[str, str] = {}
+
 
 @dataclass
 class DiscoveredSession:
@@ -41,8 +46,12 @@ class DiscoveredSession:
     pid: int  # Process ID
     entrypoint: str  # "cli", "sdk-cli", etc.
     kind: str  # "interactive", "oneshot", etc.
-    status: str  # Claude's status string
+    status: str  # Claude's status string: "busy" | "idle" | "waiting"
     transcript_path: str  # Path to events.jsonl
+    #: Claude Code's remote-bridge session id ("" when it has none).
+    bridge_session_id: str = ""
+    #: What a "waiting" session waits for, e.g. "permission prompt" ("" otherwise).
+    waiting_for: str = ""
 
 
 def _encode_cwd(cwd: str) -> str:
@@ -245,6 +254,12 @@ def discover_live_sessions(
                     transcript_path = str(candidate)
 
             if not transcript_path:
+                # A fallback hit from an earlier pass: one stat instead of a walk.
+                known = _FALLBACK_TRANSCRIPTS.get(session_id)
+                if known and Path(known).is_file():
+                    transcript_path = known
+
+            if not transcript_path:
                 # Fallback for a cwd whose encoding we did not reproduce exactly.
                 # Scans the IMMEDIATE project dirs only (one stat each) rather
                 # than recursively walking every session file under all of them.
@@ -263,6 +278,9 @@ def discover_live_sessions(
                 if hits:
                     hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                     transcript_path = str(hits[0])
+                    _FALLBACK_TRANSCRIPTS[session_id] = transcript_path
+                    if len(_FALLBACK_TRANSCRIPTS) > 512:
+                        _FALLBACK_TRANSCRIPTS.pop(next(iter(_FALLBACK_TRANSCRIPTS)))
 
             if transcript_path:
                 live_sessions.append(
@@ -275,6 +293,11 @@ def discover_live_sessions(
                         kind=kind,
                         status=status,
                         transcript_path=transcript_path,
+                        # Claude Code writes these itself on every state change,
+                        # so they are ground truth, not an inference from the
+                        # transcript -- read them rather than re-derive them.
+                        bridge_session_id=str(state.get("bridgeSessionId") or ""),
+                        waiting_for=str(state.get("waitingFor") or ""),
                     )
                 )
     except OSError as exc:

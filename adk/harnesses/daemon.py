@@ -275,6 +275,11 @@ SCOPED_LINK_PATHS = ("/sessions", "/decisions", "/desk/fleet/status")
 LINK_ACTOR_HEADER = "x-aither-link-actor"
 LINK_ACTOR_OWNER = "owner"
 
+#: Peer addresses a LOCAL-ONLY verb (``/sessions/{id}/focus``) accepts. Read at
+#: request time, so a test can widen it for its in-process client without the
+#: production list ever naming a test host.
+LOCAL_CLIENT_HOSTS = ("127.0.0.1", "::1")
+
 
 def load_principals(path: Path = None) -> dict:
     """Read the token->principal registry. Unreadable or malformed = empty.
@@ -518,6 +523,11 @@ if BaseModel is not None:
         #: True = deliver as a COMPLETE turn (a pty adds the Enter). False = raw
         #: keystrokes, which is what a terminal attach forwards.
         submit: bool = False
+
+    class SessionMessage(BaseModel):  # type: ignore[misc]
+        """``POST /sessions/{id}/message`` body: text for the session's next prompt."""
+
+        text: str
 
     class ResizeInput(BaseModel):  # type: ignore[misc]
         rows: int = 30
@@ -906,14 +916,39 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     # ── unauthenticated liveness ────────────────────────────────────────────
 
+    # Which harnesses are installed is a PATH walk plus a pty probe per harness:
+    # cheap once, not on every liveness probe. Measured before this cache: /health
+    # took 3-15 s while a directory rebuild held the worker threads, so a probe
+    # meant to say "alive" said "dead". Refreshed off the request path.
+    installed_cache: dict[str, Any] = {"ids": mgr.available_harness_ids(), "at": time.time()}
+    installed_lock = threading.Lock()
+
+    def _installed_harness_ids() -> list[str]:
+        if time.time() - installed_cache["at"] > 300 and installed_lock.acquire(blocking=False):
+            installed_cache["at"] = time.time()
+
+            def _refresh() -> None:
+                try:
+                    installed_cache["ids"] = mgr.available_harness_ids()
+                finally:
+                    installed_lock.release()
+
+            threading.Thread(target=_refresh, name="harness-detect", daemon=True).start()
+        return list(installed_cache["ids"])
+
     @app.get("/health")
     def health() -> dict[str, Any]:
+        """Liveness. Reads only in-memory state: no disk, no process probes."""
+        from adk.harnesses.session_directory import default_directory
+
         roots = allowed_roots()
+        directory_stats = getattr(default_directory(), "stats", None)
         return {
             "ok": True,
             "service": "aithershell-harness",
             "sessions": len(mgr.list_sessions()),
-            "harnesses_installed": mgr.available_harness_ids(),
+            "harnesses_installed": _installed_harness_ids(),
+            "directory": directory_stats() if callable(directory_stats) else None,
             "cors_origins": origins,
             # Stated explicitly so "this host is trusted" is a visible posture,
             # never an unnoticed default on a tunnel-exposed daemon.
@@ -1148,49 +1183,88 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         - last_activity_summary (one line of context)
         - transcript_path (for reading transcript)
         - steer_capability (full/turn-boundary/none)
+
+        ``generated_at`` is when the rows were built and ``stale`` is True when a
+        background refresh has fallen behind (or has not produced a first view
+        yet). The rows come from a snapshot, so this never waits on a rebuild.
         """
-        return {"sessions": _unified_rows()}
+        rows, meta = _unified_rows_with_meta()
+        return {"sessions": rows, **meta}
 
     def _unified_rows() -> list[dict[str, Any]]:
         """The ``/sessions/unified`` rows, shared by the list and the stream."""
+        return _unified_rows_with_meta()[0]
+
+    def _unified_rows_with_meta() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         from adk.harnesses.session_directory import default_directory
 
         directory = default_directory()
         daemon_sessions = mgr.list_sessions()
-        unified = directory.list_sessions_sync(daemon_sessions)
+        with_meta = getattr(directory, "list_with_meta", None)
+        if callable(with_meta):
+            unified, meta = with_meta(daemon_sessions)
+        else:
+            unified = directory.list_sessions_sync(daemon_sessions)
+            meta = {"generated_at": time.time(), "stale": False}
 
-        return [
-            {
-                "id": s.id,
-                "title": s.title,
-                "cwd": s.cwd,
-                "harness": s.harness,
-                "harness_label": s.harness_label,
-                "origin": s.origin,
-                "status": s.status,
-                "last_activity_at": s.last_activity_at,
-                "last_activity_summary": s.last_activity_summary,
-                "transcript_path": s.transcript_path,
-                "pid": s.pid,
-                "steer_capability": s.steer_capability,
-                # Cockpit grid columns: the branch the session works on and the
-                # tokens it has spent (input + cache-creation + output).
-                "branch": s.branch,
-                "tokens_spent": s.tokens_spent,
-                # The id the PROGRAM carries (claude-tty's --session-id). Every other
-                # surface knows a tab by it; without it a client cannot resolve an
-                # awsh-opened tab by the id its own transcript is named after.
-                "harness_session_id": str(
-                    (s.extras or {}).get("harness_session_id") or ""
-                ),
-                # Which tabs opted in to PEER input on their pty at spawn. Only a
-                # daemon-owned row can be True; a discovered tab has no config.
-                "allow_peer_input": bool(
-                    (s.extras or {}).get("allow_peer_input") or False
-                ),
-            }
-            for s in unified
-        ]
+        return [_with_actions(_unified_row(s)) for s in unified], meta
+
+    def _unified_row(s: Any) -> dict[str, Any]:
+        """One ``UnifiedSession`` as the wire row (contract v1)."""
+        from adk.harnesses.session_directory import cached_last_prompt
+
+        extras = s.extras or {}
+        # `name` is the session's own short name: Claude Code's `<repo> <branch>
+        # <HH:MM>` for a discovered tab, the spawn title for a daemon session.
+        # The title's first " - " segment is that same name, so it is the fallback.
+        name = str(extras.get("name") or "").strip() or (s.title or "").split(" - ")[0]
+        return {
+            "id": s.id,
+            "title": s.title,
+            "name": name,
+            # The last human prompt the refresher already found (no file read).
+            "last_prompt": cached_last_prompt(s.transcript_path),
+            "bridge_session_id": str(extras.get("bridge_session_id") or ""),
+            "cwd": s.cwd,
+            "harness": s.harness,
+            "harness_label": s.harness_label,
+            "origin": s.origin,
+            "status": s.status,
+            "last_activity_at": s.last_activity_at,
+            "last_activity_summary": s.last_activity_summary,
+            "transcript_path": s.transcript_path,
+            "pid": s.pid,
+            "steer_capability": s.steer_capability,
+            # Cockpit grid columns: the branch the session works on and the
+            # tokens it has spent (input + cache-creation + output).
+            "branch": s.branch,
+            "tokens_spent": s.tokens_spent,
+            # The id the PROGRAM carries (claude-tty's --session-id). Every other
+            # surface knows a tab by it; without it a client cannot resolve an
+            # awsh-opened tab by the id its own transcript is named after.
+            "harness_session_id": str(
+                (s.extras or {}).get("harness_session_id") or ""
+            ),
+            # Which tabs opted in to PEER input on their pty at spawn. Only a
+            # daemon-owned row can be True; a discovered tab has no config.
+            "allow_peer_input": bool(
+                (s.extras or {}).get("allow_peer_input") or False
+            ),
+        }
+
+    def _with_actions(row: dict[str, Any]) -> dict[str, Any]:
+        """Attach ``actions`` -- what a client may do to this row, and why not."""
+        from adk.harnesses.session_verbs import row_actions
+
+        row["actions"] = row_actions(row)
+        return row
+
+    def _unified_row_by_id(session_id: str) -> dict[str, Any]:
+        """The unified row a verb addresses (its id or the program's id), or a 404."""
+        for row in _unified_rows():
+            if session_id in (row.get("id"), row.get("harness_session_id")):
+                return row
+        raise HTTPException(status_code=404, detail=f"no session {session_id!r} in the directory")
 
     @app.get("/sessions/unified/stream", dependencies=[Depends(auth)])
     async def unified_stream(
@@ -1213,8 +1287,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             frames = 0
             idle_ticks = 0
             while True:
-                # The directory tails transcripts and probes pids: blocking I/O,
-                # so it runs on the threadpool exactly as the sync list route does.
+                # Reads the directory's snapshot (the refresher thread owns the
+                # transcript I/O). Still on the threadpool: without a refresher
+                # the directory rebuilds inline.
                 rows = await run_in_threadpool(_unified_rows)
                 cur = {r["id"]: r for r in rows}
                 if prev is None:
@@ -1316,6 +1391,101 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 status_code=409, detail=f"session {session.state} cannot accept input"
             )
         return {"ok": True, "turn": session.turn, "seq": session.last_seq}
+
+    def _speaks_as_owner(principal: Principal, request: Request) -> bool:
+        """The owner at this box, or the owner verified at the far end of the link."""
+        if principal.plan == "owner":
+            return True
+        return principal.plan == "link" and (
+            request.headers.get(LINK_ACTOR_HEADER, "") == LINK_ACTOR_OWNER
+        )
+
+    @app.post("/sessions/{session_id}/message")
+    def message_session(
+        session_id: str, body: SessionMessage, request: Request,
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """Queue text for a session's NEXT prompt (tier 2: the steering mailbox).
+
+        Works for a discovered tab the daemon does not own -- nothing is typed; the
+        session's own prompt hook drains the file (at its next prompt, or its next
+        tool call while it works). Authority comes from the AUTHENTICATED caller
+        only: the owner (or the verified owner over the link) writes an owner
+        file; any other principal writes a peer file, which the drain frames as
+        carrying no authority.
+        """
+        from adk.harnesses.session_verbs import MAX_MESSAGE_CHARS, deliver_message
+
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="refusing to send an empty message")
+        if len(text) > MAX_MESSAGE_CHARS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"message is {len(text)} characters; the limit is {MAX_MESSAGE_CHARS}",
+            )
+        row = _unified_row_by_id(session_id)
+        actions = row.get("actions") or {}
+        if not actions.get("message"):
+            raise HTTPException(
+                status_code=409,
+                detail=(actions.get("why_not") or {}).get("message")
+                or "this session cannot take a message",
+            )
+        authority = "owner" if _speaks_as_owner(principal, request) else "peer"
+        if authority == "peer":
+            from adk.harnesses.session_verbs import PEER_MESSAGE_LIMITER
+
+            wait = PEER_MESSAGE_LIMITER.retry_after(str(principal.id), str(row["id"]))
+            if wait:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"too many messages to this session; retry in {wait:.0f}s",
+                    headers={"Retry-After": str(max(1, int(wait + 0.999)))},
+                )
+        written = deliver_message(row, text, authority=authority, sender=principal.id)
+        if written is None:
+            raise HTTPException(
+                status_code=400, detail=f"{session_id!r} is not a valid mailbox name",
+            )
+        return {
+            "ok": True,
+            "session_id": row["id"],
+            "authority": authority,
+            "file": written.name,
+            "delivered_at": "next-prompt",
+        }
+
+    @app.post("/sessions/{session_id}/focus")
+    def focus_session_route(
+        session_id: str, request: Request,
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """Raise a live session's terminal window, or reopen a stopped one.
+
+        LOCAL ONLY: it moves windows on THIS desktop, so it is refused for a link
+        principal (a remote caller, even the verified owner, is not looking at
+        this screen) and for any non-owner principal, and for a request that did
+        not come from loopback. A remote client gets ``remote_url`` from the row
+        instead, when the session has one.
+        """
+        from adk.harnesses.session_verbs import focus_session
+
+        if principal.plan != "owner":
+            raise HTTPException(
+                status_code=403,
+                detail=f"principal {principal.id!r} may not move windows on this desktop",
+            )
+        client_host = (request.client.host if request.client else "") or ""
+        if client_host not in LOCAL_CLIENT_HOSTS:
+            raise HTTPException(status_code=403, detail="focus is local only")
+        row = _unified_row_by_id(session_id)
+        result = focus_session(row)
+        if not result.get("ok") and result.get("mode") == "none" and not (
+            row.get("actions") or {}
+        ).get("focus"):
+            raise HTTPException(status_code=409, detail=result.get("detail") or "cannot focus")
+        return result
 
     def _browse_roots() -> Any:
         from adk.harnesses.fs import browse_roots
@@ -3433,6 +3603,12 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     bind_host = host or DEFAULT_BIND_HOST
     bind_port = port or DEFAULT_PORT
     app = create_app(token=token)
+    # A background thread owns every session-directory rebuild, so no request
+    # (list, stream, health) ever waits on transcript I/O. Started here and not
+    # in create_app so an embedded or test app keeps the inline behaviour.
+    from adk.harnesses.session_directory import default_directory
+
+    default_directory().start_refresher(default_manager().list_sessions)
     sys.stderr.write(
         f"AitherShell harness daemon on http://{bind_host}:{bind_port}\n"
         f"  token: {TOKEN_PATH} (or $AITHER_HARNESS_TOKEN)\n"

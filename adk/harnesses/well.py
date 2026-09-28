@@ -163,6 +163,21 @@ def git_state(cwd: str) -> Dict[str, Any]:
     }
 
 
+#: "store" -> ((path, mtime_ns, size), parsed JSON). Read-only once stored.
+_LEASE_CACHE: Dict[str, Any] = {}
+_LEASE_CACHE_LOCK = threading.Lock()
+
+#: A fleet briefing that failed is not retried on every rebuild: the next try is
+#: pushed out by FLEET_BACKOFF_BASE doubling per consecutive failure, capped at
+#: FLEET_BACKOFF_MAX. The engine is frequently unreachable from the host, and a
+#: refused connect every 5 s was pure overhead (measured 2026-09-27).
+FLEET_BACKOFF_BASE = 15.0
+
+#: How long one working tree's git state is reused across rebuilds.
+GIT_REFRESH_INTERVAL = 30.0
+FLEET_BACKOFF_MAX = 300.0
+
+
 def lease_state() -> Dict[str, Any]:
     """Who is holding which files right now, from the awgit store.
 
@@ -170,12 +185,28 @@ def lease_state() -> Dict[str, Any]:
     "is someone else in this file" BEFORE the edit rather than after the collision.
     """
     path = _lease_store_path()
-    if not path.is_file():
-        return {"ok": False, "reason": f"no lease store at {path}"}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return {"ok": False, "reason": f"lease store unreadable: {exc}"}
+        st = path.stat()
+    except OSError:
+        st = None
+    if st is None or not path.is_file():
+        return {"ok": False, "reason": f"no lease store at {path}"}
+    # The store is ~2 MB of mostly-released records, and the well rebuilds every
+    # few seconds: re-parsing it each time was the well's largest cost (measured
+    # 2026-09-27). The PARSE is cached by (path, mtime, size); the live/expired
+    # split below still runs every call because expiry depends on the clock.
+    sig = (str(path), st.st_mtime_ns, st.st_size)
+    with _LEASE_CACHE_LOCK:
+        hit = _LEASE_CACHE.get("store")
+    if hit is not None and hit[0] == sig:
+        raw = hit[1]
+    else:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            return {"ok": False, "reason": f"lease store unreadable: {exc}"}
+        with _LEASE_CACHE_LOCK:
+            _LEASE_CACHE["store"] = (sig, raw)
 
     entries = raw.get("leases") if isinstance(raw, dict) else raw
     if not isinstance(entries, list):
@@ -275,6 +306,10 @@ class ContextWell:
         #: cwd -> git state, so a well serving several repos does not rebuild all of
         #: them for one caller.
         self._roots: Dict[str, Dict[str, Any]] = {}
+        #: Fleet-briefing backoff state (see FLEET_BACKOFF_BASE).
+        self._fleet_failures = 0
+        self._fleet_next_try = 0.0
+        self._fleet_last: Dict[str, Any] = {"ok": False, "reason": "not tried yet"}
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -328,7 +363,7 @@ class ContextWell:
         roots = self.known_roots()
         repos: Dict[str, Any] = {}
         for root in roots:
-            state = git_state(root)
+            state = self._git(root, started)
             repos[root] = state
             if not state.get("ok"):
                 sources[f"git:{root}"] = state.get("reason", "unavailable")
@@ -351,7 +386,7 @@ class ContextWell:
         # is often down, so it is skipped entirely when explicitly disabled.
         fleet: Dict[str, Any] = {"ok": False, "reason": "disabled"}
         if os.environ.get("AITHER_WELL_FLEET", "1").lower() not in ("0", "false", "no"):
-            fleet = fleet_briefing()
+            fleet = self._fleet()
         sources["fleet"] = "ok" if fleet.get("ok") else fleet.get("reason", "unavailable")
 
         snapshot = {
@@ -375,6 +410,50 @@ class ContextWell:
             self.builds += 1
             self.last_build_ms = (time.time() - started) * 1000.0
         return snapshot
+
+    def _git(self, root: str, now: float) -> Dict[str, Any]:
+        """``git_state(root)``, re-run at most every GIT_REFRESH_INTERVAL seconds.
+
+        Four git subprocesses per tree (``status`` over a large checkout among
+        them) on every 5 s rebuild were the well's largest remaining cost
+        (measured 2026-09-27). Leases and rooms still refresh every rebuild;
+        branch/dirty state may be up to GIT_REFRESH_INTERVAL old and says so in
+        ``checked_at``.
+        """
+        cached = self._roots.get(root)
+        if cached is not None and now - cached.get("checked_at", 0.0) < GIT_REFRESH_INTERVAL:
+            return cached
+        state = dict(git_state(root))
+        state["checked_at"] = now
+        self._roots[root] = state
+        if len(self._roots) > 32:  # roots follow live sessions; forget old ones
+            for stale in list(self._roots)[:-16]:
+                self._roots.pop(stale, None)
+        return state
+
+    def _fleet(self) -> Dict[str, Any]:
+        """``fleet_briefing()`` with exponential backoff after a failure.
+
+        While backing off, the last failure is reported again with the time of
+        the next attempt, so a consumer still sees WHY the fleet tier is absent.
+        A success resets the backoff at once.
+        """
+        now = time.time()
+        if self._fleet_failures and now < self._fleet_next_try:
+            last = dict(self._fleet_last)
+            last["retry_at"] = self._fleet_next_try
+            return last
+        fleet = fleet_briefing()
+        if fleet.get("ok"):
+            self._fleet_failures = 0
+            self._fleet_next_try = 0.0
+        else:
+            self._fleet_failures += 1
+            delay = min(FLEET_BACKOFF_MAX,
+                        FLEET_BACKOFF_BASE * (2 ** min(self._fleet_failures - 1, 10)))
+            self._fleet_next_try = now + delay
+        self._fleet_last = fleet
+        return fleet
 
     # ── reading ─────────────────────────────────────────────────────────────
 
