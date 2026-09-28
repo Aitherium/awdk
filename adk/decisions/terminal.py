@@ -219,6 +219,16 @@ def _persisted_console_input() -> bool:
     )
 
 
+def key_payload(text: str, *, submit: bool = True) -> str:
+    """The characters :func:`type_into_console` turns into key events.
+
+    ``submit=False`` carries NO carriage return: the text lands as a draft, and whatever
+    the input box already held is not submitted with it (the owner-steer path relies on
+    this, ``adk/harnesses/owner_steer.py``).
+    """
+    return text + "\r" if submit else text
+
+
 def type_into_console(pid: int, text: str, *, submit: bool = True) -> tuple[bool, str]:
     """Write ``text`` into ``pid``'s console input buffer, as if typed.
 
@@ -264,7 +274,7 @@ def type_into_console(pid: int, text: str, *, submit: bool = True) -> tuple[bool
         _fields_ = [("EventType", wintypes.WORD), ("Event", _EVENT)]
 
     kernel32 = ctypes.windll.kernel32
-    payload = text if not submit else text + "\r"
+    payload = key_payload(text, submit=submit)
     records = (_InputRecord * (len(payload) * 2))()
     for index, char in enumerate(payload):
         for offset, down in ((0, True), (1, False)):

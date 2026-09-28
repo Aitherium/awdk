@@ -59,6 +59,24 @@ actor ids, was rejected because it would allowlist an unauthenticated string
 rather than from ``actor.kind`` is FRAMED at the pty boundary with the mailbox drain's
 exact wording, so a peer message reads identically whichever tier carried it.
 
+THE OWNER'S VOICE INTO A DISCOVERED TAB (owner ruling, 2026-09-28)
+----------------------------------------------------------------------
+The ONE exception to "a discovered tab gets a peer mailbox file": an event carrying the
+MCP gateway's signed OWNER ASSERTION (``owner_steer.is_owner_steer_event``: an Ed25519
+signature over event id, target, actor and text, verified against the public key pinned
+when this dispatcher was built -- the bearer's registry principal is NOT consulted,
+because every tab on the host can mint any registry row). Its text is sanitised
+(``owner_steer.sanitize_owner_text``; a rejected text is refused, never delivered), the
+mailbox file is written with ``authority="owner"``, and it is typed through the console
+tier ONLY when the tab's turn has ENDED (``autopilot.transcript_turn_end``) and the tab's
+identity is re-proved immediately before typing from Claude Code's own state file
+(``owner_steer.verify_tab_identity``: same session, process creation time == procStart).
+It is typed as a DRAFT, never followed by Enter: nothing can read what the input box
+already holds, and an Enter would submit that too. The file is archived to
+``delivered/`` before typing (the owner's Enter fires the tab's own drain hook, which
+must not inject it a second time) and restored if typing fails. Every other sender,
+the ROOT bearer included, keeps the 09-19 path exactly.
+
 A SILENT DISPATCHER MUST NOT BE INDISTINGUISHABLE FROM A QUIET ROOM
 ----------------------------------------------------------------------
 This module NEVER raises into ``publish`` (:meth:`Room._notify` already wraps a raising
@@ -78,9 +96,16 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from adk.decisions.store import write_steer
+from adk.harnesses.autopilot import transcript_turn_end
+from adk.harnesses.owner_steer import (
+    OwnerAssertionVerifier,
+    is_owner_steer_event,
+    sanitize_owner_text,
+    verify_tab_identity,
+)
 
 #: A hop count at or above this is already a completed round trip ("owner asks" = 0,
 #: "agent answers" = 1); dispatching at this count or higher would land a third leg,
@@ -240,6 +265,11 @@ class SteerDispatcher:
         status_file: Optional[Path] = None,
         lru_size: int = DEFAULT_LRU_SIZE,
         now: Callable[[], float] = time.time,
+        console_deliver: Optional[Callable[[int, str, int], Tuple[bool, str]]] = None,
+        turn_end: Callable[[str], Optional[str]] = transcript_turn_end,
+        verify_tab: Optional[
+            Callable[[int, str], Tuple[bool, str, Optional[int]]]] = None,
+        owner_verifier: Optional[OwnerAssertionVerifier] = None,
     ) -> None:
         self._list_unified_sessions = list_unified_sessions or (lambda: [])
         self._send_managed_input = send_managed_input
@@ -251,6 +281,15 @@ class SteerDispatcher:
         self._status_file = status_file or status_path()
         self._lru_size = lru_size
         self._now = now
+        # The owner-steer console tier. None = not wired: an owner event still gets its
+        # owner-authority mailbox file, and the receipt says it was not typed.
+        self._console_deliver = console_deliver
+        self._turn_end = turn_end
+        # Re-proves "this pid is still that tab" from Claude Code's own state file and
+        # the process creation time, right before typing (never the cached listing).
+        self._verify_tab = verify_tab or verify_tab_identity
+        # The pinned owner-assertion public key. None = no event is ever the owner's.
+        self._owner_verifier = owner_verifier
 
         self._lock = threading.Lock()
         self._delivered_ids: "OrderedDict[str, float]" = OrderedDict()
@@ -343,6 +382,16 @@ class SteerDispatcher:
             return
         target_kind, address_label = resolved
 
+        # The owner-steer principal's text is sanitised BEFORE any tier sees it, so no
+        # tier (pty, console, mailbox) can carry a rejected one.
+        owner_steer = is_owner_steer_event(event, target_id, self._owner_verifier)
+        owner_text: Optional[str] = None
+        if owner_steer:
+            owner_text, why = sanitize_owner_text(_extract_text(event))
+            if owner_text is None:
+                self._refuse(room, event, target_id, target_kind, why)
+                return
+
         # Tier 1: a daemon-managed pty. Missed always until claude-tty (2026-09-19);
         # a caller that DID spawn its target through this daemon gets an immediate, not
         # a queued, delivery -- when the daemon vouched for the sender as owner-plan AND
@@ -362,7 +411,7 @@ class SteerDispatcher:
             if not tier1:
                 detail_if_queued = _tier1_refusal_detail(event)
         if tier1:
-            text = _extract_text(event)
+            text = owner_text if owner_text is not None else _extract_text(event)
             if _tier1_grant_is_opt_in(event):
                 # The grant came from the TARGET's opt-in, not from the actor kind: the
                 # sender is a peer, and a peer's words never reach a keyboard unframed.
@@ -384,10 +433,147 @@ class SteerDispatcher:
                 )
                 return
 
+        # The owner's voice into a DISCOVERED Claude Code tab (ruling 2026-09-28).
+        if owner_steer and owner_text is not None and target_kind == "claude_code":
+            row = self._discovered_row(target_id)
+            if row is not None:
+                self._dispatch_owner_live(
+                    room, event, target_id, target_kind, address_label, row, owner_text,
+                )
+                return
+
         # Tier 2: the steering mailbox — where delivery lands for everyone else.
         self._dispatch_to_mailbox(
             room, event, sender_id, target_id, target_kind, address_label,
             detail=detail_if_queued,
+        )
+
+    # ── the owner-steer tier ───────────────────────────────────────────────
+
+    def _session_rows(self) -> List[Dict[str, Any]]:
+        try:
+            return list(self._list_unified_sessions() or [])
+        except Exception as exc:
+            self._note_error(f"session listing failed: {type(exc).__name__}: {exc}")
+            return []
+
+    def _discovered_row(self, target_id: str) -> Optional[Dict[str, Any]]:
+        """The ``/sessions/unified`` row for a DISCOVERED tab, else None.
+
+        A row that names no origin counts as discovered only when it carries a
+        transcript -- the turn-end gate needs one, so nothing is typed without it.
+        """
+        for row in self._session_rows():
+            if row.get("id") != target_id:
+                continue
+            origin = str(row.get("origin") or "")
+            if origin == "daemon":
+                return None
+            if origin == "discovered" or row.get("transcript_path"):
+                return row
+            return None
+        return None
+
+    def _try_owner_console(
+        self, target_id: str, row: Dict[str, Any], text: str,
+    ) -> Tuple[bool, str]:
+        """Type ``text`` into the tab's console as a DRAFT, or say why not. Never raises."""
+        if self._console_deliver is None:
+            return False, "no console tier wired on this daemon"
+        try:
+            pid = int(row.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid <= 0:
+            return False, "the tab has no recorded process"
+        try:
+            marker = self._turn_end(str(row.get("transcript_path") or ""))
+        except Exception as exc:  # noqa: BLE001 - an unreadable turn is a busy turn
+            marker = None
+            self._note_error(
+                f"turn-end read failed for {target_id}: {type(exc).__name__}: {exc}"
+            )
+        if not marker:
+            return False, "the tab is mid-turn (its turn has not ended); it drains the mailbox"
+        # Identity re-check, immediately before typing, from Claude Code's OWN state file
+        # and the live process creation time -- never the directory's cached snapshot,
+        # which would compare the pid with itself.
+        try:
+            same, why, proc_start = self._verify_tab(pid, target_id)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"could not re-prove process {pid}: {type(exc).__name__}"
+        if not same or proc_start is None:
+            return False, f"{why or 'the tab could not be re-proved'}; not typed"
+        try:
+            ok, why = self._console_deliver(pid, text, int(proc_start))
+        except Exception as exc:  # noqa: BLE001 - a broken console tier falls back
+            return False, f"console tier failed: {type(exc).__name__}: {exc}"
+        return bool(ok), str(why or "")
+
+    @staticmethod
+    def _move(src: Path, dst: Path) -> bool:
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(src, dst)
+            return True
+        except OSError:
+            return False
+
+    def _dispatch_owner_live(
+        self,
+        room: Any,
+        event: Dict[str, Any],
+        target_id: str,
+        target_kind: str,
+        address_label: str,
+        row: Dict[str, Any],
+        text: str,
+    ) -> None:
+        actor = event.get("actor") or {}
+        sender_label = str(actor.get("name") or actor.get("id") or "the owner")
+        try:
+            path = self._write_steer(
+                target_id,
+                [text],
+                suffix="owner",
+                sender=sender_label,
+                authority="owner",
+                origin_id=str(event.get("id") or ""),
+                kind=target_kind,
+            )
+        except Exception as exc:
+            self._note_error(
+                f"owner mailbox write failed for {target_id}: {type(exc).__name__}: {exc}"
+            )
+            path = None
+        if path is None:
+            self._refuse(room, event, target_id, target_kind,
+                         f"invalid session id {target_id!r} for the steering mailbox")
+            return
+
+        # Archive BEFORE typing: the typed prompt fires the tab's own drain hook, which
+        # would otherwise inject this same file a second time.
+        path = Path(path)
+        archived = path.parent / "delivered" / path.name
+        landed, why = False, "could not archive the mailbox file before typing"
+        if self._move(path, archived):
+            landed, why = self._try_owner_console(target_id, row, text)
+            if not landed and not self._move(archived, path):
+                self._note_error(f"could not restore {archived} after a console miss")
+        if landed:
+            self._deliver(
+                room, event, target_id, target_kind, address_label,
+                channel="console", landed_now=True, queued=False,
+                detail=("typed into the idle tab as the owner's DRAFT -- press Enter in "
+                        f"that tab to send it ({why})"),
+                mailbox_pending=None,
+            )
+            return
+        self._deliver(
+            room, event, target_id, target_kind, address_label,
+            channel="mailbox", landed_now=False, queued=True,
+            detail=f"queued with owner authority for its next turn boundary ({why})",
+            mailbox_pending=str(path),
         )
 
     def _dispatch_to_mailbox(

@@ -49,6 +49,7 @@ from adk.harnesses.session import SessionConfig
 from adk.harnesses.spool import default_tailer
 from adk.harnesses.steer_dispatch import frame_peer_text
 from adk.harnesses.steer_dispatch import register as register_steer_dispatcher
+from adk.harnesses.owner_steer import load_owner_verifier
 from adk.harnesses.transcript_bridge import default_bridge
 from adk.harnesses.well import default_well
 
@@ -3305,7 +3306,12 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         from adk.harnesses.session_directory import default_directory
 
         unified = default_directory().list_sessions_sync(mgr.list_sessions())
-        rows = [{"id": s.id, "title": s.title} for s in unified]
+        # pid / transcript_path / origin feed the owner-steer console tier: it types
+        # only into a DISCOVERED tab whose turn has ended, and re-reads the pid from a
+        # fresh listing immediately before typing (steer_dispatch, ruling 2026-09-28).
+        rows = [{"id": s.id, "title": s.title, "pid": s.pid,
+                 "transcript_path": s.transcript_path, "origin": s.origin}
+                for s in unified]
         # A daemon-owned claude-tty is known to every OTHER surface by the id the
         # PROGRAM carries -- its --session-id, which is the transcript's name, the desk
         # stage's slot key and the room actor its bridge emits under -- and the
@@ -3315,7 +3321,8 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         for s in unified:
             alias = str((s.extras or {}).get("harness_session_id") or "")
             if alias and alias != s.id:
-                rows.append({"id": alias, "title": s.title})
+                rows.append({"id": alias, "title": s.title, "pid": s.pid,
+                             "transcript_path": s.transcript_path, "origin": s.origin})
         return rows
 
     def _send_managed_input_for_dispatch(session_id: str, text: str) -> bool:
@@ -3352,6 +3359,33 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     return None
         return None
 
+    def _console_deliver_for_owner_steer(pid: int, text: str, proc_start: int) -> tuple[bool, str]:
+        """The console tier for an owner-steer event (steer_dispatch decides WHEN).
+
+        Runs ``owner_steer type-draft`` in a CHILD process: it FreeConsole()s the caller
+        to attach to the target's console, and the daemon must not lose its own. The
+        child re-proves the process (creation time == ``proc_start``, a claude/node
+        image) immediately before AttachConsole and types WITHOUT a submit key. Still
+        behind the owner's console-typing opt-in (``console_input_enabled``). ``text``
+        is already one sanitised line; it travels on stdin, never argv.
+        """
+        import subprocess
+
+        request = json.dumps({"pid": int(pid), "proc_start": int(proc_start), "text": text})
+        try:
+            done = subprocess.run(  # noqa: S603 - fixed argv; the text is on stdin
+                [sys.executable, "-m", "adk.harnesses.owner_steer", "type-draft"],
+                # json.dumps is ASCII-only both ways, so the child's stdin codec cannot
+                # mangle the owner's words.
+                input=request, capture_output=True, text=True, timeout=20,
+                encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            ok, why = json.loads((done.stdout or "").strip().splitlines()[-1])
+            return bool(ok), str(why)
+        except Exception as exc:  # noqa: BLE001 - a console miss falls back to the mailbox
+            return False, f"console child failed: {type(exc).__name__}"
+
     def _tier1_opt_in_for_dispatch(session_id: str) -> bool:
         """Did this managed session opt in to PEER input on its pty at spawn?
 
@@ -3373,6 +3407,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         list_unified_sessions=_list_unified_sessions_for_dispatch,
         send_managed_input=_send_managed_input_for_dispatch,
         tier1_opt_in=_tier1_opt_in_for_dispatch,
+        console_deliver=_console_deliver_for_owner_steer,
+        # The gateway's owner-assertion PUBLIC key, read ONCE here -- never per request,
+        # and never from the principals registry an agent tab can write.
+        owner_verifier=load_owner_verifier(),
     )
 
     # Cockpit autopilot: opt-in (OFF by default) per-session auto-steer. It reads the
