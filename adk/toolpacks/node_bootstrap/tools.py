@@ -173,6 +173,16 @@ def node_resolve_recipe(
 
 # ── 3. DEPLOYMENT PLANNING ──────────────────────────────────────────────
 
+#: What to tell the operator when `docker compose up` fails. The reference node is
+#: rootful podman on awnix (CentOS Stream 9 bootc), where `docker` is podman's
+#: docker shim and the GPU reaches containers through a CDI spec, not a runtime hook.
+_ENGINE_FIX = (
+    "check the container engine: `docker compose` needs docker, or podman with "
+    "podman-docker + podman-compose (dnf install -y podman podman-docker podman-compose); "
+    "for the GPU on podman: dnf install -y nvidia-container-toolkit (NVIDIA rpm repo) && "
+    "nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+)
+
 
 def _render_compose(recipe_id: str, recipe: dict) -> str:
     """Render a minimal, self-contained docker-compose YAML from recipe fields.
@@ -471,7 +481,7 @@ def _apply_local(recipe_id: str, plan: dict, target: str) -> dict:
                     "error": f"docker compose up failed (rc={rc})",
                     "output": out,
                     "compose_file": str(compose_file),
-                    "fix": "check docker is running and the GPU runtime is configured",
+                    "fix": _ENGINE_FIX,
                 }
             return {
                 "applied": True,
@@ -579,8 +589,8 @@ def _apply_remote(
                 return {
                     "error": f"remote step failed: {cmd[0]} (rc={rc})",
                     "steps": outputs,
-                    "fix": "check SSH key auth (BatchMode), docker on the node, "
-                           f"and reachability of {node_ip}",
+                    "fix": "check SSH key auth (BatchMode), reachability of "
+                           f"{node_ip}, and the node's engine: {_ENGINE_FIX}",
                 }
         return {
             "applied": True,

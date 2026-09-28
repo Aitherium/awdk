@@ -14942,6 +14942,10 @@ def _register_commands(sub):
     # adk fleet — create & manage agents across runtimes (local | managed | hosted | cloud-run)
     fleet_p = sub.add_parser("fleet", help="Create & manage a fleet of agents (local | managed | hosted | cloud-run)")
     fleet_sub = fleet_p.add_subparsers(dest="fleet_command")
+    # `adk fleet sleep|wake|critical` -- the MACHINE fleet's verbs (fleet_verbs.py), beside
+    # the agent-fleet verbs; `adk gpu status|sleep|wake` is registered with fleet-host below.
+    from adk.commands.fleet_verbs import register_fleet_verbs as _register_fleet_verbs
+    _register_fleet_verbs(fleet_sub)
     fleet_create_p = fleet_sub.add_parser("create", help="Create an agent in a runtime")
     fleet_create_p.add_argument("name", help="Agent name")
     fleet_create_p.add_argument("--runtime", "-r", default="local",
@@ -15410,6 +15414,8 @@ def _register_commands(sub):
     # adk fleet-host — the awnix fleet host (adk/commands/fleet_host.py)
     from adk.commands.fleet_host import register_parser as _register_fleet_host
     _register_fleet_host(sub)
+    from adk.commands.fleet_verbs import register_gpu_parser as _register_gpu
+    _register_gpu(sub)
 
     # adk wm — world model management (status, inspect, train, reset)
     wm_p = sub.add_parser("wm", help="World model management (status, inspect, train, reset)")
@@ -16455,7 +16461,13 @@ def main():
     elif args.command == "pack":
         sys.exit(_cmd_pack(args))
     elif args.command == "fleet":
+        if getattr(args, "fleet_command", None) in ("sleep", "wake", "critical"):
+            from adk.commands.fleet_verbs import cmd_fleet_verb
+            sys.exit(cmd_fleet_verb(args))
         sys.exit(_cmd_fleet(args))
+    elif args.command == "gpu":
+        from adk.commands.fleet_verbs import cmd_gpu
+        sys.exit(cmd_gpu(args))
     elif args.command == "desk":
         sys.exit(_cmd_desk(args))
     elif args.command == "instance":

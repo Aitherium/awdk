@@ -51,7 +51,9 @@ echo ""
 # ── 1. Python ───────────────────────────────────────────────────────────────
 
 find_python() {
-    for c in python3 python; do
+    # Versioned names first: on CentOS Stream 9 / RHEL 9 / awnix `python3` is 3.9 and the
+    # usable interpreter is installed side by side as python3.12 or python3.11.
+    for c in python3.13 python3.12 python3.11 python3.10 python3 python; do
         if command -v "$c" >/dev/null 2>&1; then
             v=$("$c" -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
             major=${v%%.*}; minor=${v#*.}
@@ -67,6 +69,13 @@ if [[ -z "$PYTHON" ]]; then
         brew install python@3.12 >/dev/null 2>&1 && PYTHON=$(find_python)
     elif command -v apt-get >/dev/null 2>&1; then
         sudo apt-get install -y python3.12 python3-pip >/dev/null 2>&1 && PYTHON=$(find_python)
+    elif [[ -f /run/ostree-booted ]]; then
+        # A booted bootc/ostree host (awnix): /usr belongs to the image, dnf cannot add to it.
+        bad "This is an image-based (bootc) system; Python 3.10+ has to come from the image."
+        echo "  Use an awnix image that carries python3.12, or run awdk in a toolbox/container."
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y python3.12 python3.12-pip >/dev/null 2>&1 || sudo dnf install -y python3.11 python3.11-pip >/dev/null 2>&1
+        PYTHON=$(find_python)
     fi
 fi
 if [[ -z "$PYTHON" ]]; then

@@ -9,7 +9,8 @@ fixtures so they cannot drift. Order:
    ``AWDESK_FLEET_DISTRO`` (first non-empty wins);
 2. ``fleet_distro:`` of node ``debian-fleet`` in ``AitherOS/config/nodes.yaml``
    (env ``AITHER_NODES_YAML``; else the monorepo this file sits in; else
-   ``$AITHEROS_ROOT``; else ``C:/AitherOS-Fresh``);
+   ``$AITHEROS_ROOT``). A pip-installed copy with neither falls through to 3,
+   which is the right answer for it -- no checkout path is baked in;
 3. ``awnix``.
 
 TRANSPORT -- how to reach the fleet host (same rule as the lib resolver):
@@ -53,7 +54,6 @@ def _nodes_candidates(env: Mapping[str, str]) -> List[Path]:
     root = (env.get("AITHEROS_ROOT") or "").strip()
     if root:
         out.append(Path(root) / "AitherOS" / "config" / "nodes.yaml")
-    out.append(Path("C:/AitherOS-Fresh/AitherOS/config/nodes.yaml"))
     return out
 
 

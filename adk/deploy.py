@@ -516,11 +516,71 @@ def _check_docker() -> tuple[bool, str]:
     """
     docker = shutil.which("docker")
     if not docker:
-        return False, "Docker is not installed"
+        return False, "No docker CLI found (install podman + podman-docker; see below)"
     out = _run(["docker", "info", "--format", "{{.ServerVersion}}"])
     if not out:
         return False, "Docker daemon is not running"
     return True, f"Docker {out}"
+
+
+def container_engine_install_hint(system: Optional[str] = None,
+                                  os_release: Optional[str] = None) -> list[str]:
+    """Lines telling the user how to get a container engine on THIS platform.
+
+    The AitherOS fleet runs rootful podman on awnix (CentOS Stream 9 bootc); Docker
+    Desktop is not the recommended engine anywhere any more. ``docker`` commands
+    here work through podman's docker shim (``podman-docker``).
+
+    Args:
+        system: ``platform.system()`` override (tests).
+        os_release: contents of /etc/os-release override (tests).
+
+    Returns:
+        Human-readable hint lines, most specific first.
+    """
+    system = system or platform.system()
+    if system == "Windows":
+        return [
+            "Windows: run the fleet on the awnix WSL2 distro "
+            "(AitherZero 0000_Bootstrap-AitherOS.ps1 -AwnixRootfs <tar>),",
+            "or install Podman Desktop and create a rootful machine.",
+        ]
+    if system == "Darwin":
+        return [
+            "macOS: brew install podman && podman machine init --rootful && podman machine start",
+        ]
+    if os_release is None:
+        try:
+            os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+        except OSError:
+            os_release = ""
+    ids = " ".join(
+        line.split("=", 1)[1].strip().strip('"').lower()
+        for line in os_release.splitlines()
+        if line.startswith(("ID=", "ID_LIKE=", "NAME="))
+    )
+    if Path("/run/ostree-booted").exists() or "awnix" in ids:
+        return ["awnix/bootc: podman is part of the image "
+                "(bootc switch to the awnix image if it is missing)"]
+    if any(k in ids for k in ("rhel", "centos", "fedora", "rocky", "almalinux")):
+        return [
+            "sudo dnf install -y podman podman-docker",
+            "GPU: sudo curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/"
+            "nvidia-container-toolkit.repo -o /etc/yum.repos.d/nvidia-container-toolkit.repo",
+            "     && sudo dnf install -y nvidia-container-toolkit"
+            " && sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml",
+        ]
+    return [
+        "sudo apt-get install -y podman podman-docker",
+        "GPU: install nvidia-container-toolkit (NVIDIA apt repo), then "
+        "sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml",
+    ]
+
+
+def _print_engine_hint(prefix: str = "  ") -> None:
+    """Print container_engine_install_hint() lines."""
+    for line in container_engine_install_hint():
+        print(f"{prefix}{cyan(line)}")
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +860,8 @@ def _deploy_adk_node_native(dry_run: bool = False, api_key: str = "") -> int:
     if not adk_serve:
         err("Neither Docker nor adk-serve is available")
         print()
-        print(f"  Option 1: Install Docker — {cyan('https://docker.com/products/docker-desktop')}")
+        print("  Option 1: Install a container engine (podman):")
+        _print_engine_hint("    ")
         print(f"  Option 2: Ensure adk-serve is in PATH — {cyan('pip install awdk')}")
         return 1
 
@@ -1118,7 +1179,8 @@ def deploy_node(
     else:
         err(docker_msg)
         print()
-        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        print("  Install a container engine (podman):")
+        _print_engine_hint("    ")
         return 1
 
     # Authenticate with GHCR for private image pulls
@@ -1321,7 +1383,8 @@ def deploy_core(dry_run: bool = False, tag: str = "latest", api_key_arg: Optiona
     else:
         err(docker_msg)
         print()
-        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        print("  Install a container engine (podman):")
+        _print_engine_hint("    ")
         return 1
 
     # Authenticate with GHCR
@@ -1468,7 +1531,8 @@ def deploy_full(
     else:
         err(docker_msg)
         print()
-        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        print("  Install a container engine (podman):")
+        _print_engine_hint("    ")
         return 1
 
     # Authenticate with GHCR
@@ -1639,7 +1703,8 @@ def deploy_addons(
     else:
         err(docker_msg)
         print()
-        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        print("  Install a container engine (podman):")
+        _print_engine_hint("    ")
         return 1
 
     # Ensure the shared network exists
@@ -2112,7 +2177,8 @@ def deploy_sovereign(
     else:
         err(docker_msg)
         print()
-        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        print("  Install a container engine (podman):")
+        _print_engine_hint("    ")
         return 1
 
     if not dry_run:
@@ -3287,7 +3353,8 @@ def deploy_grid(
         info(docker_msg)
     else:
         err(docker_msg)
-        print(f"\n  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        print("\n  Install a container engine (podman):")
+        _print_engine_hint("    ")
         return 1
 
     gpu = detect_gpu()

@@ -29,9 +29,13 @@ TOOL_REL = Path("AitherOS") / "dev" / "tools" / "fleet_host.py"
 
 
 def find_tool(
-    env: Optional[dict] = None, here: Optional[Path] = None, cwd: Optional[Path] = None
+    env: Optional[dict] = None,
+    here: Optional[Path] = None,
+    cwd: Optional[Path] = None,
+    rel: Path = TOOL_REL,
 ) -> Optional[Path]:
-    """Locate fleet_host.py; None when no AitherOS checkout is reachable."""
+    """Locate fleet_host.py (or another repo tool by ``rel``); None when no AitherOS
+    checkout is reachable."""
     e = os.environ if env is None else env
     h = (here or Path(__file__)).resolve()
     cands: List[Path] = []
@@ -46,8 +50,8 @@ def find_tool(
     except Exception as exc:  # noqa: BLE001 - discovery is best effort
         print(f"note: checkout discovery skipped: {exc}", file=sys.stderr)
     for c in cands:
-        if (c / TOOL_REL).is_file():
-            return c / TOOL_REL
+        if (c / rel).is_file():
+            return c / rel
     return None
 
 
