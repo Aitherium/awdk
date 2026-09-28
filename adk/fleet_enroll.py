@@ -463,6 +463,17 @@ async def _heartbeat_loop(
                     "agents_active": len(agents),
                     "timestamp": int(time.time()),
                 }
+                # This node as the awnix fleet host, when it is one (a cache read,
+                # never wsl.exe): the control plane sees the distro + its verdict.
+                try:
+                    from adk.commands.fleet_host import cached_summary
+
+                    fh = cached_summary()
+                except Exception:  # noqa: BLE001 - never breaks the heartbeat
+                    fh = None
+                if fh:
+                    metrics["fleet_host_distro"] = fh.get("distro")
+                    metrics["fleet_host_verdict"] = fh.get("verdict")
                 result = await client.heartbeat(
                     status="online",
                     metrics=metrics,

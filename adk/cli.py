@@ -15407,6 +15407,10 @@ def _register_commands(sub):
     from adk.commands.solve import register_parser as _register_solve
     _register_solve(sub)
 
+    # adk fleet-host — the awnix fleet host (adk/commands/fleet_host.py)
+    from adk.commands.fleet_host import register_parser as _register_fleet_host
+    _register_fleet_host(sub)
+
     # adk wm — world model management (status, inspect, train, reset)
     wm_p = sub.add_parser("wm", help="World model management (status, inspect, train, reset)")
     wm_sub = wm_p.add_subparsers(dest="wm_command")
@@ -16585,6 +16589,9 @@ def main():
     elif args.command == "solve":
         from adk.commands.solve import cmd_solve
         sys.exit(cmd_solve(args))
+    elif args.command == "fleet-host":
+        from adk.commands.fleet_host import cmd_fleet_host
+        sys.exit(cmd_fleet_host(args))
     elif args.command == "wm":
         wm_cmd = getattr(args, "wm_command", None)
         if wm_cmd == "status":
