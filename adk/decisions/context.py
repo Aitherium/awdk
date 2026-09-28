@@ -356,7 +356,7 @@ def harvest_fleet(card: DecisionCard) -> ContextSource:
         ["docker", "ps", "--format", "{{.Names}}\x1f{{.Status}}"], timeout=5)
     if code != 0:
         code, out = _run([
-            "wsl", "-d", "Debian", "-u", "root", "--",
+            "wsl", "-d", os.environ.get("AITHER_FLEET_DISTRO", "awnix"), "-u", "root", "--",
             "podman", "ps", "--format", "{{.Names}}\x1f{{.Status}}",
         ], timeout=10)
     if code != 0:

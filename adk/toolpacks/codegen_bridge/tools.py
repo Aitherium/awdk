@@ -29,6 +29,7 @@ Design rules (same doctrine as llm_serving / node_bootstrap):
     sweet spot, not pushed higher).
 """
 from __future__ import annotations
+import os
 
 import hashlib
 import json
@@ -39,6 +40,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+_FLEET_DISTRO = os.environ.get("AITHER_FLEET_DISTRO", "awnix")  # lib/core/fleet_distro.py
 
 logger = logging.getLogger("codegen_bridge_pack")
 
@@ -659,7 +661,7 @@ def _wsl(cmd: str, timeout: int = 60) -> tuple[int, str]:
     """
     try:
         p = subprocess.run(
-            ["wsl", "-d", "Debian", "-u", "root", "bash", "-c", cmd],
+            ["wsl", "-d", _FLEET_DISTRO, "-u", "root", "bash", "-c", cmd],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, check=False,
         )

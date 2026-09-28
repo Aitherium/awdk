@@ -28,7 +28,7 @@ def test_command_and_history_requests():
 
 
 def test_fallback_argv_maps_owner_verbs_to_the_distro_script_and_never_for_panel():
-    cmd = "wsl -d Debian -u root python3 /srv/quiesce.py"
+    cmd = "wsl -d awnix -u root python3 /srv/quiesce.py"
     assert db.build_fallback_argv("down", cmd)[-3:] == ["quiesce", "--all", "--json"]
     assert db.build_fallback_argv("up", cmd)[-2:] == ["resume", "--json"]
     assert db.build_fallback_argv("gaming", cmd)[-3:] == ["quiesce", "--deep", "--json"]

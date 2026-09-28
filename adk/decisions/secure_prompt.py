@@ -187,7 +187,7 @@ def _session_bearer() -> str:
 #: the write has to happen inside a container that already holds the vault
 #: credential — which also means the credential never materialises in a shell
 #: variable on the host. Example:
-#:   AITHER_SECRETS_EXEC=wsl -d Debian -u root podman exec -i
+#:   AITHER_SECRETS_EXEC=wsl -d awnix -u root podman exec -i
 #:                       aitheros-security-core python3 /app/write.py {name}
 SECRETS_EXEC_ENV = "AITHER_SECRETS_EXEC"
 

@@ -4868,102 +4868,155 @@ def listen_to_video(session_id, voice, output_json):
 
 
 # ---------------------------------------------------------------------------
-# aither docker — Docker Desktop recovery (WSL2 500-error hang)
+# aither docker — fleet-host recovery (the group keeps its old name for callers)
 # ---------------------------------------------------------------------------
 
 @cli.group()
 def docker():
-    """Docker Desktop management and recovery."""
+    """Fleet-host recovery (podman under systemd in the fleet distro)."""
     pass
 
 
-def _docker_healthy() -> bool:
-    """Check if Docker engine responds without 500 errors."""
+#: The Windows scheduled task that re-attaches the fleet's data disk
+#: (`wsl --mount --vhd ... --bare`) and holds the fleet distro up. Registered by the
+#: awnix cutover (awnix-migration.yaml data.persist_task_name).
+FLEET_ATTACH_TASK = "AitherOS-AttachFleetData"
+#: `systemctl is-system-running` answers that mean the fleet host is UP. `degraded`
+#: is the fleet's normal state (some unit is always failed); `starting` is a boot in
+#: progress, which a recovery must never interrupt.
+_FLEET_UP_STATES = ("running", "degraded")
+_FLEET_BUSY_STATES = ("starting", "initializing")
+
+
+def _fleet_attach_task() -> str:
+    import os as _os
+    return (_os.environ.get("AITHER_FLEET_ATTACH_TASK") or FLEET_ATTACH_TASK).strip()
+
+
+def _fleet_host_is_wsl() -> bool:
+    """True on Windows, where the fleet host is a WSL distro reached through wsl.exe.
+
+    On native Linux (an awnix install) the fleet host IS this machine; on macOS there
+    is no local fleet host at all. Neither has wsl.exe or schtasks.
+    """
+    import sys as _sys
+    return _sys.platform == "win32"
+
+
+def fleet_probe_argv() -> list:
+    """argv that asks the fleet host whether systemd is up (through the resolver)."""
+    if not _fleet_host_is_wsl():
+        return ["systemctl", "is-system-running"]
+    from adk.fleet_distro import wsl_argv
+    return wsl_argv("systemctl", "is-system-running")
+
+
+def fleet_recover_plan() -> list:
+    """The recovery, as argv steps. Pure, so it is tested without touching WSL.
+
+    NEVER `wsl --shutdown`, and never a taskkill of vmmem / wslservice: every WSL
+    distro shares one utility VM, so either one kills the WHOLE fleet and detaches
+    its data disk (`wsl --mount` does not survive a VM cycle), and the fleet then
+    boots with empty data dirs. The targeted shape is: terminate the fleet distro
+    only, re-run the attach task (idempotent: it re-mounts the data disk and holds
+    the distro up), then probe systemd through the resolver.
+    """
+    from adk.fleet_distro import fleet_distro
+    d = fleet_distro()
+    return [
+        ["wsl", "--terminate", d],
+        ["schtasks", "/run", "/tn", _fleet_attach_task()],
+        fleet_probe_argv(),
+    ]
+
+
+def _fleet_state(timeout: int = 45) -> str:
+    """`systemctl is-system-running` in the fleet host, or 'unreachable'."""
     import subprocess as _sp
     try:
-        r = _sp.run(["docker", "info"], capture_output=True, timeout=10)
-        return r.returncode == 0 and b"500 Internal Server Error" not in r.stderr
+        r = _sp.run(fleet_probe_argv(), capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        # No wsl.exe / systemctl on this machine: there is no local fleet host to judge.
+        return "absent"
     except Exception:
-        return False
+        return "unreachable"
+    # wsl.exe can print its own failures as UTF-16; strip NULs before reading.
+    out = (r.stdout or b"").replace(b"\x00", b"").decode("utf-8", "replace").strip()
+    return out.splitlines()[-1].strip() if out else "unreachable"
+
+
+def fleet_state_is_up(state: str) -> bool:
+    """True for a fleet host that must be left alone (up, or mid-boot)."""
+    return state in _FLEET_UP_STATES or state in _FLEET_BUSY_STATES
+
+
+def _docker_healthy() -> bool:
+    """Is the fleet host up? (The name is kept for the command-center callers.)
+
+    The fleet is podman quadlets under systemd in the fleet distro, not Docker
+    Desktop; `docker info` failing says nothing about it, and treating that as
+    "down" made `aither docker watch` a loop that shut the fleet down every 30 s.
+    """
+    state = _fleet_state()
+    # "absent" = no local fleet host (macOS, a laptop without WSL): not a wedge, and
+    # reading it as DOWN would make the watchtower auto-recover every tick.
+    return state == "absent" or fleet_state_is_up(state)
 
 
 def _docker_recover(verbose: bool = False) -> bool:
-    """Kill Docker Desktop + WSL, restart cleanly. Returns True on success."""
+    """Targeted fleet-host recovery. Returns True when systemd answers again."""
     import subprocess as _sp
     import time
 
-    def _run(cmd: str):
+    if not _fleet_host_is_wsl():
+        # Native Linux: the fleet host is this machine; "recover" would mean
+        # restarting it, which is not this command's call. macOS: no fleet host.
+        click.echo(click.style("Fleet-host recovery is the Windows/WSL path. On a native "
+                               "awnix host use `systemctl --failed` and restart the unit; "
+                               "nothing was changed.", fg="yellow"))
+        return False
+
+    terminate, attach, _probe = fleet_recover_plan()
+
+    def _run(argv: list):
         if verbose:
-            click.echo(f"  $ {cmd}")
-        _sp.run(cmd, shell=True, capture_output=not verbose, timeout=30)
+            click.echo("  $ " + " ".join(argv))
+        try:
+            _sp.run(argv, capture_output=not verbose, timeout=60)
+        except Exception as exc:  # a hung wsl.exe must not hang the recovery
+            click.echo(click.style(f"  ({argv[0]} did not return: {exc})", fg="yellow"))
 
-    click.echo(click.style("[1/5] Killing Docker Desktop...", fg="yellow"))
-    for proc in ("Docker Desktop", "com.docker.backend", "com.docker.build",
-                 "docker-agent", "docker-sandbox"):
-        _run(f'taskkill /F /IM "{proc}.exe" 2>NUL')
-    time.sleep(2)
-
-    click.echo(click.style("[2/5] Shutting down WSL...", fg="yellow"))
-    _run("wsl --shutdown")
+    click.echo(click.style(f"[1/3] Terminating the fleet distro only ({terminate[-1]})...",
+                           fg="yellow"))
+    _run(terminate)
     time.sleep(3)
 
-    click.echo(click.style("[3/5] Cleaning up zombie processes...", fg="yellow"))
-    _run("taskkill /F /IM vmmem 2>NUL")
-    _run("taskkill /F /IM wslservice.exe 2>NUL")
-    time.sleep(2)
+    click.echo(click.style(f"[2/3] Re-attaching fleet data ({attach[-1]})...", fg="yellow"))
+    _run(attach)
 
-    click.echo(click.style("[4/5] Restarting Docker service...", fg="yellow"))
-    # Try admin service restart — will silently fail if not elevated
-    _run('net stop com.docker.service 2>NUL & net start com.docker.service 2>NUL')
-    time.sleep(2)
-
-    click.echo(click.style("[5/5] Starting Docker Desktop...", fg="yellow"))
-    docker_exe = r"C:\Program Files\Docker\Docker\Docker Desktop.exe"
-    _sp.Popen([docker_exe], creationflags=0x00000008)  # DETACHED_PROCESS
-
-    click.echo("Waiting for Docker engine...")
-    for elapsed in range(5, 95, 5):
-        time.sleep(5)
-        if _docker_healthy():
-            click.echo(click.style(f"Docker recovered in {elapsed}s!", fg="green"))
-            # Clean up dead containers
-            dead = _sp.run(
-                ["docker", "ps", "-a", "--filter", "status=dead", "--format", "{{.Names}}"],
-                capture_output=True, text=True, timeout=10,
-            )
-            for name in dead.stdout.strip().splitlines():
-                if name:
-                    click.echo(f"  Removing dead container: {name}")
-                    _run(f"docker rm -f {name}")
-            # Restart exited containers
-            exited = _sp.run(
-                ["docker", "ps", "-a", "--filter", "status=exited", "--format", "{{.Names}}"],
-                capture_output=True, text=True, timeout=10,
-            )
-            for name in exited.stdout.strip().splitlines():
-                if name:
-                    click.echo(f"  Restarting: {name}")
-                    _run(f"docker start {name}")
+    click.echo(click.style("[3/3] Waiting for systemd in the fleet host...", fg="yellow"))
+    state = "unreachable"
+    for elapsed in range(10, 190, 10):
+        time.sleep(10)
+        state = _fleet_state()
+        if state in _FLEET_UP_STATES:
+            click.echo(click.style(f"Fleet host {state} after {elapsed}s.", fg="green"))
             return True
         if verbose:
-            click.echo(f"  ... {elapsed}s")
+            click.echo(f"  ... {elapsed}s ({state})")
 
-    click.echo(click.style("Recovery FAILED after 90s. You may need to reboot.", fg="red"))
+    click.echo(click.style(f"Fleet host still '{state}' after 180s. Not escalating to a "
+                           "global WSL shutdown: see AitherOS-WSL-Wedge-Recovery.", fg="red"))
     return False
 
 
 @docker.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show commands being run")
 def recover(verbose):
-    """Recover Docker Desktop from WSL2 500-error hang (no reboot needed)."""
-    if _docker_healthy():
-        click.echo(click.style("Docker engine is healthy. Nothing to do.", fg="green"))
-        import subprocess as _sp
-        r = _sp.run(
-            ["docker", "ps", "--format", "table {{.Names}}\t{{.Status}}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        click.echo(r.stdout[:2000])
+    """Recover the fleet host (terminate + re-attach + probe; never wsl --shutdown)."""
+    state = _fleet_state()
+    if fleet_state_is_up(state):
+        click.echo(click.style(f"Fleet host is {state}. Nothing to do.", fg="green"))
         return
     ok = _docker_recover(verbose=verbose)
     raise SystemExit(0 if ok else 1)
@@ -4980,7 +5033,7 @@ def watch(interval, verbose):
         while True:
             if not _docker_healthy():
                 ts = time.strftime("%H:%M:%S")
-                click.echo(f"\n[{ts}] Docker is DOWN — recovering...")
+                click.echo(f"\n[{ts}] Fleet host is DOWN — recovering...")
                 _docker_recover(verbose=verbose)
             time.sleep(interval)
     except KeyboardInterrupt:
