@@ -542,7 +542,7 @@ async def finish_device_login(
         "expires_at": creds.expires_at,
         "user": user,
     }
-    (store or AuthStore()).set_profile(profile_name, profile)
+    _persist(store, profile_name, profile)
     return creds
 
 
@@ -622,7 +622,7 @@ async def autonomous_agent_login(
         expires_at=body.get("expires_at", ""),
     )
     creds.user = body.get("user", {})
-    (store or AuthStore()).set_profile(profile_name, {
+    _persist(store, profile_name, {
         "endpoint": base,
         "token_type": creds.token_type,
         "access_token": creds.access_token,
@@ -632,6 +632,31 @@ async def autonomous_agent_login(
         "user": creds.user,
     })
     return creds
+
+
+def _persist(store: AuthStore | None, profile_name: str, profile: dict[str, Any]) -> None:
+    """Persist a device-flow sign-in.
+
+    The default store goes through :func:`adk.credentials.save_login` (profile
+    keyed by issuer host + the session-bearer file) so every login on a machine
+    is the same login. An explicitly injected store keeps the old named-profile
+    behaviour for callers that manage their own file.
+    """
+    if store is not None:
+        store.set_profile(profile_name, profile)
+        return
+    from adk.credentials import save_login
+
+    extra = {k: v for k, v in profile.items()
+             if k not in ("access_token", "expires_at", "user")}
+    save_login(
+        str(profile.get("endpoint") or ""),
+        str(profile["access_token"]),
+        profile.get("expires_at", ""),
+        str(profile.get("token_type") or "session"),
+        profile.get("user") or {},
+        extra=extra,
+    )
 
 
 # ---------------------------------------------------------------------------

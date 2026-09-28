@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import adk.auth as auth
+import adk.credentials as credentials
 import pytest
 from adk.sync import settings
 
@@ -26,6 +27,8 @@ def signed_in(tmp_path, monkeypatch):
         "profiles": {"cloud": {"access_token": "login-session-token"}},
     }), encoding="utf-8")
     monkeypatch.setattr(auth, "AUTH_FILE", path)
+    monkeypatch.setattr(credentials, "AUTH_FILE", path)
+    monkeypatch.setattr(credentials, "BEARER_FILE", tmp_path / "session-bearer")
     return path
 
 
@@ -40,12 +43,16 @@ def test_explicit_sync_override_beats_login(signed_in, monkeypatch):
     assert settings._resolve_token() == "override"
 
 
-def test_api_key_is_the_headless_fallback(tmp_path, monkeypatch):
+def test_api_key_is_never_the_user_bearer(tmp_path, monkeypatch):
+    # One login per machine: a gateway key identifies no person, so a signed-out
+    # machine resolves "" and says "run adk login" instead of syncing as nobody.
     for env in ENVS:
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setattr(auth, "AUTH_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(credentials, "AUTH_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(credentials, "BEARER_FILE", tmp_path / "missing-bearer")
     monkeypatch.setenv("AITHERIUM_API_KEY", "gateway-api-key")
-    assert settings._resolve_token() == "gateway-api-key"
+    assert settings._resolve_token() == ""
 
 
 def test_local_root_placeholder_is_not_a_credential(signed_in, monkeypatch):

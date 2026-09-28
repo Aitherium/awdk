@@ -2139,13 +2139,23 @@ def _persist_shell_auth(identity_url: str, eps: dict | None, result: dict) -> bo
     REPL unauthenticated. Best-effort: never fails the login.
     """
     try:
-        from adk.shell.auth import AuthStore, build_profile_from_response
+        from adk.credentials import save_login
+        from adk.shell.auth import build_profile_from_response
     except Exception:
         return False
     genesis_url = (eps or {}).get("api_url") or identity_url
     try:
         profile = build_profile_from_response(identity_url, genesis_url, result)
-        AuthStore.set_profile("cloud" if eps else "default", profile)
+        # One login per machine: the profile is keyed by the issuer host and the
+        # same token lands in ~/.aither/session-bearer (adk.credentials).
+        save_login(
+            identity_url,
+            profile["access_token"],
+            profile.get("expires_at", ""),
+            str(profile.get("token_type") or "session"),
+            profile.get("user") or {},
+            extra={"genesis_url": genesis_url, "endpoint": identity_url},
+        )
         return True
     except Exception:
         return False
@@ -2732,17 +2742,13 @@ def cmd_logout(args) -> int:
         print("  No config found — already logged out.")
 
     # Also clear auth.json active profile if it exists
-    auth_path = Path.home() / ".aither" / "auth.json"
-    if auth_path.exists():
-        try:
-            import json as _json
-            auth = _json.loads(auth_path.read_text())
-            if isinstance(auth, dict):
-                auth["active_profile"] = ""
-                auth_path.write_text(_json.dumps(auth, indent=2))
-                print("  Cleared active profile in ~/.aither/auth.json")
-        except Exception:
-            pass
+    try:
+        from adk.credentials import clear_active_profile
+
+        if clear_active_profile():
+            print("  Cleared active profile in ~/.aither/auth.json")
+    except Exception:  # noqa: BLE001 — logout of a missing/corrupt store is a no-op
+        pass
     return 0
 
 

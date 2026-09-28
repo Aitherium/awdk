@@ -728,20 +728,19 @@ def login(portal_url, browser, email, password, tenant, workspace, explicit_toke
         pass  # Windows w/o ACL support — best effort
     result["token_saved"] = True
 
-    # Also update auth.json so mcp_setup.py / resolve_auth() can find the token
-    auth_json_path = aither_dir / "auth.json"
+    # Also record the login in auth.json + session-bearer so mcp_setup.py /
+    # resolve_auth() and every other tool find the SAME login. It goes through
+    # adk.credentials: keyed by the issuer host, never the reserved 'local'
+    # root profile (which this used to overwrite).
     try:
-        if auth_json_path.is_file():
-            auth_data = json.loads(auth_json_path.read_text(encoding="utf-8"))
-        else:
-            auth_data = {"version": 1, "active_profile": "local", "profiles": {}}
-        auth_data["profiles"]["local"] = {
-            "endpoint": portal_url,
-            "genesis_url": portal_url.replace("api.aitherium.com", "localhost:8001"),
-            "token_type": "portal",
-            "access_token": token,
-            "expires_at": "",
-            "user": {
+        from adk.credentials import save_login
+
+        save_login(
+            portal_url,
+            token,
+            "",
+            "session",
+            {
                 "id": result.get("user", ""),
                 "username": result.get("user", ""),
                 "display_name": result.get("user", ""),
@@ -749,9 +748,11 @@ def login(portal_url, browser, email, password, tenant, workspace, explicit_toke
                 "roles": ["admin"] if "admin" in str(result) else ["user"],
                 "tenant_id": tenant or "",
                 "tenant_slug": tenant or "",
-            }
-        }
-        auth_json_path.write_text(json.dumps(auth_data, indent=2) + "\n", encoding="utf-8")
+            },
+            extra={"genesis_url": portal_url.replace("api.aitherium.com", "localhost:8001")},
+            auth_path=aither_dir / "auth.json",
+            bearer_path=aither_dir / "session-bearer",
+        )
     except Exception:
         pass  # Best effort — portal.token is the primary store
 
@@ -2496,17 +2497,17 @@ def setup(mode, ide, project_dir, bake_token):
                         aither_dir = Path(os.environ.get("AITHER_HOME", str(Path.home() / ".aither")))
                         aither_dir.mkdir(parents=True, exist_ok=True)
                         (aither_dir / "portal.token").write_text(token + "\n", encoding="utf-8")
-                        auth_json_path = aither_dir / "auth.json"
                         try:
-                            auth_data = json.loads(auth_json_path.read_text(encoding="utf-8")) if auth_json_path.is_file() else {"version": 1, "active_profile": "local", "profiles": {}}
+                            from adk.credentials import save_login
+
                             user = token_result.get("user", {})
-                            auth_data["profiles"]["local"] = {
-                                "endpoint": identity_url,
-                                "token_type": "portal",
-                                "access_token": token,
-                                "user": user if isinstance(user, dict) else {"id": str(user)},
-                            }
-                            auth_json_path.write_text(json.dumps(auth_data, indent=2) + "\n", encoding="utf-8")
+                            save_login(
+                                identity_url, token, token_result.get("expires_at", ""),
+                                "session",
+                                user if isinstance(user, dict) else {"id": str(user)},
+                                auth_path=aither_dir / "auth.json",
+                                bearer_path=aither_dir / "session-bearer",
+                            )
                         except Exception:
                             pass
                         click.echo("  Auth: logged in successfully")
