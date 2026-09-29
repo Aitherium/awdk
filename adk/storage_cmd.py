@@ -16,7 +16,8 @@ import sys
 
 #: Verbs that arrived after awstorage 0.1.0, and the version that ships them.
 _NEEDS = {"sweep": "0.2.0", "audit": "0.2.0", "harvest": "0.2.0",
-          "files": "0.3.0", "whoami": "0.3.0", "manage": "0.3.0"}
+          "files": "0.3.0", "whoami": "0.3.0", "manage": "0.3.0",
+          "relocate": "0.5.0"}
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
