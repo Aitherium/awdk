@@ -1,10 +1,21 @@
 """ADK test fixtures — ensure tests run in env isolation."""
 
 import os
+import tempfile
 
 import pytest
 
-from adk.config import load_saved_config as _real_load_saved_config
+# `import adk` autoinstalls the air-gap egress guard when ANY air_gap.yaml exists
+# (~/.aither/air_gap.yaml is written by `adk home trust init`). On a host that ran
+# it, the guard latched the HOST's config before a single fixture ran, and 5
+# air-gap / home-serve tests failed on that machine only (measured 2026-09-30).
+# Point the primary layer at a path that does not exist, BEFORE adk is imported;
+# a test that wants a config sets AITHER_AIR_GAP_CONFIG / AITHER_DATA_DIR itself.
+if not (os.environ.get("AITHER_AIR_GAP_CONFIG") or os.environ.get("AITHER_AIR_GAP")):
+    os.environ["AITHER_AIR_GAP_CONFIG"] = os.path.join(
+        tempfile.mkdtemp(prefix="adk-test-airgap-"), "air_gap.yaml")
+
+from adk.config import load_saved_config as _real_load_saved_config  # noqa: E402
 
 # Env vars that ADK classes auto-read from the environment.
 # Tests must not inherit these from the developer's shell — OR from another test
@@ -90,6 +101,12 @@ def _isolate_env(monkeypatch, tmp_path):
         pass
 
     monkeypatch.setenv("AITHER_TENANT_SLUG", "aitherium")
+
+    # `adk home serve` setdefaults AITHER_A2A_REQUIRE_TRUST=true in-process. A bare
+    # delenv of an unset var records nothing to undo, so set-then-delete: the value
+    # a serve test leaves behind is removed at teardown, not leaked into A2A tests.
+    monkeypatch.setenv("AITHER_A2A_REQUIRE_TRUST", "")
+    monkeypatch.delenv("AITHER_A2A_REQUIRE_TRUST")
     try:
         from adk.licensing import reset_license_manager
         reset_license_manager()

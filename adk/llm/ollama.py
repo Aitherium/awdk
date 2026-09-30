@@ -14,6 +14,7 @@ from .base import (
     StreamChunk,
     ToolCall,
     _timer,
+    has_text_tool_call,
     messages_to_dicts,
 )
 
@@ -117,8 +118,9 @@ class OllamaProvider(LLMProvider):
         content = msg.get("content", "")
 
         # Hermes XML fallback: if model emitted <tool_call> tags in content
-        # but no structured tool_calls, parse them from text
-        if not tool_calls and content and "<tool_call>" in content:
+        # but no structured tool_calls, parse them from text (a closing tag
+        # alone counts: small models lose the opener, see base.py)
+        if not tool_calls and has_text_tool_call(content):
             from .base import extract_tool_calls_from_text
             fallback_calls, content = extract_tool_calls_from_text(content)
             if fallback_calls:

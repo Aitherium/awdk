@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**119 commands.**
+**123 commands.**
 
 | command | what it does |
 |---|---|
@@ -62,9 +62,11 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk eval`](#adk-eval) | Evaluate MCP tools and packs on a connected gateway |
 | [`adk explore`](#adk-explore) | Browse packs, agents, and skills in the Aitherium marketplace |
 | [`adk fleet`](#adk-fleet) | Create & manage a fleet of agents (local \| managed \| hosted \| cloud-run) |
+| [`adk fleet-host`](#adk-fleet-host) | awnix fleet host (WSL2): status, start/stop/restart, reattach data, migrate (dry-run default) |
 | [`adk forge`](#adk-forge) | Dispatch tasks to agent forge (Genesis) |
 | [`adk gateway`](#adk-gateway) | Run agent across messaging platforms |
 | [`adk gobbonet`](#adk-gobbonet) | Run GobboNet with keyless web search (clones the UI if needed) |
+| [`adk gpu`](#adk-gpu) | the 5090: status \| sleep (game on) \| wake (game off) -- fleet_verbs.py, dry-run default |
 | [`adk graph`](#adk-graph) | Provenance graph management (status, drain, claim, ground, context, leaves, lineage, runs, show, purge) |
 | [`adk grid`](#adk-grid) | Manage grid distributed nodes (add, remove, list, test, sync) |
 | [`adk harness`](#adk-harness) | AitherShell — drive Claude Code, other coding harnesses, agents and real terminals |
@@ -87,10 +89,12 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk listen`](#adk-listen) | Real-time audio intelligence — audiobook, meeting, voice notes |
 | [`adk login`](#adk-login) | Authenticate with Aitherium (browser device flow) |
 | [`adk logout`](#adk-logout) | Clear saved auth tokens |
+| [`adk lookout`](#adk-lookout) | Watch Slack, Linear triage or event streams; step in when help is wanted |
 | [`adk mail`](#adk-mail) | Sovereign mail: one-command Proton Bridge setup |
 | [`adk mcp`](#adk-mcp) | MCP server, IDE setup, and cloud gateway connection |
 | [`adk memory`](#adk-memory) | Tenant memory on the platform: remember, recall |
 | [`adk mesh`](#adk-mesh) | AitherMesh overlay operations (onboard, list peers) |
+| [`adk mobile`](#adk-mobile) | Test Android/iOS apps end to end (Maestro) and keep screenshots as proof |
 | [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
 | [`adk notebook`](#adk-notebook) | Plan, run, and inspect Agent Notebooks (.anb) on Genesis |
 | [`adk onboard`](#adk-onboard) | Interactive onboarding — detect, configure, integrate |
@@ -99,7 +103,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk pair`](#adk-pair) | Pair this machine with the portal as an inference node (6-char code from the portal) |
 | [`adk patterns`](#adk-patterns) | Prompt patterns: list, show, run, import |
 | [`adk platform`](#adk-platform) | Internal platform toolkit (merged from aither-platform) |
-| [`adk publish`](#adk-publish) | Publish agent to Elysium marketplace |
+| [`adk publish`](#adk-publish) | Publish agent to the Aitherium marketplace |
 | [`adk publish-preflight`](#adk-publish-preflight) | Check a package can actually be published: an interpreter that meets requires-python, and a wheel that installs AND imports |
 | [`adk quickstart`](#adk-quickstart) | Sign in, enrol this device and show it in your fleet (--cloud: BYOK provider keys) |
 | [`adk quickstart-local`](#adk-quickstart-local) | Local inference quickstart (no cloud required) |
@@ -582,12 +586,28 @@ Create & manage a fleet of agents (local | managed | hosted | cloud-run)
 
 **Subcommands**
 
+- `adk fleet sleep` — machine fleet sleep (fleet_verbs.py; dry-run default)
+- `adk fleet wake` — machine fleet wake (fleet_verbs.py; dry-run default)
+- `adk fleet critical` — machine fleet critical (fleet_verbs.py; dry-run default)
 - `adk fleet create` — Create an agent in a runtime
 - `adk fleet list` — List fleet members
 - `adk fleet status` — Refresh & show one member's status
 - `adk fleet rm` — Remove a member (teardown + drop record)
 - `adk fleet connect-local` — Register this machine's local agent MCP endpoint with the gateway (bidirectional)
 - `adk fleet apply-pack` — Push+enable a bundled pack on a mesh agent (no SSH; 'self' = this node)
+
+## `adk fleet-host`
+
+awnix fleet host (WSL2): status, start/stop/restart, reattach data, migrate (dry-run default)
+
+**Subcommands**
+
+- `adk fleet-host status` — fleet host status
+- `adk fleet-host start` — fleet host start
+- `adk fleet-host stop` — fleet host stop
+- `adk fleet-host restart` — fleet host restart
+- `adk fleet-host reattach` — fleet host reattach
+- `adk fleet-host migrate` — fleet host migrate
 
 ## `adk forge`
 
@@ -627,6 +647,16 @@ Run GobboNet with keyless web search (clones the UI if needed)
 | `--setup-model` | str |  | `false` | install llama.cpp + a model sized to this machine |
 | `--backend` | str |  |  | pin an OpenAI-compatible server (e.g. http://127.0.0.1:8000) |
 | `--plain` | str |  | `false` | passthrough chat instead of the adk agent loop |
+
+## `adk gpu`
+
+the 5090: status | sleep (game on) | wake (game off) -- fleet_verbs.py, dry-run default
+
+**Subcommands**
+
+- `adk gpu status` — gpu status
+- `adk gpu sleep` — gpu sleep
+- `adk gpu wake` — gpu wake
 
 ## `adk graph`
 
@@ -681,6 +711,7 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 - `adk harness tell` — Say something to ONE named session (nick, session id or prefix)
 - `adk harness wrap` — Terminal-resident daemon session (bridge stdin/stdout to daemon)
 - `adk harness mod` — The Claude Code mod: run any harness as a native Claude Code subagent
+- `adk harness pair` — Pair the awconnect browser extension: approve a code, list, revoke
 
 | option | type | required | default | description |
 |---|---|---|---|---|
@@ -701,6 +732,12 @@ Agent Home: host your own agent, pick its model and harness, and let it join gam
 - `adk home signin` — Sign in with Aitherium -- what you bought unlocks here (device code, no license to paste)
 - `adk home license` — Offline activation: install a license (file or text)
 - `adk home chat` — Send one message to your agent
+- `adk home serve` — Answer YOUR relay DMs with your agent (owner only; token from $AITHER_RELAY_TOKEN or `adk relay provision`)
+- `adk home say` — Send one message to the RUNNING `adk home serve` over the local channel (no second agent)
+- `adk home events` — Stream what the running serve sends you locally (replies, follow-ups)
+- `adk home channels` — Each channel: available, configured, bound owner (masked), preferred
+- `adk home receipts` — The signed log of what the agent did
+- `adk home trust` — Trust profile: egress guard, approvals, receipts
 - `adk home join` — Join a game: observe, act, chat, learn
 - `adk home enroll` — World-model enrollment of a game room (pack)
 
@@ -921,6 +958,14 @@ Authenticate with Aitherium (browser device flow)
 
 Clear saved auth tokens
 
+## `adk lookout`
+
+Watch Slack, Linear triage or event streams; step in when help is wanted
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<lookout_args>` | str |  |  | run \| judge \| ledger |
+
 ## `adk mail`
 
 Sovereign mail: one-command Proton Bridge setup
@@ -965,6 +1010,14 @@ AitherMesh overlay operations (onboard, list peers)
 - `adk mesh flux-node` — Start a Flux event-plane listener on this node (participates in AitherMesh)
 - `adk mesh create` — Create your OWN isolated mesh (per-tenant overlay CIDR + Headscale key + registry)
 - `adk mesh link` — Link your mesh with another (both owners consent -> shared inference pool)
+
+## `adk mobile`
+
+Test Android/iOS apps end to end (Maestro) and keep screenshots as proof
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<mobile_args>` | str |  |  | devices \| shot \| test FLOW |
 
 ## `adk new`
 
@@ -1065,7 +1118,7 @@ Internal platform toolkit (merged from aither-platform)
 
 ## `adk publish`
 
-Publish agent to Elysium marketplace
+Publish agent to the Aitherium marketplace
 
 | option | type | required | default | description |
 |---|---|---|---|---|

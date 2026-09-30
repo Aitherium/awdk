@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger("adk.channels")
 
@@ -36,15 +36,25 @@ def _strip_think(text: str) -> str:
 class ChannelAdapter(ABC):
     """Base class for messaging platform adapters."""
 
-    def __init__(self, token: str, on_message: MessageHandler | None = None) -> None:
+    def __init__(
+        self,
+        token: str,
+        on_message: MessageHandler | None = None,
+        *,
+        licensed: bool = False,
+    ) -> None:
         # GATED: deploying agents to messaging platforms (Discord/Telegram/
         # Slack/Webhook) is a paid-tier capability. Raises LicenseError unless
         # entitled (or enforcement disabled / tier INTERNAL).
-        try:
-            from adk.licensing import get_license_manager
-            get_license_manager().require("channels", friendly="Channel adapters")
-        except ImportError:
-            pass
+        # ``licensed=True`` means the CALLER already enforced a narrower
+        # entitlement for this use (Agent Home's owner-only DM transports,
+        # adk.home.transports.chat); it is not a way to skip the check.
+        if not licensed:
+            try:
+                from adk.licensing import get_license_manager
+                get_license_manager().require("channels", friendly="Channel adapters")
+            except ImportError:
+                logger.debug("adk.licensing unavailable -- channel licence check skipped")
 
         self.token = token
         self.on_message = on_message
@@ -103,8 +113,10 @@ class ChannelAdapter(ABC):
 class TelegramAdapter(ChannelAdapter):
     """Adapter for Telegram using *python-telegram-bot* (>=20)."""
 
-    def __init__(self, token: str, on_message: MessageHandler | None = None) -> None:
-        super().__init__(token, on_message)
+    def __init__(
+        self, token: str, on_message: MessageHandler | None = None, *, licensed: bool = False
+    ) -> None:
+        super().__init__(token, on_message, licensed=licensed)
         self._app: Any = None
 
     @property
@@ -174,8 +186,10 @@ class TelegramAdapter(ChannelAdapter):
 class DiscordAdapter(ChannelAdapter):
     """Adapter for Discord using *discord.py* (>=2)."""
 
-    def __init__(self, token: str, on_message: MessageHandler | None = None) -> None:
-        super().__init__(token, on_message)
+    def __init__(
+        self, token: str, on_message: MessageHandler | None = None, *, licensed: bool = False
+    ) -> None:
+        super().__init__(token, on_message, licensed=licensed)
         self._client: Any = None
         self._task: asyncio.Task[None] | None = None
 
@@ -261,8 +275,9 @@ class SlackAdapter(ChannelAdapter):
         on_message: MessageHandler | None = None,
         *,
         app_token: str = "",
+        licensed: bool = False,
     ) -> None:
-        super().__init__(token, on_message)
+        super().__init__(token, on_message, licensed=licensed)
         self.app_token = app_token
         self._bolt_app: Any = None
         self._handler: Any = None
@@ -336,8 +351,9 @@ class WebhookAdapter(ChannelAdapter):
         host: str = "0.0.0.0",
         port: int = 8090,
         path: str = "/webhook",
+        licensed: bool = False,
     ) -> None:
-        super().__init__(token, on_message)
+        super().__init__(token, on_message, licensed=licensed)
         self.host = host
         self.port = port
         self.path = path
@@ -369,11 +385,10 @@ class WebhookAdapter(ChannelAdapter):
 
         adapter = self
 
-        @app.post(self.path, response_model=Response)
         async def handle_webhook(
-            payload: Payload,
-            authorization: str | None = Header(default=None),
-        ) -> Response:
+            payload: "Payload",
+            authorization: "str | None" = Header(default=None),
+        ) -> "Response":
             # Simple bearer check
             if adapter.token:
                 expected = f"Bearer {adapter.token}"
@@ -383,6 +398,13 @@ class WebhookAdapter(ChannelAdapter):
                 payload.channel_id, payload.user_id, payload.text
             )
             return Response(response=reply or "")
+
+        # ``from __future__ import annotations`` makes these strings, and the models
+        # are local: resolve them here or FastAPI reads the body as a query param
+        # and every request 422s.
+        handle_webhook.__annotations__.update(
+            payload=Payload, authorization=Optional[str], **{"return": Response})
+        app.post(self.path, response_model=Response)(handle_webhook)
 
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="info")
         self._server = uvicorn.Server(config)

@@ -60,7 +60,13 @@ class _CompliancePDF(FPDF if FPDF_AVAILABLE else object):
         self.set_font("Helvetica", "B", 9)
         self.cell(55, 6, key)
         self.set_font("Helvetica", "", 9)
-        self.cell(0, 6, str(value), new_x="LMARGIN", new_y="NEXT")
+        text = _latin1(value)
+        if self.get_string_width(text) > self.w - self.r_margin - self.get_x():
+            # A signature or public key is wider than the page: wrap it instead of
+            # drawing past the margin, where it is clipped and cannot be re-typed.
+            self.multi_cell(0, 5, text, new_x="LMARGIN", new_y="NEXT")
+        else:
+            self.cell(0, 6, text, new_x="LMARGIN", new_y="NEXT")
 
     def table_header(self, cols: List[str], widths: List[int]):
         self.set_font("Helvetica", "B", 8)
@@ -72,8 +78,51 @@ class _CompliancePDF(FPDF if FPDF_AVAILABLE else object):
     def table_row(self, values: List[str], widths: List[int]):
         self.set_font("Helvetica", "", 8)
         for val, w in zip(values, widths):
-            self.cell(w, 5, str(val)[:50], border=1)
+            self.cell(w, 5, _latin1(val)[:50], border=1)
         self.ln()
+
+
+def _latin1(value: Any) -> str:
+    """The core PDF fonts are latin-1: replace what they cannot draw, never raise."""
+    return str(value).encode("latin-1", "replace").decode("latin-1")
+
+
+def _model_section(pdf: "_CompliancePDF", model: Dict[str, Any],
+                   license_info: Any) -> None:
+    pdf.section_title("Model and Data Boundary")
+    pdf.kv_row("Boundary:", str(model.get("boundary", "unknown")).upper())
+    pdf.kv_row("Why:", model.get("boundary_reason", ""))
+    pdf.kv_row("Provider:", f"{model.get('provider', '')} ({model.get('mode', '')})")
+    pdf.kv_row("Model:", model.get("model", "") or "(server default)")
+    pdf.kv_row("Endpoint:", model.get("base_url", "") or "(provider default)")
+    if isinstance(license_info, dict):
+        pdf.kv_row("License:", license_info.get("license", "unknown"))
+        pdf.kv_row("Commercial use:", "Yes" if license_info.get("commercial_ok") else "No")
+    else:
+        pdf.kv_row("License:", "not in the bundled model license registry")
+    pdf.ln(3)
+
+
+def _receipts_section(pdf: "_CompliancePDF", rcpt: Dict[str, Any]) -> None:
+    verify = rcpt.get("verify", {})
+    pdf.section_title("Signed Receipts (what the agent did)")
+    pdf.kv_row("Verify verdict:", f"{str(verify.get('verdict', '')).upper()} "
+                                  f"(exit {verify.get('code', '?')})")
+    pdf.kv_row("Reason:", verify.get("reason", ""))
+    pdf.kv_row("Rows (all / window):",
+               f"{rcpt.get('rows_total', 0)} / {rcpt.get('rows_in_window', 0)}")
+    pdf.kv_row("Refused in window:", str(rcpt.get("refused_in_window", 0)))
+    pdf.kv_row("Unsigned in window:", str(rcpt.get("unsigned_in_window", 0)))
+    kinds = rcpt.get("by_kind") or {}
+    if kinds:
+        pdf.kv_row("By kind:", ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())))
+    tools = rcpt.get("tools") or {}
+    if tools:
+        widths = [120, 50]
+        pdf.table_header(["Tool", "Calls in window"], widths)
+        for name, count in tools.items():
+            pdf.table_row([name, str(count)], widths)
+    pdf.ln(3)
 
 
 def generate_attestation_pdf(report: Dict[str, Any]) -> bytes:
@@ -97,6 +146,8 @@ def generate_attestation_pdf(report: Dict[str, Any]) -> bytes:
     pdf.kv_row("Window Start:", report.get("window_start", ""))
     pdf.kv_row("Window End:", report.get("window_end", ""))
     pdf.kv_row("Node ID:", report.get("node_id", ""))
+    if report.get("agent"):
+        pdf.kv_row("Agent:", report["agent"])
     pdf.ln(3)
 
     # Air-gap status
@@ -114,22 +165,36 @@ def generate_attestation_pdf(report: Dict[str, Any]) -> bytes:
         pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
 
-    # LLM call summary
-    llm = report.get("llm_summary", {})
-    pdf.section_title("LLM Inference Summary")
-    pdf.kv_row("Total Calls:", str(llm.get("total_calls", 0)))
-    pdf.kv_row("Local vLLM:", str(llm.get("local_vllm_calls", 0)))
-    pdf.kv_row("Local Ollama:", str(llm.get("local_ollama_calls", 0)))
-    pdf.kv_row("Cloud Calls:", str(llm.get("cloud_calls", 0)))
-    pdf.kv_row("Failed Calls:", str(llm.get("failed_calls", 0)))
-    models = llm.get("models_used", [])
-    if models:
-        pdf.kv_row("Models Used:", ", ".join(models))
-    pdf.ln(3)
+    # Model boundary (Agent Home reports; absent from agent attestations)
+    if isinstance(report.get("model"), dict):
+        _model_section(pdf, report["model"], report.get("model_license"))
+
+    # LLM call summary -- only when a call log was counted. A report built without
+    # one must not print "Total Calls: 0", which reads as a measured zero.
+    llm = report.get("llm_summary")
+    if isinstance(llm, dict):
+        pdf.section_title("LLM Inference Summary")
+        pdf.kv_row("Total Calls:", str(llm.get("total_calls", 0)))
+        pdf.kv_row("Local vLLM:", str(llm.get("local_vllm_calls", 0)))
+        pdf.kv_row("Local Ollama:", str(llm.get("local_ollama_calls", 0)))
+        pdf.kv_row("Cloud Calls:", str(llm.get("cloud_calls", 0)))
+        pdf.kv_row("Failed Calls:", str(llm.get("failed_calls", 0)))
+        models = llm.get("models_used", [])
+        if models:
+            pdf.kv_row("Models Used:", ", ".join(models))
+        pdf.ln(3)
+
+    if isinstance(report.get("receipts"), dict):
+        _receipts_section(pdf, report["receipts"])
 
     # Violations
     violations = report.get("violations", [])
-    pdf.section_title(f"Air-Gap Violations ({len(violations)})")
+    if "egress_events_total" in report:
+        total = int(report.get("egress_events_total") or 0)
+        shown = f"; first {len(violations)} listed" if total > len(violations) else ""
+        pdf.section_title(f"Egress Outside Policy ({total}{shown})")
+    else:
+        pdf.section_title(f"Air-Gap Violations ({len(violations)})")
     if violations:
         widths = [35, 40, 65, 30]
         pdf.table_header(["Timestamp", "Subsystem", "Detail", "Action"], widths)
@@ -151,13 +216,19 @@ def generate_attestation_pdf(report: Dict[str, Any]) -> bytes:
     pdf.section_title("Report Integrity")
     pdf.kv_row("Content Hash:", integrity.get("content_hash", ""))
     pdf.kv_row("Signature:", integrity.get("signature", ""))
-    pdf.kv_row("Algorithm:", integrity.get("algorithm", "HMAC-SHA256"))
+    algorithm = integrity.get("algorithm", "HMAC-SHA256")
+    pdf.kv_row("Algorithm:", algorithm)
+    if integrity.get("key_id"):
+        pdf.kv_row("Key ID:", integrity.get("key_id", ""))
+        pdf.kv_row("Public Key:", integrity.get("public_key", ""))
+    if integrity.get("signed") is False:
+        pdf.kv_row("Signed:", "NO -- no device key was available")
     pdf.ln(5)
 
     pdf.set_font("Helvetica", "", 9)
     pdf.cell(0, 6, "This report was automatically generated by AitherOS / AitherShell.",
              new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, "The HMAC-SHA256 signature provides tamper evidence.",
+    pdf.cell(0, 6, f"The {algorithm} signature provides tamper evidence.",
              new_x="LMARGIN", new_y="NEXT")
     pdf.ln(10)
     pdf.line(20, pdf.get_y(), 100, pdf.get_y())

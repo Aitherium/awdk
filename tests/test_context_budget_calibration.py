@@ -92,3 +92,18 @@ async def test_layer1b_trims_a_huge_recent_result():
     assert compacted is True
     assert estimate_tokens(out) < before // 3, "the recent result was not trimmed"
     assert out[-1]["tool_call_id"] == "c1", "order and pairing survive"
+
+
+@pytest.mark.parametrize("bad", [None, "1200", {"prompt_tokens": 1200}, True, object()])
+def test_a_non_number_usage_is_no_observation(bad):
+    """A str/dict/None usage (or a test double) is NOT an observation. Measured
+    2026-09-30: a MagicMock reached ``<=`` and raised TypeError in 15 wiring tests."""
+    assert calibrate_overhead(100, bad) == 0
+
+
+def test_a_mock_usage_is_no_observation():
+    from unittest.mock import MagicMock
+    # int(MagicMock()) == 1 -- coercion would invent a 1-token observation
+    assert calibrate_overhead(100, MagicMock()) == 0
+    assert calibrate_overhead(MagicMock(), 5000) == 0
+    assert calibrate_overhead(100, 5000) == 4900

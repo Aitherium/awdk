@@ -149,3 +149,20 @@ async def test_output_repair_skipped_for_plain_warmth(tmp_memory, companion_vaul
         resp = await agent.chat("I missed you!", session_id="s5")
     assert resp.content == "I missed you too, babe!"
     assert router.chat.call_count == 1          # no repair pass triggered
+
+
+@pytest.mark.asyncio
+async def test_explicit_system_prompt_agent_never_gets_companion_gates(
+        mock_llm, tmp_memory, companion_vault):
+    """A companion in the local vault must not reach an agent with its own prompt
+    (Agent Home's serve agent): no canned honest-miss reply to "what did you do
+    tonight?", no grounding rewrite of its answer. Measured live 2026-09-29: the
+    serve agent answered "I missed you" and leaked the repair prompt."""
+    with patch("adk.private_companion.get_companion_vault", return_value=companion_vault):
+        agent = AitherAgent("home", llm=mock_llm, memory=tmp_memory,
+                            system_prompt="You manage the owner's reminders.")
+        assert agent._companion_active() is False
+        resp = await agent.chat("do you remember what you did tonight?", session_id="h1")
+    assert resp.content == "Mock response"
+    assert resp.content not in coherence._HONEST_MISS_REPLIES
+    mock_llm.chat.assert_called()

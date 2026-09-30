@@ -88,6 +88,33 @@ HARNESS_ALLOWED_PREFIXES = ("sessions", "decisions", "desk/fleet/status")
 _BACKOFF_START = 1.0
 _BACKOFF_MAX = 60.0
 
+#: HTTP statuses on the handshake that mean "the tunnel ANSWERED and said no".
+#: The tunnel closes before accept with 4401 (auth), 4403 (no tenant) or 4404
+#: (node not in its table), and every one of those reaches the client as HTTP
+#: 403. Measured 2026-09-30: after each tunnel restart it answered 403 for ~10
+#: minutes until identity re-posted the node, and the daemon retried at the full
+#: ramp the whole time. A refusal is retried at the CAP, never given up on: it
+#: clears on its own when the node table re-syncs.
+_REJECT_STATUSES = frozenset({401, 403, 404})
+
+#: Consecutive refusals before the link reports ``state="rejected"``.
+REJECTED_AFTER = 5
+
+
+def _handshake_status(exc: BaseException) -> Optional[int]:
+    """The HTTP status of a rejected WebSocket handshake, or None.
+
+    websockets >= 14 raises ``InvalidStatus`` (``.response.status_code``); the
+    legacy client raised ``InvalidStatusCode`` (``.status_code``).
+    """
+    code = getattr(exc, "status_code", None)
+    if code is None:
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        return int(code) if code is not None else None
+    except (TypeError, ValueError):
+        return None
+
 #: One client SSL context for every reconnect attempt. websockets builds
 #: ``ssl.create_default_context()`` per ``wss://`` connect when none is passed,
 #: and on Windows that walks the system certificate store -- while the tunnel is
@@ -184,6 +211,34 @@ class NodeLink:
         #: the difference between "enrolled" and "usable".
         self.last_error = ""
         self._attempts = 0
+        #: Handshakes the tunnel refused in a row (HTTP 401/403/404).
+        self.consecutive_rejects = 0
+        self.last_attached_at = ""
+        self.last_status: Optional[int] = None
+
+    def status(self) -> Dict[str, Any]:
+        """What the daemon's /health reports. No credential, no node id.
+
+        ``state`` is ``connected``, ``rejected`` (the tunnel keeps answering no --
+        see :data:`_REJECT_STATUSES`), ``retrying`` or ``starting``.
+        """
+        if self.connected:
+            state = "connected"
+        elif self.consecutive_rejects >= REJECTED_AFTER:
+            state = "rejected"
+        elif self._attempts:
+            state = "retrying"
+        else:
+            state = "starting"
+        return {
+            "state": state,
+            "connected": self.connected,
+            "attempts": self._attempts,
+            "consecutive_rejects": self.consecutive_rejects,
+            "last_status": self.last_status,
+            "last_error": self.last_error,
+            "last_attached_at": self.last_attached_at,
+        }
 
     # ── what the heartbeat reports ────────────────────────────────────────
     def reach_kind(self) -> str:
@@ -221,6 +276,20 @@ class NodeLink:
                 raise
             except Exception as e:  # noqa: BLE001 -- a link failure is never fatal
                 self.last_error = str(e)[:200]
+                self.last_status = _handshake_status(e)
+                if self.last_status in _REJECT_STATUSES:
+                    self.consecutive_rejects += 1
+                    # Straight to the cap: a refusal does not clear in seconds.
+                    backoff = _BACKOFF_MAX
+                    if self.consecutive_rejects == REJECTED_AFTER:
+                        log.error(
+                            "Node link: the tunnel refused %d handshakes in a row "
+                            "(HTTP %s). It answers 403 until identity re-posts this "
+                            "node after a tunnel restart (minutes); if it persists, "
+                            "re-enroll with `adk enroll`. Retrying every ~%ds.",
+                            self.consecutive_rejects, self.last_status, int(_BACKOFF_MAX))
+                else:
+                    self.consecutive_rejects = 0
                 log.warning("Node link attempt %d failed: %s", self._attempts, self.last_error)
             finally:
                 self.connected = False
@@ -253,7 +322,15 @@ class NodeLink:
         async with conn as ws:
             self.connected = True
             self.last_error = ""
-            log.info("Node link attached: %s", url)
+            self.last_status = None
+            from datetime import datetime, timezone
+
+            self.last_attached_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            # WARNING, not INFO: the daemon logs at WARNING, and a log holding
+            # 1,079 failures and zero successes read as "never attached" when it
+            # had attached repeatedly (measured 2026-09-30).
+            log.warning("Node link attached after %d attempt(s): %s", self._attempts, url)
+            self.consecutive_rejects = 0
             pinger = asyncio.ensure_future(self._ping_loop(ws))
             try:
                 async for raw in ws:

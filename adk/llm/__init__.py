@@ -1245,9 +1245,20 @@ class LLMRouter:
             if llmfit_model:
                 return llmfit_model
 
-        # Fall back to static provider defaults
+        # Fall back to static provider defaults. An EMPTY tier entry (the desktop spine's
+        # "let MicroScheduler choose") falls back to the provider's configured default
+        # model: sending "" made MicroScheduler auto-route to a cloud provider with no key,
+        # and every agent chat came back as an empty completion (measured 2026-09-30).
         models = _EFFORT_MODELS.get(self._provider_name, {})
-        return models.get(tier, self._model or "")
+        return models.get(tier) or self._model or self._provider_default_model()
+
+    def _provider_default_model(self) -> str:
+        """The model the active provider was configured with (config.json default_model)."""
+        for prov in (self._remote_provider, getattr(self, "_provider", None), self._local_provider):
+            m = getattr(prov, "default_model", "") if prov is not None else ""
+            if isinstance(m, str) and m:
+                return m
+        return ""
 
     @staticmethod
     def _llmfit_model_for_tier(tier: str) -> str | None:

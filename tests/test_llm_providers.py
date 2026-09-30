@@ -498,6 +498,15 @@ class TestLLMRouter:
         assert router.model_for_effort(5) == "gpt-4o"          # medium
         assert router.model_for_effort(9) == "o1"              # large
 
+    def test_desktop_spine_uses_configured_default_not_empty(self):
+        # "" let MicroScheduler auto-route to a keyless cloud provider -> empty completions.
+        router = LLMRouter(provider="ollama")
+        router._provider_name = "desktop"
+        router._model = None
+        router._remote_provider = type("P", (), {"default_model": "aither-orchestrator"})()
+        for effort in (1, 5, 9):
+            assert router.model_for_effort(effort) == "aither-orchestrator"
+
     def test_model_override(self):
         router = LLMRouter(provider="ollama", model="custom-model")
         assert router.model_for_effort(5) == "custom-model"

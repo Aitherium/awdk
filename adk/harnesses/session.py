@@ -478,6 +478,20 @@ class HarnessSession:
             return False
         return True
 
+    def _prompt_with_context(self, text: str) -> str:
+        """The turn prompt, carrying the session context when argv cannot.
+
+        A harness that resumes its own session has the context from turn one, so it
+        is sent once; a fresh process per turn (codex exec, aider --message) needs
+        it every turn or it forgets the doctrine and the memory by turn two.
+        """
+        ctx = (self.config.system_prompt_append or "").strip()
+        if not ctx or not getattr(self.spec, "prompt_carries_context", False):
+            return text
+        if self.spec.supports_resume and self.harness_session_id:
+            return text
+        return f"<session-context>\n{ctx}\n</session-context>\n\n{text}"
+
     def _send_oneshot(self, text: str) -> bool:
         with self._lock:
             self.turn += 1
@@ -494,7 +508,7 @@ class HarnessSession:
             )
             return False
 
-        argv = self.spec.argv(self._launch_spec(prompt=text))
+        argv = self.spec.argv(self._launch_spec(prompt=self._prompt_with_context(text)))
         argv[0] = path
         self.state = SessionState.BUSY
         seq_at_start = self.last_seq

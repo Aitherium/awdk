@@ -186,6 +186,53 @@ def _parse_tool_json(raw_json: str, idx: int) -> ToolCall | None:
     return None
 
 
+_TOOL_CALL_CLOSE = "</tool_call>"
+
+
+def _half_tagged_tool_calls(content: str) -> tuple[list[ToolCall], str]:
+    """Calls written as ``{"name": ..., "arguments": ...}</tool_call>`` with no opener.
+
+    Measured 2026-09-30 on Bonsai-4B-Q1_0 behind llama.cpp ``--jinja``: every call
+    arrived as bare JSON plus a closing tag, the opening ``<tool_call>`` missing.
+    The server's parser and the Hermes path both miss it, so 22 of 23 Hearth
+    life-tool prompts produced no tool call at all. The closing tag is the model's
+    own statement that the JSON before it is a call, so this needs no
+    finish_reason hint.
+    """
+    if _TOOL_CALL_CLOSE not in content or "<tool_call>" in content:
+        return [], content
+    decoder = _json.JSONDecoder()
+    parts = content.split(_TOOL_CALL_CLOSE)
+    calls: list[ToolCall] = []
+    kept: list[str] = []
+    for seg in parts[:-1]:
+        start = seg.find("{")
+        tc = None
+        end = 0
+        if start >= 0:
+            try:
+                obj, end = decoder.raw_decode(seg[start:])
+            except ValueError:
+                obj = None
+            if isinstance(obj, dict):
+                tc = _parse_tool_json(_json.dumps(obj), len(calls))
+        if tc is None:
+            kept.append(seg)
+            continue
+        calls.append(tc)
+        kept.append(seg[:start] + seg[start + end:])
+    if not calls:
+        return [], content
+    kept.append(parts[-1])
+    cleaned = re.sub(r"\n{3,}", "\n\n", "".join(kept)).strip()
+    return calls, cleaned
+
+
+def has_text_tool_call(content: str) -> bool:
+    """The content carries a Hermes call tag, opening or closing."""
+    return bool(content) and ("<tool_call>" in content or _TOOL_CALL_CLOSE in content)
+
+
 def extract_tool_calls_from_text(
     content: str,
     finish_reason_hint: str = "",
@@ -210,6 +257,11 @@ def extract_tool_calls_from_text(
             cleaned = _HERMES_TOOL_RE.sub("", content).strip()
             cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
             return tool_calls, cleaned
+
+    # ── Half-tagged: a JSON call followed by ``</tool_call>`` with no opener ──
+    half_calls, half_cleaned = _half_tagged_tool_calls(content)
+    if half_calls:
+        return half_calls, half_cleaned
 
     # ── Secondary: bare JSON (only when finish_reason hints tool use) ──
     if finish_reason_hint in ("tool_calls", "tool_use"):

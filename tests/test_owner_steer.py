@@ -217,7 +217,7 @@ def test_verify_tab_identity_refuses_a_dead_process(tmp_path):
     assert ok is False and "gone" in why
 
 
-# ── typed as a draft, never submitted (finding 3) ─────────────────────────────────
+# ── submitted by default (owner ruling 2026-09-28), draft when switched off ───────
 
 
 def test_key_payload_without_submit_carries_no_carriage_return():
@@ -227,7 +227,26 @@ def test_key_payload_without_submit_carries_no_carriage_return():
     assert key_payload("look") == "look\r"     # the decision-card path is unchanged
 
 
-def test_type_owner_draft_never_submits_and_rechecks_identity_and_image():
+@pytest.fixture
+def _no_submit_setting(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_OWNER_STEER_SUBMIT", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)   # no ~/.aither/decisions.json
+    return tmp_path
+
+
+def test_owner_submit_defaults_on_and_can_be_switched_off(_no_submit_setting, monkeypatch):
+    from adk.harnesses.owner_steer import owner_submit_enabled
+
+    assert owner_submit_enabled() is True                      # the ruling: send it
+    cfg = _no_submit_setting / ".aither"
+    cfg.mkdir()
+    (cfg / "decisions.json").write_text('{"owner_submit": "0"}', encoding="utf-8")
+    assert owner_submit_enabled() is False                     # owner opt-out: draft
+    monkeypatch.setenv("AITHER_OWNER_STEER_SUBMIT", "1")
+    assert owner_submit_enabled() is True                      # env wins
+
+
+def test_type_owner_draft_submits_and_rechecks_identity_and_image(_no_submit_setting):
     calls: list = []
 
     def typer(pid, text, **kw):
@@ -237,7 +256,7 @@ def test_type_owner_draft_never_submits_and_rechecks_identity_and_image():
     ok, _ = type_owner_draft(4242, "look", PROC_START, typer=typer,
                              start_time_of=_started_at(PROC_START),
                              image_of=lambda p: "claude.exe")
-    assert ok is True and calls == [(4242, "look", {"submit": False})]
+    assert ok is True and calls == [(4242, "look", {"submit": True})]
 
     calls.clear()
     ok, why = type_owner_draft(4242, "look", PROC_START, typer=typer,

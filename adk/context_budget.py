@@ -509,8 +509,18 @@ def calibrate_overhead(estimated_at_send: int, observed_prompt_tokens: int) -> i
     tools on a 16,384 slot): the real prompt reached 15,953 tokens while the
     message estimate alone stayed under the 0.7 threshold, so compaction never
     fired and the slot was full at step 12 before any edit. Returns 0 when the
-    provider reported nothing (a fake, a stream without usage)."""
-    if not observed_prompt_tokens or observed_prompt_tokens <= 0:
+    provider reported nothing (a fake, a stream without usage).
+
+    Only a real NUMBER counts. A provider that returns a str/dict/None usage,
+    or a test double (MagicMock), raised ``TypeError`` on ``<=`` and killed the
+    turn (15 wiring tests, measured 2026-09-30); ``int()`` coercion is no guard
+    either -- ``int(MagicMock())`` is 1, a fake 1-token observation."""
+    def _num(v) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    if not _num(observed_prompt_tokens) or observed_prompt_tokens <= 0:
+        return 0
+    if not _num(estimated_at_send):
         return 0
     return max(0, int(observed_prompt_tokens) - int(estimated_at_send))
 

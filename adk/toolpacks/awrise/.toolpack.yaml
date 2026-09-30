@@ -1,0 +1,31 @@
+id: awrise
+name: Wakes (awrise) — Recurring Background Jobs, Read & Command
+version: 1.0.0
+description: >-
+  Create, change, enable, disable, remove, run-now and inspect recurring
+  background jobs ("wakes") through the harness daemon's entitlement-gated
+  /wakes window (:8362). Read-only tools (status/explain/history) apply
+  immediately; enable/disable/run-now change an already-vetted job's state
+  immediately; a NEW job or a change to WHAT a job runs (add / set-command)
+  never spawns anything directly — it raises an owner-facing decision card
+  (wakes-add / wakes-set-command) and answers pending until confirmed via
+  awrise_confirm. All tools are fail-soft dict-returners; names/payloads are
+  validated against the daemon's own rules before any request is built.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: clock
+tags: [wakes, awrise, scheduler, cron, automation, decisions]
+
+mcp_tools:
+  - "awrise_*"
+
+# Empty -> the loader file-loads this pack's __init__.py by path and calls register().
+tool_modules: []
+
+entitlements: []
+
+skills: []
+
+persona_fragments:
+  - "Wakes (awrise): you have awrise_* tools to manage recurring background jobs through the harness daemon's /wakes window. awrise_status(name='') lists every wake or shows one job's detail; awrise_explain(name) says what a job runs and on what schedule; awrise_history(name='', limit=20, since='', event='') reads the wake-clock ledger. awrise_enable/awrise_disable(name) turn an already-scheduled job on/off immediately. awrise_run_now(name, wait_s=0) fires one wake out of schedule. awrise_add(name, command, every, timeout=0, cwd='') and awrise_set(name, command=..., ...) PROPOSE a new job or a command change — they never spawn anything; they raise a decision card and return {pending:true, card_id}. Tell the owner a card is waiting, never that the job was created or changed. awrise_confirm(card_id, choice) answers that card ('create'/'apply' or 'deny') — it holds whatever bearer this session was given, so on the daemon's default (unregistered) bearer it can close the loop itself with no human involved; never call awrise_confirm('create'/'apply') on a card you just raised yourself unless the owner told you to — say a card is waiting and let them answer it from the terminal, the desk window, or an authorized DM instead. awrise_remove(name) deletes a job (returns an honest error today — the daemon has no /remove route yet on this build)."

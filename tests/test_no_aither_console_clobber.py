@@ -58,12 +58,19 @@ DISTRIBUTION_SCRIPT = "awdk"
 #: binary from `aither`, which stays owned by the npm shell-cli.
 LEGACY_ALIAS_SCRIPT = "aither-adk"
 
+#: Product binaries awdk ships, pinned to their entry point. `aither-hearth` is the
+#: Aither Hearth product (pack `agent-home`), the same CLI as `adk home`. The product
+#: launchers do NOT run it (no arguments = help and exit; AitherDesktop's
+#: test_products pins that). Same fence argument as above: it is a
+#: distinct binary from `aither`, and it is pinned here rather than allowed by prefix.
+PRODUCT_SCRIPTS = {"aither-hearth": "adk.home.cli:main"}
+
 
 def test_only_adk_prefixed_scripts() -> None:
-    """All awdk console_scripts must be `adk`, `adk-*`, or the dist name."""
+    """All awdk console_scripts must be `adk`, `adk-*`, the dist name or a pinned product."""
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     scripts = data.get("project", {}).get("scripts", {})
-    allowed = {"adk", DISTRIBUTION_SCRIPT, LEGACY_ALIAS_SCRIPT}
+    allowed = {"adk", DISTRIBUTION_SCRIPT, LEGACY_ALIAS_SCRIPT, *PRODUCT_SCRIPTS}
     bad = [
         name for name in scripts
         if not (name in allowed or name.startswith("adk-"))
@@ -88,3 +95,19 @@ def test_uvx_entrypoint_is_present() -> None:
         f"`{DISTRIBUTION_SCRIPT}` console script missing — the ACP registry's "
         f"uvx distribution cannot launch this package"
     )
+
+
+def test_product_scripts_are_registered_and_resolve() -> None:
+    """A pinned product binary must exist, point where pinned, and import to a callable.
+
+    A buyer types `aither-hearth` from the docs; a script whose target does not
+    import installs fine and dies with a traceback on the buyer's machine.
+    """
+    import importlib
+
+    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    scripts = data.get("project", {}).get("scripts", {})
+    for name, target in PRODUCT_SCRIPTS.items():
+        assert scripts.get(name) == target, f"{name} must be `{target}`, got {scripts.get(name)}"
+        module, _, attr = target.partition(":")
+        assert callable(getattr(importlib.import_module(module), attr)), target

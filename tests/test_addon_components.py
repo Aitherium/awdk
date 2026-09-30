@@ -115,3 +115,54 @@ def test_inventory_carries_brick_and_surfaces(sources):
     assert inv["cap"]["hosted_by"] == "awdk"
     hb = {c["addon_id"]: c for c in mgr.get_inventory()}
     assert hb == {}                                     # nothing enabled yet
+
+
+def test_image_env_overrides_the_shipped_default(sources, monkeypatch):
+    """A manifest names a public default image; the env var it declares replaces it
+    for every consumer, and an unset or blank variable keeps the default."""
+    home, _ = sources
+    _write(home, "img.yaml", "id: img\ntype: docker\ndefault_port: 8188\n"
+                             "image: upstream/example:1\nimage_env: ADK_TEST_IMG\n")
+    monkeypatch.delenv("ADK_TEST_IMG", raising=False)
+    assert am.load_addon_manifest("img")["image"] == "upstream/example:1"
+    monkeypatch.setenv("ADK_TEST_IMG", "   ")
+    assert am.load_addon_manifest("img")["image"] == "upstream/example:1"
+    monkeypatch.setenv("ADK_TEST_IMG", "registry.example/own:2")
+    assert am.load_addon_manifest("img")["image"] == "registry.example/own:2"
+
+
+def test_image_env_absent_leaves_image_untouched(monkeypatch):
+    monkeypatch.setenv("ADK_TEST_IMG", "should-not-apply")
+    data = {"id": "x", "image": "upstream/example:1"}
+    assert am.resolve_image_env(data)["image"] == "upstream/example:1"
+
+
+def test_a_quoted_exe_path_resolves_on_windows(sources, tmp_path, monkeypatch):
+    """posix=False shlex keeps quotes; a quoted exe was refused as "not on PATH"."""
+    bundled = sources[1]
+    py = sys.executable.replace("\\", "/")
+    _write(bundled, "awq.yaml", "id: awq\nbrick: awq\ntype: process\ndefault_port: 9101\n"
+                                + f"command: '\"{py}\" -V'\n")
+    monkeypatch.setenv("AITHER_HOME", str(tmp_path / "ah"))
+    import subprocess
+    seen = {}
+
+    class FakeProc:
+        pid = 1
+
+    def fake_popen(argv, **kw):
+        seen["argv"] = argv
+        return FakeProc()
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    mgr = am.AddonManager()
+
+    async def fake_health(manifest, inst):
+        return True
+    monkeypatch.setattr(mgr, "_check_health", fake_health)
+
+    async def no_sleep(_):
+        return None
+    monkeypatch.setattr(am.asyncio, "sleep", no_sleep)
+    inst = asyncio.run(mgr.enable("awq"))
+    assert inst.status != "error", inst.error_message
+    assert seen["argv"][0] == py and '"' not in seen["argv"][0]

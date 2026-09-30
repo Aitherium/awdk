@@ -589,6 +589,23 @@ def _status_only_phrase(label: str) -> str | None:
     return None
 
 
+#: Upper bound on a stored answer receipt (a real one is ~700 bytes).
+_MAX_RECEIPT_BYTES = 8192
+
+
+def _clean_receipt(raw: Any) -> Optional[dict[str, Any]]:
+    """An answer receipt as stored: a dict with ``alg``/``receipt``/``sig`` that
+    serialises under the size cap, else None. Shape only -- NOT a verification."""
+    if not isinstance(raw, dict) or not {"alg", "receipt", "sig"} <= set(raw):
+        return None
+    try:
+        if len(json.dumps(raw, sort_keys=True)) > _MAX_RECEIPT_BYTES:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return dict(raw)
+
+
 @dataclass
 class DecisionCard:
     """A single thing an agent needs a human to decide, know, or unblock."""
@@ -611,6 +628,20 @@ class DecisionCard:
     answer_note: Optional[str] = None
     answered_at: Optional[float] = None
     answered_via: Optional[str] = None
+    #: WHO answered and ON WHAT SURFACE, as the answering surface labelled it.
+    #: LABELS for display and fanout -- this file is writable by any agent on the
+    #: host, so nothing that gates an irreversible action may read them as proof.
+    answered_by: Optional[str] = None
+    answered_surface: Optional[str] = None
+    #: The SIGNED receipt an attesting surface (Genesis) attached: {alg, kid,
+    #: receipt, sig}, Ed25519 with a key only the vault holds. Stored verbatim from
+    #: any caller -- the store cannot and does not verify it; verifiers do
+    #: (awstorage.attest.verify_receipt) with the published public key.
+    answer_receipt: Optional[dict[str, Any]] = None
+    #: ADVISORY ONLY: "a receipt is attached". Derived from ``answer_receipt`` on
+    #: every read and write (a hand-edited ``true`` is discarded); no verifier
+    #: reads it. Kept so UIs can show "signed answer".
+    answer_attested: bool = False
     # Credential card fields (kind="credential" only)
     secret_name: Optional[str] = None      # Vault key (e.g., "STRIPE_API_KEY")
     credential_format: Optional[str] = None  # "password" | "api_key" | "totp_seed" | "custom"
@@ -734,6 +765,11 @@ class DecisionCard:
                 float(raw["answered_at"]) if raw.get("answered_at") is not None else None
             ),
             answered_via=raw.get("answered_via"),
+            answered_by=raw.get("answered_by"),
+            answered_surface=raw.get("answered_surface"),
+            answer_receipt=_clean_receipt(raw.get("answer_receipt")),
+            # Derived, never read: a hand-edited boolean means nothing.
+            answer_attested=_clean_receipt(raw.get("answer_receipt")) is not None,
             secret_name=raw.get("secret_name"),
             credential_format=raw.get("credential_format"),
             credential_scope=raw.get("credential_scope"),
@@ -1208,8 +1244,16 @@ class DecisionStore:
         via: str = "cli",
         deliver: bool = True,
         receipt: Optional[dict[str, Any]] = None,
+        answered_by: Optional[str] = None,
+        answered_surface: Optional[str] = None,
+        answer_receipt: Optional[dict[str, Any]] = None,
     ) -> DecisionCard:
         """Record an answer and deliver it to the raising session.
+
+        ``answered_by`` / ``answered_surface`` are the answering surface's LABELS;
+        ``answer_receipt`` is its SIGNED receipt, stored verbatim (a malformed or
+        oversized one is dropped). None of them is verified here -- see the field
+        docs on DecisionCard.
 
         Compare-and-set: answering an already-closed card raises rather than
         overwriting, so two surfaces racing produce one winner and one clear loser.
@@ -1257,6 +1301,11 @@ class DecisionStore:
             card.answer_note = note or None
             card.answered_at = time.time()
             card.answered_via = via
+            card.answered_by = (str(answered_by).strip()[:200] or None) if answered_by else None
+            card.answered_surface = (str(answered_surface or via or "").strip()[:40]
+                                     or None)
+            card.answer_receipt = _clean_receipt(answer_receipt)
+            card.answer_attested = card.answer_receipt is not None
             if receipt is not None:
                 # Written inside the SAME lock and the same _write as the answer
                 # itself. A receipt recorded by a second read-modify-write could

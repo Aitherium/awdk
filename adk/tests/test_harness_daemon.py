@@ -50,6 +50,25 @@ def test_health_needs_no_credential(client):
     assert response.json()["service"] == "aithershell-harness"
 
 
+def test_health_reports_the_node_link(client, monkeypatch):
+    """The reverse link's state is on the cheapest probe, not only in the log.
+
+    2026-09-30: 1,079 failed reconnects lived only in harness-daemon.log while
+    /health said ok. None when this process holds no link.
+    """
+    from adk import fleet_enroll
+
+    monkeypatch.setattr(fleet_enroll, "_node_link", None)
+    assert client.get("/health").json()["node_link"] is None
+
+    class _Link:
+        def status(self):
+            return {"state": "rejected", "consecutive_rejects": 7}
+
+    monkeypatch.setattr(fleet_enroll, "_node_link", _Link())
+    assert client.get("/health").json()["node_link"]["state"] == "rejected"
+
+
 def test_health_states_whether_cwd_is_restricted(client):
     # Stated explicitly so "this host is trusted" is a visible posture rather
     # than an unnoticed default on a tunnel-exposed daemon.
@@ -206,6 +225,28 @@ def test_wildcard_cors_origin_is_refused(monkeypatch):
 def test_explicit_cors_allowlist_is_honoured(monkeypatch):
     monkeypatch.setenv("AITHER_HARNESS_ALLOWED_ORIGINS", "https://a.com, https://b.com")
     assert allowed_origins() == ["https://a.com", "https://b.com"]
+
+
+def test_private_network_preflight_is_answered_for_allowlisted_origin(monkeypatch, tmp_path):
+    # aitherium.com's "This device" panel probes :8362 from an https page; Chrome
+    # sends Access-Control-Request-Private-Network on the preflight and Starlette
+    # answers 400 unless the middleware opts in.
+    monkeypatch.setenv("AITHER_HARNESS_ALLOWED_ORIGINS", "https://aitherium.com")
+    manager = SessionManager(root=tmp_path / "sessions")
+    app = create_app(manager=manager, token=TOKEN)
+    pna = {
+        "Origin": "https://aitherium.com",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Private-Network": "true",
+    }
+    with TestClient(app) as c:
+        ok = c.options("/health", headers=pna)
+        assert ok.status_code == 200
+        assert ok.headers.get("access-control-allow-private-network") == "true"
+        # A stranger's origin still gets nothing.
+        bad = c.options("/health", headers={**pna, "Origin": "https://evil.example"})
+        assert bad.headers.get("access-control-allow-origin") is None
+    manager.stop_all()
 
 
 def test_cwd_outside_allowed_roots_is_refused(monkeypatch, tmp_path):

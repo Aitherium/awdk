@@ -4404,7 +4404,7 @@ def cmd_onboard(args):
         step_num += 1
 
         if api_key:
-            print(f"  {step_num}. Publish to Elysium marketplace (optional)")
+            print(f"  {step_num}. Publish to the Aitherium marketplace (optional)")
             print("     -> aither publish")
             step_num += 1
 
@@ -4498,7 +4498,7 @@ def cmd_onboard(args):
         print("  aither connect         — Detect backends + test cloud")
         print("  aither init <name>     — Scaffold new agent project")
         print("  adk integrate       — Connect external tools (OpenClaw, etc.)")
-        print("  aither publish         — Submit agent to Elysium marketplace")
+        print("  aither publish         — Submit agent to the Aitherium marketplace")
         print("  aither aeon            — Multi-agent group chat")
         print()
 
@@ -5402,15 +5402,15 @@ def _integrate_openclaw(args):
 
 
 def cmd_publish(args):
-    """Publish an agent to the Elysium marketplace."""
+    """Publish an agent to the Aitherium marketplace."""
     import asyncio
 
     async def _publish():
         project_dir = Path(args.directory or ".").resolve()
 
         print()
-        print("  Elysium Marketplace Publisher")
-        print("  =============================")
+        print("  Aitherium Marketplace Publisher")
+        print("  ===============================")
         print()
 
         # Check for agent.py
@@ -5489,7 +5489,7 @@ def cmd_publish(args):
 
         if args.dry_run:
             print()
-            print("  DRY RUN — would publish to Elysium marketplace")
+            print("  DRY RUN — would publish to the Aitherium marketplace")
             return 0
 
         # Package and submit
@@ -13262,6 +13262,13 @@ def _register_commands(sub):
     from adk.awconnect_setup import register_parser as _register_awconnect
     _register_awconnect(sub)
 
+    # adk learn [play] (Aither Learn for a child's terminal) and adk bonsai setup
+    # --device phone (optional on-device model). Both light: httpx/stdlib only.
+    from adk.learn_cli import register_parser as _register_learn
+    _register_learn(sub)
+    from adk.bonsai_phone import register_parser as _register_bonsai
+    _register_bonsai(sub)
+
     # adk login
     login_p = sub.add_parser("login", help="Authenticate with Aitherium (browser device flow)")
     login_p.add_argument("--email", help="Use email/password instead of browser flow")
@@ -13395,6 +13402,27 @@ def _register_commands(sub):
     )
     bricks_p.add_argument("bricks_args", nargs=argparse.REMAINDER,
                           help="list | outdated | upgrade | test | rollback | os | history")
+
+    # adk lookout — watch Slack / Linear triage / JSONL streams and step in
+    # without an @mention; its own parser owns the flags.
+    lookout_p = sub.add_parser(
+        "lookout",
+        # 3.8.31 shipped this verb as `mothership`; keep that spelling working.
+        aliases=["mothership"],
+        help="Watch Slack, Linear triage or event streams; step in when help is wanted",
+        add_help=False,
+    )
+    lookout_p.add_argument("lookout_args", nargs=argparse.REMAINDER,
+                              help="run | judge | ledger")
+
+    # adk mobile — Android/iOS end-to-end tests (Maestro) that keep a proof dir.
+    mobile_p = sub.add_parser(
+        "mobile",
+        help="Test Android/iOS apps end to end (Maestro) and keep screenshots as proof",
+        add_help=False,
+    )
+    mobile_p.add_argument("mobile_args", nargs=argparse.REMAINDER,
+                          help="devices | shot | test FLOW")
 
     # adk link — ONE way to link this machine to aitherium.com for every surface on
     # it (awdesk, awsh, adk): device grant -> the shared sign-in -> the role-aware
@@ -14090,8 +14118,8 @@ def _register_commands(sub):
     status_p.add_argument("--json", action="store_true",
                           help="Machine-readable JSON (agent state) for AI agents/CI")
 
-    # adk publish — submit to Elysium marketplace
-    publish_p = sub.add_parser("publish", help="Publish agent to Elysium marketplace")
+    # adk publish — submit to the Aitherium marketplace
+    publish_p = sub.add_parser("publish", help="Publish agent to the Aitherium marketplace")
     publish_p.add_argument("name", nargs="?", help="Agent name (default: from config.yaml)")
     publish_p.add_argument("-d", "--directory", help="Project directory (default: .)")
     publish_p.add_argument("--api-key", help="AITHER_API_KEY")
@@ -16194,6 +16222,19 @@ def _install_air_gap_guard() -> bool:
         return False
 
 
+#: Verbs registered with ``add_help=False`` + a REMAINDER positional: their own
+#: module parses every flag, so ``main()`` dispatches them BEFORE argparse.
+_PASSTHROUGH_VERBS = {
+    "decide": ("adk.decisions.cli", "main"),
+    "storage": ("adk.storage_cmd", "main"),
+    "bricks": ("adk.bricks", "main"),
+    "lookout": ("adk.lookout", "main"),
+    "mothership": ("adk.lookout", "main"),  # the 3.8.31 spelling of lookout
+    "mobile": ("adk.mobile", "main"),
+    "link": ("adk.link", "main"),
+}
+
+
 def main():
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
     _dv = locals().get("argv")
@@ -16226,19 +16267,18 @@ def main():
         except Exception:
             pass
 
-    # `adk decide` owns its own parser, so hand it the raw argv before the big
-    # one runs. argparse.REMAINDER cannot do this job: it only begins capturing
-    # after a positional, so a LEADING flag (`adk decide --self-test`) is parsed
-    # as an unknown option of this parser and exits 2 before the subcommand ever
-    # sees it. That failed silently the first time — the flag simply did nothing.
-    if len(sys.argv) > 1 and sys.argv[1] == "decide":
-        from adk.decisions.cli import main as decide_main
-        sys.exit(decide_main(sys.argv[2:]))
-    # Same shape for `adk storage`: leading flags (`adk storage --self-test`) must
-    # reach awstorage's own parser, not die as unknown options of this one.
-    if len(sys.argv) > 1 and sys.argv[1] == "storage":
-        from adk.storage_cmd import main as storage_main
-        sys.exit(storage_main(sys.argv[2:]))
+    # A pass-through verb owns its own parser, so hand it the raw argv before
+    # the big one runs. argparse.REMAINDER cannot do this job: it only begins
+    # capturing after a positional, so a LEADING flag (`adk lookout --help`) is
+    # parsed as an unknown option of this parser and exits 2 before the verb
+    # ever sees it. Measured 2026-09-30: bricks/lookout/mobile/link all died
+    # that way because only decide/storage were listed here. The table is the
+    # one list; tests/test_cli_passthrough_verbs.py fails when a subparser is
+    # registered with add_help=False and is missing from it.
+    if len(sys.argv) > 1 and sys.argv[1] in _PASSTHROUGH_VERBS:
+        import importlib
+        _mod, _fn = _PASSTHROUGH_VERBS[sys.argv[1]]
+        sys.exit(getattr(importlib.import_module(_mod), _fn)(sys.argv[2:]))
 
     parser = argparse.ArgumentParser(
         prog="adk",
@@ -16326,6 +16366,12 @@ def main():
     elif args.command == "awconnect":
         from adk.awconnect_setup import cmd_awconnect
         sys.exit(cmd_awconnect(args))
+    elif args.command == "learn":
+        from adk.learn_cli import cmd_learn
+        sys.exit(cmd_learn(args))
+    elif args.command == "bonsai":
+        from adk.bonsai_phone import cmd_bonsai
+        sys.exit(cmd_bonsai(args))
     elif args.command == "login":
         sys.exit(cmd_login(args))
     elif args.command == "pair":
@@ -16347,6 +16393,12 @@ def main():
     elif args.command == "bricks":
         from adk.bricks import main as bricks_main
         sys.exit(bricks_main(args.bricks_args))
+    elif args.command in ("lookout", "mothership"):
+        from adk.lookout import main as lookout_main
+        sys.exit(lookout_main(args.lookout_args))
+    elif args.command == "mobile":
+        from adk.mobile import main as mobile_main
+        sys.exit(mobile_main(args.mobile_args))
     elif args.command == "link":
         from adk.link import main as link_main
         sys.exit(link_main(args.link_args))

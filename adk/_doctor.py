@@ -23,8 +23,8 @@ import sys
 #: package cannot read the registry, and a doctor that guessed at the family
 #: would go stale in silence. Regenerate to update.
 SELF = 'adk'
-FAMILY = ['awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awclassify', 'awdecide', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awnboard', 'awnest', 'awnet', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite', 'awstorage', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet']
-PAIRS_WITH = ['awask', 'awembed', 'awflow', 'awm', 'awrun']
+FAMILY = ['awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awclassify', 'awdecide', 'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet', 'awnode', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite', 'awstorage', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet']
+PAIRS_WITH = ['awask', 'awembed', 'awflow', 'awm', 'awnode', 'awreport', 'awrun']
 
 #: This brick's OWN config, read out of its source at generation time.
 #: ENV_REQUIRED is `os.environ["X"]` -- absent, that is a KeyError the moment
@@ -32,8 +32,8 @@ PAIRS_WITH = ['awask', 'awembed', 'awflow', 'awm', 'awrun']
 #: the caller cope. Only this brick's namespace is listed: reporting the
 #: platform-wide vars it also touches would be noise, and a doctor that floods
 #: gets ignored.
-ENV_REQUIRED = ['ADK_IMAGE_TAG', 'ADK_TEST_PORT_X']
-ENV_OPTIONAL = ['ADK_AGENT', 'ADK_APP_MANIFEST', 'ADK_APP_PROXY_URL', 'ADK_BASE_URL', 'ADK_CHAT_TEMPLATE_KWARGS', 'ADK_CONTEXT_LIMIT', 'ADK_DAEMON_URL', 'ADK_LLM_CONTINUATION', 'ADK_MAX_TOOL_LOOPS', 'ADK_MCP_MAX_TOOLS', 'ADK_MCP_WATCH_INTERVAL', 'ADK_MODEL', 'ADK_PERSONA', 'ADK_ROOT', 'ADK_SANDBOX_PROOF_PATH', 'ADK_SITUATION', 'ADK_TURN_TOKEN_BUDGET']
+ENV_REQUIRED = []
+ENV_OPTIONAL = ['ADK_AGENT', 'ADK_APP_MANIFEST', 'ADK_APP_PROXY_URL', 'ADK_ARC_VERBOSE', 'ADK_AWNIX_RELEASES', 'ADK_BASE_URL', 'ADK_BRICKS_HOME', 'ADK_BRICKS_INDEX', 'ADK_BUILTIN_TOOL_CATEGORIES', 'ADK_CHAT_TEMPLATE_KWARGS', 'ADK_CONTEXT_LIMIT', 'ADK_CRYSTAL_DB', 'ADK_CRYSTAL_GRAPH_ROOT', 'ADK_CRYSTAL_NO_EMBED', 'ADK_CRYSTAL_SCOPE', 'ADK_DAEMON_URL', 'ADK_EMBED_MODEL', 'ADK_EMBED_URL', 'ADK_LLM_CONTINUATION', 'ADK_LLM_DUMP_DIR', 'ADK_LLM_MAX_RETRIES', 'ADK_LLM_RETRY_WAIT_S', 'ADK_MAX_TOOL_LOOPS', 'ADK_MCP_MAX_TOOLS', 'ADK_MCP_WATCH_INTERVAL', 'ADK_MODEL', 'ADK_NO_UPDATE_CHECK', 'ADK_PERSONA', 'ADK_REASONING_DOCTRINE', 'ADK_ROOT', 'ADK_SANDBOX_PROOF_PATH', 'ADK_SEARCH_CA_BUNDLE', 'ADK_SEARCH_TOKEN', 'ADK_SEARCH_URL', 'ADK_SITUATION', 'ADK_SKILLTASK_SHELL', 'ADK_TOOL_SELECTION', 'ADK_TURN_TOKEN_BUDGET']
 
 
 def _installed(mod: str) -> "str | None":
@@ -91,6 +91,7 @@ def report(out=None) -> int:
     local = _local_checks()
     for line in local:
         print(f"  {line}", file=out)
+    problems, unjudged = _local_verdict()
 
     if mine is None:
         print(f"\nverdict: {SELF} itself is not importable. Reinstall it before "
@@ -102,6 +103,17 @@ def report(out=None) -> int:
               f"so the code path that needs them raises rather than degrades.",
               file=out)
         return 1
+    # A measured NO outranks a missing optional pair: awrise printed
+    # "nothing wakes run-due" and still exited 0 because the missing-pairs
+    # branch returned first (measured 2026-09-20).
+    if problems:
+        for p in problems:
+            print(f"\nverdict: {p}", file=out)
+        return 1
+    if unjudged:
+        for u in unjudged:
+            print(f"\nverdict: UNJUDGED -- could not judge: {u}", file=out)
+        return 2
     if missing_pairs:
         print(f"\nverdict: {SELF} works, but pairs with "
               f"{', '.join(sorted(missing_pairs))} which "
@@ -110,6 +122,23 @@ def report(out=None) -> int:
         return 0
     print(f"\nverdict: {SELF} and everything it pairs with are present.", file=out)
     return 0
+
+
+def _local_verdict() -> tuple:
+    """The brick's OWN verdict, folded into the exit code.
+
+    Without this the local lines are DECORATION. Measured 2026-09-20: awrise
+    printed "hostclock NOT INSTALLED -- nothing wakes run-due" and "last tick
+    never", then exited 0 -- teaching an operator that a doctor exit code
+    carries no information. A brick opts in with `_doctor_local_verdict()`
+    returning (problems, unjudged); a brick without one is unaffected.
+    """
+    try:
+        mod = importlib.import_module(f"{SELF}.doctor_local")
+        problems, unjudged = mod._doctor_local_verdict()
+    except Exception:                              # noqa: BLE001
+        return [], []
+    return list(problems or []), list(unjudged or [])
 
 
 def _local_checks() -> "list[str]":

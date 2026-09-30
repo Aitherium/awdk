@@ -2938,7 +2938,7 @@ def categories_from_env(value: str) -> list[str] | None:
     for name in names:
         if name in TOOLPACK_ALIASES:
             out.extend(c for c in TOOLPACK_ALIASES[name] if c not in out)
-        elif name in TOOL_CATEGORIES or name == "self":
+        elif name in TOOL_CATEGORIES or name in ("self", "storage"):
             if name not in out:
                 out.append(name)
         else:
@@ -3151,6 +3151,14 @@ def register_builtin_tools(
         if cat == "self":
             # Closure-based registration — each agent gets its own bound copies.
             count += register_self_tools(agent)
+            continue
+        if cat == "storage":
+            # Closure-based too: suggest_deletion is bound to THIS agent's name
+            # (suggested_by is never a model-filled argument), and the agent's
+            # scratch dir is registered live for awstorage sweeps while it runs.
+            from adk.storage_tools import register_storage_tools
+
+            count += register_storage_tools(agent)
             continue
         fns = TOOL_CATEGORIES.get(cat)
         if fns is None:

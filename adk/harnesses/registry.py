@@ -94,6 +94,10 @@ class HarnessSpec:
     supports_resume: bool = False
     #: Output is line-delimited JSON (vs. plain text).
     json_lines: bool = False
+    #: The harness has no system-prompt flag, so ``system_prompt_append`` (doctrine,
+    #: skills, recalled memory) rides at the top of the turn prompt instead of being
+    #: silently dropped by ``build_argv``.
+    prompt_carries_context: bool = False
     #: Builds argv for a launch. Receives the spec itself for defaults.
     build_argv: Optional[Callable[["HarnessSpec", LaunchSpec], list[str]]] = None
     #: Encodes a user turn for STRUCTURED_BIDI stdin. Returns a line WITHOUT "\n".
@@ -289,6 +293,7 @@ register(
 register(
     HarnessSpec(
         id="gemini",
+        prompt_carries_context=True,
         label="Gemini CLI",
         description="Google Gemini CLI — one process per turn, stream-json output",
         transport=Transport.ONESHOT_PER_TURN,
@@ -372,6 +377,7 @@ register(
 for _late in (
     HarnessSpec(
         id="codex",
+        prompt_carries_context=True,
         label="OpenAI Codex CLI",
         description="OpenAI Codex CLI — one process per turn (codex exec --json)",
         transport=Transport.ONESHOT_PER_TURN,
@@ -384,6 +390,7 @@ for _late in (
     ),
     HarnessSpec(
         id="aider",
+        prompt_carries_context=True,
         label="Aider",
         description="Aider — pair-programming CLI (one process per turn)",
         transport=Transport.ONESHOT_PER_TURN,
@@ -397,6 +404,7 @@ for _late in (
     ),
     HarnessSpec(
         id="opencode",
+        prompt_carries_context=True,
         label="OpenCode",
         description="OpenCode — open-source coding agent (one process per turn)",
         transport=Transport.ONESHOT_PER_TURN,

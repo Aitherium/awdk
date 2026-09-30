@@ -231,3 +231,76 @@ def test_harness_path_without_a_harness_answers_503():
     asyncio.run(link._handle_request(
         ws, "r3", {"path": "harness/sessions/unified", "method": "GET"}))
     assert ws.sent[0]["status"] == 503
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# a refused handshake: retried at the cap, reported, never given up on
+# ══════════════════════════════════════════════════════════════════════════
+
+class _Rejected(Exception):
+    """Shape of websockets.exceptions.InvalidStatus (>= 14)."""
+
+    def __init__(self, code):
+        super().__init__(f"server rejected WebSocket connection: HTTP {code}")
+        self.response = type("R", (), {"status_code": code})()
+
+
+def _drive(monkeypatch, link, errors):
+    it = iter(errors)
+
+    async def _serve():
+        raise next(it)
+
+    slept = []
+
+    async def _sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr(link, "_serve_once", _serve)
+    monkeypatch.setattr(NL.asyncio, "sleep", _sleep)
+    asyncio.run(link.run(max_attempts=len(errors)))
+    return slept
+
+
+def test_403_jumps_to_the_cap_and_keeps_retrying(monkeypatch):
+    link = NL.NodeLink(tunnel_url="https://t", node_id="n", token="tok")
+    n = NL.REJECTED_AFTER + 2
+    slept = _drive(monkeypatch, link, [_Rejected(403)] * n)
+    # Every attempt ran: a refusal is never a reason to stop (it clears when the
+    # tunnel's node table re-syncs).
+    assert link._attempts == n
+    assert all(s >= NL._BACKOFF_MAX * 0.5 for s in slept)
+    st = link.status()
+    assert st["state"] == "rejected"
+    assert st["consecutive_rejects"] == n
+    assert st["last_status"] == 403
+    assert "tok" not in str(st)
+
+
+def test_502_keeps_the_normal_ramp(monkeypatch):
+    link = NL.NodeLink(tunnel_url="https://t", node_id="n", token="tok")
+    slept = _drive(monkeypatch, link, [_Rejected(502)] * 4)
+    assert slept[0] < NL._BACKOFF_MAX * 0.5
+    assert link.status()["state"] == "retrying"
+    assert link.consecutive_rejects == 0
+
+
+def test_a_non_refusal_resets_the_reject_count(monkeypatch):
+    link = NL.NodeLink(tunnel_url="https://t", node_id="n", token="tok")
+    _drive(monkeypatch, link, [_Rejected(403)] * 3 + [OSError("reset")])
+    assert link.consecutive_rejects == 0
+
+
+def test_handshake_status_reads_both_websockets_shapes():
+    assert NL._handshake_status(_Rejected(403)) == 403
+    legacy = Exception("x")
+    legacy.status_code = 401
+    assert NL._handshake_status(legacy) == 401
+    assert NL._handshake_status(OSError("refused")) is None
+
+
+def test_status_before_any_attempt_is_starting():
+    link = NL.NodeLink(tunnel_url="https://t", node_id="n", token="tok")
+    assert link.status()["state"] == "starting"
+    link.connected = True
+    assert link.status()["state"] == "connected"

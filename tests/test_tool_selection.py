@@ -181,3 +181,17 @@ def test_trivial_turn_prompt_is_small(monkeypatch):
     assert registered > 20, "fixture no longer registers the daemon's builtin set"
     assert len(captured["tools"]) <= len(CORE_TOOL_NAMES) + 1
     assert tool_tokens < 1500, f"trivial turn ships ~{tool_tokens} tokens of tool schemas"
+
+
+
+def test_agent_choice_all_ships_every_schema_even_unclassified(monkeypatch):
+    """Agent Home's serve agent passes mode="all": its real tools are not in the
+    core, and a small local model never calls load_tools to find them."""
+    monkeypatch.delenv("ADK_TOOL_SELECTION", raising=False)
+    reg = _registry()
+    sel = TurnToolSelection(reg.list_tools(), None, _filter_tools_by_intent, mode="all")
+    assert not sel.active
+    assert len(sel.schemas(reg.to_openai_format)) == len(reg.list_tools())
+    assert LOAD_TOOLS_NAME not in _names(sel.schemas(reg.to_openai_format))
+    # and the default is untouched
+    assert TurnToolSelection(reg.list_tools(), None, _filter_tools_by_intent).active

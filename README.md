@@ -66,6 +66,7 @@ adk doctor         # something wrong? this names it
 - [Documentation map](#documentation-map) — every guide, linked
 - [Subagents — drive Claude Code, Codex, and eight more](#subagents--drive-claude-code-codex-and-eight-more) — real binaries, scoped, torn down
 - [Quick Start](#quick-start)
+- [Aither Hearth: your agent, on your phone](#aither-hearth-your-agent-on-your-phone) — serve, channels, approvals, receipts
 - [Bonsai: an agent on literally anything](#bonsai-an-agent-on-literally-anything)
 - [Reasoning capture & code intelligence](#reasoning-capture--code-intelligence) — external thinking, omp interop, DeepSeek Coder
 - [Setting Up Inference](#setting-up-inference)
@@ -104,6 +105,7 @@ If you only remember one thing: **`agent.chat()` is the agent.** Everything else
 | Understand the world-model layer | [docs/WORLD_MODEL.md](docs/WORLD_MODEL.md) |
 | Connect agents across machines (relay) | [docs/AITHERRELAY_GUIDE.md](docs/AITHERRELAY_GUIDE.md) |
 | Run a private, local-only companion | [PRIVATE_COMPANION.md](PRIVATE_COMPANION.md) |
+| Reach my own agent from my phone (Aither Hearth) | [docs/agent-home.md](docs/agent-home.md) — `adk home serve`, channels, approvals, receipts |
 | See working code | [`examples/`](examples/) — five runnable scripts |
 | See what changed | [CHANGELOG.md](CHANGELOG.md) |
 | Browse rendered docs | [aitherium.github.io/awdk](https://aitherium.github.io/awdk/) |
@@ -371,6 +373,42 @@ the tenant workspace (dgg.aitherium.com) and in `adk volunteer status`.
 | Closed system, monthly fee | **Open-core (BSL-1.1) — free, runs entirely on your box** |
 | Locked to one provider | **Runtime backend switching** — swap LLM mid-session |
 | Cloud-only reasoning | **Hybrid reasoning** — local orchestration + cloud deep thinking |
+
+---
+
+## Aither Hearth: your agent, on your phone
+
+`adk home` runs **one personal agent** on your machine that answers only you, on the chat apps
+you already use. The same CLI is installed as `aither-hearth`.
+
+```bash
+adk home init --name pip                  # ~/.aither/agent-home: persona, model, memory
+adk home model --byo anthropic            # or --local ollama | llamacpp | bonsai
+adk home model --check
+adk home signin                           # Sign in with Aitherium
+export HEARTH_TELEGRAM_TOKEN=...          # a Telegram bot token from @BotFather
+adk home serve --channels telegram --pair # prints a 6-digit code: DM it to the bot
+```
+
+- **Serve and channels.** `adk home serve` answers you on the relay, Telegram, Discord, Slack,
+  email, WhatsApp and SMS: every channel whose credentials are in the environment
+  (`adk home channels` shows which), or exactly the ones in `--channels`. Pair another channel
+  by sending `pair <channel>` from one that is already paired.
+- **It messages you first.** Reminders and follow-ups you ask for arrive on the channel you last
+  used.
+- **Approvals.** Anything that sends, books or adds (an email, a calendar event, a to-do, a
+  recurring follow-up) waits for your `yes <code>` on the channel the request arrived on.
+- **Receipts.** Every action is appended to a signed, hash-chained log:
+  `adk home receipts --verify` exits 0 intact, 1 tampered, 2 cannot judge.
+  `adk home trust status` shows what is enforced.
+- **Connectors (optional).** After `adk home signin`, a workspace admin connects a Google account
+  at `api.aitherium.com/admin?tab=connections` (admin-only); the agent can then read your agenda
+  and mail, and add to them only after an approval. Microsoft 365 is not available yet.
+- **Local window.** `adk home say "..."`, `adk home events` and `/hearth` in `adk-shell` talk to
+  the running serve over `127.0.0.1` instead of starting a second agent.
+
+Everything above is free. The paid `agent-home` pack adds learning that carries across game
+sessions and more than one agent at a time. Full guide: [docs/agent-home.md](docs/agent-home.md).
 
 ---
 

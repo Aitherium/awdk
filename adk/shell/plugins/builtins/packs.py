@@ -1,6 +1,6 @@
 """
 ADK Shell Plugin: Packs Marketplace
-Browse, purchase, and manage agent/skill/tool packs from the Elysium marketplace.
+Browse, purchase, and manage agent/skill/tool packs from the Aitherium marketplace.
 """
 
 import json
@@ -601,7 +601,7 @@ class PacksPlugin(SlashCommand):
         return """
 === PACKS MARKETPLACE HELP ===
 
-Browse and manage agent/skill/tool packs from the Elysium marketplace.
+Browse and manage agent/skill/tool packs from the Aitherium marketplace.
 
 SYNTAX:
   /packs [command] [options]

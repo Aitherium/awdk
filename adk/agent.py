@@ -1232,6 +1232,25 @@ class AitherAgent:
                 pass
             self._routines_started = False
 
+    def _companion_active(self) -> bool:
+        """True only when THIS agent speaks as the private companion.
+
+        Same rule as the system-prompt builder: an explicit ``system_prompt`` is a
+        deliberate identity, so a companion persona in the local vault must not reach
+        it. The coherence gates used to check only "a vault exists", so every agent on
+        a box with a companion (Agent Home's serve agent, a coding agent) got the
+        companion's canned replies and its grounding-repair rewrite.
+        """
+        if self._system_prompt:
+            return False
+        try:
+            from adk.private_companion import get_companion_vault
+            _v = get_companion_vault()
+            return bool(
+                _v and _v.get_system_prompt_for_level(_v.get_safety_level() or "professional"))
+        except Exception:
+            return False
+
     async def _companion_grounding_repair(self, content: str, message: str, sid: str) -> str:
         """OUTPUT-side never-fabricate backstop (companion turns). When the reply
         plausibly claims shared history, ONE LLM pass checks it against the agent's
@@ -1243,16 +1262,8 @@ class AitherAgent:
         try:
             if not content or not coherence.reply_makes_shared_claim(content):
                 return content
-            # Companion turn? (private vault persona active)
-            _active = False
-            try:
-                from adk.private_companion import get_companion_vault
-                _v = get_companion_vault()
-                _active = bool(
-                    _v and _v.get_system_prompt_for_level(_v.get_safety_level() or "professional"))
-            except Exception:
-                _active = False
-            if not _active:
+            # Companion turn? (private vault persona active FOR THIS AGENT)
+            if not self._companion_active():
                 return content
             # Gather KNOWN facts: graph memory keyed to message+reply, + this chat.
             _known_parts: list[str] = []
@@ -1496,15 +1507,8 @@ class AitherAgent:
         # not stop weaker local models from confabulating.
         try:
             from adk.coherence import history_may_answer, honest_miss_reply, is_memory_question
-            _companion_active = False
-            try:
-                from adk.private_companion import get_companion_vault
-                _v = get_companion_vault()
-                _companion_active = bool(
-                    _v and _v.get_system_prompt_for_level(_v.get_safety_level() or "professional"))
-            except Exception:
-                _companion_active = False
-            if _companion_active and is_memory_question(message) and not _mem_grounded:
+            if (self._companion_active() and is_memory_question(message)
+                    and not _mem_grounded):
                 _coh_hist = history or await self.memory.get_history(sid, limit=20)
                 if not history_may_answer(message, _coh_hist):
                     logger.info("[COHERENCE] adk companion memory-question MISS — honest reply, "
@@ -1569,7 +1573,8 @@ class AitherAgent:
         # 2026-09-27: "reply ok" carried 55 schemas, ~5.2k of an 8k window.
         from adk.tool_selection import LOAD_TOOLS_NAME, TurnToolSelection
         _tool_sel = TurnToolSelection(
-            self._tools.list_tools(), self._current_intent, _filter_tools_by_intent)
+            self._tools.list_tools(), self._current_intent, _filter_tools_by_intent,
+            mode=getattr(self, "tool_selection", None))
         tools_schema = _tool_sel.schemas(self._tools.to_openai_format)
         tool_calls_made = []
         # Human-in-the-loop approval state. ``_pending_approvals`` collects gated tool
@@ -2211,7 +2216,10 @@ class AitherAgent:
                 # second pass: deny → feed a denial observation; allow → fall through to
                 # execute; undecided → record the pending call and pause the whole turn.
                 if needs_approval(self.name, tc.name):
-                    _decision = _approval_store.decision_for(sid, tc.name)
+                    # Per call: an allow covers the args on the card, not the tool.
+                    _decision = _approval_store.decision_for(
+                        sid, tc.name,
+                        tc.arguments if isinstance(tc.arguments, dict) else {})
                     if _decision == "deny":
                         tool_calls_made.append(f"{tc.name}[denied]")
                         messages.append(Message(
@@ -2708,7 +2716,8 @@ class AitherAgent:
         # load_tools (adk.tool_selection); the ACTION handler below expands it.
         from adk.tool_selection import LOAD_TOOLS_NAME, TurnToolSelection
         _tool_sel = TurnToolSelection(
-            self._tools.list_tools(), _intent, _filter_tools_by_intent)
+            self._tools.list_tools(), _intent, _filter_tools_by_intent,
+            mode=getattr(self, "tool_selection", None))
 
         def _tool_line(td) -> str:
             props = (td.parameters or {}).get("properties", {}) if isinstance(td.parameters, dict) else {}

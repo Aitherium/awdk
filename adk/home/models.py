@@ -1,4 +1,4 @@
-"""Model choice for Agent Home: local (Bonsai / llama.cpp / Ollama) or BYO key.
+"""Model choice for Agent Home: local (Bonsai / llama.cpp / Ollama / awnode) or BYO key.
 
 Every choice maps onto a provider ``adk.llm.LLMRouter`` already knows, so the
 agent's model is built by the same code every adk agent uses.
@@ -23,6 +23,9 @@ class Preset:
     hint: str = ""
 
 
+#: awnode's default bind (``awnode start --port``, default 8090) + its OpenAI root.
+AWNODE_URL = "http://127.0.0.1:8090/v1"
+
 PRESETS: Dict[str, Preset] = {
     # local -- nothing leaves the machine
     "bonsai": Preset("local", "bonsai", "http://127.0.0.1:8080/v1", "bonsai-selfhost",
@@ -32,6 +35,13 @@ PRESETS: Dict[str, Preset] = {
                        hint="run: llama-server -m <model.gguf> --port 8080"),
     "ollama": Preset("local", "ollama", "http://localhost:11434", "gemma4:4b",
                      hint="install Ollama, then: ollama pull gemma4:4b"),
+    # awnode: this machine's own gateway (OpenAI-compatible /v1 on :8090). It routes
+    # to whichever local backend it found (Bonsai, llama.cpp, vLLM, Ollama) and
+    # resolves the unpinned model "auto" to one that backend actually serves.
+    # Loopback callers need no token (awnode _require_node_owner).
+    "awnode": Preset("local", "llamacpp", AWNODE_URL, "auto",
+                     hint="install: pip install awnode; run: awnode start (serves "
+                          ":8090 and routes to the local model it finds)"),
     # bring your own key
     "deepseek": Preset("byo", "deepseek", "https://api.deepseek.com/v1", "deepseek-chat",
                        key_env="DEEPSEEK_API_KEY"),
@@ -102,4 +112,25 @@ def probe(cfg: ModelConfig, timeout: float = 3.0) -> Dict[str, Any]:
         p = PRESETS[cfg.provider]
         return {"ok": False, "detail": f"{url} unreachable ({type(exc).__name__}). "
                                        f"{p.hint}"}
+    if cfg.provider == "awnode" and r.status_code == 200:
+        return _awnode_verdict(url, r)
     return {"ok": r.status_code == 200, "detail": f"{url} -> {r.status_code}"}
+
+
+def _awnode_verdict(url: str, r: Any) -> Dict[str, Any]:
+    """awnode answers /v1/models 200 with an EMPTY list when no backend is up --
+    the gateway is alive but every chat would 503. That is not a usable model."""
+    try:
+        data = r.json().get("data") or []
+    except (ValueError, AttributeError):
+        return {"ok": False, "detail": f"{url} -> 200 but not JSON: is this awnode?"}
+    served = [str(m.get("id")) for m in data if isinstance(m, dict) and m.get("id")]
+    if not served:
+        return {"ok": False, "detail": f"{url} -> 200, but awnode serves no model: start "
+                                       "a local backend it can route to (Bonsai / "
+                                       "llama-server / vLLM / Ollama), then re-check"}
+    backends = sorted({str(m.get("owned_by")) for m in data
+                       if isinstance(m, dict) and m.get("owned_by")})
+    return {"ok": True, "models": served,
+            "detail": f"{url} -> 200, {len(served)} model(s) via "
+                      f"{', '.join(backends) or 'awnode'}"}

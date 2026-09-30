@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.29"
+version = "3.8.34"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -323,6 +323,9 @@ adk-serve = "adk.server:main"
 adk-workspace = "adk.server:main_workspace"
 adk-bug = "adk.bugreport:main"
 adk-shell = "adk.shell.cli:entry"
+# Aither Hearth (the product; its pack id stays `agent-home`): the desktop, awdesk
+# and awsh launchers look for this name first. The same CLI as `adk home`.
+aither-hearth = "adk.home.cli:main"
 
 [tool.hatch.build]
 # Distribution-time moat boundary. These files exist in the source repo (the

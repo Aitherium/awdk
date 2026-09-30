@@ -106,6 +106,13 @@ _HTTP_TIMEOUT = 30.0
 _PROBE_TIMEOUT = float(os.getenv("AITHER_EMBED_PROBE_TIMEOUT", "15"))
 _BATCH = 64
 
+# The CPU rung's child process (torch + sentence-transformers) is shut down after
+# this many seconds with no embed in flight; the next embed respawns it. Measured
+# 2026-09-29 on aitheros-mcpgateway: the child was spawned for a handful of embeds
+# (5.7 s CPU in total) and then sat idle for 3.5 h at 1.07 GB RSS -- 80% of the
+# gateway's growth from 278 MB to 1.29 GB. 0 disables the reaper.
+_ST_IDLE_S = float(os.getenv("AITHER_EMBED_ST_IDLE_S", "300"))
+
 # Auto-deploy tuning
 _AUTODEPLOY_IMAGE = os.getenv("AITHER_EMBED_VLLM_IMAGE", "vllm/vllm-openai:latest")
 _AUTODEPLOY_CONTAINER = "aither-adk-embeddings"
@@ -177,6 +184,9 @@ class AdkEmbeddings:
         # CPU rung: the model lives in ONE child process (see _embed_st), never here.
         self._st_pool = None
         self._st_pool_lock = threading.Lock()
+        self._st_inflight = 0               # embeds running in the child right now
+        self._st_last_used = 0.0            # monotonic time the last embed finished
+        self._st_idle_timer: Optional[threading.Timer] = None
         self._autodeploy_attempted = False
         self._headers: dict = {}            # auth headers for the pinned endpoint
 
@@ -571,6 +581,11 @@ class AdkEmbeddings:
         feature hash and re-resolves on the next one.
         """
         loop = asyncio.get_running_loop()
+        with self._st_pool_lock:
+            self._st_inflight += 1
+            if self._st_idle_timer is not None:
+                self._st_idle_timer.cancel()
+                self._st_idle_timer = None
         try:
             return await loop.run_in_executor(
                 self._st_executor(), _st_encode_in_child, self._model, list(texts))
@@ -582,6 +597,42 @@ class AdkEmbeddings:
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
             raise
+        finally:
+            self._arm_st_idle_reaper()
+
+    def _arm_st_idle_reaper(self) -> None:
+        """One embed finished: if none is left in flight, (re)start the idle clock."""
+        with self._st_pool_lock:
+            self._st_inflight = max(0, self._st_inflight - 1)
+            self._st_last_used = time.monotonic()
+            if self._st_inflight or _ST_IDLE_S <= 0 or self._st_pool is None:
+                return
+            if self._st_idle_timer is not None:
+                self._st_idle_timer.cancel()
+            timer = threading.Timer(_ST_IDLE_S, self._reap_idle_st_pool)
+            timer.daemon = True
+            timer.name = "adk-embed-st-reaper"
+            self._st_idle_timer = timer
+        timer.start()
+
+    def _reap_idle_st_pool(self) -> None:
+        """Shut the CPU-model pool down if it has been idle for ``_ST_IDLE_S``.
+
+        The child process exits and its model memory goes back to the host; the
+        next embed spawns a fresh child (a few seconds of model load, off-loop).
+        """
+        with self._st_pool_lock:
+            self._st_idle_timer = None
+            idle_for = time.monotonic() - self._st_last_used
+            if self._st_inflight or self._st_pool is None or idle_for < _ST_IDLE_S * 0.99:
+                return
+            pool, self._st_pool = self._st_pool, None
+        from concurrent.futures import ThreadPoolExecutor
+        if isinstance(pool, ThreadPoolExecutor):
+            # Frozen build: the model lives in THIS process; drop it with the pool.
+            _CHILD_ST_MODELS.clear()
+        pool.shutdown(wait=False, cancel_futures=True)
+        logger.info("adk.embeddings: CPU embedding worker idle %.0fs -- shut down", idle_for)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -710,6 +761,9 @@ def reset_provider() -> None:
     """Drop the cached provider so the next call re-probes the resolution chain."""
     global _provider
     old, _provider = _provider, None
+    timer = getattr(old, "_st_idle_timer", None)
+    if timer is not None:
+        timer.cancel()
     pool = getattr(old, "_st_pool", None)
     if pool is not None:  # do not orphan the CPU-embedding child process
         pool.shutdown(wait=False, cancel_futures=True)

@@ -90,6 +90,23 @@ def _read_manifest(path: Path) -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(data, dict) or not data.get("id"):
         return None
+    return resolve_image_env(data)
+
+
+def resolve_image_env(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply a manifest's ``image_env`` override to its ``image``, in place.
+
+    A shipped manifest names a PUBLIC image as its default; an operator who runs
+    their own build of the component points at it with the env var the manifest
+    names (``image_env: AWNODE_COMFYUI_IMAGE``). Resolved at read time so every
+    consumer -- enable, compose generation, the listing -- sees the same image.
+    An unset or blank variable keeps the default.
+    """
+    var = data.get("image_env")
+    if isinstance(var, str) and var.strip():
+        override = os.environ.get(var.strip(), "").strip()
+        if override:
+            data["image"] = override
     return data
 
 
@@ -333,6 +350,13 @@ class AddonManager:
             instance.status = "running"          # assumed already running (legacy shape)
             return instance
         argv = shlex.split(command.format(port=port), posix=(sys.platform != "win32"))
+        if sys.platform == "win32":
+            # posix=False KEEPS the quotes, so `"C:/Program Files/x.exe" -c ...`
+            # became argv[0]='"C:/Program Files/x.exe"' and shutil.which() said
+            # None: every quoted-exe manifest was refused as "not on PATH"
+            # (measured 2026-09-30). Strip one matching pair per token.
+            argv = [a[1:-1] if len(a) > 1 and a[0] == a[-1] and a[0] in "\"'" else a
+                    for a in argv]
 
         # RESOLVE THE BINARY BEFORE SPAWNING, and say so in the manifest's own terms.
         #

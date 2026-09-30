@@ -1,19 +1,117 @@
-# Agent Home — host your own agent, and send it into games
+# Aither Hearth — your own agent, on your machine, on your phone
 
-Agent Home is the awdk kit for running **your own** agent on **your own**
-machine: you pick its model, write its persona, choose the harness that runs
-it, and let it join games, where it explores, remembers what worked, and plays
-better the next time.
+Aither Hearth (it began as Agent Home, and the pack id is still `agent-home`) is
+the awdk kit for running **your own** agent on **your own** machine: you pick
+its model, write its persona, choose the harness that runs it, and reach it
+from your phone. It messages you first when a reminder is due, asks before it
+sends or books anything, and signs a receipt for everything it does. It can
+also join games, where it explores, remembers what worked, and plays better
+the next time.
 
 ```bash
 pip install awdk
 adk home init --name pip                  # creates ~/.aither/agent-home
 adk home model --local bonsai             # or: --byo deepseek | openai | anthropic
-adk home harness aither                   # or: claude | openclaw | hermes
-adk home join "saga+http://127.0.0.1:8793?world=elysium" --steps 10
+adk home model --check
+adk home signin                           # Sign in with Aitherium
+export HEARTH_TELEGRAM_TOKEN=...          # a Telegram bot token from @BotFather
+adk home serve --channels telegram --pair # prints a 6-digit code: DM it to the bot
 ```
 
-Every command also runs as `python -m adk.home …`.
+Every `adk home` command also runs as `aither-hearth …` and as
+`python -m adk.home …`. With no command it prints this help and exits.
+
+The relay channel reaches a person only once the agent's nick is enrolled in
+the relay's fleet-trust roster, which an Aitherium operator does today; until
+then an unenrolled agent is limited to agent-only rooms, so reach your phone
+through Telegram (or another channel below).
+
+## Hearth: talk to your agent from anywhere
+
+`adk home serve` keeps your agent running and answers **your** messages on
+every channel it is set up for. It answers only its owner; everyone else is
+ignored.
+
+### Pairing
+
+`adk home serve --pair` prints a 6-digit code. The first message that is
+exactly that code, from a sender the channel can vouch for, makes that account
+the owner on that channel, and the code dies. To add a second channel, send
+`pair <channel>` (for example `pair telegram`) from a channel that is already
+paired; the agent replies with a new code that works only on that channel.
+
+### Channels
+
+Credentials come from the environment (or the OS keychain for the mail
+password), never from a command-line flag. `adk home channels` shows which
+channels are available, configured and paired (owners masked).
+
+| channel | what it needs |
+|---|---|
+| `relay` | `AITHER_RELAY_TOKEN`, or the credential `adk relay provision <name>` saved |
+| `telegram` | `HEARTH_TELEGRAM_TOKEN` (or `TELEGRAM_BOT_TOKEN`) |
+| `discord` | `HEARTH_DISCORD_TOKEN` (or `DISCORD_BOT_TOKEN`) |
+| `slack` | `HEARTH_SLACK_BOT_TOKEN` and `HEARTH_SLACK_APP_TOKEN` (or the `SLACK_*` names) |
+| `email` | `HEARTH_IMAP_HOST`, `HEARTH_IMAP_USER`, `HEARTH_MAIL_PASSWORD`, `HEARTH_MAIL_AUTHSERV_ID` |
+| `whatsapp` | `HEARTH_WA_TOKEN`, `HEARTH_WA_APP_SECRET`, `HEARTH_WA_VERIFY_TOKEN`, `HEARTH_WA_PHONE_NUMBER_ID` |
+| `sms` | `HEARTH_TWILIO_ACCOUNT_SID`, `HEARTH_TWILIO_AUTH_TOKEN`, `HEARTH_TWILIO_FROM`, `HEARTH_TWILIO_PUBLIC_URL` |
+| `local` | nothing: on by default, `127.0.0.1` only (see below) |
+
+By default serve opens the relay (when a relay credential exists), every
+channel whose credentials are set, and `local`. `--channels telegram,email`
+picks exactly those; `--no-local` leaves the local channel closed.
+
+Replies go back on the channel you wrote from. Reminders and follow-ups go to
+the channel you last wrote from, falling back to any other paired channel.
+
+### Approvals
+
+Anything that acts for you — sending a message or an email, adding a calendar
+event or a to-do, a recurring follow-up — stops and asks first. The agent
+sends a card listing exactly what it wants to do; reply `yes <code>` to allow
+it or `no <code>` to refuse, from the same channel the card arrived on. A yes
+allows those exact arguments once; a new message from you cancels the card.
+
+### Receipts
+
+Every tool call, message sent and approval is appended to a signed,
+hash-chained log, `<home>/actions.jsonl`.
+
+```bash
+adk home receipts -n 20          # the last 20
+adk home receipts --verify       # exit 0 intact, 1 tampered, 2 cannot judge
+adk home trust status            # egress guard, approvals, receipts: what is enforced
+adk home trust init              # write air_gap.yaml (enforcement: audit) to start from
+```
+
+You can also ask the agent for its recent receipts from any channel.
+
+### Calendar, mail and to-do (optional)
+
+After `adk home signin`, a workspace admin connects a Google account once at
+<https://api.aitherium.com/admin?tab=connections> (that page is admin-only;
+there is no member connect page yet). The agent can then read your agenda and
+unread mail, and — always after an approval — add an event or send an email.
+Microsoft 365 (calendar, mail and Microsoft To Do, which the to-do tools need)
+is not available yet: the platform has no Microsoft app registration. Nothing here stores a refresh token
+on your machine: each call resolves a short-lived access token with your
+sign-in. Without a connected account those tools say so and do nothing.
+
+### The local window
+
+The `local` channel lets anything on this machine talk to the ONE running
+serve instead of starting a second agent. It listens on `127.0.0.1` port
+`$HEARTH_LOCAL_PORT` (default 8363) and writes a fresh token to
+`<home>/local.token` each time serve starts.
+
+```bash
+adk home say "what is on my calendar tomorrow?"
+adk home say "yes 1a2b3c4d"      # answer an approval card
+adk home events                  # stream replies and follow-ups as they arrive
+```
+
+In the awdk shell (`adk-shell`), `/hearth <text>` does the same, and
+`/hearth receipts` shows the last receipts with the verify verdict.
 
 ## 1. The home folder
 
@@ -126,31 +224,36 @@ Each session (`adk.games.learning.GameLearner`):
 room through `adk.games.env_adapter:GameEnvAdapter` — the same path the ARC
 adapter uses — and writes a sandbox proof when surprise falls.
 
-## 6. Free vs the Agent Home kit
+## 6. Free vs the Aither Hearth kit
 
 | | free | `agent-home` pack |
 |---|---|---|
 | set up, persona, model, harness | yes | yes |
+| serve, every channel, approvals, receipts, calendar and mail | yes | yes |
 | join, observe, act, chat, play a session | yes | yes |
 | learning that persists across sessions (`--learn`) | — | yes |
-| world-model enrollment (`adk home enroll`) | — | yes |
+| world-model enrollment of a game room (`adk home enroll`) | — | yes |
 | more than one agent (`--agents N`) | — | yes |
 
-Buy the kit at <https://aitherium.com/shop/agent-home>, then:
+Buy the kit at <https://aitherium.com/shop/agent-home>, then sign in with the
+email you paid with:
 
 ```bash
-adk home license ~/Downloads/agent-home-license.json   # or paste the text
+adk home signin
 adk home status
 ```
 
-The license is verified (Ed25519, offline) before it is saved to
-`~/.aither/license.json`; a license that does not verify is refused and
-nothing is overwritten. adk reads one license file, so if the installed
-license grants a pack the new one does not (say you bought Deep Research
-earlier), the command refuses with exit `2`, names the packs that would stop
-working, and saves nothing. Ask the shop to resend your licenses (it issues
-one license listing every pack you own) and install that one. `--replace`
-installs anyway; the old license is then kept as `license.json.<time>.bak`.
+Offline, install the license key instead:
+
+```bash
+adk home license ~/Downloads/agent-home-license.json   # or paste the text; '-' reads stdin
+```
+
+The license is verified (Ed25519, offline) before it is saved; a license that
+does not verify is refused and nothing is written. Each offline license is
+kept as its own file under `~/.aither/licenses/`, beside your account license
+and any other license, so installing one never turns off a pack you already
+own.
 
 Exit codes: `0` ok · `1` the game or model failed · `2` setup or arguments ·
 `3` needs the `agent-home` pack.

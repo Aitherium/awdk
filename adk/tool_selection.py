@@ -130,10 +130,16 @@ class TurnToolSelection:
         filter_fn: the existing intent filter, applied when the turn IS classified.
     """
 
-    def __init__(self, tools: list[Any], intent_type: str | None, filter_fn) -> None:
+    def __init__(self, tools: list[Any], intent_type: str | None, filter_fn,
+                 mode: str | None = None) -> None:
         self._all = list(tools)
         self.loaded: list[str] = []
-        self.active = selection_mode() == "core" and is_unclassified(intent_type)
+        # ``mode`` is the AGENT's own choice and beats the env default: a curated
+        # agent whose real tools are not in the core (Agent Home's remind_me /
+        # follow_up / receipts) passes "all", or a small local model never loads
+        # them and answers "I set a reminder" with nothing on disk.
+        chosen = (mode or selection_mode()).strip().lower()
+        self.active = chosen == "core" and is_unclassified(intent_type)
         if not self.active:
             self._offered = list(filter_fn(self._all, intent_type))
             self._groups: dict[str, list[Any]] = {}

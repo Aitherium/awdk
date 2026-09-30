@@ -71,6 +71,52 @@ def test_store_roundtrip_and_decisions(isolated_store):
     assert s.get("sid1") is None
 
 
+def _pending_store(sid):
+    s = ApprovalStore()
+    s.put_pending(sid, user_message="m", agent="test",
+                  pending=[{"tool_use_id": "tc_1", "tool": "search", "args": {}}])
+    return s
+
+
+def test_missing_result_fails_closed(isolated_store):
+    s = _pending_store("sM")
+    merged = s.record_decisions("sM", [{"tool_use_id": "tc_1"}])
+    assert merged == {"search": "deny"}
+    assert s.decision_for("sM", "search") == "deny"
+
+
+@pytest.mark.parametrize(
+    "garbage", ["yes", "ALLOWED", "", None, 1, True, ["allow"], {"v": "allow"}]
+)
+def test_malformed_result_fails_closed(isolated_store, garbage):
+    s = _pending_store("sG")
+    s.record_decisions("sG", [{"tool": "search", "result": garbage}])
+    assert s.decision_for("sG", "search") == "deny"
+
+
+@pytest.mark.parametrize("value", ["allow", "Allow", " ALLOW "])
+def test_explicit_allow_is_allowed(isolated_store, value):
+    s = _pending_store("sX")
+    s.record_decisions("sX", [{"tool_use_id": "tc_1", "result": value}])
+    assert s.decision_for("sX", "search") == "allow"
+
+
+def test_explicit_deny_is_denied(isolated_store):
+    s = _pending_store("sY")
+    s.record_decisions("sY", [{"tool": "search", "result": "deny"}])
+    assert s.decision_for("sY", "search") == "deny"
+
+
+def test_clear_empties_decisions(isolated_store):
+    s = _pending_store("sC")
+    s.record_decisions("sC", [{"tool": "search", "result": "allow"}])
+    assert s.decision_for("sC", "search") == "allow"
+    s.clear("sC")
+    assert s.get("sC") is None
+    assert s.decision_for("sC", "search") is None
+    s.clear("sC")  # idempotent on an unknown session
+
+
 @pytest.mark.asyncio
 async def test_chat_pauses_for_gated_tool(monkeypatch, isolated_store, tmp_memory):
     monkeypatch.setenv("AITHER_TOOL_APPROVAL", "search")
@@ -113,3 +159,93 @@ async def test_no_policy_never_pauses(monkeypatch, isolated_store, tmp_memory):
     resp = await agent.chat("Search for test", session_id="sN")
     assert resp.requires_action is False
     assert resp.content == "Found results!"
+
+
+# ── per-call keying: an allow covers the args on the card, not the tool ──────────
+
+def _two_call_store(sid):
+    s = ApprovalStore()
+    s.put_pending(sid, user_message="m", agent="test", pending=[
+        {"tool_use_id": "tc_a", "tool": "send", "args": {"to": "a"}},
+        {"tool_use_id": "tc_b", "tool": "send", "args": {"to": "b"}},
+    ])
+    return s
+
+
+def test_allow_by_id_covers_only_that_calls_args(isolated_store):
+    s = _two_call_store("sK")
+    s.record_decisions("sK", [{"tool_use_id": "tc_a", "result": "allow"}])
+    assert s.decision_for("sK", "send", {"to": "a"}) == "allow"
+    # the other pending call and a fresh call were not on the answer -> undecided
+    assert s.decision_for("sK", "send", {"to": "b"}) is None
+    assert s.decision_for("sK", "send", {"to": "c"}) is None
+    # back-compat: no args -> the tool-level label
+    assert s.decision_for("sK", "send") == "allow"
+
+
+def test_allow_by_tool_name_covers_every_pending_call_of_that_tool(isolated_store):
+    s = _two_call_store("sT")
+    s.record_decisions("sT", [{"tool": "send", "result": "allow"}])
+    assert s.decision_for("sT", "send", {"to": "a"}) == "allow"
+    assert s.decision_for("sT", "send", {"to": "b"}) == "allow"
+    assert s.decision_for("sT", "send", {"to": "zzz"}) is None
+
+
+def test_mixed_decisions_are_per_call(isolated_store):
+    s = _two_call_store("sMx")
+    s.record_decisions("sMx", [{"tool_use_id": "tc_a", "result": "allow"},
+                               {"tool_use_id": "tc_b", "result": "deny"}])
+    assert s.decision_for("sMx", "send", {"to": "a"}) == "allow"
+    assert s.decision_for("sMx", "send", {"to": "b"}) == "deny"
+
+
+def test_tool_level_deny_is_never_narrowed(isolated_store):
+    s = _two_call_store("sDn")
+    s.record_decisions("sDn", [{"tool": "send", "result": "deny"}])
+    assert s.decision_for("sDn", "send", {"to": "new"}) == "deny"
+
+
+def test_arg_key_order_does_not_matter(isolated_store):
+    s = ApprovalStore()
+    s.put_pending("sO", user_message="m", agent="test",
+                  pending=[{"tool_use_id": "t1", "tool": "send", "args": {"a": 1, "b": 2}}])
+    s.record_decisions("sO", [{"tool_use_id": "t1", "result": "allow"}])
+    assert s.decision_for("sO", "send", {"b": 2, "a": 1}) == "allow"
+
+
+def test_decision_without_pending_args_stays_tool_level(isolated_store):
+    """A decision recorded before any pending call (legacy clients) still answers."""
+    s = ApprovalStore()
+    s.record_decisions("sL", [{"tool": "search", "result": "allow"}])
+    assert s.decision_for("sL", "search", {"q": "anything"}) == "allow"
+
+
+def test_module_level_decision_for_passes_args(isolated_store):
+    s = approval.get_approval_store()
+    s.put_pending("sMod", user_message="m", agent="test",
+                  pending=[{"tool_use_id": "t1", "tool": "send", "args": {"to": "a"}}])
+    s.record_decisions("sMod", [{"tool_use_id": "t1", "result": "allow"}])
+    assert approval.decision_for("sMod", "send", {"to": "a"}) == "allow"
+    assert approval.decision_for("sMod", "send", {"to": "b"}) is None
+
+
+@pytest.mark.asyncio
+async def test_resume_allow_does_not_cover_a_second_call_with_other_args(
+        monkeypatch, isolated_store, tmp_memory):
+    """Allowing search(q=test) must not let the same turn run search(q=other) unasked."""
+    monkeypatch.setenv("AITHER_TOOL_APPROVAL", "search")
+    first = LLMResponse(content="", model="mock",
+                        tool_calls=[ToolCall(id="tc_1", name="search", arguments={"q": "test"})])
+    second = LLMResponse(content="", model="mock",
+                         tool_calls=[ToolCall(id="tc_2", name="search",
+                                              arguments={"q": "other"})])
+    llm = MagicMock()
+    llm.provider_name = "mock"
+    llm.chat = AsyncMock(side_effect=[first, first, second,
+                                      LLMResponse(content="done", model="mock")])
+    agent = _agent(llm, tmp_memory)
+    await agent.chat("Search for test", session_id="sPC")
+    resumed = await agent.resume("sPC", [{"tool_use_id": "tc_1", "result": "allow"}])
+    assert "search" in resumed.tool_calls_made          # the approved call ran
+    assert resumed.requires_action is True             # the new-args call asks again
+    assert any(p["args"] == {"q": "other"} for p in resumed.pending)

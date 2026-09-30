@@ -32,7 +32,12 @@ from typing import Optional
 
 logger = logging.getLogger("adk.a2a_trust")
 
-_REQUIRE_TRUST_MODE = os.getenv("AITHER_A2A_REQUIRE_TRUST", "false").lower()
+_REQUIRE_TRUST_ENV = "AITHER_A2A_REQUIRE_TRUST"
+
+
+def _require_trust_mode() -> str:
+    """Read at CALL time: ``adk home serve`` sets the default after import."""
+    return (os.getenv(_REQUIRE_TRUST_ENV, "false") or "false").strip().lower()
 
 # Module-level nonce cache: maps nonce -> expiry_epoch. Pruned on each call.
 # LIMITATION (P1, accepted): this cache is PER-PROCESS. A multi-worker deploy
@@ -315,9 +320,9 @@ def should_require_a2a_trust() -> bool:
       'audit': Verify but only log failures
       'true': Enforce — return 403 for untrusted keys
     """
-    return _REQUIRE_TRUST_MODE == "true"
+    return _require_trust_mode() == "true"
 
 
 def should_audit_a2a_trust() -> bool:
     """Check if A2A trust should be audited (logged but not enforced)."""
-    return _REQUIRE_TRUST_MODE == "audit"
+    return _require_trust_mode() == "audit"

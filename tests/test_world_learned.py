@@ -22,7 +22,12 @@ from adk.world_adapters import (
     train_from_transitions,
 )
 
-AWPREDICT_SRC = Path("C:/AitherOS-Fresh/AitherOS/packages/awpredict")
+# The sibling awpredict source, when this package sits in its monorepo; override with
+# AWPREDICT_SRC. Absent (a plain pip install / public checkout) the test skips.
+AWPREDICT_SRC = Path(os.environ.get(
+    "AWPREDICT_SRC",
+    str(Path(__file__).resolve().parents[2] / "AitherOS" / "packages" / "awpredict"),
+))
 
 
 class FlipWorld:

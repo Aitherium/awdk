@@ -37,9 +37,9 @@ HOW IT REACHES THE TAB (findings 3 and 4)
   for a hook's ``cmd.exe`` fails here.
 * :func:`type_owner_draft` -- the typing CHILD re-checks the creation time and that the
   image is ``claude``/``node`` immediately before ``AttachConsole``, then types the text
-  WITHOUT a submit key. Nothing can read what is already in Claude Code's input box (a
-  ``!`` bash-mode draft, a half ``/cmd``), so an Enter after the owner's words could run
-  them as a shell command; the words land as a draft the owner sends with one key.
+  and SUBMITS it (owner ruling 2026-09-28). Nothing can read what is already in Claude
+  Code's input box, so Enter also sends any leftover draft; only the owner can reach
+  this path. :func:`owner_submit_enabled` switches it back to a draft the owner sends.
 * :func:`sanitize_owner_text` -- one line, no control or format characters, at most
   :data:`OWNER_TEXT_MAX` characters, never starting with ``!`` / ``/`` / ``#``.
 """
@@ -373,6 +373,24 @@ def verify_tab_identity(
     return True, "", proc_start
 
 
+def owner_submit_enabled() -> bool:
+    """Submit owner text (default, per the 2026-09-28 ruling) unless switched off.
+
+    Env wins when set (so one process can opt out); else ``owner_submit`` in
+    ~/.aither/decisions.json; absent means ON.
+    """
+    raw = os.environ.get("AITHER_OWNER_STEER_SUBMIT", "").strip().lower()
+    if raw:
+        return raw not in ("0", "false", "no", "off")
+    try:
+        data = json.loads((Path.home() / ".aither" / "decisions.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if not isinstance(data, dict) or "owner_submit" not in data:
+        return True
+    return str(data.get("owner_submit")).strip().lower() not in ("0", "false", "no", "off")
+
+
 def type_owner_draft(
     pid: int,
     text: str,
@@ -382,13 +400,17 @@ def type_owner_draft(
     start_time_of: Optional[Callable[[int], Optional[float]]] = None,
     image_of: Optional[Callable[[int], str]] = None,
 ) -> Tuple[bool, str]:
-    """The typing CHILD's half: re-prove identity, then type WITHOUT submitting.
+    """The typing CHILD's half: re-prove identity, then type and SUBMIT.
 
     Immediately before ``AttachConsole`` the process's creation time must still match
-    ``proc_start`` and its image must be a Claude Code image. The text is typed with
-    ``submit=False``: an Enter after it would also submit whatever the tab's input box
-    already held (a ``!`` bash-mode draft runs as a shell command), and nothing can
-    read that box. The owner sends the draft with one key.
+    ``proc_start`` and its image must be a Claude Code image.
+
+    Submitted by default -- owner ruling 2026-09-28: "may it type straight into an idle
+    Claude tab? YES". An Enter also submits whatever the tab's input box already held,
+    and nothing can read that box; but only the OWNER can put text there now (agents
+    never reach this path without a signed owner assertion), so a leftover draft is the
+    owner's own. ``owner_submit: "0"`` in ~/.aither/decisions.json (or
+    AITHER_OWNER_STEER_SUBMIT=0) falls back to typing a draft the owner sends with one key.
     """
     ok, why = _start_matches(pid, proc_start, start_time_of or _process_start_time)
     if not ok:
@@ -400,7 +422,7 @@ def type_owner_draft(
         from adk.decisions.terminal import type_into_console
 
         typer = type_into_console
-    return typer(int(pid), text, submit=False)
+    return typer(int(pid), text, submit=owner_submit_enabled())
 
 
 # ── minting the gateway's transport principal ────────────────────────────────────

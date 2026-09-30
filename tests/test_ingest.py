@@ -342,10 +342,13 @@ class TestIngestIntegration:
         assert result.chunks_created > 0
 
     @pytest.mark.asyncio
-    async def test_ingest_handles_missing_path(self):
+    async def test_ingest_handles_missing_path(self, tmp_path):
         """Ingest handles missing path gracefully."""
+        # A tmp child, never a literal: on Windows "/nonexistent/path" resolves
+        # to C:/nonexistent/path, which an earlier test run had CREATED, so the
+        # "missing" path existed and the assertion failed (measured 2026-09-30).
         result = await ingest_files(
-            path="/nonexistent/path",
+            path=str(tmp_path / "does-not-exist"),
         )
 
         # Should return error result

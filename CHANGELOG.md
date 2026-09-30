@@ -4,6 +4,73 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.34] - 2026-09-30
+- Aither Hearth can see and steer the family tutor: `tutor_learners`, `tutor_report`,
+  `tutor_set_focus` and `tutor_assign` are registered when the tutor is available;
+  assigning and focus changes always ask first.
+- `adk learn`: today's Aither Learn quest in the terminal for a child signed in with
+  `adk login` (works on a phone's Linux terminal / Termux, no GPU deps).
+- `adk bonsai` phone setup notes for an on-device model (optional; the tutor never needs it).
+- Shell `/tutor focus` for guardians.
+
+## [3.8.33] - 2026-09-30
+
+### Added
+
+- **`aither-hearth` console script** (same entry point as `adk home`), so the buyer
+  setup `pip install -U awdk` then `adk home serve --pair` works from one install (#10147).
+
+### Changed
+
+- **Hearth hardening.** Session-scoped taint: once mail, calendar, todo or web content
+  has been read, every outbound tool asks the owner, and the approval card shows the
+  argument values. Taint persists in `taint.json` (rebuilt from receipts if missing);
+  `clear taint` resets it. `owner.json`, paused turns, `receipt.key` and `actions.jsonl`
+  are restricted by one helper (`adk/_private_file.py`) that fails closed. The first
+  `serve` writes the egress audit config, and `serve` defaults
+  `AITHER_A2A_REQUIRE_TRUST=true`. Tutor tools register on a signed-in home and
+  `tutor_assign` always asks (#10143).
+- **`adk mothership` is now `adk lookout`** (state dir `~/.aither/lookout`,
+  `AITHER_LOOKOUT_HOME`). `adk mothership` and `import adk.mothership` keep working; move
+  `~/.aither/mothership` to `~/.aither/lookout` to keep its ledger (#10124).
+
+### Fixed
+
+- `import adk.mothership` and `adk mothership` are back: 3.8.32 shipped without the
+  module that 3.8.31 had (PVR002).
+
+- `adk mobile test` runs Maestro by its resolved path, so `maestro.bat` starts on
+  Windows (#10127).
+- The harness daemon answers Chrome's Private Network Access preflight (#10140).
+
+## [3.8.32] - 2026-09-30
+
+### Added
+- `kv-handoff` shell plugin: which model pairs can share a KV cache, and a PASS/REFUSED
+  verdict for a cross-model mapper pack against its measured acceptance floors.
+
+## [3.8.31] - 2026-09-29
+
+### Added
+
+- **Aither Hearth.** `adk home serve`: an owner-only relay agent with DM approvals and
+  signed receipts, on every channel, with a local window (awsh `/hearth`,
+  `adk home say/events`) and Google Calendar, Gmail and Microsoft 365 connectors (#10092,
+  #10106, #10110, #10112).
+- **adk mothership.** Step into Slack/Linear/event streams without an @mention (#10116).
+- **adk mobile.** Android/iOS end-to-end tests that keep the proof (#10118).
+- **Aither Learn.** A family K-2 reading and math tutor (#10108).
+
+### Changed
+
+- **Owner steering sends by default.** Signed owner text from the phone is typed into an
+  idle Claude tab and submitted (owner ruling 2026-09-28). `owner_submit: "0"` in
+  `~/.aither/decisions.json` or `AITHER_OWNER_STEER_SUBMIT=0` restores draft-only
+  (#10076, #10101).
+- Doctrine, skills and awm memory reach gemini/codex/aider/opencode sessions (#10117).
+
+## [3.8.30] - 2026-09-29
+
 ### Added
 
 - **An awm-backed world model.** `AITHER_AGENT_WM_BACKEND=awm` selects
@@ -37,6 +104,10 @@ All notable changes to aither-adk will be documented in this file.
   category. `ADK_TOOL_SELECTION=all` restores the old behaviour. The recalled
   `# MEMORY` block is capped at 2,000 chars (500 per item). "reply ok" measured
   ~9.7k prompt tokens before, ~2.2k after.
+- **The CPU embedding child shuts down when idle.** The one-worker process that
+  holds the sentence-transformers model now exits after `AITHER_EMBED_ST_IDLE_S`
+  seconds (default 300; `0` keeps it forever) with no embed in flight, returning
+  its model memory to the host. The next embed starts a fresh child.
 
 ## [3.8.29] - 2026-09-27
 

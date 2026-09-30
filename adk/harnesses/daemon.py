@@ -486,6 +486,27 @@ def revoke_label(label: str, *, path: Path = None) -> int:
     return removed
 
 
+#: The entitlement that lets a principal LABEL another principal as the answerer
+#: of a decision card (Genesis names the human it authenticated). It is a label
+#: only: attestation is the signed ``answer_receipt`` (awstorage.attest verifies
+#: it), and neither this entitlement nor the ``*`` bearer confers any. Deliberately
+#: NOT satisfied by ``*``: every agent on the host can read that bearer.
+ATTEST_ENTITLEMENT = "decisions:attest"
+
+
+def answerer_label(principal: "Principal", claimed_by: str = "") -> str:
+    """The ``answered_by`` LABEL to record for an answer from ``principal``.
+
+    A registry principal holding ``decisions:attest`` BY NAME may name who it
+    authenticated; everything else is recorded as ``daemon:<principal id>``,
+    whatever the body claimed. Never an attestation: see ATTEST_ENTITLEMENT.
+    """
+    who = str(claimed_by or "").strip()
+    if ATTEST_ENTITLEMENT in (principal.entitlements or frozenset()) and who:
+        return who[:200]
+    return f"daemon:{principal.id}"
+
+
 def is_owner(principal: "Principal") -> bool:
     """The unrestricted caller: the owner bearer, or an unscoped "*" entry."""
     return principal is OWNER_PRINCIPAL or (not principal.paths and principal.has("*"))
@@ -707,6 +728,17 @@ if BaseModel is not None:
         #: ``channels.json``), it does not by itself change what the shared,
         #: unscoped daemon bearer can do.
         origin: Optional["WakeOrigin"] = None
+        #: LABELS from the answering surface. ``answered_by`` is honoured only from
+        #: a principal holding ``decisions:attest`` by name (else
+        #: ``daemon:<principal>``); ``answered_surface`` defaults to ``via``.
+        answered_by: str = ""
+        answered_surface: str = ""
+        #: The attesting surface's SIGNED receipt ({alg, kid, receipt, sig}). Stored
+        #: verbatim from any caller: the daemon cannot verify it and does not need
+        #: to -- a receipt nobody can forge is worthless to an agent that attaches
+        #: one, and verifiers check the signature. Any ``answer_attested`` boolean
+        #: in the body is ignored (not a field).
+        answer_receipt: Optional[dict] = None
 
     class CancelDecision(BaseModel):  # type: ignore[misc]
         note: str = ""
@@ -962,6 +994,21 @@ def unified_diff(
     return {"upserted": upserted, "removed": removed}
 
 
+def recall_awm_context(cwd: str) -> str:
+    """awm's scoped facts for ``cwd`` as prompt text, or "" (awm is optional)."""
+    try:
+        from awm.claude_hook import build
+        from awm.cli import DEFAULT_DB
+    except ImportError:
+        return ""
+    try:
+        out = build(DEFAULT_DB, cwd=Path(cwd))
+    except Exception as exc:  # noqa: BLE001 -- memory must never block a session start
+        print(f"awm memory not injected: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return ""
+    return ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext", "")
+
+
 def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     """Build the FastAPI app. Raises if no token can be resolved (fail-closed)."""
     if BaseModel is None:
@@ -984,6 +1031,16 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
+        # PRIVATE NETWORK ACCESS (2026-09-29). An https:// page (aitherium.com's
+        # "This device" panel) probing http://127.0.0.1:8362 makes Chrome send
+        # `Access-Control-Request-Private-Network: true` on the preflight, and
+        # Starlette answers `400 Disallowed CORS private-network` unless this is
+        # set -- measured on this daemon while :9001 (adk/server.py, which already
+        # sets it) answered 200. The grant is scoped by the explicit origin
+        # allowlist above (a wildcard is refused at startup), and every route but
+        # /health still needs the bearer, so this makes the daemon DETECTABLE,
+        # not drivable.
+        allow_private_network=True,
     )
 
     def auth(request: Request, authorization: str = Header(default="")) -> Principal:
@@ -1084,6 +1141,16 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             threading.Thread(target=_refresh, name="harness-detect", daemon=True).start()
         return list(installed_cache["ids"])
 
+    def _node_link_status() -> Optional[dict[str, Any]]:
+        try:
+            from adk.fleet_enroll import active_node_link
+
+            link = active_node_link()
+            status = getattr(link, "status", None)
+            return status() if callable(status) else None
+        except Exception:  # noqa: BLE001 -- liveness never fails on a side report
+            return None
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         """Liveness. Reads only in-memory state: no disk, no process probes."""
@@ -1109,6 +1176,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "spool": default_tailer().stats(),
             "transcripts": default_bridge().stats(),
             "well": default_well().stats(),
+            # The reverse link to the tunnel (phone / aitherium.com reach). None
+            # when this process holds no link. Its failures used to live only in
+            # the log: 1,079 retries and nothing on any probe (2026-09-30).
+            "node_link": _node_link_status(),
         }
 
     # ── the HUB contract (Aither Hub — gobbonet) ───────────────────────────
@@ -1402,6 +1473,12 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             from adk.reasoning_doctrine import with_doctrine
 
             fields["system_prompt_append"] = with_doctrine(fields.get("system_prompt_append") or "")
+            if getattr(spec, "prompt_carries_context", False):
+                # Claude Code recalls awm through its own SessionStart hook; these
+                # harnesses have none, so the same scoped facts ride in here.
+                memory = recall_awm_context(body.cwd or os.getcwd())
+                if memory:
+                    fields["system_prompt_append"] += "\n\n" + memory
         if body.skill:
             from adk.harnesses import skills_local
 
@@ -2584,6 +2661,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                                 detail="only the owner can answer a pairing card")
         if _existing is not None:
             _recipe_via = _guard_recipe_answer(principal, _existing, body.choice, body)
+        _by = answerer_label(principal, body.answered_by)
         try:
             card = store.answer(
                 card_id, body.choice, note=body.note or "",
@@ -2596,6 +2674,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 # Delivered explicitly below (the response reports the path);
                 # letting answer() deliver as well writes the mailbox twice.
                 deliver=False,
+                answered_by=_by,
+                answered_surface=body.answered_surface or None,
+                answer_receipt=body.answer_receipt,
             )
         except DecisionError as exc:
             # 409, not 400: answering an already-answered card is a LOST RACE, not

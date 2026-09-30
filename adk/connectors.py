@@ -26,13 +26,23 @@ import logging
 import os
 import subprocess
 import sys
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from adk._tls import tls_verify
 
 log = logging.getLogger("adk.connectors")
 
 _ENV_PREFIX = "CONNECTOR_"
+
+#: Connectors holding the owner's personal data (mail, calendar, to-do) --
+#: mirrors ``PERSONAL_CONNECTORS`` in AitherOS lib/connectors/catalog.py. A
+#: resolve-all (``connectors`` is None: the harness ``_child_env()`` path, whose
+#: children hold shell and file tools and no approval gate) never carries their
+#: tokens. Genesis already leaves them out; this strips them again so an older
+#: Genesis cannot put mailbox access into every child env. Only a caller that
+#: NAMES them (the gated Hearth tools) receives them.
+PERSONAL_CONNECTORS = ("google_calendar", "gmail", "microsoft_graph")
+_PERSONAL_ENV = frozenset(f"{_ENV_PREFIX}{c.upper()}_TOKEN" for c in PERSONAL_CONNECTORS)
 
 
 def _genesis_base() -> str:
@@ -51,25 +61,37 @@ def _bearer() -> str:
     return ""
 
 
-def _clean_env(payload: Dict) -> Dict[str, str]:
+def _clean_env(payload: Dict, named: bool = False) -> Dict[str, str]:
     """Keep only CONNECTOR_* values from a resolve response (never trust the
-    server to hand back anything else — this env reaches every child)."""
+    server to hand back anything else — this env reaches every child).
+
+    ``named`` is False for a resolve-all: personal-data tokens are dropped.
+    """
+    if not isinstance(payload, dict):
+        payload = {}
     return {
         k: str(v)
-        for k, v in (payload or {}).items()
-        if k.startswith(_ENV_PREFIX) and v
+        for k, v in payload.items()
+        if k.startswith(_ENV_PREFIX) and v and (named or k not in _PERSONAL_ENV)
     }
 
 
-async def resolve_connector_env(
+async def resolve_connectors(
+    connectors: Optional[List[str]] = None,
     genesis_base: Optional[str] = None,
     bearer: Optional[str] = None,
     timeout: float = 8.0,
-) -> Dict[str, str]:
-    """Resolve the caller's connector env vars from Genesis /connectors/resolve.
+) -> Dict[str, Any]:
+    """Resolve connector tokens, saying WHY when none came back.
 
-    Returns {} when nothing is connected, genesis is unreachable, or the
-    caller is denied — the agent still spawns; the vars are simply absent.
+    Returns ``{"env": {CONNECTOR_*: token}, "error": reason}`` where ``error``
+    is "" on a clean answer (``env`` may still be empty: nothing connected),
+    else ``unreachable`` / ``denied`` / ``http_<code>`` / ``bad_response``. A
+    caller that must tell a person what to do (the Hearth tools) needs that
+    difference; :func:`resolve_connector_env` keeps the fail-soft ``{}``.
+    ``connectors`` narrows the resolve to the named providers (fewer tokens
+    minted, fewer audit rows); None resolves every connected one EXCEPT the
+    :data:`PERSONAL_CONNECTORS`, which come back only when named.
     """
     import httpx
 
@@ -78,31 +100,54 @@ async def resolve_connector_env(
     token = bearer if bearer is not None else _bearer()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    payload: Dict[str, Any] = {} if connectors is None else {"connectors": list(connectors)}
     try:
         async with httpx.AsyncClient(timeout=timeout, verify=tls_verify()) as client:
             resp = await client.post(
-                f"{base}/connectors/resolve", headers=headers, json={}
+                f"{base}/connectors/resolve", headers=headers, json=payload
             )
     except (httpx.HTTPError, OSError) as exc:
         log.warning(f"connector env resolution skipped (unreachable): {exc}")
-        return {}
-    if resp.status_code == 403:
+        return {"env": {}, "error": "unreachable"}
+    if resp.status_code in (401, 403):
         log.warning(
-            "connector env resolution DENIED (403) — this caller is not entitled "
-            "to connectors; an admin must fix the tenant context"
+            "connector env resolution DENIED (%s) — this caller is not entitled "
+            "to connectors; an admin must fix the tenant context", resp.status_code,
         )
-        return {}
+        return {"env": {}, "error": "denied"}
     if resp.status_code != 200:
         log.warning(f"connector env resolution skipped (HTTP {resp.status_code})")
-        return {}
+        return {"env": {}, "error": f"http_{resp.status_code}"}
     try:
-        return _clean_env(resp.json().get("env"))
-    except Exception:  # noqa: BLE001
-        return {}
+        named = connectors is not None
+        return {"env": _clean_env(resp.json().get("env"), named=named), "error": ""}
+    except (ValueError, AttributeError) as exc:
+        log.warning(f"connector env resolution returned an unreadable body: {exc}")
+        return {"env": {}, "error": "bad_response"}
+
+
+async def resolve_connector_env(
+    genesis_base: Optional[str] = None,
+    bearer: Optional[str] = None,
+    timeout: float = 8.0,
+    connectors: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """Resolve the caller's connector env vars from Genesis /connectors/resolve.
+
+    Returns {} when nothing is connected, genesis is unreachable, or the
+    caller is denied — the agent still spawns; the vars are simply absent.
+    """
+    result = await resolve_connectors(
+        connectors, genesis_base=genesis_base, bearer=bearer, timeout=timeout,
+    )
+    return result["env"]
 
 
 def resolve_connector_env_sync(timeout: float = 3.0) -> Dict[str, str]:
-    """Sync form for harness `_child_env()` (session-cached by the caller)."""
+    """Sync form for harness `_child_env()` (session-cached by the caller).
+
+    A resolve-all: never returns a :data:`PERSONAL_CONNECTORS` token.
+    """
     import httpx
 
     base = _genesis_base()
