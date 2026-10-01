@@ -86,16 +86,81 @@ adk home trust init              # write air_gap.yaml (enforcement: audit) to st
 
 You can also ask the agent for its recent receipts from any channel.
 
-### Calendar, mail and to-do (optional)
+### Calendar, mail and to-do
 
-After `adk home signin`, a workspace admin connects a Google account once at
-<https://api.aitherium.com/admin?tab=connections> (that page is admin-only;
-there is no member connect page yet). The agent can then read your agenda and
-unread mail, and — always after an approval — add an event or send an email.
-Microsoft 365 (calendar, mail and Microsoft To Do, which the to-do tools need)
-is not available yet: the platform has no Microsoft app registration. Nothing here stores a refresh token
-on your machine: each call resolves a short-lived access token with your
-sign-in. Without a connected account those tools say so and do nothing.
+Every home has a calendar and a to-do list from the first minute. No account, no
+sign-in, nothing leaves the machine (`<home>/calendar.json`):
+
+```bash
+adk home calendar add "tomorrow 9:00" "Dentist" --minutes 45
+adk home calendar add 2026-10-03 "Mum's birthday"        # a bare date is all day
+adk home calendar                                         # this week
+adk home calendar "next week"                             # or today, friday, 2026-10-05
+adk home calendar move <id> "friday 14:00"
+adk home calendar delete <id>
+adk home todo add "Buy milk" --due friday
+adk home todo done <id>
+adk home chat "what's on my calendar this week?"
+```
+
+**A calendar you already have, by link.** Google, Outlook and iCloud each hand out
+a read-only ICS address for a calendar; subscribe to it and its events appear in
+the same views and in the agent's answers. No OAuth app, no admin:
+
+```bash
+adk home connect calendar --ics "<link>"        # https:// or webcal://
+adk home connect                                 # what is connected
+adk home calendar refresh                        # re-read now (else every 15 minutes)
+adk home connect calendar --remove --name "<name>"
+```
+
+| Provider | Where the link is |
+|---|---|
+| Google | calendar.google.com > Settings > your calendar > "Secret address in iCal format" |
+| Outlook | outlook.com > Settings > Calendar > Shared calendars > Publish a calendar > ICS |
+| iCloud | Calendar > share the calendar > Public Calendar > copy the `webcal://` link |
+
+`adk home init` offers the same choice (built-in, or also one by link) and
+`adk home init --calendar-ics "<link>"` does it in one step. The address is a
+secret (whoever has it can read that calendar): it is kept in an owner-only
+`connections.json`, never printed in full, and only `https://` is accepted.
+Repeating events, time zones (including the Windows zone names Outlook writes),
+all-day events, cancelled and moved instances are read. A subscribed calendar is
+read-only here: change its events in the calendar it comes from. If a refresh
+fails the last good copy is shown and the answer says so.
+
+CalDAV with an app password works the same way:
+`adk home connect calendar --caldav <collection-url> --user <login>` (the password
+is asked at a hidden prompt, or read from `HEARTH_CALDAV_PASSWORD`).
+
+**Mail, by app password.**
+
+```bash
+adk home connect mail --user you@gmail.com       # asks for an APP password, hidden
+adk home chat "any unread mail?"
+```
+
+Gmail, iCloud, Yahoo and Fastmail servers are known; for anything else pass
+`--imap-host` (and `--smtp-host`). Create the app password in the provider's
+security settings (Gmail: <https://myaccount.google.com/apppasswords>).
+Outlook.com no longer accepts passwords over IMAP. The password is taken from
+`HEARTH_MAIL_PASSWORD` or the hidden prompt, never from an argument; it is stored
+in the OS keychain when the `keyring` package is installed, otherwise in the
+owner-only `connections.json`. Reading never marks a message as read.
+
+**Approvals are unchanged.** The agent's `calendar_add`, `calendar_move`,
+`calendar_delete`, `todo_add`, `todo_done` and `mail_send` always ask you first --
+a card on your channel, or a `y/N` prompt in `adk home chat`. The commands above
+are yours, typed at your own terminal, so they act at once. Event titles and mail
+text are third-party data: the agent is told never to follow them, and web access
+needs your yes for the rest of a session that read them.
+
+**Connected accounts (optional).** After `adk home signin`, a workspace admin can
+connect a Google account once at <https://api.aitherium.com/admin?tab=connections>
+(admin-only; there is no member connect page yet). Its events are merged into the
+agenda and new events go to it. Microsoft 365 is not available that way yet. No
+refresh token is stored on your machine: each call resolves a short-lived access
+token with your sign-in.
 
 ### The local window
 
@@ -151,7 +216,7 @@ stores the **name** of the variable that holds your key, never the key.
 
 | harness | what `adk home harness <kind>` does |
 |---|---|
-| `aither` | adk's native agent loop wearing your persona. Nothing to install. `adk home chat "hi"` talks to it. |
+| `aither` | adk's native agent loop wearing your persona. Nothing to install. `adk home chat "hi"` talks to your Hearth agent (calendar, to-do, mail, reminders, web); `--native` gives the general agent with file and shell tools. |
 | `claude` | writes `harness/CLAUDE.md` from the persona; start Claude Code in that folder. |
 | `openclaw` | renders adk's OpenClaw connect template pointed at **your** model, plus a system-prompt file. |
 | `hermes` | same for Hermes (`~/.hermes/cli-config.yaml` shape). |

@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.38"
+version = "3.8.39"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -138,6 +138,10 @@ dependencies = [
     # drifted (it never synced `sandbox`, so its sandbox.credentials guard was
     # unreachable). Published on PyPI and pure-python, so hard like awreport.
     "awsettings>=0.3.1",
+    # Windows ships no IANA time-zone database, so zoneinfo cannot resolve the TZID
+    # of a subscribed calendar (adk/home/ics.py) there without it: every event of a
+    # Google / Outlook feed would silently fall back to the machine's own zone.
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

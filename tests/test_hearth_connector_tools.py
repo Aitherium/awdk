@@ -317,22 +317,35 @@ class _Agent:
         self._tools = ToolRegistry()
 
 
-def test_connector_tools_register_only_on_a_signed_in_home(tmp_path, monkeypatch):
+def test_connected_accounts_join_only_on_a_signed_in_home(tmp_path, monkeypatch):
+    """Every home registers the calendar / mail / to-do tool NAMES (the built-in
+    calendar needs no sign-in, adk.home.home_tools); only a signed-in home's tools
+    resolve an OAuth account."""
+    from adk.home import home_tools
+
     monkeypatch.delenv("ADK_BUILTIN_TOOL_CATEGORIES", raising=False)
     monkeypatch.delenv("AITHER_TOOL_PACKS", raising=False)
     monkeypatch.delenv("ADK_APP_PROXY_URL", raising=False)
     store = FollowupStore(tmp_path / "f.json")
+    remote: list[bool] = []
+    real = home_tools.build_home_tools
+
+    def _spy(planner=None, **kw):
+        remote.append(bool(kw.get("remote")))
+        return real(planner, **kw)
+
+    monkeypatch.setattr(serve, "build_home_tools", _spy)
 
     monkeypatch.setattr(ct, "_saved_bearer", lambda: "")
-    names = serve.register_serve_tools(_Agent(), store)
-    assert not set(ct.CONNECTOR_TOOL_NAMES) & set(names)
+    names = serve.register_serve_tools(_Agent(), store, planner_root=tmp_path)
+    assert set(ct.CONNECTOR_TOOL_NAMES) <= set(names) and remote[-1] is False
 
     monkeypatch.setattr(ct, "_saved_bearer", lambda: BEARER)
-    names = serve.register_serve_tools(_Agent(), store)
-    assert set(ct.CONNECTOR_TOOL_NAMES) <= set(names)
+    names = serve.register_serve_tools(_Agent(), store, planner_root=tmp_path)
+    assert set(ct.CONNECTOR_TOOL_NAMES) <= set(names) and remote[-1] is True
 
-    names = serve.register_serve_tools(_Agent(), store, connectors=False)
-    assert not set(ct.CONNECTOR_TOOL_NAMES) & set(names)
+    serve.register_serve_tools(_Agent(), store, connectors=False, planner_root=tmp_path)
+    assert remote[-1] is False
 
 
 # ── the token never reaches a receipt or a log ────────────────────────────────────

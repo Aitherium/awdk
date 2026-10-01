@@ -11,6 +11,11 @@
     adk home license <file-or-text>             offline activation (pasted license)
     adk home teach setup [--url U]              teacher agent: local Bonsai + classroom tools
     adk home chat "hello"                       one message to your agent
+    adk home calendar [today|"this week"|..]    your built-in + subscribed calendars
+    adk home calendar add "tomorrow 9:00" "Dentist"   (also: move, delete, refresh)
+    adk home todo [add "Buy milk"|done ID]      your built-in to-do list
+    adk home connect calendar --ics <link>      Google / Outlook / iCloud, read-only
+    adk home connect mail --user you@x.com      a mailbox by app password (no OAuth)
     adk home serve [--channels relay,telegram,..] [--pair] [--no-local]
                                                 answer YOUR messages on every channel
     adk home serve --install | --uninstall      start serve at logon (task / systemd --user)
@@ -68,6 +73,9 @@ def _build(p: argparse.ArgumentParser) -> None:
     i.add_argument("--name", default="my-agent")
     i.add_argument("--force", action="store_true",
                    help="Overwrite config AND persona files")
+    i.add_argument("--calendar-ics", default="", metavar="LINK",
+                   help="Also subscribe to a calendar you already have (Google secret "
+                   "iCal address, Outlook published ICS, iCloud public calendar)")
 
     pe = hs.add_parser("persona", help="Show or edit the persona files")
     pe.add_argument("action", nargs="?", default="show", choices=["show", "path", "set"])
@@ -128,6 +136,13 @@ def _build(p: argparse.ArgumentParser) -> None:
 
     c = hs.add_parser("chat", help="Send one message to your agent")
     c.add_argument("message")
+    c.add_argument("--native", action="store_true",
+                   help="The general agent (file and shell tools) instead of your Hearth "
+                   "agent (calendar, to-do, mail, reminders, web)")
+
+    from .planner_cli import build_parsers as _planner_parsers
+
+    _planner_parsers(hs)
 
     sv = hs.add_parser("serve", help="Answer YOUR relay DMs with your agent (owner only; "
                                      "token from $AITHER_RELAY_TOKEN or `adk relay provision`)")
@@ -277,6 +292,10 @@ def cmd_init(args: argparse.Namespace) -> int:
               "ANTHROPIC_API_KEY set). Then `adk home chat \"hello\"`.\n"
               "Chat from a web page: `adk home serve --browser` prints a one-time code; "
               "type it into \"Your computer\" on https://hearth.aitherium.com.")
+    if not existed or args.force or getattr(args, "calendar_ics", ""):
+        from .planner_cli import offer_calendar
+
+        return offer_calendar(getattr(args, "calendar_ics", ""))
     return EXIT_OK
 
 
@@ -446,15 +465,46 @@ def cmd_license(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def build_chat_agent(cfg: hc.HomeConfig) -> Any:
+    """The agent `adk home chat` talks to: the Hearth agent `serve` runs (calendar,
+    to-do, mail, reminders, web), with the same ask-first policy.
+
+    It was the general agent until 2026-10-01: that one holds no calendar tool, so
+    a fresh home answered "I cannot access your calendar" to its first question.
+    """
+    from adk import approval
+
+    from . import serve
+    from .connector_tools import home_signed_in
+    from .hearth import EGRESS_TOOLS
+    from .planner import Planner
+
+    serve.apply_approval_policy()
+    agent = serve.build_serve_agent(cfg, serve.FollowupStore(),
+                                    receipts_file=serve.receipts_path())
+    # serve closes web egress once a turn has read third-party text (HearthCore's
+    # taint guard). A one-shot chat has no core, so when this home can read any --
+    # a subscribed calendar, a mailbox, a connected account -- web_fetch and
+    # web_search ask first: a crafted event title must not be able to have the
+    # model carry the calendar out in a URL.
+    plan = Planner()
+    if plan.subscriptions() or plan.mail_account() or home_signed_in():
+        approval.set_runtime_gates(agent.name, EGRESS_TOOLS)
+    return agent
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     cfg = _cfg()
-    agent = harness.build_native_agent(cfg)
+    native = bool(getattr(args, "native", False))
+    agent = harness.build_native_agent(cfg) if native else build_chat_agent(cfg)
     from adk.games.learning import _run_coro
 
     import httpx
 
+    from .planner_cli import chat_with_approvals
+
     try:
-        resp = _run_coro(agent.chat(args.message))
+        resp = chat_with_approvals(agent, args.message, _run_coro)
     except httpx.HTTPError as exc:
         # A buyer's first chat with a mistyped key used to end in a 40-line
         # traceback (clean-machine run, 2026-09-30). Say what failed and what to do.
@@ -1338,7 +1388,18 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "serve": cmd_serve, "channels": cmd_channels, "receipts": cmd_receipts, "trust": cmd_trust,
     "say": cmd_say, "events": cmd_events, "report": cmd_report,
     "connect-browser": cmd_connect_browser,
+    "calendar": lambda a: _planner("cmd_calendar", a),
+    "todo": lambda a: _planner("cmd_todo", a),
+    "connect": lambda a: _planner("cmd_connect", a),
 }
+
+
+def _planner(name: str, args: argparse.Namespace) -> int:
+    """`adk home calendar|todo|connect` (adk.home.planner_cli); needs `adk home init`."""
+    from . import planner_cli
+
+    _cfg()
+    return getattr(planner_cli, name)(args)
 
 
 def cmd_home(args: argparse.Namespace) -> int:

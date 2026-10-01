@@ -78,7 +78,8 @@ from .hearth import (  # noqa: F401 - re-exported: the serve API predates hearth
     new_pair_code,
     owner_path,
 )
-from .connector_tools import CONNECTOR_PROMPT, build_connector_tools, home_signed_in
+from .connector_tools import home_signed_in
+from .home_tools import HOME_PROMPT, build_home_tools
 from .life_tools import ALWAYS_ASK, FollowupStore, build_life_tools
 
 logger = logging.getLogger("adk.home.serve")
@@ -247,14 +248,17 @@ def register_serve_tools(agent: Any, store: FollowupStore,
                          connectors: Optional[bool] = None,
                          tutor: Optional[bool] = None,
                          teacher: Optional[bool] = None,
-                         local_model: bool = False) -> List[str]:
+                         local_model: bool = False,
+                         planner_root: Optional[Path] = None) -> List[str]:
     """``web`` + ``decisions`` + life tools; refuses if a file/shell tool is present.
 
-    ``connectors`` adds the calendar / mail / to-do tools
-    (:mod:`adk.home.connector_tools`) and the Aither Learn guardian tools
-    (:mod:`adk.home.tutor_tools`). None means "when this home is signed in": an
-    unsigned home has no bearer to resolve a connection or call the tutor router
-    with, so the tools could only ever answer "not connected" / "not signed in".
+    Every home gets the calendar / to-do / mail tools (:mod:`adk.home.home_tools`):
+    the built-in calendar and to-do list, the calendars subscribed by link and the
+    app-password mailbox need no sign-in. ``connectors`` adds the signed-in home's
+    OAuth accounts (:mod:`adk.home.connector_tools`) to those same tools, and the
+    Aither Learn guardian tools (:mod:`adk.home.tutor_tools`). None means "when
+    this home is signed in": an unsigned home has no bearer to resolve a connection
+    or call the tutor router with.
 
     ``tutor`` decides the tutor tools on their own; None follows ``connectors``
     when that was given, else :func:`tutor_enabled`. ``tutor_assign`` is in
@@ -270,14 +274,15 @@ def register_serve_tools(agent: Any, store: FollowupStore,
     from adk.builtin_tools import register_builtin_tools
 
     from .connector_tools import owner_bearer
+    from .planner import Planner
     from .tutor_tools import build_tutor_tools
 
     register_builtin_tools(agent, categories=list(SERVE_CATEGORIES))
     for fn in build_life_tools(store, receipts_file):
         agent._tools.register(fn)
-    if home_signed_in() if connectors is None else connectors:
-        for fn in build_connector_tools():
-            agent._tools.register(fn)
+    with_accounts = home_signed_in() if connectors is None else connectors
+    for fn in build_home_tools(Planner(planner_root), remote=bool(with_accounts)):
+        agent._tools.register(fn)
     if tutor is None:
         tutor = tutor_enabled() if connectors is None else connectors
     if tutor:
@@ -321,8 +326,7 @@ def build_serve_agent(cfg: HomeConfig, store: FollowupStore, root: Optional[Path
         logger.warning(TEACHER_NEEDS_LOCAL)
         with_teacher = False
     prompt = compose_system_prompt(root) + "\n\n" + SERVE_PROMPT
-    if with_connectors:
-        prompt += "\n" + CONNECTOR_PROMPT
+    prompt += "\n" + HOME_PROMPT
     if with_tutor:
         prompt += "\n" + TUTOR_PROMPT
     if with_teacher:
@@ -337,7 +341,8 @@ def build_serve_agent(cfg: HomeConfig, store: FollowupStore, root: Optional[Path
     # with nothing on disk (measured live on Bonsai 8B, 2026-09-29).
     agent.tool_selection = "all"
     register_serve_tools(agent, store, receipts_file, connectors=with_connectors,
-                         tutor=with_tutor, teacher=with_teacher, local_model=local_model)
+                         tutor=with_tutor, teacher=with_teacher, local_model=local_model,
+                         planner_root=root)
     return agent
 
 

@@ -14,7 +14,6 @@ import pytest
 
 from adk.home import cli as home_cli
 from adk.home import config as hc
-from adk.home import harness
 
 SECRET_LOOKING = "placeholder-value-for-tests"
 
@@ -48,7 +47,7 @@ def byo_home(monkeypatch, tmp_path):
     (httpx.ConnectError("refused"), "could not reach the anthropic API (ConnectError)"),
 ])
 def test_chat_model_failure_is_one_line_exit_1(byo_home, capsys, exc, want):
-    byo_home.setattr(harness, "build_native_agent", lambda _cfg: _Agent(exc))
+    byo_home.setattr(home_cli, "build_chat_agent", lambda _cfg: _Agent(exc))
     rc = home_cli.cmd_chat(argparse.Namespace(message="hello"))
     err = capsys.readouterr().err
     assert rc == home_cli.EXIT_FAIL
@@ -62,7 +61,7 @@ def test_chat_success_still_prints_the_reply(byo_home, capsys):
         async def chat(self, _m):
             return type("R", (), {"content": "hi there"})()
 
-    byo_home.setattr(harness, "build_native_agent", lambda _cfg: _Ok())
+    byo_home.setattr(home_cli, "build_chat_agent", lambda _cfg: _Ok())
     assert home_cli.cmd_chat(argparse.Namespace(message="hello")) == home_cli.EXIT_OK
     assert capsys.readouterr().out.strip() == "hi there"
 

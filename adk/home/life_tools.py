@@ -367,4 +367,6 @@ def build_life_tools(store: FollowupStore,
 ALWAYS_ASK = ("follow_up_recurring", "relay_send", "relay_reply_in_thread",
               "send_relay_message", "send_email", "send_user_email",
               "calendar_add", "mail_send", "todo_add", "tutor_assign", "tutor_set_focus",
-              "lesson_draft", "differentiate", "parent_note_send")
+              "lesson_draft", "differentiate", "parent_note_send",
+              # adk.home.home_tools: changing or removing an event, ticking a to-do.
+              "calendar_move", "calendar_delete", "todo_done")

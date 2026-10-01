@@ -4,6 +4,41 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.39] - 2026-10-01
+
+### Added
+
+- **A fresh Hearth has a working calendar, to-do list and mail path from minute one.**
+  The built-in calendar and to-do list need no account (`<home>/calendar.json`):
+  `adk home calendar [today|"this week"|..]`, `calendar add|move|delete`,
+  `adk home todo add|done|delete`. The agent gets `calendar_agenda` (a day or a span),
+  `calendar_add`, `calendar_move`, `calendar_delete`, `todo_list`, `todo_add`,
+  `todo_done`, `mail_unread` and `mail_send` on EVERY home, signed in or not.
+- **Connect a calendar you already have without an OAuth app**:
+  `adk home connect calendar --ics <link>` subscribes to Google's secret iCal address,
+  an Outlook published calendar or an iCloud public calendar (read-only, refreshed every
+  15 minutes, merged into the views). `adk/home/ics.py` reads repeating events (daily /
+  weekly / monthly / yearly, BYDAY incl. `2MO` / `-1FR`, COUNT, UNTIL, EXDATE, moved
+  instances), time zones (IANA, the Windows names Outlook writes, VTIMEZONE) and all-day
+  events. CalDAV with an app password: `--caldav <url> --user <login>`. A failed refresh
+  keeps the last good copy and says so; the address is kept owner-only and never printed.
+- **`adk home connect mail --user you@example.com`**: a mailbox by app password
+  (IMAP read, SMTP send; Gmail / iCloud / Yahoo / Fastmail servers known). The password
+  comes from `HEARTH_MAIL_PASSWORD` or a hidden prompt, never an argument.
+- `adk home init` offers "use the built-in calendar" (default) or "connect Google /
+  Outlook / iCloud by link"; `--calendar-ics <link>` does it in one step.
+
+### Changed
+
+- **`adk home chat` talks to your Hearth agent** (calendar, to-do, mail, reminders, web)
+  instead of the general agent, which holds no calendar tool: a fresh home answered "I
+  cannot access your calendar" to its first question. A gated tool asks `y/N` at the
+  terminal; off a terminal nothing is approved and the reply says so. `--native` keeps
+  the general agent.
+- Approvals are unchanged and extended: `calendar_move`, `calendar_delete` and
+  `todo_done` join `calendar_add` / `todo_add` / `mail_send` in the always-ask set.
+- `tzdata` is a dependency on Windows, which has no system time-zone database.
+
 ## [3.8.38] - 2026-10-01
 
 ### Added

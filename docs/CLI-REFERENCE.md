@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**123 commands.**
+**126 commands.**
 
 | command | what it does |
 |---|---|
@@ -35,6 +35,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk backend`](#adk-backend) | Manage LLM backends (list, set, test, switch, status) |
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
 | [`adk balance`](#adk-balance) | Show your Aitherium credit balance and earnings |
+| [`adk bonsai`](#adk-bonsai) | Small on-device Bonsai model (llama.cpp, CPU; phone-friendly) |
 | [`adk bonsai-local`](#adk-bonsai-local) | Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally |
 | [`adk bricks`](#adk-bricks) | Aither World bricks and the awnix OS — list, outdated, upgrade (tested, auto-rollback), rollback |
 | [`adk briefs`](#adk-briefs) | List and read executive briefs |
@@ -84,6 +85,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk join`](#adk-join) | One-command community node onboarding (GitHub auth + hardware detection + serve + mesh join + earnings) |
 | [`adk kb`](#adk-kb) | Tenant knowledge base on the platform: ingest, query |
 | [`adk keys`](#adk-keys) | Manage cloud provider API keys (set, list, test, remove) |
+| [`adk learn`](#adk-learn) | Aither Learn in the terminal: the /learn link, and practice a quest |
 | [`adk license`](#adk-license) | Show or sync your license (purchases follow your Aitherium account) |
 | [`adk link`](#adk-link) | link this machine to aitherium.com (one sign-in, role-aware bundle) |
 | [`adk listen`](#adk-listen) | Real-time audio intelligence — audiobook, meeting, voice notes |
@@ -95,6 +97,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk memory`](#adk-memory) | Tenant memory on the platform: remember, recall |
 | [`adk mesh`](#adk-mesh) | AitherMesh overlay operations (onboard, list peers) |
 | [`adk mobile`](#adk-mobile) | Test Android/iOS apps end to end (Maestro) and keep screenshots as proof |
+| [`adk mothership`](#adk-mothership) |  |
 | [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
 | [`adk notebook`](#adk-notebook) | Plan, run, and inspect Agent Notebooks (.anb) on Genesis |
 | [`adk onboard`](#adk-onboard) | Interactive onboarding — detect, configure, integrate |
@@ -288,6 +291,15 @@ Backup all agent data (memory, graphs, config)
 ## `adk balance`
 
 Show your Aitherium credit balance and earnings
+
+## `adk bonsai`
+
+Small on-device Bonsai model (llama.cpp, CPU; phone-friendly)
+
+**Subcommands**
+
+- `adk bonsai setup` — Install llama.cpp + a Bonsai 1 Q1_0 model and start it
+- `adk bonsai status` — Is the local Bonsai server answering?
 
 ## `adk bonsai-local`
 
@@ -731,13 +743,19 @@ Agent Home: host your own agent, pick its model and harness, and let it join gam
 - `adk home status` — Setup, model, harness and license at a glance
 - `adk home signin` — Sign in with Aitherium -- what you bought unlocks here (device code, no license to paste)
 - `adk home license` — Offline activation: install a license (file or text)
+- `adk home teach` — Aither Classroom: a teacher's own agent on this computer (local Bonsai, no cost)
 - `adk home chat` — Send one message to your agent
+- `adk home calendar` — Your built-in calendar + subscribed calendars: view, add, move, delete
+- `adk home todo` — Your built-in to-do list: list, add, done, delete
+- `adk home connect` — Connect a calendar by link or a mailbox by app password (no OAuth app needed)
 - `adk home serve` — Answer YOUR relay DMs with your agent (owner only; token from $AITHER_RELAY_TOKEN or `adk relay provision`)
 - `adk home say` — Send one message to the RUNNING `adk home serve` over the local channel (no second agent)
 - `adk home events` — Stream what the running serve sends you locally (replies, follow-ups)
+- `adk home connect-browser` — One-time code for a web page to chat with the RUNNING serve (your own model)
 - `adk home channels` — Each channel: available, configured, bound owner (masked), preferred
 - `adk home receipts` — The signed log of what the agent did
 - `adk home trust` — Trust profile: egress guard, approvals, receipts
+- `adk home report` — Device-signed data-boundary report: model boundary, egress policy and events, receipts verdict
 - `adk home join` — Join a game: observe, act, chat, learn
 - `adk home enroll` — World-model enrollment of a game room (pack)
 
@@ -910,6 +928,16 @@ Manage cloud provider API keys (set, list, test, remove)
 - `adk keys test` — Test API keys (all or specific)
 - `adk keys remove` — Remove a provider key
 
+## `adk learn`
+
+Aither Learn in the terminal: the /learn link, and practice a quest
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<learn_action>` | str |  |  | play: practice one quest right here |
+| `--open` | str |  | `false` | Also open the /learn link in a browser |
+| `--url` | str |  |  | Learn origin (default: https://app.aitherium.com) |
+
 ## `adk license`
 
 Show or sync your license (purchases follow your Aitherium account)
@@ -1018,6 +1046,12 @@ Test Android/iOS apps end to end (Maestro) and keep screenshots as proof
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `<mobile_args>` | str |  |  | devices \| shot \| test FLOW |
+
+## `adk mothership`
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<lookout_args>` | str |  |  | run \| judge \| ledger |
 
 ## `adk new`
 

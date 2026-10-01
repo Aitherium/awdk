@@ -103,7 +103,7 @@ ACTIVITY_ROWS = 10
 #: tool refused -- the exact failure a receipts-first agent exists to prevent.
 CLAIM_RE = re.compile(
     r"\b(i('ve| have)? (scheduled|set|created|added|booked|sent|emailed|paid|"
-    r"cancell?ed|reminded|updated|deleted|done that)|(is|are|has been|have been) "
+    r"cancell?ed|reminded|updated|deleted|moved|rescheduled|done that)|(is|are|has been|have been) "
     r"(scheduled|set|created|added|booked|sent)|all set|reminder (is )?set)\b", re.I)
 #: A reply that says a reminder REPEATS. Only ``follow_up_recurring`` makes one repeat, and
 #: it always asks: measured live 2026-10-01 on the hosted Hearth, a model answered
@@ -469,6 +469,24 @@ def _card_value(key: str, value: Any) -> str:
     return f"{text[:CARD_VALUE_CHARS]}... (+{len(text) - CARD_VALUE_CHARS} chars)"
 
 
+def _owner_authored(tool: str, result: Any) -> bool:
+    """Did a calendar / to-do read return ONLY the home's built-in data?
+
+    The built-in calendar and to-do list hold what the owner typed or approved on a
+    card, so reading them is not a third-party read: it must not close web access
+    for the session. ``adk.home.home_tools`` marks such a result with a top-level
+    ``"third_party": false``; a subscribed feed, a mailbox or a connected account
+    never carries it (their text sits inside ``events`` / ``messages``, where it
+    cannot set a top-level key)."""
+    if tool not in ("calendar_agenda", "todo_list"):
+        return False
+    try:
+        data = json.loads(result) if isinstance(result, str) else result
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("third_party") is False
+
+
 def wrap_untrusted(tool: str, result: Any) -> str:
     """``{"untrusted": <result>, "source", "note"}``: third-party text marked as data."""
     data = result
@@ -737,7 +755,8 @@ class HearthCore:
             sug = None if key[0] in TAINT_SOURCES else _result_suggest(result)
             if err and sug:
                 self._suggest = sug
-            if key[0] in TAINT_SOURCES and (not err or key[0] in WEB_READ_TOOLS):
+            if (key[0] in TAINT_SOURCES and (not err or key[0] in WEB_READ_TOOLS)
+                    and not _owner_authored(key[0], result)):
                 self._mark_tainted(key[0])
                 result = wrap_untrusted(key[0], result)
             self._replay[key] = result
@@ -1238,6 +1257,18 @@ class HearthCore:
             except Exception as exc:  # noqa: BLE001 - stop every transport regardless
                 logger.warning("hearth: stopping %s failed: %s", t.name, exc)
 
+    async def _refresh_calendars(self) -> None:
+        """Re-read the subscribed calendars that are due (adk.home.planner decides;
+        most ticks do nothing). A failure keeps the cached copy and is never fatal."""
+        try:
+            from .planner import Planner
+
+            plan = Planner(self.root)
+            if plan.connections_path.exists():
+                await asyncio.to_thread(plan.refresh)
+        except Exception as exc:  # noqa: BLE001 - a calendar refresh never stops serve
+            logger.warning("hearth: calendar refresh failed (continuing): %s", exc)
+
     async def run(self, tick_interval: float = 4.0) -> None:
         """Start every transport, then fire due follow-ups forever."""
         self._running = True
@@ -1248,6 +1279,7 @@ class HearthCore:
                     await self.fire_due()
                 except Exception as exc:  # noqa: BLE001 - one bad tick is not fatal
                     logger.warning("hearth: follow-up tick failed (continuing): %s", exc)
+                await self._refresh_calendars()
                 await asyncio.sleep(tick_interval)
         finally:
             await self.stop()

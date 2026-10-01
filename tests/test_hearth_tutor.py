@@ -218,9 +218,14 @@ def test_the_flag_turns_the_tutor_on_without_a_sign_in(home, monkeypatch):
     store = FollowupStore(home / "f.json")
     assert not TUTOR_TOOLS & set(serve.register_serve_tools(_Bare(), store))
     monkeypatch.setenv(serve.TUTOR_FLAG_ENV, "on")
+    built = []
+    real = serve.build_home_tools
+    monkeypatch.setattr(serve, "build_home_tools",
+                        lambda planner=None, **kw: built.append(kw) or real(planner, **kw))
     names = set(serve.register_serve_tools(_Bare(), store))
     assert TUTOR_TOOLS <= names
-    assert not {"calendar_add", "mail_send"} & names          # connectors stay off
+    # The built-in calendar tools are always there; the OAuth accounts stay off.
+    assert built[-1]["remote"] is False
 
 
 def test_a_platform_token_alone_turns_the_tutor_on(home, monkeypatch):
