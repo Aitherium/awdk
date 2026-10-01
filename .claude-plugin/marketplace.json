@@ -1,0 +1,16 @@
+{
+  "name": "awsh",
+  "owner": { "name": "Aitherium" },
+  "description": "The awdk Claude Code plugin: the `aw` subagent, Aither World skills, the aither output style, brick MCP servers and portable hooks. Install: /plugin marketplace add Aitherium/awdk, then /plugin install awsh@awsh.",
+  "plugins": [
+    {
+      "name": "awsh",
+      "source": "./adk/harnesses/claude_mod",
+      "description": "An `aw` subagent answered by the local awsh harness daemon, plus Aither World skills, the aither output style, brick MCP servers and portable brick hooks.",
+      "version": "0.2.0",
+      "author": { "name": "Aitherium" },
+      "license": "MIT",
+      "category": "development"
+    }
+  ]
+}

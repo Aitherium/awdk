@@ -1,0 +1,19 @@
+{
+  "description": "Portable brick hooks: the awrelay inbox (via hookgate), awm recall, awvoice reply and session-focus (cross-session focus records). Each is a silent no-op when its brick is not installed; session-focus also stands down when the project settings already declare it.",
+  "hooks": {
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" relay-inbox 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" relay-inbox 2>/dev/null || true", "timeout": 15}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awm-recall 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awm-recall 2>/dev/null || true", "timeout": 10}]},
+      {"hooks": [{"type": "command", "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py", "--deliver", "--plugin"], "timeout": 10}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awvoice-reply 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awvoice-reply 2>/dev/null || true", "timeout": 10}]},
+      {"hooks": [{"type": "command", "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py", "--stop", "--plugin"], "timeout": 10}]}
+    ],
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py", "--start", "--plugin"], "timeout": 10}]}
+    ]
+  }
+}

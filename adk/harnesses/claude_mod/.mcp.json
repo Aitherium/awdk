@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "awrelay": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awrelay"] },
+    "awfind": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awfind"] },
+    "awgraph": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awgraph"] },
+    "awdecide": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awdecide"] }
+  }
+}
