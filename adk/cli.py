@@ -1654,7 +1654,7 @@ def _cmd_sandbox_down(args) -> int:
     return 0
 
 
-# The two 27B generations `adk bonsai-local` can run, keyed by catalog id. Each is a
+# What `adk bonsai-local` can run, keyed by catalog id. The two 27B generations are each a
 # baked image: the PrismML llama.cpp fork plus the GGUF. Bonsai 2 needs a fork build at
 # or after prism-b10685-7dffb15 (PTQ1_0 + the shared Walsh-Hadamard transform, PRs #148
 # and #150); a STOCK llama.cpp, or the previous generation's baked image, loads the
@@ -1672,7 +1672,104 @@ BONSAI_LOCAL_MODELS: dict[str, dict[str, str]] = {
         "weights": "Bonsai-27B-Q1_0.gguf (3.8 GB)",
         "release": "prism-b9596-9fcaed7 or newer",
     },
+    # A sparse MoE, not a Bonsai: 8B total, about 1B active per token. The weights are the
+    # model author's own GGUF and are NOT baked: they download once to ~/.aither/models
+    # and are mounted read-only. It needs no fork: mainline llama.cpp has carried the
+    # `bailingmoe3` architecture since 2026-08-17, so the image is the PUBLIC mainline
+    # server image, pinned by digest (build 11312). This tier is CPU-only for now: that
+    # image has no CUDA, and a GPU run has not been measured. Measured 2026-10-01 on this
+    # digest, 8 threads: /health in ~34 s, 35 tok/s decode, 3.9 GB resident (#10547).
+    "ling-tiny-8b": {
+        "image": "ghcr.io/ggml-org/llama.cpp@sha256:"
+                 "23fd59bc5e5b06ca68003a5772d441f0411fb723eeaff850b9111bcd2ac4fd33",
+        "label": "Ling-3.0-tiny 8B-A1B (sparse MoE, CPU)",
+        "weights": "Ling-3.0-tiny-Q4_K_M.gguf (4.8 GB, downloaded once, mounted)",
+        "release": "mainline llama.cpp b11312",
+        "gguf_file": "Ling-3.0-tiny-Q4_K_M.gguf",
+        "gguf_url": "https://huggingface.co/inclusionAI/Ling-3.0-tiny-GGUF/resolve/main/"
+                    "Ling-3.0-tiny-Q4_K_M.gguf",
+        "gguf_sha256": "246d67d45f5b0c7447ca0ce0bdb8b46b8a47b593c5068635dc16422c051d7be9",
+        "gguf_bytes": "4823894944",
+    },
 }
+
+
+def _bonsai_local_gguf_path(spec: dict[str, str]) -> str:
+    """Where a mounted (not baked) model's GGUF lives on this machine."""
+    override = os.environ.get("AITHER_BONSAI_GGUF", "")
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(os.path.expanduser("~/.aither"), "models", spec["gguf_file"])
+
+
+def _bonsai_local_gguf_present(spec: dict[str, str], path: str) -> bool:
+    """True when the file is there at the catalogued size.
+
+    Size only: the sha256 is checked once, at download, because re-hashing several GB on
+    every start costs more than it protects. A same-size file swapped in afterwards is
+    therefore NOT detected here."""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) == int(spec.get("gguf_bytes", ""))
+    except (OSError, ValueError):
+        return False
+
+
+def _bonsai_local_fetch_gguf(spec: dict[str, str], path: str) -> bool:
+    """Download the GGUF to `path`, verifying size and sha256 before it gets its real name.
+
+    A download that fails either check is deleted and False is returned: a truncated or
+    substituted download must never be served as if it were the catalogued file. The
+    partial file is removed on every exit, including Ctrl-C."""
+    import hashlib
+    import http.client
+    import urllib.request
+
+    def _drop(p: str) -> None:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            print(f"  [!] Could not remove {p} ({e}); delete it by hand.")
+
+    if not (spec.get("gguf_url") and spec.get("gguf_sha256")
+            and str(spec.get("gguf_bytes", "")).isdigit()):
+        print("  [!] This model's catalogue entry has no pinned url/size/sha256; refusing "
+              "to download an unverifiable file.")
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    part = path + ".part"
+    digest = hashlib.sha256()
+    total = 0
+    req = urllib.request.Request(spec["gguf_url"], headers={"User-Agent": "awdk-bonsai-local"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r, open(part, "wb") as out:
+            while True:
+                chunk = r.read(1 << 22)
+                if not chunk:
+                    break
+                out.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+    except (OSError, http.client.HTTPException) as e:
+        print(f"  [!] Download failed ({type(e).__name__}: {e}).")
+        _drop(part)
+        return False
+    except BaseException:  # Ctrl-C and friends: do not leave several GB behind
+        _drop(part)
+        raise
+    if total != int(spec["gguf_bytes"]) or digest.hexdigest() != spec["gguf_sha256"]:
+        print(f"  [!] {spec['gguf_file']} does not match the catalogued size/sha256 "
+              f"(got {total} bytes); deleted it. Nothing was started.")
+        _drop(part)
+        return False
+    try:
+        os.replace(part, path)
+    except OSError as e:
+        print(f"  [!] Could not move the verified download into place ({e}).")
+        _drop(part)
+        return False
+    return True
 
 
 def cmd_bonsai_local(args) -> int:
@@ -1690,6 +1787,7 @@ def cmd_bonsai_local(args) -> int:
 
     Serves OpenAI-compat: GET /health, POST /v1/chat/completions, POST /completion.
     """
+    import shlex
     import shutil
     import subprocess
 
@@ -1722,19 +1820,37 @@ def cmd_bonsai_local(args) -> int:
     if "nvidia" in (probe.stdout or ""):
         gpu_args = ["--gpus", gpus]
 
+    # A mounted model brings its own weights and server arguments; a baked image needs
+    # neither, so both lists stay empty for the Bonsai entries.
+    gguf_file = spec.get("gguf_file", "")
+    gguf_path = _bonsai_local_gguf_path(spec) if gguf_file else ""
+    mount_args: list[str] = []
+    server_args: list[str] = []
+    if gguf_file:
+        gpu_args = []  # the mounted tier's image is CPU-only; see BONSAI_LOCAL_MODELS
+        mount_args = ["-v", f"{gguf_path}:/models/{gguf_file}:ro"]
+        server_args = ["-m", f"/models/{gguf_file}", "--host", "0.0.0.0", "--port", "8090",
+                       "-ngl", "0", "-c", "8192"]
+
     run_cmd = [
         "docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
-        *gpu_args, "-p", f"127.0.0.1:{port}:8090", image,
+        *gpu_args, *mount_args, "-p", f"127.0.0.1:{port}:8090", image, *server_args,
     ]
 
     if getattr(args, "dry_run", False):
         print(f"  [dry-run] would run {spec['label']} locally:")
         print("    model      :", model, "--", spec["weights"])
-        print("    image      :", image, f"(PrismML fork {spec['release']}; stock llama.cpp "
-              "cannot serve ternary Bonsai)")
+        if gguf_file:
+            print("    image      :", image, f"({spec['release']})")
+            print("    weights at :", gguf_path,
+                  "(present)" if _bonsai_local_gguf_present(spec, gguf_path)
+                  else "(not present; downloaded and sha256-checked on a real run)")
+        else:
+            print("    image      :", image, f"(PrismML fork {spec['release']}; stock llama.cpp "
+                  "cannot serve ternary Bonsai)")
         print("    serve on   : http://localhost:%d  (/health, /v1/chat/completions)" % port)
         print("    gpu        :", "yes (nvidia runtime)" if gpu_args else "no — CPU (AVX) fallback")
-        print("    command    :", " ".join(run_cmd))
+        print("    command    :", shlex.join(run_cmd))
         print("  Then the Living OS at aitherium.com auto-detects it and chats on your box.")
         print(f"    agents via : auto-detected (adk status / adk start), or adk run --backend bonsai-local"
               if port == BONSAI_LOCAL_PORT else
@@ -1746,13 +1862,26 @@ def cmd_bonsai_local(args) -> int:
     if (existing.stdout or "").strip():
         print(f"  [=] {name} already running on :{port}.")
         return 0
+    if gguf_file and not _bonsai_local_gguf_present(spec, gguf_path):
+        if os.path.exists(gguf_path):
+            # Something else is already there (another quant, a directory, the user's own
+            # file named by AITHER_BONSAI_GGUF). Never overwrite it.
+            print(f"  [!] {gguf_path} exists but is not the catalogued {gguf_file} "
+                  f"({spec.get('gguf_bytes')} bytes). Move it, or point AITHER_BONSAI_GGUF "
+                  "at a path that does not exist yet. Nothing was changed.")
+            return 1
+        print(f"  [*] Downloading {spec['weights']} to {gguf_path} ...")
+        if not _bonsai_local_fetch_gguf(spec, gguf_path):
+            return 1
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)  # clear any stopped remnant
 
     print(f"  [*] Starting {spec['label']} ({image}) on :{port} ...")
     res = subprocess.run(run_cmd, capture_output=True, text=True)
     if res.returncode != 0:
         err = (res.stderr or "").strip()
-        if "No such image" in err or "not found" in err:
+        if gguf_file:
+            print(f"  [!] docker run failed for {image}: {err}")
+        elif "No such image" in err or "not found" in err:
             print(f"  [!] Image {image} not present. Build/pull it first (PrismML llama.cpp fork "
                   f"{spec['release']} + {spec['weights']} baked), then re-run "
                   f"`adk bonsai-local --model {model}`.")
@@ -1764,7 +1893,8 @@ def cmd_bonsai_local(args) -> int:
     import urllib.request
     import time
     healthy = False
-    for _ in range(30):
+    # A mounted GGUF is read from disk at start; give it longer than a baked image.
+    for _ in range(90 if gguf_file else 30):
         try:
             with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2) as r:
                 if r.status == 200:
@@ -1790,7 +1920,8 @@ def cmd_bonsai_local(args) -> int:
             print(f"  [!] Could not save backend config ({e}); run: "
                   f"adk backend set bonsai-local --base-url http://127.0.0.1:{port}/v1")
         return 0
-    print(f"  [!] Container started but :{port}/health didn't come up in ~60s. Check `docker logs {name}`.")
+    print(f"  [!] Container started but :{port}/health didn't come up in time. "
+          f"Check `docker logs {name}`.")
     return 1
 
 
@@ -13185,7 +13316,8 @@ def _register_commands(sub):
                           help=f"Host port to serve on (default: {BONSAI_LOCAL_PORT})")
     bonsai_p.add_argument("--model", choices=sorted(BONSAI_LOCAL_MODELS), default="bonsai2-27b",
                           help="bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork "
-                               ">= prism-b10685) or bonsai-27b (the previous generation)")
+                               ">= prism-b10685), bonsai-27b (the previous generation) or "
+                               "ling-tiny-8b (sparse MoE; 4.8 GB GGUF downloaded once)")
     bonsai_p.add_argument("--dry-run", action="store_true", help="Show what would run without starting anything")
     bonsai_p.add_argument("--stop", action="store_true", help="Stop and remove the local Bonsai container")
 
