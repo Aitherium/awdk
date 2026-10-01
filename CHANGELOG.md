@@ -4,6 +4,18 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.35] - 2026-09-30
+
+### Fixed
+
+- **Offline license keys from the shop verify again.** The license verifier now trusts
+  a SET of Ed25519 roots: the original root and a new one whose private key is held in
+  the vault (the original root's private half was lost, so the shop could not sign keys
+  this version accepts). Keys signed by either root verify; garbage and unknown roots are
+  still refused. A blank `AITHER_LICENSE_PUBLIC_KEY` now means "use the built-in roots";
+  a non-empty value still replaces them and may list several keys (#10316).
+
+
 ## [3.8.34] - 2026-09-30
 - Aither Hearth can see and steer the family tutor: `tutor_learners`, `tutor_report`,
   `tutor_set_focus` and `tutor_assign` are registered when the tutor is available;
