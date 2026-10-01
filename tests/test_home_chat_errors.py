@@ -67,9 +67,12 @@ def test_chat_success_still_prints_the_reply(byo_home, capsys):
     assert capsys.readouterr().out.strip() == "hi there"
 
 
-def test_init_hint_names_the_shop_setup_path_not_bonsai(monkeypatch, tmp_path, capsys):
+def test_init_hint_installs_bonsai_before_pointing_at_it(monkeypatch, tmp_path, capsys):
+    """The 09-30 bug was pointing a buyer at a Bonsai server they did not run. The
+    hint now names the install step FIRST, then `--local bonsai`; BYO stays offered."""
     monkeypatch.setenv(hc.HOME_ENV, str(tmp_path / "home"))
     assert home_cli.main(["init"]) == home_cli.EXIT_OK
     out = capsys.readouterr().out
     assert "adk home model --byo anthropic" in out and "adk home chat" in out
-    assert "--local bonsai" not in out
+    assert "install-bonsai" in out
+    assert out.index("install-bonsai") < out.index("--local bonsai")

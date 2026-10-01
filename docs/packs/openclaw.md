@@ -1,12 +1,12 @@
 # OpenClaw Research Studio
 
-`openclaw` · version `3.8.36` · 5.1 KB
+`openclaw` · version `3.8.37` · 5.1 KB
 
-**[Download openclaw-3.8.36.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.36/openclaw-3.8.36.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.36/openclaw-3.8.36.sha256)
+**[Download openclaw-3.8.37.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.37/openclaw-3.8.37.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.37/openclaw-3.8.37.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.36/openclaw-3.8.36.tar.gz
-tar xzf openclaw-3.8.36.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.37/openclaw-3.8.37.tar.gz
+tar xzf openclaw-3.8.37.tar.gz
 python openclaw/install.py
 ```
 
@@ -40,5 +40,5 @@ skills/web-research.md
 
 ---
 
-sha256 `87bc86989c3358d335eb0f100877616e4838e8feecd2cc09143df1c2025a6ee7`  
-Built from `v3.8.36` (adk 3.8.36). [All packs](../packs.md)
+sha256 `9021d5c605c2ac1df8a22a70902ecb82357d1c255d17ac124d59c18b77fd9f16`  
+Built from `v3.8.37` (adk 3.8.37). [All packs](../packs.md)

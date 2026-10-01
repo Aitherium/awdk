@@ -400,6 +400,13 @@ class OpenAIProvider(LLMProvider):
             fallback_calls, content = extract_tool_calls_from_text(content)
             if fallback_calls:
                 tool_calls = fallback_calls
+        # A small model that writes the call as the WHOLE reply, bare JSON, no tags
+        # (Bonsai-1.7B, base.whole_reply_tool_call): a call, not text for the user.
+        if not tool_calls and tools and content:
+            from .base import offered_tool_names, whole_reply_tool_call
+            whole = whole_reply_tool_call(content, offered_tool_names(tools))
+            if whole is not None:
+                tool_calls, content = [whole], ""
 
         cache_read = _read_cached_tokens(usage)
         return LLMResponse(

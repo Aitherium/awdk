@@ -132,6 +132,16 @@ class LocalClient:
             raise self._unreachable(exc) from exc
         return self._check(resp)
 
+    def browser_code(self) -> Dict[str, Any]:
+        """A one-time code a web page exchanges for a browser bearer (5 minutes)."""
+        try:
+            with self._client(30.0) as http:
+                self._verify(http)
+                resp = http.post(f"{self.url}/browser-code", headers=self._headers())
+        except httpx.TransportError as exc:
+            raise self._unreachable(exc) from exc
+        return self._check(resp)
+
     def receipts(self, n: int = 10) -> Dict[str, Any]:
         """The last ``n`` receipts and the log's verify verdict."""
         try:

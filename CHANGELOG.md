@@ -4,6 +4,29 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.37] - 2026-10-01
+
+### Added
+
+- **Chat with YOUR serve from a web page.** `adk home serve --browser` prints a one-time
+  code (`ABCD-EFGH`, 5 minutes, single use); `adk home connect-browser` mints another for a
+  running serve. A page on an allowlisted origin (`https://hearth.aitherium.com`,
+  `https://aitherium.com`; `$HEARTH_BROWSER_ORIGINS` replaces the list, `off` disables)
+  exchanges it at `POST http://127.0.0.1:8363/browser/pair` for a browser-scoped bearer
+  (memory only, bound to that origin, 12 h, revoked by a restart), then uses
+  `/browser/say`, `/browser/state`, `/browser/approve`, `/browser/forget`. CORS and
+  Chrome's private-network preflight are answered for allowlisted origins only; a
+  non-loopback `Host` (DNS rebinding), any other origin, and a browser on the file-token
+  endpoints are refused; the file token is never accepted on `/browser/*`.
+
+### Fixed
+
+- `adk home init` / `adk home model --local bonsai` print the Bonsai install line for the
+  OS you are on (PowerShell on Windows; `curl | sh` has no `sh` there).
+- A small local model that answers with ONLY a bare `{"name": <offered tool>,
+  "arguments": {...}}` (Bonsai-1.7B on llama-server) now makes that tool call instead of
+  showing the user raw JSON.
+
 ## [3.8.36] - 2026-10-01
 
 ### Added

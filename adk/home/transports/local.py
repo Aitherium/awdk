@@ -47,6 +47,17 @@ Endpoints (all but /hello need the bearer):
                    follow-up); pushes nobody was listening for are replayed to the
                    next subscriber with ``missed: true``.
     GET  /receipts?n=N  the last N receipts plus the chain/signature verdict.
+    POST /browser-code  -> {"code", "expires_in", "origins"}: a one-time code a web
+                   page exchanges for a browser bearer (``adk home connect-browser``).
+
+Browser endpoints (:mod:`adk.home.transports.browser`; an allowlisted ``Origin``
+and, after pairing, the BROWSER bearer -- never the file token):
+
+    POST /browser/pair     {"code"} -> {"token", "expires_in", "agent"}
+    POST /browser/say      {"text"} -> as /message
+    GET  /browser/state    pending approval card, reminders, receipts + verdict
+    POST /browser/approve  {"nonce", "allow"} -> the human's click, as `yes <nonce>`
+    POST /browser/forget   drop this browser's bearer
 
 A push with no subscriber returns False from :meth:`send`, so the core falls back
 to another bound channel instead of claiming delivery.
@@ -72,6 +83,7 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from ..._private_file import PrivateFileError, restrict_owner_only
 from ..config import HomeError, home_dir
 from ._webhook import UvicornRunner, read_capped
+from .browser import SESSION_TTL_S, BrowserGuard, BrowserPairing, browser_origins
 
 logger = logging.getLogger("adk.home.transports.local")
 
@@ -98,6 +110,8 @@ SUBSCRIBER_QUEUE = 100
 KEEPALIVE_S = 15.0
 #: An approval card as :meth:`HearthCore._card` writes it.
 CARD_RE = re.compile(r"Reply `yes ([0-9a-f]{8})` to allow")
+#: The nonce a browser click answers a card with.
+CARD_NONCE_RE = re.compile(r"[0-9a-f]{8}")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{32,128}")
 #: A /hello challenge nonce (lowercase hex, 128-512 bits).
 NONCE_RE = re.compile(r"[0-9a-f]{32,128}")
@@ -229,7 +243,7 @@ class LocalTransport:
 
     def __init__(self, *, host: str = LOOPBACK, port: Optional[int] = None,
                  root: Optional[Path] = None, user_id: str = "",
-                 token: str = ""):
+                 token: str = "", origins: Optional[Tuple[str, ...]] = None):
         if host != LOOPBACK:
             raise HomeError(f"local: refusing to listen on {host!r}; the local channel "
                             f"binds {LOOPBACK} only")
@@ -246,6 +260,8 @@ class LocalTransport:
         self._backlog: Deque[Dict[str, Any]] = deque(maxlen=BACKLOG)
         self._runner = UvicornRunner(host, self.port)
         self._published = False
+        #: One-time codes and browser bearers (memory only: a restart revokes them).
+        self.browser = BrowserPairing(browser_origins() if origins is None else origins)
         self.app = self.build_app()
 
     def __repr__(self) -> str:  # never show the token
@@ -335,6 +351,54 @@ class LocalTransport:
         return hmac.compare_digest(given.strip().encode("utf-8"),
                                    self._token.encode("utf-8"))
 
+    def _browser_session(self, request: Any) -> Optional[Dict[str, Any]]:
+        """The browser session this request's bearer + Origin name (None = refuse)."""
+        header = str(request.headers.get("authorization") or "")
+        scheme, _, given = header.partition(" ")
+        if scheme.lower() != "bearer" or not given.strip():
+            return None
+        return self.browser.session_for(given.strip(),
+                                        str(request.headers.get("origin") or ""))
+
+    def new_browser_code(self) -> Tuple[str, float]:
+        """A one-time pairing code for a web page (printed by the CLI, never logged)."""
+        return self.browser.new_code()
+
+    def browser_state(self) -> Dict[str, Any]:
+        """What the paired page shows: the card waiting, reminders, agent + model."""
+        core = self.core
+        waiting = getattr(core, "awaiting", None) or {}
+        pending = None
+        if waiting.get("nonce"):
+            pending = {"nonce": str(waiting["nonce"]),
+                       "channel": str(waiting.get("channel") or ""),
+                       "age_s": round(time.time() - float(waiting.get("at") or time.time())),
+                       "calls": [{"tool": str(p.get("tool") or ""),
+                                  "args": p.get("args") if isinstance(p.get("args"), dict)
+                                  else {}}
+                                 for p in waiting.get("pending") or []
+                                 if isinstance(p, dict)]}
+        reminders: List[Dict[str, Any]] = []
+        store = getattr(core, "store", None)
+        if store is not None:
+            try:
+                rows = store.rows()
+            except Exception as exc:  # noqa: BLE001 - shown as empty, never fatal
+                logger.warning("hearth: reminders unreadable: %s", type(exc).__name__)
+                rows = []
+            reminders = [{k: r.get(k) for k in ("id", "kind", "text", "when_ts", "recurring")}
+                         for r in rows if r.get("status") == "pending"]
+        agent = getattr(core, "agent", None)
+        llm = getattr(agent, "llm", None)
+        model = ""
+        for attr in ("model", "_model", "model_name"):
+            val = getattr(llm, attr, None)
+            if isinstance(val, str) and val:
+                model = val
+                break
+        return {"agent": str(getattr(agent, "name", "") or ""), "model": model,
+                "pending": pending, "reminders": reminders}
+
     def _ensure_owner(self) -> None:
         if not self.core.registry.is_owner(CHANNEL, self.user_id):
             self.core.bind_owner(CHANNEL, self.user_id, "local-token")
@@ -362,10 +426,8 @@ class LocalTransport:
         def refuse(status: int, error: str) -> Response:
             return JSONResponse({"error": error}, status_code=status)
 
-        async def message(request: Any) -> Response:
-            if not transport._authorized(request):
-                logger.warning("hearth: local request without a valid token refused")
-                return refuse(401, "unauthorized")
+        async def read_json(request: Any) -> Any:
+            """The JSON object body, or a refusal Response."""
             body = await read_capped(request, MAX_BODY)
             if body is None:
                 return refuse(413, f"body over {MAX_BODY} bytes")
@@ -373,9 +435,9 @@ class LocalTransport:
                 data = json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, ValueError):
                 return refuse(400, "body is not JSON")
-            text = data.get("text") if isinstance(data, dict) else None
-            if not isinstance(text, str) or not text.strip():
-                return refuse(400, "send {\"text\": \"...\"}")
+            return data if isinstance(data, dict) else refuse(400, "send a JSON object")
+
+        async def run_text(text: str) -> Response:
             if transport.core is None:
                 return refuse(503, "hearth is not started")
             transport._ensure_owner()
@@ -385,6 +447,87 @@ class LocalTransport:
                 logger.error("hearth: local turn failed: %s", type(exc).__name__)
                 return refuse(500, f"turn failed: {type(exc).__name__}")
             return JSONResponse(out)
+
+        async def say_from(request: Any) -> Response:
+            data = await read_json(request)
+            if isinstance(data, Response):
+                return data
+            text = data.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return refuse(400, "send {\"text\": \"...\"}")
+            return await run_text(text)
+
+        async def message(request: Any) -> Response:
+            if not transport._authorized(request):
+                logger.warning("hearth: local request without a valid token refused")
+                return refuse(401, "unauthorized")
+            return await say_from(request)
+
+        async def browser_code(request: Any) -> Response:
+            if not transport._authorized(request):
+                return refuse(401, "unauthorized")
+            if not transport.browser.enabled:
+                return refuse(409, "browser pairing is off (HEARTH_BROWSER_ORIGINS=off)")
+            code, ttl = transport.new_browser_code()
+            return JSONResponse({"code": code, "expires_in": int(ttl),
+                                 "origins": list(transport.browser.origins)})
+
+        async def browser_pair(request: Any) -> Response:
+            origin = str(request.headers.get("origin") or "")
+            if not origin:
+                return refuse(403, "pairing is for a web page: no Origin was sent")
+            data = await read_json(request)
+            if isinstance(data, Response):
+                return data
+            token, why = transport.browser.pair(data.get("code"), origin)
+            if token is None:
+                logger.warning("hearth: browser pairing refused (%s)", why)
+                return refuse(401, why)
+            logger.info("hearth: a browser on %s paired with the local channel", origin)
+            agent = getattr(transport.core, "agent", None)
+            return JSONResponse({"token": token, "expires_in": int(SESSION_TTL_S),
+                                 "agent": str(getattr(agent, "name", "") or "")})
+
+        async def browser_say(request: Any) -> Response:
+            if transport._browser_session(request) is None:
+                return refuse(401, "unauthorized: pair this page first")
+            return await say_from(request)
+
+        async def browser_state(request: Any) -> Response:
+            if transport._browser_session(request) is None:
+                return refuse(401, "unauthorized: pair this page first")
+            if transport.core is None:
+                return refuse(503, "hearth is not started")
+            from adk import receipts
+
+            path = transport.core.receipts_file
+            rows = await asyncio.to_thread(receipts.tail, 12, path)
+            code, reason = await asyncio.to_thread(receipts.check, path)
+            verdict = {0: "intact", 1: "TAMPERED"}.get(code, "cannot judge")
+            out = transport.browser_state()
+            out["receipts"] = {"rows": rows,
+                               "verify": {"code": code, "verdict": verdict,
+                                          "reason": reason}}
+            return JSONResponse(out)
+
+        async def browser_approve(request: Any) -> Response:
+            if transport._browser_session(request) is None:
+                return refuse(401, "unauthorized: pair this page first")
+            data = await read_json(request)
+            if isinstance(data, Response):
+                return data
+            nonce = str(data.get("nonce") or "").lower()
+            allow = data.get("allow")
+            if not CARD_NONCE_RE.fullmatch(nonce) or not isinstance(allow, bool):
+                return refuse(400, "send {\"nonce\": \"<8 hex>\", \"allow\": true|false}")
+            return await run_text(f"{'yes' if allow else 'no'} {nonce}")
+
+        async def browser_forget(request: Any) -> Response:
+            if transport._browser_session(request) is None:
+                return refuse(401, "unauthorized")
+            header = str(request.headers.get("authorization") or "")
+            transport.browser.forget(header.partition(" ")[2].strip())
+            return JSONResponse({"ok": True})
 
         async def events(request: Any) -> Response:
             if not transport._authorized(request):
@@ -437,10 +580,19 @@ class LocalTransport:
             return JSONResponse({"proof": hello_proof(transport._token, nonce, port),
                                  "port": port})
 
-        return Starlette(routes=[Route("/hello", hello, methods=["GET"]),
-                                 Route("/message", message, methods=["POST"]),
-                                 Route("/events", events, methods=["GET"]),
-                                 Route("/receipts", receipts_view, methods=["GET"])])
+        app = Starlette(routes=[
+            Route("/hello", hello, methods=["GET"]),
+            Route("/message", message, methods=["POST"]),
+            Route("/events", events, methods=["GET"]),
+            Route("/receipts", receipts_view, methods=["GET"]),
+            Route("/browser-code", browser_code, methods=["POST"]),
+            Route("/browser/pair", browser_pair, methods=["POST"]),
+            Route("/browser/say", browser_say, methods=["POST"]),
+            Route("/browser/state", browser_state, methods=["GET"]),
+            Route("/browser/approve", browser_approve, methods=["POST"]),
+            Route("/browser/forget", browser_forget, methods=["POST"]),
+        ])
+        return BrowserGuard(app, transport.browser)
 
 
 def build_local_transport(**overrides: Any) -> LocalTransport:

@@ -13,6 +13,8 @@
     adk home serve --install | --uninstall      start serve at logon (task / systemd --user)
     adk home say "text"                         one message to the RUNNING serve (local)
     adk home events [-n N]                      stream what the running serve sends you
+    adk home connect-browser                    one-time code: chat with THIS serve from
+                                                hearth.aitherium.com / aitherium.com
     adk home channels [--json]                  which channels are ready, who owns them
     adk home receipts [--verify] [-n N]         what the agent did; --verify exits 0/1/2
     adk home receipts --anchor                  sign the chain head -> <home>/receipts.anchor
@@ -117,6 +119,10 @@ def _build(p: argparse.ArgumentParser) -> None:
     sv.add_argument("--no-local", action="store_true",
                     help="Do not open the local channel (127.0.0.1:$HEARTH_LOCAL_PORT, "
                     "default 8363) that `adk home say` and awsh /hearth talk to")
+    sv.add_argument("--browser", action="store_true",
+                    help="Print a one-time code a web page (hearth.aitherium.com, "
+                    "aitherium.com; $HEARTH_BROWSER_ORIGINS) exchanges to chat with this "
+                    "serve over the local channel. Later codes: `adk home connect-browser`")
     svi = sv.add_mutually_exclusive_group()
     svi.add_argument("--install", action="store_true",
                      help="Start this serve (with these --channels/--nick/--relay-url/"
@@ -140,6 +146,12 @@ def _build(p: argparse.ArgumentParser) -> None:
     ev.add_argument("--port", type=int, default=None,
                     help="Local channel port (default $HEARTH_LOCAL_PORT or 8363)")
     ev.add_argument("--json", action="store_true", help="One JSON object per line")
+
+    cb = hs.add_parser("connect-browser", help="One-time code for a web page to chat with "
+                                               "the RUNNING serve (your own model)")
+    cb.add_argument("--port", type=int, default=None,
+                    help="Local channel port (default $HEARTH_LOCAL_PORT or 8363)")
+    cb.add_argument("--json", action="store_true", help="Machine-readable output")
 
     chs = hs.add_parser("channels", help="Each channel: available, configured, bound "
                                          "owner (masked), preferred")
@@ -231,9 +243,13 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"Agent Home ready at {where}\n"
               f"  agent:   {cfg.name}\n"
               f"  persona: {where / 'persona'} (edit these files freely)\n"
-              "Next: pick a model -- `adk home model --byo anthropic` (with "
-              "ANTHROPIC_API_KEY set) or `adk home model --local ollama` -- then "
-              "`adk home model --check` and `adk home chat \"hello\"`.")
+              "Next: pick a model. Private, on this machine (CPU or GPU):\n"
+              f"  1. {models.bonsai_install_hint()}\n"
+              "  2. adk home model --local bonsai --check\n"
+              "Or bring your own key: `adk home model --byo anthropic` (with "
+              "ANTHROPIC_API_KEY set). Then `adk home chat \"hello\"`.\n"
+              "Chat from a web page: `adk home serve --browser` prints a one-time code; "
+              "type it into \"Your computer\" on https://hearth.aitherium.com.")
     return EXIT_OK
 
 
@@ -870,6 +886,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     names, built, rc = _prepare_channels(args, local=not getattr(args, "no_local", False))
     if rc:
         return rc
+    if getattr(args, "browser", False) and "local" not in names:
+        print("--browser needs the local channel (drop --no-local, or add `local` to "
+              "--channels)", file=sys.stderr)
+        return EXIT_SETUP
     owner = serve.load_owner()
     # The local channel binds the OS user on its first valid-token request.
     if (not owner and not args.pair and "local" not in names
@@ -910,6 +930,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if local_t is not None:
         print(f"  local:    http://127.0.0.1:{getattr(local_t, 'port', '?')} "
               f"(`adk home say`, awsh /hearth; token in {hc.home_dir() / 'local.token'})")
+    if local_t is not None and getattr(args, "browser", False):
+        print(_browser_code_text(*local_t.new_browser_code(),
+                                 list(local_t.browser.origins), getattr(local_t, "port", 0)))
     if code:
         where = ("on the relay: a REGISTERED account" if "relay" in names
                  else "any attached channel")
@@ -932,6 +955,33 @@ def _local_client(args: argparse.Namespace) -> Any:
     from .local_client import LocalClient
 
     return LocalClient(port=getattr(args, "port", None))
+
+
+def _browser_code_text(code: str, ttl: float, origins: List[str], port: int) -> str:
+    pages = " or ".join(origins) or "(none: HEARTH_BROWSER_ORIGINS=off)"
+    return (f"  BROWSER CODE: {code}  -- type it into \"Your computer\" on {pages} "
+            f"within {int(ttl // 60)} minutes (one use). The page then chats with this "
+            f"serve on 127.0.0.1:{port or '?'}; your model answers, approvals still need "
+            "your click, and a restart signs the page out.")
+
+
+def cmd_connect_browser(args: argparse.Namespace) -> int:
+    """Ask the running serve for a one-time browser pairing code and print it."""
+    from .local_client import LocalClientError
+
+    try:
+        client = _local_client(args)
+        data = client.browser_code()
+    except LocalClientError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAIL
+    if args.json:
+        print(json.dumps(data))
+        return EXIT_OK
+    port = int(str(client.url).rsplit(":", 1)[-1]) if ":" in str(client.url) else 0
+    print(_browser_code_text(str(data.get("code") or ""), float(data.get("expires_in") or 0),
+                             list(data.get("origins") or []), port).strip())
+    return EXIT_OK
 
 
 def cmd_say(args: argparse.Namespace) -> int:
@@ -1192,6 +1242,7 @@ COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "chat": cmd_chat, "join": cmd_join, "enroll": cmd_enroll,
     "serve": cmd_serve, "channels": cmd_channels, "receipts": cmd_receipts, "trust": cmd_trust,
     "say": cmd_say, "events": cmd_events, "report": cmd_report,
+    "connect-browser": cmd_connect_browser,
 }
 
 

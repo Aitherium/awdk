@@ -7,6 +7,7 @@ agent's model is built by the same code every adk agent uses.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -28,9 +29,8 @@ AWNODE_URL = "http://127.0.0.1:8090/v1"
 
 PRESETS: Dict[str, Preset] = {
     # local -- nothing leaves the machine
-    "bonsai": Preset("local", "bonsai", "http://127.0.0.1:8080/v1", "bonsai-selfhost",
-                     hint="install: curl -fsSL https://aitherium.com/install-bonsai.sh | sh"
-                          "  (or `adk bonsai-local` for the Docker build on :8090)"),
+    # hint filled per OS by bonsai_install_hint(): `curl | sh` has no `sh` on Windows.
+    "bonsai": Preset("local", "bonsai", "http://127.0.0.1:8080/v1", "bonsai-selfhost"),
     "llamacpp": Preset("local", "llamacpp", "http://127.0.0.1:8080/v1", "",
                        hint="run: llama-server -m <model.gguf> --port 8080"),
     "ollama": Preset("local", "ollama", "http://localhost:11434", "gemma4:4b",
@@ -50,6 +50,29 @@ PRESETS: Dict[str, Preset] = {
     "anthropic": Preset("byo", "anthropic", "", "claude-sonnet-4-6",
                         key_env="ANTHROPIC_API_KEY"),
 }
+
+BONSAI_SH = "https://aitherium.com/install-bonsai.sh"
+BONSAI_PS1 = "https://aitherium.com/install-bonsai.ps1"
+
+
+def bonsai_install_hint(platform: str = "") -> str:
+    """The Bonsai install line for THIS OS. The installer picks CPU / Vulkan / CUDA
+    itself, serves llama-server on 127.0.0.1:8080 as ``bonsai-selfhost``."""
+    plat = platform or sys.platform
+    if plat.startswith("win"):
+        return ("install (PowerShell): iwr " + BONSAI_PS1 + " -OutFile install-bonsai.ps1; "
+                "powershell -ExecutionPolicy Bypass -File .\\install-bonsai.ps1"
+                "  (CPU or GPU is detected; -Backend cpu|vulkan|cuda forces one)")
+    return ("install: curl -fsSL " + BONSAI_SH + " -o install-bonsai.sh && "
+            "sh install-bonsai.sh  (CPU or GPU is detected; --backend cpu|vulkan|cuda forces one)")
+
+
+def hint_for(provider: str, platform: str = "") -> str:
+    if provider == "bonsai":
+        return bonsai_install_hint(platform)
+    p = PRESETS.get(provider)
+    return p.hint if p else ""
+
 
 LOCAL = tuple(k for k, p in PRESETS.items() if p.mode == "local")
 BYO = tuple(k for k, p in PRESETS.items() if p.mode == "byo")
@@ -76,7 +99,7 @@ def describe(cfg: ModelConfig) -> Dict[str, Any]:
     return {"mode": cfg.mode, "provider": cfg.provider, "model": cfg.model,
             "base_url": cfg.base_url, "api_key_env": cfg.api_key_env,
             "api_key_present": key_set if cfg.mode == "byo" else None,
-            "hint": p.hint if p else ""}
+            "hint": hint_for(cfg.provider) if p else ""}
 
 
 def build_llm(cfg: ModelConfig) -> Any:
@@ -109,9 +132,8 @@ def probe(cfg: ModelConfig, timeout: float = 3.0) -> Dict[str, Any]:
     try:
         r = httpx.get(url, timeout=timeout)
     except httpx.HTTPError as exc:
-        p = PRESETS[cfg.provider]
         return {"ok": False, "detail": f"{url} unreachable ({type(exc).__name__}). "
-                                       f"{p.hint}"}
+                                       f"{hint_for(cfg.provider)}"}
     if cfg.provider == "awnode" and r.status_code == 200:
         return _awnode_verdict(url, r)
     return {"ok": r.status_code == 200, "detail": f"{url} -> {r.status_code}"}

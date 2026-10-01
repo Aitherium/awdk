@@ -228,6 +228,58 @@ def _half_tagged_tool_calls(content: str) -> tuple[list[ToolCall], str]:
     return calls, cleaned
 
 
+_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+
+def whole_reply_tool_call(content: str, offered: "set[str] | frozenset[str]") -> ToolCall | None:
+    """The reply IS one bare ``{"name": <offered tool>, "arguments": {...}}`` and nothing else.
+
+    Measured 2026-10-01: Ternary-Bonsai-1.7B behind llama-server, 22 Hearth tools
+    offered, answered "Say hello in five words." with exactly
+    ``{"name": "ask_human", "arguments": {...}}`` as its content -- no tags, no
+    finish_reason hint -- and the user was shown the raw JSON. Only a reply that is
+    entirely one JSON object naming a tool that was OFFERED on this request counts,
+    so prose that merely quotes JSON is never turned into a call.
+    """
+    text = (content or "").strip()
+    fenced = _FENCE_RE.match(text)
+    if fenced:
+        text = fenced.group(1).strip()
+    if not (text.startswith("{") and text.endswith("}")) or not offered:
+        return None
+    try:
+        data = _json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not set(data) <= {"name", "arguments", "parameters"}:
+        return None
+    name = data.get("name")
+    if not isinstance(name, str) or name not in offered:
+        return None
+    args = data.get("arguments", data.get("parameters", {}))
+    if isinstance(args, str):
+        try:
+            args = _json.loads(args)
+        except ValueError:
+            return None
+    if not isinstance(args, dict):
+        return None
+    return ToolCall(id=f"call_{name}_0", name=name, arguments=args)
+
+
+def offered_tool_names(tools: "list[dict] | None") -> "set[str]":
+    """Names of the OpenAI-shaped ``tools`` sent on a request."""
+    out: set[str] = set()
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function")
+        name = (fn if isinstance(fn, dict) else t).get("name")
+        if isinstance(name, str) and name:
+            out.add(name)
+    return out
+
+
 def has_text_tool_call(content: str) -> bool:
     """The content carries a Hermes call tag, opening or closing."""
     return bool(content) and ("<tool_call>" in content or _TOOL_CALL_CLOSE in content)
