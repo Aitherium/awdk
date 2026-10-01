@@ -553,6 +553,32 @@ def _unsearched_resumable(searched: str) -> list:
         return []
 
 
+#: Where session-focus.py (the Claude Code Stop hook) keeps one record per session:
+#: <root>/<project-key>/<session_id>.json with goal, latest ask, next step, report.
+_FOCUS_ROOT = os.environ.get("AITHER_FOCUS_DIR") or "~/.aither/focus"
+
+
+def _focus_for(session_id: str) -> dict:
+    """The goal / next step a session left behind, so a resume picks the RIGHT one.
+
+    A transcript id and a byte count do not say which session was doing what.
+    Never raises: a missing or unreadable record means no focus field.
+    """
+    import glob
+
+    root = os.path.expanduser(_FOCUS_ROOT)
+    for path in glob.glob(os.path.join(root, "*", f"{glob.escape(session_id)}.json")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict):
+            return {k: rec[k] for k in ("first_ask", "last_ask", "next", "report", "files")
+                    if rec.get(k)}
+    return {}
+
+
 def _resumable(args: dict) -> dict:
     """Prior sessions that CAN be reopened, newest first.
 
@@ -621,6 +647,10 @@ def _resumable(args: dict) -> dict:
 
     rows.sort(key=lambda r: -r["last_activity_at"])
     total = len(rows)
+    for row in rows[:limit]:
+        focus = _focus_for(row["session_id"])
+        if focus:
+            row["focus"] = focus
     return {
         "count": min(total, limit),
         "total_found": total,

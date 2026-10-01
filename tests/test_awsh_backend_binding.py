@@ -205,6 +205,27 @@ def test_resumable_lists_dead_sessions_newest_first(tmp_path, monkeypatch):
     assert out["total_found"] == 2
 
 
+def test_resumable_carries_the_session_focus_record(tmp_path, monkeypatch):
+    """A resume picks a session by WHAT it was doing; session-focus.py records that."""
+    proj = tmp_path / "projects" / "C--repo"
+    proj.mkdir(parents=True)
+    (proj / "s1.jsonl").write_text("{}", encoding="utf-8")
+    (proj / "s2.jsonl").write_text("{}", encoding="utf-8")
+    focus = tmp_path / "focus" / "c-repo"
+    focus.mkdir(parents=True)
+    (focus / "s1.json").write_text(
+        '{"first_ask": "fix login", "next": "ship it", "turns": 3}', encoding="utf-8")
+    (focus / "s2.json").write_text("{broken", encoding="utf-8")
+
+    monkeypatch.setitem(mcp_stdio._RESUMABLE_STORES, "claude", (str(tmp_path / "projects"), "*.jsonl"))
+    monkeypatch.setattr(mcp_stdio, "_unsearched_resumable", lambda s: [])
+    monkeypatch.setattr(mcp_stdio, "_FOCUS_ROOT", str(tmp_path / "focus"))
+
+    rows = {s["session_id"]: s for s in mcp_stdio._resumable({"harness": "claude"})["sessions"]}
+    assert rows["s1"]["focus"] == {"first_ask": "fix login", "next": "ship it"}
+    assert "focus" not in rows["s2"]
+
+
 def test_resumable_reports_a_harness_it_cannot_enumerate(monkeypatch):
     """Returning an empty list would read as 'you have no sessions' rather than
     'this tool cannot see them', which sends people to the wrong fix."""
