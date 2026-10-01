@@ -142,7 +142,9 @@ def claims_repeat(content: str) -> bool:
 READ_ONLY_TOOLS = frozenset({"receipts", "list_followups", "list_my_cards",
                              "check_human", "web_search", "web_fetch",
                              "calendar_agenda", "mail_unread", "todo_list",
-                             "tutor_learners", "tutor_report"})
+                             "tutor_learners", "tutor_report",
+                             "class_brief", "struggle_report", "grade_assist",
+                             "parent_note_draft"})
 #: Tools that read the owner's private accounts and return third-party text
 #: (adk.home.connector_tools.READ_ONLY_CONNECTOR_TOOLS; a test pins the two equal).
 PRIVATE_READ_TOOLS = frozenset({"calendar_agenda", "mail_unread", "todo_list"})
@@ -156,7 +158,11 @@ WEB_READ_TOOLS = frozenset({"web_fetch", "web_search"})
 #: A successful call of any of these taints the SESSION until the owner clears it.
 #: A WEB read taints even when its result looks like an error: web_fetch returns
 #: the page body as-is, so a page reading ``{"error": ...}`` is attacker text.
-TAINT_SOURCES = PRIVATE_READ_TOOLS | WEB_READ_TOOLS
+#: Classroom readers (adk.home.teacher_tools) return text students and parents wrote
+#: (answers, notes): untrusted, and student records must never ride a web_fetch out.
+STUDENT_DATA_TOOLS = frozenset({"class_brief", "struggle_report", "grade_assist",
+                                "parent_note_draft"})
+TAINT_SOURCES = PRIVATE_READ_TOOLS | WEB_READ_TOOLS | STUDENT_DATA_TOOLS
 #: Tools that send data out or act on the owner's accounts: their card shows the
 #: argument VALUES (who it goes to and what it says), never just the names --
 #: an injected "mail_send(to=attacker, body=<your mail>)" must be visible to judge.

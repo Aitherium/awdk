@@ -9,6 +9,7 @@
     adk home status                             everything at a glance
     adk home signin                             Sign in with Aitherium: purchases unlock
     adk home license <file-or-text>             offline activation (pasted license)
+    adk home teach setup [--url U]              teacher agent: local Bonsai + classroom tools
     adk home chat "hello"                       one message to your agent
     adk home serve [--channels relay,telegram,..] [--pair] [--no-local]
                                                 answer YOUR messages on every channel
@@ -113,6 +114,17 @@ def _build(p: argparse.ArgumentParser) -> None:
                      help="Path to the license file, or the pasted text ('-' = stdin)")
     lic.add_argument("--replace", action="store_true",
                      help="(no effect: offline licenses are kept side by side)")
+
+    te = hs.add_parser("teach", help="Aither Classroom: a teacher's own agent on this "
+                                     "computer (local Bonsai, no cost)")
+    tes = te.add_subparsers(dest="teach_command")
+    ts = tes.add_parser("setup", help="Probe the classroom, init, local Bonsai, sign in, "
+                                      "turn the teacher tools on")
+    ts.add_argument("--url", default="", help="Classroom API root (default "
+                    "$AITHER_CLASSROOM_URL, else the tutor URL)")
+    ts.add_argument("--no-signin", action="store_true", help="Do not sign in now")
+    ts.add_argument("--keep-model", action="store_true",
+                    help="Keep the model already chosen instead of local Bonsai")
 
     c = hs.add_parser("chat", help="Send one message to your agent")
     c.add_argument("message")
@@ -398,6 +410,26 @@ def cmd_signin(args: argparse.Namespace) -> int:
                                              str(result.get("access_token") or ""))
     _emit(entitlement.status(), False)
     return EXIT_OK
+
+
+def cmd_teach(args: argparse.Namespace) -> int:
+    """``adk home teach setup`` (see :mod:`adk.home.teach_setup`)."""
+    if getattr(args, "teach_command", None) != "setup":
+        print("usage: adk home teach setup [--url URL] [--no-signin] [--keep-model]",
+              file=sys.stderr)
+        return EXIT_SETUP
+    from . import teach_setup
+
+    try:
+        out = teach_setup.setup(
+            getattr(args, "url", ""), signin=not getattr(args, "no_signin", False),
+            keep_model=getattr(args, "keep_model", False),
+            do_signin=lambda: cmd_signin(argparse.Namespace(portal_url="")))
+    except hc.HomeError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_SETUP
+    _emit(out, False)
+    return EXIT_OK if out.get("signin") != "failed" else EXIT_FAIL
 
 
 def cmd_license(args: argparse.Namespace) -> int:
@@ -1301,7 +1333,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "init": cmd_init, "persona": cmd_persona, "model": cmd_model,
     "harness": cmd_harness, "status": cmd_status, "license": cmd_license,
-    "signin": cmd_signin,
+    "signin": cmd_signin, "teach": cmd_teach,
     "chat": cmd_chat, "join": cmd_join, "enroll": cmd_enroll,
     "serve": cmd_serve, "channels": cmd_channels, "receipts": cmd_receipts, "trust": cmd_trust,
     "say": cmd_say, "events": cmd_events, "report": cmd_report,

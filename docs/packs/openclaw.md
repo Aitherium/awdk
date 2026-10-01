@@ -40,5 +40,5 @@ skills/web-research.md
 
 ---
 
-sha256 `c07566339d17f0604c575f02828da09d80f9fbad1f32ab1c5a48c86e1af58b95`  
+sha256 `7b2c458b221398114cd50aebdc2d88644685ecb4e19cd6d3c730e7555090557c`  
 Built from `v3.8.38` (adk 3.8.38). [All packs](../packs.md)

@@ -114,6 +114,34 @@ TUTOR_FLAG_ENV = "AITHER_HOME_TUTOR"
 #: Where the tutor tools reach Genesis (``/api/v1/tutor/family/*``); the first set wins.
 TUTOR_URL_ENV = ("AITHER_TUTOR_URL", "AITHER_GENESIS_URL", "GENESIS_URL")
 DEFAULT_TUTOR_URL = "https://api.aitherium.com"
+#: Said (logged by serve, raised by ``teach setup --keep-model``) when the classroom
+#: tools are on but the model is not on this computer.
+TEACHER_NEEDS_LOCAL = ("classroom tools need the local model: student records never go "
+                       "to a bring-your-own-key or remote model. Run: adk home model "
+                       "--local bonsai")
+TEACHER_PROMPT = """\
+## Aither Classroom
+Your owner is a teacher. Name classes and students as the teacher does ("Room 4",
+"Ana"); the tools resolve them on the teacher's own roster.
+- "what is Room 4 finding hard?" -> struggle_report(class_name="Room 4"); relay the
+  OBSERVATIONS with their evidence. Never diagnose, never label a child, never name a
+  condition, never compare children.
+- "how is Ana doing?" -> struggle_report(class_name=..., student="Ana").
+- Never grade a child. grade_assist only suggests rubric notes; the teacher sets
+  every score in the console.
+- lesson_draft and differentiate save DRAFTS; say so. Publishing is the teacher's
+  action. The owner confirms each first.
+- A note to a parent: parent_note_draft first, show the draft, then parent_note_send
+  only with the teacher's words; the owner confirms it first.
+"""
+#: ``1``/``on`` gives Hearth the classroom tools, ``0``/``off`` never does; unset =
+#: whatever ``adk home teach setup`` recorded in ``<home>/teacher.json`` (default off:
+#: only a teacher wants them).
+TEACHER_FLAG_ENV = "AITHER_HOME_TEACHER"
+#: Where the classroom tools reach Genesis (``/api/v1/classroom/*``); this env, then
+#: the URL ``teach setup`` saved, then the tutor URL.
+TEACHER_URL_ENV = ("AITHER_CLASSROOM_URL",)
+TEACHER_STATE = "teacher.json"
 #: A home agent reachable from chat apps: inbound A2A calls must be signed by a
 #: trusted key unless the operator chose otherwise.
 A2A_TRUST_ENV = "AITHER_A2A_REQUIRE_TRUST"
@@ -179,6 +207,33 @@ def tutor_url() -> str:
     return DEFAULT_TUTOR_URL
 
 
+def _teacher_state(root: Optional[Path] = None) -> Dict[str, Any]:
+    import json
+
+    try:
+        data = json.loads(((root or home_dir()) / TEACHER_STATE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def teacher_enabled(root: Optional[Path] = None) -> bool:
+    """Does this owner get the Aither Classroom tools? See :data:`TEACHER_FLAG_ENV`."""
+    flag = (os.environ.get(TEACHER_FLAG_ENV) or "").strip().lower()
+    if not flag:
+        flag = str(_teacher_state(root).get(TEACHER_FLAG_ENV) or "").strip().lower()
+    return flag in ("1", "true", "yes", "on")
+
+
+def teacher_url(root: Optional[Path] = None) -> str:
+    for name in TEACHER_URL_ENV:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value.rstrip("/")
+    saved = str(_teacher_state(root).get("url") or "").strip()
+    return saved.rstrip("/") if saved else tutor_url()
+
+
 def tool_names(agent: Any) -> List[str]:
     return sorted(td.name for td in agent._tools.list_tools())
 
@@ -190,7 +245,9 @@ def forbidden_tools(agent: Any) -> List[str]:
 def register_serve_tools(agent: Any, store: FollowupStore,
                          receipts_file: Optional[Path] = None,
                          connectors: Optional[bool] = None,
-                         tutor: Optional[bool] = None) -> List[str]:
+                         tutor: Optional[bool] = None,
+                         teacher: Optional[bool] = None,
+                         local_model: bool = False) -> List[str]:
     """``web`` + ``decisions`` + life tools; refuses if a file/shell tool is present.
 
     ``connectors`` adds the calendar / mail / to-do tools
@@ -202,6 +259,13 @@ def register_serve_tools(agent: Any, store: FollowupStore,
     ``tutor`` decides the tutor tools on their own; None follows ``connectors``
     when that was given, else :func:`tutor_enabled`. ``tutor_assign`` is in
     :data:`ALWAYS_ASK`, so a parent's "have Athena practise X" is a card first.
+
+    ``teacher`` adds the Aither Classroom tools (:mod:`adk.home.teacher_tools`); None
+    means :func:`teacher_enabled`. Their writers (lesson_draft, differentiate,
+    parent_note_send) are in :data:`ALWAYS_ASK`. They are registered ONLY when
+    ``local_model`` is true (``models.is_local(cfg.model)``): every tool result enters
+    the agent's conversation, so with a bring-your-own-key model student records
+    would go to a third-party API. Not local means no classroom tool at all.
     """
     from adk.builtin_tools import register_builtin_tools
 
@@ -219,6 +283,15 @@ def register_serve_tools(agent: Any, store: FollowupStore,
     if tutor:
         for fn in build_tutor_tools(tutor_url(), owner_bearer()):
             agent._tools.register(fn)
+    if teacher_enabled() if teacher is None else teacher:
+        if local_model:
+            from .teacher_tools import build_teacher_tools, llm_generate
+
+            generate = llm_generate(getattr(agent, "llm", None), local=True)
+            for fn in build_teacher_tools(teacher_url(), owner_bearer(), generate=generate):
+                agent._tools.register(fn)
+        else:
+            logger.warning(TEACHER_NEEDS_LOCAL)
     bad = forbidden_tools(agent)
     if bad:
         raise HomeError(f"refusing to serve: the agent holds {', '.join(bad)}; a "
@@ -239,11 +312,21 @@ def build_serve_agent(cfg: HomeConfig, store: FollowupStore, root: Optional[Path
         llm = build_llm(cfg.model)
     with_connectors = home_signed_in()
     with_tutor = tutor_enabled()
+    from .models import is_local
+
+    local_model = is_local(cfg.model)
+    with_teacher = teacher_enabled(root)
+    if with_teacher and not local_model:
+        # No tools and no prompt: the agent must not claim a classroom it cannot reach.
+        logger.warning(TEACHER_NEEDS_LOCAL)
+        with_teacher = False
     prompt = compose_system_prompt(root) + "\n\n" + SERVE_PROMPT
     if with_connectors:
         prompt += "\n" + CONNECTOR_PROMPT
     if with_tutor:
         prompt += "\n" + TUTOR_PROMPT
+    if with_teacher:
+        prompt += "\n" + TEACHER_PROMPT
     agent = AitherAgent(
         name=cfg.name, llm=llm, memory=memory, system_prompt=prompt,
         builtin_tools=False, user_mcp=False, load_packs=False,
@@ -254,7 +337,7 @@ def build_serve_agent(cfg: HomeConfig, store: FollowupStore, root: Optional[Path
     # with nothing on disk (measured live on Bonsai 8B, 2026-09-29).
     agent.tool_selection = "all"
     register_serve_tools(agent, store, receipts_file, connectors=with_connectors,
-                         tutor=with_tutor)
+                         tutor=with_tutor, teacher=with_teacher, local_model=local_model)
     return agent
 
 

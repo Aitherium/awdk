@@ -81,6 +81,23 @@ def hint_for(provider: str, platform: str = "") -> str:
 
 LOCAL = tuple(k for k, p in PRESETS.items() if p.mode == "local")
 BYO = tuple(k for k, p in PRESETS.items() if p.mode == "byo")
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def is_local(cfg: Any) -> bool:
+    """Does this model run on THIS computer? A local preset whose endpoint is
+    loopback -- a "local" provider pointed at another host is not local. Anything
+    unreadable is not local (the classroom tools gate on this, so it fails closed)."""
+    from urllib.parse import urlsplit
+
+    try:
+        preset = PRESETS.get(str(cfg.provider))
+        if cfg.mode != "local" or preset is None or preset.mode != "local":
+            return False
+        host = urlsplit(str(cfg.base_url or preset.base_url)).hostname or ""
+    except (AttributeError, ValueError):
+        return False
+    return host.lower() in _LOOPBACK
 
 
 def choose_model(provider: str, model: str = "", base_url: str = "",
