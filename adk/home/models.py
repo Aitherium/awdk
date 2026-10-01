@@ -31,6 +31,11 @@ PRESETS: Dict[str, Preset] = {
     # local -- nothing leaves the machine
     # hint filled per OS by bonsai_install_hint(): `curl | sh` has no `sh` on Windows.
     "bonsai": Preset("local", "bonsai", "http://127.0.0.1:8080/v1", "bonsai-selfhost"),
+    # Bonsai 2 27B on the PrismML llama.cpp build we ship (adk.home.bonsai2): choosing
+    # it downloads the sha256-pinned server + GGUF and starts it on :8088.
+    "bonsai2": Preset("local", "bonsai", "http://127.0.0.1:8088/v1", "bonsai2-27b",
+                      hint="run: adk home model --local bonsai2 (installs and starts "
+                           "Bonsai 2 on the PrismML prism-b10685 build; again to restart)"),
     "llamacpp": Preset("local", "llamacpp", "http://127.0.0.1:8080/v1", "",
                        hint="run: llama-server -m <model.gguf> --port 8080"),
     "ollama": Preset("local", "ollama", "http://localhost:11434", "gemma4:4b",
@@ -136,6 +141,8 @@ def probe(cfg: ModelConfig, timeout: float = 3.0) -> Dict[str, Any]:
                                        f"{hint_for(cfg.provider)}"}
     if cfg.provider == "awnode" and r.status_code == 200:
         return _awnode_verdict(url, r)
+    if cfg.provider == "bonsai2" and r.status_code == 200:
+        return _bonsai2_verdict(url, r, cfg.model)
     return {"ok": r.status_code == 200, "detail": f"{url} -> {r.status_code}"}
 
 
@@ -156,3 +163,16 @@ def _awnode_verdict(url: str, r: Any) -> Dict[str, Any]:
     return {"ok": True, "models": served,
             "detail": f"{url} -> 200, {len(served)} model(s) via "
                       f"{', '.join(backends) or 'awnode'}"}
+
+
+def _bonsai2_verdict(url: str, r: Any, model: str) -> Dict[str, Any]:
+    """Port 8088 answering is not enough: a stock llama-server there would serve
+    Bonsai 2 as gibberish. Only the alias our PrismML server registers counts."""
+    try:
+        served = [str(m.get("id")) for m in r.json().get("data") or [] if isinstance(m, dict)]
+    except (ValueError, AttributeError):
+        served = []
+    if model not in served:
+        return {"ok": False, "detail": f"{url} -> 200 but serves {served or 'nothing'}, not "
+                                       f"{model}: {PRESETS['bonsai2'].hint}"}
+    return {"ok": True, "models": served, "detail": f"{url} -> 200, {model}"}

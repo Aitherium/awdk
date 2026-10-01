@@ -2,7 +2,9 @@
 
     adk home init [--name NAME]                 create ~/.aither/agent-home
     adk home persona [show|path|set FILE TEXT]  view / edit the persona files
-    adk home model --local bonsai|llamacpp|ollama|awnode | --byo deepseek|openai|anthropic
+    adk home model --local bonsai|bonsai2|llamacpp|ollama|awnode | --byo deepseek|openai|anthropic
+    adk home model --local bonsai2 [--quant ..] [--backend ..] [--data-dir D] [--stop]
+                                                Bonsai 2 27B on our shipped PrismML build
     adk home harness aither|claude|openclaw|hermes
     adk home status                             everything at a glance
     adk home signin                             Sign in with Aitherium: purchases unlock
@@ -82,6 +84,19 @@ def _build(p: argparse.ArgumentParser) -> None:
     m.add_argument("--key-env", default="",
                    help="NAME of the env var holding your key (never the key)")
     m.add_argument("--check", action="store_true", help="Probe the model now")
+    b2 = m.add_argument_group("bonsai2", "only with --local bonsai2")
+    b2.add_argument("--quant", choices=["auto", "PQ2_0", "PTQ1_0"], default="auto",
+                    help="PQ2_0 (7.2 GB, CUDA/Metal-fast) or PTQ1_0 (5.9 GB, Vulkan/CPU)")
+    b2.add_argument("--backend", choices=["auto", "cuda", "vulkan", "cpu", "metal"],
+                    default="auto", help="Which PrismML build to run")
+    b2.add_argument("--port", type=int, default=0, help="llama-server port (default 8088)")
+    b2.add_argument("--ctx", type=int, default=0, help="Context size (default: sized to "
+                    "free VRAM/RAM, 4096-65536)")
+    b2.add_argument("--data-dir", default="", help="Where the build and the GGUF live "
+                    "(default: the user data dir; or $AITHER_BONSAI2_HOME)")
+    b2.add_argument("--dry-run", action="store_true", help="Print the plan; download nothing")
+    b2.add_argument("--stop", action="store_true",
+                    help="Stop the llama-server this started (nothing else)")
 
     h = hs.add_parser("harness", help="Choose who runs the agent loop")
     h.add_argument("kind", nargs="?", choices=list(harness.HARNESSES))
@@ -273,6 +288,10 @@ def cmd_persona(args: argparse.Namespace) -> int:
 def cmd_model(args: argparse.Namespace) -> int:
     cfg = _cfg()
     provider = args.local or args.byo
+    if provider == "bonsai2":
+        rc = _bonsai2(args)
+        if rc is not None:
+            return rc
     if provider:
         cfg.model = models.choose_model(provider, model=args.model,
                                         base_url=args.base_url,
@@ -285,6 +304,49 @@ def cmd_model(args: argparse.Namespace) -> int:
     if provider and cfg.model.mode == "byo" and not info["api_key_present"]:
         print(f"note: set {cfg.model.api_key_env} in your environment before use")
     return EXIT_OK if not args.check or info["probe"]["ok"] else EXIT_FAIL
+
+
+def _bonsai2(args: argparse.Namespace) -> Optional[int]:
+    """Install + start Bonsai 2; None means 'now save the preset'."""
+    from . import bonsai2
+
+    root = bonsai2.data_dir(getattr(args, "data_dir", ""))
+    if getattr(args, "stop", False):
+        print(bonsai2.stop(root))
+        return EXIT_OK
+    port = getattr(args, "port", 0) or bonsai2.DEFAULT_PORT
+    try:
+        out = bonsai2.install_and_start(
+            quant=getattr(args, "quant", "auto"), backend=getattr(args, "backend", "auto"),
+            port=port, ctx=getattr(args, "ctx", 0), root_override=getattr(args, "data_dir", ""),
+            dry_run=getattr(args, "dry_run", False))
+    except hc.HomeError as exc:
+        print(f"bonsai2: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    if getattr(args, "dry_run", False):
+        _emit(out, False)
+        return EXIT_OK
+    args.base_url = args.base_url or out["base_url"]
+    # serve restarts the server after a reboot; it needs to know where it lives.
+    (hc.home_dir() / "bonsai2.json").write_text(
+        json.dumps({"data_dir": out["data_dir"]}), encoding="utf-8")
+    return None
+
+
+def _bonsai2_ensure(cfg: hc.HomeConfig) -> None:
+    """serve after a reboot: restart our recorded Bonsai 2 server (no downloads)."""
+    if cfg.model.provider != "bonsai2":
+        return
+    from . import bonsai2
+
+    try:
+        pointer = json.loads((hc.home_dir() / "bonsai2.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pointer = {}
+    try:
+        bonsai2.ensure_running(bonsai2.data_dir(pointer.get("data_dir", "")), print)
+    except hc.HomeError as exc:
+        print(f"bonsai2: {exc}", file=sys.stderr)
 
 
 def cmd_harness(args: argparse.Namespace) -> int:
@@ -881,6 +943,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if getattr(args, "install", False) or getattr(args, "uninstall", False):
         return _serve_autostart(args)
     cfg = _cfg()
+    _bonsai2_ensure(cfg)
     serve.apply_a2a_trust_default()
     egress_path, egress_written = ensure_egress_audit()
     names, built, rc = _prepare_channels(args, local=not getattr(args, "no_local", False))

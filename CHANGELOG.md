@@ -4,6 +4,22 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.38] - 2026-10-01
+
+### Added
+
+- **`adk home model --local bonsai2`: Bonsai 2 27B as Aither Hearth's local brain**, on
+  the same PrismML llama.cpp release the AitherOS bundle and install-bonsai ship
+  (`prism-b10685-7dffb15`). Picks the build for the machine (Linux CUDA 12.4 / Vulkan,
+  Windows CUDA / Vulkan, macOS Metal) and the weights (PQ2_0 when it fits on the GPU,
+  PTQ1_0 otherwise), downloads both with resume into the user data dir (`--data-dir` /
+  `$AITHER_BONSAI2_HOME`), verifies every file against a pinned sha256 and refuses on a
+  mismatch, checks the server's `--version` names the pinned commit (stock llama.cpp
+  emits gibberish on Bonsai 2, so there is no PATH fallback), sizes the context to free
+  VRAM/RAM and starts `llama-server` on 127.0.0.1:8088. `adk home serve` restarts it
+  after a reboot without downloading; `--stop` stops only the server it started.
+  CPU-only is never picked silently (measured ~0.5 tokens/s); `--backend cpu` forces it.
+
 ## [3.8.37] - 2026-10-01
 
 ### Added
