@@ -276,7 +276,7 @@ def remove_autostart() -> bool:
             if _names_wrapper(task.stdout, wrapper):
                 rc = subprocess.run(
                     ["schtasks", "/delete", "/tn", WINDOWS_TASK_NAME, "/f"],
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
                 )
                 removed = rc.returncode == 0
             else:
