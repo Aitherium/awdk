@@ -1493,6 +1493,18 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             ).strip()
         try:
             cwd = validate_cwd(body.cwd)
+            if not (body.system_prompt_append or "").strip() and getattr(
+                spec, "prompt_carries_context", False
+            ):
+                # No hook gives these harnesses the Claude Code SessionStart view of
+                # where the last session stopped; the focus record does (adk.harnesses.focus).
+                from adk.harnesses.focus import resume_line
+
+                line = resume_line(os.path.abspath(cwd or os.getcwd()))
+                if line:
+                    fields["system_prompt_append"] = (
+                        line + "\n\n" + (fields.get("system_prompt_append") or "")
+                    ).strip()
             config = SessionConfig(**{**fields, "cwd": cwd})
             session = mgr.create(config)
         except ManagerError as exc:

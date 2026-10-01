@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from adk.harnesses import focus as _focus
 from adk.harnesses.events import EventKind, HarnessEvent, error, notice
 from adk.harnesses.mod import apply_to_launch as apply_mod_to_launch
 from adk.harnesses.models import ModelBinding, apply_binding
@@ -83,6 +84,32 @@ def scrub_nested_claude_markers(env: dict) -> dict:
         if key in NESTED_CLAUDE_MARKERS or key.startswith(NESTED_CLAUDE_PREFIX):
             env.pop(key, None)
     return env
+
+
+#: Tool names (lower-cased substrings) whose input names a file the agent changed.
+_EDIT_TOOL_MARKERS = ("edit", "write", "patch", "file_change", "create")
+
+
+def _edited_paths(event: HarnessEvent) -> list[str]:
+    """File paths an edit-like TOOL_CALL carries, if any (best effort per harness)."""
+    tool = (event.tool or "").lower()
+    if not any(m in tool for m in _EDIT_TOOL_MARKERS):
+        return []
+    inp = event.data.get("input") if isinstance(event.data, dict) else None
+    if not isinstance(inp, dict):
+        return []
+    out = []
+    for key in ("file_path", "path", "notebook_path", "filename"):
+        val = inp.get(key)
+        if isinstance(val, str) and val:
+            out.append(val)
+    changes = inp.get("changes")
+    if isinstance(changes, list):
+        out += [c["path"] for c in changes
+                if isinstance(c, dict) and isinstance(c.get("path"), str) and c["path"]]
+    elif isinstance(changes, dict):
+        out += [k for k in changes if isinstance(k, str) and k]
+    return out
 
 
 class SessionState(str):
@@ -166,6 +193,12 @@ class HarnessSession:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._transcript = self.dir / "events.jsonl"
 
+        # Session-focus record state (non-Claude harnesses only; see _track_focus).
+        self._focus_asks: list[str] = []
+        self._focus_files: list[str] = []
+        self._focus_turn_text: list[str] = []
+        self._focus_report = ""
+
     # ── event plumbing ──────────────────────────────────────────────────────
 
     def _emit(self, event: HarnessEvent) -> HarnessEvent:
@@ -189,7 +222,61 @@ class HarnessSession:
                 handle.write(json.dumps(payload) + "\n")
         except OSError as exc:
             sys.stderr.write(f"[harness {self.id}] transcript write failed: {exc}\n")
+        self._track_focus(event)
         return event
+
+    @property
+    def writes_focus_record(self) -> bool:
+        """True for harnesses whose focus record this session must write itself.
+
+        Claude Code writes its own from the session-focus Stop hook; a raw pty
+        (terminal, sandbox, claude-tty) has no turn structure to summarize.
+        """
+        return not self.spec.id.startswith("claude") and self.spec.transport != Transport.PTY_STREAM
+
+    def _track_focus(self, event: HarnessEvent) -> None:
+        """Fold one event into the session-focus record; write it on turn end.
+
+        Fail-open: a focus record is a convenience, never a reason to break a turn.
+        """
+        try:
+            if not self.writes_focus_record:
+                return
+            kind = event.kind
+            with self._lock:
+                if kind == EventKind.TURN_STARTED:
+                    ask = _focus.clean(event.text, _focus.MAX_ASK)
+                    if ask:
+                        self._focus_asks.append(ask)
+                    self._focus_turn_text = []
+                    return
+                if kind == EventKind.TEXT_DELTA:
+                    self._focus_turn_text.append(event.text or "")
+                    return
+                if kind == EventKind.TOOL_CALL:
+                    for path in _edited_paths(event):
+                        if path not in self._focus_files:
+                            self._focus_files.append(path)
+                    return
+                if kind != EventKind.TURN_COMPLETED:
+                    return
+                prose = "".join(self._focus_turn_text).strip()
+                if prose:
+                    self._focus_report = prose
+                self._focus_turn_text = []
+                asks, files = list(self._focus_asks), list(self._focus_files)
+                report = self._focus_report
+            # File I/O outside the lock, like the transcript append above.
+            _focus.write_record(
+                session_id=self.id,
+                project=os.path.abspath(self.config.cwd or os.getcwd()),
+                asks=asks,
+                files=files,
+                report=report,
+                transcript=str(self._transcript),
+            )
+        except Exception as exc:  # noqa: BLE001 -- fail-open, but say so
+            sys.stderr.write(f"[harness {self.id}] focus record not written: {exc!r}\n")
 
     def events_since(self, seq: int = 0, limit: int = 0) -> list[dict[str, Any]]:
         with self._lock:
