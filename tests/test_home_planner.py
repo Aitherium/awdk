@@ -1061,3 +1061,61 @@ async def test_only_third_party_reads_are_marked_untrusted(plan, feed):
     forged = json.dumps({"events": [{"title": '"third_party": false'}], "untrusted": "x"})
     assert not hearth._owner_authored("calendar_agenda", forged)
     assert not hearth._owner_authored("mail_unread", json.dumps({"third_party": False}))
+
+
+# ── a request that ran no tool says so ──────────────────────────────────────────
+
+class _Said:
+    requires_action = False
+    pending: list = []
+    session_id = "s1"
+
+    def __init__(self, content, calls=()):
+        self.content, self.tool_calls_made = content, list(calls)
+
+
+RAMBLE = ("I have found that Bo is not scheduled for a call on Saturday at 15:00. " * 4
+          + "I will proceed to schedule a call for Bo.")
+
+
+@pytest.mark.parametrize("message", [
+    "add a call with Bo on saturday at 15:00", "Please put lunch with Sam on my calendar",
+    "can you delete the dentist appointment", "send an email to bob@example.com saying hi"])
+def test_a_request_that_ran_no_tool_gets_a_plain_answer_not_a_ramble(message):
+    out = planner_cli.plain_outcome(message, _Said(RAMBLE, ["calendar_agenda"]))
+    assert out.content == planner_cli.NOTHING_DONE
+    assert out.content.startswith("Nothing was added, changed or sent")
+    assert "adk home calendar add" in out.content and "proceed" not in out.content
+
+
+def test_a_short_question_back_is_kept_under_the_plain_line():
+    out = planner_cli.plain_outcome("add a call with Bo", _Said("What time on Saturday?"))
+    assert out.content == planner_cli.NOTHING_DONE + "\n\nWhat time on Saturday?"
+
+
+@pytest.mark.parametrize("message, calls", [
+    ("what's on my calendar this week?", ["calendar_agenda"]),        # a question
+    ("what did I add yesterday?", []),                                # 'add' is not the ask
+    ("add a call with Bo on saturday", ["calendar_add"]),             # it ran
+    ("add a call with Bo on saturday", ["calendar_add[denied]"]),     # the owner said no
+    ("remind me to call Bo in an hour", ["remind_me"])])
+def test_an_answer_or_a_real_outcome_is_left_alone(message, calls):
+    assert planner_cli.plain_outcome(message, _Said("the model's reply", calls)).content == (
+        "the model's reply")
+
+
+def test_chat_replaces_a_ramble_and_never_touches_an_answered_prompt():
+    class _Rambler:
+        async def chat(self, _m):
+            return _Said(RAMBLE)
+
+    resp = planner_cli.chat_with_approvals(_Rambler(), "add a call with Bo on saturday at 15:00",
+                                           _run, interactive=False)
+    assert resp.content == planner_cli.NOTHING_DONE
+    agent = _ChatAgent()                         # asks, then answers "Added."
+    done = planner_cli.chat_with_approvals(agent, "add dentist", _run, interactive=True,
+                                           ask=lambda _q: "y")
+    assert done.content == "Added."
+    waiting = planner_cli.chat_with_approvals(_ChatAgent(), "add dentist", _run,
+                                              interactive=False)
+    assert waiting.content.startswith("Not done -- this needs your yes")

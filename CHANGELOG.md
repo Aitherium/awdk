@@ -4,6 +4,18 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.40] - 2026-10-01
+
+### Fixed
+
+- **`adk home chat`: a request that ran no tool says so plainly.** Asked to "add a call
+  with Bo on saturday at 15:00", a 1.7B local model answered with three paragraphs ending
+  "I will proceed to schedule a call" and called nothing (measured on the 3.8.39 new-user
+  run). When the message tells the agent to change something and no acting tool ran, was
+  denied or is waiting for a yes, the reply is now "Nothing was added, changed or sent: no
+  tool ran for that" plus the direct command; a short question back from the model is
+  kept under that line.
+
 ## [3.8.39] - 2026-10-01
 
 ### Added

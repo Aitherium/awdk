@@ -27,6 +27,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 from typing import Any, Callable, List, Optional
 
@@ -378,6 +379,41 @@ def describe_call(pending: dict) -> str:
     return f"{pending.get('tool')}({shown})"
 
 
+#: A message that TELLS the agent to change something ("add ...", "please move ...").
+ACTION_ASK_RE = re.compile(
+    r"^\W*(?:(?:please|can you|could you|would you|will you|i need you to|i want you to)\s+)*"
+    r"(add|put|schedule|book|create|set up|move|reschedule|delete|remove|cancel|send|email|"
+    r"mail|mark|tick)\b", re.I)
+NOTHING_DONE = ("Nothing was added, changed or sent: no tool ran for that. Ask again, or do it "
+                'yourself: adk home calendar add "<when>" "<title>"  |  adk home todo add '
+                '"<text>"')
+#: A reply this short that asks something back is kept under the plain line.
+SHORT_QUESTION_CHARS = 240
+
+
+def plain_outcome(message: str, resp: Any) -> Any:
+    """The owner asked for a change and NO acting tool ran: say so, plainly.
+
+    Measured 2026-10-01 on a 1.7B local model: "add a call with Bo on saturday at
+    15:00" came back as three paragraphs ending "I will proceed to schedule a call"
+    with no tool call at all -- nothing was added, and nothing said so. serve has the
+    Hearth honesty guard for this; a one-shot chat has no core, so the check is here.
+    A call that ran, was denied or is waiting for a yes is an outcome: left alone.
+    """
+    from .life_tools import ALWAYS_ASK
+
+    if getattr(resp, "requires_action", False) or not ACTION_ASK_RE.search(message or ""):
+        return resp
+    acting = {t.lower() for t in ALWAYS_ASK} | {"remind_me", "follow_up", "cancel_followup"}
+    made = {str(c).split("[", 1)[0].lower() for c in (getattr(resp, "tool_calls_made", None) or [])}
+    if made & acting:
+        return resp
+    reply = str(getattr(resp, "content", "") or "").strip()
+    keep = len(reply) <= SHORT_QUESTION_CHARS and reply.endswith("?")
+    resp.content = NOTHING_DONE + (f"\n\n{reply}" if keep else "")
+    return resp
+
+
 def chat_with_approvals(agent: Any, message: str, run: Callable[[Any], Any],
                         interactive: Optional[bool] = None,
                         ask: Callable[[str], str] = input, rounds: int = 4) -> Any:
@@ -387,12 +423,13 @@ def chat_with_approvals(agent: Any, message: str, run: Callable[[Any], Any],
     command that does it (the owner's own command needs no second yes).
     """
     resp = run(agent.chat(message))
+    answered = False            # once the owner answered a prompt, the turn has an outcome
     if interactive is None:
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
     for _ in range(rounds):
         pending = list(getattr(resp, "pending", None) or [])
         if not getattr(resp, "requires_action", False) or not pending:
-            return resp
+            return plain_outcome(message, resp) if not answered else resp
         if not interactive:
             calls = "; ".join(describe_call(p) for p in pending)
             resp.content = (f"Not done -- this needs your yes: {calls}. Run `adk home chat` "
@@ -407,6 +444,7 @@ def chat_with_approvals(agent: Any, message: str, run: Callable[[Any], Any],
                 answer = ""
             decisions.append({"tool_use_id": p.get("tool_use_id"), "tool": p.get("tool"),
                               "result": "allow" if answer in ("y", "yes") else "deny"})
+        answered = True
         resp = run(agent.resume(getattr(resp, "session_id", ""), decisions))
     return resp
 
