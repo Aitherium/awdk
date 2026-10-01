@@ -694,11 +694,13 @@ class ClaimingAgent(StubAgent):
     """Calls a tool, then claims success whatever the tool said (the live Bonsai
     behaviour: "I have scheduled a weekly reminder" right after a refusal)."""
 
+    claim = "I have scheduled a weekly reminder for you."
+
     async def chat(self, message, session_id=None):
         self.chats.append(message)
         if self.call_tool:
             await self._tools.execute(*self.call_tool)
-        return SimpleNamespace(content="I have scheduled a weekly reminder for you.",
+        return SimpleNamespace(content=self.claim,
                                requires_action=False, pending=[])
 
 
@@ -758,10 +760,24 @@ async def test_a_claim_backed_by_a_real_action_is_kept(home):
     store = FollowupStore(home / "followups.json")
     agent = ClaimingAgent(store)
     agent.call_tool = ("remind_me", {"when": "in 5 minutes", "text": "call the dentist"})
+    agent.claim = "I have scheduled a reminder for you."
     rc, agent, _ = _client(home, agent=agent)
     relay = FakeRelay()
     await _say(relay, rc, "remind me")
-    assert relay.dm_posts[-1]["content"] == "I have scheduled a weekly reminder for you."
+    assert relay.dm_posts[-1]["content"] == "I have scheduled a reminder for you."
+
+
+@pytest.mark.asyncio
+async def test_a_weekly_claim_after_a_one_time_reminder_is_replaced(home):
+    """remind_me ran, but nothing made it repeat: "weekly" is not what happened."""
+    store = FollowupStore(home / "followups.json")
+    agent = ClaimingAgent(store)
+    agent.call_tool = ("remind_me", {"when": "in 5 minutes", "text": "call the dentist"})
+    rc, agent, _ = _client(home, agent=agent)
+    relay = FakeRelay()
+    await _say(relay, rc, "remind me")
+    assert relay.dm_posts[-1]["content"].startswith("I set that once. It does not repeat")
+    assert [r["recurring"] for r in store.rows()] == [""]
 
 
 def test_parse_when_reads_weekdays_and_clock_times():

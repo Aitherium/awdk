@@ -105,6 +105,35 @@ CLAIM_RE = re.compile(
     r"\b(i('ve| have)? (scheduled|set|created|added|booked|sent|emailed|paid|"
     r"cancell?ed|reminded|updated|deleted|done that)|(is|are|has been|have been) "
     r"(scheduled|set|created|added|booked|sent)|all set|reminder (is )?set)\b", re.I)
+#: A reply that says a reminder REPEATS. Only ``follow_up_recurring`` makes one repeat, and
+#: it always asks: measured live 2026-10-01 on the hosted Hearth, a model answered
+#: "scheduled to repeat daily" after setting a ONE-TIME reminder, and that passed because
+#: some action had run. A claim is checked against the action it is about.
+_EVERY = (r"(every (day|week|morning|evening|night|weekday|hour)|each (day|week|morning)|"
+          r"daily|weekly|hourly)")
+REPEAT_WORDS_RE = re.compile(
+    r"\b(repeat\w*|recurr?\w*)\b|"
+    r"\b" + _EVERY + r"\b[^.!?\n]{0,60}\bremind\w*|"
+    r"\bremind\w*[^.!?\n]{0,60}\b" + _EVERY + r"\b", re.I)
+REPEAT_DONE_RE = re.compile(
+    r"\b(will|now|to|it|that|which) (repeat|recur)s?\b|\b(repeats|recurs|repeating|recurring)\b",
+    re.I)
+#: A sentence that says the owner still has to answer, or only offers, claims nothing.
+NOT_DONE_RE = re.compile(
+    r"\b(asked|ask(ing)? (you|for)|your (ok|okay|approval|go-ahead)|approv\w*|allow|"
+    r"confirm\w*|once you|after you|if you|would you|do you want|want me|shall i|should i|"
+    r"i can|i could|cannot|can't|couldn't|did not|didn't|not (yet|been))\b|\?", re.I)
+#: The one tool whose success backs "it repeats".
+REPEAT_TOOL = "follow_up_recurring"
+
+
+def claims_repeat(content: str) -> bool:
+    """True when a sentence says, as done, that a reminder repeats."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", content or ""):
+        if (REPEAT_WORDS_RE.search(sentence) and not NOT_DONE_RE.search(sentence)
+                and (CLAIM_RE.search(sentence) or REPEAT_DONE_RE.search(sentence))):
+            return True
+    return False
 #: Tools that only read: a success here is not an action a claim can rest on.
 #: The connector tools that only read (adk.home.connector_tools) are listed; the
 #: ones that act (calendar_add, mail_send, todo_add) are not, on purpose. So are the
@@ -848,9 +877,17 @@ class HearthCore:
         "I scheduled ..." and no state-changing tool succeeded, the owner gets what
         actually happened instead.
         """
-        if not content or not CLAIM_RE.search(content):
+        if not content:
             return content
         acted = [n for n, ok, _ in self._turn_calls if ok and n not in READ_ONLY_TOOLS]
+        if acted and REPEAT_TOOL not in {str(n).lower() for n in acted} and claims_repeat(content):
+            # Something ran, but not the thing the reply says: a one-time reminder.
+            self._receipt("honesty", "repeat_claim_without_action", None, content[:120],
+                          "replaced")
+            return ("I set that once. It does not repeat: nothing made it repeat. "
+                    "Ask me to make it repeat and I will ask for your OK.")
+        if not CLAIM_RE.search(content):
+            return content
         if acted:
             return content
         failed = [(n, e) for n, ok, e in self._turn_calls if not ok]
