@@ -4,6 +4,21 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.36] - 2026-10-01
+
+### Added
+
+- **Session focus everywhere.** A new session sees what recent sessions were for, the
+  latest ask, the next step and where each stopped:
+  - The Claude Code plugin ships `session-focus.py` on SessionStart, UserPromptSubmit
+    and Stop, plus the plugin carrier (skills, output style, brick MCP wrapper, portable
+    hooks). It stays silent where your settings already wire the hook.
+  - `awsh_resumable` rows carry each session's focus (goal, next step, report), so a
+    resume picks the right session.
+  - Sessions the awsh daemon runs with codex, gemini, aider or opencode now get the same
+    focus record, and start with the previous session's next step
+    (`AITHER_FOCUS_INJECT=0` turns that off).
+
 ## [3.8.35] - 2026-09-30
 
 ### Fixed
