@@ -52,12 +52,24 @@ logger = logging.getLogger("adk.licensing")
 
 PORTAL_PACKS_URL = "api.aitherium.com/portal/marketplace/packs"
 
-# Ed25519 public key (hex, 32 bytes) used to verify portal-signed licenses.
-# The matching PRIVATE key lives only in the Aitherium platform vault
-# (AITHER_LICENSE_SIGNING_KEY) and is NEVER shipped.  Override at runtime with
-# AITHER_LICENSE_PUBLIC_KEY=<hex> for self-hosted/sovereign signing roots.
+# Ed25519 public key (hex, 32 bytes) of the CURRENT license signing root: the one
+# the shop and the portal sign with today. The matching PRIVATE key lives only in
+# the Aitherium platform vault (AITHERIUM_LICENSE_ED25519_SK) and is NEVER shipped.
 _LICENSE_PUBLIC_KEY_HEX = (
-    "1a468a332d6cfc5378edf7083b6d845bcfdf141fbce28e6dbe521dd6b84e233f"
+    "71f4e4da93095b3f1d29a3f01d27358d1398de9f0d5c0d8e3e0cb35199ac6980"
+)
+
+# Earlier signing roots, still TRUSTED for verification so that every license
+# issued under them keeps working. Rotation is additive: a root moves here when a
+# new one replaces it for signing, and is never removed (a pinned test enforces it).
+# 1a468a33...: the first root (2026); its private half was lost, nothing new is signed.
+_LEGACY_LICENSE_PUBLIC_KEYS_HEX: tuple[str, ...] = (
+    "1a468a332d6cfc5378edf7083b6d845bcfdf141fbce28e6dbe521dd6b84e233f",
+)
+
+#: Every root a license may be signed by when AITHER_LICENSE_PUBLIC_KEY is not set.
+TRUSTED_LICENSE_PUBLIC_KEYS_HEX: tuple[str, ...] = (
+    _LICENSE_PUBLIC_KEY_HEX, *_LEGACY_LICENSE_PUBLIC_KEYS_HEX,
 )
 
 
@@ -158,26 +170,39 @@ class License:
         return bool(self.expires_at) and time.time() > self.expires_at
 
 
+def trusted_public_keys() -> list[str]:
+    """The Ed25519 roots (hex) a license signature is checked against.
+
+    ``AITHER_LICENSE_PUBLIC_KEY`` (one hex key, or several separated by commas or
+    whitespace) REPLACES the baked roots, for self-hosted/sovereign signing roots
+    and tests. Unset or blank -> :data:`TRUSTED_LICENSE_PUBLIC_KEYS_HEX` (current
+    root first, then every legacy root). All-zero placeholder keys are dropped, so
+    a placeholder-only configuration verifies nothing (fail-closed).
+    """
+    raw = os.environ.get("AITHER_LICENSE_PUBLIC_KEY", "")
+    keys = raw.replace(",", " ").split() if raw.strip() else list(
+        TRUSTED_LICENSE_PUBLIC_KEYS_HEX)
+    return [k.strip().lower() for k in keys if k.strip() and not set(k.strip()) <= {"0"}]
+
+
 def _public_key_is_placeholder() -> bool:
     """True when no real verification key is configured (ships fail-closed).
 
-    Until the real Ed25519 public key is baked into ``_LICENSE_PUBLIC_KEY_HEX``
-    or supplied via ``AITHER_LICENSE_PUBLIC_KEY``, every signed license fails
-    verification and resolves to COMMUNITY. This helper lets callers emit a
+    When the only configured key is the all-zero placeholder, every signed license
+    fails verification and resolves to COMMUNITY. This helper lets callers emit a
     *specific* warning ("no key configured") vs a generic "bad signature".
     """
-    pub_hex = os.environ.get("AITHER_LICENSE_PUBLIC_KEY", _LICENSE_PUBLIC_KEY_HEX)
-    return (not pub_hex) or set(pub_hex) <= {"0"}
+    return not trusted_public_keys()
 
 
 def _verify_signature(payload: bytes, signature_hex: str) -> bool:
-    """Verify an Ed25519 signature over *payload*.
+    """Verify an Ed25519 signature over *payload* against ANY trusted root.
 
     Returns False (reject -> fail-closed) on any error, missing crypto lib,
-    placeholder key, or bad signature.
+    placeholder key, or a signature no trusted root produced.
     """
-    pub_hex = os.environ.get("AITHER_LICENSE_PUBLIC_KEY", _LICENSE_PUBLIC_KEY_HEX)
-    if not pub_hex or set(pub_hex) <= {"0"}:
+    keys = trusted_public_keys()
+    if not keys:
         # Placeholder/empty key -> cannot verify anything -> reject.
         return False
     try:
@@ -185,22 +210,28 @@ def _verify_signature(payload: bytes, signature_hex: str) -> bool:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey,
         )
-
-        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pub_hex))
-        try:
-            pub.verify(bytes.fromhex(signature_hex), payload)
-            return True
-        except InvalidSignature:
-            return False
     except ImportError:
         logger.debug(
             "cryptography not installed — cannot verify licenses. "
             "Install with: pip install 'awdk[federation]'",
         )
         return False
-    except Exception as exc:  # malformed key/signature
-        logger.debug("License signature verification error: %s", exc)
+    try:
+        signature = bytes.fromhex(signature_hex)
+    except (TypeError, ValueError) as exc:
+        logger.debug("License signature is not hex: %s", exc)
         return False
+    for pub_hex in keys:
+        try:
+            pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pub_hex))
+            pub.verify(signature, payload)
+            return True
+        except InvalidSignature:
+            continue
+        except Exception as exc:  # malformed key -> try the next root
+            logger.debug("License verification key unusable: %s", exc)
+            continue
+    return False
 
 
 def _license_from_envelope(envelope: dict[str, Any], source: str) -> License | None:
