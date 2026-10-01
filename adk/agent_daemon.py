@@ -262,13 +262,29 @@ def install_autostart(up_argv: list[str], dry_run: bool = False) -> Optional[str
 def remove_autostart() -> bool:
     """Remove the platform autostart entry. Best-effort; returns success."""
     if sys.platform == "win32":
-        rc = subprocess.run(
-            ["schtasks", "/delete", "/tn", WINDOWS_TASK_NAME, "/f"],
-            capture_output=True, text=True,
+        # The task name and the Run value are per Windows USER, not per agent home:
+        # `adk down` under another AITHER_HOME (a test with a fake HOME, a second
+        # install) used to delete the real agent's logon entry (2026-10-01). Only an
+        # entry whose command names THIS home's wrapper is ours to remove.
+        wrapper = str(AITHER_HOME / "aither-agent.cmd")
+        removed = False
+        task = subprocess.run(
+            ["schtasks", "/query", "/tn", WINDOWS_TASK_NAME, "/xml"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
+        if task.returncode == 0:
+            if _names_wrapper(task.stdout, wrapper):
+                rc = subprocess.run(
+                    ["schtasks", "/delete", "/tn", WINDOWS_TASK_NAME, "/f"],
+                    capture_output=True, text=True,
+                )
+                removed = rc.returncode == 0
+            else:
+                print(f"  [i] Scheduled task {WINDOWS_TASK_NAME} belongs to another agent "
+                      f"home; left in place.", file=sys.stderr)
         # Also clear the no-admin HKCU Run fallback (whichever was used).
-        hkcu = _remove_hkcu_run()
-        return rc.returncode == 0 or hkcu
+        hkcu = _remove_hkcu_run(wrapper)
+        return removed or hkcu
     if sys.platform == "darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
         subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
@@ -369,15 +385,29 @@ def _install_hkcu_run(wrapper: Path) -> bool:
         return False
 
 
-def _remove_hkcu_run() -> bool:
-    """Remove the HKCU Run autostart entry (for `adk down`). Idempotent."""
+def _names_wrapper(command: str, wrapper: str) -> bool:
+    """True when an autostart command (task XML or Run value) launches ``wrapper``."""
+    norm = lambda s: s.replace("/", "\\").lower()  # noqa: E731
+    return norm(wrapper) in norm(command or "")
+
+
+def _remove_hkcu_run(wrapper: Optional[str] = None) -> bool:
+    """Remove the HKCU Run autostart entry (for `adk down`). Idempotent.
+
+    With ``wrapper``, only a value that launches that wrapper is removed: the value
+    name is shared by every agent home of this Windows user.
+    """
     try:
         import winreg
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",
-            0, winreg.KEY_SET_VALUE,
+            0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE,
         ) as key:
+            if wrapper is not None:
+                value, _ = winreg.QueryValueEx(key, WINDOWS_TASK_NAME)
+                if not _names_wrapper(str(value), wrapper):
+                    return False
             winreg.DeleteValue(key, WINDOWS_TASK_NAME)
         return True
     except OSError:
