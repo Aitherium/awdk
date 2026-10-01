@@ -1679,6 +1679,9 @@ BONSAI_LOCAL_MODELS: dict[str, dict[str, str]] = {
     # server image, pinned by digest (build 11312). This tier is CPU-only for now: that
     # image has no CUDA, and a GPU run has not been measured. Measured 2026-10-01 on this
     # digest, 8 threads: /health in ~34 s, 35 tok/s decode, 3.9 GB resident (#10547).
+    # It is the CPU fallback, NOT a replacement for Bonsai: on the held-out set
+    # (`eval_model.py`, 32 items, same day) it scored 0.74 against Bonsai 2 27B's 0.96
+    # (routing 0.71 vs 0.96, format 0.68 vs 1.00). A box with a GPU should run Bonsai.
     "ling-tiny-8b": {
         "image": "ghcr.io/ggml-org/llama.cpp@sha256:"
                  "23fd59bc5e5b06ca68003a5772d441f0411fb723eeaff850b9111bcd2ac4fd33",
@@ -13317,7 +13320,8 @@ def _register_commands(sub):
     bonsai_p.add_argument("--model", choices=sorted(BONSAI_LOCAL_MODELS), default="bonsai2-27b",
                           help="bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork "
                                ">= prism-b10685), bonsai-27b (the previous generation) or "
-                               "ling-tiny-8b (sparse MoE; 4.8 GB GGUF downloaded once)")
+                               "ling-tiny-8b (CPU fallback, weaker than Bonsai; 4.8 GB "
+                               "GGUF downloaded once)")
     bonsai_p.add_argument("--dry-run", action="store_true", help="Show what would run without starting anything")
     bonsai_p.add_argument("--stop", action="store_true", help="Stop and remove the local Bonsai container")
 
