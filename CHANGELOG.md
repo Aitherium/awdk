@@ -4,6 +4,20 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.41] - 2026-10-01
+
+### Fixed
+
+- **`adk up` reports the autostart entry the OS has, and puts a missing one back.** With
+  the agent already running, `adk up --yes` printed the entry remembered in
+  `adk-up.json` (`"autostart": "hkcu-run:AitherAgent"`) while neither the scheduled task
+  nor the Run value existed -- an `adk down` from another shell had removed it. Every
+  `adk up` path now reads the real entry (`agent_daemon.autostart_state`), reinstalls a
+  missing one from the wrapper on disk unless `--no-persist`, and reports the verified
+  state (`autostart_state`, `autostart_reinstalled`). An entry that launches another agent
+  home's wrapper is never replaced. `adk status` shows `autostart: MISSING` and
+  `adk doctor` fails its new Autostart check when the entry is gone.
+
 ## [3.8.40] - 2026-10-01
 
 ### Fixed

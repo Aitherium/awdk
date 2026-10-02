@@ -1006,6 +1006,20 @@ def cmd_up(args):
         else:
             existing["ok"] = True
             existing["already_running"] = True
+            # The saved "autostart" is what an EARLIER run installed. An `adk down`
+            # from another shell (or anything else) can have removed the entry since
+            # while this agent kept running: check the OS, put a missing entry back,
+            # and report what is there now -- never the remembered value.
+            if persist and not dry_run:
+                verified = daemon.ensure_autostart(_autostart_up_argv(
+                    existing.get("identity") or identity, existing.get("port") or port,
+                    provider, offline, brain_pack=str(brain_pack) if brain_pack else ""))
+                _report_autostart(existing, verified)
+                daemon.write_status({k: v for k, v in existing.items()
+                                     if k not in ("ok", "already_running",
+                                                  "autostart_reinstalled")})
+                if not non_interactive:
+                    print(_autostart_line(verified))
             if non_interactive:
                 print(json.dumps(existing))
             else:
@@ -1327,7 +1341,12 @@ def cmd_up(args):
     if persist:
         up_argv = _autostart_up_argv(identity, port, provider, offline,
                                      brain_pack=str(brain_pack) if brain_pack else "")
-        autostart = daemon.install_autostart(up_argv)
+        # Install (rewriting the wrapper: the port or identity may have changed),
+        # then record what the OS reports -- not what the installer returned.
+        _verified = daemon.ensure_autostart(up_argv, refresh=True)
+        autostart = _verified.get("entry")
+        if _verified.get("state") != "present" and not non_interactive:
+            print(_autostart_line(_verified))
 
     # ── Status file (single source of truth for status/down) ──
     # The agent serves its own streaming chat page at "/" — that's where a human
@@ -1431,6 +1450,31 @@ def _resolve_up_brain_pack(raw: str) -> tuple[Path | None, str]:
     if not p.is_file():
         return None, f"brain pack not found: {raw}"
     return p.resolve(), ""
+
+
+def _report_autostart(status: dict, verified: dict) -> None:
+    """Put the VERIFIED autostart state into a status dict (in place)."""
+    status["autostart"] = verified.get("entry")
+    status["autostart_state"] = verified.get("state")
+    if verified.get("reinstalled"):
+        status["autostart_reinstalled"] = True
+    if verified.get("owner"):
+        status["autostart_owner"] = verified["owner"]
+    else:
+        status.pop("autostart_owner", None)
+
+
+def _autostart_line(verified: dict) -> str:
+    """One line for a person: what the logon entry is right now."""
+    state = verified.get("state")
+    if state == "present":
+        return (f"  [+] Autostart: {verified.get('entry')}"
+                + (" (was missing -- reinstalled)" if verified.get("reinstalled") else ""))
+    if state == "other-home":
+        return (f"  [!] Autostart: MISSING for this agent home -- the logon entry belongs to "
+                f"another home ({verified.get('owner')}) and was left alone.")
+    return ("  [!] Autostart: MISSING -- the agent will not start at logon. Run `adk up` "
+            "(elevated if the scheduled task is refused) to reinstall it.")
 
 
 def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool,
@@ -10315,6 +10359,12 @@ def cmd_status(args):
             "health": "healthy" if healthy else ("stale" if not alive else "unhealthy"),
             "tunnel_running": daemon.pid_alive(st.get("tunnel_pid")),
         }
+        # What the OS has, not what adk-up.json remembers. A run made with
+        # --no-persist never had an entry: that is "no", not "missing".
+        _wanted = bool(st.get("autostart")) or st.get("autostart_state") == "missing"
+        _verified = daemon.autostart_state()
+        if _wanted or _verified.get("state") == "present":
+            _report_autostart(agent_state, _verified)
 
     if getattr(args, "json", False):
         print(json.dumps(agent_state or {"running": False}, indent=2))
@@ -10329,8 +10379,14 @@ def cmd_status(args):
         if agent_state.get("invoke_url"):
             print(f"      tunnel: {agent_state['invoke_url']} "
                   f"({'up' if agent_state['tunnel_running'] else 'down'})")
+        _auto = agent_state.get("autostart") or (
+            "MISSING" if agent_state.get("autostart_state") in ("missing", "other-home")
+            else "no")
         print(f"      registered: {agent_state.get('registered')}   "
-              f"autostart: {agent_state.get('autostart') or 'no'}")
+              f"autostart: {_auto}")
+        if _auto == "MISSING":
+            print(_autostart_line({"state": agent_state.get("autostart_state"),
+                                   "owner": agent_state.get("autostart_owner")}))
         print()
 
     async def _status():

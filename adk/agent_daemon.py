@@ -259,6 +259,96 @@ def install_autostart(up_argv: list[str], dry_run: bool = False) -> Optional[str
     return _install_systemd_user(up_argv, dry_run)
 
 
+_WRAPPER_RE = re.compile(r'([A-Za-z]:[\\/][^"<>|*?\r\n]*?aither-agent\.cmd)', re.I)
+
+
+def _hkcu_run_value() -> str:
+    """The HKCU Run value named :data:`WINDOWS_TASK_NAME` ('' when absent)."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_QUERY_VALUE,
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, WINDOWS_TASK_NAME)
+        return str(value or "")
+    except (OSError, ImportError):
+        return ""
+
+
+def _foreign_owner(command: str, wrapper: str) -> str:
+    """The OTHER agent home's wrapper an entry launches, when that wrapper still
+    exists on disk ('' otherwise: an entry whose wrapper is gone is stale, not owned)."""
+    if not command or _names_wrapper(command, wrapper):
+        return ""
+    m = _WRAPPER_RE.search(command)
+    return m.group(1) if m and Path(m.group(1)).exists() else ""
+
+
+def autostart_state() -> dict:
+    """The logon entry as the OS has it NOW -- never what adk-up.json remembers.
+
+    ``{"state": "present" | "missing" | "other-home", "entry": <id or None>,
+    "owner": <the other home's wrapper, for other-home>}``. ``present`` means an
+    entry exists AND launches THIS home's wrapper; the task name and the Run value
+    are per Windows user, so an entry that launches another home's wrapper is that
+    home's (``other-home``) and is neither ours to count nor ours to replace.
+    """
+    if sys.platform == "win32":
+        wrapper = str(AITHER_HOME / "aither-agent.cmd")
+        task = subprocess.run(
+            ["schtasks", "/query", "/tn", WINDOWS_TASK_NAME, "/xml"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        task_xml = task.stdout if task.returncode == 0 else ""
+        run_value = _hkcu_run_value()
+        if task_xml and _names_wrapper(task_xml, wrapper):
+            return {"state": "present", "entry": f"windows-task:{WINDOWS_TASK_NAME}"}
+        if run_value and _names_wrapper(run_value, wrapper):
+            return {"state": "present", "entry": f"hkcu-run:{WINDOWS_TASK_NAME}"}
+        owner = _foreign_owner(task_xml, wrapper) or _foreign_owner(run_value, wrapper)
+        if owner:
+            return {"state": "other-home", "entry": None, "owner": owner}
+        return {"state": "missing", "entry": None}
+    if sys.platform == "darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+        return ({"state": "present", "entry": f"launchd:{LAUNCHD_LABEL}"} if plist.exists()
+                else {"state": "missing", "entry": None})
+    unit = Path.home() / ".config" / "systemd" / "user" / f"{SYSTEMD_UNIT}.service"
+    return ({"state": "present", "entry": f"systemd-user:{SYSTEMD_UNIT}"} if unit.exists()
+            else {"state": "missing", "entry": None})
+
+
+def ensure_autostart(up_argv: list[str], refresh: bool = False) -> dict:
+    """Make the logon entry exist, then report what the OS actually has.
+
+    ``refresh`` (a fresh ``adk up``) rewrites the entry even when it is there, so a
+    changed port or identity takes effect. Without it (``adk up`` on an agent that
+    is already running) an entry that is present is left exactly as it is, and one
+    that is MISSING is put back -- from the wrapper already on disk on Windows, so
+    the command the running agent was started with is the one that comes back.
+    An entry that belongs to another agent home is never replaced.
+
+    Returns :func:`autostart_state` after the fact, plus ``"reinstalled": True``
+    when this call had to put a missing entry back.
+    """
+    before = autostart_state()
+    if before["state"] == "other-home" or (before["state"] == "present" and not refresh):
+        return before
+    wrapper = AITHER_HOME / "aither-agent.cmd"
+    if sys.platform == "win32" and not refresh and wrapper.exists():
+        _ensure_dirs()
+        _register_windows_entry(wrapper, dry_run=False)
+    else:
+        install_autostart(up_argv)
+    after = autostart_state()
+    if before["state"] == "missing" and after["state"] == "present" and not refresh:
+        after["reinstalled"] = True
+    return after
+
+
 def remove_autostart() -> bool:
     """Remove the platform autostart entry. Best-effort; returns success."""
     if sys.platform == "win32":
@@ -330,6 +420,12 @@ def _install_windows_task(up_argv: list[str], dry_run: bool) -> Optional[str]:
     # there eating keystrokes, not a flash. Imported from llamacpp_setup rather than
     # re-implemented: this function used to say it "mirrors" that one, and mirroring
     # is exactly how the defect got here.
+    return _register_windows_entry(wrapper, dry_run)
+
+
+def _register_windows_entry(wrapper: Path, dry_run: bool) -> Optional[str]:
+    """Register ``wrapper`` to run at logon: the scheduled task, else the HKCU Run
+    value. The wrapper is not rewritten here."""
     from adk.llamacpp_setup import hidden_task_run, write_hidden_launch_shim
 
     shim = write_hidden_launch_shim(AITHER_HOME)

@@ -424,6 +424,27 @@ def check_graph_memory_sync() -> bool:
     return True
 
 
+def check_autostart() -> bool:
+    """`adk up` installed a logon entry: is it still there? Read from the OS."""
+    from adk import agent_daemon as daemon
+
+    st = daemon.read_status()
+    if not st or not (st.get("autostart") or st.get("autostart_state")):
+        _ok("Autostart: not used (no `adk up` agent with a logon entry)")
+        return True
+    real = daemon.autostart_state()
+    if real["state"] == "present":
+        _ok(f"Autostart: {real['entry']}")
+        return True
+    if real["state"] == "other-home":
+        _fail(f"Autostart: MISSING -- the logon entry belongs to another agent home "
+              f"({real.get('owner')}); this agent will not start at logon")
+        return False
+    _fail("Autostart: MISSING -- the agent will not start at logon; run `adk up` to "
+          "reinstall it")
+    return False
+
+
 #: Module-level on purpose: the summary prints "<passed>/<len(DOCTOR_CHECKS)>",
 #: so a check that returns falsy WITHOUT printing anything is arithmetic the
 #: user cannot reconcile with the screen — measured 2026-08-07 as "8/11 checks
@@ -443,6 +464,7 @@ DOCTOR_CHECKS: list[tuple[str, object]] = [
     ("Disk", check_disk),
     ("Packs", check_packs),
     ("Graph sync", check_graph_memory_sync),
+    ("Autostart", check_autostart),
 ]
 
 
