@@ -4,6 +4,15 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.44] - 2026-10-02
+
+### Fixed
+
+- **`adk home teach start` starts the agent itself when no service manager answers.** A
+  second unguarded `systemctl` call (the start, after the start-at-login step fixed in
+  3.8.43) still ended the setup with a traceback on a machine without systemd. The serve
+  is now started directly in that case.
+
 ## [3.8.43] - 2026-10-02
 
 ### Fixed

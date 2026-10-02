@@ -635,3 +635,35 @@ async def test_real_ops_do_not_trust_a_stranger_on_the_port(home):
         assert await asyncio.to_thread(teach_setup.StartOps(home).status) is None
     finally:
         await t._runner.stop()
+
+
+def test_spawn_starts_the_serve_directly_when_the_service_manager_is_missing(tmp_path, monkeypatch):
+    """No `systemctl` (a container, WSL without systemd): spawn must not raise. It falls
+    through and starts the serve itself. Found 2026-10-02 by running the public launcher
+    in a clean container, where this call ended the setup with a FileNotFoundError."""
+    from adk import agent_daemon
+
+    home = tmp_path / "home"
+    home.mkdir()
+    ops = teach_setup.StartOps(home)
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(ops, "autostart_current", lambda: True)
+    monkeypatch.setattr(ops, "serve_argv", lambda: ["python", "-m", "adk.home", "serve"])
+    monkeypatch.setattr(agent_daemon, "LOG_DIR", tmp_path / "logs")
+
+    def no_systemctl(*_a, **_k):
+        raise FileNotFoundError(2, "No such file or directory", "systemctl")
+
+    started: List[List[str]] = []
+
+    def fake_popen(argv, **_k):
+        started.append(list(argv))
+        return SimpleNamespace(pid=1)
+
+    monkeypatch.setattr(subprocess, "run", no_systemctl)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    assert ops.spawn() is True
+    assert started == [["python", "-m", "adk.home", "serve"]]

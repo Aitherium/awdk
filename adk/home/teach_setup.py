@@ -316,17 +316,23 @@ class StartOps:
         # Only an entry that starts THIS awdk: one left by another Python would start
         # that other copy, which is exactly what the caller is replacing.
         ours = self.autostart_current()
-        if sys.platform == "darwin" and ours:
-            rc = subprocess.run(["launchctl", "kickstart", "-k",
-                                 f"gui/{os.getuid()}/com.aitherium.{SERVE_AUTOSTART}"],
-                                capture_output=True)
-            if rc.returncode == 0:
-                return True
-        elif sys.platform not in ("win32", "darwin") and ours:
-            rc = subprocess.run(["systemctl", "--user", "restart",
-                                 f"{SERVE_AUTOSTART}.service"], capture_output=True)
-            if rc.returncode == 0:
-                return True
+        # The service manager starts it when it can. When it is missing or refuses (no
+        # systemd in a container or WSL, no launchd session), fall through and start the
+        # serve directly: a missing `systemctl` must never end the setup with a traceback.
+        try:
+            if sys.platform == "darwin" and ours:
+                rc = subprocess.run(["launchctl", "kickstart", "-k",
+                                     f"gui/{os.getuid()}/com.aitherium.{SERVE_AUTOSTART}"],
+                                    capture_output=True)
+                if rc.returncode == 0:
+                    return True
+            elif sys.platform not in ("win32", "darwin") and ours:
+                rc = subprocess.run(["systemctl", "--user", "restart",
+                                     f"{SERVE_AUTOSTART}.service"], capture_output=True)
+                if rc.returncode == 0:
+                    return True
+        except OSError:
+            pass
         argv = self.serve_argv()
         kwargs: Dict[str, Any] = {"stdin": subprocess.DEVNULL}
         if sys.platform == "win32":
