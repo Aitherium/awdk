@@ -4,6 +4,16 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.43] - 2026-10-02
+
+### Fixed
+
+- **`adk home teach start` no longer dies on a machine without systemd.** On Linux with no
+  `systemctl` (a container, WSL without systemd, a Chromebook's Linux) the start-at-login
+  step raised `FileNotFoundError` out of the one-click teacher agent setup. It now reports
+  that start-at-login could not be installed and the setup continues: the agent runs until
+  the computer restarts. Found by running the public launcher in a clean container.
+
 ## [3.8.42] - 2026-10-01
 
 ### Added

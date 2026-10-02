@@ -785,9 +785,17 @@ def _install_named_systemd(name: str, argv: list[str], description: str,
         return f"systemd:{name}"
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     unit_path.write_text(unit, encoding="utf-8")
-    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-    rc = subprocess.run(["systemctl", "--user", "enable", "--now", f"{name}.service"],
-                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    # No systemctl (a container, WSL without systemd, Alpine, a Chromebook's Linux):
+    # there is nothing to register with. Report it and return None, so the caller says
+    # "runs until this computer restarts" instead of dying with a traceback mid-setup.
+    try:
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        rc = subprocess.run(["systemctl", "--user", "enable", "--now", f"{name}.service"],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"  WARN: start-at-login could not be installed: systemctl is not usable "
+              f"here ({type(exc).__name__}). The unit is at {unit_path}.", file=sys.stderr)
+        return None
     if rc.returncode != 0:
         print(f"  WARN: systemctl --user enable failed ({(rc.stderr or '').strip()}); "
               f"the unit is at {unit_path}.", file=sys.stderr)

@@ -63,6 +63,16 @@ def test_systemd_enable_failure_is_reported(daemon_home, monkeypatch):
     assert agent_daemon.install_user_autostart("aither-hearth", ["x"], platform="linux") is None
 
 
+def test_systemd_absent_is_reported_not_raised(daemon_home, monkeypatch, capsys):
+    """A machine with no systemctl (container, WSL without systemd): the installer
+    returns None and says why. It used to raise FileNotFoundError out of teach setup."""
+    def boom(*_a, **_k):
+        raise FileNotFoundError(2, "No such file or directory", "systemctl")
+    monkeypatch.setattr(agent_daemon.subprocess, "run", boom)
+    assert agent_daemon.install_user_autostart("aither-hearth", ["x"], platform="linux") is None
+    assert "start-at-login could not be installed" in capsys.readouterr().err
+
+
 def test_systemd_uninstall_removes_unit(daemon_home, monkeypatch):
     runs = _Runs()
     monkeypatch.setattr(agent_daemon.subprocess, "run", runs)
