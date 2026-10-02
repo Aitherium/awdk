@@ -240,6 +240,18 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (mag_a * mag_b)
 
 
+def _strict_space_dim() -> int | None:
+    """The one width a graph may hold in the code-embed space; None in the nomic space.
+
+    Read per call from ``adk.embeddings`` (the SDK's single owner of the space), so an
+    unknown ``AITHER_EMBED_SPACE`` raises here exactly as it does there."""
+    try:
+        from adk import embeddings as _emb
+    except ImportError:
+        return None
+    return _emb.CANONICAL_DIM if _emb.EMBED_SPACE == _emb.SPACE_CODE_EMBED else None
+
+
 def _fallback_embed(text: str, dim: int = _EMBED_DIM) -> list[float]:
     """Feature-hashing embedding. Works offline, no model needed."""
     vector = [0.0] * dim
@@ -374,6 +386,10 @@ class GraphMemory:
             try:
                 from adk.embeddings import get_default_embedder
                 self._embedder = get_default_embedder()
+            except ValueError:
+                # An unknown AITHER_EMBED_SPACE: falling back to Ollama nomic here
+                # would be the silent wrong-space guess the switch refuses to make.
+                raise
             except Exception as exc:  # noqa: BLE001 — degrade to legacy Ollama/hash
                 logger.debug("adk.embeddings default embedder unavailable: %s", exc)
                 self._embedder = None
@@ -2239,6 +2255,13 @@ class GraphMemory:
             except Exception as exc:
                 logger.debug("injected embedder failed (skip embed, not mixing dims): %s", exc)
                 return []
+        strict = _strict_space_dim()
+        if strict is not None and (
+            self._ollama_available is False or str(self._embed_model).startswith("nomic")
+        ):
+            # Code-embed space: neither the nomic Ollama model nor the 384-d hash
+            # belongs in a 1024-d index. No vector; search stays keyword-only.
+            return []
         if self._ollama_available is False:
             return self._guard_dim(_fallback_embed(text))
 
@@ -2258,6 +2281,8 @@ class GraphMemory:
         except Exception:
             pass
 
+        if strict is not None:
+            return []
         if self._ollama_available is None:
             self._ollama_available = False
             logger.info("Ollama embeddings unavailable — using feature hashing fallback")
@@ -2271,13 +2296,25 @@ class GraphMemory:
         if not vec:
             return []
         d = len(vec)
+        strict = _strict_space_dim()
+        if strict is not None and d != strict:
+            # Checked BEFORE the pin: an empty graph must not be pinned to another width.
+            if not self._dim_warned:
+                logger.error(
+                    "graph %s: REFUSING %d-d embeddings: the code-embed space is %d-d. "
+                    "New nodes are stored WITHOUT a vector.", self._agent, d, strict,
+                )
+                self._dim_warned = True
+            return []
         if self._embed_dim is None:
             self._embed_dim = self._pin_dim(d)
         if self._embed_dim is not None and d != self._embed_dim:
             if not self._dim_warned:
-                logger.warning(
-                    "graph %s: embedding dim %d != index dim %d — skipping embedding "
-                    "(dimension mismatch; re-index to switch models)",
+                logger.error(
+                    "graph %s: REFUSING %d-d embeddings — this index holds %d-d vectors "
+                    "(another embedding model/space, e.g. AITHER_EMBED_SPACE changed). "
+                    "New nodes are stored WITHOUT a vector and search is keyword-only "
+                    "until the graph is re-indexed with the new model.",
                     self._agent, d, self._embed_dim,
                 )
                 self._dim_warned = True
@@ -2294,6 +2331,17 @@ class GraphMemory:
         try:
             with self._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                # Code-embed space only: a graph written before the pin existed (or
+                # whose pin was lost) has vectors but no meta row. Pin to what is STORED,
+                # not to the newcomer, or the first 1024-d vector would be mixed into a
+                # 768-d index. The nomic space pins to the newcomer, as it always did.
+                if _strict_space_dim() is not None:
+                    stored = conn.execute(
+                        "SELECT length(embedding) FROM nodes "
+                        "WHERE embedding IS NOT NULL AND length(embedding) > 0 LIMIT 1"
+                    ).fetchone()
+                    if stored and stored[0] and stored[0] % 4 == 0:
+                        d = stored[0] // 4
                 conn.execute(
                     "INSERT OR IGNORE INTO meta (key, value) VALUES ('embed_dim', ?)",
                     (str(d),),

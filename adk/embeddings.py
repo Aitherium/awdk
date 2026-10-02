@@ -4,6 +4,17 @@ ONE embedding provider for the whole SDK — every agent, fleet, and company bra
 that needs vectors resolves through here, so vectors are PORTABLE across scopes
 (platform / tenant / sovereign): same model + same dimension everywhere.
 
+THE SPACE follows env ``AITHER_EMBED_SPACE`` (same switch and aliases as the platform's
+``lib/core/EmbeddingSpace.py``, restated here because awdk ships without ``lib``):
+``nomic`` (default) = ``nomic-embed-text`` 768-d, everything below as written;
+``aither-code-embed`` (``code-embed`` | ``ce1024`` | ``aither-code-embed-1024``) =
+``aither-code-embed`` 1024-d on ``aither-vllm-code-embed:8229``, inputs cut to 1013
+chars (the llama.cpp lane 400s a whole batch on one over-long input), and a 768-d
+nomic answer is then REFUSED (never pinned, never returned): the nomic Ollama rung
+and the 384-d CPU/hash rungs are skipped, a retired-lane ``AITHER_EMBEDDINGS_URL`` is
+replaced by the code-embed lane, and with no 1024-d backend the result is the "no
+backend" one (empty vectors). ``AITHER_EMBED_MODEL`` still overrides the id.
+
 Canonical model id: ``nomic-embed-text`` — the vLLM ``--served-model-name`` for
 nomic-ai/nomic-embed-text-v1.5 (768-dim). The fleet serves it on vLLM over the
 internal-TLS mesh (``aither-vllm-embeddings:8209``, https) and Ollama serves the
@@ -65,6 +76,8 @@ logger = logging.getLogger("adk.embeddings")
 __all__ = [
     "CANONICAL_MODEL",
     "CANONICAL_DIM",
+    "CANONICAL_MAX_CHARS",
+    "EMBED_SPACE",
     "AdkEmbeddings",
     "get_provider",
     "get_default_embedder",
@@ -81,12 +94,92 @@ __all__ = [
 # vLLM embeddings worker serves nomic-ai/nomic-embed-text-v1.5 UNDER the id
 # "nomic-embed-text" — requesting "nomic-embed-text-v1.5" returns 404. Verified
 # live against the fleet's vLLM embeddings worker.
-CANONICAL_MODEL = os.getenv("AITHER_EMBED_MODEL", "nomic-embed-text")
-CANONICAL_DIM = 768  # nomic-ai/nomic-embed-text-v1.5
+SPACE_NOMIC = "nomic"
+SPACE_CODE_EMBED = "aither-code-embed"
+
+
+def _embed_space() -> str:
+    """The active embedding space from ``AITHER_EMBED_SPACE`` (default nomic).
+
+    An unknown value raises, exactly as the platform's EmbeddingSpace does: staying
+    on nomic while ``lib`` refuses would put one process's SDK and services in two
+    spaces on a typo, and every write would still succeed."""
+    raw = (os.getenv("AITHER_EMBED_SPACE", "") or SPACE_NOMIC).strip().lower()
+    if raw in ("code-embed", "ce1024", "aither-code-embed-1024"):
+        raw = SPACE_CODE_EMBED
+    if raw not in (SPACE_NOMIC, SPACE_CODE_EMBED):
+        raise ValueError(
+            f"AITHER_EMBED_SPACE={raw!r} is not one of {(SPACE_NOMIC, SPACE_CODE_EMBED)} -- "
+            "refusing to guess an embedding space (a wrong guess corrupts the index silently)"
+        )
+    return raw
+
+
+#: Read once at import, like the platform's EmbeddingSpace.
+EMBED_SPACE = _embed_space()
+_CE = EMBED_SPACE == SPACE_CODE_EMBED
+
+def _is_nomic_model(name: str) -> bool:
+    """A model id of the nomic space (same rule as EmbeddingSpace.resolve_model)."""
+    return (name or "").strip().lower().startswith("nomic")
+
+
+CANONICAL_MODEL = os.getenv("AITHER_EMBED_MODEL") or (
+    "aither-code-embed" if _CE else "nomic-embed-text"
+)
+if _CE and _is_nomic_model(CANONICAL_MODEL):
+    # A leftover AITHER_EMBED_MODEL=nomic-embed-text is stale config, not a choice.
+    CANONICAL_MODEL = "aither-code-embed"
+# 768 = nomic-ai/nomic-embed-text-v1.5; 1024 = aither-code-embed
+CANONICAL_DIM = 1024 if _CE else 768
+# Per-request char cut. The code-embed llama.cpp lane gives each request a 512-token
+# slot and answers 400 for the WHOLE batch past it: 512 * 2.2 chars/token * 0.9 = 1013.
+# The nomic vLLM lane truncates server-side (0 = no cut).
+CANONICAL_MAX_CHARS = 1013 if _CE else 0
+
+
+def _truncate(text: str) -> str:
+    return text[:CANONICAL_MAX_CHARS] if CANONICAL_MAX_CHARS > 0 else text
+
+
 _DEGRADED_DIM = 384  # all-MiniLM-L6-v2 / feature-hash — DIM-INCOMPATIBLE, tagged
 
 # Ports the fleet/setup_cli use for a local vLLM embeddings worker.
-_VLLM_EMBED_PORT = 8209  # dedicated embeddings worker (setup_cli 'full' tier)
+# (8229 = the code-embed llama.cpp lane when that space is active)
+_VLLM_EMBED_PORT = 8229 if _CE else 8209  # dedicated embeddings worker
+_EMBED_FLEET_HOST = "aither-vllm-code-embed" if _CE else "aither-vllm-embeddings"
+# Hosts/ports of the retired nomic lanes -- the same markers as the platform's
+# EmbeddingSpace.RETIRED_EMBED_URL_MARKERS, retired only in the code-embed space.
+_RETIRED_URL_MARKERS = (
+    ("aither-vllm-embeddings:", ":8209", "aither-vllm-dgx-embed", ":8121") if _CE else ()
+)
+_CODE_EMBED_DEFAULT_URL = (
+    "http://aither-vllm-code-embed:8229"  # embedder-direct-ok: SDK runs outside the fleet
+)
+
+
+def _is_retired_url(url: str) -> bool:
+    """True when ``url`` points at a lane the active space has retired."""
+    u = (url or "").strip().lower()
+    return bool(u) and any(m in u for m in _RETIRED_URL_MARKERS)
+
+
+def _explicit_url() -> str:
+    """``AITHER_EMBEDDINGS_URL``; a retired-lane value becomes the code-embed lane.
+
+    The fleet default of that env is the retired nomic lane, so it survives the switch
+    in every compose file that was not edited."""
+    url = os.getenv(  # embedder-direct-ok: SDK runs outside the fleet; operator-set lane
+        "AITHER_EMBEDDINGS_URL", ""
+    ).strip()
+    return _CODE_EMBED_DEFAULT_URL if _is_retired_url(url) else url
+
+
+def _width_ok(vec) -> bool:
+    """False for a vector the code-embed space must not pin, return or store."""
+    return not _CE or len(vec) == CANONICAL_DIM
+
+
 _VLLM_GENERIC_PORT = 8120
 _OLLAMA_PORT = 11434
 _OLLAMA_EMBED_MODEL = "nomic-embed-text"  # Ollama's name for the same 768-d model
@@ -105,6 +198,9 @@ _HTTP_TIMEOUT = 30.0
 # costs one-time startup latency; losing it costs the service its embeddings.
 _PROBE_TIMEOUT = float(os.getenv("AITHER_EMBED_PROBE_TIMEOUT", "15"))
 _BATCH = 64
+# Code-embed space only: how long a "no backend" resolution stands before the chain is
+# probed again (each probe can cost several connect timeouts, so not on every call).
+_NONE_RETRY_S = float(os.getenv("AITHER_EMBED_NONE_RETRY_S", "60"))
 
 # The CPU rung's child process (torch + sentence-transformers) is shut down after
 # this many seconds with no embed in flight; the next embed respawns it. Measured
@@ -134,7 +230,7 @@ def _local_vllm_host(port: int) -> str:
     the host loopback. Same marker as lib.core.AitherPorts._container_marker.
     """
     if os.path.exists("/run/.containerenv"):
-        return f"aither-vllm-embeddings:{port}"
+        return f"{_EMBED_FLEET_HOST}:{port}"
     return f"localhost:{port}"
 
 
@@ -189,6 +285,7 @@ class AdkEmbeddings:
         self._st_idle_timer: Optional[threading.Timer] = None
         self._autodeploy_attempted = False
         self._headers: dict = {}            # auth headers for the pinned endpoint
+        self._none_until = 0.0              # code-embed space: next re-probe of "none"
 
     # ── public state ────────────────────────────────────────────────────
     @property
@@ -211,19 +308,27 @@ class AdkEmbeddings:
             "dim": self._dim,
             "degraded": self._degraded,
             "canonical_dim": CANONICAL_DIM,
+            "space": EMBED_SPACE,
         }
 
     # ── resolution ──────────────────────────────────────────────────────
     async def _resolve(self) -> None:
-        if self._resolved:
+        if self._resolved and not self._none_expired():
             return
         async with self._lock:
-            if self._resolved:
+            if self._resolved and not self._none_expired():
                 return
             backend = await self._pick_backend()
             self._backend = backend
             self._resolved = True
-            if self._degraded:
+            if backend == "none":
+                self._none_until = time.monotonic() + _NONE_RETRY_S
+                logger.error(
+                    "adk.embeddings: NO %d-d %s backend reachable in the %s space -- "
+                    "returning no vectors (never a narrower fallback); re-probing in %.0fs",
+                    CANONICAL_DIM, CANONICAL_MODEL, EMBED_SPACE, _NONE_RETRY_S,
+                )
+            elif self._degraded:
                 logger.warning(
                     "adk.embeddings: DEGRADED backend=%s dim=%d (NOT the canonical "
                     "%d-d %s — vectors are not portable to a real embeddings backend)",
@@ -235,9 +340,13 @@ class AdkEmbeddings:
                     backend, self._url, self._dim, self._model,
                 )
 
+    def _none_expired(self) -> bool:
+        """A "none" resolution is retried: the lane may simply not have been up yet."""
+        return self._backend == "none" and time.monotonic() >= self._none_until
+
     async def _pick_backend(self) -> str:
         # 1. explicit endpoint
-        explicit = os.getenv("AITHER_EMBEDDINGS_URL", "").strip()
+        explicit = _explicit_url()
         if explicit and await self._try_openai_endpoint(explicit):
             return "vllm"
 
@@ -255,8 +364,10 @@ class AdkEmbeddings:
             if await self._try_local_vllm(port):
                 return "vllm"
 
-        # 4. local Ollama (768-d, dev box)
-        if await self._try_ollama(f"http://localhost:{_OLLAMA_PORT}"):
+        # 4. local Ollama (768-d, dev box) -- a nomic rung, not part of the code-embed space
+        if not (_CE and _is_nomic_model(_OLLAMA_EMBED_MODEL)) and await self._try_ollama(
+            f"http://localhost:{_OLLAMA_PORT}"
+        ):
             return "ollama"
 
         # 5. gateway (metered managed fallback)
@@ -269,6 +380,16 @@ class AdkEmbeddings:
         if _flag("AITHER_EMBED_AUTODEPLOY", False) and await self._maybe_autodeploy():
             if await self._try_openai_endpoint(f"http://localhost:{_VLLM_EMBED_PORT}"):
                 return "vllm"
+
+        if _CE:
+            # Rungs 7/8 produce 384-d vectors. Here that is not "degraded", it is a
+            # vector no 1024-d index can hold: answer with none instead.
+            self._url = ""
+            self._headers = {}
+            self._dim = CANONICAL_DIM
+            self._degraded = True
+            self._model = CANONICAL_MODEL
+            return "none"
 
         # 7. CPU sentence-transformers (DEGRADED 384-d)
         if _flag("AITHER_EMBED_ALLOW_CPU", True) and self._probe_sentence_transformers():
@@ -336,6 +457,12 @@ class AdkEmbeddings:
                 vec = data[0].get("embedding") or []
                 if not vec:
                     return False
+                if not _width_ok(vec):
+                    logger.warning(
+                        "adk.embeddings: %s answers %d-d, the %s space is %d-d -- not used",
+                        base, len(vec), EMBED_SPACE, CANONICAL_DIM,
+                    )
+                    return False
                 self._url = base
                 self._headers = dict(headers or {})
                 self._model = CANONICAL_MODEL
@@ -361,7 +488,7 @@ class AdkEmbeddings:
                 if r.status_code != 200:
                     return False
                 vec = r.json().get("embedding") or []
-                if not vec:
+                if not vec or not _width_ok(vec):
                     return False
                 self._url = base
                 self._headers = {}
@@ -403,6 +530,10 @@ class AdkEmbeddings:
         if self._autodeploy_attempted:
             return False
         self._autodeploy_attempted = True
+        if _CE:
+            # The container below serves nomic (768-d) -- the wrong space here.
+            logger.debug("autodeploy skipped: no auto-deployable lane for %s", EMBED_SPACE)
+            return False
 
         # _has_gpu() shells out (nvidia-smi) — run off the event loop.
         if not await asyncio.to_thread(_has_gpu):
@@ -498,8 +629,13 @@ class AdkEmbeddings:
                 vecs = await self._embed_ollama(texts)
             elif self._backend == "cpu":
                 vecs = await self._embed_st(texts)
+            elif self._backend == "none":
+                return [[] for _ in texts], self._dim
             else:
                 vecs = [_feature_hash(t) for t in texts]
+            if vecs is not None and not all(_width_ok(v) for v in vecs if v):
+                # The pinned endpoint changed model under us (the probe was canonical).
+                raise RuntimeError(f"backend answered a non-{CANONICAL_DIM}-d vector")
             if vecs is not None:
                 return vecs, self._dim
         except Exception as exc:  # noqa: BLE001 — degrade, don't crash the caller
@@ -508,8 +644,8 @@ class AdkEmbeddings:
         # Backend failed at call time (was reachable at probe). Re-resolve next
         # call; for THIS call degrade to the dim-consistent fallback we can honour.
         self._resolved = False
-        if self._dim == CANONICAL_DIM:
-            # Can't produce 768-d offline — skip rather than mix dims. Empty vectors
+        if _CE or self._dim == CANONICAL_DIM:
+            # Can't produce the canonical dim offline — skip rather than mix dims. Empty vectors
             # let dimension-aware consumers (GraphMemory) drop the embedding safely.
             return [[] for _ in texts], self._dim
         return [_feature_hash(t) for t in texts], self._dim
@@ -526,7 +662,7 @@ class AdkEmbeddings:
         verify = _tls_verify()
         out: List[List[float]] = []
         for i in range(0, len(texts), _BATCH):
-            batch = texts[i:i + _BATCH]
+            batch = [_truncate(t) for t in texts[i:i + _BATCH]]
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=verify) as c:
                 r = await c.post(
                     f"{self._url}/v1/embeddings",
