@@ -21,7 +21,10 @@ action, free tools). ``terminal-plain`` / ``terminal-sase`` play
 :class:`~adk.skilltasks.terminal.SkillTaskTerminalEnv`, where every command, read, write,
 test run and change hypothesis is a booked action behind ``permits()``. In the terminal
 modes a fourth served-model layer checks EVERY reply: the model that answered must equal
-the one requested, or the call fails (``CrossModelRouteError``) and is counted.
+the one requested, or the call fails (``CrossModelRouteError``) and is counted. Their
+report also names the sandbox (``podman`` = the jail, or ``policy-only, not a jail``) and
+the stall guard's counts (re-reads, the longest run of actions with no new evidence,
+stall rotations).
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .env import SkillTaskEnv
+from .task import TaskError
 
 __all__ = ["LOCAL_MODELS", "run_task", "RunRefused"]
 
@@ -168,7 +172,7 @@ async def _solve(env: Any, backend: Any, max_calls: int, wall_s: float,
 
 def run_task(task_dir: Path, *, model: str, max_calls: int = 12, wall_s: float = 900.0,
              scheduler_url: Optional[str] = None, run_dir: Optional[str] = None,
-             mode: str = "plain") -> Dict[str, Any]:
+             mode: str = "plain", jail: Optional[str] = None) -> Dict[str, Any]:
     if model not in LOCAL_MODELS:
         raise RunRefused("model %r is not a locally served model %s" % (model, list(LOCAL_MODELS)))
     try:
@@ -192,7 +196,12 @@ def run_task(task_dir: Path, *, model: str, max_calls: int = 12, wall_s: float =
     if terminal:
         from .terminal import SkillTaskTerminalEnv
 
-        env: Any = SkillTaskTerminalEnv(task_dir)
+        env: Any = SkillTaskTerminalEnv(task_dir, jail=jail)
+        try:
+            env.jail_status()  # probe before any model call: the report names the sandbox
+        except TaskError as exc:  # jail="podman" and no podman: could not run, exit 2
+            env.close()
+            raise RunRefused(str(exc)) from exc
     else:
         env = SkillTaskEnv(task_dir)
     t0 = time.time()
@@ -255,6 +264,13 @@ def _terminal_report(env: Any, result: Any, final: Any) -> Dict[str, Any]:
         "served_models": loop_stats.get("served_models"),
         "rubric_secondary": {k: "%d/%d" % (v["met"], v["total"])
                              for k, v in env.rubric_report(final).items()},
+        "sandbox": env.sandbox,
+        "verifier_sandbox": env.verifier_sandbox,
+        "sandbox_why": env.jail_why,
+        "rereads": env.rereads,
+        "redelivered": env.redelivered,
+        "max_no_evidence": env.max_no_evidence,
+        "stall_rotations": env.stall_rotations,
     }
 
 
@@ -262,7 +278,7 @@ def main_run(args: Any) -> int:
     try:
         out = run_task(Path(args.task), model=args.model, max_calls=args.max_calls,
                        wall_s=args.wall_s, scheduler_url=args.scheduler_url, run_dir=args.run_dir,
-                       mode=args.mode)
+                       mode=args.mode, jail=getattr(args, "jail", None))
     except RunRefused as exc:
         print(json.dumps({"error": str(exc), "exit_code": 2}))
         return 2

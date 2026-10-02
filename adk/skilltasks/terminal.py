@@ -29,10 +29,30 @@ commands may not name a path outside it (absolute paths, ``..`` escapes, ``~`` /
 ``$HOME``), and nothing may reach the network (network tools, remote git verbs,
 package installs, ``/dev/tcp``, URLs, network-module imports in commands or in written
 files). ``APPLY`` is additionally a CONTEXT rule: it is permitted only for a change the
-context holds as verified by a TEST-kind evidence record (a passing TRY). Shell
-processes also get dead proxies and, where ``unshare -rn`` works (Linux), no network
-namespace at all. The command filter is a policy, not a jail: on Windows a program the
-model writes and then runs is not network-isolated (see ``weaknesses`` in the design doc).
+context holds as verified by a TEST-kind evidence record (a passing TRY). That is the
+POLICY layer. Under it is a JAIL (:mod:`adk.skilltasks.jail`): every shell command -- ``sh``
+and the ``sh`` steps of a TRY/APPLY -- runs inside a podman container with no network, a
+read-only root, only the workspace mounted, a non-root user, no capabilities and
+CPU/memory/pids limits, so a program the model writes and then runs is confined too.
+The frozen verifier executes what the model left in the workspace, so in a jailed run it
+runs in a second container of its own (the workspace, ``private/`` and the read-only
+tests) and never as a host process (:attr:`SkillTaskTerminalEnv.verifier_sandbox`).
+Where podman is unavailable the adapter falls back to the policy alone and says so
+loudly: :attr:`SkillTaskTerminalEnv.sandbox` is ``"policy-only, not a jail"`` (shells
+then get dead proxies and, where ``unshare -rn`` works, no network namespace).
+
+**Stall guard** (measured: the failed SASE runs re-read the same files -- 29 of 36 reads in
+one run -- because the tools' printed output never reached the model). Every observation
+is an EVIDENCE record keyed by content: a file read by its sha256, a command by its
+output, a test run by its results on this workspace. A re-read of an unchanged file
+returns ``UNCHANGED since t<n>`` and the known summary instead of the text again -- but
+ONLY while that text is still in the model's context (the pending result or a turn the
+loop's working memory still holds). Once the turn that carried it was evicted, a re-read
+returns the text again and counts as evidence, never as a stall. The
+situation lists the files already read and says which are still in context; and
+``stall_actions`` consecutive actions that add
+no evidence set intent=stuck and end the turn, so PRISM rotates to test-first (or, from
+test-first, to minimal-patch's try-change).
 
 **State** (int8, the loop's episodic dtype), shape ``(5, W)``:
 
@@ -62,6 +82,7 @@ Stdlib at import; numpy is used when present (the loop needs it anyway). 3.10-co
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
@@ -75,6 +96,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .env import find_shell
+from .jail import (
+    POLICY_ONLY,
+    VERIFY_PRIVATE,
+    VERIFY_TESTS,
+    Jail,
+    JailUnavailableError,
+    open_jail,
+    open_verifier_jail,
+)
 from .rubric import parse_rubric
 from .task import SkillTask, TaskError, VerifierResult, Workspace, load_task
 
@@ -106,6 +136,8 @@ __all__ = [
     "SUBMIT",
     "TRY",
     "APPLY",
+    "POLICY_ONLY",
+    "STALL_ACTIONS",
     "sandbox_policy",
     "shell_problems",
     "run_policy",
@@ -130,6 +162,8 @@ ACTION_NAMES = {
 _MUTATING = (SH, WRITE, PATCH, APPLY)
 OUTPUT_CAP = 3000
 ECHO_CAP = 6000
+STALL_ACTIONS = 4  # consecutive actions with no new evidence -> intent=stuck
+SUMMARY_LINES, SUMMARY_CHARS = 6, 400
 ROWS = 5
 _UNKNOWN, _FAIL, _PASS = 0, 1, 2
 
@@ -443,6 +477,25 @@ class Step:
     mutated: bool = False
     tests_after: Optional[Dict[str, bool]] = None
     k: int = -1
+    evkey: str = ""
+    new_evidence: bool = False
+    reread: bool = False
+
+
+def _sha(data: "bytes | str") -> str:
+    if isinstance(data, str):
+        data = data.encode("utf-8", "replace")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _summary(text: str) -> str:
+    """The already-known summary of a file: its first lines, bounded."""
+    lines = text.splitlines()
+    head = [ln[:100] for ln in lines[:SUMMARY_LINES]]
+    out = " | ".join(head)[:SUMMARY_CHARS]
+    if len(lines) > SUMMARY_LINES:
+        out += " | (+%d more lines)" % (len(lines) - SUMMARY_LINES)
+    return out
 
 
 def _digest(data: bytes, salt: bytes) -> int:
@@ -487,6 +540,8 @@ class SkillTaskTerminalEnv:
         max_submits: int = 3,
         work_root: Optional[Path] = None,
         cmd_timeout_s: float = 60.0,
+        jail: Optional[str] = None,
+        stall_actions: int = STALL_ACTIONS,
     ) -> None:
         self.task = task if isinstance(task, SkillTask) else load_task(Path(task))
         self.ws: Workspace = self.task.materialize(work_root)
@@ -524,7 +579,25 @@ class SkillTaskTerminalEnv:
         self.rollback_failures = 0
         self.mode = "policy"
         self._shell = find_shell()
-        self._netns = _netns_prefix()
+        self._netns: Optional[List[str]] = None  # probed with the jail, only when needed
+        #: ``auto`` (the jail when podman is usable), ``podman`` (required) or ``off``
+        self.jail_mode = str(jail or os.environ.get("ADK_SKILLTASK_JAIL") or "auto")
+        self._jail: Optional[Jail] = None
+        #: the verifier's own jail (private/ and the frozen tests are mounted only there)
+        self._vjail: Optional[Jail] = None
+        self.verifier_sandbox = "unprobed"  # where tests/test.py runs: "podman" or "host"
+        self.sandbox = "unprobed"  # "podman" or POLICY_ONLY once probed
+        self.jail_why = ""
+        # the evidence ledger: what the model has already observed, keyed by content
+        self.known: Dict[str, Dict[str, Any]] = {}  # read path -> sha, t, lines, summary
+        self._evidence: set = set()
+        self.no_evidence = 0
+        self.max_no_evidence = 0
+        self.rereads = 0
+        self.redelivered = 0  # re-reads that returned the text: its turn had been evicted
+        self.stall_actions = max(1, int(stall_actions))
+        self.stall_rotations = 0
+        self._stall_pending = ""
         from adk.reasoning.solve.context import Context
 
         self.ctx = Context("skilltask:%s" % self.task.id, intent="terminal")
@@ -590,6 +663,7 @@ class SkillTaskTerminalEnv:
                 step.output, step.exit_class = "ERROR: the verifier could not run: %s" % exc, 3
         step.done = True
         step.mutated = self._digests() != before
+        self._book_evidence(step)
         self.last = step
         info: Dict[str, Any] = {"step": k}
         if self.invalid:
@@ -647,7 +721,63 @@ class SkillTaskTerminalEnv:
             loop.step(action, "model", expect=exp)
             ns = loop.sandbox.ns
             ns[loop.cfg.state_name] = loop.obs.state.copy()
+            self._after_model_action(loop, self.steps[k])
         return self.steps[k].output
+
+    # -- the stall guard ---------------------------------------------------------------------
+    def _book_evidence(self, step: Step) -> None:
+        """Is ``step`` NEW evidence (a new file or file version, a changed workspace, a
+        test result or command output not seen on this workspace)? Keeps the streak of
+        actions that added nothing."""
+        if step.denied:
+            key = "denied:%s:%s" % (step.denied, _sha(repr(sorted(step.args.items(), key=str))))
+        elif step.evkey:
+            key = step.evkey
+        elif step.aid in (TEST, SUBMIT, TRY):
+            ws = _sha(repr(sorted((r, _sha(b)) for r, b in self._digests().items())))
+            what = repr(sorted((step.tests_after or {}).items()))
+            if step.aid == TRY:
+                what = repr(step.args.get("steps")) + what
+            key = "%s:%s:%s" % (ACTION_NAMES.get(step.aid, "?"), ws, _sha(what))
+        else:
+            key = "%s:%s" % (ACTION_NAMES.get(step.aid, "invalid"), _sha(step.output))
+        step.evkey = key
+        step.new_evidence = step.mutated or key not in self._evidence
+        self._evidence.add(key)
+        self.no_evidence = 0 if step.new_evidence else self.no_evidence + 1
+        self.max_no_evidence = max(self.max_no_evidence, self.no_evidence)
+
+    def _after_model_action(self, loop: Any, step: Step) -> None:
+        """With PRISM bound: new evidence counts as progress for the loop's intent
+        classifier (a read of a new file changes no workspace cell, so the grid alone calls
+        it "no new state"); ``stall_actions`` actions without any set intent=stuck and end
+        the turn, and the next turn's rotation goes to test-first / try-change."""
+        if getattr(loop, "prism", None) is None:
+            return
+        if step.new_evidence:
+            if getattr(loop, "actions_since_novel", 0) > 0:
+                loop.actions_since_novel = 0
+                loop.turn_novel = getattr(loop, "turn_novel", 0) + 1
+            return
+        if self.no_evidence < self.stall_actions:
+            return
+        done = [s for s in self.steps if s.done][-self.stall_actions :]
+        fams = sorted({s.family for s in done})
+        self._stall_pending = "no new evidence in the last %d actions (%s)" % (
+            self.stall_actions,
+            ", ".join(fams)[:200],
+        )
+        self.no_evidence = 0  # one stall per streak
+        intents = getattr(loop, "intents", None)
+        need = int(getattr(intents, "stuck_actions", 1) or 1)
+        loop.actions_since_novel = max(int(getattr(loop, "actions_since_novel", 0)), need)
+        from adk.reasoning.solve._vendor.sandbox import TurnEnd
+
+        raise TurnEnd(
+            "STALLED: %s. Re-reading what you already have adds nothing: the strategy "
+            "rotates -- run_tests(), then verify ONE change with try_change()."
+            % self._stall_pending
+        )
 
     # -- tools (namespace) ------------------------------------------------------------------
     def sh(self, cmd: str) -> str:
@@ -751,7 +881,62 @@ class SkillTaskTerminalEnv:
     def _do_sh(self, step: Step) -> None:
         step.output, step.exit_class = self._run_sh(step.args["cmd"])
 
+    def jail_status(self) -> str:
+        """Probe AND START the jail once: ``"podman"`` or ``"policy-only, not a jail"``
+        (logged as a warning, and reported by the run harness). A jail that cannot start
+        counts as unavailable, so the default ``auto`` falls back to the policy here;
+        ``jail="podman"`` makes a missing or unstartable jail an error instead."""
+        if self.sandbox != "unprobed":
+            return self.sandbox
+        try:
+            self._jail, self.jail_why = open_jail(self.root, self.jail_mode)
+        except JailUnavailableError as exc:
+            raise TaskError(
+                "the jail is required (jail=%r) but unavailable: %s" % (self.jail_mode, exc)
+            ) from exc
+        if self._jail is not None:
+            # the verifier executes what the model left in the workspace: it gets a jail of
+            # its own NOW, or the run is not a jailed run (never "podman" with a host verifier)
+            try:
+                self._vjail = open_verifier_jail(
+                    self._jail, self.ws.private, self.task.root / "tests"
+                )
+            except JailUnavailableError as exc:
+                self._jail.close()
+                self._jail = None
+                if self.jail_mode.lower() == "podman":
+                    raise TaskError(
+                        "the jail is required (jail=%r) but the verifier cannot run in one: %s"
+                        % (self.jail_mode, exc)
+                    ) from exc
+                self.jail_why = "the verifier jail could not start: %s" % exc
+        if self._jail is not None:
+            self.sandbox = self.verifier_sandbox = "podman"
+        else:
+            self.sandbox = POLICY_ONLY
+            self.verifier_sandbox = "host"
+            self._netns = _netns_prefix()
+            _log.warning(
+                "skill-task sandbox for %s is %s: %s -- a program the model writes and runs "
+                "(or leaves for the verifier to run) is NOT confined",
+                self.task.id,
+                POLICY_ONLY.upper(),
+                self.jail_why,
+            )
+        return self.sandbox
+
     def _run_sh(self, cmd: str) -> Tuple[str, int]:
+        if self.jail_status() == "podman" and self._jail is not None:
+            try:
+                rc, out, err, timed_out = self._jail.run(str(cmd), timeout=self.cmd_timeout_s)
+            # the jail started once (jail_status) and a RESTART failed mid-episode: an
+            # error, never a silent fallback to the policy mode
+            except JailUnavailableError as exc:
+                return "ERROR: the jail could not start: %s" % exc, 3
+            if timed_out:
+                return "ERROR: timed out after %gs\n%s" % (self.cmd_timeout_s, out[-OUTPUT_CAP:]), 1
+            text = out + (("\n[stderr]\n" + err) if err else "")
+            return ("[exit %d]\n" % rc) + text[-OUTPUT_CAP:], 0 if rc == 0 else 1
         if self._shell is None:
             return "ERROR: no POSIX shell on this host (set ADK_SKILLTASK_SHELL)", 3
         env = dict(os.environ)
@@ -774,7 +959,7 @@ class SkillTaskTerminalEnv:
             env[var] = str(self._scratch)
         try:
             proc = subprocess.run(
-                self._netns + self._shell + [str(cmd)],
+                (self._netns or []) + self._shell + [str(cmd)],
                 cwd=str(self.root),
                 env=env,
                 capture_output=True,
@@ -796,13 +981,76 @@ class SkillTaskTerminalEnv:
         rel = p.relative_to(self.root.resolve()).as_posix() if p != self.root.resolve() else "."
         try:
             if p.is_dir():
-                step.output = self._tree(p)
+                text, kind = self._tree(p), "dir"
             else:
-                step.output = p.read_text(encoding="utf-8", errors="replace")[: OUTPUT_CAP * 2]
+                text, kind = p.read_text(encoding="utf-8", errors="replace"), "file"
                 self.reads[rel] = self.reads.get(rel, 0) + 1
-            step.exit_class = 0
         except OSError as exc:
             step.output, step.exit_class = "ERROR: %s" % exc, 1
+            return
+        sha = _sha(text)
+        step.evkey = "%s:%s:%s" % (kind, rel, sha)
+        step.family = "read:%s@%s" % (rel.strip("./") or ".", sha[:8])
+        step.exit_class = 0
+        seen = self.known.get(rel)
+        if seen is not None and seen["sha"] == sha and not self._in_context(seen, text):
+            # same bytes, but the turn that carried them left the loop's working memory:
+            # the model cannot see the text any more, so this read DELIVERS it again and
+            # is evidence (never a no-evidence action that feeds the stall guard)
+            self.redelivered += 1
+            step.evkey += ":again@%d" % self.redelivered
+            seen = None
+        if seen is not None and seen["sha"] == sha:  # the evidence table already has it
+            step.reread = True
+            self.rereads += 1
+            step.output = "UNCHANGED since t%d (sha %s, %d lines): you already read %s. %s: %s" % (
+                seen["t"],
+                sha[:8],
+                seen["lines"],
+                rel,
+                "listing" if kind == "dir" else "summary",
+                text[:1500] if kind == "dir" else seen["summary"],
+            )
+            return
+        step.output = text if kind == "dir" else text[: OUTPUT_CAP * 2]
+        if len(step.output) < len(text):
+            return  # only part of it was shown: a re-read must show it again, never "unchanged"
+        self.known[rel] = {
+            "sha": sha,
+            "t": sum(1 for s in self.steps if s.done) + 1,
+            "lines": len(text.splitlines()),
+            "summary": _summary(text) if kind == "file" else "%d entries" % len(text.splitlines()),
+            "kind": kind,
+            "k": step.k,
+            "turn": self._turn(),
+        }
+
+    def _turn(self) -> int:
+        return int(getattr(self.loop, "turn", 0) or 0) if self.loop is not None else 0
+
+    def _in_context(self, info: Dict[str, Any], text: str) -> bool:
+        """Can the model still SEE the text of the read recorded in ``info``? Without a
+        loop the caller holds the returned text. With one, the text is visible when it was
+        printed this turn (it is in the next prompt), or is literally in the pending
+        result or in a turn the working memory still holds. ``WorkingMemory.evict_to``
+        drops whole turns (``wm_tokens``, and again to fit ``ctx_tokens``), so this asks
+        the memory itself instead of assuming an earlier result is still there."""
+        loop = self.loop
+        if loop is None:
+            return True
+        if info.get("turn") == self._turn():
+            return True
+        probe = text.rstrip()
+        if not probe:
+            return True
+        if probe in str(getattr(loop, "last_result", "") or ""):
+            return True
+        wm = getattr(loop, "wm", None)
+        try:
+            msgs = list(wm.messages()) if wm is not None else []
+        except (AttributeError, TypeError):
+            msgs = []
+        return any(probe in str(m.get("content", "")) for m in msgs if isinstance(m, dict))
 
     def _write_text(self, rel: str, text: str) -> str:
         p = _inside(self.root, rel)
@@ -869,10 +1117,53 @@ class SkillTaskTerminalEnv:
             self.over = True
             raise TaskError("episode invalid: %s" % self.invalid)
 
+    def _verifier_in_jail(self, ws: Workspace) -> "subprocess.CompletedProcess[str]":
+        """``tests/test.py`` inside the verifier jail (the :meth:`Workspace.verify` runner)."""
+        assert self._vjail is not None
+        cmd = "python3 test.py /work %s" % VERIFY_PRIVATE
+        timeout = self.task.timeout_s
+        try:
+            rc, out, err, timed_out = self._vjail.run(cmd, timeout=timeout, cwd=VERIFY_TESTS)
+        except (JailUnavailableError, OSError, subprocess.SubprocessError) as exc:
+            # a RESTART failed mid-episode: no score, and never a host run instead
+            raise TaskError(
+                "%s: the verifier jail could not start, so the task was not verified: %s"
+                % (self.task.id, exc)
+            ) from exc
+        if timed_out:
+            return subprocess.CompletedProcess(
+                cmd, 124, stdout=out, stderr=err or "timeout after %gs" % timeout
+            )
+        return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=err)
+
+    def _run_verifier(self) -> VerifierResult:
+        """The frozen verifier, wherever this episode's sandbox puts it. It executes files
+        the model wrote (a checker under test, a repository's ``.git/config``), so in a
+        jailed run it runs in the verifier jail and NEVER as a host process; only a run
+        already marked policy-only verifies on the host. Either way ``private/`` is put
+        back to what setup left once the verifier returns: its scratch files are dropped,
+        and so is anything workspace code wrote there while the verifier ran it."""
+        try:
+            if self.jail_status() == "podman":
+                if self._vjail is None:  # unreachable by construction; refuse, never the host
+                    raise TaskError("%s: jailed run without a verifier jail" % self.task.id)
+                return self.ws.verify(runner=self._verifier_in_jail)
+            return self.ws.verify()
+        finally:
+            try:
+                left = self._private_snap.restore(self.ws.private)
+            except OSError as exc:
+                left = [str(exc)]
+            if left:  # the next verification would read state the host did not write
+                self.invalid = "the verifier's private state could not be restored (%s)" % (
+                    ", ".join(left[:5])
+                )
+                self.over = True
+                raise TaskError("episode invalid: %s" % self.invalid)
+
     def _verify(self) -> VerifierResult:
         self._guard()
-        res = self.ws.verify()
-        self._private_snap = _Tree.take(self.ws.private)  # the verifier's own writes are fine
+        res = self._run_verifier()
         for n in res.tests:
             self._col(n)
         self.last_verify = res
@@ -1127,12 +1418,20 @@ class SkillTaskTerminalEnv:
         )
 
     def render(self, obs: Any, last: Any) -> str:
+        self._stall_pending = ""  # the turn's rotation (if any) has already happened
         parts = ["TASK:\n" + self.task.instruction.strip()]
         for sec in ("Must-do", "Must-avoid"):
             items = self.rubric.items.get(sec) or []
             if items:
                 parts.append("RUBRIC %s:\n" % sec + "\n".join("- " + b for b in items))
         parts.append("WORKSPACE FILES:\n" + self._tree(self.root, limit=60))
+        read_lines = self._known_lines()
+        if read_lines:
+            parts.append(
+                "FILES YOU ALREADY READ (a re-read of an unchanged file whose text is still in "
+                "your earlier results returns only this line; one marked 'no longer in your "
+                "context' returns its text again):\n" + "\n".join(read_lines)
+            )
         unseen = [s for s in self.steps[self._seen :] if s.done and s.source != "model"]
         self._seen = len(self.steps)
         if unseen:  # the scripted arms act without the model: show it what they found
@@ -1185,6 +1484,29 @@ class SkillTaskTerminalEnv:
             % (self.submits, self.max_submits, sum(1 for s in self.steps if s.done))
         )
         return "\n\n".join(parts)
+
+    def _known_lines(self, limit: int = 30) -> List[str]:
+        out = []
+        for rel, info in list(self.known.items())[-limit:]:
+            if info.get("kind") != "file":
+                continue
+            p = self.root / rel
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
+            except OSError:
+                text = None
+            now = _sha(text) if text is not None else ""
+            if now != info["sha"]:
+                state = "DELETED since" if not now else "CHANGED since -- read it again"
+            elif self._in_context(info, text or ""):
+                state = "unchanged"
+            else:
+                state = "unchanged, text no longer in your context -- read() returns it again"
+            out.append(
+                "- %s  (t%d, %d lines, sha %s, %s): %s"
+                % (rel, info["t"], info["lines"], info["sha"][:8], state, info["summary"][:160])
+            )
+        return out
 
     def describe(self, t: Any) -> str:
         k = int(t.action[1])
@@ -1267,11 +1589,13 @@ class SkillTaskTerminalEnv:
 
         def echo(fn: Callable[..., str]) -> Callable[..., str]:
             def wrapped(*a: Any, **k: Any) -> str:
+                n = len(self.steps)
                 out = fn(*a, **k)
-                print(
+                self._emit(
                     out
                     if len(out) <= ECHO_CAP
-                    else out[:ECHO_CAP] + "\n[... %d more chars]" % (len(out) - ECHO_CAP)
+                    else out[:ECHO_CAP] + "\n[... %d more chars]" % (len(out) - ECHO_CAP),
+                    self.steps[n:],
                 )
                 return out
 
@@ -1297,6 +1621,27 @@ class SkillTaskTerminalEnv:
             "submit": (echo(self.submit), "submit()"),
             "plan": (plan, "not available"),
         }
+
+    def _emit(self, text: str, new_steps: Sequence[Step]) -> None:
+        """Print a tool's result where the MODEL sees it: the loop sandbox's capped stdout.
+        Measured: the builtin print() went to the host process, so no tool output ever
+        reached the model (1 of 58 SASE turn results carried any stdout) and it re-read the
+        same files. A read whose text was cut by the stdout cap was NOT delivered: it is
+        forgotten, so the next read returns the text instead of "unchanged"."""
+        sb = getattr(self.loop, "sandbox", None) if self.loop is not None else None
+        pr = getattr(sb, "_print", None)
+        if pr is None:
+            print(text)
+            return
+        pr(text)
+        cap = getattr(sb, "_out", None)
+        if cap is not None and getattr(cap, "capped", False):
+            for s in new_steps:
+                if s.aid == READ and not s.reread:
+                    for rel, info in list(self.known.items()):
+                        if info.get("k") == s.k:
+                            del self.known[rel]
+                    self._evidence.discard(s.evkey)
 
     def _bind(self, loop: Any) -> None:
         cfg = loop.cfg
@@ -1342,6 +1687,31 @@ class SkillTaskTerminalEnv:
             return "\n".join(lines)
 
         prism.overlay = overlay
+        orig_rotate = prism.rotate
+
+        def rotate(diagnosis: Any) -> Any:
+            # a stall on evidence (re-reads, repeated outputs) rotates to the strategies
+            # that GENERATE evidence: test-first, or from it minimal-patch (try_change)
+            why, old = self._stall_pending, prism.active.id
+            if why:
+                try:
+                    diagnosis.summary = why + "; " + diagnosis.summary
+                except AttributeError:
+                    _log.debug("diagnosis has no summary to annotate")
+            st = orig_rotate(diagnosis)
+            if why:
+                self._stall_pending = ""
+                from adk.reasoning.solve._vendor.prism import BY_ID
+
+                target = "rule_first" if old != "rule_first" else "analogy"
+                if target in getattr(prism, "allowed", [target]):
+                    prism.active = st = BY_ID[target]
+                    if prism.log:
+                        prism.log[-1]["to"] = target
+                self.stall_rotations += 1
+            return st
+
+        prism.rotate = rotate
 
     # -- helpers ------------------------------------------------------------------------------
     def _strategy(self) -> str:
@@ -1390,7 +1760,7 @@ class SkillTaskTerminalEnv:
         if self.invalid:
             raise TaskError("episode invalid, not scored: %s" % self.invalid)
         self._guard()
-        return self.ws.verify()
+        return self._run_verifier()
 
     def rubric_report(self, res: Optional[VerifierResult] = None) -> Dict[str, Any]:
         """Secondary report, never reward: each Must-do / Must-avoid bullet with the status
@@ -1436,12 +1806,17 @@ class SkillTaskTerminalEnv:
                 "strategy": s.strategy,
                 "mutated": s.mutated,
                 "denied": s.denied,
+                "new_evidence": s.new_evidence,
+                "reread": s.reread,
             }
             for s in self.steps
             if s.done
         ]
 
     def close(self) -> None:
+        for jail in (self._jail, self._vjail):
+            if jail is not None:
+                jail.close()
         self.ws.cleanup()
 
 
@@ -1573,6 +1948,14 @@ def _netns_prefix() -> List[str]:
 
 
 # --------------------------------------------------------------------------- policies (no model)
+_SHELL_WRITE = (
+    'python -c "import base64,os,sys;p=sys.argv[1];'
+    "os.makedirs(p.rpartition(chr(47))[0] or chr(46),exist_ok=True);"
+    'open(p,chr(119)+chr(98)).write(base64.urlsafe_b64decode(sys.argv[2]))" '
+    "'%s' '%s'"
+)
+
+
 def run_policy(
     env: SkillTaskTerminalEnv, policy: Callable[[SkillTaskTerminalEnv], None]
 ) -> VerifierResult:
@@ -1595,11 +1978,13 @@ def scripted_baseline_policy(env: SkillTaskTerminalEnv) -> None:
     env.submit()
 
 
-def reference_policy(env: SkillTaskTerminalEnv) -> None:
+def reference_policy(env: SkillTaskTerminalEnv, via_shell: bool = False) -> None:
     """The reference solution, replayed THROUGH the adapter: run ``solution/solve.py`` on
     a scratch copy of the pristine world, then carry its byte-level effect over with
     ``write`` actions (``rm`` for a deleted file), every one through ``permits()``. Git
-    internals and binary files are carried as byte-exact writes."""
+    internals and binary files are carried as byte-exact writes. ``via_shell`` carries every
+    file with a shell command instead (a python one-liner fed the bytes as urlsafe base64),
+    so the whole solution goes THROUGH the sandbox's shell -- the jail, when there is one."""
     ws = env.task.materialize()
     try:
         before = _snapshot(ws.path)
@@ -1616,6 +2001,9 @@ def reference_policy(env: SkillTaskTerminalEnv) -> None:
     for rel in sorted(after):
         data = after[rel]
         if before.get(rel) == data:
+            continue
+        if via_shell:
+            env.sh(_SHELL_WRITE % (rel, base64.urlsafe_b64encode(data).decode()))
             continue
         try:
             text = data.decode("utf-8")

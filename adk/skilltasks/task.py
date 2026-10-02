@@ -36,7 +36,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 __all__ = ["SkillTask", "Workspace", "VerifierResult", "load_task", "reward_of", "TaskError"]
 
@@ -110,10 +110,18 @@ class Workspace:
         """Run a solution-shaped script (reference or probe) against this workspace."""
         return _run_py(script, [str(self.path)], cwd=self.path, timeout=self.task.timeout_s)
 
-    def verify(self) -> VerifierResult:
-        test = self.task.root / "tests" / "test.py"
-        proc = _run_py(test, [str(self.path), str(self.private)], cwd=self.task.root / "tests",
-                       timeout=self.task.timeout_s)
+    def verify(self, runner: Optional[Callable[["Workspace"], subprocess.CompletedProcess]]
+               = None) -> VerifierResult:
+        """Run the frozen verifier and grade what it printed. ``tests/test.py`` EXECUTES
+        what the solver left in the workspace, so a caller that confines the solver passes
+        ``runner``: it runs the verifier somewhere else (a jail) and returns the finished
+        process; without one the verifier runs as a host process."""
+        if runner is not None:
+            proc = runner(self)
+        else:
+            test = self.task.root / "tests" / "test.py"
+            proc = _run_py(test, [str(self.path), str(self.private)],
+                           cwd=self.task.root / "tests", timeout=self.task.timeout_s)
         doc = _last_json(proc.stdout or "")
         if doc is None or not isinstance(doc.get("tests"), dict) or not doc["tests"]:
             raise TaskError("%s: tests/test.py printed no {\"tests\": {...}} object (exit %d): %s"

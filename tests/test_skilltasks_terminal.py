@@ -37,6 +37,12 @@ from adk.skilltasks.terminal import (
 CORPUS = Path(__file__).resolve().parents[2] / "AitherOS" / "lib" / "training" / "skilltasks"
 
 
+@pytest.fixture(autouse=True)
+def _policy_mode(monkeypatch):
+    # these tests pin the POLICY layer; the jail has its own (test_skilltasks_stall_and_jail)
+    monkeypatch.setenv("ADK_SKILLTASK_JAIL", "off")
+
+
 def _env(tmp_path: Path, **kw) -> SkillTaskTerminalEnv:
     return SkillTaskTerminalEnv(load_task(_make_task(tmp_path, "t")), **kw)
 
@@ -312,7 +318,9 @@ def test_evidence_table_is_command_to_effect(tmp_path):
         text = table.render()
         assert "write:out.txt" in text and "file:out.txt" in text
         assert "test after write:out.txt" in text and "test:wrote_out moved (+1,+0)" in text
-        assert any(r.family == "read:seed.txt" and r.changed == 0 for r in table.rows.values())
+        assert any(  # a read's row carries the content hash it observed
+            r.family.startswith("read:seed.txt@") and r.changed == 0 for r in table.rows.values()
+        )
         assert env.steps[-1].aid == READ
     finally:
         env.close()
@@ -348,7 +356,8 @@ def test_scripted_arm_output_reaches_the_model_and_fences_are_closed(tmp_path):
         env.loop = None
         assert env.trace()[-1]["strategy"] == "scripted-baseline"
         text = env.render(env.observe(), None)
-        assert "ACTIONS TAKEN WITHOUT YOU" in text and "[read:extra.txt] hello" in text
+        assert "ACTIONS TAKEN WITHOUT YOU" in text and "[read:extra.txt@" in text
+        assert "] hello" in text  # the family carries the content hash it read
         assert "ACTIONS TAKEN WITHOUT YOU" not in env.render(env.observe(), None)  # shown once
     finally:
         env.close()

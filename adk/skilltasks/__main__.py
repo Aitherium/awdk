@@ -27,6 +27,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     r.add_argument("--run-dir", default=None)
     r.add_argument("--mode", choices=("plain", "sase", "terminal-plain", "terminal-sase"),
                    default="plain")
+    r.add_argument("--jail", choices=("auto", "podman", "off"), default=None,
+                   help="terminal modes: run task commands in a podman jail (default auto; "
+                        "without podman the run is marked 'policy-only, not a jail')")
     args = p.parse_args(argv)
 
     if args.cmd == "gate":
