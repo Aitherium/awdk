@@ -219,6 +219,10 @@ class LoopConfig:
     plan_states: int = 5000
     #: sase mode: h31 evidence table + induced candidate rules + cited rules.
     grounded: bool = False
+    #: PRISM gains the ``prospect`` auto strategy (``_prospect.py``): untried actions ranked by
+    #: the ONLINE rarity of their kind plus the rarity of what that kind has produced. Off
+    #: by default: measured behind the shipped explorer on ARC-like grid games.
+    prospect: bool = False
     #: Calibrated prediction ledger (``_ledger.py``): an awdecide SQLite path. Every
     #: scored prediction and the identity baseline on the same transition are booked
     #: with a Brier score; ``stats["ledger"]`` says which sources beat "nothing changes".

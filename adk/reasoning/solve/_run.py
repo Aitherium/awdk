@@ -126,6 +126,10 @@ def build_core_loop(
             sink=sink,
             governor=governor,
         )
+    if cfg.prospect:
+        from ._prospect import install_prospector
+
+        install_prospector(loop)
     if cfg.strategies and loop.prism is not None:
         unknown = [s for s in cfg.strategies if s not in BY_ID]
         if unknown:
