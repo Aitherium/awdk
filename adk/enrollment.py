@@ -31,6 +31,11 @@ __all__ = [
     "rich_enroll",
     "build_registration",
     "heartbeat_loop",
+    "start_heartbeat",
+    "stop_heartbeat",
+    "resume_heartbeat",
+    "heartbeat_status",
+    "classify_refusal",
     "probe_inference",
     "default_candidates",
     "InferenceProbe",
@@ -366,6 +371,250 @@ def _save_workspace(workspace: Dict[str, Any]) -> None:
         log.debug("Failed to persist workspace.json: %s", e)
 
 
+# What the heartbeat last did, for the daemon's /health. Without it a node whose
+# beats are being refused (expired sign-in, revoked device) looks identical to a
+# healthy one from this side, and "offline" is only visible on the owner's
+# device page. Never holds the token.
+_HEARTBEAT_FRESH_BEATS = 3  # ``online`` = an accepted beat within this many intervals
+
+
+def _new_heartbeat_state() -> Dict[str, Any]:
+    return {
+        "node_id": "",
+        "interval": 0,
+        "started_at": 0.0,
+        "beats": 0,
+        "last_attempt_at": 0.0,
+        "last_ok_at": 0.0,
+        "last_status": None,
+        "last_result": "never",
+        "last_error": "",
+        "consecutive_failures": 0,
+        "not_started_reason": "",
+    }
+
+
+_heartbeat_state: Dict[str, Any] = _new_heartbeat_state()
+
+# ONE heartbeat task per process, and a reference to it: ``asyncio.create_task``
+# with the result dropped is only weakly held by the loop, so the task could be
+# collected mid-flight, and every repeat enrollment stacked another loop.
+_heartbeat_task: Optional["asyncio.Task[None]"] = None
+
+
+def _record_beat(status: Optional[int], result: str, error: str = "") -> None:
+    """Record one beat's outcome. ``result`` is ``ok`` | ``reregistered`` |
+    ``refused`` | ``error``."""
+    now = time.time()
+    st = _heartbeat_state
+    st["beats"] += 1
+    st["last_attempt_at"] = now
+    st["last_status"] = status
+    st["last_result"] = result
+    st["last_error"] = error[:200]
+    if result in ("ok", "reregistered"):
+        st["last_ok_at"] = now
+        st["consecutive_failures"] = 0
+    else:
+        st["consecutive_failures"] += 1
+        # The first failure of a run is worth a line at WARNING; the rest stay quiet.
+        if st["consecutive_failures"] == 1:
+            log.warning("Node heartbeat %s (status=%s): %s", result, status, error[:200])
+
+
+def heartbeat_status() -> Dict[str, Any]:
+    """The node heartbeat's state, shaped for ``/health``.
+
+    ``age_seconds`` is the time since the last beat the platform ACCEPTED
+    (``None`` when none has been), and ``online`` is true only while the loop is
+    running and that age is within a few intervals.
+    """
+    st = _heartbeat_state
+    running = _heartbeat_task is not None and not _heartbeat_task.done()
+    now = time.time()
+    age = round(now - st["last_ok_at"], 1) if st["last_ok_at"] else None
+    interval = st["interval"] or 60
+    return {
+        "running": running,
+        "online": bool(
+            running and age is not None and age <= interval * _HEARTBEAT_FRESH_BEATS
+        ),
+        "node_id": st["node_id"],
+        "interval": st["interval"],
+        "beats": st["beats"],
+        "age_seconds": age,
+        "last_attempt_age_seconds": (
+            round(now - st["last_attempt_at"], 1) if st["last_attempt_at"] else None
+        ),
+        "last_status": st["last_status"],
+        "last_result": st["last_result"],
+        "last_error": st["last_error"],
+        "consecutive_failures": st["consecutive_failures"],
+        "not_started_reason": "" if running else st["not_started_reason"],
+    }
+
+
+def start_heartbeat(
+    base_url: str,
+    token: str,
+    node_id: str,
+    *,
+    registered: bool = False,
+    **kwargs: Any,
+) -> bool:
+    """Start this process's node heartbeat, replacing one already running.
+
+    The newest credentials win: a fresh enrollment supersedes a loop resumed from
+    the stored node record instead of running beside it.
+
+    Args:
+        registered: The node was registered a moment ago, which counts as its
+            first accepted beat. Leave False when resuming from a stored record
+            so ``/health`` does not claim a beat the platform never saw.
+        **kwargs: Passed to :func:`heartbeat_loop`.
+
+    Returns:
+        True if the loop was scheduled; False when there is no running event loop
+        (a synchronous caller) — never raises.
+    """
+    global _heartbeat_task
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        log.debug("No event loop for heartbeat; skipping background task")
+        _heartbeat_state["not_started_reason"] = "no event loop"
+        return False
+    if _heartbeat_task is not None and not _heartbeat_task.done():
+        _heartbeat_task.cancel()
+    _heartbeat_state.update(_new_heartbeat_state())
+    _heartbeat_state.update({
+        "node_id": node_id,
+        "interval": int(kwargs.get("interval", 60)),
+        "started_at": time.time(),
+    })
+    if registered:
+        _heartbeat_state.update({
+            "last_ok_at": time.time(), "last_status": 200, "last_result": "registered",
+        })
+    _heartbeat_task = loop.create_task(heartbeat_loop(base_url, token, node_id, **kwargs))
+    return True
+
+
+async def stop_heartbeat() -> None:
+    """Cancel the node heartbeat (daemon shutdown). Safe when none is running."""
+    global _heartbeat_task
+    task, _heartbeat_task = _heartbeat_task, None
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        log.debug("Node heartbeat cancelled")
+    except Exception as e:  # noqa: BLE001 -- shutdown must finish
+        log.debug("Node heartbeat ended with %s", e)
+
+
+def resume_heartbeat(
+    token: str,
+    *,
+    default_base_url: str,
+    token_provider: Optional[Callable[[], str]] = None,
+    interval: int = 60,
+) -> Dict[str, Any]:
+    """Resume the heartbeat from the stored node record (``node_auth.json``).
+
+    A registered device has to keep beating after the process that registered it
+    exits; this is what a daemon calls on start. It does nothing when a heartbeat
+    is already running, when the device was never registered, or when there is no
+    sign-in to beat with — and says which.
+
+    Returns:
+        ``{"started": bool, "reason": str, "node_id": str}``.
+    """
+    if _heartbeat_task is not None and not _heartbeat_task.done():
+        return {"started": False, "reason": "already running",
+                "node_id": _heartbeat_state["node_id"]}
+    try:
+        from adk.fleet_enroll import _load_node_auth
+
+        node_auth = _load_node_auth()
+    except Exception as e:  # noqa: BLE001 -- an unreadable record is "not registered"
+        log.debug("node record unreadable: %s", e)
+        node_auth = {}
+    if not isinstance(node_auth, dict):
+        node_auth = {}
+    node_id = str(node_auth.get("node_id") or "")
+
+    def _skip(reason: str) -> Dict[str, Any]:
+        _heartbeat_state["not_started_reason"] = reason
+        return {"started": False, "reason": reason, "node_id": node_id}
+
+    if not node_id:
+        return _skip("not registered")
+    if node_auth.get("mode") != "rich":
+        # A legacy hub registration beats on its own loop (fleet_enroll).
+        return _skip("not an identity registration")
+    if not token:
+        return _skip("no sign-in on this device")
+    started = start_heartbeat(
+        str(node_auth.get("enroll_base") or default_base_url),
+        token,
+        node_id,
+        interval=interval,
+        inference_url=node_auth.get("inference_url") or None,
+        node_class=node_auth.get("node_class") or "laptop",
+        token_provider=token_provider,
+        beat_immediately=True,
+    )
+    if not started:
+        return {"started": False, "reason": "no event loop", "node_id": node_id}
+    log.info("Resumed node heartbeat for %s from the stored registration", node_id)
+    return {"started": True, "reason": "", "node_id": node_id}
+
+
+#: Platform refusals a caller should render as their own state, not a generic
+#: failure. Identity answers both with HTTP 402 and a ``detail.error`` code.
+_REFUSAL_CODES: Tuple[str, ...] = ("subscription_required", "device_quota_exceeded")
+
+
+def classify_refusal(http_status: Optional[int], body: Any) -> Optional[Dict[str, Any]]:
+    """Name a 402 / quota refusal from the platform, or return None.
+
+    Args:
+        http_status: The status the platform answered with.
+        body: The response body — raw text or already-parsed JSON.
+
+    Returns:
+        ``{"code", "http_status", "hint", "current", "limit", "upgrade"}`` (the
+        platform's own fields, verbatim where present) when the answer is a 402
+        or carries a known refusal code; otherwise None.
+    """
+    parsed: Any = body
+    if isinstance(body, (str, bytes)):
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+    detail = parsed.get("detail", parsed) if isinstance(parsed, dict) else None
+    if not isinstance(detail, dict):
+        detail = {}
+    code = str(detail.get("error") or detail.get("code") or "")
+    if code not in _REFUSAL_CODES:
+        if http_status != 402:
+            return None
+        code = "payment_required"
+    upgrade = detail.get("upgrade") if isinstance(detail.get("upgrade"), dict) else {}
+    return {
+        "code": code,
+        "http_status": int(http_status or 402),
+        "hint": str(detail.get("hint") or ""),
+        "current": detail.get("current"),
+        "limit": detail.get("limit"),
+        "upgrade": upgrade,
+    }
+
+
 async def heartbeat_loop(
     base_url: str,
     token: str,
@@ -377,6 +626,8 @@ async def heartbeat_loop(
     max_beats: Optional[int] = None,
     reach_provider: Optional[Callable[[], str]] = None,
     harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
+    token_provider: Optional[Callable[[], str]] = None,
+    beat_immediately: bool = False,
 ) -> None:
     """Background heartbeat — POST /v1/nodes/heartbeat every ``interval`` seconds.
 
@@ -396,6 +647,12 @@ async def heartbeat_loop(
             link dropped has to stop claiming reach within a minute, or the
             owner's device page offers a machine that cannot answer.
         harness_provider: Called each beat for ``(harness_url, harness_ready)``.
+        token_provider: Called each beat for the CURRENT bearer; an empty answer
+            keeps the previous one. A sign-in that was refreshed on disk is
+            picked up without restarting the loop.
+        beat_immediately: Send the first beat at once instead of after
+            ``interval`` — for a loop resumed from a stored registration, where
+            nothing has told the platform this node is back.
     """
     import httpx
 
@@ -412,6 +669,7 @@ async def heartbeat_loop(
             client, base, headers, node_id, interval=interval,
             inference_url=inference_url, node_class=node_class, max_beats=max_beats,
             reach_provider=reach_provider, harness_provider=harness_provider,
+            token_provider=token_provider, beat_immediately=beat_immediately,
         )
     finally:
         await client.aclose()
@@ -429,17 +687,28 @@ async def _heartbeat_beats(
     max_beats: Optional[int],
     reach_provider: Optional[Callable[[], str]],
     harness_provider: Optional[Callable[[], Tuple[str, bool]]],
+    token_provider: Optional[Callable[[], str]] = None,
+    beat_immediately: bool = False,
 ) -> None:
     """The beat loop of :func:`heartbeat_loop`, on a caller-owned client."""
     beats = 0
     while max_beats is None or beats < max_beats:
-        try:
-            await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            log.info("Heartbeat loop cancelled")
-            break
+        if beats or not beat_immediately:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                log.info("Heartbeat loop cancelled")
+                break
         beats += 1
         try:
+            if token_provider is not None:
+                try:
+                    fresh = str(token_provider() or "")
+                except Exception as e:  # noqa: BLE001 -- keep the bearer we have
+                    log.debug("token_provider failed: %s", e)
+                    fresh = ""
+                if fresh:
+                    headers = {**headers, "Authorization": f"Bearer {fresh}"}
             # build_registration probes the inference server with a blocking
             # urlopen; off the loop so a slow probe never stalls the daemon.
             reg = await asyncio.to_thread(
@@ -469,16 +738,28 @@ async def _heartbeat_beats(
             resp = await client.post(
                 f"{base}/v1/nodes/heartbeat", json=hb, headers=headers
             )
-            if resp.status_code == 200 and resp.json().get("status") == "unknown_node":
+            status = int(resp.status_code)
+            if status == 200 and resp.json().get("status") == "unknown_node":
                 # Registry lost us — re-register with the full payload.
-                await client.post(
+                again = await client.post(
                     f"{base}/v1/nodes/register", json=reg, headers=headers
                 )
+                again_status = int(getattr(again, "status_code", 0) or 0)
+                if again_status == 200:
+                    _record_beat(again_status, "reregistered")
+                else:
+                    _record_beat(again_status, "refused",
+                                 f"re-register answered HTTP {again_status}")
+            elif status == 200:
+                _record_beat(status, "ok")
+            else:
+                _record_beat(status, "refused", f"heartbeat answered HTTP {status}")
         except asyncio.CancelledError:
             log.info("Heartbeat loop cancelled")
             break
         except Exception as e:
             log.debug("Heartbeat error: %s", e)
+            _record_beat(None, "error", f"{e.__class__.__name__}: {e}")
 
 
 def _persist_device_cert(register_response: Dict[str, Any]) -> Dict[str, Any]:
@@ -536,6 +817,7 @@ async def rich_enroll(
     node_class: str = "laptop",
     reach_provider: Optional[Callable[[], str]] = None,
     harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
+    token_provider: Optional[Callable[[], str]] = None,
 ) -> Dict[str, Any]:
     """Register this device with the rich endpoint spine.
 
@@ -546,6 +828,7 @@ async def rich_enroll(
         enable_heartbeat: Start the background heartbeat loop on success.
         inference_url: Explicit inference base URL, or ``None``/``"auto"`` to probe.
         node_class: One of :data:`NODE_CLASSES`.
+        token_provider: Passed to the heartbeat (see :func:`heartbeat_loop`).
 
     Returns:
         ``{"enrolled": bool, "node_id": str, "workspace": dict, "registration": dict,
@@ -590,17 +873,17 @@ async def rich_enroll(
         cert_enrolled = cert_result.get("success", False)
 
         if enable_heartbeat:
-            try:
-                asyncio.create_task(heartbeat_loop(
-                    base, token, node_id,
-                    inference_url=reg["inference_url"] or None,
-                    node_class=node_class,
-                    reach_provider=reach_provider,
-                    harness_provider=harness_provider,
-                ))
-            except RuntimeError:
-                # No running loop (sync context) — caller can start it later.
-                log.debug("No event loop for heartbeat; skipping background task")
+            # No running loop (sync context) returns False — the caller can
+            # start it later.
+            start_heartbeat(
+                base, token, node_id,
+                registered=True,
+                inference_url=reg["inference_url"] or None,
+                node_class=node_class,
+                reach_provider=reach_provider,
+                harness_provider=harness_provider,
+                token_provider=token_provider,
+            )
 
         log.info("Enrolled endpoint %s (tenant=%s, cert_enrolled=%s, inference=%s %s)",
                  node_id, tenant_id, cert_enrolled, reg["inference_kind"],

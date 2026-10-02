@@ -285,6 +285,112 @@ def _mesh_admin_allowed(method: str, sub: str) -> bool:
     return False
 
 
+# ── This device on the owner's account: the node heartbeat ──────────────────
+#
+# Registering a device (`/mesh/join`, `adk enroll`) starts a heartbeat in the
+# process that registered it. Nothing restarted it: after the daemon's next
+# start the device sat under the account as offline until it was registered
+# again. The stored node record is what says "this device is registered", so the
+# daemon resumes the beat from it.
+
+def _active_access_token() -> str:
+    """The signed-in profile's access token, or "" — read fresh on every call so
+    a sign-in refreshed on disk reaches a heartbeat that is already running."""
+    try:
+        from adk.auth import AuthStore
+
+        prof = AuthStore().get_active_profile() or {}
+        return str(prof.get("access_token") or "")
+    except Exception as exc:  # noqa: BLE001 — a broken auth.json is "not signed in"
+        logger.debug("active profile unreadable: %s", exc)
+        return ""
+
+
+def _stored_node_record() -> dict[str, Any]:
+    """The identity registration persisted on this device, or {}."""
+    try:
+        from adk.fleet_enroll import _load_node_auth
+
+        rec = _load_node_auth()
+    except Exception as exc:  # noqa: BLE001 — unreadable is "not registered"
+        logger.debug("node record unreadable: %s", exc)
+        return {}
+    if not isinstance(rec, dict) or not rec.get("node_id") or rec.get("mode") != "rich":
+        return {}
+    return rec
+
+
+def _remember_node_registration(
+    node_id: str, enroll_base: str, enroll: dict[str, Any],
+) -> bool:
+    """Persist a successful identity registration so the next daemon start can
+    resume its heartbeat. No bearer is written. A legacy (non-identity) record is
+    left alone. Returns True if the record was written."""
+    try:
+        from adk.fleet_enroll import _load_node_auth, _save_node_auth
+
+        existing = _load_node_auth()
+        if not isinstance(existing, dict):
+            existing = {}
+        if existing.get("node_id") and existing.get("mode") != "rich":
+            return False
+        reg = enroll.get("registration") or {}
+        _save_node_auth({
+            **existing,
+            "node_id": node_id,
+            "enroll_base": enroll_base,
+            "tenant_id": str(enroll.get("tenant_id") or existing.get("tenant_id") or ""),
+            "mode": "rich",
+            "inference_url": reg.get("inference_url", ""),
+            "inference_kind": reg.get("inference_kind", "none"),
+            "node_class": reg.get("node_class", "laptop"),
+            "public_url": enroll.get("public_url", "") or existing.get("public_url", ""),
+        })
+        return True
+    except Exception as exc:  # noqa: BLE001 — never fail a join on bookkeeping
+        logger.warning("could not persist the node registration: %s", exc)
+        return False
+
+
+def resume_node_heartbeat(api_key: str = "") -> dict[str, Any]:
+    """Resume the node heartbeat on daemon start when this device is registered.
+
+    Uses the signed-in profile's token (re-read every beat), falling back to the
+    configured API key. Returns ``{"started", "reason", "node_id"}``; a device
+    that was never registered is ``started: False`` and nothing is sent.
+    """
+    from adk import enrollment
+
+    token = _active_access_token() or (api_key or "")
+    return enrollment.resume_heartbeat(
+        token,
+        default_base_url=os.getenv(
+            "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
+        ),
+        token_provider=_active_access_token,
+    )
+
+
+def _mesh_join_refusal(step: str, refusal: dict[str, Any]) -> JSONResponse:
+    """A platform 402 / quota answer, passed through as its own result so the
+    desktop can render it instead of a generic failure."""
+    code = refusal["code"]
+    detail = refusal.get("hint") or {
+        "device_quota_exceeded": "this account has reached its device limit",
+        "subscription_required": "this account's plan does not include registering a device",
+    }.get(code, "the platform refused this registration (payment required)")
+    return JSONResponse(status_code=402, content={
+        "ok": False,
+        "code": code,
+        "step": step,
+        "detail": detail,
+        "current": refusal.get("current"),
+        "limit": refusal.get("limit"),
+        "upgrade": refusal.get("upgrade") or {},
+        "platform_status": refusal.get("http_status"),
+    })
+
+
 def _ui_packs_dir() -> str:
     """Drop-in directory for custom UI packs (one folder per pack)."""
     explicit = os.getenv("AITHER_UI_PACKS_DIR", "").strip()
@@ -533,6 +639,13 @@ def create_app(
             await _sync_secrets()
             await _join_aithernet()
             await _rich_enroll_identity()
+            # A registered device keeps beating across daemon restarts. A no-op
+            # when the enrollment above already started the loop.
+            try:
+                _hb = resume_node_heartbeat(config.aither_api_key or "")
+                logger.debug("node heartbeat resume: %s", _hb)
+            except Exception as exc:  # noqa: BLE001 — never blocks boot
+                logger.warning("node heartbeat resume failed: %s", exc)
             await _init_chat_relay()
             await _init_mail_relay()
             await _init_relay_client()
@@ -596,6 +709,11 @@ def create_app(
                     logger.debug("%s cancelled on shutdown", _task_key)
                 except Exception as exc:  # noqa: BLE001 -- shutdown must finish
                     logger.debug("%s ended with %s on shutdown", _task_key, exc)
+        try:
+            from adk import enrollment as _enrollment_mod
+            await _enrollment_mod.stop_heartbeat()
+        except Exception as exc:  # noqa: BLE001 -- shutdown must finish
+            logger.debug("node heartbeat stop failed: %s", exc)
         await _deregister_fleet_endpoint()
         _elysium_relay = _state.get("elysium_relay")
         if _elysium_relay:
@@ -1113,6 +1231,15 @@ def create_app(
         if not _attached and _state.get("mcp_attach_attempts", 0):
             result["degraded"] = ["mcp-gateway-detached: running with built-in tools only"]
 
+        # Is this device being kept online under the owner's account? `running`
+        # says the loop exists; `online` says the platform accepted a recent beat.
+        try:
+            from adk import enrollment as _enrollment_mod
+            result["node_heartbeat"] = _enrollment_mod.heartbeat_status()
+        except Exception as exc:  # noqa: BLE001 -- /health must always answer
+            result["node_heartbeat"] = {"running": False, "online": False,
+                                        "last_error": str(exc)[:200]}
+
         if is_fleet and _state["fleet"]:
             fleet = _state["fleet"]
             result["fleet"] = {
@@ -1426,8 +1553,11 @@ def create_app(
         conductor_url = os.getenv("AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com").rstrip("/")
         import platform as _platform
         relay = _state.get("relay")
+        # A device that is already registered joins as the SAME node, so one
+        # machine stays one entry under the account.
         node_id = (
-            (relay.node_id if relay else "")
+            str(_stored_node_record().get("node_id") or "")
+            or (relay.node_id if relay else "")
             or os.getenv("AITHER_NODE_NAME", "")
             or _platform.node()
         )
@@ -1444,6 +1574,10 @@ def create_app(
             raise HTTPException(
                 status_code=502, detail=f"identity unreachable: {exc.__class__.__name__}",
             )
+        from adk import enrollment as _enrollment
+        _refusal = _enrollment.classify_refusal(r.status_code, r.text)
+        if _refusal:
+            return _mesh_join_refusal("mesh_key", _refusal)
         if r.status_code == 403:
             raise HTTPException(
                 status_code=403,
@@ -1468,10 +1602,15 @@ def create_app(
         #    with the overlay step first, the conductor answered 401 every time.
         tenant_id = ""
         node_bearer = ""
+        enroll: dict[str, Any] = {}
         try:
-            from adk import enrollment as _enrollment
+            # enable_heartbeat: the device is online from here on, whatever the
+            # overlay step below does. The token is re-read every beat.
             enroll = await asyncio.wait_for(
-                _enrollment.rich_enroll(idp, token, node_id, enable_heartbeat=True),
+                _enrollment.rich_enroll(
+                    idp, token, node_id, enable_heartbeat=True,
+                    token_provider=_active_access_token,
+                ),
                 timeout=60,
             )
             tenant_id = str(enroll.get("tenant_id") or "")
@@ -1482,6 +1621,44 @@ def create_app(
             })
         except (asyncio.TimeoutError, RuntimeError, OSError, httpx.HTTPError) as exc:
             steps.append({"step": "identity_enroll", "ok": False, "error": str(exc)[:200]})
+        if not enroll.get("enrolled"):
+            _refusal = _enrollment.classify_refusal(
+                enroll.get("http_status"), enroll.get("body", ""),
+            )
+            if _refusal:
+                return _mesh_join_refusal("identity_enroll", _refusal)
+        else:
+            # So the next daemon start resumes the heartbeat without a re-join.
+            _remember_node_registration(node_id, idp, enroll)
+            # The device is registered and beating: that is what "Register this
+            # device" promises. Only the overlay needs the tailscale binary, so a
+            # missing one skips the overlay alone — checked here, before the
+            # conductor onboard, instead of failing after it as a generic
+            # "mesh join failed".
+            from adk import mesh as _mesh_pre
+            if not _mesh_pre._tailscale():
+                _overlay = {
+                    "ok": False,
+                    "code": "tailscale_missing",
+                    "detail": "This device is registered. Tailscale is not installed, "
+                              "so it has not joined the mesh network yet. Install "
+                              "Tailscale, then register this device again.",
+                    "install_url": "https://tailscale.com/download",
+                }
+                steps.append({
+                    "step": "overlay_join", "ok": False, "code": _overlay["code"],
+                    "error": "tailscale is not installed",
+                })
+                return {
+                    "ok": True,
+                    "registered": True,
+                    "node_id": node_id,
+                    "overlay_ip": "",
+                    "transport": "",
+                    "tenant_id": tenant_id,
+                    "overlay": _overlay,
+                    "steps": steps,
+                }
         if not node_bearer:
             raise HTTPException(
                 status_code=502,
@@ -1523,10 +1700,12 @@ def create_app(
 
         return {
             "ok": True,
+            "registered": True,
             "node_id": node_id,
             "overlay_ip": overlay_ip,
             "transport": transport,
             "tenant_id": tenant_id,
+            "overlay": {"ok": True, "overlay_ip": overlay_ip},
             "steps": steps,
         }
 
@@ -5144,6 +5323,8 @@ def create_app(
             idp_url = os.getenv("AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"))
             relay = _state.get("relay")
             node_id = relay.node_id if relay else os.getenv("AITHER_NODE_NAME", "") or platform.node()
+            # Same rule as /mesh/join: an already-registered device stays one node.
+            node_id = str(_stored_node_record().get("node_id") or "") or node_id
 
             result = await enrollment.rich_enroll(
                 idp_url, config.aither_api_key, node_id, enable_heartbeat=True,
