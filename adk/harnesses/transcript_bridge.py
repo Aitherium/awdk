@@ -55,14 +55,14 @@ def _clip(value: Any, limit: int = MAX_FIELD) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _tool_summary(tool_input: Any) -> Dict[str, str]:
+def _tool_summary(tool_input: Any, limit: int = MAX_FIELD) -> Dict[str, str]:
     """The one or two fields that make a tool call READABLE in a room row."""
     if not isinstance(tool_input, dict):
         return {}
     out: Dict[str, str] = {}
     for key in ("file_path", "command", "pattern", "path", "url", "description", "prompt"):
         if tool_input.get(key):
-            out[key] = _clip(tool_input[key])
+            out[key] = _clip(tool_input[key], limit)
             break
     return out
 
@@ -130,8 +130,12 @@ def session_topic(prompt: str, limit: int = 72) -> str:
 
 
 def events_from_entry(entry: Dict[str, Any], session_id: str, cwd: str,
-                      topic: str = "", claude_name: str = "") -> List[Dict[str, Any]]:
+                      topic: str = "", claude_name: str = "",
+                      max_field: int = MAX_FIELD) -> List[Dict[str, Any]]:
     """Map one Claude Code transcript entry onto zero or more AitherEvents.
+
+    ``max_field`` is the per-field clip. A room row keeps the default; the
+    transcript route (``transcript_tail``) raises it so a reply reads whole.
 
     ``pillar`` is left absent on purpose — the room derives it from the event type, so
     this bridge never carries a second copy of the pillar vocabulary.
@@ -170,7 +174,7 @@ def events_from_entry(entry: Dict[str, Any], session_id: str, cwd: str,
     # discriminator is the shape and not the role -- same trap hook_common.py documents.
     if kind == "user" and isinstance(content, str) and content.strip():
         out.append({**base, "type": "classify", "stage": "transcript.user",
-                    "payload": {"prompt": _clip(content), "cwd": _clip(cwd)}})
+                    "payload": {"prompt": _clip(content, max_field), "cwd": _clip(cwd)}})
         return out
 
     if kind != "assistant" or not isinstance(content, list):
@@ -182,19 +186,19 @@ def events_from_entry(entry: Dict[str, Any], session_id: str, cwd: str,
         btype = block.get("type")
         if btype == "tool_use":
             payload = {"tool": _clip(block.get("name"), 80), "cwd": _clip(cwd)}
-            payload.update(_tool_summary(block.get("input")))
+            payload.update(_tool_summary(block.get("input"), max_field))
             out.append({**base, "type": "tool_call", "stage": "transcript.assistant",
                         "payload": payload})
         elif btype == "thinking":
             text = block.get("thinking") or block.get("text") or ""
             if str(text).strip():
                 out.append({**base, "type": "thinking", "stage": "transcript.assistant",
-                            "payload": {"text": _clip(text)}})
+                            "payload": {"text": _clip(text, max_field)}})
         elif btype == "text":
             text = block.get("text") or ""
             if str(text).strip():
                 out.append({**base, "type": "message", "stage": "transcript.assistant",
-                            "payload": {"text": _clip(text)}})
+                            "payload": {"text": _clip(text, max_field)}})
     return out
 
 

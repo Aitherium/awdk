@@ -1803,6 +1803,52 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "delivered_at": "next-prompt",
         }
 
+    @app.get("/sessions/{session_id}/transcript")
+    def session_transcript(
+        session_id: str, request: Request,
+        since: int = Query(default=-1, ge=-1),
+        limit: int = Query(default=256 * 1024, ge=1024, le=1024 * 1024),
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """A bounded slice of a session's transcript, as harness events.
+
+        ``/events`` and ``/stream`` resolve through the daemon's own manager, so a
+        DISCOVERED tab had no readable body. This resolves through the unified
+        directory instead and reads the transcript file the row names -- the path
+        is the daemon's own discovery, never something the caller supplies.
+
+        OWNER ONLY. A transcript carries whatever the owner pasted into the
+        session, so the bearer alone is not enough: the caller must be the owner
+        at this box or the owner verified at the far end of the link, the same
+        rule that decides who writes an OWNER message. A scoped peer or agent
+        token that can list ``/sessions`` is refused 403.
+
+        ``since`` is the byte cursor a previous answer returned as ``next``;
+        omitted, the answer is the tail. ``limit`` bounds the bytes of file one
+        read consumes; ``more`` says another read has complete lines waiting.
+        """
+        from adk.harnesses.transcript_tail import TranscriptUnavailable, read_transcript
+
+        if not _speaks_as_owner(principal, request):
+            raise HTTPException(
+                status_code=403,
+                detail=f"principal {principal.id!r} may not read a session transcript",
+            )
+        row = _unified_row_by_id(session_id)
+        path = str(row.get("transcript_path") or "")
+        if not path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"session {session_id!r} has no transcript on this device",
+            )
+        try:
+            result = read_transcript(
+                path, str(row["id"]), str(row.get("cwd") or ""), since=since, limit=limit,
+            )
+        except TranscriptUnavailable as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"session_id": row["id"], "status": row.get("status") or "", **result}
+
     @app.post("/sessions/{session_id}/focus")
     def focus_session_route(
         session_id: str, request: Request,
