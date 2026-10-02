@@ -4,8 +4,11 @@ setup
     Installs the ``awsh@awsh`` plugin that ships inside this package
     (``adk/harnesses/claude_mod``) through the ``claude plugin`` CLI, or -- when the
     CLI is absent -- by merging ``extraKnownMarketplaces`` + ``enabledPlugins`` into
-    ``~/.claude/settings.json``. Then runs ``awsettings preset apply aitherium-claude``
-    when awsettings is installed. ``--dry-run`` prints the plan and changes nothing.
+    ``~/.claude/settings.json`` (atomically, after a timestamped backup). Then runs
+    ``awsettings preset apply aitherium-claude`` when the installed awsettings has the
+    ``preset`` verb and knows that preset (probed with the read-only ``preset list``);
+    an older awsettings is skipped with a line saying why. ``--dry-run`` prints the
+    plan and changes nothing.
 
 doctor (a checker: exit 0 clean, 1 violation, 2 could-not-judge)
     CCD001  autoMode in a project/local settings file (Claude Code reads autoMode only
@@ -15,8 +18,13 @@ doctor (a checker: exit 0 clean, 1 violation, 2 could-not-judge)
     CCD003  enabledMcpjsonServers names a server absent from the nearest .mcp.json, or
             omits one present there (neither enabled nor disabled)
     CCD004  a command hook on PreToolUse/PostToolUse whose matcher hits Bash (or all
-            tools) with a median runtime over the budget on a harmless payload
-    CCD005  a settings key Claude Code does not know (typo or a dead key)
+            tools) with a median runtime over the budget on a harmless payload. The
+            hooks really run, so they run SANDBOXED: a throwaway HOME, and
+            AWSETTINGS_HOOKS_DISABLED / AWRELAY_HOOKS_DISABLED set so those hooks
+            return at once (no settings push, no relay inbox drain).
+    CCD005  a settings key Claude Code does not know (typo or a dead key). Judged
+            against the shipped key list alone; the installed binary is consulted
+            only for a hint, never to excuse a key (every common word is in it).
     CCD006  voice enabled but no claude.ai login or no audio capture device (warn only)
 
     ``--self-test`` builds fixtures that must trip CCD001-CCD005 and a clean one that
@@ -42,9 +50,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 # --------------------------------------------------------------------------- keys
-# Top-level settings keys Claude Code declares in its settings schema. Extracted from
-# the 2.1.x schema; the doctor ALSO asks the installed binary, so a key added upstream
-# after this list was written is not reported as unknown on a machine that has it.
+# Top-level settings keys Claude Code declares in its settings schema (extracted from
+# the 2.1.x settings reference). This list IS the judgement: a key outside it and
+# outside INTENTIONAL_CUSTOM_KEYS is reported. The installed binary is not asked to
+# excuse a key -- a grep for `<key>:` in a 200 MB bundle finds `mcpServers:` and
+# `apiKey:` too, so every common dead key read as known.
 KNOWN_SETTINGS_KEYS = frozenset(
     """
 $schema apiKeyHelper proxyAuthHelper awsCredentialExport awsAuthRefresh gcpAuthRefresh
@@ -93,7 +103,23 @@ autoUploadSessions inputNeededNotifEnabled agentPushNotifEnabled autoMode
 )
 
 # Keys that are ours on purpose. Claude Code ignores them; our tools read them.
+# `adk claude doctor --allow-key K` adds more for one run.
 INTENTIONAL_CUSTOM_KEYS = frozenset({"aitherLane"})
+
+# Keys people commonly put in settings.json that Claude Code does not read there.
+# Each carries the hint the report prints.
+DEAD_KEYS: dict[str, str] = {
+    "mcpServers": "MCP servers belong in .mcp.json or ~/.claude.json, not settings.json",
+    "apiKey": "use apiKeyHelper or the ANTHROPIC_API_KEY env var",
+    "allowedTools": "use permissions.allow",
+    "disallowedTools": "use permissions.deny",
+    "ignorePatterns": "use permissions.deny with Read(...) rules",
+    "customApiKeyResponses": "lives in ~/.claude.json, not settings.json",
+    "dangerouslySkipPermissions": "a CLI flag, not a setting (see permissions.defaultMode)",
+    "autoApprove": "use permissions.allow",
+    "systemPrompt": "use CLAUDE.md or --append-system-prompt",
+    "maxTokens": "set CLAUDE_CODE_MAX_OUTPUT_TOKENS in env",
+}
 
 HOT_EVENTS = ("PreToolUse", "PostToolUse")
 DEFAULT_BUDGET_MS = 300
@@ -337,29 +363,60 @@ def time_hook(
     if event == "PostToolUse":
         payload["tool_response"] = {"stdout": "ccd-doctor\n", "stderr": "", "interrupted": False}
     data = json.dumps(payload).encode()
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(cwd), AITHER_DOCTOR_PROBE="1")
     argv = _hook_shell(command)
     samples: list[float] = []
-    for _ in range(runs):
-        t0 = time.perf_counter()
-        try:
-            subprocess.run(
-                argv,
-                input=data,
-                cwd=str(cwd),
-                env=env,
-                shell=isinstance(argv, str),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=HOOK_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            samples.append(HOOK_TIMEOUT_S * 1000.0)
-            continue
-        except OSError as exc:
-            return None, str(exc)
-        samples.append((time.perf_counter() - t0) * 1000.0)
+    # ignore_cleanup_errors: a hook can leave a child holding a file in the sandbox
+    # (Windows refuses the delete); that must not turn a measurement into a traceback.
+    with tempfile.TemporaryDirectory(
+        prefix="ccd-hook-home-", ignore_cleanup_errors=True
+    ) as sandbox:
+        env = probe_env(cwd, Path(sandbox))
+        for _ in range(runs):
+            ms = _run_once(argv, data, cwd, env)
+            if isinstance(ms, str):
+                return None, ms
+            samples.append(ms)
     return statistics.median(samples), ""
+
+
+#: Env vars the aw* hook entrypoints honour: set, the hook returns at once.
+HOOK_DISABLE_ENV = ("AWSETTINGS_HOOKS_DISABLED", "AWRELAY_HOOKS_DISABLED")
+
+
+def probe_env(cwd: Path, sandbox_home: Path) -> dict[str, str]:
+    """The env a timed hook runs in: the host's PATH, a throwaway HOME, and every
+    known sync/relay hook switched off -- timing a hook must not push settings
+    off-machine or drain a relay inbox."""
+    env = dict(os.environ)
+    for k in ("HOME", "USERPROFILE"):
+        env[k] = str(sandbox_home)
+    if sys.platform == "win32":
+        env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(str(sandbox_home))
+    env["CLAUDE_PROJECT_DIR"] = str(cwd)
+    for k in HOOK_DISABLE_ENV:
+        env[k] = "1"
+    return env
+
+
+def _run_once(argv: list[str] | str, data: bytes, cwd: Path, env: dict) -> float | str:
+    """Wall ms of one run, or the error text when it could not start."""
+    t0 = time.perf_counter()
+    try:
+        subprocess.run(
+            argv,
+            input=data,
+            cwd=str(cwd),
+            env=env,
+            shell=isinstance(argv, str),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=HOOK_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return HOOK_TIMEOUT_S * 1000.0
+    except OSError as exc:
+        return str(exc)
+    return (time.perf_counter() - t0) * 1000.0
 
 
 def check_hook_latency(scopes: list[Scope], cwd: Path, budget_ms: int, rep: Report) -> None:
@@ -418,27 +475,39 @@ def keys_known_by_binary(keys: set[str], binary: Path | None) -> set[str]:
     return found
 
 
-def check_unknown_keys(scopes: list[Scope], rep: Report, binary: Path | None) -> None:
+def check_unknown_keys(
+    scopes: list[Scope],
+    rep: Report,
+    binary: Path | None,
+    allow_keys: Iterable[str] = (),
+) -> None:
+    """Every key outside KNOWN_SETTINGS_KEYS + the allowlists is a finding. The binary
+    only adds a hint ("it appears in the installed binary") -- it never excuses a key."""
+    allowed = KNOWN_SETTINGS_KEYS | INTENTIONAL_CUSTOM_KEYS | frozenset(allow_keys)
+    rep.notes.append(
+        "CCD005: allowlisted custom keys: "
+        + ", ".join(sorted(INTENTIONAL_CUSTOM_KEYS | frozenset(allow_keys)))
+    )
     unknown_by_scope: dict[str, set[str]] = {}
     for sc in scopes:
         if sc.data:
-            u = set(sc.data) - KNOWN_SETTINGS_KEYS - INTENTIONAL_CUSTOM_KEYS
+            u = set(sc.data) - allowed
             if u:
                 unknown_by_scope[sc.name + " " + str(sc.path)] = u
     all_unknown = set().union(*unknown_by_scope.values()) if unknown_by_scope else set()
-    upstream = keys_known_by_binary(all_unknown, binary)
-    if upstream:
-        rep.notes.append(
-            f"CCD005: {sorted(upstream)} not in the static list but the installed "
-            "Claude Code declares them -- add them to KNOWN_SETTINGS_KEYS"
-        )
+    in_binary = keys_known_by_binary(all_unknown - set(DEAD_KEYS), binary)
     for where, u in unknown_by_scope.items():
-        for k in sorted(u - upstream):
-            rep.add(
-                "CCD005",
-                f"unknown settings key '{k}' in {where} (Claude Code ignores it; "
-                "if intentional add it to INTENTIONAL_CUSTOM_KEYS)",
-            )
+        for k in sorted(u):
+            if k in DEAD_KEYS:
+                why = f"dead key: {DEAD_KEYS[k]}"
+            elif k in in_binary:
+                why = (
+                    "the installed binary mentions it -- if it is a new upstream key, add "
+                    "it to KNOWN_SETTINGS_KEYS"
+                )
+            else:
+                why = "Claude Code ignores it; if intentional, allowlist it with --allow-key"
+            rep.add("CCD005", f"unknown settings key '{k}' in {where} ({why})")
 
 
 def _voice_enabled(scopes: list[Scope]) -> bool:
@@ -553,6 +622,7 @@ def run_doctor(
     binary: Path | None = None,
     use_binary: bool = True,
     probe_devices: bool = True,
+    allow_keys: Iterable[str] = (),
 ) -> Report:
     rep = Report()
     project = find_project_root(cwd)
@@ -576,7 +646,10 @@ def run_doctor(
     else:
         rep.notes.append("CCD004: skipped (--no-timing)")
     check_unknown_keys(
-        scopes, rep, binary if binary is not None else (_claude_binary() if use_binary else None)
+        scopes,
+        rep,
+        binary if binary is not None else (_claude_binary() if use_binary else None),
+        allow_keys,
     )
     check_voice(scopes, home, rep, probe_devices)
     return rep
@@ -688,6 +761,16 @@ def self_test() -> int:
                 "clean fixture not clean: "
                 + "; ".join(f"{f.code} {f.message}" for f in rep.findings)
             )
+        # --- a dead key is reported even when the installed binary mentions it
+        fake_bin = root / "fake-claude-binary"
+        fake_bin.write_bytes(b"x" * 64 + b"mcpServers:{}apiKey:''" + b"x" * 64)
+        _write(home / ".claude" / "settings.json", {"mcpServers": {}, "aitherLane": "x"})
+        rep = run_doctor(
+            home, proj, timing=False, managed=nomanaged, binary=fake_bin, probe_devices=False
+        )
+        if not any(f.code == "CCD005" and "mcpServers" in f.message for f in rep.findings):
+            failures.append("dead key excused because the binary mentions it")
+        _write(home / ".claude" / "settings.json", {"aitherLane": "x"})
         # --- unreadable settings: could-not-judge, never clean
         (proj / ".claude" / "settings.json").write_text("{not json", encoding="utf-8")
         rep = run_doctor(
@@ -699,7 +782,7 @@ def self_test() -> int:
         print(f"SELF-TEST FAIL: {f}")
     print(
         "claude doctor self-test: "
-        + ("PASS (7 arms)" if not failures else f"FAIL ({len(failures)})")
+        + ("PASS (8 arms)" if not failures else f"FAIL ({len(failures)})")
     )
     return 0 if not failures else 1
 
@@ -719,6 +802,61 @@ def _merge_user_settings(home: Path, src: Path) -> dict:
     }
     data.setdefault("enabledPlugins", {})[PLUGIN_ID] = True
     return data
+
+
+def atomic_write_json(path: Path, obj: Any) -> Path | None:
+    """Write `obj` to `path` atomically (temp file in the same dir + os.replace), after
+    copying any existing file to `<name>.bak-adk-setup-<UTC timestamp>`. Returns the
+    backup path (None when there was nothing to back up). A crash mid-write leaves the
+    old file intact; a second run never overwrites the first run's backup."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup: Path | None = None
+    if path.is_file():
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        backup = path.with_name(f"{path.name}.bak-adk-setup-{stamp}")
+        n = 1
+        while backup.exists():
+            backup = path.with_name(f"{path.name}.bak-adk-setup-{stamp}-{n}")
+            n += 1
+        shutil.copy2(path, backup)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return backup
+
+
+def awsettings_preset_support(aws: str, preset: str = AWSETTINGS_PRESET) -> str:
+    """'' when `aws` has the `preset` verb AND knows `preset`; otherwise why not.
+    Probed with `awsettings preset list`, which is read-only."""
+    try:
+        p = subprocess.run(
+            [aws, "preset", "list"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"could not run `awsettings preset list`: {exc}"
+    out = p.stdout + p.stderr
+    if p.returncode != 0:
+        return (
+            "the installed awsettings has no `preset` verb (upgrade awsettings to get it)"
+            if "invalid choice" in out
+            else f"`awsettings preset list` exited {p.returncode}: {out.strip()[-200:]}"
+        )
+    if not any(line.split(" ", 1)[0] == preset for line in p.stdout.splitlines()):
+        return f"the installed awsettings does not know the preset {preset!r}"
+    return ""
 
 
 def run_setup(home: Path, dry_run: bool = False, use_cli: bool = True) -> int:
@@ -768,12 +906,16 @@ def run_setup(home: Path, dry_run: bool = False, use_cli: bool = True) -> int:
             except ValueError as exc:
                 print(f"setup: {path} is not valid JSON ({exc}); refusing to rewrite it")
                 return 2
-            if path.is_file():
-                shutil.copy2(path, path.with_suffix(".json.bak-adk-setup"))
-            _write(path, data)
-            actions.append(f"merged {PLUGIN_ID} into {path} (backup .bak-adk-setup)")
+            backup = atomic_write_json(path, data)
+            actions.append(
+                f"merged {PLUGIN_ID} into {path}"
+                + (f" (backup {backup.name})" if backup else "")
+            )
     aws = shutil.which("awsettings")
-    if aws:
+    why_not = awsettings_preset_support(aws) if aws else ""
+    if aws and why_not:
+        actions.append(f"skipped: awsettings preset apply {AWSETTINGS_PRESET} -- {why_not}")
+    elif aws:
         argv = [aws, "preset", "apply", AWSETTINGS_PRESET]
         if dry_run:
             actions.append(f"would run: awsettings preset apply {AWSETTINGS_PRESET}")
@@ -820,6 +962,13 @@ def add_arguments_doctor(p) -> None:
     p.add_argument("--cwd", default="", help="Project directory to judge (default: current)")
     p.add_argument("--json", action="store_true", help="Machine-readable output")
     p.add_argument("-v", "--verbose", action="store_true", help="Also print notes")
+    p.add_argument(
+        "--allow-key",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="CCD005: a custom settings key that is intentional (repeatable)",
+    )
 
 
 def cmd_setup(args) -> int:
@@ -839,6 +988,7 @@ def cmd_doctor(args) -> int:
         cwd,
         budget_ms=int(getattr(args, "budget_ms", DEFAULT_BUDGET_MS)),
         timing=not getattr(args, "no_timing", False),
+        allow_keys=list(getattr(args, "allow_key", None) or []),
     )
     print_report(
         rep,
