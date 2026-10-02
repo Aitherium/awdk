@@ -104,8 +104,17 @@ class AgenticEngineMixin:
                 from adk.packs.gobbonet.campaign_memory import (
                     register_campaign_tools,
                 )
+                # A realm writes its own hash-chained log; when one is configured, recall
+                # reads it beside the notes. Absent or unreadable is a state, not an error:
+                # the source reports why and the pen works exactly as before.
+                try:
+                    from adk.packs.gobbonet.realm_journal import realm_journal_from_env
+                    realm_journal = realm_journal_from_env()
+                except Exception:  # noqa: BLE001 - never let a log stop a chat
+                    realm_journal = None
                 register_campaign_tools(self._agent,
-                                        self._get_campaign_memory())
+                                        self._get_campaign_memory(),
+                                        journal=realm_journal)
                 # And the mod-pack pair: a character card people already trade
                 # imports as SCOPED notes, and what the harness learns exports
                 # back into one. Same fail-soft contract as above.

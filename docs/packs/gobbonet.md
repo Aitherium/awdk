@@ -1,6 +1,6 @@
 # GobboPack
 
-`gobbonet` · version `3.8.41` · 47.4 KB
+`gobbonet` · version `3.8.41` · 58.3 KB
 
 **[Download gobbonet-3.8.41.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.41/gobbonet-3.8.41.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.41/gobbonet-3.8.41.sha256)
 
@@ -56,6 +56,7 @@ cards.py
 catalog.py
 launch.py
 models.py
+realm_journal.py
 retrieval.py
 server.py
 ```
@@ -219,6 +220,68 @@ erase what the graph knew about it. A file-based indexer sees one file shrink
 and another grow, discards the old node, and loses its history at the exact
 moment that is most confusing.
 
+### Reading a realm: the card and the journal
+
+A realm engine can hand the pack two things, and the pack consumes both without the engine
+knowing anything about it.
+
+**The character card** — `GET /api/npc/:key/card` returns a character card of the
+SillyTavern family plus, optionally, a lorebook built from the world gazetteer and the
+chronicle. The fields the pack round-trips are exactly these, and `cards.py` carries a
+worked fixture of the shape (`ENGINE_CARD_FIXTURE`, `ENGINE_LOREBOOK_FIXTURE`):
+
+| field | kind | where it lands |
+|---|---|---|
+| `persona_id` | identity | kept verbatim; the key every avatar product joins on |
+| `name` | identity | the scope the character's notes live at |
+| `tags` | identity | kept verbatim (a list, and it comes back a list) |
+| `rating` | identity | kept verbatim — a rating that vanishes is a content gate that opens |
+| `description` | prose | notes only that character knows |
+| `personality` | prose | notes only that character knows |
+| `scenario` | prose | notes only that character knows |
+| `first_mes` | prose | notes only that character knows |
+| `mes_example` | prose | notes only that character knows |
+| `character_book` / `startingLore` | lore | notes EVERYONE knows (the world scope) |
+
+`card_to_memory(card, memory)` imports it and `memory_to_card(name, memory)` hands it back;
+`canonical_card()` is the comparison form, and the round trip is byte-stable in that form.
+Anything outside the table is reported in `dropped`, never silently carried or silently
+lost — including `avatar`, which is the author's image and is never fetched or re-emitted.
+Prose is stored with its surrounding whitespace stripped, which is why byte-stability is
+promised over the canonical form rather than over the raw bytes.
+
+Check it yourself:
+
+```bash
+python -m adk.packs.gobbonet.cards      # round-trips the engine's card; 0 pass, 1 broken, 2 could not run
+```
+
+**The journal** — a realm writes every event into `<dataDir>/realm/journal.jsonl`: one JSON
+object per line, hash-chained, `hash = sha256(prev + canonical(row_without_hash))` where
+canonical means sorted keys, no whitespace, non-ASCII literal. Point the pack at it with
+`REALM_JOURNAL_PATH` and `campaign_recall` reads it beside the notes: notes are what the
+table decided, journal rows are what the world recorded.
+
+Rows of kind `converse`, `npc.act` and `chronicle` are indexed; everything else is
+machinery and is skipped. A row's persona is read from its payload in this order —
+`persona_id`, `npc`, `who`, `speaker`, `target`, then the row's `actor` — and its text from
+`text`, `line`, `say`, `reply`, `summary`, `entry`, `action`. A `chronicle` row belongs to
+the world whatever it names, so it reaches every character; a `converse` row belongs to one
+persona and reaches nobody else.
+
+Three promises, each one a test:
+
+- **It never writes.** No repair, no re-chaining, no compaction. The realm owns the file.
+- **A broken chain is refused, not cleaned.** An edited, truncated or reordered journal
+  raises rather than indexing the part that still verifies — and a source that had already
+  read a good journal drops what it had rather than serving it as current.
+- **Personas do not cross.** A recall reads one persona's rows plus the world's, and a
+  query matching another character's lines returns nothing rather than something plausible.
+
+🚩 One number rule the engine side documents and the reader depends on: **a row must never
+carry an integral float.** JSON has one number type, and a reward written as `1.0` on one
+side and `1` on the other chains to two different hashes.
+
 ### Optional: linking to an account
 
 Everything above runs with no account. If you *want* secrets on two machines,
@@ -304,5 +367,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `1fcfb3d37853414424629ef5e5b98b4d480051ea5f4df0bd5abab728b5ecec1d`  
+sha256 `3f763365ad34f2dd3b10cccbfcae7f0f371d400115a32efc8992b7333c0f7ca3`  
 Built from `v3.8.41` (adk 3.8.41). [All packs](../packs.md)

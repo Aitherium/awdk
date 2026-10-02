@@ -221,7 +221,41 @@ def _norm_character(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:48].lower()
 
 
-def register_campaign_tools(agent: Any, memory: CampaignMemory) -> int:
+def _journal_section(journal: Any, character: str, scene: str,
+                     k: int = 5) -> Dict[str, Any]:
+    """What the realm's own log remembers about this character.
+
+    The journal is a SECOND source beside the notes, never a replacement: notes are what
+    the table decided, journal rows are what the world recorded. A journal that cannot be
+    trusted reports its refusal here — an unreadable or tampered log must not read as a
+    character with no history.
+    """
+    if journal is None:
+        return {"ok": False, "error": "no realm journal configured"}
+    try:
+        if not getattr(journal, "loaded", False) and hasattr(journal, "load_soft"):
+            journal.load_soft()
+        if getattr(journal, "error", None):
+            return {"ok": False, "error": str(journal.error)}
+        # The journal keys on the engine's persona id; campaign memory lowercases and
+        # substitutes. Try the id as written first, so a cast id with capitals is not
+        # silently missed, then the normalised form.
+        raw = (character or "").strip()
+        for key in [k2 for k2 in (raw, _norm_character(character)) if k2 and k2 != WORLD]:
+            hits = (journal.recall(key, scene, k=k) if (scene or "").strip()
+                    else journal.recent(key, k=k))
+            if hits:
+                return {"ok": True, "persona_id": key, "entries": hits,
+                        "source": str(getattr(journal, "path", ""))}
+        return {"ok": True, "persona_id": raw or WORLD, "entries": [],
+                "source": str(getattr(journal, "path", ""))}
+    except Exception as exc:  # noqa: BLE001 - a bad journal must not kill the turn
+        log.debug("realm journal recall failed: %s", exc)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def register_campaign_tools(agent: Any, memory: CampaignMemory,
+                            journal: Any = None) -> int:
     """Give the agent the pen: it records and consults the notes itself."""
 
     def campaign_note(text: str, known_by: str = "*", arc: str = "*") -> dict:
@@ -230,13 +264,20 @@ def register_campaign_tools(agent: Any, memory: CampaignMemory) -> int:
         other characters structurally cannot see it."""
         return memory.note(text, known_by=known_by, arc=arc)
 
-    def campaign_recall(character: str = "*", arc: str = "*") -> dict:
+    def campaign_recall(character: str = "*", arc: str = "*",
+                        scene: str = "") -> dict:
         """List the durable notes ONE character knows (their own plus world
-        state). Ask before writing a scene from that character's viewpoint."""
+        state). Ask before writing a scene from that character's viewpoint.
+        When a realm journal is configured, also returns what the world itself
+        recorded about them — pass `scene` to search it by keyword, or leave it
+        empty for their latest entries."""
         if not memory.available():
             return {"ok": False, "error": memory.unavailable_reason()}
-        return {"ok": True, "character": _norm_character(character),
-                "notes": memory.notes_for(character, arc=arc)}
+        out: Dict[str, Any] = {"ok": True, "character": _norm_character(character),
+                               "notes": memory.notes_for(character, arc=arc)}
+        if journal is not None:
+            out["journal"] = _journal_section(journal, character, scene)
+        return out
 
     n = 0
     for fn in (campaign_note, campaign_recall):
