@@ -79,7 +79,10 @@ def _ctx(url: str) -> Optional[ssl.SSLContext]:
     if not url.startswith("https"):
         return None
     ctx = ssl.create_default_context()
-    bundle = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+    # AITHER_DECIDE_CA scopes the internal CA to this client: a process-wide SSL_CERT_FILE
+    # pointed at the 2-cert fleet chain would break every public https call beside it.
+    bundle = (os.environ.get("AITHER_DECIDE_CA") or os.environ.get("SSL_CERT_FILE")
+              or os.environ.get("REQUESTS_CA_BUNDLE"))
     if bundle and os.path.isfile(bundle):
         ctx.load_verify_locations(bundle)
     elif url.startswith("https://127.0.0.1") or url.startswith("https://localhost"):
@@ -137,6 +140,11 @@ def _shape(d: Dict[str, Any]) -> Decision:
 
 LOCAL = "local"
 _INSTALL_HINT = 'no local decision backend either: pip install "awdk[decide]"'
+_MULTI_IS_DOOR_ONLY = (
+    "decide_multi needs the door: it keys N questions on ONE descriptor of the "
+    "context and shares a single brain prompt, which the local backend cannot "
+    "do (it would be N calls under N keys). Locally use decide() or decide_batch()"
+)
 _EVIDENCE_N = re.compile(r"evidence:\s*(\d+)\s+resolved")
 # decision ids answered locally in THIS process, so outcome() routes them back
 # to the ledger that issued them. Bounded: past the cap the door is tried first
@@ -338,6 +346,80 @@ def decide_batch(
         return _local_batch(fork, items, down)
 
 
+@dataclass
+class MultiDecision:
+    """One context, many typed answers. `answers[name]` is a Decision; teach each
+    one through `outcome(answers[name].decision_id, reward)`."""
+
+    answers: Dict[str, Decision]
+    state_key: str
+    fork: str
+    from_evidence: int = 0
+    from_model: int = 0
+    llm_calls: int = 0
+    unlearnable: List[str] = field(default_factory=list)
+    latency_ms: float = 0.0
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    def __getitem__(self, name: str) -> Decision:
+        return self.answers[name]
+
+
+def decide_multi(
+    fork: str,
+    context: str,
+    questions: Sequence[Dict[str, Any]],
+    *,
+    min_confidence: float = 0.0,
+    timeout: float = 90.0,
+) -> MultiDecision:
+    """Ask several typed questions of ONE messy context in one call.
+
+        r = decide_multi("risk", blob, [
+            {"name": "fraud", "kind": "yesno"},
+            {"name": "churn", "kind": "score", "options": ["low", "mid", "high"]},
+            {"name": "escalation", "kind": "choice", "options": ["none", "tier1", "tier2"]},
+        ])
+        r["fraud"].answer, r["fraud"].source     # engine = learned, llm = a model was asked
+        outcome(r["escalation"].decision_id, +1)  # teach that one question
+
+    The door keys every question on ONE stable descriptor of the context (its
+    shape plus a hash of the normalised text -- timestamps and ids do not count),
+    so a taught question answers from evidence while the cold ones share a
+    single brain prompt (`llm_calls` is 0 or 1, never N). A `score` question
+    with no options is answered but cannot be learned; it is listed in
+    `unlearnable` -- give it options to make it a scale the door can learn."""
+    qs = []
+    for q in questions:
+        item = {
+            "name": str(q.get("name", "")).strip(),
+            "kind": q.get("kind", "choice"),
+            "question": q.get("question", ""),
+            "min_confidence": q.get("min_confidence", min_confidence),
+        }
+        if q.get("options") is not None:
+            item["options"] = [str(o) for o in q["options"]]
+        qs.append(item)
+    body = {"context": context, "fork": _domain(fork), "questions": qs}
+    if _local_only():
+        raise DecideUnavailableError(_MULTI_IS_DOOR_ONLY)
+    try:
+        d = _post("/decide/multi", body, timeout)
+    except DecideUnavailableError as down:
+        raise DecideUnavailableError(f"{down}; {_MULTI_IS_DOOR_ONLY}") from None
+    return MultiDecision(
+        answers={str(k): _shape(v) for k, v in (d.get("answers") or {}).items()},
+        state_key=str(d.get("state_key", "")),
+        fork=str(d.get("fork", fork)),
+        from_evidence=int(d.get("from_evidence", 0) or 0),
+        from_model=int(d.get("from_model", 0) or 0),
+        llm_calls=int(d.get("llm_calls", 0) or 0),
+        unlearnable=list(d.get("unlearnable") or []),
+        latency_ms=float(d.get("latency_ms", 0.0) or 0.0),
+        raw=d,
+    )
+
+
 def outcome(decision_id: str, reward: float, *, timeout: float = 15.0) -> Dict[str, Any]:
     """Teach the door: reward in -1..1 for the decision you acted on. An id the
     local backend issued goes back to it, wherever the door is."""
@@ -445,9 +527,11 @@ def stats(timeout: float = 15.0) -> Dict[str, Any]:
 
 __all__ = [
     "Decision",
+    "MultiDecision",
     "DecideUnavailableError",
     "decide",
     "decide_batch",
+    "decide_multi",
     "outcome",
     "teach",
     "judge",

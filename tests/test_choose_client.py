@@ -178,3 +178,20 @@ def test_judge_outcome_requires_one_of_the_two_shapes(monkeypatch):
     except ValueError:
         return
     raise AssertionError("judge_outcome accepted neither shape")
+
+
+def test_decide_ca_is_scoped_and_wins(monkeypatch, tmp_path):
+    """AITHER_DECIDE_CA loads the internal CA for this client only, ahead of SSL_CERT_FILE."""
+    import ssl as _ssl
+
+    from adk import choose as _choose
+    loaded = []
+    monkeypatch.setattr(_ssl.SSLContext, "load_verify_locations",
+                        lambda self, cafile=None, *a, **k: loaded.append(cafile))
+    scoped, wide = tmp_path / "decide-ca.pem", tmp_path / "wide.pem"
+    scoped.write_text("x")
+    wide.write_text("x")
+    monkeypatch.setenv("AITHER_DECIDE_CA", str(scoped))
+    monkeypatch.setenv("SSL_CERT_FILE", str(wide))
+    _choose._ctx("https://aitheros-world-model:8197")
+    assert [c for c in loaded if c] == [str(scoped)]
