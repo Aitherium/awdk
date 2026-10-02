@@ -53,8 +53,8 @@ def _repo_root_candidates() -> "list[tuple[str, Path]]":
             out.append(("~/.aither/repo-root", Path(home.read_text(encoding="utf-8").strip())))
     except OSError:
         pass
-    if sys.platform == "win32":
-        out.append(("default checkout", Path("C:/AitherOS-Fresh")))
+    # No hard-coded checkout path: this module ships on PyPI. A machine whose repo is
+    # not beside the package sets AITHER_REPO_ROOT or writes ~/.aither/repo-root.
     return out
 
 
