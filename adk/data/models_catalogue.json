@@ -1,0 +1,294 @@
+{
+  "version": 1,
+  "generated_by": "gen_adk_model_catalogue.py",
+  "generated_from": [
+    "awnix-models.yaml",
+    "model_licenses.yaml",
+    "adk_model_catalogue.yaml"
+  ],
+  "note": "GENERATED -- do not hand-edit. Edit a source and regenerate; --check compares and goes red on any difference.",
+  "min_budget_mb": 900,
+  "headroom_divisor": 2,
+  "ladder": [
+    "bonsai-1.7b",
+    "bonsai-4b",
+    "bonsai-8b",
+    "bonsai2-27b"
+  ],
+  "models": {
+    "aither-code-embed": {
+      "id": "aither-code-embed",
+      "role": "embedding",
+      "file": "aither-code-embed.q8_0.gguf",
+      "size_mb": 609,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://weights.aitherium.com/aither-code-embed.q8_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": false,
+      "quant": "Q8_0",
+      "purpose": "Embeddings (1024-d code-embed space) for memory and search. Not a chat model.",
+      "runtime": "llama.cpp",
+      "licence_id": "aither-code-embed-0.6b",
+      "licence": {
+        "record": "aither-code-embed-0.6b",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": null,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 639145920
+    },
+    "bonsai-1.7b": {
+      "id": "bonsai-1.7b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-1.7B-PQ2_0.gguf",
+      "size_mb": 441,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-1.7B-gguf/resolve/main/Ternary-Bonsai-1.7B-PQ2_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": true,
+      "quant": "PQ2_0",
+      "purpose": "Chat on a phone-class GPU or a plain CPU.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai-1.7b",
+      "licence": {
+        "record": "bonsai-small",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 463290464,
+      "sha256": "de68ba48a8dacb21979915991e7741b917869d71410a370df951c0c3a237ae50"
+    },
+    "bonsai-27b": {
+      "id": "bonsai-27b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-27B-PQ2_0.gguf",
+      "size_mb": 6833,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-PQ2_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": false,
+      "quant": "PQ2_0",
+      "purpose": "Bonsai 1 27B, the previous generation. Superseded by bonsai2-27b.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai-27b",
+      "licence": {
+        "record": "bonsai-27b",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "sha256": "e4781999f1997ef97ce0c58d05750835acc999d18d83ee6489ba7ac7b14cb5f6"
+    },
+    "bonsai-4b": {
+      "id": "bonsai-4b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-4B-PQ2_0.gguf",
+      "size_mb": 1025,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-4B-gguf/resolve/main/Ternary-Bonsai-4B-PQ2_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": true,
+      "quant": "PQ2_0",
+      "purpose": "Chat on a 4 GB card.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai-4b",
+      "licence": {
+        "record": "bonsai-small",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 1074969344,
+      "sha256": "829abec7eb92f5bf464762be7c9e8a45d777c714543a1474fc90cee20e698beb"
+    },
+    "bonsai-8b": {
+      "id": "bonsai-8b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-8B-PQ2_0.gguf",
+      "size_mb": 2081,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-8B-gguf/resolve/main/Ternary-Bonsai-8B-PQ2_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": true,
+      "quant": "PQ2_0",
+      "purpose": "Chat with better reasoning on an 8 GB card.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai-8b",
+      "licence": {
+        "record": "bonsai-small",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "sha256": "1376f942aa90e60f7b570c1d81b3916fea1315ff85aa1c4d19006af68fb4b922"
+    },
+    "bonsai2-27b": {
+      "id": "bonsai2-27b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+      "size_mb": 5671,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://weights.aitherium.com/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": true,
+      "quant": "PTQ1_0",
+      "purpose": "The default: chat, tools and agents on a 12 GB+ card.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai2-27b",
+      "licence": {
+        "record": "bonsai2-27b",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 5946648928,
+      "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3"
+    },
+    "deepseek-v4-flash": {
+      "id": "deepseek-v4-flash",
+      "role": "chat",
+      "file": "DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf",
+      "size_mb": 21732,
+      "parts": 12,
+      "join": true,
+      "urls": [
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part0",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part1",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part2",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part3",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part4",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part5",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part6",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part7",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part8",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part9",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part10",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-deepseek-v4flash-iq2m/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf.part11"
+      ],
+      "opt_in": true,
+      "on_ladder": false,
+      "quant": "UD-IQ2_M",
+      "purpose": "Large fast general model; compute-bound, not for small GPUs.",
+      "runtime": "llama.cpp",
+      "licence_id": "deepseek-v4-flash",
+      "licence": {
+        "record": "deepseek-v4-flash",
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      }
+    },
+    "gemma4-12b": {
+      "id": "gemma4-12b",
+      "role": "chat",
+      "file": "gemma4-12b-Q4_K_M.gguf",
+      "size_mb": 7303,
+      "parts": 5,
+      "join": true,
+      "urls": [
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-gemma4-12b-q4/gemma4-12b-Q4_K_M.gguf.part0",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-gemma4-12b-q4/gemma4-12b-Q4_K_M.gguf.part1",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-gemma4-12b-q4/gemma4-12b-Q4_K_M.gguf.part2",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-gemma4-12b-q4/gemma4-12b-Q4_K_M.gguf.part3",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-gemma4-12b-q4/gemma4-12b-Q4_K_M.gguf.part4"
+      ],
+      "opt_in": true,
+      "on_ladder": false,
+      "quant": "Q4_K_M",
+      "purpose": "Dense 12B general chat.",
+      "runtime": "llama.cpp",
+      "licence_id": "gemma4-12b",
+      "licence": {
+        "record": "gemma4-12b",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      }
+    },
+    "orchestrator": {
+      "id": "orchestrator",
+      "role": "chat",
+      "file": "aither-orchestrator-Q4_K_M.gguf",
+      "size_mb": 4792,
+      "parts": 3,
+      "join": true,
+      "urls": [
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-q4/aither-orchestrator-Q4_K_M.gguf.part0",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-q4/aither-orchestrator-Q4_K_M.gguf.part1",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-q4/aither-orchestrator-Q4_K_M.gguf.part2"
+      ],
+      "opt_in": true,
+      "on_ladder": false,
+      "quant": "Q4_K_M",
+      "purpose": "The fleet's general executor (tool routing).",
+      "runtime": "llama.cpp",
+      "licence_id": "aither-orchestrator",
+      "licence": {
+        "record": "aither-orchestrator",
+        "name": "Aitherium (owner determination 2026-10-02)",
+        "url": "",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      }
+    },
+    "qwen36-27b": {
+      "id": "qwen36-27b",
+      "role": "chat",
+      "file": "qwen36-27b-Q4_K_M.gguf",
+      "size_mb": 9055,
+      "parts": 5,
+      "join": true,
+      "urls": [
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-qwen36-27b-q4/qwen36-27b-Q4_K_M.gguf.part0",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-qwen36-27b-q4/qwen36-27b-Q4_K_M.gguf.part1",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-qwen36-27b-q4/qwen36-27b-Q4_K_M.gguf.part2",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-qwen36-27b-q4/qwen36-27b-Q4_K_M.gguf.part3",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-qwen36-27b-q4/qwen36-27b-Q4_K_M.gguf.part4"
+      ],
+      "opt_in": true,
+      "on_ladder": false,
+      "quant": "Q4_K_M",
+      "purpose": "27B general chat.",
+      "runtime": "llama.cpp",
+      "licence_id": "qwen36-27b",
+      "licence": null
+    }
+  }
+}

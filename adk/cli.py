@@ -969,6 +969,7 @@ def cmd_up(args):
     reach = (getattr(args, "reach", "") or "tunnel").lower()
     mesh_overlay_ip = None  # Set below if reach == "mesh"
     will_register = not getattr(args, "no_register", False) and not offline
+    no_room = bool(getattr(args, "no_room", False))
     # The brain pack the served agent loads. The server reads AGENT_BRAIN_PACK
     # first (adk.pack_discovery), so pin it explicitly: --brain-pack wins, else a
     # brain_pack.yaml in the cwd `adk up` was run from. Pinning (rather than
@@ -1001,6 +1002,7 @@ def cmd_up(args):
     if existing and daemon.pid_alive(existing.get("server_pid")):
         if force:
             daemon.kill_pid(existing.get("tunnel_pid"))
+            daemon.kill_pid(existing.get("relay_pid"))
             daemon.kill_pid(existing.get("server_pid"))
             daemon.clear_status()
         else:
@@ -1336,11 +1338,24 @@ def cmd_up(args):
                 if not non_interactive:
                     print(f"  [!] Registration failed ({e}) — heartbeat will retry.")
 
+    # ── Company room (a login that belongs to a company joins ITS room) ──
+    # Offline and --no-register are both "nothing leaves this box"; --no-room is
+    # the explicit opt-out. Never fatal: the room is extra, the agent is the point.
+    room_status: dict = {"room": None, "room_note": "", "relay_pid": None}
+    if no_room:
+        room_status["room_note"] = "--no-room" if _login_company_tenant(saved) else ""
+    elif not offline and not getattr(args, "no_register", False):
+        room_status = _up_join_company_room(
+            daemon, saved, identity, _relay_credential(None, saved) or portal_token)
+    if not non_interactive and _room_line(room_status):
+        print(_room_line(room_status))
+
     # ── Persist (autostart) ──
     autostart = None
     if persist:
         up_argv = _autostart_up_argv(identity, port, provider, offline,
-                                     brain_pack=str(brain_pack) if brain_pack else "")
+                                     brain_pack=str(brain_pack) if brain_pack else "",
+                                     no_room=no_room)
         # Install (rewriting the wrapper: the port or identity may have changed),
         # then record what the OS reports -- not what the installer returned.
         _verified = daemon.ensure_autostart(up_argv, refresh=True)
@@ -1361,6 +1376,9 @@ def cmd_up(args):
         "autostart": autostart, "portal": portal, "chat_url": chat_url,
         "log_path": str(agent_log),
         "spawned_at": spawned_at,
+        "room": room_status.get("room"), "room_nick": room_status.get("room_nick"),
+        "room_note": room_status.get("room_note") or None,
+        "relay_pid": room_status.get("relay_pid"),
     }
     daemon.write_status(status)
 
@@ -1478,7 +1496,7 @@ def _autostart_line(verified: dict) -> str:
 
 
 def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool,
-                       brain_pack: str = "") -> list[str]:
+                       brain_pack: str = "", no_room: bool = False) -> list[str]:
     """Build the command the autostart entry re-runs at logon (unattended, detached)."""
     argv = [sys.executable, "-m", "adk.cli", "up",
             "--identity", identity, "--port", str(port), "--yes"]
@@ -1490,6 +1508,9 @@ def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool,
         argv += ["--provider", provider]
     if offline:
         argv += ["--offline"]
+    if no_room:
+        # An opt-out that the logon re-run forgot would rejoin the room at reboot.
+        argv += ["--no-room"]
     return argv
 
 
@@ -1985,6 +2006,8 @@ def cmd_down(args):
 
     if daemon.kill_pid(st.get("tunnel_pid")):
         print("  [+] Tunnel stopped.")
+    if daemon.kill_pid(st.get("relay_pid")):
+        print(f"  [+] Left the company room {st.get('room') or ''}".rstrip() + ".")
     if daemon.kill_pid(st.get("server_pid")):
         print("  [+] Agent stopped.")
 
@@ -6412,6 +6435,148 @@ def _session_bearer_token() -> str:
         return ""
 
 
+#: The platform's own coordination channel -- where `adk relay join` has always gone.
+_RELAY_PLATFORM_CHANNEL = "#agents"
+_RELAY_CLOUD_BASE = "https://relay.aitherium.com/api/relay/v1"   # cloud fabric (public cert)
+_RELAY_LOCAL_BASE = "https://127.0.0.1:8205/v1"                  # local fleet relay (internal CA)
+
+
+def _relay_credential(args, saved: dict) -> str:
+    """The bearer `adk relay join` presents.
+
+    ORDER MATTERS: an explicit token, then the env, then THIS HOST'S LIVE BEARER,
+    and only then the saved login. The saved credential does not expire in the
+    config file -- measured 2026-09-20, it was a 17-character key the relay had
+    long since stopped accepting, and because it sorted first the join failed with
+    "check the token / nick / channel" on a box whose bearer was valid all along.
+    """
+    return (getattr(args, "token", "") or os.environ.get("AITHER_RELAY_TOKEN", "")
+            or _session_bearer_token()
+            or saved.get("relay_token", "")
+            or saved.get("api_key", "") or saved.get("access_token", ""))
+
+
+def _relay_base(args) -> str:
+    """The relay API root: --url, else --local, else the cloud fabric."""
+    if getattr(args, "url", ""):
+        return args.url.rstrip("/")
+    if getattr(args, "local", False):
+        return _RELAY_LOCAL_BASE
+    return _RELAY_CLOUD_BASE
+
+
+def _login_company_tenant(saved: dict) -> str:
+    """The customer tenant of the saved login, or "".
+
+    Only a SWITCH for "is there a company room to ask about": the relay decides
+    which room from the bearer it authenticates, never from this value. No tenant
+    and the platform tenant both mean "none" -- the platform's own agents belong
+    on #agents, exactly as before.
+    """
+    tenant = str(saved.get("tenant_id") or "").strip()
+    return "" if tenant.lower() in ("", "platform") else tenant
+
+
+def _relay_join_channel(explicit: str, saved: dict, base: str, token: str,
+                        lookup=None) -> tuple[str, str]:
+    """Which channel `adk relay join` enters: ``(channel, note)``.
+
+    An explicit --channel always wins. A login that carries a company tenant
+    joins that company's room, as named by the relay (`relay_client.home_room`).
+    Everything else -- no tenant, or a relay that names no room -- is the old
+    default, with a `note` saying why the company room was not used.
+    """
+    if explicit:
+        return (explicit if explicit.startswith("#") else f"#{explicit}"), ""
+    if not _login_company_tenant(saved):
+        return _RELAY_PLATFORM_CHANNEL, ""
+    if lookup is None:
+        from adk.relay_client import home_room as lookup
+    room, reason = lookup(base, token)
+    if room:
+        return room, ""
+    return _RELAY_PLATFORM_CHANNEL, reason or "the relay named no company room"
+
+
+def _up_join_company_room(daemon, saved: dict, identity: str, token: str,
+                          base: str = _RELAY_CLOUD_BASE, lookup=None, join=None) -> dict:
+    """`adk up`: put the device agent in its company's room. Returns a status dict.
+
+    ``{"room": "#garg-room" | None, "room_note": "...", "relay_pid": int | None}``.
+    Nothing here can fail `adk up`: an agent that is up without a room is still
+    up, and the note is the one line that says which of the two happened.
+
+    The channel is resolved HERE and handed to the child explicitly, so the line
+    printed names the room the child really joins. The child is a plain
+    `adk relay join`: it registers the nick, answers on this box's own inference,
+    and exits non-zero (into relay.log) if the relay refuses it.
+    """
+    out: dict = {"room": None, "room_note": "", "relay_pid": None}
+    if not _login_company_tenant(saved):
+        return out          # no company on this login: today's behaviour, silently
+    if not token:
+        out["room_note"] = "not signed in -- run `adk login`"
+        return out
+    if lookup is None:
+        from adk.relay_client import home_room as lookup
+    room, reason = lookup(base, token)
+    if not room:
+        out["room_note"] = reason or "the relay named no company room"
+        return out
+    # ADMISSION IS THE RELAY'S ANSWER, not ours: join once here so the line below
+    # reports a room the agent was actually let into (and the nick it was let in
+    # under -- the relay may only grant `<you>+<identity>`), instead of announcing
+    # a room a detached child is then refused in a log nobody reads.
+    try:
+        ok, nick = (join or _relay_probe_join)(base, token, identity, room)
+    except Exception as exc:  # noqa: BLE001 -- a room is optional; `adk up` is not
+        ok, nick = False, ""
+        out["room_note"] = f"{room}: {type(exc).__name__}: {exc}".rstrip(": ")
+    if not ok:
+        out["room_note"] = out["room_note"] or (
+            f"the relay refused this agent in {room} -- open the Company Room in your "
+            "company's app once (that enrols you), then run `adk up --force`")
+        return out
+    argv = [sys.executable, "-m", "adk.cli", "relay", "join",
+            "--channel", room, "--nick", nick or identity, "--url", base]
+    try:
+        out["relay_pid"] = daemon.spawn_detached(argv, daemon.LOG_DIR / "relay.log")
+    except OSError as exc:
+        out["room_note"] = f"could not start the room connection ({exc})"
+        return out
+    out["room"] = room
+    out["room_nick"] = nick or identity
+    return out
+
+
+def _relay_probe_join(base: str, token: str, nick: str, channel: str) -> tuple[bool, str]:
+    """Join `channel` once, synchronously: ``(admitted, nick the relay granted)``."""
+    import asyncio
+
+    import httpx
+
+    from adk.relay_client import RelayClient
+
+    probe = RelayClient(base_url=base, token=token, nick=nick, agent=None, channel=channel)
+
+    async def _run() -> bool:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20,
+                                     verify=probe.verify) as client:
+            return await probe.join(client)
+
+    return asyncio.run(_run()), probe.nick
+
+
+def _room_line(room_status: dict) -> str:
+    """One line for a person: the room the agent joined, or why it did not."""
+    if room_status.get("room"):
+        return (f"  [+] Room: joined your company room {room_status['room']} as "
+                f"{room_status.get('room_nick') or 'this agent'} (--no-room to skip)")
+    if room_status.get("room_note"):
+        return f"  [i] Room: not joined -- {room_status['room_note']}"
+    return ""
+
+
 def cmd_relay(args):
     """Connect this agent to AitherRelay as a chat participant — one command.
 
@@ -6435,7 +6600,7 @@ def cmd_relay(args):
 
     if getattr(args, "relay_command", None) != "join":
         print("Usage: adk relay up [--slug NAME] [--rooms #general,#agents] [--hub-url URL]")
-        print("       adk relay join [--nick NAME] [--url BASE] [--local] [--channel #agents]")
+        print("       adk relay join [--nick NAME] [--url BASE] [--local] [--channel #NAME]")
         print("       adk relay provision <nick> [--local] [--acta-url URL] [--roster PATH]")
         print("       adk relay notifications [--nick NAME] [--local] [--unread] [--ack]")
         return 1
@@ -6444,30 +6609,22 @@ def cmd_relay(args):
     from adk.relay_client import RelayClient
 
     saved = load_saved_config()
-    # ORDER MATTERS: an explicit token, then the env, then THIS HOST'S LIVE BEARER,
-    # and only then the saved login. The saved credential does not expire in the
-    # config file -- measured 2026-09-20, it was a 17-character key the relay had
-    # long since stopped accepting, and because it sorted first the join failed with
-    # "check the token / nick / channel" on a box whose bearer was valid all along.
-    token = (getattr(args, "token", "") or os.environ.get("AITHER_RELAY_TOKEN", "")
-             or _session_bearer_token()
-             or saved.get("relay_token", "")
-             or saved.get("api_key", "") or saved.get("access_token", ""))
+    token = _relay_credential(args, saved)
     if not token:
         print("  No relay credential. Run `adk relay provision <nick>` or `adk login`,"
               " or pass --token / set AITHER_RELAY_TOKEN.")
         return 1
 
-    if getattr(args, "url", ""):
-        base = args.url.rstrip("/")
-    elif getattr(args, "local", False):
-        base = "https://127.0.0.1:8205/v1"       # local fleet AitherRelay (internal CA)
-    else:
-        base = "https://relay.aitherium.com/api/relay/v1"   # cloud fabric (public cert)
+    base = _relay_base(args)
 
     nick = (getattr(args, "nick", "") or saved.get("relay_nick", "")
             or saved.get("username", "") or "aither")
-    channel = getattr(args, "channel", "") or "#agents"
+    # No --channel: a login that belongs to a company joins THAT company's room
+    # (the relay names it); every other login keeps #agents.
+    channel, _channel_note = _relay_join_channel(
+        getattr(args, "channel", "") or "", saved, base, token)
+    if _channel_note:
+        print(f"  Company room not used -- {_channel_note}. Falling back to {channel}.")
 
     # A CHANNEL AGENT IS NEVER THE OWNER'S PRIVATE COMPANION. `AitherAgent` with no
     # explicit system_prompt swaps its identity WHOLESALE to the private companion
@@ -6481,13 +6638,17 @@ def cmd_relay(args):
         "aither": "You are Aither, the AitherOS system overseer: coordination, synthesis "
                   "and delegation across the fleet.",
     }.get(nick.split("+")[-1].lower(), f"You are {nick.split('+')[-1]}, an AitherOS agent.")
+    _where = ("where other agents and Claude Code sessions coordinate"
+              if channel == _RELAY_PLATFORM_CHANNEL
+              else "a room shared by the people of one company and their agents")
     agent = AitherAgent(nick, system_prompt=(
-        f"{_identity_line} You are answering on the relay channel {channel}, where other "
-        "agents and Claude Code sessions coordinate. Messages you receive were ADDRESSED "
+        f"{_identity_line} You are answering on the relay channel {channel}, {_where}. "
+        "Messages you receive were ADDRESSED "
         "to you by a named peer; answer them directly, briefly and factually, and say "
         "plainly when you do not know. Never adopt another persona."))
     client = RelayClient(base_url=base, token=token, nick=nick, agent=agent, channel=channel)
-    print(f"  Joining AitherRelay as '{nick}' at {base} — serving DMs (Ctrl+C to leave).")
+    print(f"  Joining AitherRelay as '{nick}' on {channel} at {base} — serving DMs "
+          "(Ctrl+C to leave).")
     try:
         asyncio.run(client.run())
     except KeyboardInterrupt:
@@ -13333,6 +13494,9 @@ def _register_commands(sub):
                       help="Sovereign/local-only: no tunnel, no portal (or set AITHER_OFFLINE=1)")
     up_p.add_argument("--no-register", action="store_true",
                       help="Run locally only — no tunnel, no fleet registration")
+    up_p.add_argument("--no-room", action="store_true", dest="no_room",
+                      help="Do not join your company's room (a login that belongs to a "
+                           "company joins it by default)")
     up_p.add_argument("--require-register", action="store_true",
                       help="Fail (non-zero) if the fleet registration cannot complete")
     up_p.add_argument("--token", help="Portal token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN)")
@@ -14347,7 +14511,9 @@ def _register_commands(sub):
     relay_join_p.add_argument("--nick", help="Agent nick on the relay (default: your login username)")
     relay_join_p.add_argument("--url", help="Relay API base (default: cloud relay.aitherium.com)")
     relay_join_p.add_argument("--local", action="store_true", help="Use the local fleet relay (https://127.0.0.1:8205/v1)")
-    relay_join_p.add_argument("--channel", default="#agents", help="Channel to join (default: #agents)")
+    relay_join_p.add_argument("--channel", default="",
+                              help="Channel to join (default: your company's room when your "
+                                   "login belongs to a company, else #agents)")
     relay_join_p.add_argument("--token", help="Bearer credential (default: provisioned/saved login / $AITHER_RELAY_TOKEN)")
 
     relay_prov_p = relay_sub.add_parser(
@@ -14386,6 +14552,10 @@ def _register_commands(sub):
     relay_up_p.add_argument("--compose-file", help="Path to docker-compose file (default: auto-detect)")
     relay_up_p.add_argument("--foreground", action="store_true", help="Run in foreground (default: detached)")
     relay_up_p.add_argument("--dry-run", action="store_true", help="Show what would run, don't start")
+
+    # adk models — browse the catalogue, pick for this hardware, pull verified, serve.
+    from adk.models.cli import add_parser as _add_models_parser
+    _add_models_parser(sub)
 
     backend_p = sub.add_parser("backend", help="Manage LLM backends (list, set, test, switch, status)")
     backend_sub = backend_p.add_subparsers(dest="backend_command")
@@ -16673,6 +16843,9 @@ def main():
         sys.exit(cmd_relay(args))
     elif args.command == "backend":
         sys.exit(cmd_backend(args))
+    elif args.command == "models":
+        from adk.models.cli import run as _models_run
+        sys.exit(_models_run(args))
     elif args.command == "keys":
         sys.exit(cmd_keys(args))
     elif args.command == "secret":

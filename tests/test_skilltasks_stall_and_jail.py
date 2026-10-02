@@ -377,6 +377,87 @@ def test_corpus_reference_scores_one_with_every_write_in_the_jail(name):
         env.close()
 
 
+def _root_on_posix() -> bool:
+    return os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+needs_rootful = pytest.mark.skipif(
+    not _root_on_posix(),
+    reason="needs root on Linux (rootful podman): only there is a container uid a host uid",
+)
+
+
+@needs_podman
+@needs_rootful
+def test_the_jail_starts_as_root_under_rootful_podman_and_the_harness_reads_the_result(tmp_path):
+    """Real rootful podman, harness = root: the workspace is root's and 0700 (what
+    ``mkdtemp`` makes). The jail must START, write it, and the harness must read the
+    result back -- and the files must never belong to a real host account."""
+    import pwd
+
+    from adk.skilltasks.jail import IDMAP_SIZE, JAIL_UID, open_jail
+
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    (work / "seed.txt").write_text("from the harness\n", encoding="utf-8")
+    assert work.stat().st_uid == 0
+    jail, why = open_jail(work, "podman")
+    assert jail is not None and why == ""
+    try:
+        uid = jail.host_uid()
+        assert uid is not None and uid != JAIL_UID and uid >= IDMAP_SIZE
+        with pytest.raises(KeyError):  # nobody's account: no real user owns a task file
+            pwd.getpwuid(uid)
+        rc, out, err, _to = jail.run("id -u && echo from-the-jail >> seed.txt && echo x > new.txt")
+        assert (rc, out.strip()) == (0, str(JAIL_UID)), (rc, out, err)  # uid 1000 INSIDE
+        # the harness (root) reads what the jail wrote, and owns nothing it must chase
+        assert (work / "seed.txt").read_text(encoding="utf-8") == (
+            "from the harness\nfrom-the-jail\n"
+        )
+        assert (work / "new.txt").read_text(encoding="utf-8") == "x\n"
+        assert (work / "new.txt").stat().st_uid == uid and work.stat().st_uid == uid
+        # a file the harness writes BETWEEN commands is root's: the jail can still edit it
+        (work / "later.txt").write_text("a\n", encoding="utf-8")
+        (work / "sub").mkdir(mode=0o700)
+        assert (work / "later.txt").stat().st_uid == 0
+        rc, out, err, _to = jail.run("echo b >> later.txt && touch sub/in && echo ok")
+        assert (rc, out.strip()) == (0, "ok"), (rc, out, err)
+        assert (work / "later.txt").read_text(encoding="utf-8") == "a\nb\n"
+        # the mapping is the jail's own: container root is not host root either
+        rc, out, _err, _to = jail.run("cat /proc/self/uid_map")
+        assert out.split() == ["0", str(uid - JAIL_UID), str(IDMAP_SIZE)], out
+    finally:
+        jail.close()
+
+
+@needs_podman
+@needs_rootful
+def test_a_planted_symlink_is_never_followed_when_the_workspace_is_handed_over(tmp_path):
+    """The harness re-owns the workspace as ROOT before each command: a symlink the model
+    left pointing outside must be re-owned itself, never its target."""
+    from adk.skilltasks.jail import open_jail
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("root's\n", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    jail, _why = open_jail(work, "podman")
+    assert jail is not None
+    try:
+        # inside the jail the target does not exist; on the HOST the same link resolves
+        rc, _out, err, _to = jail.run("ln -s %s f && ln -s %s d && echo ok" % (
+            outside / "secret.txt", outside))  # fmt: skip
+        assert rc == 0, err
+        assert jail.run("true")[0] == 0  # the walk that hands the workspace over ran again
+        assert (work / "f").is_symlink() and (work / "d").is_symlink()
+        assert (work / "f").lstat().st_uid == jail.host_uid()  # the LINK was re-owned ...
+        # ... and what it points at on the host was not
+        assert outside.stat().st_uid == 0 and (outside / "secret.txt").stat().st_uid == 0
+    finally:
+        jail.close()
+
+
 # ----------------------------------------------------------------- the jail, without podman
 # A stand-in for ``podman run``: it ignores its argv and speaks the command server's line
 # protocol, so the client half (start checks, request/reply pairing, the flags) is tested
@@ -418,6 +499,72 @@ def test_the_jail_argv_carries_every_confinement_flag(tmp_path, monkeypatch):
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
     assert len(mounts) == 1 and mounts[0].endswith(":/work:rw")  # only the workspace
     assert "--privileged" not in argv and not any(a.startswith("--network=host") for a in argv)
+
+
+def test_a_mapped_jail_gets_its_own_user_namespace_and_the_verifier_shares_it(
+    tmp_path, monkeypatch
+):
+    """Rootful podman: container uid 1000 must not be HOST uid 1000 (a real account). The
+    argv maps the container's ids onto a block of its own, and the verifier jail takes the
+    shell jail's block so both own the one workspace."""
+    import adk.skilltasks.jail as jail_mod
+
+    work = tmp_path / "work"
+    work.mkdir()
+    base = 0x40000000 + 7 * jail_mod.IDMAP_SIZE
+    shell = jail_mod.Jail(work, ["podman"], idmap_base=base)
+    shell.name = "adk-jail-x"
+    argv = shell.argv()
+    ids = "0:%d:%d" % (base, jail_mod.IDMAP_SIZE)
+    assert argv[argv.index("--uidmap") + 1] == ids and argv[argv.index("--gidmap") + 1] == ids
+    assert argv.index("--uidmap") < argv.index(shell.image)  # a run flag, not the command's
+    assert argv[argv.index("--user") + 1] == "1000:1000"
+    assert shell.host_uid() == base + 1000
+
+    started = []
+    monkeypatch.setattr(jail_mod.Jail, "start", lambda self: started.append(self))
+    verifier = jail_mod.open_verifier_jail(shell, tmp_path / "private", tmp_path / "tests")
+    assert started == [verifier] and verifier.idmap_base == base
+
+    # an unmapped jail (not root, or Windows) keeps the engine's own mapping
+    monkeypatch.setattr(jail_mod, "rootful_here", lambda: False)
+    plain = jail_mod.Jail(work, ["podman"])
+    plain.name = "adk-jail-y"
+    assert plain.idmap_base is None and plain.host_uid() is None
+    assert "--uidmap" not in plain.argv() and "--gidmap" not in plain.argv()
+
+    # root on Linux: a block is picked for the episode
+    monkeypatch.setattr(jail_mod, "rootful_here", lambda: True)
+    monkeypatch.setattr(jail_mod, "pick_idmap_base", lambda: base)
+    assert jail_mod.Jail(work, ["podman"]).idmap_base == base
+
+
+@pytest.mark.parametrize("mapped", [True, False])
+def test_an_unwritable_workspace_is_refused_with_its_real_cause(tmp_path, monkeypatch, mapped):
+    """The refusal used to blame "rootless podman" whatever happened, also under rootful
+    podman. It names what was measured: the mount's owner and mode, and which case it is."""
+    import adk.skilltasks.jail as jail_mod
+
+    script = tmp_path / "fake_podman.py"
+    script.write_text(_FAKE_PODMAN, encoding="utf-8")
+    monkeypatch.setenv("FAKE_JAIL_READY", '{"ready": 1, "uid": 1000, "w": false, "nd": true}')
+    monkeypatch.setattr(jail_mod, "rootful_here", lambda: False)
+    monkeypatch.setattr(jail_mod, "_give_to", lambda root, uid: None)  # the chown "failed"
+    work = tmp_path / "work"
+    work.mkdir()
+    base = 0x40000000
+    jail = jail_mod.Jail(work, [sys.executable, str(script)], idmap_base=base if mapped else None)
+    with pytest.raises(jail_mod.JailUnavailableError) as exc:
+        jail.start()
+    msg = str(exc.value)
+    assert "cannot write the workspace" in msg and str(work) in msg
+    assert "owned by host uid %d, mode " % work.stat().st_uid in msg
+    if mapped:
+        assert "host uid %d (rootful podman" % (base + 1000) in msg and "rootless" not in msg
+    elif os.name == "nt":
+        assert "WSL distro" in msg and "rootless" not in msg
+    else:
+        assert "rootless" in msg and "sub-uid" in msg
 
 
 def test_the_jail_client_pairs_a_reply_with_its_request(tmp_path, monkeypatch):
@@ -491,7 +638,7 @@ def _podman_that_cannot_start(tmp_path: Path, monkeypatch, ready: str) -> None:
 def test_auto_mode_falls_back_to_the_policy_when_the_jail_cannot_start(
     tmp_path, monkeypatch, caplog, ready, why
 ):
-    # podman on PATH, image present, but uid 1000 cannot write the workspace (rootless
+    # podman on PATH, image present, but uid 1000 cannot write the workspace (e.g. rootless
     # sub-uid mapping): the run must be POLICY-ONLY and say so, not "podman" with a dead sh
     _podman_that_cannot_start(tmp_path, monkeypatch, ready)
     env = _env(tmp_path / "t", jail="auto")

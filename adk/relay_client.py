@@ -99,6 +99,66 @@ def strip_envelope(content: str) -> str:
     return re.sub(r"^\[(finding|alert|request|steer|ack)\]\s*", "", text.strip())
 
 
+def home_room(
+    base_url: str,
+    token: str,
+    *,
+    verify: Union[bool, str, None] = None,
+    timeout: float = 15.0,
+    client: Optional[httpx.Client] = None,
+) -> tuple[str, str]:
+    """The Company Room of the signed-in tenant: ``(channel, reason)``.
+
+    ASKED, never derived. The room is ``#<workspace slug>-room`` and the slug is
+    the relay's own record of which workspace a tenant owns -- deployment config a
+    device cannot see. A name guessed here from the tenant id would be a second
+    rule that drifts from the server's, and when it drifts it names either nothing
+    or another company's channel. ``GET /agent/home-room`` answers from the
+    AUTHENTICATED bearer alone (there is no tenant parameter to send).
+
+    ``channel`` is "" whenever the relay did not name one, and ``reason`` then says
+    why in words a person can act on. Never raises: the caller's fallback is the
+    behaviour it had before this existed.
+
+    Args:
+        base_url: Relay API root, e.g. ``https://relay.aitherium.com/api/relay/v1``.
+        token: Bearer credential the relay resolves to the caller's identity.
+        verify: TLS verification override; default is the AitherNet CA bundle.
+        timeout: Seconds to wait for the relay.
+        client: An ``httpx.Client`` to use instead of opening one (tests).
+
+    Returns:
+        ``(channel, reason)`` -- exactly one of them is non-empty.
+    """
+    url = f"{base_url.rstrip('/')}/agent/home-room"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        if client is not None:
+            r = client.get(url, headers=headers, timeout=timeout)
+        else:
+            with httpx.Client(follow_redirects=True, timeout=timeout,
+                              verify=tls_verify() if verify is None else verify) as c:
+                r = c.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        return "", f"the relay could not be reached ({type(exc).__name__})"
+    if r.status_code == 404:
+        return "", "this relay does not serve company rooms yet (no /agent/home-room)"
+    if r.status_code in (401, 403):
+        return "", f"the relay refused this sign-in ({r.status_code}) -- run `adk login`"
+    if r.status_code != 200:
+        return "", f"the relay answered {r.status_code}"
+    try:
+        data = r.json()
+    except ValueError:
+        return "", "the relay sent an unreadable answer"
+    if not isinstance(data, dict):
+        return "", "the relay sent an unreadable answer"
+    channel = str(data.get("channel") or "").strip()
+    if channel.startswith("#") and len(channel) > 1:
+        return channel, ""
+    return "", str(data.get("reason") or "").strip() or "the relay named no company room"
+
+
 class RelayClient:
     """Join AitherRelay as an agent and answer DMs on the agent's own inference."""
 

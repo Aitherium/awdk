@@ -4,6 +4,27 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.46] - 2026-10-02
+
+- `adk models recommend` on a machine with no GPU picks the 4B, not a 27B that runs at
+  0.43 tokens/s on a CPU.
+
+## [3.8.45] - 2026-10-02
+
+- **A signed-in `adk up` joins its own company's room** (the relay names the room from the
+  authenticated sign-in; `--no-room` opts out).
+
+### Added
+
+- **`adk models list | recommend | pull <id> | use <id>`.** One command family to browse
+  the model catalogue, have a model picked for this machine's memory (NVIDIA VRAM, Apple
+  unified memory, AMD/Intel dedicated VRAM, else RAM), download it resumably with the size
+  checked against the mirror and the sha256 checked where the catalogue records one, and
+  serve it from the Bonsai installer's directory. `pull` and `use` refuse any model whose
+  licence record is missing or does not permit redistribution, and say why in one line;
+  `recommend` never picks such a model. An embedding model configures the embedding
+  endpoint and leaves the chat backend alone.
+
 ## [3.8.44] - 2026-10-02
 
 ### Fixed

@@ -11,6 +11,16 @@ what the policy cannot see -- a program the model writes and then runs:
 * a non-root user (uid 1000), ``--cap-drop=ALL``, ``no-new-privileges``, CPU, memory and
   pids limits.
 
+WHO OWNS THE WORKSPACE. Under ROOTFUL podman driven by root (Linux), container uid 1000
+would be HOST uid 1000 -- a real account on most hosts -- and the workspace is root's
+(``mkdtemp``, 0700), so the jail user could not write it and no jail ever started
+(measured: all eight real-podman tests failed that way). There the container gets a user
+namespace of its own (``--uidmap``/``--gidmap``) on a 65536-id block no host account
+lives in, and the harness hands every read-write mount to the jail user's HOST uid
+(block + 1000) before each command: root still reads and writes all of it, and no real
+account ever owns a task file. ``--userns=auto`` would pick the block itself but needs a
+``containers`` entry in ``/etc/subuid``, which this module must not require or write.
+
 Starting a container costs seconds (measured 10-20 s per ``podman run``/``exec`` on a
 busy host), so ONE container serves a whole episode: its
 main process is a tiny command server that reads one JSON request per line on stdin and
@@ -58,7 +68,8 @@ this channel) and print its own reply while it is still alive. Two things stop t
 
 When neither is available -- or the container cannot START here (the jail user cannot
 write the workspace, e.g. rootless podman mapping uid 1000 to a sub-uid, or an SELinux
-label refusing the mount) -- the caller falls back to the policy mode, marked
+label refusing the mount; the refusal names the owner, the mode and which case it
+is) -- the caller falls back to the policy mode, marked
 :data:`POLICY_ONLY` ("policy-only, not a jail") and logged as a warning, never silently.
 :func:`open_jail` STARTS the container, so that is decided once, before any task command.
 
@@ -83,6 +94,8 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 __all__ = [
+    "IDMAP_SIZE",
+    "JAIL_UID",
     "Jail",
     "JailUnavailableError",
     "POLICY_ONLY",
@@ -173,6 +186,57 @@ for line in sys.stdin:
 
 class JailUnavailableError(RuntimeError):
     """podman (or the jail image) is not usable on this host."""
+
+
+JAIL_UID = 1000  # the ``--user`` of both jails, INSIDE the container
+IDMAP_SIZE = 65536  # ids in the jail's own user namespace (rootful podman only)
+_IDMAP_FLOOR = 0x40000000  # blocks start here: far above accounts and /etc/subuid ranges
+_IDMAP_BLOCKS = 8192  # ... and stay below 2**31
+
+
+def rootful_here() -> bool:
+    """This process is root on a POSIX host, so the podman it runs is rootful and a
+    container uid is the SAME host uid unless the jail maps it away."""
+    return os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def pick_idmap_base() -> int:
+    """The first host id of a :data:`IDMAP_SIZE` block for one episode's jails: random
+    (two episodes do not share an owner) and never one whose jail uid is an account."""
+    import pwd  # POSIX only; only reached when rootful_here()
+
+    for _ in range(64):
+        base = _IDMAP_FLOOR + secrets.randbelow(_IDMAP_BLOCKS) * IDMAP_SIZE
+        try:
+            pwd.getpwuid(base + JAIL_UID)
+        except KeyError:
+            return base
+    raise JailUnavailableError("no host id block without an account for the jail user")
+
+
+def _give_to(root: Path, uid: int) -> None:
+    """Hand the tree at ``root`` to host ``uid``. ``lchown`` and a walk that follows no
+    link: a symlink the model planted is re-owned itself, never its target. Nothing is
+    alive in the jail between commands, so nobody races the walk."""
+    lchown = getattr(os, "lchown", None)
+    if lchown is None:  # Windows: podman sees the drive through the distro's own mount
+        return
+    for top, dirs, files in os.walk(str(root)):
+        for path in [top] + [os.path.join(top, n) for n in dirs + files]:
+            try:
+                if os.lstat(path).st_uid != uid:
+                    lchown(path, uid, uid)
+            except OSError as exc:
+                # gone meanwhile, or refused: the server's "w" check is what reports it
+                _log.debug("could not hand %s to uid %d: %s", path, uid, exc)
+
+
+def _owner_of(path: Path) -> str:
+    try:
+        st = os.lstat(str(path))
+    except OSError as exc:
+        return "unreadable here: %s" % exc
+    return "owned by host uid %d, mode %04o" % (st.st_uid, st.st_mode & 0o7777)
 
 
 def _running_wsl_distros() -> List[str]:
@@ -269,6 +333,7 @@ class Jail:
         mounts: Sequence[Tuple[Path, str, str]] = (),
         home: str = "/work",
         reap: bool = False,
+        idmap_base: Optional[int] = None,
     ) -> None:
         self.workspace = Path(workspace)
         self.prefix = list(prefix)
@@ -280,6 +345,14 @@ class Jail:
         #: a survivor shares the workspace with the host harness and can race its file
         #: operations (a symlink swapped in between the path check and the open)
         self.reap = bool(reap)
+        #: first host id of the container's own user namespace (rootful podman run by
+        #: root), else None: the engine's default mapping. The verifier jail takes the
+        #: shell jail's, so both see the workspace as theirs.
+        self.idmap_base: Optional[int] = None
+        if idmap_base is not None:
+            self.idmap_base = int(idmap_base)
+        elif rootful_here():
+            self.idmap_base = pick_idmap_base()
         self.name = ""
         self.proc: Optional[subprocess.Popen] = None
         self._lines: "queue.Queue[Optional[str]]" = queue.Queue()
@@ -296,6 +369,10 @@ class Jail:
             extra += ["-v", "%s:%s:%s" % (host_path(host), inside, mode)]
             if mode == "rw":
                 rw.append(inside)
+        userns: List[str] = []
+        if self.idmap_base is not None:
+            ids = "0:%d:%d" % (self.idmap_base, IDMAP_SIZE)
+            userns = ["--uidmap", ids, "--gidmap", ids]
         return self.prefix + [
             "run", "-i", "--rm", "--name", self.name,
             "--label", "adk.skilltask.jail=1",
@@ -304,7 +381,8 @@ class Jail:
             "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
-            "--user", "1000:1000",
+            *userns,
+            "--user", "%d:%d" % (JAIL_UID, JAIL_UID),
             *LIMITS,
             "-v", "%s:/work:rw" % host_path(self.workspace),
             *extra,
@@ -318,8 +396,50 @@ class Jail:
             "python3", "-u", "-c", "import base64;exec(base64.b64decode('%s'))" % code,
         ]  # fmt: skip
 
+    def host_uid(self) -> Optional[int]:
+        """The HOST uid the jail user is, when this jail maps it (else None)."""
+        return None if self.idmap_base is None else self.idmap_base + JAIL_UID
+
+    def _rw_mounts(self) -> List[Path]:
+        return [self.workspace] + [h for h, _c, m in self.mounts if m == "rw"]
+
+    def _own(self) -> None:
+        """Every read-write mount belongs to the jail user: the workspace starts as the
+        harness's, and so does each file the harness writes into it between commands."""
+        uid = self.host_uid()
+        if uid is None:
+            return
+        for path in self._rw_mounts():
+            _give_to(path, uid)
+
+    def _why_unwritable(self) -> str:
+        """The refusal, naming what was measured: who owns each mount and which case."""
+        what = "; ".join("%s is %s" % (p, _owner_of(p)) for p in self._rw_mounts())
+        uid = self.host_uid()
+        if uid is not None:
+            cause = (
+                "the jail user is host uid %d (rootful podman, ids mapped from %d) and "
+                "the harness could not hand it the mount (a filesystem that refuses "
+                "chown, or one mounted read-only)" % (uid, uid - JAIL_UID)
+            )
+        elif os.name == "nt":
+            cause = (
+                "podman runs in the WSL distro and container uid %d has no write access "
+                "to that path through the distro's mount" % JAIL_UID
+            )
+        else:
+            cause = (
+                "the harness is uid %d, not root, so podman is rootless here: container "
+                "uid %d is one of that user's sub-uids, not the owner" % (os.geteuid(), JAIL_UID)
+            )
+        return (
+            "the jail user cannot write the workspace: %s -- %s; every task command "
+            "would fail" % (what, cause)
+        )
+
     def start(self) -> None:
         self.close()
+        self._own()
         self.name = "adk-jail-" + uuid.uuid4().hex[:12]
         self._lines = queue.Queue()
         self.proc = subprocess.Popen(
@@ -353,16 +473,9 @@ class Jail:
                 "the jail's command server could not seal itself (PR_SET_DUMPABLE); a "
                 "command could forge its replies; refusing"
             )
-        if ready.get("w") is False:  # e.g. rootless podman: uid 1000 maps to a sub-uid
+        if ready.get("w") is False:
             self.close()
-            raise JailUnavailableError(
-                "the jail user cannot write the workspace %s%s (rootless podman maps uid "
-                "1000 to a sub-uid that does not own it); every task command would fail"
-                % (
-                    self.workspace,
-                    "".join(" or %s" % h for h, _c, m in self.mounts if m == "rw"),
-                )
-            )
+            raise JailUnavailableError(self._why_unwritable())
 
     @staticmethod
     def _pump(proc: subprocess.Popen, q: "queue.Queue[Optional[str]]") -> None:
@@ -397,6 +510,7 @@ class Jail:
         if not self.alive():
             self.start()
         assert self.proc is not None and self.proc.stdin is not None
+        self._own()  # what the harness wrote since the last command is the harness's
         self.commands += 1
         rid = self.commands
         # the reply must echo this; it goes down the server's stdin only, never to the
@@ -525,6 +639,7 @@ def open_verifier_jail(shell: Jail, private: Path, tests: Path) -> Jail:
             mounts=((Path(private), VERIFY_PRIVATE, "rw"), (Path(tests), VERIFY_TESTS, "ro")),
             home="/tmp",
             reap=True,
+            idmap_base=shell.idmap_base,
         )
         jail.start()
     except (OSError, subprocess.SubprocessError) as exc:

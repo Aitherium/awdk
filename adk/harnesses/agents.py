@@ -348,6 +348,71 @@ def translate_genesis(event_name: str, payload: dict[str, Any]) -> list[HarnessE
     return [raw(json.dumps(payload)[:1500], event_type=name)]
 
 
+#: Where the company brain sits inside an AitherOS checkout.
+_BRAIN_REL = (".WORKFORCE", ".DAO-COMPANY-BRAIN", "brain")
+
+
+def _brain_dirs() -> list:
+    """Candidate brain directories: $WORKFORCE_BRAIN_PATH, then every plausible checkout."""
+    from pathlib import Path
+
+    out = []
+    env = os.environ.get("WORKFORCE_BRAIN_PATH", "").strip()
+    if env:
+        out.append(Path(env))
+    roots = []
+    if os.environ.get("AITHEROS_ROOT"):
+        roots.append(Path(os.environ["AITHEROS_ROOT"]))
+    try:
+        from adk.shell._repo_roots import candidate_repo_roots
+
+        roots += candidate_repo_roots()
+    except Exception:  # noqa: BLE001 - discovery is best effort
+        pass
+    out += [r.joinpath(*_BRAIN_REL) for r in roots]
+    return out
+
+
+def local_workforce(brain_dirs: Optional[Iterable[Any]] = None) -> Optional[list[dict[str, str]]]:
+    """The Workforce roster read from the brain pack on THIS machine, or None.
+
+    The brain is Markdown + YAML in the checkout (``brain/pack/<agent>/agent.yaml``),
+    the same files the awkit backend serves as ``/workforce/agents``. Reading them
+    here needs no service: measured 2026-10-02, the daemon's only path was Genesis
+    over ``http://localhost:8001``, which publishes no host port and has no such
+    route, so the OS showed "workforce unreachable" for a roster sitting on disk.
+    ``*-template`` agents are skeletons, not staff, and are left out.
+    """
+    from pathlib import Path
+
+    for d in (brain_dirs if brain_dirs is not None else _brain_dirs()):
+        pack = Path(d) / "pack"
+        if not pack.is_dir():
+            continue
+        roster: list[dict[str, str]] = []
+        for entry in sorted(pack.iterdir()):
+            spec_file = entry / "agent.yaml"
+            if (not entry.is_dir() or entry.name.startswith((".", "_"))
+                    or entry.name.endswith("-template") or not spec_file.is_file()):
+                continue
+            try:
+                import yaml
+
+                spec = yaml.safe_load(spec_file.read_text(encoding="utf-8")) or {}
+            except Exception:  # noqa: BLE001 - one bad spec must not hide the rest
+                spec = {}
+            if not isinstance(spec, dict):
+                spec = {}
+            agent_id = str(spec.get("name") or entry.name).strip()
+            roster.append({
+                "id": agent_id,
+                "label": str(spec.get("title") or spec.get("display_name") or agent_id.title()),
+                "role": " ".join(str(spec.get("description") or "").split()),
+            })
+        return roster
+    return None
+
+
 def fetch_workforce(base_url: str = "") -> tuple[list[dict[str, str]], str]:
     """Aitherium Workforce roster from Genesis. Returns ``(agents, reason)``.
 
@@ -356,6 +421,10 @@ def fetch_workforce(base_url: str = "") -> tuple[list[dict[str, str]], str]:
     list must be distinguishable from a service that did not answer — otherwise
     a down Workforce renders as "you have hired nobody".
     """
+    if not base_url:
+        local = local_workforce()
+        if local is not None:
+            return (local, "" if local else "the Workforce brain on this machine defines no agents")
     try:
         import httpx
     except ImportError:
