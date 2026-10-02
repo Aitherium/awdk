@@ -4,6 +4,54 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.42] - 2026-10-01
+
+### Added
+
+- **`adk home teach start`: a teacher's agent from one click.** The command a
+  downloadable launcher runs after it has installed awdk and a local model. It runs
+  `teach setup`, installs the start-at-logon entry when there is none, starts the agent
+  now (restarting one that was running before the setup, since the classroom tools and
+  the sign-in are read when it starts), waits for it to answer, and opens the Aither
+  Classroom agent page with a one-time pairing code in the URL fragment, so the page is
+  connected without a code being read off a console and typed. It exits 0 only when the
+  agent answered, holds the classroom tools and is signed in; every other outcome is
+  named in plain words, and no line it prints is a command to type. `--no-open`,
+  `--no-autostart`, `--no-signin`, `--page`, `--url`, `--json`.
+- **`GET /browser/status` on the local channel.** A page on an allowlisted origin can
+  ask, before it has paired, whether an agent is running here: `running`, the awdk
+  `version`, `teacher` (the classroom tools are on in the running process),
+  `local_model`, `model_up` and `signed_in`. Booleans and the version only: no agent
+  name, model name, owner, token or path. Other origins and non-loopback hosts are
+  refused exactly as on every other `/browser/*` path, and the answer is reused for
+  three seconds so a polling page costs one model probe per window.
+- `https://academy.aitherium.com` joins the default browser-pairing origins
+  (`$HEARTH_BROWSER_ORIGINS` still replaces the list).
+- **`adk home teach stop`.** Stops this home's running agent, and only one that proved
+  it holds this home's token: a `local.token` left by a dead agent names a process id
+  that may belong to another program by now. The launcher's remover runs it, so an agent
+  the launcher started by itself does not go on listening from deleted files.
+- **`teach start` restarts an agent started from an older awdk.** The launcher upgrades
+  awdk on every open; an agent whose reported version differs from the installed one is
+  stopped and started again instead of running on while it loads the new files piece by
+  piece.
+- **`teach start` rewrites a start-at-logon entry that names another Python.** The
+  entry's name is shared with any earlier `adk home serve --install`; one left by another
+  interpreter (pipx, an older venv) started that other awdk at every logon and was used
+  to start the agent now. It is replaced, the agent it started is restarted from this
+  awdk, and the change is said.
+- **`teach start` says when it changed an existing agent's model.** On a home that ran
+  another model, the switch to the model on this computer is printed with the previous
+  provider (`model_previous` in the result) instead of being swallowed.
+
+### Fixed
+
+- **`adk home model --check` on a fresh home probed an empty address.** A home made by
+  `adk home init` stores no `base_url`, and the probe asked `"" + /models`, so every new
+  home reported its local model as unreachable (`UnsupportedProtocol`) even with Bonsai
+  answering on 127.0.0.1:8080. The probe now asks the preset's endpoint, the one the
+  agent itself dials.
+
 ## [3.8.41] - 2026-10-01
 
 ### Fixed

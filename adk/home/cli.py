@@ -10,6 +10,8 @@
     adk home signin                             Sign in with Aitherium: purchases unlock
     adk home license <file-or-text>             offline activation (pasted license)
     adk home teach setup [--url U]              teacher agent: local Bonsai + classroom tools
+    adk home teach start                        one click: setup, run at logon, open the page
+    adk home teach stop                         stop this home's running agent (the remover)
     adk home chat "hello"                       one message to your agent
     adk home calendar [today|"this week"|..]    your built-in + subscribed calendars
     adk home calendar add "tomorrow 9:00" "Dentist"   (also: move, delete, refresh)
@@ -133,6 +135,18 @@ def _build(p: argparse.ArgumentParser) -> None:
     ts.add_argument("--no-signin", action="store_true", help="Do not sign in now")
     ts.add_argument("--keep-model", action="store_true",
                     help="Keep the model already chosen instead of local Bonsai")
+    tg = tes.add_parser("start", help="One click: setup, start at logon, start now, and "
+                                      "open the Classroom page already connected")
+    tg.add_argument("--url", default="", help="Classroom API root (as `teach setup`)")
+    tg.add_argument("--page", default="", help="The page to open (default the Aither "
+                    "Classroom agent page; its origin must be allowed to pair)")
+    tg.add_argument("--no-signin", action="store_true", help="Do not sign in now")
+    tg.add_argument("--no-open", action="store_true", help="Do not open a browser")
+    tg.add_argument("--no-autostart", action="store_true",
+                    help="Do not start the agent at logon")
+    tes.add_parser("stop", help="Stop this home's running agent (what the remover runs "
+                                "before it deletes the toolkit)")
+    tg.add_argument("--json", action="store_true", help="Print the result as JSON")
 
     c = hs.add_parser("chat", help="Send one message to your agent")
     c.add_argument("message")
@@ -163,7 +177,8 @@ def _build(p: argparse.ArgumentParser) -> None:
                     "default 8363) that `adk home say` and awsh /hearth talk to")
     sv.add_argument("--browser", action="store_true",
                     help="Print a one-time code a web page (hearth.aitherium.com, "
-                    "aitherium.com; $HEARTH_BROWSER_ORIGINS) exchanges to chat with this "
+                    "aitherium.com, academy.aitherium.com; $HEARTH_BROWSER_ORIGINS) "
+                    "exchanges to chat with this "
                     "serve over the local channel. Later codes: `adk home connect-browser`")
     svi = sv.add_mutually_exclusive_group()
     svi.add_argument("--install", action="store_true",
@@ -432,12 +447,34 @@ def cmd_signin(args: argparse.Namespace) -> int:
 
 
 def cmd_teach(args: argparse.Namespace) -> int:
-    """``adk home teach setup`` (see :mod:`adk.home.teach_setup`)."""
+    """``adk home teach setup|start`` (see :mod:`adk.home.teach_setup`)."""
+    from . import teach_setup
+
+    if getattr(args, "teach_command", None) == "start":
+        try:
+            out = teach_setup.start(
+                getattr(args, "url", ""),
+                page=getattr(args, "page", "") or teach_setup.DEFAULT_PAGE,
+                signin=not getattr(args, "no_signin", False),
+                open_page=not getattr(args, "no_open", False),
+                autostart=not getattr(args, "no_autostart", False),
+                do_signin=lambda: cmd_signin(argparse.Namespace(portal_url="")))
+        except hc.HomeError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_SETUP
+        if getattr(args, "json", False):
+            print(json.dumps(out, default=str))
+        return EXIT_OK if out.get("ready") else EXIT_FAIL
+    if getattr(args, "teach_command", None) == "stop":
+        stopped = teach_setup.stop_serve()
+        print("agent: stopped." if stopped else "agent: none was running.")
+        return EXIT_OK if stopped else EXIT_FAIL
     if getattr(args, "teach_command", None) != "setup":
-        print("usage: adk home teach setup [--url URL] [--no-signin] [--keep-model]",
+        print("usage: adk home teach setup [--url URL] [--no-signin] [--keep-model]\n"
+              "       adk home teach start [--url URL] [--page URL] [--no-open]\n"
+              "       adk home teach stop",
               file=sys.stderr)
         return EXIT_SETUP
-    from . import teach_setup
 
     try:
         out = teach_setup.setup(

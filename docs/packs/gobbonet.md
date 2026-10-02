@@ -1,12 +1,12 @@
 # GobboPack
 
-`gobbonet` · version `3.8.41` · 58.3 KB
+`gobbonet` · version `3.8.42` · 58.3 KB
 
-**[Download gobbonet-3.8.41.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.41/gobbonet-3.8.41.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.41/gobbonet-3.8.41.sha256)
+**[Download gobbonet-3.8.42.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.42/gobbonet-3.8.42.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.42/gobbonet-3.8.42.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.41/gobbonet-3.8.41.tar.gz
-tar xzf gobbonet-3.8.41.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.42/gobbonet-3.8.42.tar.gz
+tar xzf gobbonet-3.8.42.tar.gz
 python gobbonet/install.py
 ```
 
@@ -367,5 +367,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `78767eaa1663ca3c5b6d72f347519b16febf175ea81bc4d9cfad3bd1a410f43e`  
-Built from `v3.8.41` (adk 3.8.41). [All packs](../packs.md)
+sha256 `2589144fd6800a2768eb1d6263d7d3788f382789ee42482e26d6d2d03e50b5a3`  
+Built from `v3.8.42` (adk 3.8.42). [All packs](../packs.md)

@@ -1,8 +1,9 @@
 """Browser pairing for the ``local`` Hearth channel: a web page talks to YOUR serve.
 
-A page on an allowlisted origin (by default ``https://hearth.aitherium.com`` and
-``https://aitherium.com``) can chat with the ``adk home serve`` running on this
-machine, so the brain answering is your own model (Bonsai on your CPU or GPU),
+A page on an allowlisted origin (by default ``https://hearth.aitherium.com``,
+``https://aitherium.com`` and ``https://academy.aitherium.com``) can chat with the
+``adk home serve`` running on this machine, so the brain answering is your own
+model (Bonsai on your CPU or GPU),
 not ours. The page never sees ``<home>/local.token``. Instead:
 
 1. ``adk home connect-browser`` (or ``adk home serve --browser``) asks the running
@@ -29,6 +30,12 @@ allowlisted is refused on every path, an allowlisted origin may reach
 ``/browser/*`` only, and CORS answers (with ``Access-Control-Allow-Private-Network``
 for Chrome's private-network preflight) are sent for allowlisted origins only.
 No cookies are involved, so ``Access-Control-Allow-Credentials`` is never sent.
+
+One path needs no bearer: ``GET /browser/status`` (:data:`STATUS_PATH`). It answers an
+allowlisted page that has not paired yet with four facts about the RUNNING serve --
+the awdk version, whether the classroom tools are on, whether the model runs on this
+computer, whether the home holds a sign-in -- and nothing that names a person, an
+agent, a class or a file. It is how a setup page says "running" without a terminal.
 """
 
 from __future__ import annotations
@@ -47,12 +54,13 @@ from ..config import HomeError
 
 __all__ = [
     "DEFAULT_ORIGINS", "ORIGINS_ENV", "CODE_TTL_S", "SESSION_TTL_S", "MAX_PAIR_FAILS",
-    "BROWSER_PREFIX", "BrowserPairing", "BrowserGuard", "browser_origins",
+    "BROWSER_PREFIX", "STATUS_PATH", "BrowserPairing", "BrowserGuard", "browser_origins",
     "normalize_code",
 ]
 
 #: The pages allowed to pair with a home serve unless ``$HEARTH_BROWSER_ORIGINS`` says otherwise.
-DEFAULT_ORIGINS: Tuple[str, ...] = ("https://hearth.aitherium.com", "https://aitherium.com")
+DEFAULT_ORIGINS: Tuple[str, ...] = ("https://hearth.aitherium.com", "https://aitherium.com",
+                                    "https://academy.aitherium.com")
 ORIGINS_ENV = "HEARTH_BROWSER_ORIGINS"
 #: Seconds a pairing code stays valid.
 CODE_TTL_S = 300.0
@@ -65,6 +73,8 @@ MAX_OPEN_CODES = 3
 #: Browser sessions held at once; pairing another drops the oldest.
 MAX_SESSIONS = 8
 BROWSER_PREFIX = "/browser/"
+#: The one /browser/* path that needs no bearer (see the module doc).
+STATUS_PATH = "/browser/status"
 #: No 0/O/1/I/L: the code is read off a terminal and typed by hand.
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 CODE_LEN = 8

@@ -53,6 +53,8 @@ Endpoints (all but /hello need the bearer):
 Browser endpoints (:mod:`adk.home.transports.browser`; an allowlisted ``Origin``
 and, after pairing, the BROWSER bearer -- never the file token):
 
+    GET  /browser/status   no bearer: {"running", "version", "teacher", "local_model",
+                           "model_up", "signed_in"} -- booleans only, nothing personal
     POST /browser/pair     {"code"} -> {"token", "expires_in", "agent"}
     POST /browser/say      {"text"} -> as /message
     GET  /browser/state    pending approval card, reminders, receipts + verdict
@@ -83,7 +85,13 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from ..._private_file import PrivateFileError, restrict_owner_only
 from ..config import HomeError, home_dir
 from ._webhook import UvicornRunner, read_capped
-from .browser import SESSION_TTL_S, BrowserGuard, BrowserPairing, browser_origins
+from .browser import (
+    SESSION_TTL_S,
+    STATUS_PATH,
+    BrowserGuard,
+    BrowserPairing,
+    browser_origins,
+)
 
 logger = logging.getLogger("adk.home.transports.local")
 
@@ -108,6 +116,10 @@ BACKLOG = 50
 SUBSCRIBER_QUEUE = 100
 #: Seconds between SSE keep-alive comments.
 KEEPALIVE_S = 15.0
+#: Seconds /browser/status waits for the home's model endpoint.
+STATUS_PROBE_S = 1.5
+#: Seconds one /browser/status answer is reused.
+STATUS_CACHE_S = 3.0
 #: An approval card as :meth:`HearthCore._card` writes it.
 CARD_RE = re.compile(r"Reply `yes ([0-9a-f]{8})` to allow")
 #: The nonce a browser click answers a card with.
@@ -399,6 +411,48 @@ class LocalTransport:
         return {"agent": str(getattr(agent, "name", "") or ""), "model": model,
                 "pending": pending, "reminders": reminders}
 
+    def public_status(self) -> Dict[str, Any]:
+        """What an UNPAIRED allowlisted page may know: is a serve running, and can it
+        do classroom work? Booleans and the awdk version only -- no agent name, no
+        model name, no owner, no path. ``teacher`` is read off the tools the running
+        agent actually holds, so "on" means on in THIS process (a setup that ran
+        after serve started shows off until the restart). ``model_up`` is a live
+        probe of the home's model endpoint (blocking: call it off the event loop)."""
+        from adk import __version__
+
+        from .. import models
+        from ..config import load_config
+        from ..connector_tools import home_signed_in
+
+        # No bearer guards this path, so one answer serves every caller for a moment:
+        # a page polling it (or a loop hammering it) costs one model probe per window.
+        cached = getattr(self, "_status_cache", None)
+        if cached and time.monotonic() - cached[0] < STATUS_CACHE_S:
+            return dict(cached[1])
+        agent = getattr(self.core, "agent", None)
+        try:
+            names = {td.name for td in agent._tools.list_tools()}
+        except Exception:  # noqa: BLE001 - an agent without a registry holds no tools
+            names = set()
+        try:
+            signed_in = bool(home_signed_in())
+        except Exception as exc:  # noqa: BLE001 - unreadable config = not signed in
+            logger.debug("hearth: sign-in state unreadable: %s", type(exc).__name__)
+            signed_in = False
+        local_model = model_up = False
+        try:
+            model = load_config(self.root).model
+            local_model = models.is_local(model)
+            if local_model:
+                model_up = bool(models.probe(model, timeout=STATUS_PROBE_S).get("ok"))
+        except Exception as exc:  # noqa: BLE001 - no readable home = no local model
+            logger.debug("hearth: model state unreadable: %s", type(exc).__name__)
+        out = {"running": self.core is not None, "version": str(__version__),
+               "teacher": "class_brief" in names, "local_model": local_model,
+               "model_up": model_up, "signed_in": signed_in}
+        self._status_cache = (time.monotonic(), out)
+        return dict(out)
+
     def _ensure_owner(self) -> None:
         if not self.core.registry.is_owner(CHANNEL, self.user_id):
             self.core.bind_owner(CHANNEL, self.user_id, "local-token")
@@ -487,6 +541,10 @@ class LocalTransport:
             agent = getattr(transport.core, "agent", None)
             return JSONResponse({"token": token, "expires_in": int(SESSION_TTL_S),
                                  "agent": str(getattr(agent, "name", "") or "")})
+
+        async def browser_status(request: Any) -> Response:
+            return JSONResponse(await asyncio.to_thread(transport.public_status),
+                                headers={"Cache-Control": "no-store"})
 
         async def browser_say(request: Any) -> Response:
             if transport._browser_session(request) is None:
@@ -586,6 +644,7 @@ class LocalTransport:
             Route("/events", events, methods=["GET"]),
             Route("/receipts", receipts_view, methods=["GET"]),
             Route("/browser-code", browser_code, methods=["POST"]),
+            Route(STATUS_PATH, browser_status, methods=["GET"]),
             Route("/browser/pair", browser_pair, methods=["POST"]),
             Route("/browser/say", browser_say, methods=["POST"]),
             Route("/browser/state", browser_state, methods=["GET"]),

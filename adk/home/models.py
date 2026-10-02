@@ -149,7 +149,11 @@ def probe(cfg: ModelConfig, timeout: float = 3.0) -> Dict[str, Any]:
                 f"set {cfg.api_key_env} in your environment"}
     import httpx
 
-    url = cfg.base_url.rstrip("/")
+    # A home created by `adk home init` (and so by `teach setup`) stores no base_url:
+    # the preset's is what build_llm dials, so it is what the probe must ask. Probing
+    # the empty string reported every fresh home as "/models unreachable".
+    preset = PRESETS.get(cfg.provider)
+    url = (cfg.base_url or (preset.base_url if preset else "")).rstrip("/")
     url = f"{url}/api/tags" if cfg.provider == "ollama" else f"{url}/models"
     try:
         r = httpx.get(url, timeout=timeout)
