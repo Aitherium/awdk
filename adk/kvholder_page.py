@@ -27,4 +27,6 @@ def __getattr__(name: str) -> str:
         return _read("index.html")
     if name == "SWARM_HTML":
         return _read("swarm.html")
+    if name == "STATE_JS":
+        return _read("state.js")
     raise AttributeError(name)

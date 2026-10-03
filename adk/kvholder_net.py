@@ -713,6 +713,10 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             from adk.kvholder_page import HOLDER_JS
 
             return self._send(200, "text/javascript; charset=utf-8", HOLDER_JS.encode())
+        if route == "/state.js":
+            from adk.kvholder_page import STATE_JS
+
+            return self._send(200, "text/javascript; charset=utf-8", STATE_JS.encode())
         return self._send(404, "text/plain", b"not found")
 
     def _join(self, path: str, hdrs: dict, relay: Relay) -> None:

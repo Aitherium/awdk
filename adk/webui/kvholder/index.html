@@ -218,6 +218,7 @@ body {
 </div></footer>
 
 <script src="holder.js"></script>
+<script src="state.js"></script>
 <script>
 (function () {
   'use strict';
@@ -243,7 +244,7 @@ body {
   if (CHOICES.indexOf(budgetMb) < 0) budgetMb = 2048;
   let ws = null, lock = null, engine = null, holder = null, deviceName = 'browser';
   let phase = 'starting', lastErr = '', stopped = false, retryAt = 0, armed = 0, cfgSeen = false;
-  let prevCalls = 0, lastCallAt = 0, rate = 0;
+  let prevCalls = 0, calls = KVState.counter(), rate = 0;
   const samples = new Array(60).fill(0), log = [];
 
   function event(text) {
@@ -261,12 +262,11 @@ body {
   function view() {
     const h = holder, cfg = h && h.cfg;
     const keys = cfg ? h.maxHeld() : 0;
-    // Active means a call arrived in the last 5 s, and the rate shown is over those same 5 s,
-    // so the page never says Active next to 0 calls/s
-    const now = Date.now(), busy = rate > 0;
-    const ago = lastCallAt ? Math.round((now - lastCallAt) / 1000) : -1;
-    let st = phase;
-    if (phase === 'attached') st = !cfg ? 'waiting' : busy ? 'active' : keys ? 'holding' : 'ready';
+    // the 5 s rule lives in state.js (tested under Node): Active only with calls in the window
+    const now = Date.now();
+    const der = KVState.derive(phase, !!cfg, keys, calls, now / 1000), st = der.state;
+    rate = der.rate;
+    const ago = der.ago === null ? -1 : Math.round(der.ago);
     const copy = {
       starting: ['Starting', 'Starting the attention engine on this device.', 'warn', 'starting'],
       connecting: ['Connecting', 'Dialing the relay.', 'warn', 'dialing'],
@@ -332,9 +332,8 @@ body {
   setInterval(() => {
     const c = holder ? holder.calls : 0, d = Math.max(0, c - prevCalls);
     prevCalls = c;
-    if (d) lastCallAt = Date.now();
+    KVState.observe(calls, Date.now() / 1000, c);
     samples.push(d); samples.shift();
-    rate = samples.slice(-5).reduce((a, x) => a + x, 0) / 5;
     drawSpark(); view();
     $('clock').textContent = new Date().toTimeString().slice(0, 5);
   }, 1000);
@@ -392,7 +391,7 @@ body {
     await makeEngine();
     // one holder per lend amount: a reconnect re-announces the keys it kept, so the relay swaps
     // the link and loses nothing
-    if (!holder) { holder = new KVHolder.Holder(engine, budgetMb * 1048576, deviceName); prevCalls = 0; }
+    if (!holder) { holder = new KVHolder.Holder(engine, budgetMb * 1048576, deviceName); prevCalls = 0; calls = KVState.counter(); }
     phase = 'connecting'; view();
     ws = KVHolder.connect(url, token, holder, {
       session: (s) => { token = s; },  // a join link works once; reconnect with the session
