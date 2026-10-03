@@ -179,8 +179,8 @@ def cmd_use(args: Any, cat: Dict[str, Any]) -> int:
     if role == "embedding":
         _say(f"Embedding endpoint: {cfg['embeddings_url']} ({args.id}). The chat backend "
              "was not changed.")
-        _say(f"  adk reads the embedding space from the environment: set "
-             f"AITHER_EMBED_SPACE={args.id}")
+        _say(f"  adk now embeds in the {args.id} space (saved embed_space; "
+             "AITHER_EMBED_SPACE still overrides it)")
     else:
         _say(f"Chat backend: {cfg['inference_url']} serving {args.id} as "
              f"{cfg['default_model']}. adk status / adk start now use it.")

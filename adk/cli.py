@@ -10694,14 +10694,25 @@ def cmd_status(args):
             icon = "+" if status == "UP" else "-"
             print(f"  [{icon}] {name:12s} {url:45s} {status}")
 
-        # Scan additional vLLM ports
-        for extra_port in [8201, 8202, 8203, 8209]:
+        # Scan additional vLLM ports, plus the active space's embed lane: in the
+        # aither-code-embed space that is :8229 (`adk models use aither-code-embed`),
+        # which a :8209-only scan never saw.
+        try:
+            from adk.embeddings import embed_lane_port
+
+            _embed_port = embed_lane_port()
+        except Exception:  # noqa: BLE001 -- an unknown space keeps the nomic scan
+            _embed_port = 8209
+        _scan = [(p, "vLLM") for p in (8201, 8202, 8203, 8209)]
+        if _embed_port not in (8201, 8202, 8203, 8209):
+            _scan.append((_embed_port, "Embeddings"))
+        for extra_port, _label in _scan:
             try:
                 async with httpx.AsyncClient(timeout=2.0) as c:
                     r = await c.get(f"http://localhost:{extra_port}/health")
                     if r.status_code == 200:
                         url = f"http://localhost:{extra_port}"
-                        print(f"  [+] {'vLLM':12s} {url:45s} UP")
+                        print(f"  [+] {_label:12s} {url:45s} UP")
             except Exception:
                 pass
 

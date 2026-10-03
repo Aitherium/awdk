@@ -55,7 +55,8 @@ FACT_MAX_CHARS = 400
 MAX_FACTS_PER_COMPACTION = 40
 #: Recall reads at most this many rows from the scope before ranking.
 SCAN_LIMIT = 200
-#: Vectors are stored rounded: 768 floats at 4 decimals is ~5 KB per fact.
+#: Vectors are stored rounded: 768 floats (nomic; 1024 in the aither-code-embed space)
+#: at 4 decimals is ~5 KB (~7 KB) per fact.
 VEC_DECIMALS = 4
 
 _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
@@ -362,16 +363,27 @@ def _gateway_embed_fallback() -> tuple[str, dict]:
 
 
 def make_scheduler_embedder(url: str | None = None, model: str | None = None) -> Embedder:
-    """An OpenAI-compatible ``/v1/embeddings`` embedder (MicroScheduler serves
-    ``nomic-embed-text``; measured 2026-09-22 at https://127.0.0.1:8150/v1).
+    """An OpenAI-compatible ``/v1/embeddings`` embedder (MicroScheduler; measured
+    2026-09-22 at https://127.0.0.1:8150/v1).
+
+    The model and width follow the active space (:mod:`adk.embeddings` is the
+    authority): ``nomic-embed-text`` 768-d, or ``aither-code-embed`` 1024-d. In the
+    code-embed space a vector of any other width is refused (``None``, never stored),
+    exactly as ``adk.embeddings._width_ok`` refuses it, and a leftover nomic
+    ``ADK_EMBED_MODEL`` is stale config, not a choice.
 
     With no explicit ``url``/``ADK_EMBED_URL`` the loopback scheduler is only the
     FIRST choice: a hosted tenant's box has nothing on :8150, so an unreachable
     scheduler falls back (once, then sticky) to the managed gateway rung that
     :mod:`adk.embeddings` uses, carrying the tenant bearer."""
+    from adk import embeddings as space  # read at call time: tests reload the space
+
     explicit = url or os.environ.get("ADK_EMBED_URL")
     base = (explicit or "https://127.0.0.1:8150/v1").rstrip("/")
-    name = model or os.environ.get("ADK_EMBED_MODEL") or "nomic-embed-text"
+    name = model or os.environ.get("ADK_EMBED_MODEL") or space.CANONICAL_MODEL
+    code_embed = space.EMBED_SPACE == space.SPACE_CODE_EMBED
+    if code_embed and space._is_nomic_model(name):
+        name = space.CANONICAL_MODEL
     state: dict[str, Any] = {"base": base, "headers": {}, "fell_back": bool(explicit)}
 
     async def _embed(texts: list[str]) -> list[Optional[list[float]]]:
@@ -391,12 +403,21 @@ def make_scheduler_embedder(url: str | None = None, model: str | None = None) ->
             async with httpx.AsyncClient(timeout=30.0, verify=verify) as client:
                 async def _one(text: str) -> Optional[list[float]]:
                     r = await client.post(f"{state['base']}/embeddings",
-                                          json={"model": name, "input": text},
+                                          json={"model": name,
+                                                "input": space._truncate(text)},
                                           headers=state["headers"])
                     r.raise_for_status()
                     data = r.json().get("data") or []
                     vec = data[0].get("embedding") if data else None
-                    return [float(x) for x in vec] if vec else None
+                    if not vec:
+                        return None
+                    if code_embed and len(vec) != space.CANONICAL_DIM:
+                        logger.warning(
+                            "crystal: %s answered a %d-d vector in the %s space (want "
+                            "%d); refused", state["base"], len(vec), space.EMBED_SPACE,
+                            space.CANONICAL_DIM)
+                        return None
+                    return [float(x) for x in vec]
 
                 return list(await asyncio.gather(*(_one(t) for t in texts)))
 

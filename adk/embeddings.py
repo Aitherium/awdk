@@ -78,6 +78,8 @@ __all__ = [
     "CANONICAL_DIM",
     "CANONICAL_MAX_CHARS",
     "EMBED_SPACE",
+    "embed_lane_port",
+    "installer_embed_model",
     "AdkEmbeddings",
     "get_provider",
     "get_default_embedder",
@@ -211,6 +213,22 @@ def _width_ok(vec) -> bool:
 _VLLM_GENERIC_PORT = 8120
 _OLLAMA_PORT = 11434
 _OLLAMA_EMBED_MODEL = "nomic-embed-text"  # Ollama's name for the same 768-d model
+
+
+def embed_lane_port() -> int:
+    """The local port of the active space's embedder: 8229 (``adk models use
+    aither-code-embed``) in the code-embed space, 8209 in nomic. adk status / doctor
+    probe it so they see the lane this install actually embeds through."""
+    return _VLLM_EMBED_PORT
+
+
+def installer_embed_model() -> str:
+    """The embedder an installer pulls for the active space.
+
+    nomic: the Ollama name ``nomic-embed-text``. code-embed: the catalogue id
+    ``aither-code-embed`` -- a GGUF that ``adk models pull/use`` serves on :8229, NOT an
+    Ollama model (``ollama pull aither-code-embed`` has nothing to pull)."""
+    return SPACE_CODE_EMBED if _CE else _OLLAMA_EMBED_MODEL
 
 # The managed OpenAI-compatible v1 plane. gateway.aitherium.com answers 404 for
 # /v1/* (measured 2026-08-31, see adk.cli) — the v1 API lives on mcp.aitherium.com.

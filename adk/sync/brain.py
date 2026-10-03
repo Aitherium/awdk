@@ -102,7 +102,8 @@ class SyncDeltaItem:
     Attrs:
         op: "upsert" or "delete"
         chunk_id: Unique identifier (min 1 char)
-        vector: Optional embedding vector (768-dim or None to skip semantic search)
+        vector: Optional embedding vector in the active space (768-d nomic / 1024-d
+                aither-code-embed), or None to skip semantic search
         metadata: Arbitrary dict (typically {text, source, offset, ...})
         classification: public|internal|confidential|restricted (default: internal)
     """

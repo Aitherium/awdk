@@ -25,15 +25,17 @@ embedder captures call/def structure. Never mix them in one graph.
 | your material | embedder | why |
 |---|---|---|
 | a **codebase** (`.py`, `.ts`, `.go`, …) | `code` (CodeRankEmbed) | function/def-level similarity, call graph |
-| **docs / a KB** (`.md`, `.pdf`, prose) | `text` (nomic-embed-text, 768-dim) | semantic prose retrieval |
+| **docs / a KB** (`.md`, `.pdf`, prose) | `text` (nomic-embed-text, 768-dim; this recipe serves on :8209) | semantic prose retrieval |
 | **both** | two graphs, one per space | querying code with a text embedder returns garbage |
 
 `--as` overrides the guess. If the path is mostly source, default to `code`.
 
 ## Step 1 — Stand up (and PROVE) the embedder
 
-Skip this if you're using the fleet's already-running embedder at
-`https://…:8209` — just verify it. Otherwise:
+Skip this if you're using the embedder your install already runs — just verify it.
+That is the active space's lane: `:8209` (nomic-embed-text, 768-d) in the nomic space,
+`:8229` (`aither-code-embed`, 1024-d; `adk models use aither-code-embed`) in the
+code-embed space. `adk doctor` / `adk status` probe the one in use. Otherwise:
 
 ```bash
 python -m adk.toolpacks.graphrag detect                       # what fits
@@ -48,15 +50,16 @@ python -m adk.toolpacks.graphrag verify-embedder --embedder text --base-url http
 ```
 
 - `healthy` — up **and** returns a vector of the expected dimension (768 for
-  nomic-embed-text). Only now proceed.
+  nomic-embed-text, 1024 for aither-code-embed). Only now proceed.
 - `wrong_dimension` (exit 4) — it loaded as the wrong task/checkpoint. The vectors
   would be silently incompatible with the graph store. **Stop and fix** before
   ingesting — everything downstream would be poisoned.
 - `degraded`/`unknown` — still loading or not up. Wait, re-check.
 
-**Fleet-parity trap:** `nomic-embed-text` (768-dim) is the fleet's canonical vector
-space — its memory/RAG are keyed on it. If you want your graph to interoperate with
-the fleet's store, serve *that* embedder, not a different one. A different embedder
+**Fleet-parity trap:** the fleet's memory/RAG are keyed on ONE active space — 768-d
+`nomic-embed-text` or 1024-d `aither-code-embed` (`AITHER_EMBED_SPACE`; `adk.embeddings`
+reports it as `EMBED_SPACE`). If you want your graph to interoperate with the fleet's
+store, serve *that space's* embedder, not a different one. A different embedder
 = an island.
 
 ## Step 2 — Ingest
@@ -141,7 +144,7 @@ A scheduled ingest keeps the agent's answers current without a separate pipeline
 |---|---|---|
 | agent answers confidently but wrong | queried an `empty` graph | `verify-retrieval` first; never ship `empty` |
 | retrieval returns garbage | wrong embedder for the material (text on code) | separate graphs, right embedder per space |
-| vectors "don't match the fleet" | served a non-canonical text embedder | use `nomic-embed-text` (768-dim) for parity |
+| vectors "don't match the fleet" | served an embedder outside the active space | use the active space's embedder (768-d nomic / 1024-d aither-code-embed) |
 | `verify-embedder` says wrong_dimension | model loaded as generative, not embed | `--task embed`; check the served model id |
 | `adk query` not found | that command doesn't exist | for a *mesh* agent use `adk chat <agent> <msg>`; for a *local ingest graph* use `verify-retrieval` (queries the store) |
 | `verify-retrieval` says healthy but graph is empty | routed retrieval through `adk chat` (mesh) whose error text counted as a hit | fixed — it queries `~/.aither/graph/<agent>.db` directly; a false-positive here is the exact trap to avoid |

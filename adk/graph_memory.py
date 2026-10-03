@@ -1,7 +1,8 @@
 """Local knowledge graph — entity extraction, embeddings, hybrid search.
 
 Zero external dependencies beyond httpx (already required). Uses SQLite for
-storage, Ollama nomic-embed-text for embeddings (falls back to feature hashing).
+storage, the active embedding space via adk.embeddings (768-d nomic-embed-text or
+1024-d aither-code-embed; falls back to feature hashing).
 
 This is a lightweight port of AitherOS MemoryGraph. Key differences:
   - SQLite instead of pickle (single file, no HMAC needed)
@@ -85,7 +86,10 @@ _REL_TO_UNIFIED_EDGE: dict[str, str] = {
     "uses": "related", "depends_on": "related", "connects_to": "related",
 }
 
-_EMBED_DIM = 384  # Match nomic-embed-text small dimension
+# Legacy raw-Ollama path only (AITHER_GRAPH_EMBEDDER=legacy). 384 is the feature-hash
+# fallback width, NOT a model's: nomic-embed-text is 768-d and aither-code-embed 1024-d
+# (the active space lives in adk.embeddings).
+_EMBED_DIM = 384
 _OLLAMA_URL = "http://localhost:11434"
 _EMBED_MODEL = "nomic-embed-text"
 
@@ -377,7 +381,8 @@ class GraphMemory:
         #
         # When NO embedder is injected, default to the canonical adk.embeddings
         # provider (self-resolving: local vLLM → Ollama → gateway → auto-deploy →
-        # CPU/hash), so every agent shares ONE portable 768-d embedding space.
+        # CPU/hash), so every agent shares ONE portable embedding space (the active
+        # space: 768-d nomic / 1024-d aither-code-embed).
         # Opt out with AITHER_GRAPH_EMBEDDER=legacy to keep the raw Ollama→hash path.
         self._embedder = embedder
         if self._embedder is None and os.getenv(
@@ -653,7 +658,8 @@ class GraphMemory:
         """Push one graph node to the per-tenant dataplane (best-effort).
 
         Mirrors adk.memory's KV ``/ingest`` contract. The node's content+label
-        is re-embedded by the dataplane in the SAME canonical 768-d space, so
+        is re-embedded by the dataplane in the SAME active space (768-d nomic /
+        1024-d aither-code-embed), so
         vectors stay portable. Returns True on 200/201.
         """
         if not self._fleet_enabled or not self._fleet_url:

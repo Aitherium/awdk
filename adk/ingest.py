@@ -8,7 +8,8 @@ Features:
   - Directory walker with DEFAULT EXCLUSIONS (.git, node_modules, venvs, >50MB)
   - Mandatory secret guard (skip .env/credentials/keys, scan for sk-, ghp_, etc.)
   - Chunking with semantic boundaries (Markdown, code blocks) + fixed-size fallback
-  - Embeddings via canonical adk.embeddings (768-d nomic-embed-text)
+  - Embeddings via canonical adk.embeddings (the active space: 768-d nomic-embed-text
+    or 1024-d aither-code-embed)
   - Local SQLite storage (~/.aither/graph/*)
   - Brain delta push with watermark tracking
   - Graceful degradation (local-only, fallback on brain unreachable)

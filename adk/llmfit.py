@@ -100,10 +100,11 @@ _ODS_BACKEND_PREFIXES = (
 def _canonical_embedding_tier() -> dict[str, Any]:
     """The embedding tier, which ODS structurally cannot answer.
 
-    `adk.embeddings` is the SDK's single embedding provider (768-d
-    nomic-embed-text) — every scope resolves through it so vectors stay
-    portable. Reporting that here keeps `recommend_config()`'s five-tier shape
-    honest instead of handing back a chat model with an "embedding" label.
+    `adk.embeddings` is the SDK's single embedding provider (the active space:
+    768-d nomic-embed-text, or 1024-d aither-code-embed) — every scope resolves
+    through it so vectors stay portable. Reporting that here keeps
+    `recommend_config()`'s five-tier shape honest instead of handing back a chat
+    model with an "embedding" label.
     """
     try:
         from adk.embeddings import CANONICAL_DIM, CANONICAL_MODEL
@@ -121,7 +122,7 @@ def _canonical_embedding_tier() -> dict[str, Any]:
         "dimension": CANONICAL_DIM,
         "reason": (
             "The ODS catalog contains no embedding models; embeddings resolve "
-            "through adk.embeddings, the SDK's canonical 768-d provider."
+            f"through adk.embeddings, the SDK's canonical {CANONICAL_DIM}-d provider."
         ),
     }
 

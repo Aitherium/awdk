@@ -43,7 +43,7 @@ Each item carries `doc_id`, `score`, `modality`, `title`, `content`, `metadata`.
 | Need | Endpoint |
 |---|---|
 | Semantic similarity | `POST /v1/vector/search` — `{query, collection, limit, filters}` (embeddings generated server-side) |
-| Embed one text without storing | `POST /v1/vector/embed` — returns the 768-dim vector |
+| Embed one text without storing | `POST /v1/vector/embed` — returns the vector of the active space (768-d nomic / 1024-d aither-code-embed) |
 | Full-text (tsvector) | `POST /v1/text/search` — `{query, limit, filters}` |
 | Typo-tolerant short text | `POST /v1/text/search` with `"fuzzy": true` (trigram similarity) |
 | Hybrid with weights | `POST /v1/hybrid/search` — `{query, weights: {text, vector, graph}}` |

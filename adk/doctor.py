@@ -75,11 +75,25 @@ def check_ollama() -> tuple[bool, list[str]]:
         return False, []
 
 
+def _embed_lane_port() -> int:
+    """The active space's local embedder port (8229 code-embed, 8209 nomic)."""
+    try:
+        from adk.embeddings import embed_lane_port
+
+        return embed_lane_port()
+    except Exception:  # noqa: BLE001 -- an unknown space still gets the nomic probe
+        return 8209
+
+
 def check_vllm() -> tuple[bool, list[str]]:
     import urllib.request
     import urllib.error
 
     ports = [8000, 8201, 8202, 8203, 8209]   # not 8200: that's media-forge, not an LLM
+    # The embed lane this install actually uses (`adk models use aither-code-embed`
+    # serves :8229); probing only :8209 left the code-embed lane invisible.
+    if _embed_lane_port() not in ports:
+        ports.append(_embed_lane_port())
 
     # Add user-configured ports
     extra = os.environ.get("AITHER_VLLM_PORTS", "")
@@ -102,7 +116,8 @@ def check_vllm() -> tuple[bool, list[str]]:
             pass
 
     if not found:
-        _fail("vLLM: no instances found on ports 8000, 8201-8203, 8209")
+        _fail("vLLM: no instances found on ports 8000, 8201-8203, "
+              + ", ".join(str(p) for p in ports[4:]))
     return bool(found), found
 
 
@@ -133,7 +148,7 @@ def check_dgx() -> tuple[bool, list[str]]:
 
     # Auto-scan common DGX Spark addresses
     for host in ("spark.local", "192.168.0.33"):
-        for port in (8000, 8120, 8209):
+        for port in dict.fromkeys((8000, 8120, 8209, _embed_lane_port())):
             try:
                 req = urllib.request.Request(f"http://{host}:{port}/v1/models")
                 with urllib.request.urlopen(req, timeout=2) as resp:

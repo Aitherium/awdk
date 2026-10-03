@@ -334,6 +334,59 @@ def _select_profile(gpu: GPUInfo, ram_gb: float) -> str:
     return "minimal"
 
 
+_NOMIC_OLLAMA = "nomic-embed-text"
+
+
+def _active_embeddings():
+    """:mod:`adk.embeddings`, or None when ``AITHER_EMBED_SPACE`` names no known space.
+
+    That module raises at import on an unknown space (memory writes must not guess).
+    An installer is not a memory write: before the space existed setup / deploy never
+    imported it, so a typo there keeps the old nomic behaviour, loudly, the same as
+    ``adk doctor`` / ``adk status`` fall back to the nomic probe."""
+    try:
+        from adk import embeddings  # read at call time: the space can be reloaded
+    except ValueError as exc:
+        logger.warning(f"{exc}; installing the nomic embedder")
+        return None
+    return embeddings
+
+
+def _embed_model() -> str:
+    """The embedder the active space pulls (:mod:`adk.embeddings` is the authority):
+    ``nomic-embed-text`` via Ollama, or the ``aither-code-embed`` catalogue GGUF."""
+    mod = _active_embeddings()
+    return mod.installer_embed_model() if mod else _NOMIC_OLLAMA
+
+
+def _pull_code_embed(model_id: str) -> bool:
+    """Fetch the code-embed GGUF and serve it on the embed lane (:8229), the same as
+    ``adk models pull`` + ``adk models use``. -> True when the GGUF is on disk.
+
+    A serve failure (no llama-server from the Bonsai installer, port taken) is logged
+    and leaves the file in place for ``adk models use``; the pull still succeeded.
+    """
+    from adk.config import save_saved_config
+    from adk.models import catalogue, download, serve
+
+    try:
+        m = catalogue.get(catalogue.load(), model_id)
+        gguf, _ = download.fetch_model(m, serve.models_dir(), say=logger.info)
+    except Exception as exc:  # noqa: BLE001 -- catalogue/download errors are reported
+        logger.error(f"Failed to pull {model_id}: {exc}")
+        return False
+    if serve._healthy(serve.EMBED_PORT):
+        logger.info(f"{model_id}: an embedder already answers on :{serve.EMBED_PORT}")
+        return True
+    try:
+        serve.start(m, gguf, serve.EMBED_PORT, say=logger.info)
+        save_saved_config(dict(serve.backend_config(m, serve.EMBED_PORT)))
+    except Exception as exc:  # noqa: BLE001 -- served later by `adk models use`
+        logger.warning(f"{model_id} pulled but not served ({exc}); "
+                       f"run: adk models use {model_id}")
+    return True
+
+
 def _recommended_models(profile: str) -> list[str]:
     """Return recommended Ollama models for a profile.
 
@@ -358,7 +411,9 @@ def _recommended_models(profile: str) -> list[str]:
         "workstation": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
         "server": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
     }
-    return models.get(profile, models["cpu_only"])
+    embed = _embed_model()
+    return [embed if m == _NOMIC_OLLAMA else m
+            for m in models.get(profile, models["cpu_only"])]
 
 
 async def _recommended_models_llmfit() -> list[str] | None:
@@ -378,7 +433,7 @@ async def _recommended_models_llmfit() -> list[str] | None:
     - balanced (general)
     - reasoning
     - coding
-    - embedding (always nomic-embed-text for Ollama compatibility)
+    - embedding (the active space's: nomic-embed-text, or aither-code-embed)
     """
     try:
         from adk.llmfit import get_llmfit
@@ -412,8 +467,9 @@ async def _recommended_models_llmfit() -> list[str] | None:
             ordered.append(model_name)
 
     # Always include an embedding model (llmfit doesn't track these well yet)
-    if "nomic-embed-text" not in seen:
-        ordered.append("nomic-embed-text")
+    embed = _embed_model()
+    if embed not in seen:
+        ordered.append(embed)
 
     logger.info("llmfit recommended models: %s", ordered)
     return ordered if ordered else None
@@ -814,8 +870,15 @@ class AgentSetup:
             return models
 
         pulled = []
+        embed = _embed_model()
+        code_embed = embed if embed != _NOMIC_OLLAMA else ""
         for model in to_pull:
             logger.info(f"Pulling {model}...")
+            if model == code_embed:
+                # a catalogue GGUF served by llama.cpp, not an Ollama model
+                if await asyncio.to_thread(_pull_code_embed, model):
+                    pulled.append(model)
+                continue
             rc, out, err = await _run(["ollama", "pull", model], timeout=600.0)
             if rc == 0:
                 pulled.append(model)

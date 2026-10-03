@@ -328,6 +328,45 @@ TIERS: dict[str, dict] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# The embedding space (adk.embeddings is the authority)
+# ---------------------------------------------------------------------------
+
+_NOMIC_EMBED = "nomic-embed-text"
+
+
+def _code_embed_model() -> str:
+    """The code-embed catalogue id in the aither-code-embed space, else "".
+
+    In that space the nomic embedder is a model of the retired space: ``ollama pull
+    nomic-embed-text`` and the 768-d vLLM worker on :8209 feed a lane adk.embeddings
+    refuses. An unknown space keeps nomic, loudly (adk.setup._active_embeddings)."""
+    from adk.setup import _embed_model
+
+    embed = _embed_model()
+    return "" if embed == _NOMIC_EMBED else embed
+
+
+def _space_workers(workers: list[VLLMWorker], code_embed: str) -> list[VLLMWorker]:
+    """``workers`` minus the nomic embeddings worker when ``code_embed`` is set; that
+    space's embedder is the catalogue GGUF on the :8229 lane (adk.setup._pull_code_embed)."""
+    if not code_embed:
+        return list(workers)
+    return [w for w in workers if w.served_name != _NOMIC_EMBED]
+
+
+def _serve_code_embed(model_id: str, dry_run: bool) -> None:
+    """Pull + serve the code-embed GGUF on :8229, as ``adk models pull/use`` do."""
+    if dry_run:
+        info(f"Would pull + serve: {model_id} (llama.cpp, :8229)")
+        return
+    from adk.setup import _pull_code_embed
+
+    info(f"Pulling: {bold(model_id)} (catalogue GGUF, served on :8229)...")
+    if not _pull_code_embed(model_id):
+        warn(f"Failed to pull {model_id}; retry: adk models pull {model_id}")
+
+
 def recommend_tier(gpu: GPUInfo) -> str:
     # Non-NVIDIA: prefer llama.cpp (Vulkan / Metal / CPU) over Ollama for
     # endpoint installs — same OpenAI API, no Docker, runs as native service,
@@ -372,9 +411,9 @@ def _find_free_port(preferred: int, used: set[int]) -> int:
     return preferred  # give up, let Docker report the conflict
 
 
-def generate_compose(tier_id: str, hf_token: str = "") -> str:
+def generate_compose(tier_id: str, hf_token: str = "", code_embed: str = "") -> str:
     tier = TIERS[tier_id]
-    workers = tier["workers"]
+    workers = _space_workers(tier["workers"], code_embed)
 
     # Resolve port conflicts before generating compose
     used_ports: set[int] = set()
@@ -545,14 +584,17 @@ def setup_ollama(gpu: GPUInfo, dry_run: bool = False) -> int:
     warn("For parallel agent fleets, use an NVIDIA GPU + vLLM.")
     print()
 
+    code_embed = _code_embed_model()
     models_to_pull = []
     for name, desc, min_vram in OLLAMA_RECOMMENDED:
         if vram_gb >= min_vram or gpu.vendor == "none":
+            if name == _NOMIC_EMBED and code_embed:
+                name, desc = code_embed, "Aither code-embed — vector search (1024-d)"
             models_to_pull.append(name)
             info(f"Will pull: {name} — {desc}")
 
     if not models_to_pull:
-        models_to_pull = ["llama3.2:3b", "nomic-embed-text"]
+        models_to_pull = ["llama3.2:3b", code_embed or _NOMIC_EMBED]
         info(f"Low VRAM — using compact models: {', '.join(models_to_pull)}")
 
     running = _run(["ollama", "list"])
@@ -572,6 +614,10 @@ def setup_ollama(gpu: GPUInfo, dry_run: bool = False) -> int:
                 existing.add(parts[0].split(":")[0])
 
     for model in models_to_pull:
+        if model == code_embed:
+            # a catalogue GGUF served by llama.cpp, not an Ollama model
+            _serve_code_embed(model, dry_run)
+            continue
         base = model.split(":")[0]
         if base in existing or model in existing:
             info(f"Already have: {model}")
@@ -1454,6 +1500,7 @@ def cmd_setup(args) -> int:
     print()
 
     recommended = forced_tier or recommend_tier(gpu)
+    code_embed = _code_embed_model()
 
     if forced_tier:
         tier_id = forced_tier
@@ -1466,9 +1513,10 @@ def cmd_setup(args) -> int:
         print(f"  {'Tier':<12} {'Workers':<35} {'VRAM':<10} {'Download'}")
         print(f"  {'-'*12} {'-'*35} {'-'*10} {'-'*10}")
         for tid, tier in TIERS.items():
-            workers_str = " + ".join(w.name for w in tier["workers"])
-            vram_need = sum(w.vram_gb for w in tier["workers"])
-            dl = sum(w.download_gb for w in tier["workers"])
+            tier_workers = _space_workers(tier["workers"], code_embed)
+            workers_str = " + ".join(w.name for w in tier_workers)
+            vram_need = sum(w.vram_gb for w in tier_workers)
+            dl = sum(w.download_gb for w in tier_workers)
             fits = vram_gb * 0.85 >= tier["min_vram_gb"]
             status = green("fits") if fits else red("too big")
             print(f"  {bold(tid):<20} {workers_str:<35} ~{vram_need:.0f}GB {status:<18} ~{dl:.0f}GB")
@@ -1480,7 +1528,10 @@ def cmd_setup(args) -> int:
         info(f"Recommended: {bold(recommended)}")
         tier_id = ask("Select tier", default=recommended, choices=list(TIERS.keys()))
 
-    tier = TIERS[tier_id]
+    # In the code-embed space the nomic worker leaves the compose; that tier's embedder
+    # is the catalogue GGUF on :8229 instead (served after the containers start).
+    tier = {**TIERS[tier_id], "workers": _space_workers(TIERS[tier_id]["workers"], code_embed)}
+    serve_code_embed = len(tier["workers"]) < len(TIERS[tier_id]["workers"])
     info(f"{tier['name']}: {tier['desc']}")
 
     total_dl = sum(w.download_gb for w in tier["workers"])
@@ -1505,7 +1556,7 @@ def cmd_setup(args) -> int:
     # ── Step 5: Generate + Start ──────────────────────────────────
     step(5, total_steps, "Starting vLLM containers")
 
-    compose_content = generate_compose(tier_id, hf_token)
+    compose_content = generate_compose(tier_id, hf_token, code_embed)
 
     if dry_run:
         info(f"Would write: {compose_path}")
@@ -1525,6 +1576,8 @@ def cmd_setup(args) -> int:
                 info(f"{w.name}: {green('healthy')}")
             else:
                 warn(f"{w.name}: still loading (docker logs adk-vllm-{w.name})")
+    if serve_code_embed:
+        _serve_code_embed(code_embed, dry_run)
 
     # ── Reasoning API collection (hybrid tier or --reasoning-api) ──
     reasoning_api_key = ""
@@ -1582,6 +1635,10 @@ def cmd_setup(args) -> int:
     for w in tier["workers"]:
         print(f"  {green('*')} {bold(w.name)}: http://localhost:{w.port}/v1")
         print(f"    Model: {w.model} ({w.served_name})")
+    if serve_code_embed:
+        lane = "http://localhost:8229/v1"  # embedder-direct-ok: a summary line, not a dial
+        print(f"  {green('*')} {bold('embeddings')}: {lane}")
+        print(f"    Model: {code_embed} (llama.cpp, adk models use {code_embed})")
     print()
     print(f"  {bold('Run your agent:')}")
     print(f"    {cyan('adk run')}")

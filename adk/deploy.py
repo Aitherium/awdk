@@ -138,6 +138,18 @@ _OLLAMA_MODELS_BY_VRAM = {
 }
 
 
+
+def _space_models(models: list[str]) -> list[str]:
+    """``models`` with nomic swapped for the active space's embedder.
+
+    In the aither-code-embed space (:mod:`adk.embeddings`) ``ollama pull
+    nomic-embed-text`` pulls a model of the retired space; the install embeds through
+    the ``aither-code-embed`` GGUF instead. nomic space: unchanged."""
+    from adk.setup import _embed_model  # an unknown space keeps the nomic pull
+
+    embed = _embed_model()
+    return [embed if m == "nomic-embed-text" else m for m in models]
+
 # ---------------------------------------------------------------------------
 # Helper: Authentication gate
 # ---------------------------------------------------------------------------
@@ -735,7 +747,8 @@ def deploy_ollama(dry_run: bool = False, models: Optional[list[str]] = None) -> 
         models_to_pull = list(models)
         info(f"Using explicit model list: {', '.join(models_to_pull)}")
     else:
-        models_to_pull = list(_OLLAMA_MODELS_BY_VRAM.get(tier, _OLLAMA_MODELS_BY_VRAM["none"]))
+        models_to_pull = _space_models(
+            _OLLAMA_MODELS_BY_VRAM.get(tier, _OLLAMA_MODELS_BY_VRAM["none"]))
         info(f"Auto-selected for {bold(tier)} tier: {', '.join(models_to_pull)}")
 
     # Estimate resource usage
@@ -743,7 +756,7 @@ def deploy_ollama(dry_run: bool = False, models: Optional[list[str]] = None) -> 
     size_estimates = {
         "gemma4:4b": 2.5, "gemma4:27b": 16.0,
         "nemotron-orchestrator-8b": 5.0, "deepseek-r1:14b": 9.0,
-        "deepseek-r1:7b": 4.5, "nomic-embed-text": 0.3,
+        "deepseek-r1:7b": 4.5, "nomic-embed-text": 0.3, "aither-code-embed": 0.6,
         "qwen3:8b": 5.0, "llama3.2:3b": 2.0,
     }
     for m in models_to_pull:
@@ -774,6 +787,16 @@ def deploy_ollama(dry_run: bool = False, models: Optional[list[str]] = None) -> 
             continue
 
         info(f"Pulling: {bold(model)} ...")
+        if model == "aither-code-embed":
+            # a catalogue GGUF served by llama.cpp on :8229, not an Ollama model
+            from adk.setup import _pull_code_embed
+
+            if _pull_code_embed(model):
+                info(f"  {green('OK')}")
+                pulled += 1
+            else:
+                failed += 1
+            continue
         try:
             result = subprocess.run(
                 ["ollama", "pull", model],
@@ -1910,6 +1933,87 @@ def _parse_simple_yaml(text: str) -> dict:
         return result
 
 
+#: The overlay's code-embed service. The PUBLIC mainline llama.cpp server image pinned
+#: by digest (build 11312, the same pin as adk.cli's ling-tiny-8b tier); CPU-only, which
+#: a 0.6B embedder does not need more than.
+_CODE_EMBED_IMAGE = ("ghcr.io/ggml-org/llama.cpp@sha256:"
+                     "23fd59bc5e5b06ca68003a5772d441f0411fb723eeaff850b9111bcd2ac4fd33")
+_CODE_EMBED_SERVICE = "code-embed"
+
+
+def _code_embed_active() -> bool:
+    """True in the aither-code-embed space. An unknown space is nomic here, loudly
+    (:func:`adk.setup._active_embeddings`), as it was before the space existed."""
+    from adk.setup import _active_embeddings
+
+    mod = _active_embeddings()
+    return bool(mod) and mod.EMBED_SPACE == mod.SPACE_CODE_EMBED
+
+
+def _embedding_env_lines() -> list[str]:
+    """The overlay's EMBEDDING_* env for the active space.
+
+    nomic: Ollama's ``nomic-embed-text`` (unchanged). aither-code-embed: the overlay's
+    own ``code-embed`` service (OpenAI shape) and the space itself, so the app never
+    writes 768-d vectors into a 1024-d index."""
+    if not _code_embed_active():
+        return [
+            '      EMBEDDING_PROVIDER: "ollama"',
+            '      EMBEDDING_URL: "http://ollama:11434"',
+            '      EMBEDDING_MODEL: "nomic-embed-text"',
+        ]
+    from adk import embeddings
+    from adk.models.serve import EMBED_PORT
+
+    return [
+        f'      AITHER_EMBED_SPACE: "{embeddings.SPACE_CODE_EMBED}"',
+        '      EMBEDDING_PROVIDER: "openai"',
+        f'      EMBEDDING_URL: "http://{_CODE_EMBED_SERVICE}:{EMBED_PORT}/v1"',
+        f'      EMBEDDING_MODEL: "{embeddings.SPACE_CODE_EMBED}"',
+    ]
+
+
+def _code_embed_service_lines() -> list[str]:
+    """The ``code-embed`` compose service: the catalogue GGUF served on the stack network.
+
+    NOT the host lane. ``adk models use`` serves :8229 on 127.0.0.1 only (models/serve.py:
+    0.0.0.0 would publish an unauthenticated server to the LAN), so from a container on a
+    native Linux engine ``host.docker.internal`` -> the bridge IP finds nothing listening.
+    Here llama-server binds 0.0.0.0 INSIDE the container and publishes no port: only the
+    ``sovereign-network`` peers reach it, as the nomic path reaches the ``ollama`` service.
+    The GGUF is the one ``adk models pull aither-code-embed`` / ``adk deploy ollama`` put
+    in the Bonsai models dir, mounted read-only."""
+    from adk import embeddings
+    from adk.models import catalogue, serve
+
+    model_id = embeddings.SPACE_CODE_EMBED
+    gguf = catalogue.get(catalogue.load(), model_id)["file"]
+    models = serve.models_dir()
+    if not (models / gguf).is_file():
+        warn(f"{gguf} is not in {models}: run `adk models pull {model_id}` before "
+             f"starting this overlay, or its {_CODE_EMBED_SERVICE} service cannot load")
+    port = serve.EMBED_PORT
+    return [
+        f"  {_CODE_EMBED_SERVICE}:",
+        f"    image: {_CODE_EMBED_IMAGE}",
+        f"    container_name: sovereign-{_CODE_EMBED_SERVICE}",
+        "    restart: unless-stopped",
+        f'    command: ["--model", "/models/{gguf}", "--embedding", "--alias", "{model_id}",'
+        f' "--host", "0.0.0.0", "--port", "{port}"]',
+        "    volumes:",
+        f"      - {str(models).replace(chr(92), '/')}:/models:ro",
+        "    healthcheck:",
+        f'      test: ["CMD", "curl", "-sf", "http://localhost:{port}/health"]',
+        "      interval: 30s",
+        "      timeout: 5s",
+        "      start_period: 60s",
+        "      retries: 3",
+        "    networks:",
+        "      - default",
+        "",
+    ]
+
+
 def _generate_app_overlay(
     app_id: str,
     manifest: dict,
@@ -1961,10 +2065,9 @@ def _generate_app_overlay(
         f'      {prefix}_QDRANT_URL: "http://qdrant:6333"',
         f'      {prefix}_QDRANT_COLLECTION: "{slug}_{tenant}"',
         f'      OLLAMA_URL: "http://ollama:11434"',
-        f'      EMBEDDING_PROVIDER: "ollama"',
-        f'      EMBEDDING_URL: "http://ollama:11434"',
-        f'      EMBEDDING_MODEL: "nomic-embed-text"',
     ])
+    env_lines.extend(_embedding_env_lines())
+    code_embed = _code_embed_active()
 
     env_block = "\n".join(env_lines)
     app_name = manifest.get("name", slug)
@@ -1992,6 +2095,8 @@ def _generate_app_overlay(
         "        condition: service_healthy",
         "      qdrant:",
         "        condition: service_healthy",
+        *([f"      {_CODE_EMBED_SERVICE}:", "        condition: service_healthy"]
+          if code_embed else []),
         "    healthcheck:",
         f'      test: ["CMD", "curl", "-sf", "http://localhost:{port}{hc_path}"]',
         "      interval: 30s",
@@ -2011,6 +2116,7 @@ def _generate_app_overlay(
         "    networks:",
         "      - default",
         "",
+        *(_code_embed_service_lines() if code_embed else []),
         "  # Override workspace-app to inject brain pack + brand for this app",
         "  workspace-app:",
         "    environment:",
