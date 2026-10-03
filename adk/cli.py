@@ -13662,7 +13662,7 @@ def _register_commands(sub):
     sb_sub.add_parser("status", help="Show sandbox state + linked URL")
 
     # adk kvholder — lend this device's memory to another host's context window (PATN v3)
-    from adk.kvholder import register as _register_kvholder
+    from adk.kvholder_cli import register as _register_kvholder
     _register_kvholder(sub)
 
     down_p = sub.add_parser("down", help="Stop the agent + tunnel and remove its autostart")
@@ -16961,7 +16961,7 @@ def main():
     elif args.command == "routing":
         sys.exit(cmd_routing(args))
     elif args.command == "kvholder":
-        from adk.kvholder import run as _run_kvholder
+        from adk.kvholder_cli import run as _run_kvholder
         sys.exit(_run_kvholder(args))
     elif args.command == "join":
         from adk.commands.join import cmd_join

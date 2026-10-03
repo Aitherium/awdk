@@ -683,6 +683,14 @@ def _free_bytes() -> int:
 
 
 def register(sub) -> None:
+    """The verbs live in adk.kvholder_cli (numpy-free); this copy is for a standalone file."""
+    try:
+        from adk.kvholder_cli import register as _register
+    except ImportError:
+        _register = None
+    if _register is not None:
+        _register(sub)
+        return
     p = sub.add_parser(
         "kvholder",
         help="Lend this device's memory to another host's context window (PATN v3 KV holder)",
@@ -722,11 +730,6 @@ def register(sub) -> None:
     )
     pl.add_argument("--profile", choices=sorted(PROFILES), default="qwen38-27b")
     pl.add_argument("--kv", choices=sorted(KV_TYPES), default="q8_0")
-    try:  # the transports; absent when this file is copied alone onto a device
-        from adk import kvholder_net
-    except ImportError:
-        return
-    kvholder_net.register(s)
 
 
 def run(args) -> int:

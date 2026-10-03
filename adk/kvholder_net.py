@@ -911,49 +911,6 @@ def holder_url(base: str, token: str) -> str:
 # ---------------------------------------------------------------- CLI
 
 
-def register(s) -> None:
-    ph = s.add_parser(
-        "phone", help="Use a phone (or any browser) as the holder: USB, LAN, mesh or tunnel"
-    )
-    ph.add_argument(
-        "--via",
-        choices=["usb", "lan", "tunnel", "local"],
-        default="usb",
-        help="usb: adb reverse + open the page on the phone (default); lan: bind every "
-        "interface (mesh too); tunnel: public https via awtunnel; local: this machine",
-    )
-    ph.add_argument(
-        "--port", type=int, default=kv.DEFAULT_PORT, help="engine-side PATN port (loopback)"
-    )
-    ph.add_argument("--web-port", type=int, default=DEFAULT_WS_PORT, help="page + WebSocket port")
-    ph.add_argument("--host", default="", help="address to bind/advertise for --via lan (mesh IP)")
-    ph.add_argument("--token", default="", help="reuse a token (default: a fresh one)")
-    ph.add_argument("--serial", default="", help="adb device serial when several are plugged in")
-    st = s.add_parser("relay-status", help="Is a holder attached to the local relay")
-    st.add_argument("--web-port", type=int, default=DEFAULT_WS_PORT)
-    el = s.add_parser(
-        "elastic",
-        help="Add holders on demand (CI runners via awrun, or any machine), one join token each",
-    )
-    el.add_argument("--count", type=int, default=1, help="holders to add")
-    el.add_argument("--minutes", type=int, default=30, help="how long each lends its memory")
-    el.add_argument("--max-mb", type=int, default=4096, help="memory each holder lends")
-    el.add_argument(
-        "--workflow",
-        default="kvholder-runner.yml",
-        help="a workflow_dispatch workflow in your repo that runs `adk kvholder serve --connect` "
-        "(inputs: relay, join, minutes, max_mb)",
-    )
-    el.add_argument("--ref", default="develop")
-    el.add_argument("--priority", type=int, default=5, help="awrun priority")
-    el.add_argument(
-        "--print-only",
-        action="store_true",
-        help="mint the tokens and print one command per holder; launch nothing",
-    )
-    el.add_argument("--dry-run", action="store_true", help="show what would be launched")
-
-
 def run_phone(args) -> int:
     token = args.token or secrets.token_urlsafe(18)
     bind = "127.0.0.1"
