@@ -447,11 +447,22 @@ class Relay:
         self.broken = ""
         for h in self.holders:
             self._place(h)
+        lost = False
         for h in list(self.holders):
-            rep = self._call(h, msg)
+            try:
+                rep = self._call(h, msg)
+            except HolderLostError:
+                lost = True  # a closed link (hidden tab, reload): _call already detached it
+                continue
             if _type(rep) != kv.OK:
                 self.cfg = None
                 return rep
+        if not self.holders:
+            self.cfg = None
+            return _err("no holder attached")
+        if lost:  # nothing is held yet: re-place the survivors over the gap
+            for h in self.holders:
+                self._place(h)
         return _msg(kv.OK, b"")
 
     def _append(self, p: bytes) -> bytes:
@@ -1219,9 +1230,17 @@ def run_phone(args) -> int:
                 file=sys.stderr,
             )
         else:
-            # every phone on the cable joins (one swarm), unless --serial picks one: a bare
-            # `adb reverse` with several phones plugged in fails with "more than one device"
-            for serial in [args.serial] if args.serial else devs:
+            # several phones on one host belong to several people and sessions: open the page
+            # on one only when it is named, or on all with --serial all (a swarm), never by guess
+            pick = devs if args.serial == "all" else [args.serial] if args.serial else devs[:1]
+            if len(devs) > 1 and not args.serial:
+                pick = []
+                print(
+                    f"kvholder: {len(devs)} phones on adb ({', '.join(devs)}); opened none. "
+                    "Pick one with --serial SERIAL, or --serial all for a swarm",
+                    file=sys.stderr,
+                )
+            for serial in pick:
                 err = adb_link(args.web_port, url, serial)
                 print(f"kvholder: {serial}: {err}" if err else f"kvholder: opened on {serial}")
         print(f"phone URL: {url}   (localhost on the phone = WebGPU allowed)")

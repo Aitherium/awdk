@@ -83,7 +83,12 @@ def register(sub) -> None:
     ph.add_argument("--web-port", type=int, default=DEFAULT_WS_PORT, help="page + WebSocket port")
     ph.add_argument("--host", default="", help="address to bind/advertise for --via lan (mesh IP)")
     ph.add_argument("--token", default="", help="reuse a token (default: a fresh one)")
-    ph.add_argument("--serial", default="", help="adb device serial when several are plugged in")
+    ph.add_argument(
+        "--serial",
+        default="",
+        help="adb serial of the phone to use (required when several are plugged in); "
+        "'all' opens the page on every phone (a swarm)",
+    )
     ph.add_argument(
         "--mesh",
         action="store_true",

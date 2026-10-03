@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import subprocess
 
+import pytest
+
 from adk import kvholder_net as net
 
 
@@ -86,8 +88,6 @@ def test_relay_answers_only_for_a_relay():
 def test_a_second_relay_on_the_same_port_fails_loudly():
     import socket
 
-    import pytest
-
     def free() -> int:
         s = socket.socket()
         s.bind(("127.0.0.1", 0))
@@ -108,7 +108,7 @@ def test_a_second_relay_on_the_same_port_fails_loudly():
         net.stop_relay(r, servers)
 
 
-def test_usb_links_every_phone_on_the_cable(monkeypatch, tmp_path, capsys):
+def test_usb_opens_only_named_phones(monkeypatch, tmp_path, capsys):
     import argparse
     import socket
 
@@ -132,9 +132,56 @@ def test_usb_links_every_phone_on_the_cable(monkeypatch, tmp_path, capsys):
         via="usb", port=free(), web_port=free(), host="", token="tk", serial="", mesh=False
     )
     assert net.run_phone(args) == 0
-    assert linked == ["A", "B", "C"]
+    assert linked == []  # three phones, none named: open nothing, never guess
     assert "/swarm#m=tk" in capsys.readouterr().out
+    args.port, args.web_port, args.serial = free(), free(), "all"
+    net.run_phone(args)
+    assert linked == ["A", "B", "C"]
     linked.clear()
     args.port, args.web_port, args.serial = free(), free(), "B"
     net.run_phone(args)
     assert linked == ["B"]
+
+
+def test_config_drops_a_dead_link_and_succeeds():
+    """A hidden or reloaded tab leaves a closed link: CONFIG must skip it, not fail the engine."""
+    import socket
+    import threading
+    import time
+
+    from adk import kvholder as kv
+
+    np = pytest.importorskip("numpy")
+
+    def free() -> int:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    ep, wp = free(), free()
+    r, servers = net.start_relay("tk", ("127.0.0.1", ep), ("127.0.0.1", wp))
+    try:
+        for name in ("a", "b"):
+            h = kv.KVHolder(8 << 20, device=name)
+            threading.Thread(
+                target=net.dial_holder,
+                args=(f"ws://127.0.0.1:{wp}/holder", "tk", h, True),
+                daemon=True,
+            ).start()
+        end = time.time() + 10
+        while len(r.holders) < 2 and time.time() < end:
+            time.sleep(0.05)
+        assert len(r.holders) == 2
+        dead, alive = r.holders[0].device, r.holders[1].device
+        r.holders[0].ws.sock.close()  # the link died; the relay has not noticed yet
+        c = kv.KVHolderClient("127.0.0.1", ep, timeout=30)
+        c.configure(kv.Config.for_model(1, 1, "q8_0"))  # raises on the old behaviour
+        assert [h.device for h in r.holders] == [alive] and r.holders[0].off == 0
+        assert dead != alive
+        k = np.ones((4, 1, kv.HD), np.float32)
+        assert c.append(0, 0, k, k) == 4
+        c.close()
+    finally:
+        net.stop_relay(r, servers)
