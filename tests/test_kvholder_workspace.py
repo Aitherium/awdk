@@ -304,3 +304,78 @@ def test_awsh_tools_read_the_swarm_and_can_only_revoke(tmp_path, monkeypatch):
     assert tools["awsh_kvholder_workspace_deny"]({"device_id": "kvh-fold"})["lend"] is False
     assert kw.Grants().allowed("kvh-fold") is False
     assert not any("allow" in n for n in tools)  # lending is switched on by the owner only
+
+
+def _household(env, rows, status=200):
+    fake = {"status": status, "rows": rows}
+    hh = kw.Household(fetch=lambda: (fake["status"], dict(fake["rows"])))
+    hh.refresh()
+    env["gate"].household = hh
+    return fake, hh
+
+
+def _child(env, kv_lend, revoked=False):
+    child = ed.Ed25519PrivateKey.generate()
+    env["ident"].keys["fdev_kid"] = _pub_hex(child)
+    env["keys"].refresh()
+    row = {"device_id": "fdev_kid", "profile_kind": "child", "kv_lend": kv_lend, "revoked": revoked}
+    return child, row
+
+
+def test_child_device_lends_only_when_the_owner_switched_kv_lend_on(ws_relay):
+    env = ws_relay
+    child, row = _child(env, kv_lend=False)
+    env["grants"].set("fdev_kid", True)  # a local allow does NOT override the household switch
+    fake, hh = _household(env, {"fdev_kid": row})
+    hello = lambda: kw.sign_hello(child, "127.0.0.1", "fdev_kid")  # noqa: E731
+    ok, why = env["gate"].admit(hello())
+    assert ok is None and "child" in why
+    fake["rows"]["fdev_kid"] = {**row, "kv_lend": True}
+    hh.refresh()
+    assert env["gate"].admit(hello())[0] == "fdev_kid"
+    fake["rows"]["fdev_kid"] = {**row, "kv_lend": True, "revoked": True}
+    hh.refresh()
+    assert env["gate"].admit(hello())[0] is None
+
+
+def test_household_switch_off_revokes_an_attached_child(ws_relay):
+    env = ws_relay
+    child, row = _child(env, kv_lend=True)
+    fake, hh = _household(env, {"fdev_kid": row})
+    _dial(env, child, device_id="fdev_kid", once=False)
+    assert _wait(lambda: env["relay"].holder is not None)
+    fake["status"] = 503  # registry outage: nothing is revoked
+    hh.refresh()
+    assert kw.sweep(env["relay"], env["gate"]) == []
+    fake["status"], fake["rows"] = 200, {"fdev_kid": {**row, "kv_lend": False}}
+    hh.refresh()
+    assert kw.sweep(env["relay"], env["gate"]) == ["fdev_kid"]
+    assert env["relay"].holder is None
+
+
+def test_household_device_is_refused_while_the_registry_cannot_vouch(ws_relay, monkeypatch):
+    env = ws_relay
+    child, row = _child(env, kv_lend=True)
+    _household(env, {"fdev_kid": row})
+    monkeypatch.setattr(kw, "KEYS_STALE_S", -1.0)  # registry answer too old
+    ok, why = env["gate"].may_lend("fdev_kid")
+    assert not ok and "unreachable" in why
+
+
+def test_mesh_admit_network_refuses_a_child_unless_the_owner_enabled_it(ws_relay):
+    """The --mesh-admit path applies the same owner decision as the public listener."""
+    from adk import kvholder_mesh as mesh
+
+    env = ws_relay
+    child, row = _child(env, kv_lend=False)
+    fake, hh = _household(env, {"fdev_kid": row})
+    door = mesh.Door(env["relay"], env["wp"], ["127.0.0.0/8"], name="t")
+    try:
+        signed = kw.sign_hello(child, "127.0.0.1", "fdev_kid")
+        assert door.request("127.0.0.1", "kid", "a" * 64, signed)[1]["status"] == "pending"
+        fake["rows"]["fdev_kid"] = {**row, "kv_lend": True}
+        hh.refresh()
+        signed = kw.sign_hello(child, "127.0.0.1", "fdev_kid")
+        assert door.request("127.0.0.1", "kid", "b" * 64, signed)[1]["status"] == "approved"
+    finally:
+        door.close()

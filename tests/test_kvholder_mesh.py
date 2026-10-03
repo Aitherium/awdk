@@ -121,12 +121,29 @@ def test_denied_request_raises(relay):
         mesh.request_join(base, "x", wait_s=10, poll_s=0.1, on_code=deny_when_seen)
 
 
-def test_admit_network_skips_the_owner(relay):
+class _Gate:
+    """A stand-in for adk.kvholder_workspace.DeviceGate: admits one signed device id."""
+
+    def __init__(self, ok: str):
+        self.ok = ok
+
+    def admit(self, hello):
+        did = hello.get("device_id")
+        return (did, "") if did == self.ok else (None, "not allowed")
+
+
+def test_admit_network_skips_the_owner_for_an_allowed_signed_device(relay):
     r, _, wp = relay
     _open(r, wp, admit=["127.0.0.1/32"])
+    r.device_gate = _Gate("kvh-dgx")
     states = []
     tok = mesh.request_join(
-        f"http://127.0.0.1:{wp}", "dgx", wait_s=5, poll_s=0.1, on_code=lambda c, s: states.append(s)
+        f"http://127.0.0.1:{wp}",
+        "dgx",
+        wait_s=5,
+        poll_s=0.1,
+        on_code=lambda c, s: states.append(s),
+        sign=lambda: {"device_id": "kvh-dgx"},
     )
     assert states == ["approved"] and r.admit(tok) == "join"
 
@@ -134,10 +151,24 @@ def test_admit_network_skips_the_owner(relay):
 def test_admit_network_does_not_cover_other_peers(relay):
     r, _, wp = relay
     door = _open(r, wp, admit=["100.64.0.0/10"])
-    _, doc = door.request("192.168.1.50", "lan", "a" * 64)
+    r.device_gate = _Gate("kvh-tail")
+    _, doc = door.request("192.168.1.50", "lan", "a" * 64, {"device_id": "kvh-tail"})
     assert doc["status"] == "pending"
-    _, doc = door.request("100.64.0.38", "tailnet", "b" * 64)
+    _, doc = door.request("100.64.0.38", "tailnet", "b" * 64, {"device_id": "kvh-tail"})
     assert doc["status"] == "approved"
+
+
+def test_admit_network_alone_never_admits(relay):
+    """An unsigned or not-allowed device on an admitted network waits for the owner's code."""
+    r, _, wp = relay
+    door = _open(r, wp, admit=["100.64.0.0/10"])
+    _, doc = door.request("100.64.0.38", "no-gate", "c" * 64, {"device_id": "kvh-x"})
+    assert doc["status"] == "pending"  # no workspace gate on this relay at all
+    r.device_gate = _Gate("kvh-ok")
+    _, doc = door.request("100.64.0.38", "unsigned", "d" * 64)
+    assert doc["status"] == "pending"
+    _, doc = door.request("100.64.0.38", "child", "e" * 64, {"device_id": "fdev_child"})
+    assert doc["status"] == "pending"
 
 
 def test_owner_routes_need_master_token(relay):

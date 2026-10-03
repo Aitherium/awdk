@@ -161,6 +161,12 @@ fi
 # Mesh discovery for the KV holder arrived after 3.8.49; use it when this adk has it.
 HOLDER_MESH=0
 if adk kvholder serve --help 2>/dev/null | grep -q -- '--mesh'; then HOLDER_MESH=1; fi
+# The workspace relay: outbound wss, signed in with this Deck's enrolled device key (adk
+# enroll), no token. The owner lets the Deck lend once: adk kvholder workspace allow <node id>
+HOLDER_CONNECT=
+if adk kvholder serve --help 2>/dev/null | grep -q -- '--device'; then
+  HOLDER_CONNECT=wss://kv.aitherium.com/holder
+fi
 
 # 4. Settings the guard reads. No secrets here; the sign-in lives in ~/.aither.
 cat > "$CONF_DIR/deck.env" <<EOF
@@ -172,7 +178,7 @@ DECK_REQUIRE_DOCK=$REQUIRE_DOCK
 # when empty and DECK_HOLDER_MESH=1, mesh discovery (tailnet peers / LAN). A mesh
 # join prints a 6-letter code in: journalctl --user -u aither-deck-holder
 # approve it on your desktop with: adk kvholder mesh approve CODE
-DECK_HOLDER_CONNECT=
+DECK_HOLDER_CONNECT=$HOLDER_CONNECT
 DECK_HOLDER_MESH=$HOLDER_MESH
 EOF
 chmod 600 "$CONF_DIR/deck.env"
@@ -232,7 +238,7 @@ Description=Aither: lend memory as a KV holder (started and stopped by aither-de
 Type=simple
 EnvironmentFile=$CONF_DIR/deck.env
 Environment=PATH=$BIN_DIR:/usr/bin:/bin
-ExecStart=/usr/bin/env bash -c 'if [ -n "\$DECK_HOLDER_CONNECT" ]; then exec $ADK_BIN kvholder serve --connect "\$DECK_HOLDER_CONNECT" --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; else exec $ADK_BIN kvholder serve --mesh --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; fi'
+ExecStart=/usr/bin/env bash -c 'if [ -n "\$DECK_HOLDER_CONNECT" ]; then exec $ADK_BIN kvholder serve --connect "\$DECK_HOLDER_CONNECT" --device --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; else exec $ADK_BIN kvholder serve --mesh --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; fi'
 Restart=on-failure
 RestartSec=60
 Nice=19

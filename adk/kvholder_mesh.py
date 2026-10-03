@@ -3,7 +3,9 @@
 The relay owner opens a **door** (``adk kvholder phone --via lan --mesh``). A holder on
 another machine runs ``adk kvholder serve --mesh``: it finds relays, asks one to let it in,
 and waits. The owner approves the request by its short code (``adk kvholder mesh approve
-CODE``, the awsh tool or the gateway tool), or a ``--mesh-admit`` network admits it at once.
+CODE``, the awsh tool or the gateway tool). A ``--mesh-admit`` network admits at once only a
+holder that signed in as a workspace device the owner lets lend (``Door._device_ok``); any
+other device on that network still waits for the code.
 The relay then hands that holder a **join token**: single-use, short-lived, minted on the
 engine host. The master token never leaves the engine host.
 
@@ -149,7 +151,20 @@ class Door:
             return False
         return any(ip in net for net in self.admit if net.version == ip.version)
 
-    def request(self, peer: str, device: str, claim_hash: str) -> tuple[int, dict]:
+    def _device_ok(self, signed: dict | None) -> bool:
+        """An auto-admit network admits a holder only when it signed in as a workspace device
+        the owner lets lend (adk.kvholder_workspace: local allow, or the household registry's
+        kv_lend; a child's phone is refused unless the owner switched it on). A network alone
+        never admits: an unknown device on it waits for the owner's code like any other."""
+        gate = getattr(self.relay, "device_gate", None)
+        if gate is None or not isinstance(signed, dict):
+            return False
+        did, _why = gate.admit(signed)
+        return bool(did)
+
+    def request(
+        self, peer: str, device: str, claim_hash: str, signed: dict | None = None
+    ) -> tuple[int, dict]:
         if len(claim_hash) != 64 or any(c not in "0123456789abcdef" for c in claim_hash):
             return 400, {"error": "x-kv-claim-hash must be sha256 hex"}
         with self.lock:
@@ -173,7 +188,7 @@ class Door:
                 "token": "",
             }
             self.requests[rid] = r
-            if self._admitted(peer):
+            if self._admitted(peer) and self._device_ok(signed):
                 self._approve(r, by="admit")
         return 200, {"id": rid, "code": code, "status": r["status"]}
 
@@ -265,8 +280,12 @@ def handle_http(handler, path: str, hdrs: dict, relay) -> None:
     if route == "/mesh":
         return reply(200, {**door.hello(), "holders": len(relay.holders)})
     if route == "/mesh/request":
+        try:
+            signed = json.loads(hdrs.get("x-kv-device-auth", "") or "null")
+        except ValueError:
+            signed = None
         code, doc = door.request(
-            peer, hdrs.get("x-kv-device", ""), hdrs.get("x-kv-claim-hash", "").lower()
+            peer, hdrs.get("x-kv-device", ""), hdrs.get("x-kv-claim-hash", "").lower(), signed
         )
         return reply(code, doc)
     if route == "/mesh/claim":
@@ -472,17 +491,20 @@ def discover(
 
 
 def request_join(
-    base: str, device: str, wait_s: float = 600.0, poll_s: float = 2.0, on_code=None
+    base: str, device: str, wait_s: float = 600.0, poll_s: float = 2.0, on_code=None, sign=None
 ) -> str:
-    """File a request at ``base`` and wait for the owner's answer. Returns the join token."""
+    """File a request at ``base`` and wait for the owner's answer. Returns the join token.
+
+    ``sign``: the signed device fields (adk.kvholder_workspace.device_hello); only a signed,
+    owner-allowed device is admitted by the relay's network policy without a code."""
     claim = secrets.token_urlsafe(24)
-    req = urllib.request.Request(
-        f"{base}/mesh/request",
-        headers={
-            "X-KV-Device": _clean(device),
-            "X-KV-Claim-Hash": hashlib.sha256(claim.encode()).hexdigest(),
-        },
-    )
+    headers = {
+        "X-KV-Device": _clean(device),
+        "X-KV-Claim-Hash": hashlib.sha256(claim.encode()).hexdigest(),
+    }
+    if sign is not None:
+        headers["X-KV-Device-Auth"] = json.dumps(sign())
+    req = urllib.request.Request(f"{base}/mesh/request", headers=headers)
     with urllib.request.urlopen(req, timeout=10) as r:
         doc = json.loads(r.read())
     rid = doc["id"]

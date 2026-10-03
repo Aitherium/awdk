@@ -283,13 +283,89 @@ class Grants:
 # ---------------------------------------------------------------- the gate the relay calls
 
 
+FAMILY_DEVICES_URL = "https://api.aitherium.com/api/tutor/family/devices"
+
+
+class Household:
+    """The owner's household device registry (family devices: profile, kv_lend, revoked).
+
+    ``kv_lend`` is the owner's switch, off by default for every device; a child's phone lends
+    only when the owner turned it on there. Same outage rule as SealKeys: the last 200 holds
+    for ``KEYS_STALE_S``, then nothing in it is trusted.
+    """
+
+    def __init__(self, fetch: Callable[[], tuple[int, dict[str, dict]]] | None = None):
+        self._fetch = fetch or fetch_family_devices
+        self.rows: dict[str, dict] = {}
+        self.at = 0.0
+        self.error = ""
+        self.lock = threading.Lock()
+
+    def refresh(self) -> bool:
+        try:
+            status, rows = self._fetch()
+        except Exception as e:  # noqa: BLE001 - any transport failure is an outage
+            status, rows = 0, {}
+            self.error = f"household registry unreachable: {type(e).__name__}"
+        if status == 200:
+            with self.lock:
+                self.rows, self.at, self.error = dict(rows), time.time(), ""
+            return True
+        if status:
+            self.error = f"household registry answered {status}"
+        return False
+
+    def fresh(self) -> dict[str, dict] | None:
+        with self.lock:
+            return dict(self.rows) if time.time() - self.at <= KEYS_STALE_S else None
+
+
+def fetch_family_devices() -> tuple[int, dict[str, dict]]:
+    """``GET /api/tutor/family/devices`` as the signed-in owner (family registry, Genesis)."""
+    import urllib.error
+    import urllib.request
+
+    from adk import devices
+
+    bearer = devices.resolve_bearer()
+    if not bearer:
+        return 401, {}
+    url = os.environ.get("AITHER_FAMILY_DEVICES_URL") or FAMILY_DEVICES_URL
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {bearer}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (adk kvholder)",  # Cloudflare 403s a Python UA
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            doc = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+    rows = {
+        str(d["device_id"]): d
+        for d in (doc.get("devices") or [])
+        if isinstance(d, dict) and d.get("device_id")
+    }
+    return 200, rows
+
+
 class DeviceGate:
     """``Relay.device_gate``: admits a signed hello from an allowed workspace device."""
 
-    def __init__(self, relay_ids: set[str], keys: SealKeys, grants: Grants):
+    def __init__(
+        self,
+        relay_ids: set[str],
+        keys: SealKeys,
+        grants: Grants,
+        household: Household | None = None,
+    ):
         self.relay_ids = {r.lower() for r in relay_ids if r}
         self.keys = keys
         self.grants = grants
+        self.household = household
         self._nonces: dict[str, float] = {}
         self.lock = threading.Lock()
 
@@ -318,11 +394,42 @@ class DeviceGate:
             if nonce in self._nonces:
                 return None, "replayed hello"
             self._nonces[nonce] = now + 2 * CLOCK_SKEW_S
-        self.grants.reload()
-        if not self.grants.allowed(did):
-            self.grants.note_refused(did, str(hello.get("device", "")))
-            return None, "the workspace owner has not allowed this device to lend"
+        ok, why = self.may_lend(did)
+        if not ok:
+            if why == NOT_ALLOWED:
+                self.grants.note_refused(did, str(hello.get("device", "")))
+            return None, why
         return did, ""
+
+    def may_lend(self, did: str) -> tuple[bool, str]:
+        """The owner's decision for ``did``, from every place the owner can make it.
+
+        A household device (a row in the family registry) lends only while that row says
+        ``kv_lend`` and is not revoked: a child's phone included, whatever this host's local
+        list says. A local ``deny`` always wins. Any other device needs a local ``allow``.
+        """
+        self.grants.reload()
+        with self.grants.lock:
+            local = dict(self.grants.devices.get(did) or {})
+        if local and not local.get("lend") and "changed" in local:
+            return False, "denied by the workspace owner"
+        rows = self.household.fresh() if self.household is not None else None
+        row = rows.get(did) if rows is not None else None
+        if row is not None:
+            if row.get("revoked"):
+                return False, "this device was removed from the household"
+            if not row.get("kv_lend"):
+                kind = "child " if row.get("profile_kind") == "child" else ""
+                return False, f"the owner has not turned on lending for this {kind}device"
+            return True, ""
+        if did.startswith("fdev_"):  # a household device the registry cannot vouch for now
+            return False, "household registry unreachable: lending refused until it answers"
+        if not self.grants.allowed(did):
+            return False, NOT_ALLOWED
+        return True, ""
+
+
+NOT_ALLOWED = "the workspace owner has not allowed this device to lend"
 
 
 def device_of(session: str) -> str:
@@ -339,10 +446,13 @@ def sweep(relay: Any, gate: DeviceGate) -> list[str]:
         if not did:
             continue
         gone = known is not None and did not in known
-        if gone or not gate.grants.allowed(did):
+        ok, why = gate.may_lend(did)
+        if not ok and why.startswith("household registry unreachable"):
+            continue  # an outage revokes nothing; new sign-ins wait for the registry
+        if gone or not ok:
             relay.revoke(h.session)
             dropped.append(did)
-            why = "removed from the workspace" if gone else "denied by the owner"
+            why = "removed from the workspace" if gone else why
             print(f"kvholder: revoked {did} ({why})", flush=True)
     return dropped
 
@@ -380,6 +490,9 @@ def snapshot(relay: Any, gate: DeviceGate, public_url: str) -> dict:
         "pid": os.getpid(),
         "updated": time.time(),
         "identity": {"ok": known is not None, "error": gate.keys.error or None},
+        "household": None
+        if gate.household is None
+        else {"ok": gate.household.fresh() is not None, "error": gate.household.error or None},
         "enrolled": sorted(known) if known is not None else None,
         "grants": grants,
         "pending": sorted(k for k, v in grants.items() if not v["lend"]),
@@ -569,7 +682,9 @@ def run_serve(args) -> int:
     else:
         keys = SealKeys(fetch=lambda: fetch_seal_keys(lambda: grants.allowed_ids()))
     keys.refresh()
-    gate = DeviceGate({args.public_host, "localhost", "127.0.0.1"}, keys, grants)
+    household = Household()
+    household.refresh()
+    gate = DeviceGate({args.public_host, "localhost", "127.0.0.1"}, keys, grants, household)
     relay.device_gate = gate
     public_url = f"wss://{args.public_host}/holder"
     net.write_state(
@@ -594,6 +709,7 @@ def run_serve(args) -> int:
             time.sleep(SWEEP_S)
             if time.time() - last_keys >= KEYS_REFRESH_S:
                 keys.refresh()
+                household.refresh()
                 last_keys = time.time()
             sweep(relay, gate)
             try:
