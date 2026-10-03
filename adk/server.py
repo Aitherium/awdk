@@ -67,12 +67,18 @@ _WEBUI_CACHE: str | None = None
 # trusting whatever the browser sends.
 _SECRET_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
-# Public hosts that hold an Identity login but do not serve /auth/handoff/mint:
-# a handoff aimed at one is redirected to the IdP (see _handoff_identity_base).
-_HANDOFF_NON_IDP_HOSTS = frozenset({
-    "api.aitherium.com", "portal.aitherium.com", "gateway.aitherium.com",
-    "mcp.aitherium.com", "aitherium.com", "www.aitherium.com",
-})
+# On the public domain only the IdP serves /auth/handoff/mint. Every other host there
+# (api., gateway., mcp., the apex, www., any retired name that 301s) holds an Identity
+# login but no mint, so a handoff aimed at one is redirected to the IdP
+# (see _handoff_identity_base). A rule, not a list: a list missed every host nobody
+# enumerated and had to carry retired names to keep old profiles working.
+_PUBLIC_DOMAIN = "aitherium.com"
+_PUBLIC_IDP_HOST = "idp.aitherium.com"
+
+
+def _is_public_non_idp_host(host: str) -> bool:
+    return host != _PUBLIC_IDP_HOST and (
+        host == _PUBLIC_DOMAIN or host.endswith("." + _PUBLIC_DOMAIN))
 
 
 def _gateway_attach_policy(raw: str) -> dict:
@@ -1665,13 +1671,13 @@ def create_app(
                 "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
             ).rstrip("/")
         # 🚩 THE CONTROL-PLANE HOSTS ARE NOT IDENTITY. `aither login` from the shell
-        # writes endpoint https://api.aitherium.com, and api./portal./gateway./mcp.
+        # writes endpoint https://api.aitherium.com, and api./gateway./mcp.
         # route to Veil (Next.js) or the MCP gateway -- neither serves
         # /auth/handoff/mint, so "Continue as David" answered "identity refused
         # handoff (404)". Measured 2026-09-26 on the owner's box. The token those
         # logins hold IS an Identity token, so send it to the IdP.
         host = base.split("://", 1)[-1].split("/", 1)[0].lower()
-        if host in _HANDOFF_NON_IDP_HOSTS:
+        if _is_public_non_idp_host(host.rsplit(":", 1)[0]):
             base = os.getenv(
                 "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
             ).rstrip("/")

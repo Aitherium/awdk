@@ -87,8 +87,8 @@ def test_handoff_refuses_local_only_without_calling_identity(client):
 
 @pytest.mark.parametrize("endpoint", [
     "https://api.aitherium.com", "https://api.aitherium.com/",
-    "https://portal.aitherium.com", "https://gateway.aitherium.com",
-    "https://mcp.aitherium.com", "https://aitherium.com",
+    "https://desktop.aitherium.com", "https://gateway.aitherium.com",
+    "https://mcp.aitherium.com", "https://aitherium.com", "https://www.aitherium.com:443",
 ])
 def test_handoff_from_control_plane_login_goes_to_the_idp(client, endpoint, monkeypatch):
     """A shell login writes endpoint api.aitherium.com; that host is Veil, which 404s the mint."""
@@ -106,3 +106,12 @@ def test_handoff_from_control_plane_login_goes_to_the_idp(client, endpoint, monk
     urls = [c.args[0] for c in http.post.call_args_list]
     assert urls, "the daemon never called Identity"
     assert urls[0] == "https://idp.aitherium.com/identity/auth/handoff/mint"
+
+
+def test_public_non_idp_host_is_a_rule_not_a_list():
+    """Any host on the public domain except the IdP is redirected; look-alikes are not."""
+    from adk.server import _is_public_non_idp_host as non_idp
+    assert non_idp("aitherium.com") and non_idp("studio.aitherium.com")
+    assert not non_idp("idp.aitherium.com")
+    for other in ("evil-aitherium.com", "aitherium.com.evil.io", "example.org", ""):
+        assert not non_idp(other), other
