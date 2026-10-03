@@ -14,6 +14,7 @@ never holds a usable credential::
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 from pathlib import Path
@@ -25,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Request
 from .caller import ANONYMOUS, Caller
 from .contract import Scope
 from .inventory import local_node, node_doc
+from .reconcile import ReconcileError, Runtime
 from .registry import Cells
 from .server import build_app
 
@@ -73,18 +75,71 @@ def build_node_app(
     authenticate: Callable[[str | None], Caller],
     node_name: str | None = None,
     labels: dict[str, Any] | None = None,
+    runtime: Runtime | None = None,
 ) -> FastAPI:
-    """The cells app plus ``GET /cells/_node``: this machine's measured inventory,
-    for operators only (it is what the control plane plans on)."""
+    """The cells app plus the operator-only control surface the control plane drives:
+
+    - ``GET /cells/_node``: this machine's measured inventory (what placement plans on)
+    - ``GET /cells/_runtime``: the cells this node's runtime is running
+    - ``POST /cells/_runtime/start`` / ``stop`` with ``{"cell": name}``
+
+    Without a ``runtime`` the node serves cells but cannot be told to run new ones.
+    """
     app = build_app(cells, authenticate)
 
-    @app.get("/cells/_node")
-    async def node(request: Request) -> dict[str, Any]:
+    def operator_only(request: Request) -> None:
         header = request.headers.get("authorization", "")
         caller = authenticate(header[7:] if header.lower().startswith("bearer ") else None)
         if Scope.operator not in caller.scopes:
-            raise HTTPException(status_code=403, detail="inventory is operator-only")
+            raise HTTPException(status_code=403, detail="operator-only")
+
+    def need_runtime() -> Runtime:
+        if runtime is None:
+            raise HTTPException(status_code=501, detail="this node has no cell runtime")
+        return runtime
+
+    async def cell_of(request: Request) -> str:
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="body is not JSON") from None
+        cell = body.get("cell") if isinstance(body, dict) else None
+        if not isinstance(cell, str) or not cell:
+            raise HTTPException(status_code=422, detail='body must be {"cell": "<name>"}')
+        return cell
+
+    @app.get("/cells/_node")
+    async def node(request: Request) -> dict[str, Any]:
+        operator_only(request)
         return node_doc(local_node(node_name, labels))
+
+    @app.get("/cells/_runtime")
+    async def running(request: Request) -> dict[str, Any]:
+        operator_only(request)
+        rt = need_runtime()
+        return {"running": await asyncio.to_thread(rt.running)}
+
+    @app.post("/cells/_runtime/start")
+    async def start(request: Request) -> dict[str, Any]:
+        operator_only(request)
+        rt, cell = need_runtime(), await cell_of(request)
+        try:
+            await asyncio.to_thread(rt.start, cell)
+        except ReconcileError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except Exception as exc:  # noqa: BLE001 - the runtime's own failure, reported
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from None
+        return {"ok": True, "cell": cell}
+
+    @app.post("/cells/_runtime/stop")
+    async def stop(request: Request) -> dict[str, Any]:
+        operator_only(request)
+        rt, cell = need_runtime(), await cell_of(request)
+        try:
+            await asyncio.to_thread(rt.stop, cell)
+        except Exception as exc:  # noqa: BLE001 - the runtime's own failure, reported
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from None
+        return {"ok": True, "cell": cell}
 
     return app
 
@@ -112,6 +167,7 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8443,
     node_name: str | None = None,
+    runtime: Runtime | None = None,
 ) -> None:
     """Run the node over TLS. There is no plain-HTTP mode."""
     import uvicorn
@@ -119,6 +175,6 @@ def serve(
     for label, path in (("cert", cert), ("key", key)):
         if not Path(path).is_file():
             raise FileNotFoundError(f"--{label} {path} does not exist")
-    app = build_node_app(cells, authenticate, node_name)
+    app = build_node_app(cells, authenticate, node_name, runtime=runtime)
     uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key,
                 log_level="warning")

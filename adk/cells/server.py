@@ -37,6 +37,14 @@ def build_app(cells: Cells, authenticate: Authenticate) -> FastAPI:
     async def health() -> dict[str, Any]:
         return {"ok": True, "cells": sorted(impls)}
 
+    @app.get("/cells/_whoami")
+    async def whoami(request: Request) -> dict[str, Any]:
+        """Who this node takes the bearer for. A client uses it to show its agent only
+        the tools it can call; the node still re-checks every call."""
+        caller = authenticate(_bearer(request))
+        return {"subject": caller.subject, "workspace": caller.workspace,
+                "scopes": sorted(s.value for s in caller.scopes)}
+
     def bind(op: OpSpec, impl: Any) -> None:
         async def handler(request: Request) -> dict[str, Any]:
             caller = authenticate(_bearer(request))

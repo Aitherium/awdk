@@ -3,6 +3,7 @@ and the memory cell reached through HttpsTransport with the node's CA."""
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import ipaddress
 import socket
@@ -66,8 +67,9 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-def live_node(tmp_path):
+@contextlib.contextmanager
+def running_node(tmp_path):
+    """A memory node over real TLS on a free port: yields (url, ca_path)."""
     import uvicorn
 
     cert, key = self_signed(tmp_path)
@@ -85,9 +87,17 @@ def live_node(tmp_path):
         if time.monotonic() > deadline:
             raise RuntimeError("node did not start")
         time.sleep(0.05)
-    yield f"https://127.0.0.1:{port}", cert
-    server.should_exit = True
-    thread.join(timeout=10)
+    try:
+        yield f"https://127.0.0.1:{port}", cert
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+@pytest.fixture
+def live_node(tmp_path):
+    with running_node(tmp_path) as node:
+        yield node
 
 
 async def test_memory_over_real_tls_with_the_node_ca(live_node):
