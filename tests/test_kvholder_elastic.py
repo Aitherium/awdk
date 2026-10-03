@@ -7,12 +7,13 @@ import subprocess
 import threading
 import time
 
-import numpy as np
 import pytest
 
 from adk import kvholder as kv
 from adk import kvholder_net as net
 from adk.kvholder_page import HOLDER_JS
+
+np = pytest.importorskip("numpy")  # optional for awdk; the payload lane has core deps only
 
 H, LAYERS = 2, 2
 ROW = H * kv.HD * 2  # f16 row bytes

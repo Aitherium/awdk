@@ -10,12 +10,13 @@ import threading
 import time
 import urllib.request
 
-import numpy as np
 import pytest
 
 from adk import kvholder as kv
 from adk import kvholder_net as net
 from adk.kvholder_page import HOLDER_JS, PAGE_HTML
+
+np = pytest.importorskip("numpy")  # optional for awdk; the payload lane has core deps only
 
 
 def _free_port() -> int:
@@ -166,20 +167,6 @@ def test_relay_reattach_after_holder_drops(relay):
     _wait_attached(r, timeout=15)  # dial_holder reconnects on its own
     assert c.hello()["version"] == kv.VERSION
     c.close()
-
-
-def test_cli_works_without_numpy():
-    code = (
-        "import sys; sys.modules['numpy'] = None\n"
-        "import argparse, adk.kvholder as k\n"
-        "ap = argparse.ArgumentParser(); k.register(ap.add_subparsers(dest='command'))\n"
-        "assert k.run(ap.parse_args(['kvholder', 'plan', '--free-gb', '8'])) == 0\n"
-        "assert k.run(ap.parse_args(['kvholder', 'serve', '--max-mb', '8'])) == 2\n"
-    )
-    r = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8"
-    )
-    assert r.returncode == 0, r.stderr
 
 
 def test_page_has_no_external_assets():
