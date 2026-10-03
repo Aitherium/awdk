@@ -70,6 +70,11 @@ final class Config {
         // by adding it to the relay's file, so there is nothing to confirm with identity.
         boolean offline = code == null || code.isEmpty();
         if (!offline && (idp == null || !idp.startsWith("https://"))) return false;
+        // a link is used once: Android re-delivers the launching intent when the activity is
+        // recreated (an app update, a restored task), and that must not unpair the phone
+        String once = code == null ? "" : code;
+        if (!once.isEmpty() && once.equals(p.getString("last_code", ""))) return false;
+        if (!once.isEmpty()) p.edit().putString("last_code", once).apply();
         int mb = 2048;
         try { mb = Integer.parseInt(u.getQueryParameter("mb")); } catch (RuntimeException e) { /* default */ }
         p.edit().putString("relay", relay).putString("identity", offline ? "" : idp)

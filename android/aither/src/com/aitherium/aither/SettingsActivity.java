@@ -74,7 +74,10 @@ public class SettingsActivity extends Activity {
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.addView(col);
         setContentView(scroll);
-        handle(getIntent());
+        // only a fresh launch carries a link to act on, never a task restored from history
+        if (b == null && (getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
+            handle(getIntent());
+        }
     }
 
     @Override

@@ -110,7 +110,11 @@ public class HolderService extends Service {
         if (intent != null && "stop".equals(intent.getAction())) {
             cfg.set("enabled", false);
         }
-        main.post(this::evaluate);
+        main.post(() -> {
+            // a pairing link that arrived while the engine page was already up
+            if (pageReady && !cfg.paired() && !cfg.pendingCode().isEmpty()) pair(cfg.pubkey());
+            evaluate();
+        });
         return START_STICKY;
     }
 
@@ -180,7 +184,7 @@ public class HolderService extends Service {
         if (!cfg.enabled()) why = "off (turned off on this phone)";
         else if (cfg.relay().isEmpty()) why = "not paired (open the owner's pairing link)";
         else if (pairing) why = "pairing with the workspace";
-        else if (!cfg.paired()) why = "not paired (" + reason + ")";
+        else if (!cfg.paired()) why = reason.startsWith("pairing") ? reason : "not paired";
         else if (!pageReady) why = "starting the engine";
         else if (cfg.onlyCharging() && !charging) why = "waiting: not charging";
         else if (cfg.onlyWifi() && !onWifi) why = "waiting: not on Wi-Fi";

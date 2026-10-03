@@ -1020,7 +1020,41 @@ class AitherAgent:
             lines = ["\n[PACK DIRECTIVES]"]
             lines.extend(f"- {f}" for f in self._pack_persona_fragments)
             base += "\n".join(lines)
+        # Skills are capabilities, not identity: they ride along on any prompt,
+        # and exist only while a pack that provides them is active.
+        if getattr(self, "_pack_skills", None):
+            from adk.pack_activation import skills_prompt_block
+            base += skills_prompt_block(self)
         return base
+
+    def activate_pack(self, pack_id: str, packs_dir: str | None = None) -> dict:
+        """Mount a tool pack on this live agent; every effect it makes is recorded.
+
+        Takes effect on the next request (tools and system prompt are read per
+        turn). Returns the activation summary, or ``{"error": ...}``.
+        """
+        from pathlib import Path
+
+        from adk.pack_activation import activate
+        from adk.tool_pack_loader import get_tool_pack_loader
+
+        loader = get_tool_pack_loader(extra_dirs=[Path(packs_dir)] if packs_dir else None)
+        found = loader.load_packs([pack_id])
+        if not found:
+            return {"error": f"pack {pack_id!r} not found"}
+        allowed, why = loader.check_license(found[0])
+        if not allowed:
+            return {"error": f"pack {pack_id!r} not licensed: {why}"}
+        return activate(self, found[0], loader).summary()
+
+    def deactivate_pack(self, pack_id: str) -> dict:
+        """Reverse everything :meth:`activate_pack` did for *pack_id*."""
+        from adk.pack_activation import deactivate
+
+        act = deactivate(self, pack_id)
+        if act is None:
+            return {"error": f"pack {pack_id!r} is not active on this agent"}
+        return act.summary()
 
     @property
     def strata(self):

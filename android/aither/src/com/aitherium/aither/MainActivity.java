@@ -81,8 +81,9 @@ public class MainActivity extends Activity {
     private String startUrl(Intent i) {
         if (i != null && i.getData() != null && ours(i.getData())) return i.getData().toString();
         if (cfg.llmEnabled() && !cfg.llmPaired() && cfg.localAiBlocked().isEmpty()) {
+            String token = cfg.llmToken(); // first: making a token resets "paired"
             cfg.set("llm_paired", true);
-            return HOME + "#local-pair=" + cfg.llmToken() + "&port=" + LocalProxy.PORT;
+            return HOME + "#local-pair=" + token + "&port=" + LocalProxy.PORT;
         }
         return HOME;
     }
