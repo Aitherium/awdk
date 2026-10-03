@@ -247,6 +247,52 @@ class Door:
         return 404, {"ok": False, "error": f"no pending request {code}"}
 
 
+def relay_ids() -> set[str]:
+    """Every name a holder may have dialled this relay by: a signed hello names the host it
+    dialled (adk.kvholder_workspace.hello_message), and a mesh holder dials an address."""
+    ids = {"localhost", "127.0.0.1", socket.gethostname().lower()}
+    try:
+        ids.update(a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+    except OSError:
+        pass
+    from adk.kvholder_net import lan_ip
+
+    ids.add(lan_ip())
+    exe = shutil.which("tailscale")
+    if exe:
+        try:
+            out = subprocess.run(
+                [exe, "ip", "-4"], capture_output=True, text=True, encoding="utf-8", timeout=10
+            )
+            ids.update(x.strip() for x in out.stdout.split() if x.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {i for i in ids if i}
+
+
+def device_gate(stop: threading.Event | None = None, ids: set[str] | None = None):
+    """The workspace device gate for a mesh door's ``--mesh-admit`` networks: the owner's
+    enrolled device keys, the local grants and the household kv_lend registry
+    (adk.kvholder_workspace), refreshed in the background. Fails closed: without fresh
+    keys no hello verifies and every holder waits for the owner's code."""
+    from adk import kvholder_workspace as kw
+
+    grants = kw.Grants()
+    keys = kw.SealKeys(fetch=lambda: kw.fetch_seal_keys(lambda: grants.allowed_ids()))
+    household = kw.Household()
+    gate = kw.DeviceGate(ids if ids is not None else relay_ids(), keys, grants, household)
+    stop = stop or threading.Event()
+
+    def refresh() -> None:
+        while not stop.is_set():
+            keys.refresh()
+            household.refresh()
+            stop.wait(kw.KEYS_STALE_S / 3)
+
+    threading.Thread(target=refresh, daemon=True).start()
+    return gate
+
+
 def open_door(relay, args) -> Door:
     """Attach a door to ``relay`` (``adk kvholder phone --mesh``) and answer UDP queries."""
     door = Door(relay, args.web_port, list(getattr(args, "mesh_admit", None) or []))
@@ -258,7 +304,11 @@ def open_door(relay, args) -> Door:
             "machines cannot find it (use --via lan)",
             file=sys.stderr,
         )
+    if door.admit and getattr(relay, "device_gate", None) is None:
+        relay.device_gate = device_gate(door.stop)
     nets = ", ".join(str(n) for n in door.admit) or "none: approve each by code"
+    if door.admit:
+        nets += " (signed workspace devices the owner lets lend; others wait for a code)"
     print(f"kvholder mesh: door open as {door.name!r}; auto-admit {nets}")
     print("  approve a holder: adk kvholder mesh approve CODE")
     return door

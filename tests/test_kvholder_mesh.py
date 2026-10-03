@@ -210,6 +210,53 @@ def test_serve_mesh_device_signs_the_request(relay, monkeypatch):
     assert mesh.resolve_serve(args) == 1 and mesh.pending()[0]["status"] == "pending"
 
 
+def test_mesh_admit_door_gets_a_real_device_gate(relay, monkeypatch, tmp_path):
+    """`phone --mesh --mesh-admit CIDR` builds the workspace gate itself, keyed on every
+    address a holder may dial: a household device with kv_lend on is admitted, a child's
+    phone with kv_lend off waits for the code, a hello signed for another host is refused."""
+    import types
+
+    crypto = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.ed25519")
+    from adk import kvholder_workspace as kw
+
+    r, _, wp = relay
+    priv = crypto.Ed25519PrivateKey.generate()
+    from cryptography.hazmat.primitives import serialization as ser
+
+    pub = priv.public_key().public_bytes(ser.Encoding.Raw, ser.PublicFormat.Raw).hex()
+    keys = {"kvh-tablet": pub, "fdev-kid": pub}
+    rows = {
+        "kvh-tablet": {"device_id": "kvh-tablet", "kv_lend": True},
+        "fdev-kid": {"device_id": "fdev-kid", "kv_lend": False},
+    }
+    monkeypatch.setattr(kw, "fetch_seal_keys", lambda ids=None: (200, keys))
+    monkeypatch.setattr(kw, "fetch_family_devices", lambda: (200, rows))
+    monkeypatch.setenv("AITHER_KVHOLDER_GRANTS", str(tmp_path / "grants.json"))
+    monkeypatch.setattr(mesh, "relay_ids", lambda: {"127.0.0.1", "100.64.0.31"})
+    args = types.SimpleNamespace(
+        web_port=wp,
+        mesh_admit=["100.64.0.0/10"],
+        via="lan",
+        mesh_udp_port=_free_port(socket.SOCK_DGRAM),
+    )
+    door = mesh.open_door(r, args)
+    for _ in range(100):  # the background refresh fills keys + household
+        if r.device_gate.keys.get("kvh-tablet") and r.device_gate.household.fresh():
+            break
+        time.sleep(0.05)
+    ok = kw.sign_hello(priv, "100.64.0.31", "kvh-tablet")
+    assert door.request("100.64.0.38", "tablet", "a" * 64, ok)[1]["status"] == "approved"
+    kid = kw.sign_hello(priv, "100.64.0.31", "fdev-kid")
+    assert door.request("100.64.0.39", "kid", "b" * 64, kid)[1]["status"] == "pending"
+    other = kw.sign_hello(priv, "relay.elsewhere", "kvh-tablet")
+    assert door.request("100.64.0.38", "tablet", "c" * 64, other)[1]["status"] == "pending"
+
+
+def test_relay_ids_cover_loopback_and_lan():
+    ids = mesh.relay_ids()
+    assert {"127.0.0.1", "localhost"} <= ids and net.lan_ip() in ids
+
+
 def test_owner_routes_need_master_token(relay):
     r, master, wp = relay
     _open(r, wp)

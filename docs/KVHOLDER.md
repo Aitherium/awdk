@@ -312,8 +312,11 @@ discover` shows what this machine can find.
 Approving mints one **join token** on the relay's machine. The holder that asked collects it
 itself: its request carries the hash of a secret only it knows, and it can collect the token
 once. The token never appears in the owner's list, a tool result or a log, and the master token
-never leaves the relay's machine. To skip the approval for a network you trust, name it:
-`--mesh-admit 100.64.0.0/10` admits every request from the overlay at once. Without `--mesh`
+never leaves the relay's machine. To skip the approval on a network you trust, name it with
+`--mesh-admit 100.64.0.0/10`. Only a holder that signs in as a workspace device
+(`adk kvholder serve --mesh --device`) and that the owner lets lend is admitted at once: a
+local allow, or the household registry's `kv_lend`, which is off for a child's phone until
+the owner turns it on. Any other holder on that network waits for the code. Without `--mesh`
 the relay has no door: `/mesh` answers 404.
 
 `adk kvholder mesh pending | approve CODE | deny CODE | status` manage the door. A request
