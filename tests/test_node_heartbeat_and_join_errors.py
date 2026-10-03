@@ -26,6 +26,12 @@ from adk import enrollment, fleet_enroll, mesh, server
 
 GOOD_ORIGIN = "https://aitherium.com"
 LOOPBACK = ("127.0.0.1", 41234)
+
+
+def _owner(headers):
+    """/mesh/join also needs the owner's local credential (adk.local_auth)."""
+    from adk.local_auth import HEADER, read_token
+    return {**headers, HEADER: read_token() or ""}
 IDP = "https://idp.example.test"
 
 
@@ -364,7 +370,8 @@ def join(monkeypatch):
     monkeypatch.setattr(mesh, "join", _join)
     monkeypatch.setattr(mesh, "_tailscale", lambda: "/usr/bin/tailscale")
     h.client = TestClient(_app(), client=LOOPBACK)
-    h.post = lambda: h.client.post("/mesh/join", headers={"Origin": GOOD_ORIGIN}, json={})
+    h.post = lambda: h.client.post("/mesh/join", headers=_owner({"Origin": GOOD_ORIGIN}),
+                                   json={})
     return h
 
 
@@ -439,7 +446,7 @@ class TestJoinErrors:
         monkeypatch.setattr(mesh, "join", _never)
 
         resp = TestClient(_app(), client=LOOPBACK).post(
-            "/mesh/join", headers={"Origin": GOOD_ORIGIN}, json={})
+            "/mesh/join", headers=_owner({"Origin": GOOD_ORIGIN}), json={})
         body = resp.json()
         assert resp.status_code == 200 and body["registered"] is True
         assert body["overlay"]["code"] == "tailscale_missing"

@@ -91,6 +91,10 @@ def _isolate_env(monkeypatch, tmp_path):
     # Non-Claude harness sessions write session-focus records (adk.harnesses.focus);
     # a test codex turn must never land in the owner's ~/.aither/focus.
     monkeypatch.setenv("AITHER_FOCUS_DIR", str(tmp_path / ".aither" / "focus"))
+    # create_app mints the daemon's per-user local credential (adk.local_auth); a test
+    # app must never write ~/.aither/daemon-token into the developer's real home.
+    monkeypatch.setenv("AITHER_LOCAL_TOKEN_FILE", str(tmp_path / ".aither" / "daemon-token"))
+    monkeypatch.delenv("AITHER_LOCAL_AUTH", raising=False)
 
     # Isolate the operator-blind companion vault: tests must NOT read the dev
     # machine's ~/.aither persona, which would swap every agent's identity into

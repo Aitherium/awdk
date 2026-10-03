@@ -40,6 +40,7 @@ from fastapi.responses import (
 )
 
 from adk import __version__
+from adk import local_auth as _local_auth
 from adk._tls import tls_verify
 from adk.agent import AitherAgent, AgentResponse
 from adk.config import Config
@@ -74,19 +75,68 @@ _HANDOFF_NON_IDP_HOSTS = frozenset({
 })
 
 
-def _local_gateway_api_key(config) -> str:
+def _gateway_attach_policy(raw: str) -> dict:
+    """Whether, where and with what the offline daemon may attach an MCP gateway.
+
+    Returns {refuse: str (empty = allowed), url, host, account_ok}.
+      * unset/empty            refused -- offline dials nothing it was not told to
+      * not loopback           refused -- sovereign mode never talks to the cloud
+      * https://<loopback>     allowed; the account credential may be presented
+      * http://<loopback>      refused unless AITHER_MCP_GATEWAY_TRUSTED=1 says this
+                               user owns that port; even then only the gateway's own
+                               key (AITHER_MCP_KEY / AITHER_INTERNAL_KEY) is sent,
+                               never the account key or ~/.aither/session-bearer
+                               (any local user can bind a plaintext loopback port)
+    """
+    import urllib.parse as _up
+
+    out = {"refuse": "", "url": "", "host": "", "account_ok": False}
+    raw = (raw or "").strip()
+    if not raw:
+        out["refuse"] = "no MCP gateway configured (AITHER_MCP_GATEWAY unset): built-in tools only"
+        return out
+    url = raw if "://" in raw else f"http://{raw}"
+    try:
+        parts = _up.urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        out["refuse"] = f"unparseable AITHER_MCP_GATEWAY: {raw!r}"
+        return out
+    out["url"], out["host"] = url, host
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        out["refuse"] = f"non-loopback gateway refused: {url}"
+        return out
+    trusted = os.getenv("AITHER_MCP_GATEWAY_TRUSTED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+    if parts.scheme == "https":
+        out["account_ok"] = True
+    elif parts.scheme == "http" and not trusted:
+        out["refuse"] = (f"plaintext gateway {url} refused: any local user can bind a "
+                         "loopback port; use https, or set AITHER_MCP_GATEWAY_TRUSTED=1 "
+                         "if you own it")
+    elif parts.scheme != "http":
+        out["refuse"] = f"unsupported gateway scheme {parts.scheme!r}"
+    return out
+
+
+def _local_gateway_api_key(config, account_ok: bool = True) -> str:
     """Credential for the loopback MCP gateway attach.
 
-    Order: the configured API key, AITHER_INTERNAL_KEY, AITHER_MCP_KEY, then the
-    session bearer a local login writes to ~/.aither/session-bearer. The attach is
-    explicit about the file rather than relying on the client's own resolver, so a
-    daemon with no key configured still attaches. The value is never logged.
+    Order: AITHER_INTERNAL_KEY, AITHER_MCP_KEY (the gateway's own credentials), then --
+    only when ``account_ok`` (an https gateway, _gateway_attach_policy) -- the configured
+    account API key and the session bearer a local login writes to
+    ~/.aither/session-bearer. A plaintext loopback gateway never receives the account's
+    credential. The value is never logged.
     """
     key = (
-        (getattr(config, "aither_api_key", "") or "")
-        or os.getenv("AITHER_INTERNAL_KEY", "")
+        os.getenv("AITHER_INTERNAL_KEY", "")
         or os.getenv("AITHER_MCP_KEY", "").strip()
     )
+    if key:
+        return key
+    if not account_ok:
+        return ""
+    key = getattr(config, "aither_api_key", "") or ""
     if key:
         return key
     try:
@@ -901,14 +951,23 @@ def create_app(
         # edit and a release per tenant, so each new customer is undetectable
         # from the web until somebody remembers. A rule covers them the day
         # they exist.
-        # Both GitHub Pages demos: our fork, and UPSTREAM's own site. Upstream is
-        # included deliberately -- a GobboNet user who never heard of us should still
-        # find a node they are already running. That is the local-first promise, and
-        # it costs nothing: this is an origin allowlist on a loopback daemon, not a
-        # grant of anything.
+        # Our GitHub Pages demo (wizzense is the owner's account). UPSTREAM's own
+        # Pages site (elodineofficial.github.io) was listed here too until 2026-10-03
+        # and is gone on purpose: a third party's origin may not POST /chat to a
+        # stranger's agent, and with loopback trusted that is what the entry granted.
         "https://wizzense.github.io",
-        "https://elodineofficial.github.io",
     ]
+    # OFFLINE NARROWS THE ALLOWLIST TO LOOPBACK, as the harness daemon already does.
+    # "Offline" promises nothing leaves the machine until someone signs in; a hosted
+    # page that can POST /chat to the local agent and read the reply breaks that
+    # promise from the other direction. An explicit AITHER_CORS_ORIGINS still wins.
+    _offline_origins = _local_auth.is_offline()
+    _loopback_origins = [
+        "http://localhost:3000", "http://localhost:8080",
+        "http://127.0.0.1:3000", "http://127.0.0.1:8080",
+    ]
+    if _offline_origins:
+        _aitherium_origins = []
     # Tenant surfaces as a RULE. Bounded on purpose: https only, ONE label,
     # our apex and nothing else -- evil.example.com, aitherium.com.evil.test,
     # a.b.aitherium.com and http:// all fail it (verified in both directions).
@@ -921,20 +980,14 @@ def create_app(
     # OFF -- it is never set, and three comments in this file say so -- so a
     # matching origin still carries no ambient cookie.
     _tenant_origin_rule = (
-        None if _cors_origins
+        None if _cors_origins or _offline_origins
         else r"^https://[a-z0-9][a-z0-9-]*\.aitherium\.com$"
     )
-    _cors_allowed = frozenset(_cors_origins or [
-        *_aitherium_origins, "http://localhost:3000", "http://localhost:8080",
-    ])
+    _cors_allowed = frozenset(_cors_origins or [*_aitherium_origins, *_loopback_origins])
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=_tenant_origin_rule,
-        allow_origins=_cors_origins or [
-            *_aitherium_origins,
-            "http://localhost:3000",
-            "http://localhost:8080",
-        ],
+        allow_origins=_cors_origins or [*_aitherium_origins, *_loopback_origins],
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         # Athena: no wildcard — only the headers our clients actually send. A
         # permissive list widens what a whitelisted-origin page can do cross-site.
@@ -997,6 +1050,20 @@ def create_app(
     # ─── Auth middleware (optional, enabled via AITHER_API_KEY or --api-key) ───
 
     _server_api_key = os.getenv("AITHER_SERVER_API_KEY", "")
+    # The per-user local credential (adk/local_auth.py). Minted on every start so the
+    # owner's own clients can always present it; ENFORCED on loopback only when
+    # AITHER_LOCAL_AUTH resolves to `required` (the default on an offline box). A token
+    # that cannot be written fails CLOSED: required mode then refuses every gated route.
+    _local_auth_required = _local_auth.mode() == "required"
+    try:
+        _local_token: Optional[str] = _local_auth.ensure_token()
+    except OSError as exc:
+        logger.warning("local auth token unavailable (%s): gated routes need the API key", exc)
+        _local_token = None
+
+    def _local_token_ok(request: Request) -> bool:
+        return _local_auth.matches(_local_auth.presented(request.headers), _local_token)
+
     # "/" and "/chat" serve only the static chat page (no data); the page then
     # authenticates to the gated /chat/stream with the bearer from its URL fragment.
     # Similarly, "/aeon" serves the group-chat UI; "/aeon/stream" is bearer-gated.
@@ -1040,11 +1107,18 @@ def create_app(
     )
 
     def _csrf_origin_ok(origin: str) -> bool:
-        if origin in _cors_allowed or origin in _handoff_origins:
+        if origin in _cors_allowed or _csrf_loopback_origin.match(origin):
+            return True
+        if _offline_origins and not _cors_origins:
+            # Offline trusts no hosted page: loopback (above) and the pinned
+            # extension (below) only -- the same narrowing the CORS list got.
+            from adk.extension_id import allowed_extension_origins
+            return origin in allowed_extension_origins()
+        if origin in _handoff_origins:
             return True
         if _tenant_origin_rule and re.match(_tenant_origin_rule, origin):
             return True
-        if _handoff_origin_rule.match(origin) or _csrf_loopback_origin.match(origin):
+        if _handoff_origin_rule.match(origin):
             return True
         from adk.extension_id import allowed_extension_origins
         return origin in allowed_extension_origins()
@@ -1065,6 +1139,42 @@ def create_app(
                                     content={"error": "application/json required"})
         return await call_next(request)
 
+    # ── WebSockets: the same Origin and local-credential rule, BEFORE accept ────────────
+    # `@app.middleware("http")` never sees a `websocket` scope, and browsers apply no CORS
+    # to a WebSocket: without this, /ws/chat (and any websocket route a router adds) was
+    # open to any local process and any web page while POST /chat answered 401. This
+    # wraps EVERY websocket route, so a new one cannot be added outside it. Refusal is a
+    # close before accept, which the server turns into an HTTP 403 handshake failure.
+    def _ws_refusal(scope: dict) -> str:
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers") or []}
+        origin = headers.get("origin")
+        if origin is not None and not _csrf_origin_ok(origin):
+            return "cross-origin websocket refused"
+        if _local_auth_required:
+            given = _local_auth.presented(headers)
+            if _local_auth.matches(given, _local_token):
+                return ""
+            if _server_api_key and _local_auth.matches(given, _server_api_key):
+                return ""
+            return "local credential required (X-Aither-Local-Token)"
+        return ""
+
+    class _WebSocketGuard:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") == "websocket":
+                why = _ws_refusal(scope)
+                if why:
+                    logger.info("websocket %s refused: %s", scope.get("path"), why)
+                    await send({"type": "websocket.close", "code": 1008, "reason": why})
+                    return
+            await self.inner(scope, receive, send)
+
+    app.add_middleware(_WebSocketGuard)
+
     @app.middleware("http")
     async def _auth_middleware(request: Request, call_next):
         """Bearer token auth + caller-type header validation.
@@ -1073,7 +1183,10 @@ def create_app(
         External requests cannot claim PLATFORM caller type.
         """
         if request.url.path in _skip_auth_paths or _is_pack_ui_asset(request.url.path):
-            return await call_next(request)
+            # The skip list names PAGES. In required mode it covers reads only:
+            # POST /chat is the chat endpoint, not the page that shares its path.
+            if not _local_auth_required or request.method in ("GET", "HEAD", "OPTIONS"):
+                return await call_next(request)
 
         # Validate X-Caller-Type if present (prevent spoofing)
         caller_type = request.headers.get("x-caller-type", "")
@@ -1093,6 +1206,22 @@ def create_app(
                         status_code=403,
                         content={"error": "PLATFORM caller type requires valid API key"},
                     )
+
+        if _local_auth_required:
+            # Loopback is a MACHINE, not a person: every caller proves it can read the
+            # owner's ~/.aither/daemon-token, or presents the remote API key. A CORS
+            # preflight carries no credential and changes nothing, so it passes.
+            if request.method == "OPTIONS":
+                return await call_next(request)
+            if _local_token_ok(request):
+                return await call_next(request)
+            auth_header = request.headers.get("authorization", "")
+            tok = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+            if _server_api_key and tok and hmac.compare_digest(tok, _server_api_key):
+                return await call_next(request)
+            return JSONResponse(status_code=401, content={
+                "error": "local credential required: send X-Aither-Local-Token with the "
+                         "contents of ~/.aither/daemon-token (AITHER_LOCAL_AUTH=required)"})
 
         if not _server_api_key:
             return await call_next(request)
@@ -1361,7 +1490,15 @@ def create_app(
         the daemon runs as the owner — so we forward the cookies to the fleet's
         verify-and-store endpoint with the owner's own credentials. No download,
         no `adk x-session import`, no manual step. Cookies never leave the box.
+
+        Never on an offline box: it forwards the account key and the x.com cookies to
+        a PLAINTEXT loopback port that, on a machine without the fleet, nothing owns
+        and any local user can bind.
         """
+        if _local_auth.is_offline():
+            return JSONResponse(status_code=503, content={
+                "ok": False, "error": "x-session import is not available offline "
+                                      "(AITHER_OFFLINE): it needs the fleet gateway"})
         import httpx
         try:
             body = await request.json()
@@ -1450,6 +1587,31 @@ def create_app(
     })
     _handoff_origin_rule = re.compile(r"^https://[a-z0-9][a-z0-9-]*\.aitherium\.com$")
     _handoff_loopback = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
+    def _handoff_mint_guard(request: Request, always: bool = True) -> str:
+        """The handoff guard PLUS the owner's local credential.
+
+        These routes spend the signed-in account (a browser ticket, a mesh key). An
+        Origin header proves nothing -- any non-browser process sets whatever it
+        likes -- and a loopback peer is any local process of any user. So the caller
+        must also present ~/.aither/daemon-token: only the owner's own software can.
+
+        ``always=False`` (the browser ticket): ONLINE, with AITHER_LOCAL_AUTH not
+        `required`, the token is not demanded -- the hosted "sign in with this device"
+        flow (Veil local-identity-handoff.ts, awkit auth/local-device.tsx) runs in a
+        browser that cannot read the file, and keeps the previous gate: loopback peer,
+        allowlisted first-party Origin (the ticket's audience) and the CSRF middleware.
+        Offline, or in required mode, the token is demanded like everywhere else.
+        """
+        audience = _handoff_guard(request)
+        if not always and not _local_auth_required and not _local_auth.is_offline():
+            return audience
+        if not _local_token_ok(request):
+            raise HTTPException(
+                status_code=401,
+                detail="the owner's local credential is required "
+                       "(X-Aither-Local-Token from ~/.aither/daemon-token)")
+        return audience
 
     def _handoff_guard(request: Request) -> str:
         """Refuse anything but a loopback peer on a first-party origin; return the origin."""
@@ -1586,7 +1748,7 @@ def create_app(
         Called from a click on the apex. The daemon's bearer stays here; the
         page gets a 60-second single-use ticket to redeem at Veil.
         """
-        audience = _handoff_guard(request)
+        audience = _handoff_mint_guard(request, always=False)
         prof = _handoff_profile()
         if not prof:
             raise HTTPException(
@@ -1641,7 +1803,7 @@ def create_app(
     @app.post("/mesh/join")
     async def mesh_join_from_desktop(request: Request):
         """Join the signed-in user's mesh on AitherNet and register this node."""
-        _handoff_guard(request)
+        _handoff_mint_guard(request)
         prof = _handoff_profile()
         if not prof:
             raise HTTPException(
@@ -4974,7 +5136,8 @@ def create_app(
         """Sovereign-mode tool access: attach to a LOCAL MCP gateway only.
 
         Offline mode must not mean tool-less. This targets a loopback gateway
-        (AITHER_MCP_GATEWAY, default 127.0.0.1:8182) and REFUSES anything non-loopback, so
+        (AITHER_MCP_GATEWAY, NO default -- see _gateway_attach_policy) and REFUSES anything
+        non-loopback, so
         turning on sovereign mode can never silently start talking to the cloud. Entirely
         fail-soft: if the local gateway is down the daemon still serves with its built-in
         tools, and says so.
@@ -4985,13 +5148,19 @@ def create_app(
         tools for its ENTIRE lifetime and looked merely "not very capable".
         """
         _state["mcp_attach_attempts"] = _state.get("mcp_attach_attempts", 0) + 1
-        target = os.getenv("AITHER_MCP_GATEWAY", "127.0.0.1:8182").strip()
-        if not target:
-            _state["mcp_last_error"] = "AITHER_MCP_GATEWAY is empty"
+        # NO DEFAULT GATEWAY (2026-10-03). This used to dial 127.0.0.1:8182 on every
+        # offline box, presenting the account key or ~/.aither/session-bearer. Where
+        # nothing owns that port, any local user can bind it, collect the credential
+        # and serve its own tools to the agent. Offline now dials a gateway only when
+        # one is named, and see _gateway_attach_policy for which and with what.
+        target = os.getenv("AITHER_MCP_GATEWAY", "").strip()
+        policy = _gateway_attach_policy(target)
+        if policy["refuse"]:
+            _state["mcp_last_error"] = policy["refuse"]
+            _state["mcp_attach_permanent_failure"] = True
             return False
-        if "://" not in target:
-            target = f"http://{target}"
-        host = target.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]
+        target = policy["url"]
+        host = policy["host"]
         if host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
             logger.info(
                 "Sovereign mode: refusing non-loopback MCP gateway %s — built-in tools only",
@@ -5006,7 +5175,7 @@ def create_app(
 
             mcp_client = await create_gateway_mcp_client(
                 gateway_url=target,
-                api_key=_local_gateway_api_key(config),
+                api_key=_local_gateway_api_key(config, account_ok=policy["account_ok"]),
             )
             if not mcp_client:
                 logger.info("Sovereign mode: local MCP gateway %s unavailable — built-in tools only", target)

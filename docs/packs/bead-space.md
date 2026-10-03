@@ -1,12 +1,12 @@
 # BeadSpace
 
-`bead-space` · version `3.8.47` · 1.5 KB
+`bead-space` · version `3.8.48` · 1.5 KB
 
-**[Download bead-space-3.8.47.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.47/bead-space-3.8.47.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.47/bead-space-3.8.47.sha256)
+**[Download bead-space-3.8.48.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.48/bead-space-3.8.48.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.48/bead-space-3.8.48.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.47/bead-space-3.8.47.tar.gz
-tar xzf bead-space-3.8.47.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.48/bead-space-3.8.48.tar.gz
+tar xzf bead-space-3.8.48.tar.gz
 python bead-space/install.py
 ```
 
@@ -35,5 +35,5 @@ brain_pack.yaml
 
 ---
 
-sha256 `046aeff678d01a4932bc5d78e176ed10c705451cd7b61290a9fe9175b1e39563`  
-Built from `v3.8.47` (adk 3.8.47). [All packs](../packs.md)
+sha256 `2665df28305fc74542a4433c72cd1f80414c71182efd81a07540ff2e325fabbe`  
+Built from `v3.8.48` (adk 3.8.48). [All packs](../packs.md)

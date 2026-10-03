@@ -21,6 +21,8 @@ from urllib.parse import urljoin
 
 import httpx
 
+from adk.local_auth import headers_for
+
 logger = logging.getLogger("adk.a2a_dispatch")
 
 # Bounded dispatch configuration
@@ -95,7 +97,7 @@ async def dispatch_to_agent(
         }
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(rpc_url, json=payload)
+            resp = await client.post(rpc_url, json=payload, headers=headers_for(rpc_url))
             resp.raise_for_status()
             result = resp.json()
 
@@ -152,7 +154,7 @@ async def _poll_task_completion(
             }
 
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(rpc_url, json=payload)
+                resp = await client.post(rpc_url, json=payload, headers=headers_for(rpc_url))
                 resp.raise_for_status()
                 result = resp.json()
 

@@ -25,6 +25,12 @@ from adk.harnesses import daemon as harness_daemon
 
 GOOD_ORIGIN = "https://aitherium.com"
 LOOPBACK = ("127.0.0.1", 41234)
+
+
+def _owner(headers):
+    """/mesh/join also needs the owner's local credential (adk.local_auth)."""
+    from adk.local_auth import HEADER, read_token
+    return {**headers, HEADER: read_token() or ""}
 IDP = "https://idp.example.test"
 SCOPED = "scoped-session-token"
 
@@ -321,7 +327,7 @@ def join(monkeypatch, harness):
     monkeypatch.setattr(mesh, "join", _join)
     monkeypatch.setattr(mesh, "_tailscale", lambda: "/usr/bin/tailscale")
     h.post = lambda: TestClient(_app(), client=LOOPBACK).post(
-        "/mesh/join", headers={"Origin": GOOD_ORIGIN}, json={})
+        "/mesh/join", headers=_owner({"Origin": GOOD_ORIGIN}), json={})
     return h
 
 

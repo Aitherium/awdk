@@ -12,6 +12,12 @@ from adk.server import create_app
 ORIGIN = {"Origin": "https://aitherium.com"}
 
 
+def _owner(headers):
+    """Minting a ticket also needs the owner's local credential (adk.local_auth)."""
+    from adk.local_auth import HEADER, read_token
+    return {**headers, HEADER: read_token() or ""}
+
+
 @pytest.fixture
 def client():
     agent = MagicMock(spec=AitherAgent)
@@ -73,7 +79,7 @@ def test_no_profile_keeps_old_shape(client):
 def test_handoff_refuses_local_only_without_calling_identity(client):
     a, b = _with_profile(dict(ROOT_PROFILE))
     with a, b, patch("adk.server.httpx.AsyncClient") as ac:
-        r = client.post("/identity/handoff", headers=ORIGIN, json={})
+        r = client.post("/identity/handoff", headers=_owner(ORIGIN), json={})
     assert r.status_code == 401
     assert "adk login" in r.json()["detail"]
     ac.assert_not_called()
@@ -96,7 +102,7 @@ def test_handoff_from_control_plane_login_goes_to_the_idp(client, endpoint, monk
         resp = MagicMock(status_code=200)
         resp.json.return_value = {"ticket": "t", "expires_in": 60}
         http.post.return_value = resp
-        client.post("/identity/handoff", headers=ORIGIN, json={})
+        client.post("/identity/handoff", headers=_owner(ORIGIN), json={})
     urls = [c.args[0] for c in http.post.call_args_list]
     assert urls, "the daemon never called Identity"
     assert urls[0] == "https://idp.aitherium.com/identity/auth/handoff/mint"

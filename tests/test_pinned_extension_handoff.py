@@ -15,6 +15,12 @@ from adk import extension_id as ext
 from adk.server import create_app
 
 PINNED = f"chrome-extension://{ext.PINNED_EXTENSION_ID}"
+
+
+def _owner(headers):
+    """Minting a ticket also needs the owner's local credential (adk.local_auth)."""
+    from adk.local_auth import HEADER, read_token
+    return {**headers, HEADER: read_token() or ""}
 OTHER = "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
 PROFILE = {"endpoint": "https://idp.aitherium.com/identity", "token_type": "bearer",
            "access_token": "x",
@@ -59,7 +65,7 @@ def _handoff(client, origin):
     ac.return_value.__aenter__ = AsyncMock(return_value=http)
     ac.return_value.__aexit__ = AsyncMock(return_value=False)
     with a, b, patch("adk.server.httpx.AsyncClient", ac):
-        r = client.post("/identity/handoff", headers={"Origin": origin}, json={})
+        r = client.post("/identity/handoff", headers=_owner({"Origin": origin}), json={})
     return r, http
 
 

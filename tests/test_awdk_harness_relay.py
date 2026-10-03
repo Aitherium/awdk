@@ -92,7 +92,8 @@ def test_relay_skips_adk_answer_repeat_after_token_deltas(tmp_path, monkeypatch)
         def __exit__(self, *a):
             return False
 
-        def stream(self, method, url, json=None):
+        def stream(self, method, url, json=None, headers=None):
+            # the relay presents the owner's local credential to a loopback daemon
             return _Stream(json)
 
     fake = types.ModuleType("httpx")

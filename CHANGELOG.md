@@ -4,6 +4,28 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.48] - 2026-10-03
+
+### Security
+
+- **The agent daemon no longer treats "loopback" as its owner.** It mints a per-user
+  credential, `~/.aither/daemon-token` (0600), and with `AITHER_LOCAL_AUTH=required` --
+  the default when `AITHER_OFFLINE` is set -- refuses every caller that does not present
+  it in `X-Aither-Local-Token` (or the remote `AITHER_SERVER_API_KEY` bearer), loopback
+  included, and websocket routes (`/ws/chat`) check it and the Origin before accepting.
+  `POST /mesh/join` requires it in every mode; `POST /identity/handoff` requires it
+  offline or in required mode (online it keeps the browser sign-in gate). awdk's own
+  clients and awsh send it to loopback daemons only, and only when every listener they
+  could reach on that port (both loopbacks for `localhost`) belongs to the same user.
+  Online, without the variable, the previous loopback behaviour stays.
+- **Offline narrows CORS and CSRF to loopback** (as the harness daemon already did): no
+  hosted page can drive an offline agent. The third-party `elodineofficial.github.io`
+  origin is gone from the defaults.
+- **Offline dials no MCP gateway by default** (was `127.0.0.1:8182`). A configured
+  loopback gateway must be https, or plaintext with `AITHER_MCP_GATEWAY_TRUSTED=1`; a
+  plaintext gateway is never sent the account key or `~/.aither/session-bearer`, only its
+  own `AITHER_MCP_KEY`/`AITHER_INTERNAL_KEY`. `/x-session/import` refuses offline.
+
 ## [3.8.47] - 2026-10-03
 
 - A signed-in `adk up` runs as your company's own persona (e.g. GargBot) when your

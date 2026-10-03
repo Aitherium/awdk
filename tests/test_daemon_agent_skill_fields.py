@@ -224,7 +224,7 @@ def test_relay_session_forwards_the_addition_as_system_additions(tmp_path, monke
         def __exit__(self, *a):
             return False
 
-        def stream(self, method, url, json=None):
+        def stream(self, method, url, json=None, headers=None):
             return _Stream(json)
 
     fake = types.ModuleType("httpx")

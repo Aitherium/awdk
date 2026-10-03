@@ -547,8 +547,12 @@ class AgentRelaySession(HarnessSession):
             body["system_additions"] = [self.config.system_prompt_append]
         url = f"{self.base_url}{STREAM_PATH}"
         try:
+            # The owner's local credential, sent ONLY to a loopback daemon
+            # (adk.local_auth): an offline daemon refuses an anonymous caller.
+            from adk.local_auth import headers_for
+
             with httpx.Client(timeout=httpx.Timeout(600.0, connect=15.0)) as client:
-                with client.stream("POST", url, json=body) as response:
+                with client.stream("POST", url, json=body, headers=headers_for(url)) as response:
                     if response.status_code >= 400:
                         response.read()
                         self._emit(
