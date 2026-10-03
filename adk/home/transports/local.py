@@ -409,7 +409,25 @@ class LocalTransport:
                 model = val
                 break
         return {"agent": str(getattr(agent, "name", "") or ""), "model": model,
+                "ran_on": self.model_ran_on(),
                 "pending": pending, "reminders": reminders}
+
+    def model_ran_on(self) -> Dict[str, Any]:
+        """WHERE this home's model runs, for the page to say so: ``this_computer`` is true
+        only for a loopback local model (``models.is_local``). A hosted or bring-your-own-key
+        model, or a "local" preset aimed at another host, answers ``False`` with the provider,
+        so a page never tells the owner a turn stayed on their computer when it did not.
+        Unreadable config is not "this computer" (fails closed, like the classroom gate)."""
+        from .. import models
+        from ..config import load_config
+
+        try:
+            model = load_config(self.root).model
+            return {"this_computer": bool(models.is_local(model)),
+                    "provider": str(getattr(model, "provider", "") or "")}
+        except Exception as exc:  # noqa: BLE001 - no readable home = say nothing is local
+            logger.debug("hearth: model location unreadable: %s", type(exc).__name__)
+            return {"this_computer": False, "provider": ""}
 
     def public_status(self) -> Dict[str, Any]:
         """What an UNPAIRED allowlisted page may know: is a serve running, and can it

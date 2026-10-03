@@ -559,3 +559,23 @@ def test_serve_browser_flag_prints_a_code(home, monkeypatch, capsys):
     code = line.split("BROWSER CODE:")[1].split()[0]
     assert seen["core"].transports["local"].browser.pair(code, PAGE)[0]
     assert home_cli.main(["serve", "--browser", "--no-local"]) == home_cli.EXIT_SETUP
+
+
+@pytest.mark.parametrize("provider,base_url,this_computer", [
+    ("bonsai", "", True),
+    ("bonsai", "http://10.1.2.3:8080/v1", False),   # "local" preset pointed at another host
+    ("openai", "", False),                          # bring-your-own-key: off this computer
+])
+def test_browser_state_says_where_the_model_runs(home, provider, base_url, this_computer):
+    """The page names where a turn ran. A hosted or remote model must never be reported as
+    "this computer" (reverting ``model_ran_on`` drops the field and this fails)."""
+    from adk.home import models
+
+    hc.init_home(name="hearth-test")
+    cfg = hc.load_config()
+    cfg.model = models.choose_model(provider, base_url=base_url)
+    hc.save_config(cfg)
+    core, agent, t = _setup(home)
+    state = t.browser_state()
+    assert state["ran_on"]["this_computer"] is this_computer
+    assert state["ran_on"]["provider"] == provider
