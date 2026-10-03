@@ -26,6 +26,8 @@ DEFAULT_MODEL = "Qwen/Qwen3-0.6B"
 ATTN_NAME = "adk_kvholder"
 DEFAULT_QUESTION = "Summarize the document above in three sentences."
 _ACTIVE: list = []  # the Engine whose forward is running; the attention hook reads it
+_QBLOCK = 512  # queries per local score matrix
+_APPEND_MAX = 2048  # keys per APPEND message
 
 
 def _deps():
@@ -137,7 +139,7 @@ class Engine:
         link: HolderLink | None = None,
         window: int = 1024,
         block: int = 256,
-        chunk: int = 512,
+        chunk: int = 32768,
     ):
         _, torch, _ = _deps()
         self.torch = torch
@@ -179,12 +181,18 @@ class Engine:
         if base != far:
             raise RuntimeError(f"layer {li}: local keys start at {base}, holders hold {far}")
         g = self.n_heads // self.n_kv
-        s = torch.matmul(q, k.repeat_interleave(g, 0).transpose(1, 2)) * scaling  # [H, T, N]
-        qpos = torch.arange(self._pos0, self._pos0 + n_t)
+        kr, vr = k.repeat_interleave(g, 0), v.repeat_interleave(g, 0)  # [H, N, D]
         kpos = torch.arange(base, base + n)
-        s = s.masked_fill(kpos[None, :] > qpos[:, None], float("-inf"))
-        lse = torch.logsumexp(s, -1)  # [H, T]
-        o = torch.matmul(torch.softmax(s, -1), v.repeat_interleave(g, 0))  # [H, T, D]
+        os_, lses = [], []
+        for a in range(0, n_t, _QBLOCK):  # bounds the score matrix on a long prompt
+            qb = q[:, a : a + _QBLOCK]
+            qpos = torch.arange(self._pos0 + a, self._pos0 + a + qb.shape[1])
+            last = int(qpos[-1]) - base + 1  # causal: no key after the block's last query
+            s = torch.matmul(qb, kr[:, :last].transpose(1, 2)) * scaling  # [H, t, N']
+            s = s.masked_fill(kpos[None, :last] > qpos[:, None], float("-inf"))
+            lses.append(torch.logsumexp(s, -1))
+            os_.append(torch.matmul(torch.softmax(s, -1), vr[:, :last]))
+        o, lse = torch.cat(os_, 1), torch.cat(lses, 1)  # [H, T, D], [H, T]
         if far:
             fo, fl = self.link.attn(li, q.transpose(0, 1).contiguous().numpy(), float(scaling))
             fo = torch.from_numpy(fo).transpose(0, 1)
@@ -194,11 +202,13 @@ class Engine:
             o = (o * a[..., None] + fo * b[..., None]) / (a + b)[..., None]
         if self.link is not None and n - self.window >= self.block:
             cut = (n - self.window) // self.block * self.block
-            self.link.append(
-                li,
-                k[:, :cut].transpose(0, 1).contiguous().numpy(),
-                v[:, :cut].transpose(0, 1).contiguous().numpy(),
-            )
+            for a in range(0, cut, _APPEND_MAX):  # bounded messages for a phone's socket
+                b = min(cut, a + _APPEND_MAX)
+                self.link.append(
+                    li,
+                    k[:, a:b].transpose(0, 1).contiguous().numpy(),
+                    v[:, a:b].transpose(0, 1).contiguous().numpy(),
+                )
             k, v = k[:, cut:].contiguous(), v[:, cut:].contiguous()
         self.k[li], self.v[li] = k, v
         return o.transpose(0, 1)[None].to(query.dtype), None
@@ -215,6 +225,11 @@ class Engine:
         prev = cfg._attn_implementation
         cfg._attn_implementation = ATTN_NAME
         _ACTIVE.append(self)
+        # the hook masks causally itself: skip the model's dense [T, T] mask (1.6 GB at 20k)
+        base = getattr(self.model, "model", None)
+        had = base is not None and hasattr(base, "_update_causal_mask")
+        if had:
+            base._update_causal_mask = lambda *a, **k: None
         try:
             with torch.no_grad():
                 for s in range(0, len(ids), self.chunk):
@@ -232,6 +247,8 @@ class Engine:
         finally:
             _ACTIVE.pop()
             cfg._attn_implementation = prev
+            if had:
+                del base._update_causal_mask  # back to the class method
         return logits
 
     def generate(
@@ -389,15 +406,23 @@ def run(args) -> int:
         try:
             client = kv.KVHolderClient(host, port, timeout=args.timeout)
             hello = client.hello()
-            link = HolderLink(
-                client,
-                c.num_hidden_layers,
-                c.num_key_value_heads,
-                c.num_attention_heads,
-                getattr(c, "head_dim", None) or c.hidden_size // c.num_attention_heads,
-                kv_type=args.kv,
-                wire=args.wire,
-            )
+            for attempt in range(3):
+                try:
+                    link = HolderLink(
+                        client,
+                        c.num_hidden_layers,
+                        c.num_key_value_heads,
+                        c.num_attention_heads,
+                        getattr(c, "head_dim", None) or c.hidden_size // c.num_attention_heads,
+                        kv_type=args.kv,
+                        wire=args.wire,
+                    )
+                    break
+                except RuntimeError as e:
+                    # a stale tab that died during CONFIG is dropped by the relay: ask again
+                    if "holder lost" not in str(e) or attempt == 2:
+                        raise
+                    print(f"kvholder chat: {e}; configuring again", flush=True)
         except (OSError, RuntimeError, ValueError) as e:
             print(
                 f"kvholder chat: relay {host}:{port}: {e}\n"
@@ -524,7 +549,13 @@ def register_args(p) -> None:
         help="recent tokens kept on this machine; older ones go to the holders",
     )
     p.add_argument("--block", type=int, default=256, help="tokens per APPEND to the holders")
-    p.add_argument("--chunk", type=int, default=512, help="prefill tokens per forward pass")
+    p.add_argument(
+        "--chunk",
+        type=int,
+        default=32768,
+        help="prefill tokens per forward pass; in one pass each layer ships its old keys "
+        "before the next layer runs, so the holders do no prefill attention",
+    )
     p.add_argument(
         "--kv",
         choices=["f16", "q8_0"],

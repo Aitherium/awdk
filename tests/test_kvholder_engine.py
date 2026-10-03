@@ -55,12 +55,17 @@ def _prompt(n: int, seed: int = 1) -> list[int]:
     return np.random.default_rng(seed).integers(0, 97, n).tolist()
 
 
-@pytest.mark.parametrize("wire", ["v3", "v4"])
-def test_far_keys_on_a_holder_match_local_greedy(wire):
+@pytest.mark.parametrize(
+    "wire, chunk, qblock",
+    [("v3", 24, 512), ("v4", 24, 512), ("v4", 4096, 16)],  # last: one pass, blocked queries
+)
+def test_far_keys_on_a_holder_match_local_greedy(wire, chunk, qblock, monkeypatch):
+    monkeypatch.setattr(eng, "_QBLOCK", qblock)
+    monkeypatch.setattr(eng, "_APPEND_MAX", 16)
     model = _tiny()
     srv, client = _holder()
     try:
-        e = eng.Engine(model, _link(model, client, wire), window=16, block=8, chunk=24)
+        e = eng.Engine(model, _link(model, client, wire), window=16, block=8, chunk=chunk)
         ids = _prompt(70)
         out, st = e.generate(ids, 24)
         ref = eng.reference_greedy(model, ids, 24)

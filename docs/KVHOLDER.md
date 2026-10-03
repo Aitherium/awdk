@@ -359,10 +359,12 @@ Every layer keeps its last `--window` tokens (default 1024) of keys and values o
 Older keys are appended to the holders in blocks of `--block` tokens. Each attention op asks
 the holders for their share over the old keys, computes the window here, and merges the two
 by log-sum-exp. The result is attention over every key the model has seen, rounded to fp16 on
-the wire. A long `--prompt-file` therefore lands mostly on the phones: prefill runs in chunks
-of `--chunk` tokens, and each chunk's old keys are shipped once the window is full. After each
-reply the engine prints decode tokens/s, the keys the holders hold, and the average holder
-round trip next to the part of it the holders spent computing.
+the wire. A long `--prompt-file` lands on the phones in one forward pass: each layer attends
+over the prompt here, ships everything older than the window, and frees it before the next
+layer runs, so the host peaks at one layer of the prompt and the holders do no prefill work.
+(`--chunk N` splits the prefill; later chunks then ask the holders about the earlier ones.)
+After each reply the engine prints decode tokens/s, the keys the holders hold, and the
+average holder round trip next to the part of it the holders spent computing.
 
 `--wire v4` (the default) sends the model's own shapes; the Python holder and the phone page
 read them. `--wire v3` pads every head to 256 values and 48 query rows for a holder that
@@ -371,9 +373,16 @@ does about six times the work.
 
 `--verify N` runs the same prompt again, fully on the host with the model's own attention and
 KV cache, and exits 1 unless the first N greedy tokens are identical. `--local` keeps every
-key on the host through the same code. Measured on Qwen3-0.6B (fp32, CPU) through a relay
-and a Python holder, a 3,871-token prompt with a 256-token window: 3,584 keys per layer on
-the holder, 32 of 32 greedy tokens identical to the local run (2026-10-03).
+key on the host through the same code. Measured with Qwen3-0.6B (fp32, CPU host) on
+2026-10-03, every run identical to the local one:
+
+| holders | prompt | keys per layer on holders | greedy tokens identical | holder call |
+|---|---|---|---|---|
+| Pixel 9 Pro XL, Chrome `webgpu-f16`, over USB | 20,031 tokens, window 1,536 | 18,432 (x 28 layers) | 24 / 24 | 32 ms round trip, 22 ms on the phone |
+| desktop Chrome, `webgpu-f16` | 3,871 tokens, window 256 | 3,584 | 32 / 32 | |
+| Python holder (`serve --connect`) | 3,871 tokens, window 256 | 3,584 | 32 / 32 | |
+
+Decode ran at 0.8 tokens/s, bound by the host's CPU, which other jobs held at 100%.
 
 Any causal LM whose attention goes through transformers' `AttentionInterface` works (Qwen3,
 Qwen2, Llama, Mistral). torch and transformers are imported only by `chat`; the rest of
