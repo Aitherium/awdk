@@ -37,7 +37,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-import numpy as np
+try:  # numpy is optional for awdk; only the holder's math needs it (serve, tests)
+    import numpy as np
+except ImportError:  # `adk kvholder plan|probe` and the CLI parser still work
+    np = None  # type: ignore[assignment]
 
 log = logging.getLogger("adk.kvholder")
 
@@ -228,7 +231,7 @@ def merge_partials(parts: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarr
 # only page their full-attention layers; recurrent state is O(1) and stays on the host.
 PROFILES = {
     "qwen38-27b": {"n_layer": 16, "n_head_kv": 4},  # Backburner's measured target
-    "bonsai2-27b": {"n_layer": 16, "n_head_kv": 4},  # Qwen3.x-27B base
+    "bonsai2-27b": {"n_layer": 16, "n_head_kv": 4},  # Qwen3.8-27B base (same attention)
 }
 
 
@@ -598,8 +601,19 @@ def register(sub) -> None:
     )
     s = p.add_subparsers(dest="kvholder_action")
     sv = s.add_parser("serve", help="Hold old KV pages and answer attention over them")
-    sv.add_argument("--host", default="0.0.0.0")
+    sv.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Listen address. PATN has no auth: bind a LAN address only on a network you trust; "
+        "otherwise dial a relay with --connect",
+    )
     sv.add_argument("--port", type=int, default=DEFAULT_PORT)
+    sv.add_argument(
+        "--connect",
+        default="",
+        help="Dial out to a relay instead of listening (ws://HOST:50063/holder or wss://...)",
+    )
+    sv.add_argument("--token", default="", help="Relay token (with --connect)")
     sv.add_argument(
         "--max-mb", type=int, default=0, help="Memory to lend (default: free RAM minus 2 GB)"
     )
@@ -614,18 +628,30 @@ def register(sub) -> None:
     )
     pl.add_argument("--profile", choices=sorted(PROFILES), default="qwen38-27b")
     pl.add_argument("--kv", choices=sorted(KV_TYPES), default="q8_0")
+    try:  # the transports; absent when this file is copied alone onto a device
+        from adk import kvholder_net
+    except ImportError:
+        return
+    kvholder_net.register(s)
 
 
 def run(args) -> int:
     action = getattr(args, "kvholder_action", None)
+    if action == "serve" and np is None:
+        print("kvholder serve needs numpy: pip install numpy", file=sys.stderr)
+        return 2
     if action == "serve":
         max_b = args.max_mb << 20 if args.max_mb else max(0, _free_bytes() - (2 << 30))
         if max_b <= 0:
             print("kvholder: cannot size the loan; pass --max-mb", file=sys.stderr)
             return 2
-        srv = HolderServer(
-            (args.host, args.port), KVHolder(max_b, device=f"adk-kvholder@{socket.gethostname()}")
-        )
+        holder = KVHolder(max_b, device=f"adk-kvholder@{socket.gethostname()}")
+        if args.connect:
+            from adk import kvholder_net
+
+            print(f"kvholder: lending {max_b >> 20} MB to {args.connect}")
+            return kvholder_net.dial_holder(args.connect, args.token, holder)
+        srv = HolderServer((args.host, args.port), holder)
         print(f"kvholder: PATN v{VERSION} on {args.host}:{args.port}, lending {max_b >> 20} MB")
         try:
             srv.serve_forever()
@@ -665,7 +691,13 @@ def run(args) -> int:
             f"{r['reserve_bytes'] >> 20} MB reserve)"
         )
         return 0
-    print("usage: adk kvholder {serve,probe,plan}", file=sys.stderr)
+    if action in ("phone", "relay-status"):
+        from adk import kvholder_net
+
+        return (kvholder_net.run_phone if action == "phone" else kvholder_net.run_relay_status)(
+            args
+        )
+    print("usage: adk kvholder {serve,probe,plan,phone,relay-status}", file=sys.stderr)
     return 2
 
 

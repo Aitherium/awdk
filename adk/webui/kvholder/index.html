@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV Holder</title>
+<style>
+:root { --bg:#0b0d12; --card:#141821; --ink:#e8ecf3; --dim:#8a94a7; --ok:#3ecf8e; --warn:#f5a524; --bad:#f2555a; --acc:#7c9cff; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg:#f6f7fb; --card:#fff; --ink:#141821; --dim:#5b6475; } }
+* { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+main { max-width:520px; margin:0 auto; padding:24px 16px; }
+h1 { font-size:20px; margin:0 0 4px } p.sub { color:var(--dim); margin:0 0 20px }
+.card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:12px; }
+.row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(128,128,128,.15) } .row:last-child { border:0 }
+.k { color:var(--dim) } .v { font-variant-numeric:tabular-nums; text-align:right }
+.dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; background:var(--dim) }
+.on { background:var(--ok) } .wait { background:var(--warn) } .off { background:var(--bad) }
+label { display:block; color:var(--dim); margin-bottom:6px } input[type=range] { width:100% }
+button { background:var(--acc); color:#fff; border:0; border-radius:10px; padding:10px 14px; font-size:15px; width:100% }
+</style></head>
+<body><main>
+<h1>KV Holder</h1>
+<p class="sub">This device keeps the oldest part of a model's context and does the attention over it. Keep this tab open and the screen on.</p>
+<div class="card"><div class="row"><span><span id="dot" class="dot wait"></span><span id="state">starting</span></span><span class="v" id="engine"></span></div></div>
+<div class="card">
+  <div class="row"><span class="k">Held keys (layer 0)</span><span class="v" id="held">0</span></div>
+  <div class="row"><span class="k">Memory used</span><span class="v" id="mem">0 MB</span></div>
+  <div class="row"><span class="k">Attention calls</span><span class="v" id="calls">0</span></div>
+  <div class="row"><span class="k">Last call</span><span class="v" id="last">-</span></div>
+</div>
+<div class="card"><label for="budget">Memory to lend: <b id="bv"></b> MB</label>
+<input id="budget" type="range" min="256" max="8192" step="256" value="2048"><button id="go" style="margin-top:12px">Reconnect</button></div>
+</main>
+<script src="holder.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const token = new URLSearchParams(location.hash.slice(1)).get('t') || '';
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/holder';
+  const budget = $('budget'); budget.value = localStorageGet('kvh.mb', '2048'); $('bv').textContent = budget.value;
+  budget.oninput = () => { $('bv').textContent = budget.value; localStorageSet('kvh.mb', budget.value); };
+  function localStorageGet(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } }
+  function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
+  function set(state, cls) { $('state').textContent = state; $('dot').className = 'dot ' + cls; }
+  let ws = null, lock = null;
+  async function start() {
+    if (ws) { ws.onclose = null; ws.close(); }
+    if (!token) { set('no token in the link: open the URL the host printed', 'off'); return; }
+    let engine = null;
+    try { engine = await KVHolder.GpuEngine.create(navigator.gpu); } catch (e) { engine = null; }
+    if (!engine) engine = new KVHolder.CpuEngine();
+    $('engine').textContent = engine.describe();
+    const name = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'browser';
+    const holder = new KVHolder.Holder(engine, Number(budget.value) * 1048576, name);
+    set('connecting', 'wait');
+    ws = KVHolder.connect(url, token, holder, {
+      attached: () => set('attached: lending memory', 'on'),
+      error: (e) => set('error: ' + e, 'off'),
+      closed: () => { set('disconnected, retrying', 'wait'); setTimeout(start, 3000); },
+      activity: (h) => {
+        $('held').textContent = h.cfg ? h.engine.held(0).toLocaleString() : '0';
+        $('mem').textContent = (h.used() / 1048576).toFixed(0) + ' MB';
+        $('calls').textContent = h.calls.toLocaleString(); $('last').textContent = h.lastMs.toFixed(1) + ' ms';
+      },
+    });
+    try { if ('wakeLock' in navigator && !lock) lock = await navigator.wakeLock.request('screen'); } catch (e) { /* not granted */ }
+  }
+  $('go').onclick = start;
+  start();
+})();
+</script>
+</body></html>

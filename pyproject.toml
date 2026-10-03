@@ -362,6 +362,8 @@ artifacts = [
     # selects one; a custom pack is a folder with index.html dropped into
     # ~/.aither/ui-packs/. Ship the built-ins inside the wheel.
     "adk/webui/packs/**/*",
+    # The browser KV holder page + script served by `adk kvholder phone`.
+    "adk/webui/kvholder/**/*",
     # Vendored ODS model catalog and hardware database (deterministic model resolution).
     # JSON files needed at runtime by adk.ods.resolver; force-include via importlib.resources.
     "adk/ods/**/*",

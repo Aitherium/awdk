@@ -938,6 +938,8 @@ Lend this device's memory to another host's context window (PATN v3 KV holder)
 - `adk kvholder serve` — Hold old KV pages and answer attention over them
 - `adk kvholder probe` — HELLO + link latency + STATS against a holder (an adk holder or a Backburner iPhone)
 - `adk kvholder plan` — How much context a holder with this much free memory can keep
+- `adk kvholder phone` — Use a phone (or any browser) as the holder: USB, LAN, mesh or tunnel
+- `adk kvholder relay-status` — Is a holder attached to the local relay
 
 ## `adk learn`
 
