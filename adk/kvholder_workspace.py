@@ -688,7 +688,10 @@ def run_serve(args) -> int:
     keys.refresh()
     household = Household()
     household.refresh()
-    gate = DeviceGate({args.public_host, "localhost", "127.0.0.1"}, keys, grants, household)
+    from adk.kvholder_mesh import relay_ids
+
+    # the public host, and every address a tailnet/LAN holder may dial the listener by directly
+    gate = DeviceGate(relay_ids() | {args.public_host, pub_ip}, keys, grants, household)
     relay.device_gate = gate
     public_url = f"wss://{args.public_host}/holder"
     net.write_state(
