@@ -248,6 +248,111 @@ def partial_attention(
     return _finish(q.shape, rows, *_attend(qs, chunks))
 
 
+# ---------------------------------------------------------------- TurboQuant-style 4-bit store
+
+# Rotate each vector by a fixed orthogonal matrix, then quantize every coordinate with the
+# 16-level Lloyd-Max quantizer for a unit Gaussian, keeping one float32 norm per vector
+# (TurboQuant, Zandieh et al., arXiv:2504.19874). After the rotation the coordinates of a
+# unit vector are close to N(0, 1/d), so one fixed codebook fits every head. Dot products
+# survive the rotation: the holder rotates the query once, scores against the stored
+# rotated keys, and rotates the output back once. 132 bytes per key per head (q8 is 272).
+_TQ4_CENTROIDS = (
+    np.array(
+        [
+            -2.7326,
+            -2.0690,
+            -1.6181,
+            -1.2562,
+            -0.9424,
+            -0.6568,
+            -0.3881,
+            -0.1284,
+            0.1284,
+            0.3881,
+            0.6568,
+            0.9424,
+            1.2562,
+            1.6181,
+            2.0690,
+            2.7326,
+        ],
+        dtype=np.float32,
+    )
+    if np is not None
+    else None
+)
+_TQ4_EDGES = (_TQ4_CENTROIDS[1:] + _TQ4_CENTROIDS[:-1]) / 2 if np is not None else None
+# every packed byte -> its (low, high) centroid pair, so decoding is a single gather
+_TQ4_PAIRS = (
+    np.stack(
+        [_TQ4_CENTROIDS[np.arange(256) & 15], _TQ4_CENTROIDS[np.arange(256) >> 4]], axis=1
+    ).astype(np.float32)
+    if np is not None
+    else None
+)
+_ROT: dict = {}
+
+
+def tq4_rotation(d: int) -> np.ndarray:
+    """A deterministic orthogonal d x d matrix (randomized Hadamard; d a power of two)."""
+    if d not in _ROT:
+        h = np.array([[1.0]])
+        while h.shape[0] < d:
+            h = np.block([[h, h], [h, -h]])
+        signs = np.random.default_rng(0x7A5).choice([-1.0, 1.0], d)
+        _ROT[d] = (h * signs / np.sqrt(d)).astype(np.float32)
+    return _ROT[d]
+
+
+def tq4_encode(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """[..., D] float -> (packed 4-bit codes [..., D/2] uint8, norms [...] float32)."""
+    d = x.shape[-1]
+    xr = np.asarray(x, np.float32) @ tq4_rotation(d).T
+    norms = np.linalg.norm(xr, axis=-1).astype(np.float32)
+    u = xr * (np.sqrt(d) / np.where(norms > 0, norms, 1))[..., None]
+    codes = np.searchsorted(_TQ4_EDGES, u).astype(np.uint8)
+    return codes[..., 0::2] | (codes[..., 1::2] << 4), norms
+
+
+def tq4_decode_rotated(packed: np.ndarray, norms: np.ndarray) -> np.ndarray:
+    """Packed codes -> vectors in the ROTATED basis (what attention needs), float32."""
+    d = packed.shape[-1] * 2
+    out = np.take(_TQ4_PAIRS, packed, axis=0).reshape(packed.shape[:-1] + (d,))  # one gather
+    out *= (norms / np.float32(np.sqrt(d)))[..., None]
+    return out
+
+
+def _attend_tq4(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """_attend over 4-bit chunks (kc, kn, vc, vn), all in the rotated basis.
+
+    Vectors are decoded at unit scale with one gather; each key's norm is folded into its
+    score and each value's norm into its weight, so no full-size multiply is spent on norms.
+    """
+    n_h, n_r, n_d = qs.shape
+    inv = np.float32(1.0 / np.sqrt(n_d))
+    acc = np.zeros((n_h, n_r, n_d), np.float32)
+    m = np.full((n_h, n_r), -np.inf, np.float32)
+    den = np.zeros((n_h, n_r), np.float32)
+    for kc, kn, vc, vn in chunks:
+        n = kc.shape[1]
+        if n == 0:
+            continue
+        k = np.take(_TQ4_PAIRS, kc, axis=0).reshape(n_h, n, n_d)
+        scores = np.matmul(qs, k.transpose(0, 2, 1)) * (kn * inv)[:, None, :]
+        mx = np.maximum(m, scores.max(axis=-1))
+        a = np.exp(m - mx)
+        probs = np.exp(scores - mx[..., None])
+        v = np.take(_TQ4_PAIRS, vc, axis=0).reshape(n_h, n, n_d)
+        acc = acc * a[..., None] + np.matmul(probs * (vn * inv)[:, None, :], v)
+        den = den * a + probs.sum(axis=-1)
+        m = mx
+    return acc, m, den
+
+
+def tq4_decode(packed: np.ndarray, norms: np.ndarray) -> np.ndarray:
+    return tq4_decode_rotated(packed, norms) @ tq4_rotation(packed.shape[-1] * 2)
+
+
 def merge_partials(parts: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
     """Exact log-sum-exp merge of normalized partials [(O, lse), ...] over disjoint key sets."""
     lses = np.stack([p[1] for p in parts]).astype(np.float64)
@@ -357,8 +462,8 @@ class KVHolder:
     """
 
     def __init__(self, max_bytes: int, device: str = "adk-kvholder", store: str = "f32"):
-        if store not in ("f32", "wire"):
-            raise ValueError("store must be 'f32' or 'wire'")
+        if store not in ("f32", "wire", "tq4"):
+            raise ValueError("store must be 'f32', 'wire' or 'tq4'")
         self.st = HolderState(max_bytes=max_bytes, store=store)
         self.device = device
 
@@ -367,6 +472,8 @@ class KVHolder:
         cfg = self.st.cfg
         if self.st.store == "f32":
             return 2 * cfg.n_head_kv * HD * 4
+        if self.st.store == "tq4":
+            return 2 * cfg.n_head_kv * (HD // 2 + 4)
         return 2 * cfg.rs
 
     def handle(self, mtype: int, p: bytes) -> tuple[int, bytes] | None:
@@ -439,10 +546,13 @@ class KVHolder:
                 return ERR, f"out of memory at {st.n[layer]} keys".encode()
             off = APPEND_REQ.size
             k_raw, v_raw = p[off : off + nbytes], p[off + nbytes : off + 2 * nbytes]
-            if st.store == "f32":
+            if st.store in ("f32", "tq4"):
                 k = dequant_rows(np.frombuffer(k_raw, np.uint8), n, cfg).transpose(1, 0, 2)
                 v = dequant_rows(np.frombuffer(v_raw, np.uint8), n, cfg).transpose(1, 0, 2)
-                st.chunks[layer].append((np.ascontiguousarray(k), np.ascontiguousarray(v)))
+                if st.store == "tq4":
+                    st.chunks[layer].append((*tq4_encode(k), *tq4_encode(v)))
+                else:
+                    st.chunks[layer].append((np.ascontiguousarray(k), np.ascontiguousarray(v)))
             else:
                 st.raw[layer].append(k_raw)
                 st.raw_v[layer].append(v_raw)
@@ -454,15 +564,14 @@ class KVHolder:
 
     def _truncate_layer(self, layer: int, keep: int) -> None:
         st = self.st
-        if st.store == "f32":
+        if st.store in ("f32", "tq4"):
             kept, have = [], 0
-            for k, v in st.chunks[layer]:
-                take = min(k.shape[1], keep - have)
+            for parts in st.chunks[layer]:
+                size = parts[0].shape[1]
+                take = min(size, keep - have)
                 if take <= 0:
                     break
-                kept.append(
-                    (k[:, :take].copy(), v[:, :take].copy()) if take < k.shape[1] else (k, v)
-                )
+                kept.append(tuple(a[:, :take].copy() for a in parts) if take < size else parts)
                 have += take
             st.held_bytes -= (st.n[layer] - keep) * self._per_key()
             st.chunks[layer], st.n[layer] = kept, keep
@@ -509,13 +618,13 @@ class KVHolder:
         with st.lock:
             held = st.n[layer]
             nk = held if nk == 0 else min(nk, held)
-            if st.store == "f32":
+            if st.store in ("f32", "tq4"):
                 chunks, have = [], 0
-                for k, v in st.chunks[layer]:
-                    take = min(k.shape[1], nk - have)
+                for parts in st.chunks[layer]:
+                    take = min(parts[0].shape[1], nk - have)
                     if take <= 0:
                         break
-                    chunks.append((k[:, :take], v[:, :take]))
+                    chunks.append(tuple(a[:, :take] for a in parts))
                     have += take
             else:
                 keys, vals = self._kv(layer)
@@ -523,10 +632,15 @@ class KVHolder:
         outs, lses = [], []
         rows = _rows(NR, n_tok)
         for g in range(ng):
-            if st.store == "f32":
+            if st.store in ("f32", "tq4"):
                 if nk == 0 or rows.size == 0:
                     o = np.zeros(q[g].shape, np.float32)
                     s = np.full(q[g].shape[:2], -np.inf, np.float32)
+                elif st.store == "tq4":  # scores in the rotated basis; rotate the output back
+                    rot = tq4_rotation(HD)
+                    qs = np.ascontiguousarray((q[g][:, rows] * np.float32(scale)) @ rot.T)
+                    acc, m, den = _attend_tq4(qs, chunks)
+                    o, s = _finish(q[g].shape, rows, acc @ rot, m, den)
                 else:
                     qs = np.ascontiguousarray(q[g][:, rows] * np.float32(scale))
                     o, s = _finish(q[g].shape, rows, *_attend(qs, chunks))
@@ -712,9 +826,10 @@ def register(sub) -> None:
     sv.add_argument("--token", default="", help="Relay token (with --connect)")
     sv.add_argument(
         "--store",
-        choices=["f32", "wire"],
+        choices=["f32", "wire", "tq4"],
         default="f32",
-        help="f32: fast attention, 3.8x the q8 bytes per key; wire: most context per MB, slower",
+        help="f32: exact and fastest; wire: exact, as received; tq4: ~2x the context of q8 "
+        "per MB, approximate (TurboQuant-style 4-bit)",
     )
     sv.add_argument(
         "--max-mb", type=int, default=0, help="Memory to lend (default: free RAM minus 2 GB)"

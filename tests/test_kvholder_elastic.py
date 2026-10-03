@@ -357,3 +357,19 @@ def test_f32_holders_get_ranges_sized_for_f32(relay):
     e.check(n_tok=1)
     with pytest.raises(RuntimeError, match="out of memory at 512 keys"):
         e.push(13)
+
+
+def test_tq4_holders_get_ranges_sized_for_4_bits(relay):
+    r, token, ep, wp = relay
+    budget = CAP * PER_KEY  # what 512 f16 keys cost; at 132 B per head a tq4 key costs ~1/4
+    h = kv.KVHolder(budget, device="tq", store="tq4")
+    threading.Thread(
+        target=net.dial_holder, args=(f"ws://127.0.0.1:{wp}/holder", token, h), daemon=True
+    ).start()
+    end = time.time() + 10
+    while not r.holders and time.time() < end:
+        time.sleep(0.05)
+    Engine(ep, seed=13)  # CONFIG places the holder
+    cap = r.status()["holders"][0]["cap"]
+    assert cap == (budget // (2 * H * (kv.HD // 2 + 4) * LAYERS)) // 64 * 64
+    assert cap > 3 * CAP

@@ -35,9 +35,10 @@ def register(sub) -> None:
     sv.add_argument("--token", default="", help="Relay token (with --connect)")
     sv.add_argument(
         "--store",
-        choices=["f32", "wire"],
+        choices=["f32", "wire", "tq4"],
         default="f32",
-        help="f32: fast attention, 3.8x the q8 bytes per key; wire: most context per MB, slower",
+        help="f32: exact and fastest; wire: exact, as received; tq4: ~2x the context of q8 "
+        "per MB, approximate (TurboQuant-style 4-bit)",
     )
     sv.add_argument(
         "--max-mb", type=int, default=0, help="Memory to lend (default: free RAM minus 2 GB)"

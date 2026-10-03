@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 import threading
 
 import pytest
@@ -175,3 +176,68 @@ def test_plan_matches_backburners_measured_footprint():
 def test_cli_plan_runs(capsys):
     assert kv.main(["plan", "--free-gb", "8"]) == 0
     assert "old tokens" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- tq4 (TurboQuant-style 4-bit)
+
+
+def test_tq4_rotation_is_orthogonal_and_error_is_bounded():
+    r = kv.tq4_rotation(kv.HD)
+    np.testing.assert_allclose(r @ r.T, np.eye(kv.HD), atol=1e-5)
+    x = np.random.default_rng(10).standard_normal((500, 2, kv.HD)).astype(np.float32)
+    codes, norms = kv.tq4_encode(x)
+    assert codes.shape == (500, 2, kv.HD // 2) and codes.dtype == np.uint8
+    y = kv.tq4_decode(codes, norms)
+    rel_mse = float(((y - x) ** 2).sum() / (x**2).sum())
+    assert rel_mse < 0.012  # 16-level Lloyd-Max on a Gaussian: ~0.0095
+
+
+def _tq4_holder(keys, vals, h):
+    holder = kv.KVHolder(1 << 30, store="tq4")
+    holder.handle(kv.CONFIG, kv.Config.for_model(1, h, "f16").pack())
+    n = keys.shape[0]
+    rep = holder.handle(
+        kv.APPEND, kv.APPEND_REQ.pack(0, 0, n) + kv.quant_rows(keys, 0) + kv.quant_rows(vals, 0)
+    )
+    assert rep[0] == kv.OK
+    return holder
+
+
+def _attn(holder, q, h, n_tok=1):
+    rep = holder.handle(
+        kv.ATTN, kv.ATTN_REQ.pack(0, n_tok, 0, kv.HD**-0.5) + q[None].astype(np.float16).tobytes()
+    )
+    assert rep[0] == kv.ATTN_OK
+    o = np.frombuffer(rep[1], np.float16, h * kv.NR * kv.HD, kv.ATTN_REP.size)
+    return o.astype(np.float32).reshape(h, kv.NR, kv.HD)
+
+
+def test_tq4_holder_finds_the_needle_in_a_quarter_of_the_bytes():
+    rng = np.random.default_rng(11)
+    h, n = 2, 3000
+    keys = rng.standard_normal((n, h, kv.HD)).astype(np.float32)
+    vals = rng.standard_normal((n, h, kv.HD)).astype(np.float32)
+    q = rng.standard_normal((h, kv.NR, kv.HD)).astype(np.float32)
+    pos = [17, 2411]
+    for hh in range(h):
+        keys[pos[hh], hh] = q[hh, 0]  # row 0 of each head should retrieve its needle's value
+    holder = _tq4_holder(keys, vals, h)
+    assert holder.st.held_bytes == n * 2 * h * (kv.HD // 2 + 4)  # 132 B per key per head
+    o = _attn(holder, q, h)
+    for hh in range(h):
+        v = vals[pos[hh], hh]
+        cos = float(o[hh, 0] @ v / np.linalg.norm(o[hh, 0]) / np.linalg.norm(v))
+        assert cos > 0.99, cos
+
+
+def test_tq4_truncate_keeps_the_prefix():
+    rng = np.random.default_rng(12)
+    h = 1
+    keys = rng.standard_normal((1000, h, kv.HD)).astype(np.float32)
+    vals = rng.standard_normal((1000, h, kv.HD)).astype(np.float32)
+    holder = _tq4_holder(keys, vals, h)
+    assert holder.handle(kv.TRUNCATE, struct.pack("<I", 600))[0] == kv.OK
+    assert holder.st.n[0] == 600 and holder.st.held_bytes == 600 * 2 * h * (kv.HD // 2 + 4)
+    q = rng.standard_normal((h, kv.NR, kv.HD)).astype(np.float32)
+    ref = _tq4_holder(keys[:600], vals[:600], h)
+    np.testing.assert_allclose(_attn(holder, q, h), _attn(ref, q, h), atol=1e-3)

@@ -315,6 +315,8 @@ class Relay:
         assert self.cfg is not None
         row = {"f16": 2, "f32": 4}.get(h.store)
         row_bytes = self.cfg.n_head_kv * kv.HD * row if row else self.cfg.rs
+        if h.store == "tq4":
+            row_bytes = self.cfg.n_head_kv * (kv.HD // 2 + 4)
         per_key = 2 * row_bytes * self.cfg.n_layer
         h.cap = None if h.max_bytes is None else (h.max_bytes // per_key) // 64 * 64
         h.off = 0
@@ -706,7 +708,7 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             ws,
             device,
             max_bytes,
-            store if store in ("wire", "f16", "f32") else "f32",
+            store if store in ("wire", "f16", "f32", "tq4") else "f32",
             session=session,
             held=held if isinstance(held, int) else None,
         )
