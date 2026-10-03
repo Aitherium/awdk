@@ -1,6 +1,7 @@
 """Tests for adk/builtin_tools.py — 21 built-in tool functions."""
 
 import sys
+import importlib.util
 import json
 import os
 import pytest
@@ -855,6 +856,12 @@ class TestShellExecDecoding:
         assert "ok" in (res.get("stdout") or res.get("output") or json.dumps(res))
 
 
+_NEEDS_AWRUN = pytest.mark.skipif(
+    importlib.util.find_spec("awrun") is None,
+    reason="the queue round trip needs awrun (pip install awdk[queue])",
+)
+
+
 class TestQueueTools:
     """awrun-backed queue_* wrappers (TOOL_CATEGORIES['queue'], awdk[queue]).
     Isolated to a temp AITHER_AWRUN_DIR so this never touches a real queue."""
@@ -876,6 +883,28 @@ class TestQueueTools:
         assert "error" in res
         assert "not-a-real-id" in res["error"]
 
+    @pytest.mark.parametrize("verb", ["status", "bump", "cancel"])
+    def test_malformed_id_is_refused_before_awrun(self, verb, monkeypatch):
+        """The id is judged before awrun is imported: same clean error with or
+        without awdk[queue] (the published payload is tested without it)."""
+        monkeypatch.setitem(sys.modules, "awrun", None)
+        monkeypatch.setitem(sys.modules, "awrun.store", None)
+        call = {"status": lambda i: bt.queue_status(i),
+                "bump": lambda i: bt.queue_bump(i, 5),
+                "cancel": lambda i: bt.queue_cancel(i)}[verb]
+        for bad in ("not-a-real-id", "../../etc/passwd", "", "r-"):
+            res = json.loads(call(bad))
+            assert res["error"] == f"not a valid run id: {bad!r}"
+        # a well-formed id reaches the awrun lookup, which here is absent
+        assert json.loads(call("r-abcd"))["error"] == "awrun not available"
+
+    def test_without_awrun_submit_says_so(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "awrun", None)
+        monkeypatch.setitem(sys.modules, "awrun.store", None)
+        res = json.loads(bt.queue_submit("ci", workflow="x.yml"))
+        assert res == {"error": "awrun not available", "fix": "pip install awdk[queue]"}
+
+    @_NEEDS_AWRUN
     def test_queue_status_roundtrip(self):
         submitted = json.loads(bt.queue_submit(
             "ci", priority=8, workflow="deploy.yml", ref="develop",
@@ -886,6 +915,7 @@ class TestQueueTools:
         assert status["priority"] == 8
         assert status["status"] == "queued"
 
+    @_NEEDS_AWRUN
     def test_queue_bump_and_cancel(self):
         submitted = json.loads(bt.queue_submit("ci", priority=1, workflow="x.yml"))
         bumped = json.loads(bt.queue_bump(submitted["id"], 10))

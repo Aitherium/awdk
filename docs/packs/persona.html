@@ -282,23 +282,23 @@ a:focus-visible, .jump a:focus-visible {
     <p class="eyebrow">An agent pack for <b>persona</b></p>
     <h1>persona</h1>
     <p class="lede">Bringing real-time voice to life.</p>
-    <nav class="jump"><a href="https://github.com/xikhar/persona">Project site</a><a href="https://github.com/xikhar/persona">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.50/persona-3.8.50.tar.gz">Download</a></nav>
+    <nav class="jump"><a href="https://github.com/xikhar/persona">Project site</a><a href="https://github.com/xikhar/persona">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.51/persona-3.8.51.tar.gz">Download</a></nav>
   </header>
 
   <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">persona — install</span></div><pre class="term-body"><span class="c"># one command each; nothing else to configure</span>
-<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.50/persona-3.8.50.tar.gz
-<span class="p">$</span> tar xzf persona-3.8.50.tar.gz
+<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.51/persona-3.8.51.tar.gz
+<span class="p">$</span> tar xzf persona-3.8.51.tar.gz
 <span class="p">$</span> python persona/install.py
 <span class="o">installed persona -&gt; ~/.aither/packs/persona</span>
 <span class="o">verified: adk discovers &#x27;persona&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">persona — install</span></div><pre class="term-body"><span class="c"># PowerShell. curl.exe and tar ship with Windows 10 1803+</span>
-<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.50/persona-3.8.50.tar.gz
-<span class="p">$</span> tar -xzf persona-3.8.50.tar.gz
+<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.51/persona-3.8.51.tar.gz
+<span class="p">$</span> tar -xzf persona-3.8.51.tar.gz
 <span class="p">$</span> python persona\install.py
 <span class="o">installed persona -&gt; ~\.aither\packs\persona</span>
 <span class="o">verified: adk discovers &#x27;persona&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.50</dd></div><div><dt>Size</dt><dd>1 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>b7de23c39f430d99…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.51</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>dcbd3062485fb533…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,13 +314,13 @@ not affiliated with or endorsed by them.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>b7de23c39f430d99bcfcfec8340a71efb466e288d917b5d298c6b209c8b28eeb</code></p>
+    <p class="sub">sha256 <code>dcbd3062485fb53339f22b69700bc3736be1b662dec38b09fc9836b00e31fd01</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
-<span class="p">$</span> sha256sum -c persona-3.8.50.sha256
-<span class="o">persona-3.8.50.tar.gz: OK</span>
+<span class="p">$</span> sha256sum -c persona-3.8.51.sha256
+<span class="o">persona-3.8.51.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;B7DE23C39F430D99BCFCFEC8340A71EFB466E288D917B5D298C6B209C8B28EEB&#x27;
-<span class="p">$</span> (Get-FileHash persona-3.8.50.tar.gz -Algorithm SHA256).Hash -eq $want
+<span class="p">$</span> $want = &#x27;DCBD3062485FB53339F22B69700BC3736BE1B662DEC38B09FC9836B00E31FD01&#x27;
+<span class="p">$</span> (Get-FileHash persona-3.8.51.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
   </section>
@@ -328,7 +328,7 @@ not affiliated with or endorsed by them.</p></div></section>
   <div class="colophon"><p><a href="https://github.com/xikhar/persona">persona</a> is created by <strong>xikhar</strong>. Licensed MIT. This pack is an engine that runs behind it — their application is not modified, not redistributed here, and not affiliated with us. If you like what you see, the credit belongs upstream.</p></div>
 
   <footer>
-    Built from <code>v3.8.50</code> · adk 3.8.50 ·
+    Built from <code>v3.8.51</code> · adk 3.8.51 ·
     <a href="../packs.html">All packs</a> ·
     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a><br>persona is an independent project. This page links to it; it does not speak for it.
   </footer>

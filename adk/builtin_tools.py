@@ -24,6 +24,7 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1902,8 +1903,23 @@ def queue_list(kind: str = "", include_closed: bool = False) -> str:
     return json.dumps([i.to_dict() for i in items], default=str)
 
 
+#: A run id's shape (awrun's ids are ``r-`` + 4-12 letters/digits). Checked BEFORE awrun
+#: is imported, so a malformed id gets the same clean error with or without awdk[queue];
+#: awrun.store still validates the exact alphabet.
+_RUN_ID_SHAPE = re.compile(r"^r-[A-Za-z0-9]{4,12}$")
+
+
+def _bad_run_id(run_id: str) -> str | None:
+    if _RUN_ID_SHAPE.match(run_id or ""):
+        return None
+    return json.dumps({"error": f"not a valid run id: {run_id!r}"})
+
+
 def queue_status(run_id: str) -> str:
     """Full state of one run by id."""
+    bad = _bad_run_id(run_id)
+    if bad:
+        return bad
     store = _queue_store()
     if store is None:
         return json.dumps({"error": "awrun not available", "fix": "pip install awdk[queue]"})
@@ -1929,6 +1945,9 @@ def queue_bump(run_id: str, priority: int) -> str:
     """Change a queued/claimed run's priority -- this is how an urgent run
     jumps ahead of what is already waiting. Refused (not silently ignored)
     on a run that has already finished."""
+    bad = _bad_run_id(run_id)
+    if bad:
+        return bad
     try:
         from awrun.store import RunError, RunStore
     except Exception:
@@ -1944,6 +1963,9 @@ def queue_bump(run_id: str, priority: int) -> str:
 def queue_cancel(run_id: str) -> str:
     """Withdraw a queued/claimed run. Idempotent on an already-finished run
     (returns it unchanged rather than erroring)."""
+    bad = _bad_run_id(run_id)
+    if bad:
+        return bad
     try:
         from awrun.store import RunError, RunStore
     except Exception:

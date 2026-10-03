@@ -4,6 +4,15 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.51] - 2026-10-03
+
+### Fixed
+
+- `queue_status`, `queue_bump` and `queue_cancel` refuse a malformed run id before
+  importing awrun, so the error is the same with or without `awdk[queue]`. The queue
+  round-trip tests run only when awrun is installed; the published payload is tested
+  without it.
+
 ## [3.8.50] - 2026-10-03
 
 ### Added
