@@ -45,7 +45,8 @@ button { background:var(--acc); color:#fff; border:0; border-radius:10px; paddin
     if (ws) { ws.onclose = null; ws.close(); }
     if (!token) { set('no token in the link: open the URL the host printed', 'off'); return; }
     let engine = null;
-    try { engine = await KVHolder.GpuEngine.create(navigator.gpu); } catch (e) { engine = null; }
+    const tq4 = new URLSearchParams(location.hash.slice(1)).get('store') === 'tq4';  // ~4x keys/MB, approximate
+    try { engine = await KVHolder.GpuEngine.create(navigator.gpu, {tq4}); } catch (e) { engine = null; }
     if (!engine) engine = new KVHolder.CpuEngine();
     $('engine').textContent = engine.describe();
     const name = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'browser';

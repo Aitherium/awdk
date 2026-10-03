@@ -49,7 +49,9 @@ as received (most context per MB; about 300 ms for the same call).
 `--store tq4` (TurboQuant-style: rotate, then 4 bits per value plus one norm per vector)
 holds about 2x the context of the 8-bit rows per MB and 7.8x the context of `f32`. It is the
 one approximate store: a planted needle is still retrieved at cosine 0.995, and each call
-takes about 190 ms over 20,000 keys.
+takes about 190 ms over 20,000 keys. On a GPU the same format costs nothing extra: open the phone link with
+`&store=tq4` added after the token and the WebGPU holder unpacks the 4-bit codes inside its
+shader, answering in 4 to 6 ms over 70,000 keys on a desktop GPU.
 
 On the model's machine use `adk kvholder phone --via lan` (or `--via tunnel` with a `wss://`
 URL) so the holder can reach it. `adk kvholder serve` without `--connect` listens on

@@ -204,3 +204,38 @@ def test_stale_tunnel_to_our_port_is_taken_down(tmp_path, recorded_port, expect_
     )
     net._down_stale_tunnel([sys.executable, str(fake)], 50463)
     assert marker.exists() is expect_down
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_browser_tq4_encoder_round_trips_within_the_4_bit_bound(tmp_path):
+    """The page's tq4 encoder (the WebGPU shader decodes the same codes): rotation is exact,
+    reconstruction error sits at the 16-level Lloyd-Max bound."""
+    (tmp_path / "holder.js").write_text(HOLDER_JS, encoding="utf-8")
+    (tmp_path / "run.js").write_text(
+        "const K = require('./holder.js');\n"
+        "const C = [-2.7326,-2.0690,-1.6181,-1.2562,-0.9424,-0.6568,-0.3881,-0.1284,"
+        "0.1284,0.3881,0.6568,0.9424,1.2562,1.6181,2.0690,2.7326];\n"
+        "let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648;"
+        " return seed / 2147483648; };\n"
+        "const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12))"
+        " * Math.cos(6.283185 * rnd());\n"
+        "const N = 400, D = 256; const x = new Float32Array(N * D).map(gauss);\n"
+        "const orig = x.slice();\n"
+        "const r = orig.slice(0, D); K.tq4Rotate(r, 0); K.tq4Unrotate(r, 0);\n"
+        "let rot = 0; for (let i = 0; i < D; i++) rot = Math.max(rot, Math.abs(r[i] - orig[i]));\n"
+        "const {codes, norms} = K.tq4Encode(x, N);\n"
+        "let num = 0, den = 0;\n"
+        "for (let v = 0; v < N; v++) { const y = new Float32Array(D);\n"
+        "  for (let j = 0; j < D; j += 2) { const b = codes[(v * D + j) >> 1];\n"
+        "    y[j] = C[b & 15] * norms[v] / 16; y[j + 1] = C[b >> 4] * norms[v] / 16; }\n"
+        "  K.tq4Unrotate(y, 0);\n"
+        "  for (let j = 0; j < D; j++) { const e = y[j] - orig[v * D + j]; num += e * e;"
+        " den += orig[v * D + j] ** 2; } }\n"
+        "console.log(JSON.stringify({rot, mse: num / den}));\n",
+        encoding="utf-8",
+    )
+    out = subprocess.run(
+        [NODE, "run.js"], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60
+    )
+    res = json.loads(out.stdout)
+    assert res["rot"] < 1e-5 and 0.005 < res["mse"] < 0.012, res
