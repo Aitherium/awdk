@@ -2511,7 +2511,33 @@ class AitherAgent:
         if not paused:
             return AgentResponse(content="", session_id=session_id, finish_reason="stop")
         store.record_decisions(session_id, decisions)
-        return await self.chat(paused.get("user_message", ""), session_id=session_id, **kwargs)
+        # Run what the user approved, exactly as it was on the card, BEFORE the turn
+        # continues. Replaying the turn and hoping the model asks for the same call
+        # again does not survive a real model: on replay it re-plans, and an approved
+        # action that is never re-issued is an approval that silently did nothing.
+        allowed, denied = store.take_decided(session_id)
+        ran: list[str] = []
+        notes: list[str] = []
+        for p in allowed:
+            args = p.get("args") if isinstance(p.get("args"), dict) else {}
+            result = await self._tools.execute(p["tool"], args)
+            ran.append(p["tool"])
+            notes.append(f"- {p['tool']}({json.dumps(args, default=str)}) APPROVED and ran: "
+                         f"{str(result)[:2000]}")
+        for p in denied:
+            ran.append(f"{p['tool']}[denied]")
+            notes.append(f"- {p['tool']}({json.dumps(p.get('args') or {}, default=str)}) "
+                         "DENIED by the user; do not retry it.")
+        message = paused.get("user_message", "")
+        if notes:
+            message += (
+                "\n\n[APPROVAL RESUME] This request paused for the user's decision. The "
+                "decided actions are settled below; do not call them again. Continue the "
+                "request from their results.\n" + "\n".join(notes))
+        resp = await self.chat(message, session_id=session_id, **kwargs)
+        if ran and isinstance(getattr(resp, "tool_calls_made", None), list):
+            resp.tool_calls_made[:0] = ran
+        return resp
 
     async def chat_stream(
         self,

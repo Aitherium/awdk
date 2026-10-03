@@ -249,3 +249,34 @@ async def test_resume_allow_does_not_cover_a_second_call_with_other_args(
     assert "search" in resumed.tool_calls_made          # the approved call ran
     assert resumed.requires_action is True             # the new-args call asks again
     assert any(p["args"] == {"q": "other"} for p in resumed.pending)
+
+
+@pytest.mark.asyncio
+async def test_resume_runs_the_approved_call_even_if_the_model_never_reissues_it(
+        monkeypatch, isolated_store, tmp_memory):
+    """Measured with a real model: on replay it re-planned and never asked for the
+    approved call again, so the approval silently did nothing. Resume must run the
+    call on the card itself, once, and tell the model it ran."""
+    monkeypatch.setenv("AITHER_TOOL_APPROVAL", "search")
+    calls: list[str] = []
+    tools = ToolRegistry()
+    tools.register(lambda q: (calls.append(q), f"Results for {q}")[1],
+                   name="search", description="Search")
+    gated = LLMResponse(content="", model="mock",
+                        tool_calls=[ToolCall(id="tc_1", name="search", arguments={"q": "x"})])
+    llm = MagicMock()
+    llm.provider_name = "mock"
+    # pass 1 proposes the call; on resume the model goes straight to an answer
+    llm.chat = AsyncMock(side_effect=[gated] + [LLMResponse(content="all done", model="mock")] * 6)
+    agent = AitherAgent("test", llm=llm, tools=[tools], memory=tmp_memory)
+    await agent.chat("Search for x", session_id="sR")
+    resumed = await agent.resume("sR", [{"tool_use_id": "tc_1", "result": "allow"}])
+    assert calls == ["x"]
+    assert resumed.content == "all done"
+    assert resumed.tool_calls_made[0] == "search"
+    sent = llm.chat.call_args_list[-1].args[0]
+    assert any("[APPROVAL RESUME]" in (m.content or "") and "Results for x" in m.content
+               for m in sent)
+    # a retried resume cannot run it a second time
+    await agent.resume("sR", [{"tool_use_id": "tc_1", "result": "allow"}])
+    assert calls == ["x"]

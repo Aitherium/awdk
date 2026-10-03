@@ -212,6 +212,36 @@ class ApprovalStore:
             return None
         return tool_level
 
+    def take_decided(self, session_id: str) -> tuple[list[dict], list[dict]]:
+        """Claim the pending calls that now carry a decision: ``(allowed, denied)``.
+
+        Each call is handed out ONCE -- its key is recorded under ``executed`` in the
+        same locked write -- so a resume that is retried, or two resumes racing, can
+        never run an approved call twice. Undecided calls stay pending.
+        """
+        with self._lock:
+            data = self._load()
+            entry = data.get(session_id)
+            if not entry:
+                return [], []
+            calls = entry.get("call_decisions") or {}
+            done = set(entry.get("executed") or [])
+            allowed: list[dict] = []
+            denied: list[dict] = []
+            for p in entry.get("pending") or []:
+                if not isinstance(p, dict):
+                    continue
+                key = call_key(str(p.get("tool") or ""), p.get("args"))
+                verdict = calls.get(key)
+                if key in done or verdict not in ("allow", "deny"):
+                    continue
+                (allowed if verdict == "allow" else denied).append(p)
+                done.add(key)
+            entry["executed"] = sorted(done)
+            data[session_id] = entry
+            self._save(data)
+            return allowed, denied
+
     def clear(self, session_id: str) -> None:
         """Drop the paused turn and every recorded decision for this session."""
         with self._lock:
