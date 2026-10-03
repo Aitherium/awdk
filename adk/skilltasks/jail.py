@@ -149,7 +149,10 @@ JAIL_CONTAINERFILE = (
     "USER 1000:1000\n"
     "WORKDIR /work\n"
 )
-WSL_DISTRO = os.environ.get("ADK_SKILLTASK_JAIL_DISTRO", "Debian")
+#: The WSL distro whose podman runs the jail on Windows. Never started from here: only a
+#: distro that is already running is used. Debian is retired on this fleet (awnix).
+WSL_DISTRO = (os.environ.get("ADK_SKILLTASK_JAIL_DISTRO")
+              or os.environ.get("AITHER_WSL_DISTRO") or "awnix")
 LIMITS = ("--cpus", "2", "--memory", "1g", "--pids-limit", "256")
 START_TIMEOUT_S = 240.0
 CLOSE_WAIT_S = 30.0  # how long a jail gets to exit once its stdin is closed
