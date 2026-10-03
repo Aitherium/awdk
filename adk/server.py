@@ -371,6 +371,93 @@ def resume_node_heartbeat(api_key: str = "") -> dict[str, Any]:
     )
 
 
+def _update_node_record(**fields: Any) -> bool:
+    """Merge ``fields`` into the stored identity registration. False if there is none."""
+    try:
+        from adk.fleet_enroll import _load_node_auth, _save_node_auth
+
+        rec = _load_node_auth()
+        if not isinstance(rec, dict) or not rec.get("node_id") or rec.get("mode") != "rich":
+            return False
+        _save_node_auth({**rec, **fields})
+        return True
+    except Exception as exc:  # noqa: BLE001 — bookkeeping never fails a join
+        logger.warning("could not update the node registration: %s", exc)
+        return False
+
+
+# ── This device's sessions, reachable from the owner's account ──────────────
+#
+# Registering lists the device. Opening its shell sessions from the web needs
+# the reverse link `adk rc` holds, with a path-scoped session token. The daemon
+# is the process that stays running after a click, so it holds the link.
+
+async def hold_node_harness_link(
+    node_id: str,
+    token: str,
+    base_url: str,
+    *,
+    inference_url: str = "",
+    node_class: str = "laptop",
+    registered: bool = False,
+) -> dict[str, Any]:
+    """Hold the session link for a registered node and advertise it on the heartbeat.
+
+    Args:
+        registered: The node was registered a moment ago (see
+            :func:`adk.enrollment.start_heartbeat`).
+
+    Returns:
+        ``{"held", "code", "detail", "harness_ready"}`` — no credential. Never raises.
+    """
+    try:
+        from adk import enrollment, rc
+
+        res = await rc.hold_harness_link(node_id, token, inference_url=inference_url)
+        if res.get("held"):
+            # The heartbeat is restarted so every beat carries the link's live
+            # reach and the session daemon's readiness.
+            enrollment.start_heartbeat(
+                base_url, token, node_id,
+                registered=registered,
+                inference_url=inference_url or None,
+                node_class=node_class,
+                reach_provider=res["reach_provider"],
+                harness_provider=res["harness_provider"],
+                token_provider=_active_access_token,
+                beat_immediately=not registered,
+            )
+        return {
+            "held": bool(res.get("held")),
+            "code": str(res.get("code") or ""),
+            "detail": str(res.get("detail") or ""),
+            "harness_ready": bool(res.get("harness_ready")),
+        }
+    except Exception as exc:  # noqa: BLE001 — the device is registered either way
+        logger.warning("could not hold the session link: %s", exc)
+        return {"held": False, "code": "link_unavailable",
+                "detail": "the session link could not be started", "harness_ready": False}
+
+
+async def resume_node_harness_link(api_key: str = "") -> dict[str, Any]:
+    """Re-hold the session link on daemon start for a device that was registered
+    with one. A device registered without it (or never registered) holds nothing."""
+    rec = _stored_node_record()
+    if not rec or not rec.get("harness_link"):
+        return {"held": False, "code": "not_requested", "detail": "", "harness_ready": False}
+    token = _active_access_token() or (api_key or "")
+    if not token:
+        return {"held": False, "code": "not_signed_in", "detail": "", "harness_ready": False}
+    base = str(rec.get("enroll_base") or os.getenv(
+        "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
+    ))
+    return await hold_node_harness_link(
+        str(rec["node_id"]), token, base,
+        inference_url=str(rec.get("inference_url") or ""),
+        node_class=str(rec.get("node_class") or "laptop"),
+    )
+
+
 def _mesh_join_refusal(step: str, refusal: dict[str, Any]) -> JSONResponse:
     """A platform 402 / quota answer, passed through as its own result so the
     desktop can render it instead of a generic failure."""
@@ -646,6 +733,11 @@ def create_app(
                 logger.debug("node heartbeat resume: %s", _hb)
             except Exception as exc:  # noqa: BLE001 — never blocks boot
                 logger.warning("node heartbeat resume failed: %s", exc)
+            try:
+                _hl = await resume_node_harness_link(config.aither_api_key or "")
+                logger.debug("session link resume: %s", _hl)
+            except Exception as exc:  # noqa: BLE001 — never blocks boot
+                logger.warning("session link resume failed: %s", exc)
             await _init_chat_relay()
             await _init_mail_relay()
             await _init_relay_client()
@@ -714,6 +806,13 @@ def create_app(
             await _enrollment_mod.stop_heartbeat()
         except Exception as exc:  # noqa: BLE001 -- shutdown must finish
             logger.debug("node heartbeat stop failed: %s", exc)
+        try:
+            from adk import fleet_enroll as _fleet_enroll_mod
+            _link_task = _fleet_enroll_mod._node_link_task
+            if _link_task is not None and not _link_task.done():
+                _link_task.cancel()
+        except Exception as exc:  # noqa: BLE001 -- shutdown must finish
+            logger.debug("session link stop failed: %s", exc)
         await _deregister_fleet_endpoint()
         _elysium_relay = _state.get("elysium_relay")
         if _elysium_relay:
@@ -1562,6 +1661,9 @@ def create_app(
             or _platform.node()
         )
         steps: list[dict[str, Any]] = []
+        harness_link: dict[str, Any] = {
+            "held": False, "code": "not_registered", "detail": "", "harness_ready": False,
+        }
 
         # 1. mesh key — Identity refuses (403) when the caller has no tenant.
         try:
@@ -1630,6 +1732,20 @@ def create_app(
         else:
             # So the next daemon start resumes the heartbeat without a re-join.
             _remember_node_registration(node_id, idp, enroll)
+            # Also what `adk rc` does: hold the link that makes this device's
+            # sessions reachable from the account, with a scoped token.
+            _reg = enroll.get("registration") or {}
+            harness_link = await hold_node_harness_link(
+                node_id, token, idp,
+                inference_url=str(_reg.get("inference_url") or ""),
+                node_class=str(_reg.get("node_class") or "laptop"),
+                registered=True,
+            )
+            _update_node_record(harness_link=harness_link["held"])
+            steps.append({
+                "step": "harness_link", "ok": harness_link["held"],
+                "code": harness_link["code"], "error": harness_link["detail"],
+            })
             # The device is registered and beating: that is what "Register this
             # device" promises. Only the overlay needs the tailscale binary, so a
             # missing one skips the overlay alone — checked here, before the
@@ -1657,6 +1773,7 @@ def create_app(
                     "transport": "",
                     "tenant_id": tenant_id,
                     "overlay": _overlay,
+                    "harness_link": harness_link,
                     "steps": steps,
                 }
         if not node_bearer:
@@ -1689,6 +1806,7 @@ def create_app(
             overlay_ip = str(mesh_result.get("overlay_ip") or mesh_result.get("aithernet_ip") or "")
             transport = str(mesh_result.get("transport") or transport)
             steps.append({"step": "overlay_join", "ok": True, "overlay_ip": overlay_ip})
+            _update_node_record(overlay_ip=overlay_ip)
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail="mesh join timed out (150s)")
         except (RuntimeError, OSError, ValueError, httpx.HTTPError) as exc:
@@ -1706,7 +1824,42 @@ def create_app(
             "transport": transport,
             "tenant_id": tenant_id,
             "overlay": {"ok": True, "overlay_ip": overlay_ip},
+            "harness_link": harness_link,
             "steps": steps,
+        }
+
+    @app.get("/node/status")
+    async def node_status(request: Request):
+        """What this device is registered as — for the page that registered it.
+
+        Read-only and credential-free: the node id, when it was registered, its
+        tenant, how fresh the heartbeat is, the overlay address and whether the
+        session link is held. Same guard as ``/identity/whoami``.
+        """
+        _whoami_guard(request)
+        rec = _stored_node_record()
+        if not rec:
+            return {"registered": False}
+        from adk import enrollment as _enrollment
+        from adk import rc as _rc
+
+        hb = _enrollment.heartbeat_status()
+        # The beat this process runs must be THIS node's to count.
+        mine = hb.get("node_id") == rec["node_id"]
+        return {
+            "registered": True,
+            "node_id": str(rec["node_id"]),
+            "enrolled_at": str(rec.get("enrolled_at") or ""),
+            "tenant_id": str(rec.get("tenant_id") or ""),
+            "node_class": str(rec.get("node_class") or ""),
+            "overlay_ip": str(rec.get("overlay_ip") or ""),
+            "heartbeat": {
+                "running": bool(mine and hb.get("running")),
+                "online": bool(mine and hb.get("online")),
+                "age_seconds": hb.get("age_seconds") if mine else None,
+                "last_result": str(hb.get("last_result") or "") if mine else "never",
+            },
+            "harness_link": _rc.harness_link_status(),
         }
 
     # ── Signed Spaces: this device as the Space's origin of record ──────────

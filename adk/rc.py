@@ -27,11 +27,21 @@ it never leaves this process except into the daemon's own hashed registry.
 
 from __future__ import annotations
 
-__all__ = ["cmd_rc", "default_harness_url", "probe_harness"]
+__all__ = [
+    "cmd_rc",
+    "default_harness_url",
+    "harness_link_enabled",
+    "harness_link_status",
+    "hold_harness_link",
+    "probe_harness",
+]
 
 import asyncio
+import logging
 import os
-from typing import Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
+
+log = logging.getLogger("adk.rc")
 
 #: Where the session daemon listens. Loopback, always: the daemon is reached
 #: THROUGH the link by a process on this machine, never by binding a public port.
@@ -79,6 +89,150 @@ def probe_harness(base: str, token: str = "", timeout: float = 3.0) -> Tuple[boo
         return True, f"{n} session(s)"
     except ValueError:
         return True, "answered (non-JSON body)"
+
+
+# ── The same link, held by a long-running process ───────────────────────────
+#
+# `adk rc` holds the link for as long as its terminal stays open. A device
+# registered from the desktop ("Register this device") has no terminal, so the
+# daemon that served the click holds it instead — same scoped token, same
+# reverse link, same refusal to ever advertise the root token.
+
+_OFF = frozenset({"0", "false", "no", "off"})
+
+
+def harness_link_enabled() -> bool:
+    """``AITHER_HARNESS_LINK=0`` keeps a long-running process from holding the link."""
+    return (os.environ.get("AITHER_HARNESS_LINK") or "1").strip().lower() not in _OFF
+
+
+class _HarnessReadiness:
+    """``(harness_url, harness_ready)`` for the heartbeat, without blocking it.
+
+    The probe is a blocking request, and the heartbeat calls its provider on the
+    event loop. Each call answers with the last result and refreshes it on a
+    worker thread, so readiness is at most one beat stale and a dead session
+    daemon can never stall the process that reports it.
+    """
+
+    def __init__(self, url: str, token: str, ready: bool = False) -> None:
+        self.url = url
+        self.token = token
+        self.ready = ready
+
+    def refresh(self) -> bool:
+        self.ready = probe_harness(self.url, self.token)[0]
+        return self.ready
+
+    def __call__(self) -> Tuple[str, bool]:
+        try:
+            asyncio.get_running_loop().run_in_executor(None, self.refresh)
+        except RuntimeError:
+            log.debug("no event loop; harness readiness not refreshed")
+        return self.url, self.ready
+
+
+#: The readiness reporter of the link this process holds (None = no link held).
+_held_readiness: Optional[_HarnessReadiness] = None
+
+
+def _held_link() -> Optional[Any]:
+    """The reverse link this process is actually driving, or None."""
+    from adk import fleet_enroll
+
+    link = fleet_enroll.active_node_link()
+    task = fleet_enroll._node_link_task
+    if link is None or task is None or task.done():
+        return None
+    return link
+
+
+def harness_link_status() -> Dict[str, Any]:
+    """Is this process holding the link that makes its sessions reachable?
+
+    ``held`` is true only while a link is being driven AND it carries a scoped
+    harness token. No credential and no address is returned.
+    """
+    link = _held_link()
+    readiness = _held_readiness
+    held = bool(
+        link is not None and readiness is not None
+        and getattr(link, "harness_url", "") and getattr(link, "harness_token", "")
+    )
+    if not held:
+        return {"held": False, "reach": "none", "state": "", "harness_ready": False}
+    return {
+        "held": True,
+        "reach": link.reach_kind(),
+        "state": str(link.status().get("state") or ""),
+        "harness_ready": bool(readiness.ready),
+    }
+
+
+async def hold_harness_link(
+    node_id: str,
+    token: str,
+    *,
+    inference_url: str = "",
+    harness_url: str = "",
+    ttl_days: int = 30,
+) -> Dict[str, Any]:
+    """Hold the reverse link for an ALREADY-REGISTERED node, advertising its sessions.
+
+    What ``adk rc`` does after it enrols, for a caller that stays running. Mints
+    a fresh path-scoped harness token (never the daemon's root token — a failed
+    mint holds nothing), starts the link if this process has none, and attaches
+    the harness to a link that is already up.
+
+    Returns:
+        ``{"held": bool, "code": str, "detail": str, "harness_ready": bool,
+        "reach_provider": callable, "harness_provider": callable}``. The two
+        providers are what the heartbeat needs to advertise the link; they are
+        present only when ``held``. Never raises.
+    """
+    global _held_readiness
+    if not harness_link_enabled():
+        return {"held": False, "code": "disabled",
+                "detail": "AITHER_HARNESS_LINK is off on this device"}
+    if not node_id or not token:
+        return {"held": False, "code": "not_registered",
+                "detail": "no registered node or no sign-in to hold a link with"}
+    url = (harness_url or "").strip().rstrip("/") or default_harness_url()
+    try:
+        from adk.harnesses.daemon import mint_scoped_token
+
+        # The registry write takes a file lock; keep it off the event loop.
+        scoped = await asyncio.to_thread(mint_scoped_token, f"node:{node_id}", ttl_days=ttl_days)
+    except Exception as e:  # noqa: BLE001 -- no scoped token means no link, not the root token
+        log.warning("Could not mint a scoped harness token: %s", e)
+        return {"held": False, "code": "token_mint_failed",
+                "detail": "could not mint a scoped session token; nothing was advertised"}
+    readiness = _HarnessReadiness(url, scoped)
+    await asyncio.to_thread(readiness.refresh)
+
+    from adk import fleet_enroll
+
+    link = fleet_enroll._start_node_link(
+        node_id, token, inference_url=inference_url, harness_url=url, harness_token=scoped,
+    )
+    if link is None or _held_link() is None:
+        return {"held": False, "code": "link_unavailable",
+                "detail": "the reverse link could not be started on this device"}
+    # A link this process already held (started without a harness, or with the
+    # previous token) keeps its socket and gains the fresh scope and sign-in.
+    link.token = token
+    link.harness_url = url
+    link.harness_token = scoped
+    _held_readiness = readiness
+    reach: Callable[[], str] = link.reach_kind
+    return {
+        "held": True,
+        "code": "",
+        "detail": "",
+        "harness_ready": readiness.ready,
+        "reach_provider": reach,
+        "harness_provider": readiness,
+    }
 
 
 def _signed_in() -> bool:

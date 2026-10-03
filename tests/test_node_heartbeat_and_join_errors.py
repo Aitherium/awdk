@@ -37,6 +37,9 @@ def _clean_heartbeat(tmp_path, monkeypatch):
     monkeypatch.setattr(enrollment, "_heartbeat_task", None)
     monkeypatch.setattr(enrollment, "_heartbeat_state", enrollment._new_heartbeat_state())
     monkeypatch.delenv("AITHER_BROWSER_HANDOFF", raising=False)
+    # The session link a join also holds has its own tests; here it stays off so
+    # no join mints a session token or opens a socket.
+    monkeypatch.setenv("AITHER_HARNESS_LINK", "0")
     monkeypatch.delenv("AITHER_IDP_URL", raising=False)
     monkeypatch.delenv("AITHER_IDP_BASE_URL", raising=False)
     yield
