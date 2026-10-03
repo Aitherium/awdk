@@ -78,8 +78,8 @@ remote backend is the **full endpoint**, not the device name:
 ```
 Available buffer types:            Available devices:
   CPU                                CUDA0: RTX 5090
-  CUDA0                              RPC0:  192.168.1.112:50053
-  RPC0[192.168.1.112:50053]        <-- what -ot needs
+  CUDA0                              RPC0:  <spark-ip>:50053
+  RPC0[<spark-ip>:50053]        <-- what -ot needs
 ```
 
 Devices enumerate `RPC0`, `RPC1`, … but **buffer types are ALL `RPC0[endpoint]`**,

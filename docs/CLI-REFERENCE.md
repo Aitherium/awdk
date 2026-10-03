@@ -1561,7 +1561,8 @@ Run a persistent agent connected to your AitherOS fleet (one command)
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `--identity` | str |  | `aither` | Agent identity (default: aither) |
+| `--identity` | str |  |  | Agent identity (default: your company's persona when your login has a synced company pack, else aither) |
+| `--no-tenant-persona` | str |  | `false` | Run the generic 'aither' agent even when your login's company pack is synced |
 | `--brain-pack` | str |  |  | brain_pack.yaml (or a directory holding one) the agent loads; default: ./brain_pack.yaml when present |
 | `--name` | str |  |  | Fleet label for this agent (default: <hostname>-adk) |
 | `--provider` | str |  |  | Cloud provider if no local LLM: deepseek/openai/anthropic |
