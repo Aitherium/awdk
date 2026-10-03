@@ -475,3 +475,109 @@ def test_a_planted_symlink_does_not_survive_a_rollback(tmp_path):
         assert snap.restore(env.root) == [] and not os.path.lexists(link)
     finally:
         env.close()
+
+
+# --- the harness never reads or walks through a link the model planted ------------------------
+# Security review of #10876, follow-up 1: _digests() and _tree() run as the harness user (root
+# under a rootful jail) after every step; following a planted link reads or walks host files.
+
+
+@pytest.mark.skipif(not _can_symlink(), reason="this host cannot create symlinks")
+def test_digests_and_tree_never_follow_a_planted_link(tmp_path):
+    outside = tmp_path / "host-secret"
+    (outside / "deep").mkdir(parents=True)
+    (outside / "deep" / "key.pem").write_bytes(b"HOST-SECRET-BYTES")
+    (outside / "file.txt").write_bytes(b"HOST-FILE-BYTES")
+    env = _env(tmp_path / "w")
+    try:
+        os.symlink(outside, env.root / "dirlink")
+        os.symlink(outside / "file.txt", env.root / "filelink")
+        digests = env._digests()
+        assert not any(b"HOST-" in v for v in digests.values())
+        assert digests["filelink"].startswith(b"<link:")
+        assert not any(k.startswith("dirlink/") for k in digests)
+        tree = env._tree(env.root)
+        assert "key.pem" not in tree and "dirlink (link)" in tree
+    finally:
+        env.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this host")
+def test_a_fifo_in_the_workspace_never_blocks_the_harness(tmp_path):
+    env = _env(tmp_path)
+    try:
+        import threading
+
+        from adk.skilltasks.terminal import Step
+
+        os.mkfifo(env.root / "pipe")
+        assert "pipe" not in env._digests()  # never read as content
+        assert "pipe (0 B)" in env._tree(env.root)
+        step = Step(aid=0, args={"path": "pipe"})
+        t = threading.Thread(target=env._do_read, args=(step,), daemon=True)
+        t.start()
+        t.join(5)
+        if t.is_alive():  # unblock the reader so the test process can exit
+            fd = os.open(env.root / "pipe", os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+        assert not t.is_alive(), "reading a FIFO blocked the harness"
+        assert step.exit_class == 1 and "not a regular file" in step.output
+    finally:
+        env.close()
+
+
+def test_a_huge_file_is_digested_not_held(tmp_path):
+    from adk.skilltasks.terminal import _read_regular
+
+    p = tmp_path / "big.bin"
+    p.write_bytes(b"x" * 4096)
+    assert _read_regular(p, cap=1024).startswith(b"<sha256:")
+    assert _read_regular(p, cap=1 << 20) == b"x" * 4096
+
+
+@pytest.mark.skipif(not _can_symlink(), reason="this host cannot create symlinks")
+def test_a_read_file_swapped_for_a_link_is_not_followed_when_the_prompt_is_built(tmp_path):
+    from adk.skilltasks.terminal import Step
+
+    outside = tmp_path / "host-secret.txt"
+    outside.write_text("HOST-SECRET\n", encoding="utf-8")
+    env = _env(tmp_path / "w")
+    try:
+        name = sorted(p.name for p in env.root.iterdir() if p.is_file())[0]
+        step = Step(aid=0, args={"path": name})
+        env._do_read(step)
+        assert step.exit_class == 0 and name in env.known
+        reads: list = []
+        real = Path.read_text
+
+        def spy(self, *a, **k):
+            reads.append(str(self))
+            return real(self, *a, **k)
+
+        os.unlink(env.root / name)
+        os.symlink(outside, env.root / name)
+        Path.read_text = spy
+        try:
+            lines = env._known_lines()
+        finally:
+            Path.read_text = real
+        assert not any("host-secret" in r for r in reads)
+        assert any(name in line and "DELETED" in line for line in lines)
+        assert name not in env._unread()
+    finally:
+        env.close()
+
+
+def test_an_unchanged_crlf_file_is_reported_unchanged(tmp_path):
+    from adk.skilltasks.terminal import Step
+
+    env = _env(tmp_path)
+    try:
+        (env.root / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")
+        step = Step(aid=0, args={"path": "crlf.txt"})
+        env._do_read(step)
+        assert step.exit_class == 0
+        line = next(x for x in env._known_lines() if x.startswith("- crlf.txt"))
+        assert "CHANGED" not in line and "DELETED" not in line
+    finally:
+        env.close()

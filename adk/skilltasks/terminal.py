@@ -998,6 +998,8 @@ class SkillTaskTerminalEnv:
         try:
             if p.is_dir():
                 text, kind = self._tree(p), "dir"
+            elif not _is_regular(p):  # a FIFO or device would block or misbehave
+                raise OSError("not a regular file")
             else:
                 text, kind = p.read_text(encoding="utf-8", errors="replace"), "file"
                 self.reads[rel] = self.reads.get(rel, 0) + 1
@@ -1366,29 +1368,38 @@ class SkillTaskTerminalEnv:
         return out
 
     def _digests(self) -> Dict[str, bytes]:
+        # The workspace is written by the model and read here by the harness, which may be
+        # root. A link is recorded as a link and never followed, and only regular files are
+        # read (never a FIFO, which would block): a planted link must not make the harness
+        # read or walk host files (security review of #10876, follow-up 1).
         cur: Dict[str, bytes] = {}
-        for p in self.root.rglob("*"):
+        if self._jail_broken():  # a command may still be running in the workspace
+            return cur
+        git_dirs: List[Path] = []
+        for p, st in _entries(self.root):
             rel = p.relative_to(self.root)
             if ".git" in rel.parts:
+                if p.name == ".git" and stat.S_ISDIR(st.st_mode):
+                    git_dirs.append(p)
                 continue
-            if p.is_file():
+            if stat.S_ISLNK(st.st_mode):
                 try:
-                    cur[rel.as_posix()] = p.read_bytes()
+                    cur[rel.as_posix()] = b"<link:" + os.fsencode(os.readlink(p)) + b">"
                 except OSError:
-                    cur[rel.as_posix()] = b"<unreadable>"
+                    cur[rel.as_posix()] = b"<link:?>"
+            elif stat.S_ISREG(st.st_mode):
+                cur[rel.as_posix()] = _read_regular(p)
         g = b""
-        for gd in sorted(self.root.rglob(".git")):
-            if not gd.is_dir():
-                continue
+        for gd in sorted(git_dirs):
             for part in ["HEAD", "index", "packed-refs"]:
                 f = gd / part
-                if f.is_file():
-                    g += part.encode() + f.read_bytes()
+                if _is_regular(f):
+                    g += part.encode() + _read_regular(f)
             refs = gd / "refs"
-            if refs.is_dir():
-                for f in sorted(refs.rglob("*")):
-                    if f.is_file():
-                        g += f.relative_to(gd).as_posix().encode() + f.read_bytes()
+            if _is_dir_not_link(refs):
+                for f, st in sorted(_entries(refs)):
+                    if stat.S_ISREG(st.st_mode):
+                        g += f.relative_to(gd).as_posix().encode() + _read_regular(f)
         if g:
             cur["<git>"] = g
         return cur
@@ -1508,14 +1519,18 @@ class SkillTaskTerminalEnv:
 
     def _known_lines(self, limit: int = 30) -> List[str]:
         out = []
+        broken = self._jail_broken()
         for rel, info in list(self.known.items())[-limit:]:
             if info.get("kind") != "file":
                 continue
             p = self.root / rel
-            try:
-                text = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
-            except OSError:
-                text = None
+            # Runs every turn as the harness user: never through a link (security review
+            # of #10882), and not at all once a jail could not be removed.
+            text = None
+            if not broken and _is_regular(p):
+                text = _read_regular(p).decode("utf-8", errors="replace")
+                # the same text _do_read hashed: read_text() turns CRLF and CR into LF
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
             now = _sha(text) if text is not None else ""
             if now != info["sha"]:
                 state = "DELETED since" if not now else "CHANGED since -- read it again"
@@ -1746,19 +1761,35 @@ class SkillTaskTerminalEnv:
         return ts.name if ts else prism.active.id
 
     def _unread(self) -> List[str]:
-        files = [f for f in self.files if f != "<git>" and (self.root / f).is_file()]
-        files.sort(key=lambda f: (self.reads.get(f, 0), (self.root / f).stat().st_size))
+        if self._jail_broken():
+            return []
+        sizes: Dict[str, int] = {}
+        for f in self.files:
+            if f == "<git>":
+                continue
+            try:
+                st = os.lstat(self.root / f)  # a link is not a file the model may read
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                sizes[f] = st.st_size
+        files = sorted(sizes, key=lambda f: (self.reads.get(f, 0), sizes[f]))
         return [f for f in files if not self.reads.get(f)]
 
     def _tree(self, base: Path, limit: int = 200) -> str:
         rows = []
-        for q in sorted(base.rglob("*")):
+        for q, st in sorted(_entries(base)):  # never through a link (see _digests)
             rel = q.relative_to(self.root)
             if ".git" in rel.parts:
                 if q.name == ".git":
                     rows.append(rel.as_posix() + "/ (git repository)")
                 continue
-            rows.append(rel.as_posix() + ("/" if q.is_dir() else " (%d B)" % q.stat().st_size))
+            if stat.S_ISLNK(st.st_mode):
+                rows.append(rel.as_posix() + " (link)")
+            elif stat.S_ISDIR(st.st_mode):
+                rows.append(rel.as_posix() + "/")
+            else:
+                rows.append(rel.as_posix() + " (%d B)" % st.st_size)
         if len(rows) > limit:
             rows = rows[:limit] + ["(+%d more)" % (len(rows) - limit)]
         return "\n".join(rows) or "(empty)"
@@ -1941,6 +1972,69 @@ class _Tree:
             if after.others.get(k) != self.others.get(k)
         )
         return bad + sorted(set(after.dirs) ^ set(self.dirs))
+
+
+_READ_CAP = 8 << 20  # bytes of one workspace file held in memory; larger ones are hashed
+
+
+def _entries(root: Path) -> List[Tuple[Path, os.stat_result]]:
+    """Every entry under ``root`` with its lstat, never descending through a link."""
+    out: List[Tuple[Path, os.stat_result]] = []
+    for base, dnames, fnames in os.walk(root, followlinks=False):
+        for name in dnames + fnames:
+            p = Path(base) / name
+            try:
+                out.append((p, os.lstat(p)))
+            except OSError:
+                continue
+    return out
+
+
+def _is_regular(p: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(p).st_mode)
+    except OSError:
+        return False
+
+
+def _is_dir_not_link(p: Path) -> bool:
+    try:
+        return stat.S_ISDIR(os.lstat(p).st_mode)
+    except OSError:
+        return False
+
+
+def _read_regular(p: Path, cap: int = _READ_CAP) -> bytes:
+    """Bytes of a REGULAR file, opened without following a link and without blocking; a
+    file over ``cap`` becomes its sha256 so a huge file cannot exhaust memory."""
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_BINARY", 0))
+    try:
+        fd = os.open(p, flags)
+    except OSError:
+        return b"<unreadable>"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return b"<not a regular file>"
+        h = hashlib.sha256()
+        chunks: List[bytes] = []
+        size = 0
+        while True:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                break
+            size += len(b)
+            h.update(b)
+            if size <= cap:
+                chunks.append(b)
+        if size > cap:
+            return b"<sha256:" + h.hexdigest().encode() + b">"
+        return b"".join(chunks)
+    except OSError:
+        return b"<unreadable>"
+    finally:
+        os.close(fd)
 
 
 def _tree_hash(root: Path) -> str:
