@@ -4,6 +4,31 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.52] - 2026-10-03
+
+### Added
+
+- **Workspace KV relay and the Android holder app.** Phones lend memory from anywhere,
+  signed in as workspace devices (`adk kvholder workspace serve|pair|allow|deny|status`);
+  awsh sees the workspace swarm and can revoke a device.
+- **`adk kvholder serve --mesh --device`** signs the mesh join request with this machine's
+  enrolled device key, so a `--mesh-admit` relay admits an allowed device without a code.
+- **Chat prefills in one pass**: a 20k-token prompt lands on a phone. The engine centers
+  far keys and picks the far-KV format by measured perplexity.
+
+### Security
+
+- **Every admit path applies the owner's `kv_lend`.** A `--mesh-admit` network admits only
+  a signed workspace device the owner lets lend (local allow, or the household registry's
+  `kv_lend`, off for a child's phone); any other holder waits for the code. A mesh door
+  builds its own device gate keyed on the relay's addresses. A household-registry outage
+  refuses every new admission (fail closed).
+
+### Fixed
+
+- `adk llama status` reports running only when our model answers on the port; the Deck
+  installer ships awseal so a device-signed holder can sign.
+
 ## [3.8.51] - 2026-10-03
 
 ### Fixed
