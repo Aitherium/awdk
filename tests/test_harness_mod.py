@@ -146,3 +146,40 @@ def test_status_is_inactive_until_every_half_is_true(settings):
     # fake_claude lists no plugins, so the hooks switch alone must not read active.
     assert mod.status()["function_hooks_enabled"] is True
     assert mod.status()["active"] is False
+
+
+def _installed(tmp_settings, version: str) -> None:
+    plug = tmp_settings.parent / "plugins"
+    plug.mkdir(parents=True, exist_ok=True)
+    (plug / "installed_plugins.json").write_text(json.dumps(
+        {"version": 2, "plugins": {"awsh@awsh": [{"version": version, "scope": "user"}]}}),
+        encoding="utf-8")
+
+
+def test_install_updates_a_stale_plugin_instead_of_saying_already_installed(settings, monkeypatch):
+    path, calls = settings
+    path.write_text(json.dumps({"env": {mod.HOOKS_ENV: "1"}}), encoding="utf-8")
+    monkeypatch.setattr(mod, "_plugin_known", lambda: True)
+    monkeypatch.setattr(mod, "source_version", lambda: "0.2.0")
+    _installed(path, "0.1.0")
+    assert mod.plugin_stale() is True
+    assert mod.status()["active"] is False, "a stale plugin must not read active"
+    result = mod.install()
+    assert result["ok"]
+    assert ("plugin", "update", "awsh@awsh") in calls
+    assert ("plugin", "marketplace", "update", "awsh") in calls
+
+
+def test_install_leaves_a_current_plugin_alone(settings, monkeypatch):
+    path, calls = settings
+    path.write_text(json.dumps({"env": {mod.HOOKS_ENV: "1"}}), encoding="utf-8")
+    monkeypatch.setattr(mod, "_plugin_known", lambda: True)
+    monkeypatch.setattr(mod, "source_version", lambda: "0.2.0")
+    _installed(path, "0.2.0")
+    result = mod.install()
+    assert result["ok"] and result["steps"] == ["already installed"]
+    assert not any(c[:2] == ("plugin", "update") for c in calls)
+
+
+def test_the_shipped_plugin_declares_a_version():
+    assert mod.source_version(), "plugin.json must carry a version or staleness is undetectable"

@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed claude-code -&gt; ~\.aither\packs\claude-code</span>
 <span class="o">verified: adk discovers &#x27;claude-code&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.53</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>0b8d21731f811e72…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.53</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>4af4c001a7301741…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -313,12 +313,12 @@ integrates with version control.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>0b8d21731f811e72e5b69cf33deb33aa3514c3c79a45ea3ddf92aa19dbe975bf</code></p>
+    <p class="sub">sha256 <code>4af4c001a7301741e35012669ad5edaafdb382b6c802a3e8f3f94d55bc28ace4</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c claude-code-3.8.53.sha256
 <span class="o">claude-code-3.8.53.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;0B8D21731F811E72E5B69CF33DEB33AA3514C3C79A45EA3DDF92AA19DBE975BF&#x27;
+<span class="p">$</span> $want = &#x27;4AF4C001A7301741E35012669AD5EDAAFDB382B6C802A3E8F3F94D55BC28ACE4&#x27;
 <span class="p">$</span> (Get-FileHash claude-code-3.8.53.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>

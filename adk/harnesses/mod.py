@@ -149,6 +149,45 @@ def _plugin_known() -> Optional[bool]:
     return f"{PLUGIN_NAME}@{MARKETPLACE_NAME}" in out
 
 
+def source_version() -> Optional[str]:
+    """The plugin version this adk ships (``claude_mod/.claude-plugin/plugin.json``)."""
+    try:
+        data = json.loads((mod_dir() / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    v = data.get("version") if isinstance(data, dict) else None
+    return str(v) if v else None
+
+
+def installed_version() -> Optional[str]:
+    """The version Claude Code has installed for the plugin, from installed_plugins.json.
+
+    None when the file is absent, unreadable or has no entry for the plugin.
+    """
+    path = claude_settings_path().parent / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    plugins = data.get("plugins", data) if isinstance(data, dict) else {}
+    entries = plugins.get(f"{PLUGIN_NAME}@{MARKETPLACE_NAME}") if isinstance(plugins, dict) else None
+    if isinstance(entries, list) and entries and isinstance(entries[0], dict):
+        v = entries[0].get("version")
+        return str(v) if v else None
+    return None
+
+
+def plugin_stale() -> bool:
+    """True when Claude Code runs an older copy of the plugin than this adk ships.
+
+    Measured 2026-10-03: the installed copy stayed at 0.1.0 (no scripts/brick.py)
+    for two weeks while the source moved to 0.2.0, so every plugin MCP server
+    failed at launch while ``install`` kept answering "already installed".
+    """
+    src, inst = source_version(), installed_version()
+    return bool(src and inst and src != inst)
+
+
 def status() -> dict[str, Any]:
     path = claude_settings_path()
     try:
@@ -165,9 +204,12 @@ def status() -> dict[str, Any]:
         "settings_error": settings_error,
         "function_hooks_enabled": hooks_on,
         "plugin_installed": known,
+        "plugin_version": installed_version(),
+        "source_version": source_version(),
+        "plugin_stale": plugin_stale(),
         "daemon_sessions_get_mod": os.environ.get(OPT_OUT_ENV, "1").strip() != "0",
         "max_depth": MAX_DEPTH,
-        "active": bool(mod_present() and hooks_on and known),
+        "active": bool(mod_present() and hooks_on and known and not plugin_stale()),
         "note": "restart Claude Code after a change: the env block is read at launch",
     }
 
@@ -194,6 +236,16 @@ def install() -> dict[str, Any]:
             return {"ok": False, "steps": steps, "error": out[-400:]}
         code, out = _claude("plugin", "install", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}")
         steps.append(f"plugin install -> {code}")
+        if code != 0:
+            return {"ok": False, "steps": steps, "error": out[-400:]}
+    elif plugin_stale():
+        old = installed_version()
+        code, out = _claude("plugin", "marketplace", "update", MARKETPLACE_NAME)
+        steps.append(f"marketplace update -> {code}")
+        if code != 0:
+            return {"ok": False, "steps": steps, "error": out[-400:]}
+        code, out = _claude("plugin", "update", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}")
+        steps.append(f"plugin update {old} -> {source_version()}: {code}")
         if code != 0:
             return {"ok": False, "steps": steps, "error": out[-400:]}
     return {"ok": True, "steps": steps or ["already installed"], **status()}
