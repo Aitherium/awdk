@@ -4,6 +4,14 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.56] - 2026-10-03
+
+### Fixed
+
+- The KV holder guide no longer cites a monorepo-only path; that citation stopped the
+  public release of 3.8.55, which is on PyPI. This release carries everything in 3.8.55
+  and the Deck installer's `--pair CODE` enrolment.
+
 ## [3.8.55] - 2026-10-03
 
 ### Fixed
