@@ -2050,6 +2050,16 @@ def create_app(
             "harness_link": _rc.harness_link_status(),
         }
 
+    # ── Lend context: the local KV-holder relay, driven from a first-party page ──
+    # Same _handoff_guard as the identity, mesh and Space routes. The relay's master
+    # token stays in this process; the page only ever receives one-time join tokens.
+    try:
+        from adk.lend_routes import create_lend_router
+
+        app.include_router(create_lend_router(_handoff_guard))
+    except ImportError as _lend_exc:
+        logger.warning("kvholder lend routes NOT mounted: %s", _lend_exc)
+
     # ── Signed Spaces: this device as the Space's origin of record ──────────
     #
     # Two routes, both opening with the SAME `_handoff_guard` the identity and
