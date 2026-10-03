@@ -38,9 +38,13 @@ and the memory holder and freezes the node agent so it uses no CPU. When the gam
 exits, they resume. What it saw is in `~/.local/state/aither-deck/presence.json`.
 
 Memory is lent only when all of these hold: you installed with `--lend-memory`
-and set `DECK_HOLDER_CONNECT` in `~/.config/aither-deck/deck.env`, the Deck is on
-AC power, it is docked (an external display; `--no-dock-required` drops this),
-and no game is running.
+and the holder has a way in (mesh discovery, on by default when your `adk`
+supports `kvholder serve --mesh`, or a relay URL in `DECK_HOLDER_CONNECT` in
+`~/.config/aither-deck/deck.env`), the Deck is on AC power, it is docked (an
+external display; `--no-dock-required` drops this), and no game is running.
+
+A mesh join prints a 6-letter code (`journalctl --user -u aither-deck-holder`);
+approve it from your desktop with `adk kvholder mesh approve CODE`.
 
 `~/.local/share/aither-deck/deck-guard.sh --self-test` proves each check can say
 both yes and no.

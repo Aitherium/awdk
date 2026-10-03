@@ -10,7 +10,8 @@
 # While gaming: the session daemon and any memory lending are STOPPED, and the
 # fleet node is frozen (SIGSTOP via systemd) so it takes no CPU at all.
 # When the game exits they come back. Memory is lent only when
-# DECK_LEND_MEMORY=1, DECK_HOLDER_CONNECT is set, on AC, docked (unless
+# DECK_LEND_MEMORY=1, a relay (DECK_HOLDER_CONNECT) or mesh discovery
+# (DECK_HOLDER_MESH=1) is configured, on AC, docked (unless
 # DECK_REQUIRE_DOCK=0) and no game is running.
 #
 # It writes what it saw to ~/.local/state/aither-deck/presence.json:
@@ -30,6 +31,7 @@ SYS="${DECK_GUARD_SYS:-/sys}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/aither-deck"
 LEND="${DECK_LEND_MEMORY:-0}"
 CONNECT="${DECK_HOLDER_CONNECT:-}"
+MESH="${DECK_HOLDER_MESH:-0}"
 REQUIRE_DOCK="${DECK_REQUIRE_DOCK:-1}"
 SYSTEMCTL="${DECK_GUARD_SYSTEMCTL:-systemctl}"
 
@@ -76,7 +78,7 @@ decide() {
     gaming="$(b is_gaming)"
     ac="$(b on_ac)"
     docked="$(b is_docked)"
-    if [ "$gaming" = false ] && [ "$LEND" = 1 ] && [ -n "$CONNECT" ] && [ "$ac" = true ] \
+    if [ "$gaming" = false ] && [ "$LEND" = 1 ] && { [ -n "$CONNECT" ] || [ "$MESH" = 1 ]; } && [ "$ac" = true ] \
         && { [ "$REQUIRE_DOCK" = 0 ] || [ "$docked" = true ]; }; then
         lend=true
     fi

@@ -122,7 +122,7 @@ ok "uv $(uv --version 2>/dev/null | awk '{print $2}')"
 
 # 2. awdk. uv brings its own Python, so SteamOS's system Python is never touched.
 say "installing awdk ($AWDK_SPEC)"
-uv tool install --quiet --force --python 3.12 "$AWDK_SPEC"
+uv tool install --quiet --force --python 3.12 --with numpy "$AWDK_SPEC"
 command -v adk >/dev/null || die "adk is not on PATH after install"
 ok "$(adk --version 2>/dev/null | head -1 || echo adk)"
 
@@ -158,14 +158,22 @@ EOF
     ok "awsh $("$BIN_DIR/awsh" --version 2>/dev/null | head -1 || echo installed)"
 fi
 
+# Mesh discovery for the KV holder arrived after 3.8.49; use it when this adk has it.
+HOLDER_MESH=0
+if adk kvholder serve --help 2>/dev/null | grep -q -- '--mesh'; then HOLDER_MESH=1; fi
+
 # 4. Settings the guard reads. No secrets here; the sign-in lives in ~/.aither.
 cat > "$CONF_DIR/deck.env" <<EOF
 # Aither on this Deck. Edit, then: systemctl --user restart aither-deck-guard
 DECK_LEND_MEMORY=$LEND_MEMORY
 DECK_HOLDER_MAX_MB=$HOLDER_MAX_MB
 DECK_REQUIRE_DOCK=$REQUIRE_DOCK
-# Where a lent holder dials out to (ws(s)://HOST:PORT/holder). Empty = do not lend.
+# How lent memory reaches the fleet: a relay URL (ws(s)://HOST:PORT/holder), or,
+# when empty and DECK_HOLDER_MESH=1, mesh discovery (tailnet peers / LAN). A mesh
+# join prints a 6-letter code in: journalctl --user -u aither-deck-holder
+# approve it on your desktop with: adk kvholder mesh approve CODE
 DECK_HOLDER_CONNECT=
+DECK_HOLDER_MESH=$HOLDER_MESH
 EOF
 chmod 600 "$CONF_DIR/deck.env"
 
@@ -224,7 +232,7 @@ Description=Aither: lend memory as a KV holder (started and stopped by aither-de
 Type=simple
 EnvironmentFile=$CONF_DIR/deck.env
 Environment=PATH=$BIN_DIR:/usr/bin:/bin
-ExecStart=/usr/bin/env bash -c 'exec $ADK_BIN kvholder serve --connect "\$DECK_HOLDER_CONNECT" --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4'
+ExecStart=/usr/bin/env bash -c 'if [ -n "\$DECK_HOLDER_CONNECT" ]; then exec $ADK_BIN kvholder serve --connect "\$DECK_HOLDER_CONNECT" --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; else exec $ADK_BIN kvholder serve --mesh --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; fi'
 Restart=on-failure
 RestartSec=60
 Nice=19
