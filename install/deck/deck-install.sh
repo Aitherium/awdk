@@ -15,6 +15,9 @@
 #        aither-deck-shell   the session daemon on 127.0.0.1    (`adk harness serve`)
 #        aither-deck-guard   backs everything off while a game runs; lends memory
 #                            (`adk kvholder serve`) only on AC power + docked + idle
+#        aither-deck-rpc     opt-in compute lending (--lend-compute): a ggml-rpc worker for
+#                            the compute pool, run by the guard ONLY while docked, on AC
+#                            and with no game running
 #   6. Desktop launcher "Leave Aither fleet" that runs deck-uninstall.sh
 #
 # Remove it all: ~/.local/share/aither-deck/deck-uninstall.sh
@@ -24,7 +27,15 @@
 #   --no-enroll          install only; enrol later with: adk rc --once
 #   --lend-memory        let the guard lend memory as a KV holder (off by default)
 #   --holder-max-mb N    memory to lend (default 6144 of the Deck's 16 GB)
-#   --no-dock-required   lend on AC power even when not docked
+#   --no-dock-required   lend memory on AC power even when not docked (compute: never)
+#   --lend-compute       opt in to compute lending (off by default); needs all three:
+#   --rpc-worker-bin F   a PREBUILT ggml-rpc-server from the same llama.cpp commit as the
+#                        pool's server (a Vulkan build for the Deck APU); copied into
+#                        ~/.local/share/aither-deck/bin, nothing is compiled here
+#   --rpc-worker-sha256 H  its sha256; the install refuses a mismatch
+#   --rpc-bind ADDR      the private address to listen on (your tailnet IP); ggml-rpc
+#                        has no authentication, so never 0.0.0.0
+#   --rpc-max-mb N       memory cap for the worker (default 4096 of the Deck's 16 GB)
 #   --api-key-file F     sign in non-interactively with a key read from file F
 #   --awdk-spec S        pip spec for awdk (default: awdk)
 
@@ -46,7 +57,14 @@ LEND_MEMORY=0
 HOLDER_MAX_MB=6144
 REQUIRE_DOCK=1
 API_KEY_FILE=""
-AWDK_SPEC="${AITHER_DECK_AWDK_SPEC:-awdk}"
+# 3.8.53: kvholder serve --device/--mesh and node class deck. The --help probes below stay,
+# for a user who passes an older --awdk-spec.
+AWDK_SPEC="${AITHER_DECK_AWDK_SPEC:-awdk>=3.8.53}"
+LEND_COMPUTE=0
+RPC_SRC=""
+RPC_SHA256=""
+RPC_BIND=""
+RPC_MAX_MB=4096
 
 say()  { printf '  > %s\n' "$*"; }
 ok()   { printf '  ok  %s\n' "$*"; }
@@ -60,6 +78,11 @@ while [ $# -gt 0 ]; do
         --lend-memory) LEND_MEMORY=1 ;;
         --holder-max-mb) shift; HOLDER_MAX_MB="${1:?--holder-max-mb needs a number}" ;;
         --no-dock-required) REQUIRE_DOCK=0 ;;
+        --lend-compute) LEND_COMPUTE=1 ;;
+        --rpc-worker-bin) shift; RPC_SRC="${1:?--rpc-worker-bin needs a path}" ;;
+        --rpc-worker-sha256) shift; RPC_SHA256="${1:?--rpc-worker-sha256 needs a hash}" ;;
+        --rpc-bind) shift; RPC_BIND="${1:?--rpc-bind needs an address}" ;;
+        --rpc-max-mb) shift; RPC_MAX_MB="${1:?--rpc-max-mb needs a number}" ;;
         --api-key-file) shift; API_KEY_FILE="${1:?--api-key-file needs a path}" ;;
         --awdk-spec) shift; AWDK_SPEC="${1:?--awdk-spec needs a value}" ;;
         -h|--help) sed -n '2,32p' "$0" 2>/dev/null || true; exit 0 ;;
@@ -69,6 +92,16 @@ while [ $# -gt 0 ]; do
 done
 
 case "$HOLDER_MAX_MB" in ''|*[!0-9]*) die "--holder-max-mb must be a whole number" ;; esac
+case "$RPC_MAX_MB" in ''|*[!0-9]*) die "--rpc-max-mb must be a whole number" ;; esac
+if [ "$LEND_COMPUTE" = 1 ]; then
+    [ -f "$RPC_SRC" ] || die "--lend-compute needs --rpc-worker-bin pointing at a prebuilt file"
+    [ -n "$RPC_SHA256" ] || die "--lend-compute needs --rpc-worker-sha256 for that file"
+    [ "$(sha256sum "$RPC_SRC" | awk '{print $1}')" = "$RPC_SHA256" ] \
+        || die "rpc worker checksum mismatch for $RPC_SRC"
+    case "$RPC_BIND" in
+        ''|0.0.0.0|'::') die "--lend-compute needs --rpc-bind with a private address (your tailnet IP)" ;;
+    esac
+fi
 [ "$(id -u)" -ne 0 ] || die "run this as your normal user (deck), not root: nothing here needs sudo"
 command -v curl >/dev/null || die "curl is missing"
 command -v systemctl >/dev/null || die "systemctl is missing (this is meant for SteamOS / a systemd Linux)"
@@ -110,6 +143,13 @@ say "fetching the guard and the uninstaller"
 fetch_sibling deck-guard.sh
 fetch_sibling deck-uninstall.sh
 ok "$DATA_DIR"
+RPC_BIN=""
+if [ "$LEND_COMPUTE" = 1 ]; then
+    mkdir -p "$DATA_DIR/bin" "$DATA_DIR/rpc-cache"
+    RPC_BIN="$DATA_DIR/bin/ggml-rpc-server"
+    install -m 755 "$RPC_SRC" "$RPC_BIN"
+    ok "rpc worker $RPC_BIN (sha256 checked)"
+fi
 
 # 1. uv
 if ! command -v uv >/dev/null; then
@@ -165,7 +205,9 @@ if adk kvholder serve --help 2>/dev/null | grep -q -- '--mesh'; then HOLDER_MESH
 # The workspace relay: outbound wss, signed in with this Deck's enrolled device key (adk
 # enroll), no token. The owner lets the Deck lend once: adk kvholder workspace allow <node id>
 HOLDER_CONNECT=
+HOLDER_DEVICE=0
 if adk kvholder serve --help 2>/dev/null | grep -q -- '--device'; then
+  HOLDER_DEVICE=1
   HOLDER_CONNECT=wss://kv.aitherium.com/holder
 fi
 
@@ -180,7 +222,14 @@ DECK_REQUIRE_DOCK=$REQUIRE_DOCK
 # join prints a 6-letter code in: journalctl --user -u aither-deck-holder
 # approve it on your desktop with: adk kvholder mesh approve CODE
 DECK_HOLDER_CONNECT=$HOLDER_CONNECT
+# Sign the mesh holder's hello with the enrolled device key (needs ~/.aither/node_auth.json).
+DECK_HOLDER_DEVICE=$HOLDER_DEVICE
 DECK_HOLDER_MESH=$HOLDER_MESH
+# Compute lending (pool rpc worker): docked + AC + no game, always.
+DECK_LEND_COMPUTE=$LEND_COMPUTE
+DECK_RPC_BIN=$RPC_BIN
+DECK_RPC_BIND=$RPC_BIND
+DECK_RPC_PORT=50070
 EOF
 chmod 600 "$CONF_DIR/deck.env"
 
@@ -239,17 +288,37 @@ Description=Aither: lend memory as a KV holder (started and stopped by aither-de
 Type=simple
 EnvironmentFile=$CONF_DIR/deck.env
 Environment=PATH=$BIN_DIR:/usr/bin:/bin
-ExecStart=/usr/bin/env bash -c 'if [ -n "\$DECK_HOLDER_CONNECT" ]; then exec $ADK_BIN kvholder serve --connect "\$DECK_HOLDER_CONNECT" --device --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; else exec $ADK_BIN kvholder serve --mesh --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; fi'
+ExecStart=/usr/bin/env bash -c 'if [ -n "\$DECK_HOLDER_CONNECT" ]; then exec $ADK_BIN kvholder serve --connect "\$DECK_HOLDER_CONNECT" --device --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; else dev=; [ -f "\$\$HOME/.aither/node_auth.json" ] && [ "\$DECK_HOLDER_DEVICE" = 1 ] && dev=--device; exec $ADK_BIN kvholder serve --mesh \$\$dev --max-mb "\$DECK_HOLDER_MAX_MB" --store tq4; fi'
 Restart=on-failure
 RestartSec=60
 Nice=19
 CPUWeight=idle
 IOSchedulingClass=idle
 EOF
+# $$ in the holder line: systemd substitutes $NAME in ExecStart itself, so the shell's
+# own variables (dev, HOME) are written as $$ to reach bash -c unexpanded.
+
+write_unit aither-deck-rpc.service <<EOF
+[Unit]
+Description=Aither: lend compute to the pool (started and stopped by aither-deck-guard)
+
+[Service]
+Type=simple
+EnvironmentFile=$CONF_DIR/deck.env
+# -c caches tensors under LLAMA_CACHE: inside the data dir, so the uninstaller removes it
+Environment=LLAMA_CACHE=$DATA_DIR/rpc-cache
+ExecStart=/usr/bin/env bash -c 'exec "\$DECK_RPC_BIN" -H "\$DECK_RPC_BIND" -p "\$DECK_RPC_PORT" -c'
+Restart=on-failure
+RestartSec=60
+Nice=19
+CPUWeight=idle
+IOSchedulingClass=idle
+MemoryMax=${RPC_MAX_MB}M
+EOF
 
 write_unit aither-deck-guard.service <<EOF
 [Unit]
-Description=Aither: back off while a game runs; lend memory only on AC + dock + idle
+Description=Aither: back off while a game runs; lend memory/compute only on AC + dock + idle
 
 [Service]
 Type=simple

@@ -38,7 +38,7 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 echo "  Removing Aither from this Deck"
-UNITS="aither-deck-guard.service aither-deck-holder.service aither-deck-shell.service aither-deck-node.service"
+UNITS="aither-deck-guard.service aither-deck-holder.service aither-deck-rpc.service aither-deck-shell.service aither-deck-node.service"
 
 # Units first: the guard must not restart what we are stopping.
 for u in $UNITS; do

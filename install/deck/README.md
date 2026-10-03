@@ -27,6 +27,7 @@ enrols itself in your workspace. Check it with `adk devices list`.
 | `aither-deck-shell` | systemd --user | `adk harness serve` on 127.0.0.1 only |
 | `aither-deck-guard` | systemd --user | games first: see below |
 | `aither-deck-holder` | systemd --user, guard-controlled | `adk kvholder serve`: lend memory to the fleet |
+| `aither-deck-rpc` | systemd --user, guard-controlled, opt-in | a ggml-rpc worker: lend compute to the pool |
 
 Every service runs at idle CPU and I/O priority.
 
@@ -51,6 +52,10 @@ no token. Allow it once from any signed-in machine:
 A mesh join prints a 6-letter code (`journalctl --user -u aither-deck-holder`);
 approve it from your desktop with `adk kvholder mesh approve CODE`.
 
+Compute is lent only with `--lend-compute` (plus a prebuilt worker, its sha256 and a
+private `--rpc-bind` address), while docked, on AC power and with no game running; the
+dock is always required for compute and the guard stops the worker the moment a game starts.
+
 `~/.local/share/aither-deck/deck-guard.sh --self-test` proves each check can say
 both yes and no.
 
@@ -67,5 +72,7 @@ created them. `--keep-enrollment` leaves the device listed in your workspace.
 ## Options
 
 `deck-install.sh --help` lists them: `--no-awsh`, `--no-enroll`, `--lend-memory`,
-`--holder-max-mb N` (default 6144), `--no-dock-required`, `--api-key-file F`
+`--holder-max-mb N` (default 6144), `--no-dock-required`, `--lend-compute`,
+`--rpc-worker-bin F`, `--rpc-worker-sha256 H`, `--rpc-bind ADDR`, `--rpc-max-mb N`,
+`--api-key-file F`
 (headless sign-in), `--awdk-spec S`.
