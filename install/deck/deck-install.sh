@@ -171,6 +171,9 @@ chmod 600 "$CONF_DIR/deck.env"
 
 # 5. systemd --user units. Background work runs at idle priority, always.
 ADK_BIN="$(command -v adk)"
+# "deck" once the installed adk knows the class; older releases only take laptop.
+NODE_CLASS=laptop
+if adk rc --help 2>/dev/null | grep -Eq '[{,]deck[,}]'; then NODE_CLASS=deck; fi
 write_unit() { cat > "$UNIT_DIR/$1"; }
 
 write_unit aither-deck-node.service <<EOF
@@ -182,7 +185,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PATH=$BIN_DIR:/usr/bin:/bin
-ExecStart=$ADK_BIN rc --node-class laptop
+ExecStart=$ADK_BIN rc --node-class $NODE_CLASS
 Restart=on-failure
 RestartSec=30
 Nice=19
@@ -273,7 +276,7 @@ if [ "$ENROLL" = 1 ]; then
         adk login --no-sync </dev/tty
     fi
     say "enrolling this Deck in your workspace"
-    adk rc --node-class laptop --once
+    adk rc --node-class "$NODE_CLASS" --once
 fi
 
 systemctl --user enable --now aither-deck-shell.service aither-deck-guard.service >/dev/null 2>&1
