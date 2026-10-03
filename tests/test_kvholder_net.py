@@ -12,6 +12,7 @@ import urllib.request
 
 import numpy as np
 import pytest
+
 from adk import kvholder as kv
 from adk import kvholder_net as net
 from adk.kvholder_page import HOLDER_JS, PAGE_HTML
@@ -199,3 +200,20 @@ def test_unauthenticated_peer_cannot_send_a_big_first_message(relay):
         ws.recv()
     assert time.time() - t0 < 3
     assert r.holder is None
+
+
+@pytest.mark.parametrize("recorded_port,expect_down", [(50463, True), (8080, False)])
+def test_stale_tunnel_to_our_port_is_taken_down(tmp_path, recorded_port, expect_down):
+    """A hard-killed relay leaves cloudflared up; the next relay on that port removes it and
+    never touches a tunnel to any other port."""
+    fake = tmp_path / "awtunnel_fake.py"
+    marker = tmp_path / "down"
+    fake.write_text(
+        "import json, pathlib, sys\n"
+        "if sys.argv[1] == 'status':\n"
+        f"    print(json.dumps({{'alive': True, 'port': {recorded_port}}}))\n"
+        f"elif sys.argv[1] == 'down': pathlib.Path(r'{marker}').write_text('x')\n",
+        encoding="utf-8",
+    )
+    net._down_stale_tunnel([sys.executable, str(fake)], 50463)
+    assert marker.exists() is expect_down

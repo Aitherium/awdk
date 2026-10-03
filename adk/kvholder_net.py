@@ -852,7 +852,9 @@ def tunnel_up(port: int, wait_s: float = 90.0) -> tuple[str, subprocess.Popen | 
     read until it prints the URL, and left running; ('', None) when awtunnel is absent or silent.
     """
     exe = shutil.which("awtunnel")
-    cmd = ([exe] if exe else [sys.executable, "-m", "awtunnel"]) + ["up", "--port", str(port)]
+    base = [exe] if exe else [sys.executable, "-m", "awtunnel"]
+    _down_stale_tunnel(base, port)
+    cmd = base + ["up", "--port", str(port)]
     try:
         proc = subprocess.Popen(
             cmd,
@@ -881,6 +883,24 @@ def tunnel_up(port: int, wait_s: float = 90.0) -> tuple[str, subprocess.Popen | 
         proc.terminate()
         return "", None
     return found[0], proc
+
+
+def _down_stale_tunnel(base: list[str], port: int) -> None:
+    """A relay killed hard leaves its cloudflared running: a public URL still pointing at this
+    port. We just bound the port, so a recorded tunnel to it belongs to a dead relay: take it
+    down. A tunnel to any other port is someone else's and is left alone."""
+    try:
+        r = subprocess.run(
+            base + ["status"], capture_output=True, text=True, encoding="utf-8", timeout=30
+        )
+        st = json.loads(r.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return
+    if st.get("alive") and st.get("port") == port:
+        subprocess.run(
+            base + ["down"], capture_output=True, text=True, encoding="utf-8", timeout=30
+        )
+        print(f"kvholder: took down a stale tunnel to :{port} ({st.get('url', '')})")
 
 
 def holder_url(base: str, token: str) -> str:
