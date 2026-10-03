@@ -1298,6 +1298,8 @@ def create_app(
             # Turns being served right now. The watchdog defers a replace (and a
             # fingerprint-drift reload) while this is non-zero.
             "chat": _chat_inflight.snapshot(),
+            # Running code vs installed code (adk/self_update.py), cached by the watcher.
+            "code_update": _self_update_status(),
             # AFRL G10: is this process sealed? (awnix awdk health reads this)
             "air_gap": air_gap_health(),
         }
@@ -7247,6 +7249,15 @@ def _uvicorn_loop() -> str:
         return "asyncio"
 
 
+def _self_update_status():
+    try:
+        from adk import self_update
+
+        return self_update.status()
+    except Exception:  # noqa: BLE001 - health never fails on a report
+        return None
+
+
 def main():
     """CLI entry point: aither-serve"""
     # Air gap first: no client may be built before the egress guard is in place.
@@ -7377,6 +7388,17 @@ def main():
         clear_daemon_url = None
     except Exception:  # noqa: BLE001 — discovery is an optimisation, never fatal
         clear_daemon_url = None
+    try:
+        # Restart onto newly installed code between chat turns (adk/self_update.py).
+        from adk import self_update
+
+        _inflight = getattr(app.state, "chat_inflight", None)
+        self_update.start(
+            "adk-daemon",
+            lambda: _inflight is None or int((_inflight.snapshot() or {}).get("inflight", 0)) == 0,
+        )
+    except Exception as exc:  # noqa: BLE001 - detection is an aid, never a reason not to serve
+        print(f"  self-update watcher not started: {exc}")
     try:
         uvicorn.run(app, host=host, port=port, log_level="info", loop=_uvicorn_loop())
     finally:

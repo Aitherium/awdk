@@ -1009,6 +1009,15 @@ def recall_awm_context(cwd: str) -> str:
     return ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext", "")
 
 
+def _self_update_status() -> Optional[dict[str, Any]]:
+    try:
+        from adk import self_update
+
+        return self_update.status()
+    except Exception:  # noqa: BLE001 - health never fails on a report
+        return None
+
+
 def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     """Build the FastAPI app. Raises if no token can be resolved (fail-closed)."""
     if BaseModel is None:
@@ -1180,6 +1189,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             # when this process holds no link. Its failures used to live only in
             # the log: 1,079 retries and nothing on any probe (2026-09-30).
             "node_link": _node_link_status(),
+            # Which code this process runs and whether newer code is installed
+            # (adk/self_update.py). Cached state only; the watcher does the probing.
+            "code_update": _self_update_status(),
         }
 
     # ── the HUB contract (Aither Hub — gobbonet) ───────────────────────────
@@ -4068,6 +4080,16 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     from adk.harnesses._win_accept import install as _keep_listening
 
     _keep_listening()
+    # Restart onto newly installed code when no daemon-owned session is live
+    # (measured 2026-10-02: a day on a deleted snapshot, /agents 500 behind a green
+    # /health). A session that is still open holds the restart; /health says so.
+    from adk import self_update
+
+    def _no_live_session() -> bool:
+        live = {"starting", "ready", "busy", "idle"}
+        return not any(str(s.get("state", "")) in live for s in default_manager().list_sessions())
+
+    self_update.start("harness-daemon", _no_live_session)
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
     return 0
 
