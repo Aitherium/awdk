@@ -1,0 +1,151 @@
+id: strata-moe-offload
+name: Strata engine (Niko1221) - 125B MoE on a gaming PC (12-24 GB GPU + 64 GB RAM)
+# gpu-medium: the floor is a 12 GB consumer card. The tier only matters for auto-resolution,
+# which this recipe never enters (auto_select: false below).
+tier: gpu-medium
+# NEVER auto-selected. It loads 35-55 GB into RAM and pins part of it for the GPU; the PC
+# can stop responding for 1-3 minutes while it loads. A person chooses that; a node bootstrap
+# must never pick it for them and displace cuda-vllm-* on every 24 GB box.
+auto_select: false
+description: >-
+  Runs Qwen3.8-Flash-Next (125B MoE, 48 layers x 512 experts, top-10) on one
+  consumer GPU with 12+ GB VRAM and 64 GB of RAM, using the upstream Strata engine
+  (github.com/Niko1221/Strata, MIT) - a third-party project, unrelated to anything
+  else named Strata. Wraps the PUBLIC upstream installer rather than a fleet script.
+
+# WHY THIS RECIPE EXISTS, AND WHY IT WRAPS UPSTREAM INSTEAD OF PORTING IT
+# The engine keeps the most-routed experts in a VRAM slot table filled from a frequency
+# profile and adapted live; the CPU computes the misses in place from pinned RAM while the
+# GPU runs the hits. llama.cpp packs each layer's experts into ONE tensor, so our
+# --override-tensor placement cannot express per-expert residency - porting it would be a
+# fork of the MoE path. Upstream's installer already detects the card, picks the build
+# (CUDA or HIP), downloads the GGUF shards resumably and sizes the context. Wrapping it is
+# the bonsai-selfhost pattern: it stays correct as they ship.
+#
+# NOT FOR A BOX THAT ALREADY SERVES MODELS. The engine wants the card's free VRAM for its
+# expert cache and tens of GB of free RAM; on a host whose GPU and RAM are already held by
+# other services it does not fit. This recipe is for a person's own gaming PC.
+
+hardware_requirements:
+  # 64 GB runs every size. 32 GB runs only the Coder build (half the experts), and 48 GB
+  # only Q2_0/IQ2_XS - upstream's setup picks those itself from the RAM it measures.
+  min_ram_gb: 32
+  min_cpu_cores: 6
+  # NVIDIA RTX 20-50 series. AMD RX 6800+/7700 XT+/9060 XT+ also works through upstream's
+  # HIP build; the scorer matches one vendor, and this recipe is explicit-id only anyway.
+  gpu_vendor: nvidia
+  min_vram_gb: 12
+  unified_memory: false
+  notes: >-
+    ~80 GB free disk (SSD strongly preferred: the 28.8 GB n-gram table is read a few
+    rows per token through the OS cache). RAM decides the size: 32 GB -> coder IQ1_M,
+    48 GB -> IQ2_XS or Q2_0, 64 GB -> IQ2_XS (recommended), 96 GB+ -> IQ3_S. Upstream
+    measured 79 tok/s (IQ2_XS) on an RTX 5070 12 GB + 64 GB RAM; not re-measured here.
+
+inference_config:
+  engine: strata
+  models:
+    - name: qwen3.8-flash-next-iq2_xs
+      source: https://github.com/Niko1221/Strata
+      size_gb: 70.0
+      quantization: IQ2_XS
+      # Upstream's default by VRAM is 32768 under 14 GB, 65536 under 20 GB, else 131072.
+      # Advertise the floor a 12 GB card is promised, because the router trusts this value;
+      # raise it on a node whose server was started with a bigger --context.
+      context_window: 32768
+      # The server answers any requested model name (serve/server.py resolves unknown names
+      # to its own model), so this id is ours to pick.
+      served_name: strata-qwen3.8-flash-next
+  serve_args:
+    # Upstream defaults, stated so nobody has to read their README to know what runs.
+    - --host 127.0.0.1
+    - --port 8080
+  image: ""
+  platform_traps:
+    # Loopback by default. Upstream refuses to tell agents to bind 0.0.0.0 without
+    # --api-key; neither do we.
+    - loopback-bind-not-lan-without-api-key
+    # The model load pins tens of GB; the PC can freeze for 1-3 minutes on first start.
+    # A health probe during that window times out - wait, do not restart it.
+    - first-start-freezes-the-pc-1-3-min-while-ram-is-pinned
+    # One request at a time (a FIFO in front of one resident sequence). Never register it
+    # as a concurrent backend.
+    - serves-one-request-at-a-time
+    # Same port as bonsai-selfhost. One local model per box, or start Strata with
+    # --port 8090 (also on the browser's loopback probe list).
+    - port-8080-shared-with-bonsai-selfhost
+
+oneclick:
+  # Upstream's own launchers: double-click on Windows, one command on Linux. They ask four
+  # questions; --yes takes the recommended answer to each.
+  windows: "START-HERE.bat --yes"
+  unix: "./setup.sh --yes"
+  prompts: 0
+  requires_token: false
+  requires_admin: false
+
+setup:
+  repo: https://github.com/Niko1221/Strata.git
+  env: {}
+  steps:
+    - "git clone https://github.com/Niko1221/Strata.git && cd Strata"
+    - "./setup.sh --check"                     # GPU, RAM, disk - changes nothing
+    - "./setup.sh --yes --no-start"            # engine + model (~70 GB, resumable)
+    - "./setup.sh"                             # starts the server on 127.0.0.1:8080
+  windows_steps:
+    - "git clone https://github.com/Niko1221/Strata.git; cd Strata"
+    - ".\\START-HERE.bat --check"
+    - ".\\START-HERE.bat --yes --no-start"
+    - ".\\START-HERE.bat"
+
+deployment:
+  # Upstream's launcher IS the deployment; it runs in the foreground until its window closes.
+  target: user-managed
+  compose_template: ""
+  delegate: ""
+  port: 8080
+
+backend_config:
+  # OpenAI-compatible (/v1/chat/completions, /v1/models, /health) - the shape the existing
+  # llamacpp_remote backend already speaks. No new backend type.
+  backend_type: llamacpp_remote
+  # /health answers {"status":"ok","loaded":...,"service":"strata"} even while loading;
+  # verify with a completion, not with health alone.
+  health_path: /health
+  completion_path: /v1/chat/completions
+
+verify:
+  # The first load moves 35-55 GB into RAM; upstream says 1-3 minutes, longest the first time.
+  health_timeout_s: 600
+  completion:
+    model: strata-qwen3.8-flash-next
+    prompt: "What is the capital of France? Answer in one short sentence."
+    min_tokens: 3
+    timeout_s: 300
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp_remote
+    category: reasoning
+    # Must equal inference_config.models[0].context_window.
+    context_window: 32768
+    # The card's VRAM is the expert cache's, not a model-size figure; 0 = not a fleet GPU slot.
+    vram_gb: 0
+    speed: 6
+    quality: 9
+  ms_env_var: AITHER_GRID_LLAMACPP_URL
+
+discovery:
+  browser_probe: "http://127.0.0.1:8080"
+  probe_gate: "/health"
+  chat_path: "/v1/chat/completions"
+  notes: >-
+    The aitherium.com loopback probe already tries 8080 and 8090.
+
+mesh_share:
+  onboard: "adk mesh onboard"
+  advertise: "adk mesh provide --inference-url http://127.0.0.1:8080/v1 --model strata-qwen3.8-flash-next"
+  gate: operator-trust-grant
+  notes: >-
+    Optional, and only for a box that can spare the model full-time: it answers one
+    request at a time, so a shared node queues every caller behind every other.

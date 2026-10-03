@@ -185,6 +185,15 @@ def resolve_recipe(
         recipe = _load_recipe(recipe_id)
         if recipe:
             warnings = []
+            # An explicit id still wins, but it must not hide a box that cannot run it: a
+            # strata-moe-offload request on a 16 GB-RAM machine used to come back with no
+            # warning at all. Only judged when hardware was actually supplied.
+            if system_info:
+                fit_score, fit_warnings = _score_recipe(recipe, system_info)
+                if fit_score <= 0:
+                    warnings.extend(
+                        f"Hardware does not meet {recipe_id}: {w}" for w in fit_warnings
+                    )
             if "platform_traps" in recipe.get("inference_config", {}):
                 warnings.extend(recipe["inference_config"]["platform_traps"])
             return {

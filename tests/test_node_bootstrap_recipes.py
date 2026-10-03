@@ -436,3 +436,50 @@ class TestRecipeConsistency:
     def test_no_duplicate_recipe_ids(self):
         """All recipe IDs in RECIPE_IDS are unique."""
         assert len(RECIPE_IDS) == len(set(RECIPE_IDS))
+
+
+class TestStrataMoeOffload:
+    """strata-moe-offload: opt-in only, and an explicit pick says when the box cannot run it."""
+
+    GAMING_PC = {
+        "ram_gb": 64.0,
+        "cpu_cores": 8,
+        "gpu_vendor": "nvidia",
+        "gpu_vram_mb": 12 * 1024,
+        "unified_memory": False,
+        "gpu_name": "RTX 5070",
+    }
+
+    def test_never_auto_selected(self):
+        # 24 GB card + 64 GB RAM fits Strata, but auto-resolution must keep the vLLM default.
+        system = dict(self.GAMING_PC, gpu_vram_mb=24 * 1024)
+        assert resolve_recipe(system)["recipe"]["id"] != "strata-moe-offload"
+
+    def test_explicit_on_fitting_box_has_no_hardware_warning(self):
+        result = resolve_recipe(self.GAMING_PC, recipe_id="strata-moe-offload")
+        assert result["recipe"]["id"] == "strata-moe-offload"
+        assert not [w for w in result["warnings"] if w.startswith("Hardware does not meet")]
+
+    def test_explicit_on_small_box_warns_but_still_wins(self):
+        system = dict(self.GAMING_PC, ram_gb=16.0)
+        result = resolve_recipe(system, recipe_id="strata-moe-offload")
+        assert result["recipe"]["id"] == "strata-moe-offload"
+        assert any(
+            w.startswith("Hardware does not meet strata-moe-offload") and "RAM" in w
+            for w in result["warnings"]
+        ), result["warnings"]
+
+    def test_explicit_on_small_card_warns(self):
+        system = dict(self.GAMING_PC, gpu_vram_mb=8 * 1024)
+        result = resolve_recipe(system, recipe_id="strata-moe-offload")
+        assert any("VRAM" in w for w in result["warnings"]), result["warnings"]
+
+    def test_catalog_context_matches_served_context(self):
+        recipe = get_recipe("strata-moe-offload")
+        served = recipe["inference_config"]["models"][0]["context_window"]
+        assert recipe["fleet_wiring"]["catalog_entry"]["context_window"] == served
+
+    def test_loopback_bind_by_default(self):
+        args = get_recipe("strata-moe-offload")["inference_config"]["serve_args"]
+        assert "--host 127.0.0.1" in args
+        assert not any("0.0.0.0" in a for a in args)

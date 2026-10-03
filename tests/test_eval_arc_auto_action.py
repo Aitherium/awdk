@@ -5,11 +5,14 @@ at the first None), so turns whose code only wrote hypotheses never moved.
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from adk.evalharness.arc_agi3 import env_arc
 from adk.evalharness.arc_agi3.env_arc import ArcAgi3Environment, _component_centres
+
+# numpy is the optional `arc`/`reason` extra; the base install (and the publish lane's
+# payload venv) does not have it, so an unguarded import fails collection there.
+np = pytest.importorskip("numpy")
 
 
 class _Raw:
