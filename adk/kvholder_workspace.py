@@ -698,10 +698,40 @@ def run_install() -> int:
             encoding="utf-8",
             errors="replace",
         )
-        print(r.stdout.strip() or r.stderr.strip())
         if r.returncode == 0:
+            print(r.stdout.strip())
             subprocess.run(["schtasks", "/Run", "/TN", "AitherKVRelay"], capture_output=True)
-        return r.returncode
+            return 0
+        # an ONLOGON task needs an elevated shell; the per-user Run key does not
+        print(f"kvholder: logon task refused ({r.stderr.strip()}); using the per-user Run key")
+        r = subprocess.run(
+            [
+                "reg",
+                "add",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "AitherKVRelay",
+                "/t",
+                "REG_SZ",
+                "/d",
+                cmd,
+                "/f",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if r.returncode != 0:
+            print(f"kvholder: {r.stderr.strip()}", file=sys.stderr)
+            return r.returncode
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NO_WINDOW", 0
+        )
+        argv = [str(pyw if pyw.exists() else exe), "-m", "adk", "kvholder", "workspace", "serve"]
+        subprocess.Popen(argv, creationflags=flags, close_fds=True)
+        print("kvholder: starts at logon (HKCU Run: AitherKVRelay); started now")
+        return 0
     unit = (
         "[Unit]\nDescription=Aither KV holder workspace relay\nAfter=network-online.target\n\n"
         f"[Service]\nExecStart={exe} -m adk kvholder workspace serve\nRestart=always\n\n"
