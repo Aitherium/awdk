@@ -4,6 +4,39 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.49] - 2026-10-03
+
+### Added
+
+- **`adk.cells`: one contract per service, run in-process or across a swarm.** A
+  `@contract` class with `@op` methods generates its HTTPS routes, client calls, MCP
+  tools (scoped to the caller), CLI verbs and schedules. `Cells().host(impl)` runs a
+  cell in this process; `Cells().remote(Contract, url)` reaches it on another node with
+  the same calling code. Scope comes only from the authenticated caller and is
+  re-checked server-side; plain `http://` is refused and certificate checks cannot be
+  turned off.
+- **The memory cell.** Scoped agent memory (awm) as a cell: remember, recall, forget and
+  history. The contract has no tenant or workspace parameter; whose memory an op touches
+  is the caller's workspace (`current_caller()`), so a payload cannot name another one.
+- **Placement and reconcile.** `estate.plan` places cells on a node inventory (replicas,
+  zone spread, label constraints, per-GPU, `yield_to` live tags) and lists every
+  unplaceable replica; `diff` + `reconcile.apply` start before they stop and hold a
+  cell's stops when its start fails. `PodmanRuntime` runs digest-pinned images only.
+- **Nodes measure and serve themselves.** `python -m adk.cells inventory` reports CPU,
+  RAM and per-GPU VRAM; `python -m adk.cells serve --cell memory=DB --tokens T --cert C
+  --key K` hosts cells over TLS only, with callers from a token file that stores
+  sha256 hashes, and an operator-only `/cells/_node` inventory endpoint.
+
+- **The control loop.** `python -m adk.cells control estate.yaml --node NAME=URL --ca CA`
+  reads the estate, asks every node for its measured inventory and what it runs, plans,
+  and applies the difference through each node's operator-only runtime surface. An
+  unreachable node is never told to stop anything; the estate is re-read every tick, so
+  a merged estate change is the deploy. `serve --images` lets a node run digest-pinned
+  cells, `--podman-via wsl:<distro>` reaches podman inside WSL.
+- **Cells as an MCP server.** `python -m adk.cells mcp` serves every cell tool to an MCP
+  client over stdio, generated from the contracts and scoped to the caller (`--local`
+  for one workspace in-process, `--remote` to a node over TLS via `/cells/_whoami`).
+
 ## [3.8.48] - 2026-10-03
 
 ### Security
