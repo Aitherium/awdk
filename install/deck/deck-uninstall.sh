@@ -72,6 +72,9 @@ if [ "$had_uv" = 0 ]; then
     rm -f "$BIN_DIR/uv" "$BIN_DIR/uvx"
     rm -rf "${XDG_DATA_HOME:-$DECK_HOME/.local/share}/uv" "${XDG_CACHE_HOME:-$DECK_HOME/.cache}/uv"
 fi
+if [ -f "$DECK_HOME/.bashrc" ] && grep -q '# aither-deck PATH' "$DECK_HOME/.bashrc"; then
+    sed -i '/# aither-deck PATH$/d' "$DECK_HOME/.bashrc"
+fi
 rm -rf "$CONF_DIR" "$STATE_DIR"
 # Last: this script lives in DATA_DIR; the open file descriptor keeps it readable.
 rm -rf "$DATA_DIR"

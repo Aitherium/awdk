@@ -160,6 +160,12 @@ fi
 command -v uv >/dev/null || die "uv did not install"
 ok "uv $(uv --version 2>/dev/null | awk '{print $2}')"
 
+# A re-run (an update) replaces the awdk venv the units are running from: uv then
+# fails "Directory not empty". Stop them first, the guard before what it restarts.
+for u in aither-deck-guard aither-deck-holder aither-deck-rpc aither-deck-shell aither-deck-node; do
+    systemctl --user stop "$u.service" 2>/dev/null || true
+done
+
 # 2. awdk. uv brings its own Python, so SteamOS's system Python is never touched.
 say "installing awdk ($AWDK_SPEC)"
 # numpy for the KV holder; awseal signs the holder's hello with the enrolled device key.
@@ -345,6 +351,15 @@ Terminal=false
 Categories=System;
 EOF
 
+# A new Konsole must find adk/awsh. Only when a login shell lacks ~/.local/bin, and
+# with a marker line the uninstaller deletes.
+# shellcheck disable=SC2016  # the login shell expands these, not this one
+if ! env -i HOME="$DECK_HOME" bash -lc 'case ":$PATH:" in *":$HOME/.local/bin:"*) exit 0;; esac; exit 1' 2>/dev/null; then
+    # shellcheck disable=SC2016  # $HOME/$PATH must reach .bashrc unexpanded
+    grep -q '# aither-deck PATH' "$DECK_HOME/.bashrc" 2>/dev/null \
+        || echo 'export PATH="$HOME/.local/bin:$PATH"  # aither-deck PATH' >> "$DECK_HOME/.bashrc"
+fi
+
 systemctl --user daemon-reload
 # Keep the units running in Game Mode too. Allowed for your own user on SteamOS;
 # harmless when refused (Game Mode keeps the deck session logged in anyway).
@@ -364,7 +379,8 @@ if [ "$ENROLL" = 1 ]; then
 fi
 
 systemctl --user enable --now aither-deck-shell.service aither-deck-guard.service >/dev/null 2>&1
-if [ "$ENROLL" = 1 ]; then
+# Also on a --no-enroll re-run of a Deck that was already enrolled: the stop above held it.
+if [ "$ENROLL" = 1 ] || systemctl --user is-enabled --quiet aither-deck-node.service 2>/dev/null; then
     systemctl --user enable --now aither-deck-node.service >/dev/null 2>&1
 fi
 "$DATA_DIR/deck-guard.sh" --once || true
