@@ -157,6 +157,51 @@ def _before_after(t: Any) -> Tuple[Any, Any]:
     return None, None
 
 
+def _component_centres(frame: Any, mask: Any, limit: int) -> List[Tuple[int, int]]:
+    """(x, y) centres of 4-connected same-colour components, background excluded.
+
+    Background = the most frequent colour. Cells under ``mask`` (the learned HUD)
+    are skipped. Largest components first, capped at ``limit``. Pure numpy.
+    """
+    import numpy as np
+
+    f = np.asarray(frame)
+    if f.ndim != 2 or f.size == 0:
+        return []
+    vals, counts = np.unique(f, return_counts=True)
+    bg = vals[int(np.argmax(counts))]
+    seen = np.zeros(f.shape, dtype=bool)
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        if m.shape == f.shape:
+            seen |= m
+    seen |= f == bg
+    h, w = f.shape
+    comps: List[Tuple[int, int, int]] = []
+    for r0 in range(h):
+        for c0 in range(w):
+            if seen[r0, c0]:
+                continue
+            colour = f[r0, c0]
+            stack = [(r0, c0)]
+            seen[r0, c0] = True
+            cells = []
+            while stack:
+                r, c = stack.pop()
+                cells.append((r, c))
+                for rr, cc in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                    if 0 <= rr < h and 0 <= cc < w and not seen[rr, cc] and f[rr, cc] == colour:
+                        seen[rr, cc] = True
+                        stack.append((rr, cc))
+            # the member cell nearest the mean, so the click lands ON the component
+            mr = sum(r for r, _ in cells) / len(cells)
+            mc = sum(c for _, c in cells) / len(cells)
+            r, c = min(cells, key=lambda p: (p[0] - mr) ** 2 + (p[1] - mc) ** 2)
+            comps.append((len(cells), c, r))
+    comps.sort(key=lambda t: -t[0])
+    return [(x, y) for _n, x, y in comps[:max(0, limit)]]
+
+
 class ArcAgi3Environment:
     """One ARC-AGI-3 game, one seed, competition-mode accounting."""
 
@@ -312,6 +357,52 @@ class ArcAgi3Environment:
         return self.state_name == "WIN"
 
     # -- optional hooks --------------------------------------------------------
+    #: Most click candidates offered per frame (one per colour component).
+    MAX_CLICK_CANDIDATES = 40
+
+    def candidates(self) -> List[Action]:
+        """Every action worth trying from the current frame.
+
+        Simple actions (1-5, 7) the game offers, then one click at the centre of
+        each connected non-background component when the game offers clicks.
+        The reasoning loop's ``scan`` and ``auto_action`` both read this.
+        """
+        avail = [a for a in self.available_actions() if a != RESET_ACTION_ID]
+        out: List[Action] = [(a, -1, -1) for a in avail if a != CLICK_ACTION_ID]
+        if CLICK_ACTION_ID in avail and self._frame is not None:
+            out.extend((CLICK_ACTION_ID, x, y) for x, y in _component_centres(
+                _as_array(self._frame), self.hud(), self.MAX_CLICK_CANDIDATES))
+        return out
+
+    def auto_action(self) -> Optional[Action]:
+        """One action from a non-LLM novelty explorer, or None when none is offered.
+
+        Before this hook existed the loop's explorer fallbacks (after
+        ``zero_act_turns`` turns with no action, on a model error, a prism
+        strategy's ``auto_actions``) took ZERO actions on ARC: ``auto()`` stops at
+        the first ``None``. Measured 2026-10-03 on ls20 seed 1: 40 model calls,
+        0 actions, while every turn's code only wrote hypotheses.
+
+        Untried-in-this-state first (in candidate order), else the least-tried
+        candidate in this state. Counts are per HUD-masked state key, so a ticking
+        step counter does not make every state look new.
+        """
+        cands = self.candidates()
+        if not cands or self._frame is None:
+            return None
+        key = self.state_key(self._frame)
+        tried = self._auto_tried.setdefault(key, {})
+        best = min(cands, key=lambda a: tried.get(a, 0))
+        tried[best] = tried.get(best, 0) + 1
+        return best
+
+    @property
+    def _auto_tried(self) -> Dict[str, Dict[Action, int]]:
+        d = self.__dict__.get("_auto_tried_d")
+        if d is None:
+            d = self.__dict__["_auto_tried_d"] = {}
+        return d
+
     def primer(self) -> str:
         return (
             "ARC-AGI-3 game %s: a 64x64 grid of colour indices 0-15. Actions are "
@@ -451,9 +542,3 @@ class ArcAgi3Environment:
             "colours": (colours, "colours(f=None): [(colour, cells)] most common first"),
             "hud_cells": (hud_cells, "hud_cells(): the learned HUD / meter mask extent"),
         }
-
-    def candidates(self) -> List[Action]:
-        out: List[Action] = [(a, -1, -1) for a in self.available_actions() if a != CLICK_ACTION_ID]
-        if CLICK_ACTION_ID in self.available_actions():
-            out.extend((CLICK_ACTION_ID, x, y) for y in range(4, 64, 8) for x in range(4, 64, 8))
-        return out
