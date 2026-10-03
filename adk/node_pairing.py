@@ -29,10 +29,15 @@ from typing import Any, Dict
 log = logging.getLogger("adk.node_pairing")
 
 _CONFIRM_PATH = "/api/node-pairing/confirm"
+#: Identity's own confirm route. The default since 2026-10-03: the portal proxy above
+#: answered an anonymous confirm with 401 "Authentication required" (measured), so
+#: `adk pair` with no --portal could never succeed.
+IDENTITY_CONFIRM_PATH = "/v1/nodes/pairing/confirm"
 
 
 async def pair_with_code(code: str, portal_url: str,
-                         node_class: str = "laptop") -> Dict[str, Any]:
+                         node_class: str = "laptop",
+                         confirm_path: str = _CONFIRM_PATH) -> Dict[str, Any]:
     """Present a portal pairing code and register this machine as a node.
 
     Returns ``{"paired": bool, ...}`` — never raises; failures carry ``error``.
@@ -55,7 +60,7 @@ async def pair_with_code(code: str, portal_url: str,
 
         base = portal_url.rstrip("/")
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(f"{base}{_CONFIRM_PATH}", json=payload)
+            resp = await client.post(f"{base}{confirm_path}", json=payload)
 
         if resp.status_code != 200:
             detail = resp.text[:200]
@@ -77,6 +82,8 @@ async def pair_with_code(code: str, portal_url: str,
             "public_url": data.get("public_url", ""),
             "paired_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "enrolled_via": "pairing-code",
+            # Where the device beats with its own token (/v1/nodes/device/*).
+            **({"enroll_base": base} if confirm_path == IDENTITY_CONFIRM_PATH else {}),
             "node_class": reg.get("node_class", node_class),
             "inference_url": reg.get("inference_url", ""),
         })
@@ -103,14 +110,18 @@ def cmd_pair(args: Any) -> int:
     import asyncio
     import os
 
-    portal_url = getattr(args, "portal", None) or os.environ.get(
-        "AITHER_PORTAL_URL", "https://api.aitherium.com"
-    )
+    portal_url = getattr(args, "portal", None) or os.environ.get("AITHER_PORTAL_URL", "")
+    confirm_path = _CONFIRM_PATH
+    if not portal_url:
+        from adk.devices import enroll_base
+
+        portal_url, confirm_path = enroll_base(), IDENTITY_CONFIRM_PATH
     code = getattr(args, "code", "")
 
     print(f"  Pairing this machine with {portal_url} …")
     result = asyncio.run(pair_with_code(
-        code, portal_url, node_class=getattr(args, "node_class", None) or "laptop"))
+        code, portal_url, node_class=getattr(args, "node_class", None) or "laptop",
+        confirm_path=confirm_path))
 
     if not result.get("paired"):
         print(f"  ✗ Pairing failed: {result.get('error', 'unknown error')}")

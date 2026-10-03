@@ -198,3 +198,24 @@ def test_a_paired_record_resumes_a_device_token_heartbeat(tmp_path, monkeypatch)
     rec["mode"] = "rich"
     enrollment.resume_heartbeat("user-tok", default_base_url="https://idp.test")
     assert calls[0][1] == "user-tok" and "device" not in calls[0][3]
+
+
+def test_adk_pair_defaults_to_identitys_own_confirm_route(monkeypatch):
+    """The portal proxy answered an anonymous confirm with 401; Identity is the door."""
+    from types import SimpleNamespace
+
+    from adk import devices, node_pairing
+
+    seen = {}
+
+    async def fake_pair(code, base, node_class="laptop", confirm_path=""):
+        seen.update(code=code, base=base, node_class=node_class, path=confirm_path)
+        return {"paired": True, "node_id": NODE}
+
+    monkeypatch.delenv("AITHER_PORTAL_URL", raising=False)
+    monkeypatch.setattr(devices, "enroll_base", lambda: "https://idp.test")
+    monkeypatch.setattr(node_pairing, "pair_with_code", fake_pair)
+    assert node_pairing.cmd_pair(SimpleNamespace(code="ABCD2345", portal="",
+                                                 node_class="spark")) == 0
+    assert seen == {"code": "ABCD2345", "base": "https://idp.test", "node_class": "spark",
+                    "path": "/v1/nodes/pairing/confirm"}

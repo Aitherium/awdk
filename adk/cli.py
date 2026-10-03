@@ -13748,7 +13748,7 @@ def _register_commands(sub):
         help="Pair this machine with the portal as an inference node (6-char code from the portal)")
     pair_p.add_argument("code", help="Pairing code shown in the signed-in portal tab")
     pair_p.add_argument("--portal", default="",
-                        help="Portal base URL (default: https://api.aitherium.com)")
+                        help="Portal base URL (default: pair directly with Identity)")
     pair_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
         default="laptop", help="What this device is (default: laptop)")
