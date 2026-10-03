@@ -588,9 +588,12 @@ def _err(text: str) -> bytes:
 
 class _EngineHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
+        from adk import kvpool  # sessions + shared prefix blocks; plain Relay.call without them
+
         relay: Relay = self.server.relay  # type: ignore[attr-defined]
         sock: socket.socket = self.request
         kv._tune(sock)
+        conn = kvpool.EngineConn()
         try:
             while True:
                 head = kv._recv_all(sock, kv.HDR.size)
@@ -599,9 +602,9 @@ class _EngineHandler(socketserver.BaseRequestHandler):
                     return
                 payload = kv._recv_all(sock, n) if n else b""
                 if mtype == kv.BYE:
-                    relay.call(head + payload, expect_reply=False)
+                    kvpool.relay_call(relay, conn, head + payload, expect_reply=False)
                     return
-                sock.sendall(relay.call(head + payload))
+                sock.sendall(kvpool.relay_call(relay, conn, head + payload))
         except (ConnectionError, OSError):
             return
 

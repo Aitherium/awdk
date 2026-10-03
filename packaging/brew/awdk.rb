@@ -31,7 +31,7 @@ class Awdk < Formula
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
   homepage "https://aitherium.com"
   url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.8.49.tar.gz"
-  sha256 "PLACEHOLDER_SHA256"
+  sha256 "1481a348d2d2c7d94673f948a57bebca071b9d2678dbc9a0180c4cece935ae5f"
   # SPDX. "Proprietary" is not an SPDX identifier and `brew audit` rejects it;
   # the LICENSE file is Business Source License 1.1.
   license "BUSL-1.1"

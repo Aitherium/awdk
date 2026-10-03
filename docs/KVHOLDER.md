@@ -113,6 +113,73 @@ docker run --rm -e RELAY=wss://<relay>/holder -e JOIN=<join token> python:3.11-s
   sh -c 'pip install -q awdk numpy && exec adk kvholder serve --connect "$RELAY" --token "$JOIN" --max-mb 4096'
 ```
 
+## Shared pool: sessions reuse a prefix already on the holders
+
+Engine sessions that start from the same text (a system prompt, a repository, a document)
+compute the same keys for it. With the pool (`adk.kvpool`) the first session publishes that
+prefix as shared blocks and every later session attaches to them instead of sending it
+again. Measured in the tests: two sessions over a 4,096-token prefix, the first sent
+16.8 MB of APPEND rows, the second sent 0 bytes, through one holder or a relay with two.
+Attention stayed exact against numpy for both sessions after each went its own way.
+
+- **Keys.** A block is 256 positions. Its key is the model fingerprint, the holder's layer
+  layout and store, and a hash chain over every token up to the block's end
+  (`kvpool.chain_hashes(tokens, kvpool.model_fingerprint(...))`). A block key therefore
+  names the whole prefix before it.
+- **Copy-on-write.** Shared blocks are read-only. A session's own keys go after them;
+  attention covers the shared blocks and the private tail in one pass, so the merge across
+  holders stays exact. A `TRUNCATE` into the shared part copies the kept rows of that block
+  into the session's private range and releases the rest.
+- **Refcounts and eviction.** Each session holds one reference per block. A block nobody
+  references stays resident for the next session until the holder needs room. Then the
+  least recently released blocks go first, the deepest block of a chain before its head.
+  A referenced block is never evicted: without room the `APPEND` is refused, as before.
+- **Protocol.** Four message types after PATN's 13: `SESSION` (20) binds a connection or a
+  relay link to a session, `POOL_ATTACH` (21) attaches the resident part of a prefix right
+  after `CONFIG` and returns the token count, `POOL_PUBLISH` (22) offers the session's first
+  blocks for sharing, and `POOL_STATUS` (23) returns JSON. A v3 or v4 holder answers
+  "unknown message"; the engine helpers read that as "no pool" and the engine appends
+  everything, as it always did. A connection that never sends `SESSION` gets the plain
+  protocol: one state per holder that survives reconnects.
+- **Relay.** One relay serves several engine sessions: it switches every holder link to the
+  caller's session, and each holder gets the blocks inside its own key range. Sharing runs
+  from position 0 and needs each holder's range to start on a block boundary; it stops at
+  the first holder that does not qualify. A relay with a holder that has no pool refuses
+  `SESSION`, so each engine keeps its own relay connection as before.
+- **Stores.** `f32` and `tq4`. `wire` refuses the pool messages (`ERR`), and the engine
+  falls back.
+
+```bash
+adk kvholder pool status                     # blocks, bytes, refcounts, sessions (relay or holder)
+adk kvholder pool status --target 10.0.0.5:50062
+```
+
+Engine side, with any PATN client:
+
+```python
+from adk import kvpool
+fp = kvpool.model_fingerprint("qwen3.8-27b", "q8_0")
+hashes = kvpool.chain_hashes(prompt_tokens, fp)
+kvpool.open_session(client, sid)          # False: no pool, keep one connection per context
+client.configure(cfg)
+start = kvpool.attach(client, fp, hashes) # tokens already resident: append from here
+...                                       # append [start, n) as usual
+kvpool.publish(client, fp, hashes)        # let the next session reuse it
+```
+
+**The platform directory.** AitherOS's Workspace Shared-Prefix Directory (Nexus,
+`/kv-cache/register-prefix` and `/kv-cache/prefix-directory`) records which nodes hold a
+prefix warm. `kvpool.NexusPrefixDirectory` is a thin client for it. Add it to a holder's
+`pool.listeners` and every published block is registered under its chain hash. Every
+evicted block is released. A router then sends a session to the relay that already holds
+its prefix. The directory holds routing hints only; KV bytes never leave the holders. The
+caller passes the credential header, and a directory that is down never fails the holder.
+
+Not covered yet: an engine that disconnects without `BYE` leaves its session (and its
+references) on the holders until a `CONFIG` on the same session id resets it. A holder
+that joins the relay while a pooled session is loaded gets that session's `CONFIG` on
+first use. It never receives shared blocks that were published before it joined.
+
 ## Plan and check
 
 ```bash

@@ -28,6 +28,7 @@ is the bottleneck.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import socket
 import socketserver
@@ -41,6 +42,11 @@ try:  # numpy is optional for awdk; only the holder's math needs it (serve, test
     import numpy as np
 except ImportError:  # `adk kvholder plan|probe` and the CLI parser still work
     np = None  # type: ignore[assignment]
+
+try:  # the shared pool (sessions, prefix blocks); absent when this file is copied standalone
+    from adk import kvpool as _pool
+except ImportError:
+    _pool = None  # type: ignore[assignment]
 
 log = logging.getLogger("adk.kvholder")
 
@@ -527,6 +533,18 @@ class HolderState:
     # bytes); "wire": rows kept as received (most context per MB, dequantized per call)
     store: str = "f32"
     chunks: list = field(default_factory=list)  # per layer: [(K [H,n,D], V [H,n,D]), ...]
+    # shared pool (adk.kvpool): positions [0, base) are read-only pool blocks, the same on every
+    # layer; ``chunks``/``raw`` hold this session's private keys, positions [base, n)
+    shared: list = field(default_factory=list)
+    base: int = 0
+    ns: tuple | None = None
+
+
+class _Conn:
+    """Which session one connection (or the relay link) is bound to."""
+
+    def __init__(self) -> None:
+        self.sid = 0
 
 
 class KVHolder:
@@ -538,21 +556,39 @@ class KVHolder:
     def __init__(self, max_bytes: int, device: str = "adk-kvholder", store: str = "f32"):
         if store not in ("f32", "wire", "tq4"):
             raise ValueError("store must be 'f32', 'wire' or 'tq4'")
-        self.st = HolderState(max_bytes=max_bytes, store=store)
+        self.st = HolderState(max_bytes=max_bytes, store=store)  # session 0: the PATN default
         self.device = device
+        self.sessions: dict[int, HolderState] = {0: self.st}
+        self.pool = _pool.KVPool() if _pool is not None else None
+        self._link = _Conn()  # the binding for callers that pass no connection (a relay link)
 
-    def _per_key(self) -> int:
+    def _used(self) -> int:
+        """Bytes held across every session plus the shared pool."""
+        return sum(s.held_bytes for s in self.sessions.values()) + (
+            self.pool.bytes if self.pool is not None else 0
+        )
+
+    def _per_key(self, st: HolderState | None = None) -> int:
         """Bytes one key costs on every layer it is appended to (K and V)."""
-        cfg = self.st.cfg
+        cfg = (st or self.st).cfg
         if self.st.store == "f32":
             return cfg.n_head_kv * (cfg.k_dim + cfg.v_dim) * 4
         if self.st.store == "tq4":
             return cfg.n_head_kv * (cfg.k_dim // 2 + 4 + cfg.v_dim // 2 + 4)
         return cfg.rs + cfg.v_rs
 
-    def handle(self, mtype: int, p: bytes) -> tuple[int, bytes] | None:
-        """One request -> (reply type, payload); None = close the session."""
-        st = self.st
+    def handle(self, mtype: int, p: bytes, conn: _Conn | None = None) -> tuple[int, bytes] | None:
+        """One request -> (reply type, payload); None = close the session.
+
+        ``conn`` is the caller's session binding (one per TCP connection); without it the
+        holder-wide link binding is used (a relay link carries one session at a time).
+        """
+        conn = conn or self._link
+        if _pool is not None and mtype in _pool.POOL_TYPES:
+            return self._pool_msg(conn, mtype, p)
+        st = self.sessions.get(conn.sid)
+        if st is None:  # the session ended: back to the default
+            conn.sid, st = 0, self.st
         if mtype == HELLO:
             dev = f"{self.device} {st.store} max_mb={st.max_bytes >> 20}".encode()[:63]
             return HELLO_OK, HELLO_REP.pack(VERSION, 0, dev)
@@ -581,6 +617,9 @@ class KVHolder:
             if st.store == "tq4" and not pow2:
                 return ERR, b"bad CONFIG: tq4 needs power-of-two head dims (use f32 or wire)"
             with st.lock:
+                if st.shared and self.pool is not None:
+                    self.pool.release(st.shared)
+                st.shared, st.base, st.ns = [], 0, None
                 st.cfg = c
                 st.raw = [[] for _ in range(c.n_layer)]
                 st.raw_v = [[] for _ in range(c.n_layer)]
@@ -590,17 +629,19 @@ class KVHolder:
                 st.cache.clear()
             return OK, b""
         if mtype == APPEND:
-            return self._append(p)
+            return self._append(p, st)
         if mtype == TRUNCATE:
             keep = struct.unpack_from("<I", p)[0] if len(p) >= 4 else 0
             with st.lock:
                 if st.cfg:
+                    if keep < st.base:
+                        self._unshare(st, keep)
                     for layer in range(st.cfg.n_layer):
                         if st.n[layer] > keep:
-                            self._truncate_layer(layer, keep)
+                            self._truncate_layer(layer, keep, st)
             return OK, b""
         if mtype in (ATTN, ATTN_BIG):
-            return self._attn(p, big=mtype == ATTN_BIG)
+            return self._attn(p, big=mtype == ATTN_BIG, st=st)
         if mtype == STATS:
             with st.lock:
                 mean = st.sum_attn_ms / st.attn_calls if st.attn_calls else 0.0
@@ -611,16 +652,149 @@ class KVHolder:
                     f"held={held} appended={st.appended} held_mb={st.held_bytes / 1048576:.1f} "
                     f"max_mb={st.max_bytes >> 20} store={st.store}"
                 )
+                if self.pool is not None and (self.pool.blocks or len(self.sessions) > 1):
+                    s += (
+                        f" shared={st.base} sessions={len(self.sessions)}"
+                        f" pool_mb={self.pool.bytes / 1048576:.1f}"
+                    )
             return OK, s.encode()
         if mtype == PING:
             n = struct.unpack_from("<I", p)[0] if len(p) >= 4 else 0
             return OK, b"\x5a" * min(n, 64 << 20)
         if mtype == BYE:
+            if conn.sid:  # a pooled session ends: its references and private keys go
+                with st.lock:
+                    self._drop(st)
+                    self.sessions.pop(conn.sid, None)
+                conn.sid = 0
             return None
         return ERR, f"unknown message {mtype}".encode()
 
-    def _append(self, p: bytes) -> tuple[int, bytes]:
-        st = self.st
+    # ------------------------------------------------------------ shared pool (adk.kvpool)
+
+    def _drop(self, st: HolderState) -> None:
+        if st.shared and self.pool is not None:
+            self.pool.release(st.shared)
+        st.shared, st.base, st.chunks, st.raw, st.raw_v = [], 0, [], [], []
+        st.n, st.held_bytes, st.cfg = [], 0, None
+
+    def _pool_msg(self, conn: _Conn, mtype: int, p: bytes) -> tuple[int, bytes]:
+        if mtype == _pool.SESSION:
+            if len(p) != _pool.SESSION_REQ.size:
+                return ERR, b"bad SESSION"
+            sid = _pool.SESSION_REQ.unpack(p)[0]
+            with self.st.lock:
+                if sid not in self.sessions:
+                    if len(self.sessions) >= _pool.MAX_SESSIONS:
+                        return ERR, b"too many sessions"
+                    self.sessions[sid] = HolderState(
+                        max_bytes=self.st.max_bytes, store=self.st.store, lock=self.st.lock
+                    )
+            conn.sid = sid
+            return OK, b""
+        st = self.sessions.get(conn.sid) or self.st
+        if mtype == _pool.POOL_STATUS:
+            with st.lock:
+                rep = {
+                    "device": self.device,
+                    "store": self.st.store,
+                    "max_bytes": self.st.max_bytes,
+                    "used_bytes": self._used(),
+                    "sessions": [
+                        {
+                            "sid": sid,
+                            "held": s.n[0] if s.n else 0,
+                            "shared_tokens": s.base,
+                            "private_bytes": s.held_bytes,
+                        }
+                        for sid, s in sorted(self.sessions.items())
+                    ],
+                    "pool": self.pool.status(),
+                }
+            return OK, json.dumps(rep).encode()
+        if st.store == "wire":
+            return ERR, b"pool: needs --store f32 or tq4 (wire rows are not shared)"
+        if st.cfg is None:
+            return ERR, b"pool: CONFIG first"
+        try:
+            fp, block, hashes = _pool.unpack_pool_req(p)
+        except ValueError as e:
+            return ERR, str(e).encode()
+        ns = (fp, _pool.layout_fingerprint(st.cfg.pack(), st.store), block)
+        with st.lock:
+            if mtype == _pool.POOL_ATTACH:
+                if any(st.n) or st.shared:
+                    return ERR, b"POOL_ATTACH needs an empty session (right after CONFIG)"
+                blocks = self.pool.chain(ns, hashes)
+                self.pool.acquire(blocks)
+                st.shared, st.ns = blocks, ns
+                st.base = len(blocks) * block
+                st.n = [st.base] * st.cfg.n_layer
+                self.pool.attached_tokens += st.base
+                return OK, struct.pack("<I", st.base)
+            return self._publish(st, ns, block, hashes)
+
+    def _publish(self, st: HolderState, ns: tuple, block: int, hashes: list) -> tuple[int, bytes]:
+        if st.shared and st.ns != ns:
+            return ERR, b"POOL_PUBLISH: another model, layout or block size than the shared prefix"
+        for b, h in zip(st.shared, hashes):
+            if b.key != h:
+                return ERR, b"POOL_PUBLISH: prefix differs from the shared blocks"
+        k = min(len(hashes), min(st.n) // block)
+        first = len(st.shared)
+        if k <= first:
+            return OK, struct.pack("<I", len(st.shared))
+        cfg, base0 = st.cfg, st.base
+        per_key = self._per_key(st)
+        priv = []  # this session's private rows, one contiguous array set per layer
+        for layer in range(cfg.n_layer):
+            parts = st.chunks[layer]
+            priv.append(
+                tuple(np.concatenate([c[i] for c in parts], axis=1) for i in range(len(parts[0])))
+            )
+        new = []
+        for j in range(first, k):
+            lo, hi = j * block - base0, (j + 1) * block - base0
+            blk = _pool.Block(
+                ns=ns,
+                key=hashes[j],
+                index=j,
+                tokens=block,
+                layers=[tuple(np.ascontiguousarray(a[:, lo:hi]) for a in pl) for pl in priv],
+                nbytes=block * per_key * cfg.n_layer,
+            )
+            new.append(self.pool.insert(blk))  # an identical block already resident wins
+        self.pool.acquire(new)
+        cut = k * block - base0
+        for layer in range(cfg.n_layer):
+            tail = tuple(np.ascontiguousarray(a[:, cut:]) for a in priv[layer])
+            st.chunks[layer] = [tail] if tail[0].shape[1] else []
+        st.held_bytes -= cut * per_key * cfg.n_layer
+        st.shared, st.base, st.ns = st.shared + new, k * block, ns
+        return OK, struct.pack("<I", len(st.shared))
+
+    def _unshare(self, st: HolderState, keep: int) -> None:
+        """TRUNCATE below the shared boundary: copy the kept part of the straddling block into
+        the private range (copy-on-write) and drop the references past it."""
+        block = st.ns[2]
+        kb, part = divmod(keep, block)
+        per_key = self._per_key(st)
+        for layer in range(st.cfg.n_layer):
+            st.chunks[layer] = (
+                [tuple(np.ascontiguousarray(a[:, :part]) for a in st.shared[kb].layers[layer])]
+                if part
+                else []
+            )
+            st.n[layer] = keep
+        self.pool.release(st.shared[kb:])
+        st.held_bytes = part * per_key * st.cfg.n_layer
+        st.shared, st.base = st.shared[:kb], kb * block
+
+    def _layer_chunks(self, st: HolderState, layer: int) -> list:
+        return [b.layers[layer] for b in st.shared] + st.chunks[layer]
+
+    def _append(self, p: bytes, st: HolderState | None = None) -> tuple[int, bytes]:
+        st = st or self.st
         if len(p) < APPEND_REQ.size or st.cfg is None:
             return ERR, b"short APPEND"
         layer, pos0, n = APPEND_REQ.unpack_from(p)
@@ -631,8 +805,12 @@ class KVHolder:
         with st.lock:
             if pos0 != st.n[layer]:
                 return ERR, f"APPEND pos0 {pos0} != held {st.n[layer]}".encode()
-            cost = n * self._per_key()
-            if st.held_bytes + cost > st.max_bytes:
+            cost = n * self._per_key(st)
+            over = self._used() + cost - st.max_bytes
+            if over > 0 and self.pool is not None:
+                self.pool.evict(over)  # unreferenced shared blocks only, oldest first
+                over = self._used() + cost - st.max_bytes
+            if over > 0:
                 return ERR, f"out of memory at {st.n[layer]} keys".encode()
             off = APPEND_REQ.size
             k_raw, v_raw = p[off : off + nbytes], p[off + nbytes : off + nbytes + vbytes]
@@ -652,18 +830,18 @@ class KVHolder:
             st.cache.pop(layer, None)
             return OK, struct.pack("<I", st.n[layer])
 
-    def _truncate_layer(self, layer: int, keep: int) -> None:
-        st = self.st
+    def _truncate_layer(self, layer: int, keep: int, st: HolderState | None = None) -> None:
+        st = st or self.st
         if st.store in ("f32", "tq4"):
             kept, have = [], 0
             for parts in st.chunks[layer]:
                 size = parts[0].shape[1]
-                take = min(size, keep - have)
+                take = min(size, keep - st.base - have)
                 if take <= 0:
                     break
                 kept.append(tuple(a[:, :take].copy() for a in parts) if take < size else parts)
                 have += take
-            st.held_bytes -= (st.n[layer] - keep) * self._per_key()
+            st.held_bytes -= (st.n[layer] - keep) * self._per_key(st)
             st.chunks[layer], st.n[layer] = kept, keep
             return
         rs, v_rs = st.cfg.rs, st.cfg.v_rs
@@ -673,8 +851,8 @@ class KVHolder:
         st.raw[layer], st.raw_v[layer], st.n[layer] = [k], [v], keep
         st.cache.pop(layer, None)
 
-    def _kv(self, layer: int) -> tuple[np.ndarray, np.ndarray]:
-        st = self.st
+    def _kv(self, layer: int, st: HolderState | None = None) -> tuple[np.ndarray, np.ndarray]:
+        st = st or self.st
         hit = st.cache.get(layer)
         if hit and hit[0] == st.n[layer]:
             return hit[1], hit[2]
@@ -686,8 +864,8 @@ class KVHolder:
         }  # one layer hot: decode walks layers in order, memory stays bounded
         return keys, vals
 
-    def _attn(self, p: bytes, big: bool) -> tuple[int, bytes]:
-        st = self.st
+    def _attn(self, p: bytes, big: bool, st: HolderState | None = None) -> tuple[int, bytes]:
+        st = st or self.st
         if st.cfg is None or len(p) < ATTN_REQ.size:
             return ERR, b"short ATTN"
         layer, n_tok, nk, scale = ATTN_REQ.unpack_from(p)
@@ -712,14 +890,14 @@ class KVHolder:
             nk = held if nk == 0 else min(nk, held)
             if st.store in ("f32", "tq4"):
                 chunks, have = [], 0
-                for parts in st.chunks[layer]:
+                for parts in self._layer_chunks(st, layer):
                     take = min(parts[0].shape[1], nk - have)
                     if take <= 0:
                         break
                     chunks.append(tuple(a[:, :take] for a in parts))
                     have += take
             else:
-                keys, vals = self._kv(layer)
+                keys, vals = self._kv(layer, st)
                 keys, vals = keys[:nk], vals[:nk]
         outs, lses = [], []
         rows = _rows(cfg.rows, n_tok)
@@ -757,10 +935,11 @@ class _Handler(socketserver.BaseRequestHandler):
         sock: socket.socket = self.request
         _tune(sock)
         holder: KVHolder = self.server.holder  # type: ignore[attr-defined]
+        conn = _Conn()  # each connection picks its own session (SESSION); default 0
         try:
             while True:
                 mtype, payload = _recv_msg(sock)
-                rep = holder.handle(mtype, payload)
+                rep = holder.handle(mtype, payload, conn)
                 if rep is None:
                     return
                 _send_msg(sock, rep[0], rep[1])
@@ -996,6 +1175,10 @@ def run(args) -> int:
             f"{r['reserve_bytes'] >> 20} MB reserve)"
         )
         return 0
+    if action == "pool":
+        from adk import kvpool
+
+        return kvpool.run_pool(args)
     if action in ("phone", "relay-status", "elastic"):
         from adk import kvholder_net
 

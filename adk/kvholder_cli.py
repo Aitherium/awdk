@@ -100,6 +100,17 @@ def register(sub) -> None:
     )
     el.add_argument("--dry-run", action="store_true", help="show what would be launched")
 
+    po = s.add_parser(
+        "pool", help="The shared KV pool: prefix blocks engine sessions attach to (adk.kvpool)"
+    )
+    pos = po.add_subparsers(dest="pool_action")
+    ps = pos.add_parser("status", help="Blocks, bytes, refcounts and sessions on a holder or relay")
+    ps.add_argument(
+        "--target",
+        default=f"127.0.0.1:{DEFAULT_PORT}",
+        help="HOST[:PORT] of a holder or the relay's engine port",
+    )
+
 
 def run(args) -> int:
     from adk import kvholder  # numpy (optional) is imported here, never at parser build
