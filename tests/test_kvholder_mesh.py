@@ -171,6 +171,45 @@ def test_admit_network_alone_never_admits(relay):
     assert doc["status"] == "pending"
 
 
+def test_serve_mesh_device_signs_the_request(relay, monkeypatch):
+    """`adk kvholder serve --mesh --device`: resolve_serve signs the request for the relay
+    it found, so an admitted network lets an allowed device in without a code."""
+    import types
+
+    from adk import kvholder_workspace
+
+    r, _, wp = relay
+    _open(r, wp, admit=["127.0.0.1/32"])
+    r.device_gate = _Gate("kvh-deck")
+    seen = []
+
+    def fake_hello(url, device_id="", key_path=""):
+        seen.append(url)
+        return lambda: {"device_id": "kvh-deck"}
+
+    monkeypatch.setattr(kvholder_workspace, "device_hello", fake_hello)
+    args = types.SimpleNamespace(
+        peer=[f"127.0.0.1:{wp}"],
+        mesh_port=wp,
+        relay_name="",
+        mesh_wait=5,
+        device=True,
+        connect="",
+        token="",
+    )
+    monkeypatch.setattr(mesh, "_udp_query", lambda: [])
+    monkeypatch.setattr(mesh, "_tailnet_peers", lambda: [])
+    monkeypatch.setattr(mesh, "_wireguard_peers", lambda: [])
+    assert mesh.resolve_serve(args) == 0
+    assert seen == [f"http://127.0.0.1:{wp}"]
+    assert args.connect == f"ws://127.0.0.1:{wp}/holder" and r.admit(args.token) == "join"
+    # without --device the same holder waits for the owner's code
+    args = types.SimpleNamespace(
+        **{**vars(args), "device": False, "mesh_wait": 0.5, "connect": "", "token": ""}
+    )
+    assert mesh.resolve_serve(args) == 1 and mesh.pending()[0]["status"] == "pending"
+
+
 def test_owner_routes_need_master_token(relay):
     r, master, wp = relay
     _open(r, wp)

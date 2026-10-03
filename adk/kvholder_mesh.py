@@ -566,12 +566,24 @@ def resolve_serve(args) -> int:
                 flush=True,
             )
 
+    sign = None
+    if getattr(args, "device", False):  # sign in as this workspace device: --mesh-admit applies
+        try:
+            from adk import kvholder_workspace
+
+            sign = kvholder_workspace.device_hello(r["base"])
+        except (ImportError, OSError, ValueError) as e:
+            print(
+                f"kvholder mesh: cannot sign as a device ({e}); asking for a code instead",
+                file=sys.stderr,
+            )
     try:
         token = request_join(
             r["base"],
             f"adk-kvholder@{socket.gethostname()}",
             wait_s=float(getattr(args, "mesh_wait", 600) or 600),
             on_code=shown,
+            sign=sign,
         )
     except (OSError, PermissionError, TimeoutError, ValueError, KeyError) as e:
         print(f"kvholder mesh: not admitted ({e})", file=sys.stderr)
