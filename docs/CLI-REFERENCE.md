@@ -1168,7 +1168,7 @@ Pair this machine with the portal as an inference node (6-char code from the por
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab |
-| `--portal` | str |  |  | Portal base URL (default: https://api.aitherium.com) |
+| `--portal` | str |  |  | Portal base URL (default: pair directly with Identity) |
 | `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
 
 ## `adk patterns`
