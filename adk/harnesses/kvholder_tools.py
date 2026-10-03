@@ -55,7 +55,41 @@ def _elastic(a: dict) -> Any:
         return {"error": str(e)}
 
 
+def _workspace(a: dict) -> Any:
+    from adk import kvholder_workspace
+
+    st = kvholder_workspace.read_status()
+    if st is None:
+        return {"error": "the workspace relay is not running (adk kvholder workspace serve)"}
+    return st
+
+
+def _workspace_deny(a: dict) -> Any:
+    """Revoke only. Letting a device lend stays an owner command on the relay host
+    (`adk kvholder workspace allow`): an agent must not be able to switch a child's phone on."""
+    from adk import kvholder_workspace
+
+    did = str(a.get("device_id") or "").strip()
+    if not kvholder_workspace._DEVICE_ID.match(did):
+        return {"error": "device_id is required (see awsh_kvholder_workspace)"}
+    kvholder_workspace.Grants().set(did, False)
+    return {"device_id": did, "lend": False, "note": "dropped at the relay's next sweep (5 s)"}
+
+
 TOOLS: list = [
+    {"name": "awsh_kvholder_workspace",
+     "description": "The workspace KV swarm (adk kvholder workspace serve): phones lending "
+                    "memory by device id, the owner's grants, devices waiting for a yes, "
+                    "identity health. No secrets.",
+     "schema": {"type": "object", "properties": {}},
+     "fn": _workspace},
+    {"name": "awsh_kvholder_workspace_deny",
+     "description": "Stop a workspace device lending to this relay (revoke). Allowing a "
+                    "device is the owner's own command, not a tool.",
+     "schema": {"type": "object", "properties": {
+         "device_id": {"type": "string", "description": "e.g. kvh-fold"}},
+         "required": ["device_id"]},
+     "fn": _workspace_deny},
     {"name": "awsh_kvholder_status",
      "description": "The KV relay on this machine (adk kvholder phone): attached holders, "
                     "their memory, the mesh door and its pending requests. No secrets.",

@@ -289,3 +289,18 @@ def test_seal_keys_fall_back_to_per_device_reads_when_the_search_fails(monkeypat
     )
     assert kw.fetch_seal_keys(lambda: ["kvh-fold"])[0] != 200
     assert kw.fetch_seal_keys(None)[0] == 503  # nothing allowed: no per-device reads
+
+
+def test_awsh_tools_read_the_swarm_and_can_only_revoke(tmp_path, monkeypatch):
+    from adk.harnesses import kvholder_tools as kt
+
+    monkeypatch.setenv("AITHER_KVHOLDER_GRANTS", str(tmp_path / "grants.json"))
+    monkeypatch.setenv("AITHER_KVHOLDER_WORKSPACE_STATUS", str(tmp_path / "ws.json"))
+    tools = {t["name"]: t["fn"] for t in kt.TOOLS}
+    assert "error" in tools["awsh_kvholder_workspace"]({})  # relay not running: says so
+    (tmp_path / "ws.json").write_text(json.dumps({"updated": time.time(), "swarm": {}}))
+    assert tools["awsh_kvholder_workspace"]({})["stale"] is False
+    kw.Grants().set("kvh-fold", True)
+    assert tools["awsh_kvholder_workspace_deny"]({"device_id": "kvh-fold"})["lend"] is False
+    assert kw.Grants().allowed("kvh-fold") is False
+    assert not any("allow" in n for n in tools)  # lending is switched on by the owner only

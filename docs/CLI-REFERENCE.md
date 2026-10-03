@@ -951,6 +951,7 @@ Lend this device's memory to another host's context window (PATN v3 KV holder)
 - `adk kvholder phone` — Use a phone (or any browser) as the holder: USB, LAN, mesh or tunnel
 - `adk kvholder relay-status` — Is a holder attached to the local relay
 - `adk kvholder elastic` — Add holders on demand (CI runners via awrun, or any machine), one join token each
+- `adk kvholder workspace` — The always-on relay: phones lend from anywhere, signed in as workspace devices
 - `adk kvholder pool` — The shared KV pool: prefix blocks engine sessions attach to (adk.kvpool)
 - `adk kvholder chat` — Chat with a real model whose old context lives on the holders (torch)
 - `adk kvholder mesh` — Holders found on the mesh: list, approve or deny requests
