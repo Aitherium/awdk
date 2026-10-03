@@ -14,6 +14,16 @@ from fastapi.testclient import TestClient
 LONE = "\udc9d"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_store(monkeypatch):
+    # get_store() is a process-wide singleton bound to the AITHER_DECISIONS_DIR of the
+    # first test that touched it; without a reset this file listed ANOTHER test's card
+    # (answer_note None -> TypeError) whenever it ran after one in the full suite.
+    from adk.decisions import store as store_module
+
+    monkeypatch.setattr(store_module, "_STORE", None)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AITHER_DECISIONS_DIR", str(tmp_path / "decisions"))

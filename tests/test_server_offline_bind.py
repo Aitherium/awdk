@@ -33,10 +33,15 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("AITHER_AIR_GAP_CONFIG", str(tmp_path / "air_gap.yaml"))
     prev = air_gap.set_enforcer(None)
     was = dict(egress_guard._INSTALLED)
+    # Start every test from an UNINSTALLED guard. An earlier module that imports adk with
+    # enforcement on leaves the socket backstop installed, and the air-gap-OFF tests here
+    # then read enforced=True and loop="asyncio" (seen only in the full payload suite).
+    egress_guard.uninstall_egress_guard()
     yield tmp_path
-    if not any(was.values()):
-        egress_guard.uninstall_egress_guard()
+    egress_guard.uninstall_egress_guard()
     air_gap.set_enforcer(prev)
+    if any(was.values()):
+        egress_guard.install_egress_guard()
 
 
 @pytest.mark.parametrize("cli,cfg_host,env,want", [

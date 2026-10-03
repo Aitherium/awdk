@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from adk.harnesses.discovery import discover_live_sessions
+from adk.harnesses.discovery import cwd_basename, discover_live_sessions
 from adk.harnesses.rooms import RoomError, RoomRegistry, default_registry
 
 #: How often to re-discover sessions. Discovery walks state files and probes pids, so
@@ -94,7 +94,7 @@ def _session_name(session_id: str, cwd: str, claude_name: str = "") -> str:
     name = " ".join(str(claude_name or "").split())
     if name:
         return name[:80]
-    repo = Path(cwd).name or "session"
+    repo = cwd_basename(cwd) or "session"
     short = (session_id or "")[:8]
     return f"{repo}#{short}" if short else repo
 

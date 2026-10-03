@@ -67,6 +67,12 @@ def win(monkeypatch, tmp_path):
     return _make
 
 
+# The other home's wrapper is found by a drive-letter regex (a scheduled task only ever
+# names one), and tmp_path only has a drive letter on Windows.
+_DRIVE_TMP = pytest.mark.skipif(sys.platform != "win32",
+                                reason="needs a drive-letter tmp_path (Windows)")
+
+
 def _wrapper() -> Path:
     return d.AITHER_HOME / "aither-agent.cmd"
 
@@ -115,6 +121,7 @@ def test_an_entry_that_is_there_is_not_touched(win):
     assert fake.created == []
 
 
+@_DRIVE_TMP
 @pytest.mark.parametrize("where", ["task", "run"])
 def test_the_entry_of_another_home_is_left_alone(win, tmp_path, where):
     other = tmp_path / "home-b" / "aither-agent.cmd"
@@ -201,6 +208,7 @@ def test_adk_up_no_persist_does_not_touch_autostart(running, capsys):
     assert running.created == [] and running.run_value == ""
 
 
+@_DRIVE_TMP
 def test_adk_up_leaves_another_homes_entry_and_says_so(running, capsys, tmp_path):
     other = tmp_path / "home-b" / "aither-agent.cmd"
     other.parent.mkdir()

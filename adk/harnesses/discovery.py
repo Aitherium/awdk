@@ -68,6 +68,15 @@ def _encode_cwd(cwd: str) -> str:
     return encoded
 
 
+def cwd_basename(cwd: str) -> str:
+    """The last component of a session's cwd, whichever OS wrote it.
+
+    A transcript written on Windows (``C:\\work\\repo``) is read by daemons on Linux too,
+    where ``Path(cwd).name`` returns the whole string; split on both separators.
+    """
+    return re.split(r"[\\/]+", str(cwd or "").rstrip("\\/"))[-1]
+
+
 def _try_parse_int(value: Any) -> Optional[int]:
     """Try to parse a value as int, return None on failure."""
     try:

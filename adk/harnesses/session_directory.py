@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from adk.harnesses.discovery import DiscoveredSession, discover_live_sessions
+from adk.harnesses.discovery import DiscoveredSession, cwd_basename, discover_live_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ def session_display_title(session_id: str, cwd: str, transcript_path: str = "",
     # it already carries the BRANCH (peers work on their own) and a start time
     # the owner can match to a tab, so it beats anything derived here. The
     # `#<id8>` form stays for a session that has no such name.
-    repo = Path(cwd).name if cwd else ""
+    repo = cwd_basename(cwd)
     short = (session_id or "")[:8]
     name = " ".join(str(claude_name or "").split())
     if not name:

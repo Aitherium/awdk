@@ -32,13 +32,15 @@ def main(argv: list[str]) -> int:
     try:
         from awstorage.cli import main as _awstorage_main
     except ImportError:
+        # Asking for help is not an error: say how to get the brick, exit 0.
+        asked_help = not argv or argv[0] in ("-h", "--help")
         print(
             "adk storage: the `awstorage` package is not installed.\n"
             "  pip install 'awdk[storage]'   or   pip install awstorage\n"
             "Then: adk storage scan <root> --catalog inventory.db",
-            file=sys.stderr,
+            file=sys.stdout if asked_help else sys.stderr,
         )
-        return 2
+        return 0 if asked_help else 2
     if not argv:
         argv = ["--help"]
     need = _NEEDS.get(argv[0])

@@ -73,13 +73,15 @@ def test_mode_defaults_to_required_offline_only():
 
 
 def test_the_token_is_only_ever_sent_to_loopback(tmp_path):
-    path = tmp_path / "t"
-    local_auth.ensure_token(path)
-    assert local_auth.headers_for("http://127.0.0.1:9001/chat", path)
-    assert local_auth.headers_for("http://[::1]:9001", path)
+    # Every loopback listener on 9001 is ours, so only the loopback rule decides. Without
+    # an explicit table this read the host's real /proc/net on Linux, where nothing
+    # listens on 9001 and the token is (correctly) withheld.
+    net = _table(tmp_path, tcp=[(V4_LO, 9001, ME)], tcp6=[(V6_LO, 9001, ME)])
+    assert _send(tmp_path, "http://127.0.0.1:9001/chat", net)
+    assert _send(tmp_path, "http://[::1]:9001", net)
     for url in ("https://api.aitherium.com", "http://10.0.0.5:9001",
                 "http://127.0.0.1.evil.test:9001"):
-        assert local_auth.headers_for(url, path) == {}, url
+        assert not _send(tmp_path, url, net), url
 
 
 _HDR = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
