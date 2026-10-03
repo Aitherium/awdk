@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.47] - 2026-10-03
+
+- A signed-in `adk up` runs as your company's own persona (e.g. GargBot) when your
+  company has one; `--no-tenant-persona` opts out. `adk pack sync` installs it.
+
 ## [3.8.46] - 2026-10-02
 
 - `adk models recommend` on a machine with no GPU picks the 4B, not a 27B that runs at
