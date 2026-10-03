@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import threading
 import time
 
@@ -11,7 +9,6 @@ import pytest
 
 from adk import kvholder as kv
 from adk import kvholder_net as net
-from adk.kvholder_page import HOLDER_JS
 
 np = pytest.importorskip("numpy")  # optional for awdk; the payload lane has core deps only
 
@@ -96,23 +93,3 @@ def test_tq4_refuses_non_power_of_two_heads():
     h = kv.KVHolder(1 << 26, store="tq4")
     rep = h.handle(kv.CONFIG, kv.Config.for_model(LAYERS, H, "q8_0", **MLA).pack())
     assert rep[0] == kv.ERR and b"power-of-two" in rep[1]
-
-
-NODE = shutil.which("node")
-
-
-@pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_browser_holder_refuses_v4_loudly(tmp_path):
-    (tmp_path / "holder.js").write_text(HOLDER_JS, encoding="utf-8")
-    cfg = kv.Config.for_model(LAYERS, H, "q8_0", **MLA).pack().hex()
-    (tmp_path / "run.js").write_text(
-        "const K = require('./holder.js');\n"
-        "const h = new K.Holder(new K.CpuEngine(), 1 << 26, 'n');\n"
-        f"h.handle(3, Buffer.from('{cfg}', 'hex')).then(([t, p]) => {{\n"
-        "  console.log(t, Buffer.from(p).toString()); });\n",
-        encoding="utf-8",
-    )
-    out = subprocess.run(
-        [NODE, "run.js"], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60
-    )
-    assert out.stdout.startswith("10 ") and "v3 shapes only" in out.stdout, out.stdout + out.stderr

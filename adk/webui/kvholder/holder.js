@@ -1,6 +1,6 @@
 (function (root) {
 'use strict';
-const MAGIC = 0x4E544150, VERSION = 3, NR = 48, HD = 256, MAX_GROUPS = 64;
+const MAGIC = 0x4E544150, VERSION = 3, NR = 48, HD = 256, MAX_GROUPS = 64, MAX_DIM = 4096, V4_TAG = 4;
 const T = {HELLO:1,HELLO_OK:2,CONFIG:3,APPEND:4,TRUNCATE:5,ATTN:6,ATTN_OK:7,STATS:8,OK:9,ERR:10,BYE:11,PING:12,ATTN_BIG:13};
 const NEG = -3.0e38;
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -27,23 +27,34 @@ function f2h(v) {
   if (m & 0x1000) { m += 0x2000; if (m & 0x800000) { m = 0; e += 1; if (e >= 31) return sign | 0x7c00; } }
   return sign | (e << 10) | (m >> 13);
 }
-function headBytes(t) { return t === 0 ? HD * 2 : t === 1 ? HD / 32 * 34 : t === 2 ? HD / 32 * 18 : -1; }
+function headBytes(t, dim) { dim = dim || HD; return t === 0 ? dim * 2 : t === 1 ? dim / 32 * 34 : t === 2 ? dim / 32 * 18 : -1; }
+// PATN v4 (the adk extension): CONFIG may carry a 24-byte tail (tag 4, k_dim, v_dim, rows per KV
+// head, V row stride, V bytes per head) for models whose attention is not 256 wide x 48 rows.
+// Every config below carries the full shape; a v3 CONFIG gets the v3 defaults.
+function mkCfg(nLayer, nkv, type, kd, vd, rows) {
+  kd = kd || HD; vd = vd || kd; rows = rows || NR;
+  const hb = headBytes(type, kd), hbv = headBytes(type, vd);
+  return {nLayer, nkv, rs: nkv * hb, hb, type, kd, vd, rows, rsv: nkv * hbv, hbv};
+}
+function side(cfg, which) { return which === 'v' ? [cfg.vd, cfg.rsv, cfg.hbv] : [cfg.kd, cfg.rs, cfg.hb]; }
+const isPow2 = (d) => (d & (d - 1)) === 0;
 
-// ggml rows (n x rs bytes) -> Float32Array [n][nkv][HD]
-function dequant(bytes, n, cfg) {
-  const out = new Float32Array(n * cfg.nkv * HD);
+// ggml rows (n x row-stride bytes) -> Float32Array [n][nkv][dim] for the K or V side
+function dequant(bytes, n, cfg, which) {
+  const [D, rs, hb] = side(cfg, which);
+  const out = new Float32Array(n * cfg.nkv * D);
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let j = 0; j < n; j++) for (let h = 0; h < cfg.nkv; h++) {
-    const base = j * cfg.rs + h * cfg.hb, o = (j * cfg.nkv + h) * HD;
+    const base = j * rs + h * hb, o = (j * cfg.nkv + h) * D;
     if (cfg.type === 0) {
-      for (let d = 0; d < HD; d++) out[o + d] = h2f(dv.getUint16(base + 2 * d, true));
+      for (let d = 0; d < D; d++) out[o + d] = h2f(dv.getUint16(base + 2 * d, true));
     } else if (cfg.type === 1) {
-      for (let b = 0; b < HD / 32; b++) {
+      for (let b = 0; b < D / 32; b++) {
         const blk = base + b * 34, dd = h2f(dv.getUint16(blk, true));
         for (let i = 0; i < 32; i++) out[o + b * 32 + i] = dd * dv.getInt8(blk + 2 + i);
       }
     } else {
-      for (let b = 0; b < HD / 32; b++) {
+      for (let b = 0; b < D / 32; b++) {
         const blk = base + b * 18, dd = h2f(dv.getUint16(blk, true));
         for (let i = 0; i < 16; i++) {
           const q = bytes[blk + 2 + i];
@@ -60,41 +71,41 @@ function dequant(bytes, n, cfg) {
 class CpuEngine {
   constructor() { this.kind = 'cpu'; }
   configure(cfg) { this.cfg = cfg; this.layers = []; for (let i = 0; i < cfg.nLayer; i++) this.layers.push({n: 0, K: [], V: [], cache: null}); }
-  bytesPerKey() { return 2 * this.cfg.rs; }
+  bytesPerKey() { return this.cfg.rs + this.cfg.rsv; }
   append(layer, n, kRaw, vRaw) { const L = this.layers[layer]; L.K.push(kRaw.slice()); L.V.push(vRaw.slice()); L.n += n; L.cache = null; }
   truncate(keep) {
     for (const L of this.layers) {
       if (L.n <= keep) continue;
-      const cut = (arrs) => { const all = concat(arrs); return [all.slice(0, keep * this.cfg.rs)]; };
-      L.K = cut(L.K); L.V = cut(L.V); L.n = keep; L.cache = null;
+      const cut = (arrs, rs) => { const all = concat(arrs); return [all.slice(0, keep * rs)]; };
+      L.K = cut(L.K, this.cfg.rs); L.V = cut(L.V, this.cfg.rsv); L.n = keep; L.cache = null;
     }
   }
   held(layer) { return this.layers[layer].n; }
   kv(layer) {
     const L = this.layers[layer];
-    if (!L.cache || L.cache.n !== L.n) L.cache = {n: L.n, K: dequant(concat(L.K), L.n, this.cfg), V: dequant(concat(L.V), L.n, this.cfg)};
+    if (!L.cache || L.cache.n !== L.n) L.cache = {n: L.n, K: dequant(concat(L.K), L.n, this.cfg, 'k'), V: dequant(concat(L.V), L.n, this.cfg, 'v')};
     return L.cache;
   }
   async attn(layer, nk, scale, q, nTok, ng) {
-    const {K, V} = this.kv(layer), nkv = this.cfg.nkv, rows = nkv * NR;
-    const O = new Float32Array(ng * rows * HD), lse = new Float32Array(ng * rows).fill(-Infinity);
-    const s = new Float64Array(nk), acc = new Float64Array(HD);
-    for (let g = 0; g < ng; g++) for (let h = 0; h < nkv; h++) for (let r = 0; r < NR; r++) {
-      const row = g * rows + h * NR + r;
+    const {K, V} = this.kv(layer), {nkv, kd: KD, vd: VD, rows: R} = this.cfg, rows = nkv * R;
+    const O = new Float32Array(ng * rows * VD), lse = new Float32Array(ng * rows).fill(-Infinity);
+    const s = new Float64Array(nk), acc = new Float64Array(VD);
+    for (let g = 0; g < ng; g++) for (let h = 0; h < nkv; h++) for (let r = 0; r < R; r++) {
+      const row = g * rows + h * R + r;
       if (nk === 0 || (r % 8) >= nTok) continue;
-      const qo = row * HD;
+      const qo = row * KD, oo = row * VD;
       let m = -Infinity;
       for (let k = 0; k < nk; k++) {
-        const ko = (k * nkv + h) * HD; let d = 0;
-        for (let i = 0; i < HD; i++) d += q[qo + i] * K[ko + i];
+        const ko = (k * nkv + h) * KD; let d = 0;
+        for (let i = 0; i < KD; i++) d += q[qo + i] * K[ko + i];
         s[k] = d * scale; if (s[k] > m) m = s[k];
       }
       acc.fill(0); let l = 0;
       for (let k = 0; k < nk; k++) {
-        const p = Math.exp(s[k] - m); l += p; const vo = (k * nkv + h) * HD;
-        for (let i = 0; i < HD; i++) acc[i] += p * V[vo + i];
+        const p = Math.exp(s[k] - m); l += p; const vo = (k * nkv + h) * VD;
+        for (let i = 0; i < VD; i++) acc[i] += p * V[vo + i];
       }
-      for (let i = 0; i < HD; i++) O[qo + i] = acc[i] / l;
+      for (let i = 0; i < VD; i++) O[oo + i] = acc[i] / l;
       lse[row] = m + Math.log(l);
     }
     return {O, lse};
@@ -111,45 +122,48 @@ function concat(arrs) {
 }
 
 // ---------------------------------------------------------------- WebGPU engine
-const PARTIAL_WGSL = (KT) => `
-${KT === 'f16' ? 'enable f16;' : ''}
+// Shaders are specialized per CONFIG shape (key width KD, value width VD, rows R per KV head):
+// one workgroup of 256 threads per (row, KV head, key chunk). A thread scores one key of each
+// 256-key tile and owns value dims i, i+256, ... of the output. Queries sit in workgroup memory
+// when they fit (KD <= 2048), else they are read from storage.
+const WG = 256, QS_MAX = 2048;
+const f32lit = (x) => { const t = String(x); return /[.e]/.test(t) ? t : t + '.0'; };
+const partialHead = (KD, VD, R, extra) => {
+  const shared = KD <= QS_MAX;
+  return {shared, OPT: Math.ceil(VD / WG), qv: (d) => shared ? `qs[${d}]` : `(Q[row * ${KD}u + ${d}] * p.scale)`, src: `
 struct P { nk: u32, nkv: u32, slot: u32, ntok: u32, scale: f32, rows: u32, chunk: u32, b: u32 };
 @group(0) @binding(0) var<uniform> p: P;
-@group(0) @binding(1) var<storage, read> K: array<${KT}>;
-@group(0) @binding(2) var<storage, read> V: array<${KT}>;
+${extra}
 @group(0) @binding(3) var<storage, read> Q: array<f32>;
 @group(0) @binding(4) var<storage, read_write> PO: array<f32>;
 @group(0) @binding(5) var<storage, read_write> PML: array<f32>;
-var<workgroup> qs: array<f32, 256>;
+${shared ? `var<workgroup> qs: array<f32, ${KD}>;` : ''}
 var<workgroup> sc: array<f32, 256>;
 var<workgroup> red: array<f32, 256>;
-const NEG: f32 = -3.0e38;
+const NEG: f32 = -3.0e38;`};
+};
+const partialPrologue = (KD, VD, R, shared, OPT) => `
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i: u32) {
-  let r = wg.x; let h = wg.y; let row = h * 48u + r;
+  let r = wg.x; let h = wg.y; let row = h * ${R}u + r;
   let slot = p.slot + wg.z;
   let k0 = wg.z * p.chunk;
   let k1 = min(k0 + p.chunk, p.nk);
-  let ob = (slot * p.rows + row) * 256u;
+  let ob = (slot * p.rows + row) * ${VD}u;
   let mb = (slot * p.rows + row) * 2u;
   if ((r % 8u) >= p.ntok || k0 >= p.nk) {
-    PO[ob + i] = 0.0;
+    for (var d = i; d < ${VD}u; d = d + 256u) { PO[ob + d] = 0.0; }
     if (i == 0u) { PML[mb] = NEG; PML[mb + 1u] = 0.0; }
     return;
   }
-  qs[i] = Q[row * 256u + i] * p.scale;
-  workgroupBarrier();
-  var m = NEG; var l = 0.0; var o = 0.0;
-  let stride = p.nkv * 256u;
+  ${shared ? `for (var d = i; d < ${KD}u; d = d + 256u) { qs[d] = Q[row * ${KD}u + d] * p.scale; }
+  workgroupBarrier();` : ''}
+  var m = NEG; var l = 0.0;
+  var o: array<f32, ${OPT}>;
   for (var t0 = k0; t0 < k1; t0 = t0 + 256u) {
     let k = t0 + i;
-    var s = NEG;
-    if (k < k1) {
-      let kb = k * stride + h * 256u;
-      var acc = 0.0;
-      for (var d = 0u; d < 256u; d = d + 1u) { acc = acc + qs[d] * f32(K[kb + d]); }
-      s = acc;
-    }
+    var s = NEG;`;
+const partialSoftmax = `
     red[i] = s;
     workgroupBarrier();
     for (var w = 128u; w > 0u; w = w >> 1u) { if (i < w) { red[i] = max(red[i], red[i + w]); } workgroupBarrier(); }
@@ -163,18 +177,36 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i
     workgroupBarrier();
     for (var w = 128u; w > 0u; w = w >> 1u) { if (i < w) { red[i] = red[i] + red[i + w]; } workgroupBarrier(); }
     let ps = red[0];
-    let cnt = min(256u, k1 - t0);
-    var acc2 = 0.0;
-    for (var j = 0u; j < cnt; j = j + 1u) { acc2 = acc2 + sc[j] * f32(V[(t0 + j) * stride + h * 256u + i]); }
-    o = o * alpha + acc2;
+    let cnt = min(256u, k1 - t0);`;
+const partialEpilogue = (VD, OPT) => `
     l = l * alpha + ps;
     m = nm;
     workgroupBarrier();
   }
-  PO[ob + i] = o;
+  for (var c = 0u; c < ${OPT}u; c = c + 1u) { let d = i + c * 256u; if (d < ${VD}u) { PO[ob + d] = o[c]; } }
   if (i == 0u) { PML[mb] = m; PML[mb + 1u] = l; }
 }`;
-const MERGE_WGSL = `
+const PARTIAL_WGSL = (KT, KD, VD, R) => {
+  const {shared, OPT, qv, src} = partialHead(KD, VD, R, `
+@group(0) @binding(1) var<storage, read> K: array<${KT}>;
+@group(0) @binding(2) var<storage, read> V: array<${KT}>;`);
+  return (KT === 'f16' ? 'enable f16;' : '') + src + partialPrologue(KD, VD, R, shared, OPT) + `
+    if (k < k1) {
+      let kb = k * p.nkv * ${KD}u + h * ${KD}u;
+      var acc = 0.0;
+      for (var d = 0u; d < ${KD}u; d = d + 1u) { acc = acc + ${qv('d')} * f32(K[kb + d]); }
+      s = acc;
+    }` + partialSoftmax + `
+    for (var c = 0u; c < ${OPT}u; c = c + 1u) {
+      let d = i + c * 256u;
+      if (d < ${VD}u) {
+        var acc2 = 0.0;
+        for (var j = 0u; j < cnt; j = j + 1u) { acc2 = acc2 + sc[j] * f32(V[(t0 + j) * p.nkv * ${VD}u + h * ${VD}u + d]); }
+        o[c] = o[c] * alpha + acc2;
+      }
+    }` + partialEpilogue(VD, OPT);
+};
+const MERGE_WGSL = (VD) => `
 struct M { nslots: u32, rows: u32, a: u32, b: u32 };
 @group(0) @binding(0) var<uniform> mp: M;
 @group(0) @binding(1) var<storage, read> PO: array<f32>;
@@ -190,17 +222,19 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i
     let b = (s * mp.rows + row) * 2u;
     if (PML[b + 1u] > 0.0) { mx = max(mx, PML[b]); }
   }
-  var acc = 0.0; var den = 0.0;
+  var den = 0.0;
   for (var s = 0u; s < mp.nslots; s = s + 1u) {
-    let b = (s * mp.rows + row) * 2u;
-    let l = PML[b + 1u];
-    if (l > 0.0) {
-      let w = exp(PML[b] - mx);
-      acc = acc + w * PO[(s * mp.rows + row) * 256u + i];
-      den = den + w * l;
-    }
+    let l = PML[(s * mp.rows + row) * 2u + 1u];
+    if (l > 0.0) { den = den + exp(PML[(s * mp.rows + row) * 2u] - mx) * l; }
   }
-  OUT[row * 256u + i] = select(0.0, acc / den, den > 0.0);
+  for (var d = i; d < ${VD}u; d = d + 256u) {
+    var acc = 0.0;
+    for (var s = 0u; s < mp.nslots; s = s + 1u) {
+      let b = (s * mp.rows + row) * 2u;
+      if (PML[b + 1u] > 0.0) { acc = acc + exp(PML[b] - mx) * PO[(s * mp.rows + row) * ${VD}u + d]; }
+    }
+    OUT[row * ${VD}u + d] = select(0.0, acc / den, den > 0.0);
+  }
   if (i == 0u) { LSE[row] = select(NEG, mx + log(den), den > 0.0); }
 }`;
 
@@ -208,28 +242,32 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i
 // Rotate (signs, then a Walsh-Hadamard transform), quantize each coordinate to 16 Lloyd-Max
 // levels for a unit Gaussian, keep one norm per vector. The shader unpacks nibbles in
 // registers while it multiplies; norms fold into scores and weights. ~4x the keys per MB of f16.
+// Any power-of-two width up to MAX_DIM; the sign vector's first 256 entries are the v3 ones.
 const TQ4_C = [-2.7326, -2.0690, -1.6181, -1.2562, -0.9424, -0.6568, -0.3881, -0.1284,
   0.1284, 0.3881, 0.6568, 0.9424, 1.2562, 1.6181, 2.0690, 2.7326];
 const TQ4_EDGES = TQ4_C.slice(1).map((c, i) => (c + TQ4_C[i]) / 2);
-const TQ4_SIGN = new Float32Array(HD).map((_, j) => ((Math.imul(j + 1, 2654435761) >>> 13) & 1) ? -1 : 1);
-function fwht(a, off) {  // in place, length HD; applying it twice multiplies by HD
-  for (let h = 1; h < HD; h <<= 1)
-    for (let i = 0; i < HD; i += h << 1)
+const TQ4_SIGN = new Float32Array(MAX_DIM).map((_, j) => ((Math.imul(j + 1, 2654435761) >>> 13) & 1) ? -1 : 1);
+function fwht(a, off, D) {  // in place, length D; applying it twice multiplies by D
+  for (let h = 1; h < D; h <<= 1)
+    for (let i = 0; i < D; i += h << 1)
       for (let j = i; j < i + h; j++) { const x = a[off + j], y = a[off + j + h]; a[off + j] = x + y; a[off + j + h] = x - y; }
 }
-const INV_SQRT_HD = 1 / Math.sqrt(HD);
-function tq4Rotate(a, off) { for (let j = 0; j < HD; j++) a[off + j] *= TQ4_SIGN[j]; fwht(a, off); for (let j = 0; j < HD; j++) a[off + j] *= INV_SQRT_HD; }
-function tq4Unrotate(a, off) { fwht(a, off); for (let j = 0; j < HD; j++) a[off + j] *= TQ4_SIGN[j] * INV_SQRT_HD; }
-// f32 [n][nkv][HD] -> codes Uint8Array [n][nkv][HD/2], norms Float32Array [n][nkv]
-function tq4Encode(x, vecs) {
-  const codes = new Uint8Array(vecs * HD / 2), norms = new Float32Array(vecs), sq = Math.sqrt(HD);
+function tq4Rotate(a, off, D) {
+  D = D || HD; const s = 1 / Math.sqrt(D);
+  for (let j = 0; j < D; j++) a[off + j] *= TQ4_SIGN[j]; fwht(a, off, D); for (let j = 0; j < D; j++) a[off + j] *= s;
+}
+function tq4Unrotate(a, off, D) { D = D || HD; const s = 1 / Math.sqrt(D); fwht(a, off, D); for (let j = 0; j < D; j++) a[off + j] *= TQ4_SIGN[j] * s; }
+// f32 [vecs][D] -> codes Uint8Array [vecs][D/2], norms Float32Array [vecs]
+function tq4Encode(x, vecs, D) {
+  D = D || HD;
+  const codes = new Uint8Array(vecs * D / 2), norms = new Float32Array(vecs), sq = Math.sqrt(D);
   for (let v = 0; v < vecs; v++) {
-    const off = v * HD;
-    tq4Rotate(x, off);
-    let nn = 0; for (let j = 0; j < HD; j++) nn += x[off + j] * x[off + j];
+    const off = v * D;
+    tq4Rotate(x, off, D);
+    let nn = 0; for (let j = 0; j < D; j++) nn += x[off + j] * x[off + j];
     const norm = Math.sqrt(nn), k = norm > 0 ? sq / norm : 0;
     norms[v] = norm;
-    for (let j = 0; j < HD; j += 2) {
+    for (let j = 0; j < D; j += 2) {
       let c0 = 0, c1 = 0; const u0 = x[off + j] * k, u1 = x[off + j + 1] * k;
       while (c0 < 15 && u0 > TQ4_EDGES[c0]) c0++;
       while (c1 < 15 && u1 > TQ4_EDGES[c1]) c1++;
@@ -238,79 +276,39 @@ function tq4Encode(x, vecs) {
   }
   return {codes, norms};
 }
-const PARTIAL_TQ4_WGSL = `
-struct P { nk: u32, nkv: u32, slot: u32, ntok: u32, scale: f32, rows: u32, chunk: u32, b: u32 };
-@group(0) @binding(0) var<uniform> p: P;
+const PARTIAL_TQ4_WGSL = (KD, VD, R) => {
+  const {shared, OPT, qv, src} = partialHead(KD, VD, R, `
 @group(0) @binding(1) var<storage, read> K: array<u32>;
 @group(0) @binding(2) var<storage, read> V: array<u32>;
-@group(0) @binding(3) var<storage, read> Q: array<f32>;
-@group(0) @binding(4) var<storage, read_write> PO: array<f32>;
-@group(0) @binding(5) var<storage, read_write> PML: array<f32>;
 @group(0) @binding(6) var<storage, read> KN: array<f32>;
 @group(0) @binding(7) var<storage, read> VN: array<f32>;
 var<private> C: array<f32, 16> = array<f32, 16>(${TQ4_C.map((c) => c.toFixed(4)).join(', ')});
-var<workgroup> qs: array<f32, 256>;
-var<workgroup> sc: array<f32, 256>;
-var<workgroup> red: array<f32, 256>;
-const NEG: f32 = -3.0e38;
-const INV: f32 = 0.0625;
-@compute @workgroup_size(256)
-fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i: u32) {
-  let r = wg.x; let h = wg.y; let row = h * 48u + r;
-  let slot = p.slot + wg.z;
-  let k0 = wg.z * p.chunk;
-  let k1 = min(k0 + p.chunk, p.nk);
-  let ob = (slot * p.rows + row) * 256u;
-  let mb = (slot * p.rows + row) * 2u;
-  if ((r % 8u) >= p.ntok || k0 >= p.nk) {
-    PO[ob + i] = 0.0;
-    if (i == 0u) { PML[mb] = NEG; PML[mb + 1u] = 0.0; }
-    return;
-  }
-  qs[i] = Q[row * 256u + i] * p.scale;
-  workgroupBarrier();
-  var m = NEG; var l = 0.0; var o = 0.0;
-  for (var t0 = k0; t0 < k1; t0 = t0 + 256u) {
-    let k = t0 + i;
-    var s = NEG;
+const INVK: f32 = ${f32lit(1 / Math.sqrt(KD))};
+const INVV: f32 = ${f32lit(1 / Math.sqrt(VD))};`);
+  return src + partialPrologue(KD, VD, R, shared, OPT) + `
     if (k < k1) {
-      let kw = (k * p.nkv + h) * 32u;
+      let kw = (k * p.nkv + h) * ${KD / 8}u;
       var acc = 0.0;
-      for (var w = 0u; w < 32u; w = w + 1u) {
+      for (var w = 0u; w < ${KD / 8}u; w = w + 1u) {
         let word = K[kw + w];
-        for (var j = 0u; j < 8u; j = j + 1u) { acc = acc + qs[w * 8u + j] * C[(word >> (j * 4u)) & 15u]; }
+        for (var j = 0u; j < 8u; j = j + 1u) { acc = acc + ${qv('w * 8u + j')} * C[(word >> (j * 4u)) & 15u]; }
       }
-      s = acc * KN[k * p.nkv + h] * INV;
-    }
-    red[i] = s;
-    workgroupBarrier();
-    for (var w = 128u; w > 0u; w = w >> 1u) { if (i < w) { red[i] = max(red[i], red[i + w]); } workgroupBarrier(); }
-    let tm = red[0];
-    workgroupBarrier();
-    let nm = max(m, tm);
-    let alpha = exp(m - nm);
-    var pv = 0.0;
-    if (k < k1) { pv = exp(s - nm); }
-    sc[i] = pv; red[i] = pv;
-    workgroupBarrier();
-    for (var w = 128u; w > 0u; w = w >> 1u) { if (i < w) { red[i] = red[i] + red[i + w]; } workgroupBarrier(); }
-    let ps = red[0];
-    let cnt = min(256u, k1 - t0);
-    var acc2 = 0.0;
-    let sh = (i % 8u) * 4u;
-    for (var j = 0u; j < cnt; j = j + 1u) {
-      let key = (t0 + j) * p.nkv + h;
-      let word = V[key * 32u + i / 8u];
-      acc2 = acc2 + sc[j] * C[(word >> sh) & 15u] * VN[key] * INV;
-    }
-    o = o * alpha + acc2;
-    l = l * alpha + ps;
-    m = nm;
-    workgroupBarrier();
-  }
-  PO[ob + i] = o;
-  if (i == 0u) { PML[mb] = m; PML[mb + 1u] = l; }
-}`;
+      s = acc * KN[k * p.nkv + h] * INVK;
+    }` + partialSoftmax + `
+    for (var c = 0u; c < ${OPT}u; c = c + 1u) {
+      let d = i + c * 256u;
+      if (d < ${VD}u) {
+        var acc2 = 0.0;
+        let sh = (d % 8u) * 4u;
+        for (var j = 0u; j < cnt; j = j + 1u) {
+          let key = (t0 + j) * p.nkv + h;
+          let word = V[key * ${VD / 8}u + d / 8u];
+          acc2 = acc2 + sc[j] * C[(word >> sh) & 15u] * VN[key] * INVV;
+        }
+        o[c] = o[c] * alpha + acc2;
+      }
+    }` + partialEpilogue(VD, OPT);
+};
 
 class GpuEngine {
   static async create(gpu, opts) {
@@ -325,66 +323,84 @@ class GpuEngine {
     });
     const e = new GpuEngine();
     e.tq4 = !!(opts && opts.tq4);
-    e.device = device; e.f16 = f16 && !e.tq4; e.maxBind = want;
+    e.device = device; e.f16 = f16 && !e.tq4; e.maxBind = want; e.pipes = {};
     e.kind = 'webgpu' + (e.tq4 ? '-tq4' : f16 ? '-f16' : '');
     const info = adapter.info || {};
     e.adapterName = [info.vendor, info.architecture, info.device].filter(Boolean).join(' ') || 'gpu';
-    const code = e.tq4 ? PARTIAL_TQ4_WGSL : PARTIAL_WGSL(e.f16 ? 'f16' : 'f32');
-    e.partial = device.createComputePipeline({layout: 'auto', compute: {module: device.createShaderModule({code}), entryPoint: 'main'}});
-    e.merge = device.createComputePipeline({layout: 'auto', compute: {module: device.createShaderModule({code: MERGE_WGSL}), entryPoint: 'main'}});
-    // warm-up: the first dispatch compiles the shaders (seconds on a busy GPU); pay it now, not on a call
-    e.configure({nLayer: 1, nkv: 1, rs: HD * 2, hb: HD * 2, type: 0});
+    // warm-up: the first dispatch pays the driver's first-use costs; pay them now, not on a call
+    const bad = await e.configure(mkCfg(1, 1, 0));
+    if (bad) throw new Error(bad);
     e.append(0, 256, new Uint8Array(256 * HD * 2), new Uint8Array(256 * HD * 2));
     await e.attn(0, 256, 0.0625, new Float32Array(NR * HD), 8, 1);
     return e;
   }
   elem() { return this.f16 ? 2 : 4; }
   storeName() { return this.tq4 ? 'tq4' : this.f16 ? 'f16' : 'f32'; }
-  keyBytes() { return this.tq4 ? this.cfg.nkv * HD / 2 : this.cfg.nkv * HD * this.elem(); }
-  bytesPerKey() { return this.tq4 ? 2 * this.cfg.nkv * (HD / 2 + 4) : 2 * this.cfg.nkv * HD * this.elem(); }
-  configure(cfg) {
+  sideBytes(D) { return this.tq4 ? this.cfg.nkv * D / 2 : this.cfg.nkv * D * this.elem(); }
+  bytesPerKey() {
+    const {nkv, kd, vd} = this.cfg;
+    return this.tq4 ? nkv * (kd / 2 + 4 + vd / 2 + 4) : nkv * (kd + vd) * this.elem();
+  }
+  // compile (once per shape) before dropping anything: a shape this GPU cannot run is an ERR
+  // reply and the engine keeps what it held
+  async configure(cfg) {
+    const key = cfg.kd + 'x' + cfg.vd + 'x' + cfg.rows;
+    if (!this.pipes[key]) {
+      const lim = this.device.limits.maxComputeWorkgroupStorageSize || 16384;
+      if (cfg.kd <= QS_MAX && (cfg.kd + 2 * WG) * 4 > lim) return 'bad CONFIG: k_dim ' + cfg.kd + ' exceeds this GPU\'s workgroup memory';
+      const code = this.tq4 ? PARTIAL_TQ4_WGSL(cfg.kd, cfg.vd, cfg.rows) : PARTIAL_WGSL(this.f16 ? 'f16' : 'f32', cfg.kd, cfg.vd, cfg.rows);
+      const mk = (src) => this.device.createComputePipelineAsync({layout: 'auto', compute: {module: this.device.createShaderModule({code: src}), entryPoint: 'main'}});
+      try {
+        const [partial, merge] = await Promise.all([mk(code), mk(MERGE_WGSL(cfg.vd))]);
+        this.pipes[key] = {partial, merge};
+      } catch (err) {
+        return 'bad CONFIG: shader for k' + cfg.kd + ' v' + cfg.vd + ' rows ' + cfg.rows + ' failed: ' + String(err && err.message || err).slice(0, 120);
+      }
+    }
     if (this.layers) for (const L of this.layers) for (const s of L.segs) this.dropSeg(s);
-    this.cfg = cfg;
-    const keyBytes = this.keyBytes();
-    this.segKeys = Math.max(256, Math.floor(Math.min(this.maxBind, 64 * 1024 * 1024) / keyBytes / 256) * 256);
+    this.cfg = cfg; this.partial = this.pipes[key].partial; this.merge = this.pipes[key].merge;
+    const widest = Math.max(this.sideBytes(cfg.kd), this.sideBytes(cfg.vd));
+    this.segKeys = Math.max(256, Math.floor(Math.min(this.maxBind, 64 * 1024 * 1024) / widest / 256) * 256);
     this.layers = []; for (let i = 0; i < cfg.nLayer; i++) this.layers.push({n: 0, segs: []});
     this.scratch = null;
+    return null;
   }
   held(layer) { return this.layers[layer].n; }
   sync() { return this.device.queue.onSubmittedWorkDone(); }
   dropSeg(s) { s.k.destroy(); s.v.destroy(); if (s.kn) { s.kn.destroy(); s.vn.destroy(); } }
   append(layer, n, kRaw, vRaw) {
     if (this.tq4) return this.appendTq4(layer, n, kRaw, vRaw);
-    const L = this.layers[layer], cfg = this.cfg, kb = cfg.nkv * HD * this.elem();
-    const K = this.pack(dequant(kRaw, n, cfg)), V = this.pack(dequant(vRaw, n, cfg));
+    const L = this.layers[layer], cfg = this.cfg, kb = this.sideBytes(cfg.kd), vb = this.sideBytes(cfg.vd);
+    const K = this.pack(dequant(kRaw, n, cfg, 'k')), V = this.pack(dequant(vRaw, n, cfg, 'v'));
+    const kper = cfg.nkv * cfg.kd, vper = cfg.nkv * cfg.vd;
     let done = 0;
     while (done < n) {
       const pos = L.n + done, si = Math.floor(pos / this.segKeys), off = pos % this.segKeys;
       while (L.segs.length <= si) {
-        const size = this.segKeys * kb, u = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-        L.segs.push({k: this.device.createBuffer({size, usage: u}), v: this.device.createBuffer({size, usage: u})});
+        const u = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+        L.segs.push({k: this.device.createBuffer({size: this.segKeys * kb, usage: u}), v: this.device.createBuffer({size: this.segKeys * vb, usage: u})});
       }
-      const take = Math.min(n - done, this.segKeys - off), per = cfg.nkv * HD;
-      this.device.queue.writeBuffer(L.segs[si].k, off * kb, K, done * per, take * per);
-      this.device.queue.writeBuffer(L.segs[si].v, off * kb, V, done * per, take * per);
+      const take = Math.min(n - done, this.segKeys - off);
+      this.device.queue.writeBuffer(L.segs[si].k, off * kb, K, done * kper, take * kper);
+      this.device.queue.writeBuffer(L.segs[si].v, off * vb, V, done * vper, take * vper);
       done += take;
     }
     L.n += n;
   }
   appendTq4(layer, n, kRaw, vRaw) {
-    const L = this.layers[layer], cfg = this.cfg, nkv = cfg.nkv, cb = nkv * HD / 2, nb = nkv * 4;
-    const K = tq4Encode(dequant(kRaw, n, cfg), n * nkv), V = tq4Encode(dequant(vRaw, n, cfg), n * nkv);
+    const L = this.layers[layer], cfg = this.cfg, nkv = cfg.nkv, cbk = nkv * cfg.kd / 2, cbv = nkv * cfg.vd / 2, nb = nkv * 4;
+    const K = tq4Encode(dequant(kRaw, n, cfg, 'k'), n * nkv, cfg.kd), V = tq4Encode(dequant(vRaw, n, cfg, 'v'), n * nkv, cfg.vd);
     const u = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     let done = 0;
     while (done < n) {
       const pos = L.n + done, si = Math.floor(pos / this.segKeys), off = pos % this.segKeys;
       while (L.segs.length <= si) {
         const mk = (size) => this.device.createBuffer({size, usage: u});
-        L.segs.push({k: mk(this.segKeys * cb), v: mk(this.segKeys * cb), kn: mk(this.segKeys * nb), vn: mk(this.segKeys * nb)});
+        L.segs.push({k: mk(this.segKeys * cbk), v: mk(this.segKeys * cbv), kn: mk(this.segKeys * nb), vn: mk(this.segKeys * nb)});
       }
       const take = Math.min(n - done, this.segKeys - off), sg = L.segs[si];
-      this.device.queue.writeBuffer(sg.k, off * cb, K.codes, done * cb, take * cb);
-      this.device.queue.writeBuffer(sg.v, off * cb, V.codes, done * cb, take * cb);
+      this.device.queue.writeBuffer(sg.k, off * cbk, K.codes, done * cbk, take * cbk);
+      this.device.queue.writeBuffer(sg.v, off * cbv, V.codes, done * cbv, take * cbv);
       this.device.queue.writeBuffer(sg.kn, off * nb, K.norms, done * nkv, take * nkv);
       this.device.queue.writeBuffer(sg.vn, off * nb, V.norms, done * nkv, take * nkv);
       done += take;
@@ -413,9 +429,9 @@ class GpuEngine {
     return (this.scratch[name] = this.device.createBuffer({size, usage}));
   }
   async attn(layer, nk, scale, q, nTok, ng) {
-    const d = this.device, rows = this.cfg.nkv * NR, L = this.layers[layer];
+    const d = this.device, {nkv, kd: KD, vd: VD, rows: R} = this.cfg, rows = nkv * R, L = this.layers[layer];
     const S = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC;
-    const O = new Float32Array(ng * rows * HD), lse = new Float32Array(ng * rows).fill(-Infinity);
+    const O = new Float32Array(ng * rows * VD), lse = new Float32Array(ng * rows).fill(-Infinity);
     if (nk === 0) return {O, lse};
     // flash-decoding split: chunks of keys run in parallel workgroups, ~128 partials per call
     const chunk = Math.max(256, Math.ceil(nk / 128 / 256) * 256);
@@ -425,21 +441,21 @@ class GpuEngine {
       const ks = Math.min(this.segKeys, nk - s * this.segKeys), nc = Math.ceil(ks / chunk);
       plan.push({s, ks, nc, base: nslots}); nslots += nc;
     }
-    const qb = this.buf('q', rows * HD * 4, S | CD);
-    const po = this.buf('po', nslots * rows * HD * 4, S);
+    const qb = this.buf('q', rows * KD * 4, S | CD);
+    const po = this.buf('po', nslots * rows * VD * 4, S);
     const pml = this.buf('pml', nslots * rows * 2 * 4, S);
-    const out = this.buf('out', rows * HD * 4, S | CS);
+    const out = this.buf('out', rows * VD * 4, S | CS);
     const outl = this.buf('outl', rows * 4, S | CS);
-    const rb = this.buf('rb', rows * HD * 4, GPUBufferUsage.MAP_READ | CD);
+    const rb = this.buf('rb', rows * VD * 4, GPUBufferUsage.MAP_READ | CD);
     const rbl = this.buf('rbl', rows * 4, GPUBufferUsage.MAP_READ | CD);
     const ub = this.buf('u' + nseg, 256 * (nseg + 1), GPUBufferUsage.UNIFORM | CD);
-    if (this.tq4) { q = q.slice(); for (let v = 0; v < ng * rows; v++) tq4Rotate(q, v * HD); }
+    if (this.tq4) { q = q.slice(); for (let v = 0; v < ng * rows; v++) tq4Rotate(q, v * KD, KD); }
     for (let g = 0; g < ng; g++) {
-      d.queue.writeBuffer(qb, 0, q, g * rows * HD, rows * HD);
+      d.queue.writeBuffer(qb, 0, q, g * rows * KD, rows * KD);
       const enc2 = d.createCommandEncoder();
       for (const {s, ks, nc, base} of plan) {
         const pu = new ArrayBuffer(32), pv = new DataView(pu);
-        pv.setUint32(0, ks, true); pv.setUint32(4, this.cfg.nkv, true); pv.setUint32(8, base, true);
+        pv.setUint32(0, ks, true); pv.setUint32(4, nkv, true); pv.setUint32(8, base, true);
         pv.setUint32(12, nTok, true); pv.setFloat32(16, scale, true); pv.setUint32(20, rows, true);
         pv.setUint32(24, chunk, true);
         d.queue.writeBuffer(ub, 256 * s, pu);
@@ -449,7 +465,7 @@ class GpuEngine {
           {binding: 3, resource: {buffer: qb}}, {binding: 4, resource: {buffer: po}}, {binding: 5, resource: {buffer: pml}},
           ...(this.tq4 ? [{binding: 6, resource: {buffer: L.segs[s].kn}}, {binding: 7, resource: {buffer: L.segs[s].vn}}] : [])]});
         const pass = enc2.beginComputePass(); pass.setPipeline(this.partial); pass.setBindGroup(0, bg);
-        pass.dispatchWorkgroups(NR, this.cfg.nkv, nc); pass.end();
+        pass.dispatchWorkgroups(R, nkv, nc); pass.end();
       }
       const mu = new ArrayBuffer(16), mv = new DataView(mu);
       mv.setUint32(0, nslots, true); mv.setUint32(4, rows, true);
@@ -460,16 +476,16 @@ class GpuEngine {
         {binding: 3, resource: {buffer: out}}, {binding: 4, resource: {buffer: outl}}]});
       const mp = enc2.beginComputePass(); mp.setPipeline(this.merge); mp.setBindGroup(0, mbg);
       mp.dispatchWorkgroups(rows); mp.end();
-      enc2.copyBufferToBuffer(out, 0, rb, 0, rows * HD * 4);
+      enc2.copyBufferToBuffer(out, 0, rb, 0, rows * VD * 4);
       enc2.copyBufferToBuffer(outl, 0, rbl, 0, rows * 4);
       const tw = performance.now();
       d.queue.submit([enc2.finish()]);
-      await Promise.all([rb.mapAsync(GPUMapMode.READ, 0, rows * HD * 4), rbl.mapAsync(GPUMapMode.READ, 0, rows * 4)]);
-      O.set(new Float32Array(rb.getMappedRange(0, rows * HD * 4)), g * rows * HD);
+      await Promise.all([rb.mapAsync(GPUMapMode.READ, 0, rows * VD * 4), rbl.mapAsync(GPUMapMode.READ, 0, rows * 4)]);
+      O.set(new Float32Array(rb.getMappedRange(0, rows * VD * 4)), g * rows * VD);
       const l = new Float32Array(rbl.getMappedRange(0, rows * 4));
       for (let i = 0; i < rows; i++) lse[g * rows + i] = l[i] < -1e37 ? -Infinity : l[i];
       rb.unmap(); rbl.unmap();
-      if (this.tq4) for (let v = 0; v < rows; v++) tq4Unrotate(O, (g * rows + v) * HD);
+      if (this.tq4) for (let v = 0; v < rows; v++) tq4Unrotate(O, (g * rows + v) * VD, VD);
       this.lastPhase = 'gpu+map=' + (performance.now() - tw).toFixed(1) + 'ms slots=' + nslots;
     }
     return {O, lse};
@@ -494,22 +510,32 @@ class Holder {
       }
       case T.CONFIG: {
         if (p.length < 44) return this.err('short CONFIG');
-        const c = {nLayer: dv.getUint32(0, true), nkv: dv.getUint32(4, true), rs: dv.getUint32(8, true), hb: dv.getUint32(12, true), type: dv.getUint32(16, true)};
-        if (!(c.nkv > 0 && c.nkv <= 16 && c.nLayer > 0 && c.nLayer <= 256 && c.rs >= c.nkv * c.hb)) return this.err('bad CONFIG');
-        if (p.length >= 68 && dv.getUint32(44, true) === 4) return this.err('this holder speaks PATN v3 shapes only (keys and values 256 wide, 48 rows)');
-        if (headBytes(c.type) !== c.hb) return this.err('bad CONFIG: unsupported row format');
-        this.cfg = c; this.engine.configure(c); this.held = 0;
+        const c = {nLayer: dv.getUint32(0, true), nkv: dv.getUint32(4, true), rs: dv.getUint32(8, true), hb: dv.getUint32(12, true), type: dv.getUint32(16, true),
+          kd: HD, vd: HD, rows: NR, rsv: 0, hbv: 0};
+        if (p.length >= 68 && dv.getUint32(44, true) === V4_TAG) {
+          c.kd = dv.getUint32(48, true); c.vd = dv.getUint32(52, true); c.rows = dv.getUint32(56, true);
+          c.rsv = dv.getUint32(60, true); c.hbv = dv.getUint32(64, true);
+        }
+        c.rsv = c.rsv || c.rs; c.hbv = c.hbv || c.hb;  // 0: V rows look like K rows
+        const dimOk = (d) => d > 0 && d <= MAX_DIM && d % 32 === 0;
+        if (!(c.nkv > 0 && c.nkv <= 16 && c.nLayer > 0 && c.nLayer <= 256 && c.rows > 0 && c.rows <= 1024 && c.rows % 8 === 0 &&
+              dimOk(c.kd) && dimOk(c.vd) && c.rs >= c.nkv * c.hb && c.rsv >= c.nkv * c.hbv)) return this.err('bad CONFIG');
+        if (headBytes(c.type, c.kd) !== c.hb || headBytes(c.type, c.vd) !== c.hbv) return this.err('bad CONFIG: unsupported row format');
+        if (this.engine.tq4 && !(isPow2(c.kd) && isPow2(c.vd))) return this.err('bad CONFIG: tq4 needs power-of-two head dims (use f32 or wire)');
+        const bad = await this.engine.configure(c);
+        if (bad) return this.err(bad);
+        this.cfg = c; this.held = 0;
         return [T.OK, new Uint8Array(0)];
       }
       case T.APPEND: {
         if (!this.cfg || p.length < 12) return this.err('short APPEND');
-        const layer = dv.getUint32(0, true), pos0 = dv.getUint32(4, true), n = dv.getUint32(8, true), nb = n * this.cfg.rs;
-        if (layer >= this.cfg.nLayer || p.length !== 12 + 2 * nb) return this.err('bad APPEND');
+        const layer = dv.getUint32(0, true), pos0 = dv.getUint32(4, true), n = dv.getUint32(8, true), nb = n * this.cfg.rs, nbv = n * this.cfg.rsv;
+        if (layer >= this.cfg.nLayer || p.length !== 12 + nb + nbv) return this.err('bad APPEND');
         const have = this.engine.held(layer);
         if (pos0 !== have) return this.err('APPEND pos0 ' + pos0 + ' != held ' + have);
         const per = this.engine.bytesPerKey();
         if (this.used() + n * per > this.budget) return this.err('out of memory at ' + have + ' keys');
-        this.engine.append(layer, n, p.subarray(12, 12 + nb), p.subarray(12 + nb, 12 + 2 * nb));
+        this.engine.append(layer, n, p.subarray(12, 12 + nb), p.subarray(12 + nb, 12 + nb + nbv));
         if (this.engine.sync) await this.engine.sync();  // OK means resident: no upload lands on an ATTN
         this.appended += n;
         const out = new Uint8Array(4); new DataView(out.buffer).setUint32(0, this.engine.held(layer), true);
@@ -538,7 +564,7 @@ class Holder {
   async attn(p, dv, big) {
     if (!this.cfg || p.length < 16) return this.err('short ATTN');
     const layer = dv.getUint32(0, true), nTok = dv.getUint32(4, true), nkReq = dv.getUint32(8, true), scale = dv.getFloat32(12, true);
-    const qn = this.cfg.nkv * NR * HD, body = p.length - 16, ng = Math.floor(body / (2 * qn));
+    const qn = this.cfg.nkv * this.cfg.rows * this.cfg.kd, body = p.length - 16, ng = Math.floor(body / (2 * qn));
     if (layer >= this.cfg.nLayer || ng < 1 || body !== ng * 2 * qn || (!big && ng !== 1) || ng > MAX_GROUPS) return this.err('bad ATTN');
     const t0 = (typeof performance !== 'undefined' ? performance : Date).now();
     const held = this.engine.held(layer), nk = nkReq === 0 ? held : Math.min(nkReq, held);
@@ -592,6 +618,7 @@ function connect(url, token, holder, on) {
   return ws;
 }
 
-const api = {Holder, CpuEngine, GpuEngine, connect, h2f, f2h, dequant, tq4Encode, tq4Rotate, tq4Unrotate, VERSION};
+const api = {Holder, CpuEngine, GpuEngine, connect, h2f, f2h, dequant, mkCfg, headBytes, tq4Encode, tq4Rotate, tq4Unrotate, VERSION,
+  wgsl: {partial: PARTIAL_WGSL, tq4: PARTIAL_TQ4_WGSL, merge: MERGE_WGSL}};
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.KVHolder = api;
 })(typeof window !== 'undefined' ? window : globalThis);

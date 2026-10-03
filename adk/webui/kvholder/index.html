@@ -21,6 +21,7 @@ button { background:var(--acc); color:#fff; border:0; border-radius:10px; paddin
 <p class="sub">This device keeps the oldest part of a model's context and does the attention over it. Keep this tab open and the screen on.</p>
 <div class="card"><div class="row"><span><span id="dot" class="dot wait"></span><span id="state">starting</span></span><span class="v" id="engine"></span></div></div>
 <div class="card">
+  <div class="row"><span class="k">Model shape</span><span class="v" id="shape">-</span></div>
   <div class="row"><span class="k">Held keys (layer 0)</span><span class="v" id="held">0</span></div>
   <div class="row"><span class="k">Memory used</span><span class="v" id="mem">0 MB</span></div>
   <div class="row"><span class="k">Attention calls</span><span class="v" id="calls">0</span></div>
@@ -59,6 +60,7 @@ button { background:var(--acc); color:#fff; border:0; border-radius:10px; paddin
       closed: () => { set('disconnected, retrying', 'wait'); setTimeout(start, 3000); },
       activity: (h) => {
         $('held').textContent = h.cfg ? h.engine.held(0).toLocaleString() : '0';
+        $('shape').textContent = h.cfg ? h.cfg.nLayer + ' layers, ' + h.cfg.nkv + ' KV heads, keys ' + h.cfg.kd + ' / values ' + h.cfg.vd : '-';
         $('mem').textContent = (h.used() / 1048576).toFixed(0) + ' MB';
         $('calls').textContent = h.calls.toLocaleString(); $('last').textContent = h.lastMs.toFixed(1) + ' ms';
       },

@@ -1,0 +1,303 @@
+"""The browser holder (holder.js) speaks PATN v4 shapes: Qwen3 / Llama / Gemma / MLA layouts.
+
+Node drives the page's CPU engine (what a phone runs without WebGPU) through the Python relay;
+the WebGPU engine runs the same CONFIG/APPEND/ATTN state machine with shape-specialized shaders.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import time
+
+import pytest
+
+from adk import kvholder as kv
+from adk import kvholder_net as net
+from adk.kvholder_page import HOLDER_JS
+
+np = pytest.importorskip("numpy")  # optional for awdk; the payload lane has core deps only
+NODE = shutil.which("node")
+pytestmark = pytest.mark.skipif(NODE is None, reason="node is not installed")
+
+# (k_dim, v_dim, rows per KV head, KV heads): Qwen3-8B (GQA 2 -> 16 rows), a 64/128 split,
+# the v3 Qwen3.8 shape (sends no v4 tail), and DeepSeek MLA (one latent head, 576/512).
+SHAPES = {
+    "qwen3": (128, 128, 16, 2),
+    "k64v128": (64, 128, 8, 2),
+    "v3": (256, 256, 48, 2),
+    "mla": (576, 512, 128, 1),
+}
+
+
+def _free_port() -> int:
+    import socket
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+@pytest.fixture()
+def relay():
+    token = "js4-" + str(time.time_ns())
+    ep, wp = _free_port(), _free_port()
+    r, servers = net.start_relay(token, ("127.0.0.1", ep), ("127.0.0.1", wp))
+    yield r, token, ep, wp
+    net.stop_relay(r, servers)
+
+
+@pytest.fixture()
+def js_holder(relay, tmp_path):
+    """A Node process running holder.js's CPU engine, dialed into the relay."""
+    r, token, ep, wp = relay
+    (tmp_path / "holder.js").write_text(HOLDER_JS, encoding="utf-8")
+    (tmp_path / "run.js").write_text(
+        "const K = require('./holder.js');\n"
+        "const h = new K.Holder(new K.CpuEngine(), 256 * 1048576, 'node-v4');\n"
+        "const fail = (e) => { console.error(e); process.exit(3); };\n"
+        f"K.connect('ws://127.0.0.1:{wp}/holder', '{token}', h, {{error: fail}});\n"
+        "setTimeout(() => process.exit(0), 120000);\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.Popen(
+        [NODE, "run.js"], cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    try:
+        end = time.time() + 10
+        while not r.holder and time.time() < end:
+            time.sleep(0.05)
+        assert r.holder, "the JS holder never attached"
+        yield r, ep
+    finally:
+        proc.kill()
+        proc.communicate(timeout=10)
+
+
+def _ref(q, keys, vals, scale):
+    s = np.einsum("hrd,nhd->hrn", q.astype(np.float64) * scale, keys.astype(np.float64))
+    p = np.exp(s - s.max(-1, keepdims=True))
+    return np.einsum("hrn,nhd->hrd", p / p.sum(-1, keepdims=True), vals.astype(np.float64))
+
+
+def _wire(x, cfg, side):
+    t = cfg.is_q8
+    n = x.shape[0]
+    return kv.dequant_rows(np.frombuffer(kv.quant_rows(x, t), np.uint8), n, cfg, side)
+
+
+@pytest.mark.parametrize("kv_type", ["f16", "q8_0", "q4_0"])
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_js_holder_is_exact_for_v4_shapes(js_holder, shape, kv_type):
+    _, ep = js_holder
+    kd, vd, rows, h = SHAPES[shape]
+    cfg = kv.Config.for_model(2, h, kv_type, k_dim=kd, v_dim=vd, rows=rows)
+    assert cfg.is_v3 == (shape == "v3")
+    rng = np.random.default_rng(kd + vd + rows)
+    n_old, n_new, n_tok = 300, 60, 3
+    keys = rng.standard_normal((n_old + n_new, h, kd)).astype(np.float32)
+    vals = rng.standard_normal((n_old + n_new, h, vd)).astype(np.float32)
+    c = kv.KVHolderClient("127.0.0.1", ep, timeout=60)
+    c.configure(cfg)
+    for layer in (0, 1):
+        assert c.append(layer, 0, keys[:200], vals[:200]) == 200
+        assert c.append(layer, 200, keys[200:n_old], vals[200:n_old]) == n_old
+    q = rng.standard_normal((h, rows, kd)).astype(np.float32)
+    scale = kd**-0.5
+    far_o, far_lse, meta = c.attn(1, q, scale, n_tok=n_tok)
+    assert meta["nk"] == n_old and far_o.shape == (h, rows, vd)
+    near = kv.partial_attention(q, keys[n_old:], vals[n_old:], scale)
+    out, _ = kv.merge_partials([near, (far_o, far_lse)])
+    ref = _ref(
+        q,
+        np.concatenate([_wire(keys[:n_old], cfg, "k"), keys[n_old:]]),
+        np.concatenate([_wire(vals[:n_old], cfg, "v"), vals[n_old:]]),
+        scale,
+    )
+    live = [i for i in range(rows) if i % 8 < n_tok]
+    pad = [i for i in range(rows) if i % 8 >= n_tok]
+    np.testing.assert_allclose(out[:, live], ref[:, live], atol=3e-3)
+    assert np.isneginf(far_lse[:, pad]).all() and not np.isinf(far_lse[:, live]).any()
+    assert "engine=cpu" in c.stats()
+    c.close()
+
+
+def test_js_holder_attn_big_and_truncate_on_a_v4_shape(js_holder):
+    _, ep = js_holder
+    kd, vd, rows, h = SHAPES["qwen3"]
+    cfg = kv.Config.for_model(1, h, "q8_0", k_dim=kd, v_dim=vd, rows=rows)
+    rng = np.random.default_rng(5)
+    keys = rng.standard_normal((400, h, kd)).astype(np.float32)
+    vals = rng.standard_normal((400, h, vd)).astype(np.float32)
+    c = kv.KVHolderClient("127.0.0.1", ep, timeout=60)
+    c.configure(cfg)
+    c.append(0, 0, keys, vals)
+    c.truncate(250)
+    q = rng.standard_normal((3, h, rows, kd)).astype(np.float32)  # ATTN_BIG: 3 groups
+    o, lse, meta = c.attn(0, q, kd**-0.5, n_tok=8)
+    assert meta["nk"] == 250 and o.shape == (3, h, rows, vd)
+    kq, vq = _wire(keys[:250], cfg, "k"), _wire(vals[:250], cfg, "v")
+    for g in range(3):
+        np.testing.assert_allclose(o[g], _ref(q[g], kq, vq, kd**-0.5), atol=3e-3)
+    c.close()
+
+
+def _node(tmp_path, body: str) -> dict:
+    (tmp_path / "holder.js").write_text(HOLDER_JS, encoding="utf-8")
+    (tmp_path / "run.js").write_text("const K = require('./holder.js');\n" + body, encoding="utf-8")
+    out = subprocess.run(
+        [NODE, "run.js"], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def _cfg_hex(**kw) -> str:
+    base = {"n_layer": 2, "n_head_kv": 2, "kv": "q8_0"}
+    base.update(kw)
+    return kv.Config.for_model(**base).pack().hex()
+
+
+def test_js_config_validation_matches_the_python_holder(tmp_path):
+    """Every CONFIG the Python KVHolder refuses, holder.js refuses with the same text, and the
+    reverse; a fake engine with tq4 set stands in for the WebGPU tq4 store."""
+    cases = {
+        "qwen3": _cfg_hex(k_dim=128, v_dim=128, rows=16),
+        "mla": _cfg_hex(n_head_kv=1, k_dim=576, v_dim=512, rows=128),
+        "v3": _cfg_hex(),
+        "rows_not_8": _cfg_hex(k_dim=128, rows=12),
+        "dim_not_32": _cfg_hex(k_dim=80, v_dim=128),
+        "dim_too_big": _cfg_hex(k_dim=8192, v_dim=128),
+    }
+    # a v4 tail whose V bytes per head disagree with the row type
+    raw = bytearray.fromhex(cases["qwen3"])
+    raw[64:68] = (999).to_bytes(4, "little")
+    cases["bad_hbv"] = raw.hex()
+    want = {}
+    for store in ("f32", "tq4"):
+        for name, hx in cases.items():
+            t, p = kv.KVHolder(1 << 26, store=store).handle(kv.CONFIG, bytes.fromhex(hx))
+            want[f"{store}:{name}"] = [t, p.decode()]
+    got = _node(
+        tmp_path,
+        f"const cases = {json.dumps(cases)}; const out = {{}};\n"
+        "(async () => {\n"
+        "  for (const store of ['f32', 'tq4']) for (const [name, hx] of Object.entries(cases)) {\n"
+        "    const eng = store === 'tq4' ? {tq4: true, kind: 'fake', configure() {}, held() "
+        "{ return 0; }} : new K.CpuEngine();\n"
+        "    const [t, p] = await new K.Holder(eng, 1 << 26).handle(3, Buffer.from(hx, 'hex'));\n"
+        "    out[store + ':' + name] = [t, Buffer.from(p).toString()];\n"
+        "  }\n"
+        "  console.log(JSON.stringify(out));\n"
+        "})();\n",
+    )
+    assert got == want
+    assert want["f32:mla"][0] == kv.OK and want["tq4:mla"][0] == kv.ERR
+
+
+def test_js_store_sizing_matches_the_relay(tmp_path):
+    """The relay sizes a holder's key range from the store it announces in its hello; the bytes
+    holder.js actually charges per key must be the same number or keys land past its budget."""
+    shapes = {k: list(v) for k, v in SHAPES.items()}
+    got = _node(
+        tmp_path,
+        f"const shapes = {json.dumps(shapes)}; const out = {{}};\n"
+        "for (const [name, [kd, vd, rows, h]] of Object.entries(shapes)) {\n"
+        "  const cfg = K.mkCfg(1, h, 1, kd, vd, rows); const e = new K.CpuEngine();\n"
+        "  e.configure(cfg); out[name + ':wire'] = e.bytesPerKey();\n"
+        "  for (const [store, f16, tq4] of [['f16', true, false], ['f32', false, false], "
+        "['tq4', false, true]]) {\n"
+        "    const g = Object.assign(Object.create(K.GpuEngine.prototype), {cfg, f16, tq4});\n"
+        "    out[name + ':' + store] = g.bytesPerKey();\n"
+        "  }\n"
+        "}\n"
+        "console.log(JSON.stringify(out));\n",
+    )
+    for name, (kd, vd, rows, h) in SHAPES.items():
+        cfg = kv.Config.for_model(1, h, "q8_0", k_dim=kd, v_dim=vd, rows=rows)
+        for store in ("wire", "f16", "f32", "tq4"):
+            relay = net.Relay("sizing")
+            relay.cfg = cfg
+            att = net._Attached(None, "x", 0.0, max_bytes=1 << 30, store=store)
+            relay._place(att)
+            assert att.cap == ((1 << 30) // got[f"{name}:{store}"]) // 64 * 64, (name, store)
+    assert got["v3:wire"] == 2 * 2 * 272  # v3 unchanged: K + V q8_0 rows of 2 heads
+
+
+def test_js_holder_charges_v4_appends_against_its_budget(tmp_path):
+    kd, vd, rows, h = SHAPES["k64v128"]
+    cfg = kv.Config.for_model(1, h, "q4_0", k_dim=kd, v_dim=vd, rows=rows)
+    per_key = cfg.rs + cfg.v_rs
+    rng = np.random.default_rng(1)
+    k = kv.quant_rows(rng.standard_normal((10, h, kd)).astype(np.float32), cfg.is_q8)
+    v = kv.quant_rows(rng.standard_normal((10, h, vd)).astype(np.float32), cfg.is_q8)
+    ok = (kv.APPEND_REQ.pack(0, 0, 10) + k + v).hex()
+    more = (kv.APPEND_REQ.pack(0, 10, 1) + k[: cfg.rs] + v[: cfg.v_rs]).hex()
+    short = (kv.APPEND_REQ.pack(0, 10, 1) + k[: cfg.rs] + v[: cfg.rs]).hex()  # V sized like K
+    got = _node(
+        tmp_path,
+        f"const h = new K.Holder(new K.CpuEngine(), {10 * per_key});\n"
+        "(async () => { const out = [];\n"
+        f"  for (const [t, hx] of [[3, '{cfg.pack().hex()}'], [4, '{ok}'], [4, '{short}'],"
+        f" [4, '{more}']]) {{\n"
+        "    const [rt, p] = await h.handle(t, Buffer.from(hx, 'hex'));\n"
+        "    out.push([rt, Buffer.from(p).toString('hex')]); }\n"
+        "  console.log(JSON.stringify(out)); })();\n",
+    )
+    assert [g[0] for g in got] == [kv.OK, kv.OK, kv.ERR, kv.ERR]
+    assert bytes.fromhex(got[2][1]) == b"bad APPEND"
+    assert bytes.fromhex(got[3][1]).startswith(b"out of memory at 10")
+
+
+@pytest.mark.parametrize("dim", [64, 128, 256, 512])
+def test_js_tq4_round_trips_within_the_4_bit_bound_at_any_pow2_width(tmp_path, dim):
+    """tq4 for every power-of-two head width: the rotation inverts exactly and reconstruction
+    error sits at the 16-level Lloyd-Max bound (~0.0095 relative MSE for a Gaussian)."""
+    res = _node(
+        tmp_path,
+        "const C = [-2.7326,-2.0690,-1.6181,-1.2562,-0.9424,-0.6568,-0.3881,-0.1284,"
+        "0.1284,0.3881,0.6568,0.9424,1.2562,1.6181,2.0690,2.7326];\n"
+        "let seed = 11; const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648;"
+        " return seed / 2147483648; };\n"
+        "const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12))"
+        " * Math.cos(6.283185 * rnd());\n"
+        f"const N = 300, D = {dim}; const x = new Float32Array(N * D).map(gauss);\n"
+        "const orig = x.slice();\n"
+        "const r = orig.slice(0, D); K.tq4Rotate(r, 0, D); K.tq4Unrotate(r, 0, D);\n"
+        "let rot = 0; for (let i = 0; i < D; i++) rot = Math.max(rot, Math.abs(r[i] - orig[i]));\n"
+        "const {codes, norms} = K.tq4Encode(x, N, D);\n"
+        "let num = 0, den = 0;\n"
+        "for (let v = 0; v < N; v++) { const y = new Float32Array(D);\n"
+        "  for (let j = 0; j < D; j += 2) { const b = codes[(v * D + j) >> 1];\n"
+        "    y[j] = C[b & 15] * norms[v] / Math.sqrt(D);"
+        " y[j + 1] = C[b >> 4] * norms[v] / Math.sqrt(D); }\n"
+        "  K.tq4Unrotate(y, 0, D);\n"
+        "  for (let j = 0; j < D; j++) { const e = y[j] - orig[v * D + j]; num += e * e;"
+        " den += orig[v * D + j] ** 2; } }\n"
+        "console.log(JSON.stringify({rot, mse: num / den, bytes: codes.length}));\n",
+    )
+    assert res["rot"] < 1e-5 and 0.005 < res["mse"] < 0.013, res
+    assert res["bytes"] == 300 * dim // 2
+
+
+def test_js_shaders_are_specialized_per_shape(tmp_path):
+    """The WGSL a WebGPU holder compiles carries the CONFIG's widths and rows, and the v3 shape
+    keeps its queries in workgroup memory (no storage reads in the score loop)."""
+    got = _node(
+        tmp_path,
+        "const w = K.wgsl, out = {};\n"
+        "out.v3 = w.partial('f32', 256, 256, 48); out.qwen = w.partial('f16', 128, 128, 16);\n"
+        "out.mla = w.partial('f32', 576, 512, 128); out.wide = w.partial('f32', 4096, 4096, 8);\n"
+        "out.tq = w.tq4(128, 64, 16); out.merge = w.merge(512);\n"
+        "console.log(JSON.stringify(out));\n",
+    )
+    assert "row = h * 48u + r" in got["v3"] and "array<f32, 256>;" in got["v3"]
+    assert "enable f16;" in got["qwen"] and "row = h * 16u + r" in got["qwen"]
+    assert "var o: array<f32, 2>;" in got["mla"] and "qs: array<f32, 576>" in got["mla"]
+    assert "var<workgroup> qs" not in got["wide"] and "var o: array<f32, 16>;" in got["wide"]
+    assert "INVK: f32 = 0.0883883476" in got["tq"] and "INVV: f32 = 0.125" in got["tq"]
+    assert "* 16u + w" not in got["tq"] and "(k * p.nkv + h) * 16u" in got["tq"]
+    assert "d < 512u" in got["merge"]

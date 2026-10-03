@@ -36,6 +36,27 @@ so treat the link like a password and prefer USB or the tunnel to an open LAN.
 Whether the phone's GPU is used depends on its browser: the page shows `webgpu…` or `cpu`.
 Both are exact; the GPU is much faster.
 
+**Model shapes.** The page speaks PATN v4 shapes as well as v3: key and value widths from 32
+to 4096 (multiples of 32, and they may differ), any number of query rows per KV head that is a
+multiple of 8, up to 16 KV heads. So a phone holds context for Qwen3 (128 wide, 16 rows),
+Llama and Gemma layouts, and DeepSeek MLA (keys 576, values 512, 128 rows), not only the
+256-wide Qwen3.8 shape. It refuses a CONFIG with the same messages as the Python holder.
+The WebGPU engine compiles one shader per shape when the host configures it. Add
+`&store=tq4` to the link for about 4x the keys per MB (approximate); tq4 needs power-of-two
+widths, so an MLA host is refused on a tq4 page. Measured in headed Chromium on an RTX 5090,
+one layer, 6 calls (2026-10-03):
+
+| shape (k / v / rows x KV heads) | f16 store, max abs error | ms per call (8192 q8_0 keys) |
+|---|---|---|
+| 128 / 128 / 16 x 2 (Qwen3) | 5e-05 | 4.6 |
+| 64 / 128 / 8 x 2 | 7e-05 | 3.9 |
+| 256 / 256 / 48 x 2 (v3) | 7e-05 | 3.8 |
+| 576 / 512 / 128 x 1 (MLA) | 8e-05 | 8.9 |
+| 128 / 128 / 64 x 8 (Llama 70B) | 1.1e-04 | 8.7 |
+
+The tq4 store's relative error was 0.13-0.14 on every power-of-two shape, the same as the
+Python `--store tq4` holder on the same data.
+
 ## A Python holder (Pixel Linux terminal, a laptop, a server)
 
 ```bash
