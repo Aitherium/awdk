@@ -20,6 +20,32 @@ lives in, and the harness hands every read-write mount to the jail user's HOST u
 (block + 1000) before each command: root still reads and writes all of it, and no real
 account ever owns a task file. ``--userns=auto`` would pick the block itself but needs a
 ``containers`` entry in ``/etc/subuid``, which this module must not require or write.
+The block is random per episode and avoids every ``/etc/subuid``/``/etc/subgid`` range,
+every range a live process's user namespace maps (``/proc/<pid>/uid_map``: the running
+containers of any engine) and any block whose jail uid is an account. It costs no
+storage: measured on overlay with idmapped mounts, five jails on five blocks added five
+29 kB container layers and no image layer, and nothing was left after they closed.
+
+That hand-over is a chown BY ROOT in a tree the model wrote, so it is done through
+directory file descriptors only (``O_NOFOLLOW``, ``dir_fd``; a regular file is opened
+and re-owned through its own descriptor): no path is resolved twice, so a link swapped
+in underneath cannot redirect it. It leaves alone what is not the workspace's own:
+another filesystem mounted inside it, and a regular file with more than one hard link
+(another name of that inode may live outside). It is bounded (:data:`MAX_OWN_ENTRIES`,
+:data:`MAX_OWN_DEPTH`) and iterative: a tree past the bound ends the episode with a
+:class:`JailBrokenError` instead of a slow walk before every command or a
+``RecursionError``. The whole tree is walked each time rather than "what the harness
+wrote": the harness writes through several paths (``write``/``patch``, the rollback,
+the verifier's restore, a caller writing by path), a missed one would be a file the
+jail silently cannot edit, and directory mtimes are too coarse to prune by.
+
+A jail that could NOT be removed (``podman rm -f`` failed and the container still
+exists) is fatal for the episode (:class:`JailBrokenError`): something may still run in
+the workspace, and neither the hand-over nor the harness may touch it again.
+
+WHAT THE MODEL IS TOLD. A refusal names its precise cause (host uid, id block, mode,
+host path, podman's own error) in the HOST log only. The exception text -- which reaches
+the model as a tool error and the run report as ``sandbox_why`` -- is generic.
 
 Starting a container costs seconds (measured 10-20 s per ``podman run``/``exec`` on a
 busy host), so ONE container serves a whole episode: its
@@ -86,6 +112,7 @@ import os
 import queue
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -96,7 +123,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 __all__ = [
     "IDMAP_SIZE",
     "JAIL_UID",
+    "MAX_OWN_DEPTH",
+    "MAX_OWN_ENTRIES",
     "Jail",
+    "JailBrokenError",
     "JailUnavailableError",
     "POLICY_ONLY",
     "JAIL_IMAGE",
@@ -185,13 +215,25 @@ for line in sys.stdin:
 
 
 class JailUnavailableError(RuntimeError):
-    """podman (or the jail image) is not usable on this host."""
+    """podman (or the jail image) is not usable on this host. Its text reaches the model
+    and the run report: it never carries a host path, uid, id block or mode (those are
+    logged where it is raised)."""
+
+
+class JailBrokenError(JailUnavailableError):
+    """The jail failed in a way the EPISODE cannot survive: a container that could not be
+    removed (a command may still run in the workspace), or a workspace too large or too
+    deep to hand to the jail user. The harness must not touch the workspace again."""
 
 
 JAIL_UID = 1000  # the ``--user`` of both jails, INSIDE the container
 IDMAP_SIZE = 65536  # ids in the jail's own user namespace (rootful podman only)
 _IDMAP_FLOOR = 0x40000000  # blocks start here: far above accounts and /etc/subuid ranges
 _IDMAP_BLOCKS = 8192  # ... and stay below 2**31
+#: The hand-over walk stops here and the episode ends (measured on tmpfs: about 0.15 s per
+#: 50 000 entries that already belong to the jail user).
+MAX_OWN_ENTRIES = 200000
+MAX_OWN_DEPTH = 64  # one open directory descriptor per level
 
 
 def rootful_here() -> bool:
@@ -200,35 +242,162 @@ def rootful_here() -> bool:
     return os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0
 
 
+def _reserved_id_ranges(
+    subid_files: Sequence[str] = ("/etc/subuid", "/etc/subgid"), proc: str = "/proc"
+) -> List[Tuple[int, int]]:
+    """``(first host id, count)`` of every range something else may use: each
+    ``/etc/subuid``/``/etc/subgid`` line, and each range a live process's user namespace
+    maps -- the running containers of any engine, read from ``/proc`` (measured: 30 ms
+    for 1400 processes, against one ``podman inspect`` per container)."""
+    out: List[Tuple[int, int]] = []
+    for name in subid_files:
+        try:
+            with open(name, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            continue  # no such file: nothing is delegated there
+        for line in lines:
+            parts = line.split("#", 1)[0].strip().split(":")
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                out.append((int(parts[1]), int(parts[2])))
+    try:
+        pids = [n for n in os.listdir(proc) if n.isdigit()]
+    except OSError:
+        pids = []
+    seen = set()
+    for pid in pids:
+        for which in ("uid_map", "gid_map"):
+            try:
+                with open(os.path.join(proc, pid, which), encoding="ascii", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue  # the process ended meanwhile
+            if text in seen:
+                continue
+            seen.add(text)
+            for line in text.splitlines():
+                f = line.split()
+                if len(f) != 3 or not all(x.isdigit() for x in f):
+                    continue
+                inside, outside, count = int(f[0]), int(f[1]), int(f[2])
+                if inside == 0 and outside == 0 and count >= 0xFFFFFFFF:
+                    continue  # the initial namespace maps everything onto itself
+                out.append((outside, count))
+    return out
+
+
 def pick_idmap_base() -> int:
     """The first host id of a :data:`IDMAP_SIZE` block for one episode's jails: random
-    (two episodes do not share an owner) and never one whose jail uid is an account."""
+    (two episodes do not share an owner), outside every reserved range
+    (:func:`_reserved_id_ranges`) and never one whose jail uid is an account."""
     import pwd  # POSIX only; only reached when rootful_here()
 
+    reserved = _reserved_id_ranges()
     for _ in range(64):
         base = _IDMAP_FLOOR + secrets.randbelow(_IDMAP_BLOCKS) * IDMAP_SIZE
+        if any(base < first + count and first < base + IDMAP_SIZE for first, count in reserved):
+            continue
         try:
             pwd.getpwuid(base + JAIL_UID)
         except KeyError:
             return base
-    raise JailUnavailableError("no host id block without an account for the jail user")
+    raise JailUnavailableError("no free host id block for the jail user")
 
 
 def _give_to(root: Path, uid: int) -> None:
-    """Hand the tree at ``root`` to host ``uid``. ``lchown`` and a walk that follows no
-    link: a symlink the model planted is re-owned itself, never its target. Nothing is
-    alive in the jail between commands, so nobody races the walk."""
-    lchown = getattr(os, "lchown", None)
-    if lchown is None:  # Windows: podman sees the drive through the distro's own mount
+    """Hand the tree at ``root`` to host ``uid``, as root, without ever resolving a path
+    twice: every directory is opened ``O_NOFOLLOW`` relative to its parent's descriptor
+    and re-owned through its own, a regular file likewise, anything else by name relative
+    to the directory descriptor without following it. A symlink the model planted is
+    re-owned itself, never its target, also if the tree changes during the walk.
+
+    Left alone: what lives on another filesystem (a mount inside the workspace) and a
+    regular file with more than one hard link. Iterative and bounded: past
+    :data:`MAX_OWN_ENTRIES` or :data:`MAX_OWN_DEPTH` it raises :class:`JailBrokenError`."""
+    if os.name == "nt" or not hasattr(os, "fchown"):
+        return  # Windows: podman sees the drive through the distro's own mount
+    dflags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    fflags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        top = os.open(str(root), dflags)
+    except OSError as exc:  # not there, or a link: the server's "w" check reports it
+        _log.debug("could not open %s to hand it to uid %d: %s", root, uid, exc)
         return
-    for top, dirs, files in os.walk(str(root)):
-        for path in [top] + [os.path.join(top, n) for n in dirs + files]:
+    seen = 0
+    stack: List[Tuple[int, List[str]]] = []
+
+    def enter(fd: int, dev: int) -> List[str]:
+        """Re-own the directory ``fd`` and what is in it; the names of its sub-directories."""
+        nonlocal seen
+        if os.fstat(fd).st_uid != uid:
+            os.fchown(fd, uid, uid)
+        with os.scandir(fd) as it:
+            names = [entry.name for entry in it]
+        seen += len(names)
+        if seen > MAX_OWN_ENTRIES:
+            raise JailBrokenError(
+                "the workspace holds more than %d entries; it is too large to hand to "
+                "the jail user before every command" % MAX_OWN_ENTRIES
+            )
+        subdirs: List[str] = []
+        for name in names:
             try:
-                if os.lstat(path).st_uid != uid:
-                    lchown(path, uid, uid)
+                st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if st.st_dev != dev:
+                    continue  # another filesystem: not the workspace's own
+                if stat.S_ISDIR(st.st_mode):
+                    subdirs.append(name)
+                elif st.st_uid == uid:
+                    continue
+                elif stat.S_ISREG(st.st_mode):
+                    ffd = os.open(name, fflags, dir_fd=fd)
+                    try:  # judge and re-own the SAME inode: the one this descriptor holds
+                        fst = os.fstat(ffd)
+                        if stat.S_ISREG(fst.st_mode) and fst.st_dev == dev and fst.st_nlink == 1:
+                            os.fchown(ffd, uid, uid)
+                    finally:
+                        os.close(ffd)
+                else:
+                    os.chown(name, uid, uid, dir_fd=fd, follow_symlinks=False)
             except OSError as exc:
-                # gone meanwhile, or refused: the server's "w" check is what reports it
-                _log.debug("could not hand %s to uid %d: %s", path, uid, exc)
+                # gone meanwhile, swapped for a link, or refused: the server's "w" check
+                # is what reports a workspace the jail cannot write
+                _log.debug("could not hand %r to uid %d: %s", name, uid, exc)
+        return subdirs
+
+    stack.append((top, []))  # on the stack BEFORE anything can raise: closed below
+    try:
+        dev = os.fstat(top).st_dev
+        stack[-1][1].extend(enter(top, dev))
+        while stack:
+            fd, subdirs = stack[-1]
+            if not subdirs:
+                os.close(fd)
+                stack.pop()
+                continue
+            name = subdirs.pop()
+            if len(stack) >= MAX_OWN_DEPTH:
+                raise JailBrokenError(
+                    "the workspace is more than %d directories deep; it is too deep to "
+                    "hand to the jail user" % MAX_OWN_DEPTH
+                )
+            try:
+                child = os.open(name, dflags, dir_fd=fd)
+            except OSError as exc:  # gone, or swapped for a link: never followed
+                _log.debug("could not open %r to hand it to uid %d: %s", name, uid, exc)
+                continue
+            stack.append((child, []))
+            if os.fstat(child).st_dev != dev:  # a mount point: not the workspace's own
+                os.close(child)
+                stack.pop()
+                continue
+            stack[-1][1].extend(enter(child, dev))
+    finally:
+        for fd, _subdirs in stack:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                _log.debug("closing a directory descriptor: %s", exc)
 
 
 def _owner_of(path: Path) -> str:
@@ -271,9 +440,8 @@ def host_path(p: Path) -> str:
         return str(p)
     w = PureWindowsPath(str(Path(p).resolve()))
     if not w.drive or not w.drive.endswith(":"):
-        raise JailUnavailableError(
-            "the workspace %s is not on a drive letter the distro mounts" % p
-        )
+        _log.warning("the workspace %s is not on a drive letter the distro mounts", p)
+        raise JailUnavailableError("the workspace is not on a drive letter the distro mounts")
     return "/mnt/%s/%s" % (w.drive[0].lower(), "/".join(w.parts[1:]))
 
 
@@ -315,9 +483,11 @@ def probe_podman(build: bool = True) -> Tuple[Optional[List[str]], str]:
                 stdin=JAIL_CONTAINERFILE,
             )
             if r.returncode != 0:
-                return None, "building %s failed: %s" % (JAIL_IMAGE, (r.stderr or r.stdout)[-300:])
+                _log.warning("building %s failed: %s", JAIL_IMAGE, (r.stderr or r.stdout)[-300:])
+                return None, "building the jail image %s failed (see the host log)" % JAIL_IMAGE
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, "podman did not answer: %s" % exc
+        _log.warning("podman did not answer: %s", exc)
+        return None, "podman did not answer (see the host log)"
     return prefix, ""
 
 
@@ -354,6 +524,9 @@ class Jail:
         elif rootful_here():
             self.idmap_base = pick_idmap_base()
         self.name = ""
+        #: why this jail ended the episode ("" while it has not): a container that could
+        #: not be removed, or a workspace past the hand-over bound. Never cleared.
+        self.broken = ""
         self.proc: Optional[subprocess.Popen] = None
         self._lines: "queue.Queue[Optional[str]]" = queue.Queue()
         self.starts = 0
@@ -405,15 +578,16 @@ class Jail:
 
     def _own(self) -> None:
         """Every read-write mount belongs to the jail user: the workspace starts as the
-        harness's, and so does each file the harness writes into it between commands."""
+        harness's, and so does each file the harness writes into it between commands.
+        Raises :class:`JailBrokenError` past the walk's bound."""
         uid = self.host_uid()
         if uid is None:
             return
         for path in self._rw_mounts():
             _give_to(path, uid)
 
-    def _why_unwritable(self) -> str:
-        """The refusal, naming what was measured: who owns each mount and which case."""
+    def _unwritable_detail(self) -> str:
+        """What was measured, for the HOST log: who owns each mount and which case."""
         what = "; ".join("%s is %s" % (p, _owner_of(p)) for p in self._rw_mounts())
         uid = self.host_uid()
         if uid is not None:
@@ -432,13 +606,18 @@ class Jail:
                 "the harness is uid %d, not root, so podman is rootless here: container "
                 "uid %d is one of that user's sub-uids, not the owner" % (os.geteuid(), JAIL_UID)
             )
-        return (
-            "the jail user cannot write the workspace: %s -- %s; every task command "
-            "would fail" % (what, cause)
-        )
+        return "%s -- %s" % (what, cause)
+
+    def _stop(self, kill: bool = False) -> None:
+        """:meth:`close`, and the episode ends here if the container may have survived."""
+        self.close(kill=kill)
+        if self.broken:
+            raise JailBrokenError(self.broken)
 
     def start(self) -> None:
-        self.close()
+        if self.broken:
+            raise JailBrokenError(self.broken)
+        self._stop()
         self._own()
         self.name = "adk-jail-" + uuid.uuid4().hex[:12]
         self._lines = queue.Queue()
@@ -458,24 +637,34 @@ class Jail:
             err = ""
             if self.proc is not None and self.proc.poll() is not None and self.proc.stderr:
                 err = self.proc.stderr.read()[-300:]
-            self.close()
+            self._stop()
+            # podman's own error names host paths: the log has it, the model does not
+            _log.warning("jail %s did not start: %s", self.name, err or "no answer")
             raise JailUnavailableError(
-                "the jail container did not start: %s" % (err or "no answer")
+                "the jail container did not start (podman's error is in the host log)"
             )
         if int(ready.get("uid", 0)) == 0:
-            self.close()
+            self._stop()
             raise JailUnavailableError("the jail runs as root; refusing")
         if ready.get("nd") is not True:
             # its stdout is the reply channel: a server a command of the same uid can
             # write as (/proc/1/fd/1) or read (/proc/1/mem) cannot say "the command ended"
-            self.close()
+            self._stop()
             raise JailUnavailableError(
                 "the jail's command server could not seal itself (PR_SET_DUMPABLE); a "
                 "command could forge its replies; refusing"
             )
         if ready.get("w") is False:
-            self.close()
-            raise JailUnavailableError(self._why_unwritable())
+            self._stop()
+            _log.warning(
+                "jail %s: the jail user cannot write the workspace: %s",
+                self.name,
+                self._unwritable_detail(),
+            )
+            raise JailUnavailableError(
+                "the jail user cannot write the workspace; every task command would fail "
+                "(the cause is in the host log)"
+            )
 
     @staticmethod
     def _pump(proc: subprocess.Popen, q: "queue.Queue[Optional[str]]") -> None:
@@ -506,11 +695,20 @@ class Jail:
         self, cmd: str, timeout: float = 60.0, cwd: Optional[str] = None
     ) -> Tuple[int, str, str, bool]:
         """``(returncode, stdout, stderr, timed_out)`` of ``bash -c cmd`` inside the jail
-        (in ``cwd``, a path INSIDE the container; default ``/work``)."""
+        (in ``cwd``, a path INSIDE the container; default ``/work``). Raises
+        :class:`JailBrokenError` when the episode cannot go on (see :attr:`broken`)."""
+        if self.broken:
+            raise JailBrokenError(self.broken)
         if not self.alive():
             self.start()
         assert self.proc is not None and self.proc.stdin is not None
-        self._own()  # what the harness wrote since the last command is the harness's
+        try:
+            self._own()  # what the harness wrote since the last command is the harness's
+        except JailBrokenError as exc:
+            self.broken = str(exc)
+            _log.error("jail %s: %s; the episode cannot go on", self.name, exc)
+            self.close()
+            raise
         self.commands += 1
         rid = self.commands
         # the reply must echo this; it goes down the server's stdin only, never to the
@@ -530,12 +728,13 @@ class Jail:
             self.proc.stdin.write(json.dumps(req) + "\n")
             self.proc.stdin.flush()
         except OSError as exc:
-            self.close()
-            return 127, "", "the jail went away: %s" % exc, False
+            _log.warning("jail %s went away: %s", self.name, exc)
+            self._stop()
+            return 127, "", "the jail went away; it is restarted for the next command", False
         while True:
             rep = self._next(float(timeout) + 60.0)
             if rep is None:  # the server died (a command killed it) or hung: a fresh jail next
-                self.close()
+                self._stop()
                 return (
                     127,
                     "",
@@ -550,7 +749,7 @@ class Jail:
             # is forging its own "I ended" and is still alive. Remove the jail (waited
             # for) before the harness touches the workspace.
             _log.warning("jail %s: a forged reply to command %d; removing it", self.name, rid)
-            self.close(kill=True)
+            self._stop(kill=True)
             return (
                 127,
                 "",
@@ -562,9 +761,44 @@ class Jail:
         err = base64.b64decode(rep.get("e", "")).decode("utf-8", "replace")
         return int(rep.get("rc", 127)), out, err, bool(rep.get("to"))
 
+    def _removed(self) -> bool:
+        """``podman rm -f`` the container and KNOW it is gone: rm succeeded, or podman
+        says no such container exists. Anything else (rm failed and it still exists,
+        podman did not answer) is "not removed"."""
+        try:
+            rm = subprocess.run(
+                self.prefix + ["rm", "-f", self.name],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=RM_TIMEOUT_S,
+            )
+            if rm.returncode == 0:
+                return True
+            there = subprocess.run(
+                self.prefix + ["container", "exists", self.name],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=RM_TIMEOUT_S,
+            )
+            if there.returncode == 1:  # 0 = it exists, 1 = it does not, else podman failed
+                return True
+            _log.error(
+                "podman rm -f %s failed (exit %d, exists: exit %d): %s",
+                self.name,
+                rm.returncode,
+                there.returncode,
+                (rm.stderr or b"")[-300:].decode("utf-8", "replace"),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            _log.error("podman rm -f %s did not answer: %s", self.name, exc)
+        return False
+
     def close(self, kill: bool = False) -> None:
         """Stop the jail. ``kill``: a command is known to be alive in it, so do not wait
-        for the server to exit by itself -- remove the container now."""
+        for the server to exit by itself -- remove the container now. A container that
+        could not be removed sets :attr:`broken`: the episode is over."""
         proc, self.proc = self.proc, None
         if proc is None:
             return
@@ -576,19 +810,14 @@ class Jail:
             proc.wait(timeout=CLOSE_WAIT_S)
         except (OSError, subprocess.SubprocessError):
             proc.kill()
-            if self.name:
-                # never leave a jail behind, and WAIT for it to be gone: killing the podman
-                # client does not kill the container, and what still runs in it shares
-                # the workspace the host harness is about to touch again
-                try:
-                    subprocess.run(
-                        self.prefix + ["rm", "-f", self.name],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=RM_TIMEOUT_S,
-                    )
-                except (OSError, subprocess.SubprocessError) as exc:
-                    _log.warning("could not remove jail %s: %s", self.name, exc)
+            # never leave a jail behind, and KNOW it is gone: killing the podman client
+            # does not kill the container, and what still runs in it shares the workspace
+            # the host harness (root, by name) is about to touch again
+            if self.name and not self._removed():
+                self.broken = (
+                    "the jail container could not be removed, so a command may still be "
+                    "running in the workspace"
+                )
 
 
 def open_jail(workspace: Path, mode: str = "auto") -> Tuple[Optional[Jail], str]:
@@ -617,9 +846,10 @@ def open_jail(workspace: Path, mode: str = "auto") -> Tuple[Optional[Jail], str]
             raise
         return None, str(exc)
     except (OSError, subprocess.SubprocessError) as exc:  # podman vanished under us
+        _log.warning("podman did not start the jail: %s", exc)
         if mode == "podman":
-            raise JailUnavailableError("podman did not start the jail: %s" % exc) from exc
-        return None, "podman did not start the jail: %s" % exc
+            raise JailUnavailableError("podman did not start the jail") from exc
+        return None, "podman did not start the jail (see the host log)"
     return jail, ""
 
 
@@ -643,5 +873,6 @@ def open_verifier_jail(shell: Jail, private: Path, tests: Path) -> Jail:
         )
         jail.start()
     except (OSError, subprocess.SubprocessError) as exc:
-        raise JailUnavailableError("podman did not start the verifier jail: %s" % exc) from exc
+        _log.warning("podman did not start the verifier jail: %s", exc)
+        raise JailUnavailableError("podman did not start the verifier jail") from exc
     return jail

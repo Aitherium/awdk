@@ -101,6 +101,7 @@ from .jail import (
     VERIFY_PRIVATE,
     VERIFY_TESTS,
     Jail,
+    JailBrokenError,
     JailUnavailableError,
     open_jail,
     open_verifier_jail,
@@ -925,10 +926,25 @@ class SkillTaskTerminalEnv:
             )
         return self.sandbox
 
+    def _jail_broken(self) -> bool:
+        """A jail of this episode could not be removed (or its workspace handed over): a
+        command may still run in the workspace, so the harness must not touch it by name."""
+        return any(j is not None and j.broken for j in (self._jail, self._vjail))
+
+    def _jail_broke(self, exc: Exception) -> TaskError:
+        self.invalid = "the jail failed and the episode cannot go on: %s" % exc
+        self.over = True
+        _log.error("skill-task %s: %s", self.task.id, self.invalid)
+        return TaskError("episode invalid: %s" % self.invalid)
+
     def _run_sh(self, cmd: str) -> Tuple[str, int]:
         if self.jail_status() == "podman" and self._jail is not None:
             try:
                 rc, out, err, timed_out = self._jail.run(str(cmd), timeout=self.cmd_timeout_s)
+            # the container could not be removed, or the workspace cannot be handed to
+            # the jail user: nothing may touch the workspace again. Not scored, and loud.
+            except JailBrokenError as exc:
+                raise self._jail_broke(exc) from exc
             # the jail started once (jail_status) and a RESTART failed mid-episode: an
             # error, never a silent fallback to the policy mode
             except JailUnavailableError as exc:
@@ -1124,6 +1140,8 @@ class SkillTaskTerminalEnv:
         timeout = self.task.timeout_s
         try:
             rc, out, err, timed_out = self._vjail.run(cmd, timeout=timeout, cwd=VERIFY_TESTS)
+        except JailBrokenError as exc:
+            raise self._jail_broke(exc) from exc
         except (JailUnavailableError, OSError, subprocess.SubprocessError) as exc:
             # a RESTART failed mid-episode: no score, and never a host run instead
             raise TaskError(
@@ -1151,7 +1169,8 @@ class SkillTaskTerminalEnv:
             return self.ws.verify()
         finally:
             try:
-                left = self._private_snap.restore(self.ws.private)
+                # a jail that could not be removed may still run: its mounts are not touched
+                left = [] if self._jail_broken() else self._private_snap.restore(self.ws.private)
             except OSError as exc:
                 left = [str(exc)]
             if left:  # the next verification would read state the host did not write
@@ -1198,7 +1217,9 @@ class SkillTaskTerminalEnv:
         finally:
             # measured: git marks its objects read-only on Windows, a plain unlink failed
             # half-way and a TRIED commit survived the rollback. Restore, then PROVE it.
-            left = snap.restore(self.root)
+            # (a jail that could not be removed may still run in the workspace: the
+            # episode is already invalid and the harness must not write there by name)
+            left = [] if self._jail_broken() else snap.restore(self.root)
             if left:  # an unverified change is live: the episode cannot be scored honestly
                 self.rollback_failures += 1
                 self.invalid = "rollback left %d path(s) changed" % len(left)

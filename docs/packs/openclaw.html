@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed openclaw -&gt; ~\.aither\packs\openclaw</span>
 <span class="o">verified: adk discovers &#x27;openclaw&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.46</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>4c020e7d1646969f…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.46</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>7b97f24d3aa9c040…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -313,12 +313,12 @@ Sign-in-free; runs on the operator&#x27;s own LLM key.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>4c020e7d1646969f9498eeecc56f686c1f58ca97b9a08a139c23e88fc74beffe</code></p>
+    <p class="sub">sha256 <code>7b97f24d3aa9c040de3b1e1dcf29662fd38c00d0967792fc078971a44c8d2f54</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c openclaw-3.8.46.sha256
 <span class="o">openclaw-3.8.46.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;4C020E7D1646969F9498EEECC56F686C1F58CA97B9A08A139C23E88FC74BEFFE&#x27;
+<span class="p">$</span> $want = &#x27;7B97F24D3AA9C040DE3B1E1DCF29662FD38C00D0967792FC078971A44C8D2F54&#x27;
 <span class="p">$</span> (Get-FileHash openclaw-3.8.46.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>

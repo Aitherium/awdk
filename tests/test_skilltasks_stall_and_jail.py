@@ -540,9 +540,12 @@ def test_a_mapped_jail_gets_its_own_user_namespace_and_the_verifier_shares_it(
 
 
 @pytest.mark.parametrize("mapped", [True, False])
-def test_an_unwritable_workspace_is_refused_with_its_real_cause(tmp_path, monkeypatch, mapped):
+def test_an_unwritable_workspace_is_refused_with_its_real_cause(
+    tmp_path, monkeypatch, caplog, mapped
+):
     """The refusal used to blame "rootless podman" whatever happened, also under rootful
-    podman. It names what was measured: the mount's owner and mode, and which case it is."""
+    podman. The HOST LOG names what was measured: the mount's owner and mode, and which
+    case it is. The exception text reaches the model and the run report, so it is generic."""
     import adk.skilltasks.jail as jail_mod
 
     script = tmp_path / "fake_podman.py"
@@ -554,9 +557,13 @@ def test_an_unwritable_workspace_is_refused_with_its_real_cause(tmp_path, monkey
     work.mkdir()
     base = 0x40000000
     jail = jail_mod.Jail(work, [sys.executable, str(script)], idmap_base=base if mapped else None)
-    with pytest.raises(jail_mod.JailUnavailableError) as exc:
+    with caplog.at_level("WARNING"), pytest.raises(jail_mod.JailUnavailableError) as exc:
         jail.start()
-    msg = str(exc.value)
+    public = str(exc.value)
+    assert "cannot write the workspace" in public and "host log" in public
+    for secret in (str(work), str(tmp_path), "uid", "mode", str(base), str(base + 1000)):
+        assert secret not in public, (secret, public)
+    msg = caplog.text
     assert "cannot write the workspace" in msg and str(work) in msg
     assert "owned by host uid %d, mode " % work.stat().st_uid in msg
     if mapped:
@@ -1117,3 +1124,448 @@ def test_the_real_command_server_cannot_be_written_or_read_by_its_own_command(tm
         if srv.stdin is not None:
             srv.stdin.close()
         srv.wait(timeout=30)
+
+
+# ----------------------------------------------------------------- hardening the hand-over
+# The harness is ROOT and re-owns a tree the model wrote before every command. These pin
+# what keeps that safe and bounded, and what the model is (not) told when it fails.
+_ODD_UID = 0x40000000 + 1000  # the jail user of the first id block: nobody's account
+needs_posix = pytest.mark.skipif(
+    os.name == "nt", reason="the ownership hand-over is POSIX only (Windows has no chown)"
+)
+
+
+def _owner(path) -> int:
+    return os.lstat(str(path)).st_uid
+
+
+@needs_rootful
+def test_the_hand_over_reowns_the_tree_and_nothing_outside_or_shared(tmp_path):
+    """Everything IN the workspace goes to the jail uid -- links and special files
+    themselves, never their targets -- and a file with a second hard link is left alone
+    (its other name may live outside the workspace)."""
+    import adk.skilltasks.jail as jail_mod
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("s", encoding="utf-8")
+    (outside / "shared").write_text("h", encoding="utf-8")
+    work = tmp_path / "work"
+    (work / "sub" / "deep").mkdir(parents=True)
+    (work / "a.txt").write_text("a", encoding="utf-8")
+    (work / "sub" / "deep" / "b.txt").write_text("b", encoding="utf-8")
+    os.symlink(str(outside / "secret"), str(work / "lnk"))
+    os.symlink(str(outside), str(work / "dlnk"))
+    os.link(str(outside / "shared"), str(work / "hard"))
+    os.mkfifo(str(work / "fifo"))
+
+    jail_mod._give_to(work, _ODD_UID)
+
+    mine = ("", "sub", "sub/deep", "a.txt", "sub/deep/b.txt", "lnk", "dlnk", "fifo")
+    assert {rel: _owner(work / rel) for rel in mine} == {rel: _ODD_UID for rel in mine}
+    assert _owner(work / "hard") == 0  # two names for one inode: not the workspace's alone
+    assert [_owner(p) for p in (outside, outside / "secret", outside / "shared")] == [0, 0, 0]
+
+
+def _can_mount_privately() -> bool:
+    """Root, with ``unshare`` and ``mount``, and a tmpfs really mounts in a private mount
+    namespace here (it may not in a container without CAP_SYS_ADMIN)."""
+    import subprocess
+    import tempfile
+
+    if not _root_on_posix() or not shutil.which("unshare") or not shutil.which("mount"):
+        return False
+    spot = tempfile.mkdtemp(prefix="adk-mnt-probe-")
+    try:
+        return (
+            subprocess.run(
+                [
+                    "unshare",
+                    "-m",
+                    "--propagation",
+                    "private",
+                    "mount",
+                    "-t",
+                    "tmpfs",
+                    "tmpfs",
+                    spot,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        shutil.rmtree(spot, ignore_errors=True)
+
+
+@pytest.mark.skipif(
+    not _can_mount_privately(),
+    reason="needs root and a tmpfs mounted in a private mount namespace (unshare -m)",
+)
+def test_the_hand_over_stops_at_a_mount_point(tmp_path):
+    """Another filesystem mounted inside the workspace is not the workspace's own. The
+    mount lives in a private mount namespace: it never exists on the host."""
+    import subprocess
+
+    import adk.skilltasks.jail as jail_mod
+
+    work = tmp_path / "work"
+    (work / "mnt").mkdir(parents=True)
+    (work / "plain").write_text("x", encoding="utf-8")
+    code = (
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "import adk.skilltasks.jail as j\n"
+        "w = sys.argv[1]\n"
+        "open(w + '/mnt/inner', 'w').close()\n"
+        "j._give_to(Path(w), %d)\n"
+        "print(*(os.lstat(w + p).st_uid for p in ('/plain', '/mnt', '/mnt/inner')))\n" % _ODD_UID
+    )
+    shell = 'mount -t tmpfs tmpfs "$1/mnt" && exec "$2" -c "$3" "$1"'
+    proc = subprocess.run(
+        ["unshare", "-m", "--propagation", "private", "sh", "-c", shell, "sh",
+         str(work), sys.executable, code],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        cwd=str(Path(jail_mod.__file__).resolve().parents[2]),
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == [str(_ODD_UID), "0", "0"], proc.stdout
+    assert not (work / "mnt" / "inner").exists()  # the mount never existed out here
+
+
+@needs_rootful
+def test_a_tree_that_changes_under_the_hand_over_is_never_followed_out(tmp_path, monkeypatch):
+    """The walk resolves nothing twice. A directory swapped for a link between listing it
+    and entering it is not entered; a file swapped for a hard link to an outside inode
+    between its stat and its chown is judged again on the descriptor and left alone."""
+    import adk.skilltasks.jail as jail_mod
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("s", encoding="utf-8")
+    (outside / "shared").write_text("h", encoding="utf-8")
+    work = tmp_path / "work"
+    (work / "sub").mkdir(parents=True)
+    (work / "sub" / "inner.txt").write_text("i", encoding="utf-8")
+    (work / "a.txt").write_text("a", encoding="utf-8")
+    real_open, swapped = os.open, []
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None and path == "sub" and "sub" not in swapped:
+            swapped.append("sub")  # the model's process wins the race, every time
+            os.rename(str(work / "sub"), str(work / "sub.real"))
+            os.symlink(str(outside), str(work / "sub"))
+        if dir_fd is not None and path == "a.txt" and "a.txt" not in swapped:
+            swapped.append("a.txt")
+            os.unlink(str(work / "a.txt"))
+            os.link(str(outside / "shared"), str(work / "a.txt"))
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(jail_mod.os, "open", racing_open)
+    jail_mod._give_to(work, _ODD_UID)
+    monkeypatch.undo()
+
+    assert sorted(swapped) == ["a.txt", "sub"]  # both races really happened
+    assert [_owner(p) for p in (outside, outside / "secret", outside / "shared")] == [0, 0, 0]
+    assert _owner(work) == _ODD_UID
+
+
+@needs_posix
+def test_a_workspace_past_the_bound_ends_the_hand_over_cleanly(tmp_path, monkeypatch):
+    """Too deep or too large is a caught JailBrokenError -- never a RecursionError (os.walk
+    and os.fwalk recurse on Python 3.10/3.11), never an unbounded walk before each command
+    -- and no directory descriptor is left open."""
+    import adk.skilltasks.jail as jail_mod
+
+    me = os.getuid()  # nothing to chown: the bound is about the walk, so any uid can run it
+    fds = "/proc/self/fd"
+    before = len(os.listdir(fds)) if os.path.isdir(fds) else None
+
+    deep = tmp_path / "deep"
+    os.makedirs(str(deep) + "/d" * 300)
+    with pytest.raises(jail_mod.JailBrokenError, match="directories deep"):
+        jail_mod._give_to(deep, me)
+
+    wide = tmp_path / "wide"
+    wide.mkdir()
+    for n in range(50):
+        (wide / ("f%d" % n)).write_text("", encoding="utf-8")
+    jail_mod._give_to(wide, me)  # within the bound: fine
+    monkeypatch.setattr(jail_mod, "MAX_OWN_ENTRIES", 20)
+    with pytest.raises(jail_mod.JailBrokenError, match="more than 20 entries") as exc:
+        jail_mod._give_to(wide, me)
+    assert str(tmp_path) not in str(exc.value)  # this text reaches the model
+
+    if before is not None:
+        assert len(os.listdir(fds)) == before
+
+
+def _mapped(monkeypatch, give_to=None) -> int:
+    """Make the jails the env opens MAPPED ones (as under rootful podman) on any host."""
+    import adk.skilltasks.jail as jail_mod
+
+    base = 0x40000000 + 3 * jail_mod.IDMAP_SIZE
+    monkeypatch.setattr(jail_mod, "rootful_here", lambda: True)
+    monkeypatch.setattr(jail_mod, "pick_idmap_base", lambda: base)
+    monkeypatch.setattr(jail_mod, "_give_to", give_to or (lambda root, uid: None))
+    return base
+
+
+def test_a_workspace_that_cannot_be_handed_over_ends_the_episode_loudly(
+    tmp_path, monkeypatch, caplog
+):
+    import adk.skilltasks.jail as jail_mod
+    from adk.skilltasks.task import TaskError
+
+    state = {"fail": False, "calls": 0}
+
+    def give_to(root, uid):
+        state["calls"] += 1
+        if state["fail"]:
+            raise jail_mod.JailBrokenError("the workspace holds more than 5 entries; too large")
+
+    _mapped(monkeypatch, give_to)
+    env, _requests = _exec_env(tmp_path, monkeypatch, jail="podman")
+    try:
+        env.sh("echo one")
+        assert state["calls"] >= 2 and not env.invalid
+        state["fail"] = True
+        with caplog.at_level("ERROR"):
+            out = env.sh("echo two")
+        assert out.startswith("ERROR") and "more than 5 entries" in out
+        assert "the jail failed" in env.invalid and env.over  # over, and never scored
+        assert env._jail is not None and env._jail.broken and not env._jail.alive()
+        assert "cannot go on" in caplog.text  # loud on the host too
+        calls = state["calls"]
+        env.sh("echo three")
+        assert state["calls"] == calls  # the workspace is not walked again
+        with pytest.raises(TaskError, match="invalid"):
+            env.final()
+    finally:
+        env.close()
+
+
+# ``podman run`` that forges a reply and stays alive, and whose container CANNOT be removed:
+# ``rm -f`` fails, and ``container exists`` answers FAKE_EXISTS_RC (0 = still there).
+_FAKE_PODMAN_UNREMOVABLE = r"""
+import json, os, sys, time
+if sys.argv[1:2] == ["rm"]:
+    with open(os.environ["FAKE_RM_LOG"], "a", encoding="utf-8") as fh:
+        fh.write(" ".join(sys.argv[1:]) + "\n")
+    sys.exit(1)
+if sys.argv[1:3] == ["container", "exists"]:
+    sys.exit(int(os.environ["FAKE_EXISTS_RC"]))
+sys.stdout.write('{"ready": 1, "uid": 1000, "w": true, "nd": true}\n')
+sys.stdout.flush()
+for line in sys.stdin:
+    req = json.loads(line)
+    sys.stdout.write(json.dumps({"id": req["id"], "rc": 0, "to": False, "o": "", "e": ""}) + "\n")
+    sys.stdout.flush()
+    time.sleep(600)
+"""
+
+
+@pytest.mark.parametrize("exists_rc, fatal", [(0, True), (125, True), (1, False)])
+def test_a_jail_that_cannot_be_removed_is_fatal_for_the_episode(
+    tmp_path, monkeypatch, caplog, exists_rc, fatal
+):
+    """``podman rm -f`` failed. Unless podman then says the container does not exist, a
+    command may still be running in the workspace: no restart, no further root chown by
+    name, the episode is over. (It used to be one log line, and the next command went on.)"""
+    import adk.skilltasks.jail as jail_mod
+
+    script = tmp_path / "fake_podman_unremovable.py"
+    script.write_text(_FAKE_PODMAN_UNREMOVABLE, encoding="utf-8")
+    log = tmp_path / "rm.log"
+    monkeypatch.setenv("FAKE_RM_LOG", str(log))
+    monkeypatch.setenv("FAKE_EXISTS_RC", str(exists_rc))
+    handed = []
+    monkeypatch.setattr(jail_mod, "_give_to", lambda root, uid: handed.append(uid))
+    work = tmp_path / "work"
+    work.mkdir()
+    jail = jail_mod.Jail(work, [sys.executable, str(script)], reap=True, idmap_base=0x40000000)
+    jail.start()
+    name = jail.name
+    try:
+        if not fatal:  # rm failed because it was already gone: an ordinary forgery
+            rc, _out, err, _to = jail.run("python3 x.py", timeout=20)
+            assert rc == 127 and "forged" in err and not jail.broken
+            return
+        with caplog.at_level("ERROR"), pytest.raises(jail_mod.JailBrokenError) as exc:
+            jail.run("python3 x.py", timeout=20)
+        assert "could not be removed" in str(exc.value) and jail.broken
+        assert name in caplog.text and name not in str(exc.value)
+        assert log.read_text(encoding="utf-8").splitlines() == ["rm -f " + name]
+        calls = len(handed)
+        for _ in range(2):  # no restart and no chown, ever again
+            with pytest.raises(jail_mod.JailBrokenError):
+                jail.run("echo next", timeout=20)
+        with pytest.raises(jail_mod.JailBrokenError):
+            jail.start()
+        assert len(handed) == calls and jail.starts == 1 and not jail.alive()
+    finally:
+        jail.close()
+
+
+def test_an_unremovable_jail_invalidates_the_episode_and_its_workspace_is_left_alone(
+    tmp_path, monkeypatch
+):
+    from adk.skilltasks.task import TaskError
+
+    _mapped(monkeypatch)
+    env, _requests = _exec_env(tmp_path, monkeypatch, jail="podman")
+    try:
+        env.sh("echo one")
+        assert env._jail is not None and not env.invalid
+        env._jail.broken = "the jail container could not be removed"  # what close() sets
+        restored = []
+        monkeypatch.setattr(env._private_snap, "restore", lambda root: restored.append(root) or [])
+        out = env.sh("echo two")
+        assert out.startswith("ERROR") and "could not be removed" in out
+        assert "the jail failed" in env.invalid and env.over
+        assert env._jail_broken()
+        try:  # the verifier's restore would write private/ by name: it must be skipped
+            env._run_verifier()
+        except TaskError as exc:
+            assert "could not be restored" not in str(exc)
+        assert restored == []
+    finally:
+        env.close()
+
+
+def test_reserved_id_ranges_come_from_subid_files_and_live_user_namespaces(tmp_path):
+    from adk.skilltasks.jail import _reserved_id_ranges
+
+    subuid = tmp_path / "subuid"
+    subuid.write_text("alice:100000:65536\n# a comment\nnot-a-range\n", encoding="utf-8")
+    subgid = tmp_path / "subgid"
+    subgid.write_text("alice:200000:1000\n", encoding="utf-8")
+    proc = tmp_path / "proc"
+    for pid, uid_map, gid_map in (
+        ("1", "         0          0 4294967295\n", "         0          0 4294967295\n"),
+        ("77", "         0 1073741824      65536\n", "0 5000 10\n1000 7000 1\n"),
+        ("78", "         0 1073741824      65536\n", "garbage\n"),
+    ):
+        (proc / pid).mkdir(parents=True)
+        (proc / pid / "uid_map").write_text(uid_map, encoding="ascii")
+        (proc / pid / "gid_map").write_text(gid_map, encoding="ascii")
+    (proc / "self").mkdir()  # not a pid
+    (proc / "99").mkdir()  # a process that ended: no map to read
+    got = _reserved_id_ranges((str(subuid), str(subgid), str(tmp_path / "absent")), str(proc))
+    assert sorted(set(got)) == [
+        (5000, 10),
+        (7000, 1),
+        (100000, 65536),
+        (200000, 1000),
+        (1073741824, 65536),
+    ]  # ... and not the initial namespace's identity map
+
+
+@needs_posix
+def test_the_id_block_avoids_reserved_ranges(monkeypatch):
+    """Not a block /etc/subuid or /etc/subgid delegates, nor one a running container maps
+    (only "no account at block + 1000" was checked)."""
+    import adk.skilltasks.jail as jail_mod
+
+    floor, size = jail_mod._IDMAP_FLOOR, jail_mod.IDMAP_SIZE
+    draws = iter(range(1000))
+    monkeypatch.setattr(jail_mod.secrets, "randbelow", lambda n: next(draws))
+    # blocks 0..2 delegated, block 3 touched by ten ids of a live user namespace
+    monkeypatch.setattr(
+        jail_mod, "_reserved_id_ranges", lambda: [(floor, 3 * size), (floor + 4 * size - 10, 10)]
+    )
+    assert jail_mod.pick_idmap_base() == floor + 4 * size
+    monkeypatch.setattr(jail_mod, "_reserved_id_ranges", lambda: [(0, 2**32)])
+    with pytest.raises(jail_mod.JailUnavailableError, match="no free host id block"):
+        jail_mod.pick_idmap_base()
+
+
+_SEAL_PROBE = """import ctypes, os
+print("uid", os.getuid(), "map", open("/proc/self/uid_map").read().split())
+for what, mode in (("fd/1", "w"), ("fd/0", "r"), ("mem", "rb"), ("environ", "rb")):
+    try:
+        open("/proc/1/" + what, mode).close()
+        print("OPENED", what)
+    except OSError as exc:
+        print("REFUSED", what, exc.errno)
+try:
+    os.listdir("/proc/1/fd")
+    print("OPENED fd-listing")
+except OSError as exc:
+    print("REFUSED fd-listing", exc.errno)
+libc = ctypes.CDLL(None, use_errno=True)
+print("ATTACHED" if libc.ptrace(16, 1, 0, 0) == 0 else "REFUSED ptrace")
+"""
+
+
+@needs_podman
+@needs_rootful
+def test_the_mapped_jail_seals_its_server_against_its_own_commands(tmp_path, monkeypatch):
+    """Real rootful podman, the jail in its own user namespace: the server reports itself
+    sealed, and a command running as uid 1000 INSIDE cannot open the server's reply
+    channel, stdin, memory or environment, nor ptrace it. (The seal test on the bare
+    server needs a non-root harness, so it never ran in this configuration.)"""
+    import adk.skilltasks.jail as jail_mod
+
+    readies, real_next = [], jail_mod.Jail._next
+
+    def spy(self, timeout):
+        rep = real_next(self, timeout)
+        if isinstance(rep, dict) and "ready" in rep:
+            readies.append(rep)
+        return rep
+
+    monkeypatch.setattr(jail_mod.Jail, "_next", spy)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    (work / "probe.py").write_text(_SEAL_PROBE, encoding="utf-8")
+    jail, why = jail_mod.open_jail(work, "podman")
+    assert jail is not None and why == ""
+    try:
+        assert jail.idmap_base is not None  # the mapped configuration
+        assert readies and readies[0]["nd"] is True and readies[0]["uid"] == 1000, readies
+        rc, out, err, _to = jail.run("python3 probe.py")
+        assert rc == 0, (out, err)
+        first = out.splitlines()[0]
+        assert first == "uid 1000 map ['0', '%d', '%d']" % (jail.idmap_base, jail_mod.IDMAP_SIZE)
+        assert "OPENED" not in out and "ATTACHED" not in out, out
+        assert out.count("REFUSED") == 6, out
+        assert jail.alive() and jail.run("echo still-mine")[1] == "still-mine\n"
+    finally:
+        jail.close()
+
+
+@pytest.mark.parametrize("mode", ["auto", "podman"])
+def test_the_model_is_never_told_host_ids_or_paths_when_the_jail_is_refused(
+    tmp_path, monkeypatch, caplog, mode
+):
+    """What a refused jail says to the MODEL (a tool error) and to the run report
+    (``sandbox_why``) carries no host uid, id block, mode or host path. The host log does."""
+    from adk.skilltasks.task import TaskError
+
+    base = _mapped(monkeypatch)
+    _podman_that_cannot_start(
+        tmp_path, monkeypatch, '{"ready": 1, "uid": 1000, "w": false, "nd": true}'
+    )
+    env = _env(tmp_path / "t", jail=mode)
+    try:
+        with caplog.at_level("WARNING"):
+            if mode == "podman":
+                with pytest.raises(TaskError) as exc:
+                    env.jail_status()
+                told = str(exc.value)
+            else:
+                assert env.jail_status() == POLICY_ONLY
+                told = env.jail_why + "\n" + env.sh("echo hi")
+        assert "cannot write the workspace" in told
+        secrets_ = [str(env.root), str(tmp_path), str(base), str(base + 1000), "host uid", "mode 0"]
+        for secret in secrets_:
+            assert secret not in told, (secret, told)
+        assert str(env.root) in caplog.text and "host uid %d" % (base + 1000) in caplog.text
+    finally:
+        env.close()
