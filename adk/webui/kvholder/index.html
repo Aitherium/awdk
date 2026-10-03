@@ -367,7 +367,8 @@ body {
   async function makeEngine() {
     if (engine) return engine;
     try { engine = await KVHolder.GpuEngine.create(navigator.gpu, {tq4}); } catch (e) { engine = null; }
-    if (!engine) engine = new KVHolder.CpuEngine();
+    // tq4 without WebGPU: the CPU tq4 engine when this holder.js has it, else the exact CPU one
+    if (!engine) engine = tq4 && KVHolder.CpuTq4Engine ? new KVHolder.CpuTq4Engine() : new KVHolder.CpuEngine();
     $('engine').textContent = engine.describe();
     event('engine ready · ' + engine.describe());
     return engine;
