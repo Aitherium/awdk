@@ -42,22 +42,22 @@ Built from `v3.8.49` (adk 3.8.49).
 ## Contents
 
 - **aither** `3.8.49` — skills  
-  `sha256:d6d2428cf11831cb…`
+  `sha256:4c182de205b79243…`
 - **analyst** `3.8.49` — agent config, skills  
-  `sha256:300c78e656d9492f…`
+  `sha256:69bc3bb1978e7aa7…`
 - **bead-space** `3.8.49` — brain pack only  
-  `sha256:3b1fbf3918abb7d8…`
+  `sha256:4c3d104db2fc9600…`
 - **claude-code** `3.8.49` — agent config, skills  
-  `sha256:4ceada3d2763db75…`
+  `sha256:f4ad475a0ba8e121…`
 - **dgg_research** `3.8.49` — agent config, skills  
-  `sha256:18f8ff92eb6c14e8…`
+  `sha256:2204e36758651c0a…`
 - **gobbonet** `3.8.49` — agent config, Python  
-  `sha256:36dc8d526d3985d8…`
+  `sha256:8c6db6b0f2ace8e3…`
 - **hermes** `3.8.49` — agent config, skills  
-  `sha256:6ac1a83e2501a8eb…`
+  `sha256:eb4a1bc6954a4138…`
 - **iris** `3.8.49` — skills  
-  `sha256:7c650ffad1ecc642…`
+  `sha256:0226026c87527baf…`
 - **openclaw** `3.8.49` — agent config, skills  
-  `sha256:8f6d7b16d273a726…`
+  `sha256:2f662bfd1aa1bdf6…`
 - **persona** `3.8.49` — brain pack only  
-  `sha256:a7442ef4ee138952…`
+  `sha256:5cd5654c5a068828…`

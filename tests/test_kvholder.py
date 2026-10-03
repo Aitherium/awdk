@@ -239,5 +239,12 @@ def test_tq4_truncate_keeps_the_prefix():
     assert holder.handle(kv.TRUNCATE, struct.pack("<I", 600))[0] == kv.OK
     assert holder.st.n[0] == 600 and holder.st.held_bytes == 600 * 2 * h * (kv.HD // 2 + 4)
     q = rng.standard_normal((h, kv.NR, kv.HD)).astype(np.float32)
-    ref = _tq4_holder(keys[:600], vals[:600], h)
-    np.testing.assert_allclose(_attn(holder, q, h), _attn(ref, q, h), atol=1e-3)
+    # the same encoding read to nk=600 (a fresh 600-key holder centers on another mean)
+    ref = _tq4_holder(keys, vals, h)
+    rep = ref.handle(
+        kv.ATTN, kv.ATTN_REQ.pack(0, 1, 600, kv.HD**-0.5) + q[None].astype(np.float16).tobytes()
+    )
+    o = np.frombuffer(rep[1], np.float16, h * kv.NR * kv.HD, kv.ATTN_REP.size)
+    np.testing.assert_allclose(
+        _attn(holder, q, h), o.astype(np.float32).reshape(h, kv.NR, kv.HD), atol=1e-3
+    )

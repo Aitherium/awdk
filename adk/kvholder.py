@@ -399,22 +399,30 @@ def tq4_decode_rotated(packed: np.ndarray, norms: np.ndarray) -> np.ndarray:
 
 
 def _attend_tq4(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """_attend over 4-bit chunks (kc, kn, vc, vn), all in the rotated basis.
+    """_attend over 4-bit chunks (kc, kn, vc, vn[, mu]), all in the rotated basis.
 
     Vectors are decoded at unit scale with one gather; each key's norm is folded into its
     score and each value's norm into its weight, so no full-size multiply is spent on norms.
+    A chunk with ``mu`` [H, Dk] holds keys k - mu (centered): every score of that chunk gets
+    q . mu back, so the softmax, the output and the lse are those of the uncentered keys.
     """
     n_h, n_r, n_d = qs.shape
     inv = np.float32(1.0 / np.sqrt(n_d))
     acc = None
     m = np.full((n_h, n_r), -np.inf, np.float32)
     den = np.zeros((n_h, n_r), np.float32)
-    for kc, kn, vc, vn in chunks:
+    shift: dict = {}  # id(mu) -> q . mu [H, r]; one mean serves many chunks
+    for kc, kn, vc, vn, *mu in chunks:
         n = kc.shape[1]
         if n == 0:
             continue
         k = np.take(_TQ4_PAIRS, kc, axis=0).reshape(n_h, n, n_d)
         scores = np.matmul(qs, k.transpose(0, 2, 1)) * (kn * inv)[:, None, :]
+        if mu:
+            c = shift.get(id(mu[0]))
+            if c is None:
+                c = shift[id(mu[0])] = np.einsum("hrd,hd->hr", qs, mu[0])
+            scores += c[..., None]
         mx = np.maximum(m, scores.max(axis=-1))
         a = np.exp(m - mx)
         probs = np.exp(scores - mx[..., None])
@@ -427,6 +435,19 @@ def _attend_tq4(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndar
         den = den * a + probs.sum(axis=-1)
         m = mx
     return acc, m, den
+
+
+def _cut(parts: tuple, lo: int, hi: int | None = None, copy: bool = False) -> tuple:
+    """Positions [lo, hi) of one chunk. Per-chunk constants (a tq4 chunk's key mean, index
+    4) are not per position: they ride along unsliced."""
+    out = []
+    for i, a in enumerate(parts):
+        if i >= 4:
+            out.append(a)
+            continue
+        a = a[:, lo:hi]
+        out.append(np.ascontiguousarray(a) if copy else a)
+    return tuple(out)
 
 
 def tq4_decode(packed: np.ndarray, norms: np.ndarray) -> np.ndarray:
@@ -538,6 +559,7 @@ class HolderState:
     shared: list = field(default_factory=list)
     base: int = 0
     ns: tuple | None = None
+    mu: dict = field(default_factory=dict)  # tq4: layer -> (mean key [H, D], rotated)
 
 
 class _Conn:
@@ -553,9 +575,19 @@ class KVHolder:
     Transport-free, so tests and other transports (a mesh relay) can drive it.
     """
 
-    def __init__(self, max_bytes: int, device: str = "adk-kvholder", store: str = "f32"):
+    def __init__(
+        self,
+        max_bytes: int,
+        device: str = "adk-kvholder",
+        store: str = "f32",
+        tq4_center: bool = True,
+    ):
         if store not in ("f32", "wire", "tq4"):
             raise ValueError("store must be 'f32', 'wire' or 'tq4'")
+        # tq4 keys are centered by default: a model's keys share a large per-head offset
+        # (Qwen3-0.6B layer 0) that a 4-bit code cannot hold next to the detail. Exact: see
+        # _tq4_chunk. Off only to reproduce the old, known-bad store.
+        self.tq4_center = tq4_center
         self.st = HolderState(max_bytes=max_bytes, store=store)  # session 0: the PATN default
         self.device = device
         self.sessions: dict[int, HolderState] = {0: self.st}
@@ -621,6 +653,7 @@ class KVHolder:
                     self.pool.release(st.shared)
                 st.shared, st.base, st.ns = [], 0, None
                 st.cfg = c
+                st.mu = {}
                 st.raw = [[] for _ in range(c.n_layer)]
                 st.raw_v = [[] for _ in range(c.n_layer)]
                 st.n = [0] * c.n_layer
@@ -750,7 +783,10 @@ class KVHolder:
         for layer in range(cfg.n_layer):
             parts = st.chunks[layer]
             priv.append(
-                tuple(np.concatenate([c[i] for c in parts], axis=1) for i in range(len(parts[0])))
+                tuple(
+                    np.concatenate([c[i] for c in parts], axis=1) if i < 4 else parts[0][i]
+                    for i in range(len(parts[0]))
+                )
             )
         new = []
         for j in range(first, k):
@@ -760,14 +796,14 @@ class KVHolder:
                 key=hashes[j],
                 index=j,
                 tokens=block,
-                layers=[tuple(np.ascontiguousarray(a[:, lo:hi]) for a in pl) for pl in priv],
+                layers=[_cut(pl, lo, hi, copy=True) for pl in priv],
                 nbytes=block * per_key * cfg.n_layer,
             )
             new.append(self.pool.insert(blk))  # an identical block already resident wins
         self.pool.acquire(new)
         cut = k * block - base0
         for layer in range(cfg.n_layer):
-            tail = tuple(np.ascontiguousarray(a[:, cut:]) for a in priv[layer])
+            tail = _cut(priv[layer], cut, copy=True)
             st.chunks[layer] = [tail] if tail[0].shape[1] else []
         st.held_bytes -= cut * per_key * cfg.n_layer
         st.shared, st.base, st.ns = st.shared + new, k * block, ns
@@ -781,14 +817,27 @@ class KVHolder:
         per_key = self._per_key(st)
         for layer in range(st.cfg.n_layer):
             st.chunks[layer] = (
-                [tuple(np.ascontiguousarray(a[:, :part]) for a in st.shared[kb].layers[layer])]
-                if part
-                else []
+                [_cut(st.shared[kb].layers[layer], 0, part, copy=True)] if part else []
             )
             st.n[layer] = keep
         self.pool.release(st.shared[kb:])
         st.held_bytes = part * per_key * st.cfg.n_layer
         st.shared, st.base = st.shared[:kb], kb * block
+
+    def _tq4_chunk(self, st: HolderState, layer: int, k: np.ndarray, v: np.ndarray) -> tuple:
+        """Encode one APPEND for the tq4 store; k, v are [H, n, D] float32.
+
+        Keys are stored as k - mu, mu the per-head mean key of this session's FIRST append to
+        the layer, fixed from then on (encoded keys never shift). mu travels with every chunk
+        in the rotated basis; attention adds q . mu back per chunk, which is exact.
+        """
+        if not self.tq4_center:
+            return (*tq4_encode(k), *tq4_encode(v))
+        mu = st.mu.get(layer)
+        if mu is None:
+            m = k.mean(axis=1)
+            mu = st.mu[layer] = (m, np.ascontiguousarray(m @ tq4_rotation(k.shape[-1]).T))
+        return (*tq4_encode(k - mu[0][:, None, :]), *tq4_encode(v), mu[1])
 
     def _layer_chunks(self, st: HolderState, layer: int) -> list:
         return [b.layers[layer] for b in st.shared] + st.chunks[layer]
@@ -818,7 +867,7 @@ class KVHolder:
                 k = dequant_rows(np.frombuffer(k_raw, np.uint8), n, cfg).transpose(1, 0, 2)
                 v = dequant_rows(np.frombuffer(v_raw, np.uint8), n, cfg, "v").transpose(1, 0, 2)
                 if st.store == "tq4":
-                    st.chunks[layer].append((*tq4_encode(k), *tq4_encode(v)))
+                    st.chunks[layer].append(self._tq4_chunk(st, layer, k, v))
                 else:
                     st.chunks[layer].append((np.ascontiguousarray(k), np.ascontiguousarray(v)))
             else:
@@ -839,7 +888,7 @@ class KVHolder:
                 take = min(size, keep - st.base - have)
                 if take <= 0:
                     break
-                kept.append(tuple(a[:, :take].copy() for a in parts) if take < size else parts)
+                kept.append(_cut(parts, 0, take, copy=True) if take < size else parts)
                 have += take
             st.held_bytes -= (st.n[layer] - keep) * self._per_key(st)
             st.chunks[layer], st.n[layer] = kept, keep
@@ -894,7 +943,7 @@ class KVHolder:
                     take = min(parts[0].shape[1], nk - have)
                     if take <= 0:
                         break
-                    chunks.append(tuple(a[:, :take] for a in parts))
+                    chunks.append(_cut(parts, 0, take))
                     have += take
             else:
                 keys, vals = self._kv(layer, st)

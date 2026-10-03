@@ -98,6 +98,16 @@ takes about 190 ms over 20,000 keys. On a GPU the same format costs nothing extr
 `&store=tq4` added after the token and the WebGPU holder unpacks the 4-bit codes inside its
 shader, answering in 4 to 6 ms over 70,000 keys on a desktop GPU.
 
+A tq4 holder **centers keys** by default. A real model's keys share a large per-head offset
+(Qwen3-0.6B's layer 0), and a 4-bit code cannot hold that offset next to the detail. The
+holder subtracts each head's mean key, fixed by the first append to that layer, before
+encoding. It then adds `scale * q . mean` back to the lse it returns. The softmax is
+unchanged by a per-query constant, so the merge stays exact. Measured on real Qwen3-0.6B KV
+through the holder (last 512 tokens of a 2,048-token document): perplexity 10.27 with
+`f32`, 10.71 with centered tq4 and 35.96 uncentered. A tq4 holder announces this in its
+hello (`"tq4": "centered"`). The relay's `/status` lists a tq4 holder that does not under
+`warnings` as "tq4 uncentered: approximate, known-bad on real models".
+
 On the model's machine use `adk kvholder phone --via lan` (or `--via tunnel` with a `wss://`
 URL) so the holder can reach it. `adk kvholder serve` without `--connect` listens on
 `127.0.0.1:50062` instead; PATN has no authentication, so bind a LAN address only on a

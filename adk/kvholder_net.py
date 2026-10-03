@@ -614,6 +614,7 @@ class Relay:
             "holders": holders,
             "held": self.n[0] if self.n else 0,
             "held_per_layer": list(self.n),
+            "warnings": tq4_warnings(hs),
             "broken": self.broken or None,
             "calls": self.calls,
             "attn_calls": self.attn_calls,
@@ -812,9 +813,34 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             session=session,
             held=held if isinstance(held, int) else None,
         )
+        _note_tq4(relay, ws, hello)
         # This thread now only parks: the relay drives the socket under the holder's lock.
         while any(h.ws is ws for h in relay.holders):
             time.sleep(0.5)
+
+
+TQ4_UNCENTERED = "tq4 uncentered: approximate, known-bad on real models"
+
+
+def _note_tq4(relay: Relay, ws: WebSocket, hello: dict) -> None:
+    """Record whether a tq4 holder centers its keys (hello "tq4": "centered").
+
+    Centering is internal to the holder (its ATTN reply is already exact), so nothing is
+    requested; an old holder that does not announce it is only flagged, loudly.
+    """
+    for h in list(relay.holders):
+        if h.ws is ws:
+            h.tq4 = str(hello.get("tq4", ""))
+            if h.store == "tq4" and h.tq4 != "centered":
+                print(f"kvholder: WARNING {h.device}: {TQ4_UNCENTERED}", flush=True)
+
+
+def tq4_warnings(holders: list) -> list[str]:
+    return [
+        f"{h.device}: {TQ4_UNCENTERED}"
+        for h in holders
+        if h.store == "tq4" and getattr(h, "tq4", "") != "centered"
+    ]
 
 
 class _Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -866,6 +892,7 @@ def dial_holder(url: str, token: str, holder: "kv.KVHolder", once: bool = False)
                         "max_bytes": holder.st.max_bytes,
                         "held": max(holder.st.n) if holder.st.n else 0,
                         "store": holder.st.store,
+                        "tq4": "centered" if getattr(holder, "tq4_center", False) else "",
                     }
                 )
             )
