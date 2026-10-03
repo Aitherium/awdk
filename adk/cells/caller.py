@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Iterator
 
 from .contract import OpSpec, Scope
 
@@ -32,3 +35,21 @@ ANONYMOUS = Caller(subject="anonymous")
 
 def operator(subject: str = "operator") -> Caller:
     return Caller(subject=subject, scopes=frozenset({Scope.operator}))
+
+
+_CURRENT: ContextVar[Caller] = ContextVar("aither_cell_caller", default=ANONYMOUS)
+
+
+def current_caller() -> Caller:
+    """The authenticated caller of the op now running. Transports set it; an op reads
+    it to decide WHOSE data it touches, so tenancy never comes from a payload field."""
+    return _CURRENT.get()
+
+
+@contextmanager
+def acting_as(caller: Caller) -> Iterator[Caller]:
+    token = _CURRENT.set(caller)
+    try:
+        yield caller
+    finally:
+        _CURRENT.reset(token)

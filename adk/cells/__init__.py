@@ -16,7 +16,14 @@ placement decision (``estate.plan``), never a code change::
     await cells.memory.recall(query="why", k=3)      # same call either way
 """
 
-from .caller import ANONYMOUS, Caller, ScopeDeniedError, operator
+from .caller import (
+    ANONYMOUS,
+    Caller,
+    ScopeDeniedError,
+    acting_as,
+    current_caller,
+    operator,
+)
 from .contract import ContractError, ContractSpec, OpSpec, Scope, contract, op, spec_of
 from .estate import Estate, EstateError, Node, PlanError, diff, load, load_files, plan
 from .registry import Cells, UnknownCellError
@@ -26,7 +33,7 @@ from .transport import CellCallError, HttpsTransport, LocalTransport
 __all__ = [
     "ANONYMOUS", "Caller", "CellCallError", "Cells", "ContractError", "ContractSpec",
     "Estate", "EstateError", "HttpsTransport", "LocalTransport", "Node", "OpSpec",
-    "PlanError", "Scope", "ScopeDeniedError", "UnknownCellError", "cli_verbs", "contract",
-    "contract_index", "diff", "load", "load_files", "mcp_tools", "op", "operator",
-    "plan", "schedules", "spec_of",
+    "PlanError", "Scope", "ScopeDeniedError", "UnknownCellError", "acting_as", "cli_verbs",
+    "contract", "contract_index", "current_caller", "diff", "load", "load_files",
+    "mcp_tools", "op", "operator", "plan", "schedules", "spec_of",
 ]

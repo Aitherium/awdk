@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .caller import Caller
+from .caller import Caller, acting_as
 from .contract import OpSpec, spec_of
 
 
@@ -38,7 +38,8 @@ class LocalTransport:
     async def call(self, op: OpSpec, caller: Caller, args: dict[str, Any]) -> Any:
         caller.require(op)
         params = op.params.model_validate(args)
-        result = await getattr(self.impl, op.name)(**dict(params))
+        with acting_as(caller):
+            result = await getattr(self.impl, op.name)(**dict(params))
         return op.result_adapter().validate_python(result)
 
 

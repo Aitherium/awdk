@@ -7,7 +7,7 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import ValidationError
 
-from .caller import Caller, ScopeDeniedError
+from .caller import Caller, ScopeDeniedError, acting_as
 from .contract import ContractSpec, OpSpec
 from .registry import Cells
 from .surfaces import contract_index
@@ -50,7 +50,11 @@ def build_app(cells: Cells, authenticate: Authenticate) -> FastAPI:
                 raise HTTPException(status_code=422, detail=exc.errors()) from None
             except ValueError:
                 raise HTTPException(status_code=422, detail="body is not JSON") from None
-            result = await getattr(impl, op.name)(**dict(params))
+            try:
+                with acting_as(caller):
+                    result = await getattr(impl, op.name)(**dict(params))
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from None
             return {"result": op.result_adapter().dump_python(result, mode="json")}
 
         app.add_api_route(op.route, handler, methods=["POST"], name=op.qualname)
