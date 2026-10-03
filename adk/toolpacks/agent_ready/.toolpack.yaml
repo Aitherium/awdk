@@ -1,0 +1,30 @@
+id: agent_ready
+name: Agent Ready — make any website discoverable and usable by AI agents
+version: 1.0.0
+description: >-
+  Make a website agent-ready and prove it. agent_ready_probe checks a site
+  yourself, with no third party: Content Signals in robots.txt, RFC 8288 Link
+  headers, Accept text/markdown negotiation, the RFC 9727 API catalog, OAuth /
+  OIDC discovery, RFC 9728 protected-resource metadata, auth.md, the MCP server
+  card, the A2A agent card and the agent-skills index, each with a pass/fail
+  verdict, the evidence and the fix. agent_ready_scan runs the public
+  isitagentready.com scanner and returns its verdicts. agent_ready_worker_template
+  hands you the Cloudflare Worker that aitherium.com runs in front of a static
+  GitHub Pages site to add the headers, content types and markdown negotiation
+  static hosting cannot do. Free, keyless, standard library only.
+category: tool_packs
+tier: free
+author: Aitherium
+icon: globe
+tags: [agents, discovery, mcp, a2a, oauth, markdown, cloudflare, seo, well-known]
+
+mcp_tools:
+  - "agent_ready_*"
+
+tool_modules: []
+
+entitlements: []
+
+persona_fragments:
+  - "Agent readiness: you have agent_ready_* tools. Run agent_ready_probe BEFORE and AFTER any change and quote its verdicts; a change you did not re-probe is not done. Never publish a discovery document that advertises an endpoint you have not seen answer: an A2A card with no live A2A transport, or a commerce document with no real checkout, sends agents to doors that are not there. A missing protocol is an honest fail; a fake one is a lie agents will act on."
+  - "Static hosts (GitHub Pages, S3, Netlify without functions) cannot set Link headers, serve an extensionless file as application/linkset+json, or negotiate text/markdown. Put a thin edge layer in front (agent_ready_worker_template) that passes every other request straight through and falls back to plain passthrough on any error."
