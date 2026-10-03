@@ -1032,16 +1032,28 @@ class StatusResult:
     error: str = ""
 
 
-def status(port: int = DEFAULT_PORT) -> StatusResult:
+def status(port: int = DEFAULT_PORT, served_name: str = DEFAULT_SERVED_NAME) -> StatusResult:
+    """Running means OUR model answers on ``port``, not just that something does.
+
+    Measured 2026-10-03: another local server held 8200 and served its own models;
+    this reported "Running" and named that server's first model, so install and
+    quickstart believed the orchestrator was up when it was not.
+    """
     url = f"http://localhost:{port}/v1/models"
     try:
         with urllib.request.urlopen(url, timeout=3) as resp:
             data = json.loads(resp.read())
-            models = [m.get("id", "") for m in data.get("data", [])]
-            return StatusResult(running=True, port=port, url=url,
-                                model=models[0] if models else "")
     except Exception as e:
         return StatusResult(running=False, port=port, url=url, error=str(e))
+    models = [m.get("id", "") for m in (data.get("data") or []) if isinstance(m, dict)]
+    if served_name in models:
+        return StatusResult(running=True, port=port, url=url, model=served_name)
+    shown = ", ".join(models[:3]) or "no models"
+    return StatusResult(
+        running=False, port=port, url=url, model="",
+        error=f"port {port} is held by another server (serving {shown}), not {served_name}; "
+              f"use --port to pick a free port",
+    )
 
 
 def smoke_test(port: int = DEFAULT_PORT, timeout: int = 60) -> bool:
