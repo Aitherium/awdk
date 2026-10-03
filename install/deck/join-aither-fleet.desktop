@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Join Aither fleet
+Comment=Install Aither on this Deck and add it to your fleet (user-level, SteamOS untouched)
+Exec=konsole --hold -e bash -c "curl -fsSL https://raw.githubusercontent.com/Aitherium/awdk/main/install/deck/deck-install.sh | bash"
+Icon=network-connect
+Terminal=false
+Categories=System;
