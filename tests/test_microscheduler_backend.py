@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -218,13 +219,15 @@ def _routed(served_by: str, cross: bool) -> Any:
     return handler
 
 
-def test_a_cross_model_reply_is_refused_as_a_dead_backend() -> None:
+def test_a_cross_model_reply_is_refused_as_a_dead_backend_when_strict() -> None:
     """Measured 2026-09-25: a busy deepseek-v4-flash-pool slot was answered by
     deepseek_api (a cloud model). An eval row scored on that measures the wrong
-    model, so it is refused -- and it is backend_dead, never a scored zero."""
+    model, so a strict backend refuses it -- backend_dead, never a scored zero."""
     from adk.core.backends.microscheduler import CrossModelRouteError
 
-    b = _backend(_routed("deepseek_api", True), model="deepseek-v4-flash-pool")
+    b = _backend(
+        _routed("deepseek_api", True), model="deepseek-v4-flash-pool", allow_cross_model=False
+    )
     with pytest.raises(CrossModelRouteError) as ei:
         b.chat([{"role": "user", "content": "go"}])
     assert ei.value.backend_dead and ei.value.served_by == "deepseek_api"
@@ -234,7 +237,7 @@ def test_a_cross_model_reply_is_refused_as_a_dead_backend() -> None:
 def test_served_by_mismatch_is_refused_even_without_the_flag() -> None:
     from adk.core.backends.microscheduler import CrossModelRouteError
 
-    b = _backend(_routed("kimi-k3", False), model="bonsai2-27b")
+    b = _backend(_routed("kimi-k3", False), model="bonsai2-27b", allow_cross_model=False)
     with pytest.raises(CrossModelRouteError):
         b.chat([{"role": "user", "content": "go"}])
 
@@ -243,14 +246,48 @@ def test_a_same_model_reply_passes_and_names_who_served() -> None:
     b = _backend(_routed("gemma4-12b", False), model="gemma4-12b")
     r = b.chat([{"role": "user", "content": "go"}])
     assert r.model == "gemma4-12b" and b.stats()["cross_model_replies"] == 0
+    assert r.cross_model is False and r.requested == "gemma4-12b"
 
 
-def test_allow_cross_model_accepts_but_still_counts() -> None:
-    b = _backend(
-        _routed("deepseek_api", True), model="deepseek-v4-flash-pool", allow_cross_model=True
-    )
-    r = b.chat([{"role": "user", "content": "go"}])
-    assert r.model == "deepseek_api" and b.stats()["cross_model_replies"] == 1
+def test_default_labels_a_stand_in_reply_and_still_counts(caplog) -> None:
+    """An ordinary adk chat gets the stand-in's answer, labelled with who served
+    it -- not an error where the fleet deliberately served a resident model."""
+    b = _backend(_routed("bonsai2-27b", True), model="deepseek-v4-flash-pool")
+    with caplog.at_level(logging.INFO, logger="adk.backends.microscheduler"):
+        r1 = b.chat([{"role": "user", "content": "go"}])
+        r2 = b.chat([{"role": "user", "content": "go"}])
+    assert r1.content == "OK" and r1.model == "bonsai2-27b"
+    assert r1.cross_model is True and r1.requested == "deepseek-v4-flash-pool"
+    assert r2.cross_model is True
+    assert b.stats()["cross_model_replies"] == 2 and b.errors == 0 and b.calls == 2
+    logged = [rec for rec in caplog.records if "stand-in" in rec.getMessage()]
+    assert len(logged) == 1  # once per served model, not per reply
+
+
+def test_generate_carries_the_route_on_the_model_response() -> None:
+    b = _backend(_routed("bonsai2-27b", True), model="deepseek-v4-flash-pool")
+    resp = asyncio.run(b.generate([Message(role="user", content="go")]))
+    assert resp.model == "bonsai2-27b"
+    assert resp.raw == {
+        "requested": "deepseek-v4-flash-pool",
+        "served_by": "bonsai2-27b",
+        "cross_model": True,
+    }
+    same = _backend(_routed("gemma4-12b", False), model="gemma4-12b")
+    assert asyncio.run(same.generate([Message(role="user", content="go")])).raw is None
+
+
+def test_eval_call_sites_stay_strict() -> None:
+    """The eval harness and the solve/eval-arc profile must refuse a stand-in,
+    byte-identical to before the default flipped."""
+    from types import SimpleNamespace
+
+    from adk.commands._model_profile import build_backend
+
+    b = build_backend(SimpleNamespace(backend="microscheduler", scheduler_url=None, model="m"))
+    assert b.allow_cross_model is False
+    src = Path(__file__).resolve().parents[1] / "adk" / "evalharness" / "arc_agi3" / "suite.py"
+    assert "allow_cross_model=False" in src.read_text(encoding="utf-8")
 
 
 def _capture(seen: List[Dict[str, Any]]) -> Any:

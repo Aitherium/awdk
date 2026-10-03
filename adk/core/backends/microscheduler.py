@@ -15,7 +15,14 @@ in:
   without usage is estimated at 4 characters per token and flagged);
 * **fails loudly**: an unreachable scheduler, a 5xx or a reply with no choices
   raises :class:`SchedulerUnavailableError` (``backend_dead = True``), which the
-  ARC suite turns into exit 2 rather than a scored zero.
+  ARC suite turns into exit 2 rather than a scored zero;
+* **labels a stand-in, never hides it**: when the scheduler answers from a
+  different model than the one asked for (``aither_route.cross_model``), the
+  reply comes back with ``model`` = who served, ``requested`` = who was asked and
+  ``cross_model = True``; it is logged once per served model and counted in
+  ``cross_model_replies``. Evals pass ``allow_cross_model=False`` explicitly and
+  get :class:`CrossModelRouteError` instead (a row scored on a stand-in measures
+  the wrong model).
 
 Where it points: ``base_url=`` > ``$AITHER_MICROSCHEDULER_URL`` > the in-fleet
 name when running inside a container > ``https://127.0.0.1:8150`` on a host.
@@ -29,6 +36,7 @@ The choice is recorded in ``self.model`` and ``self.model_source``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -36,6 +44,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Sequence, Union
 
 from adk.core.model import Message, ModelResponse
+
+logger = logging.getLogger("adk.backends.microscheduler")
 
 __all__ = [
     "ChatReply",
@@ -79,8 +89,9 @@ class CrossModelRouteError(SchedulerUnavailableError):
 
     MicroScheduler falls a busy or down lane over to a cloud peer
     (``aither_route.cross_model``); an eval row scored on that answer measures the
-    wrong model, so it is refused -- a dead backend, never a scored row. Set
-    ``allow_cross_model=True`` on the backend to accept it (it is still counted).
+    wrong model, so it is refused -- a dead backend, never a scored row. Raised
+    only when the backend was built with ``allow_cross_model=False`` (evals); the
+    default labels the reply instead (``ChatReply.cross_model``).
     """
 
     def __init__(self, requested: str, served_by: str) -> None:
@@ -99,6 +110,10 @@ class ChatReply:
     latency_s: float = 0.0
     model: str = ""
     finish_reason: Optional[str] = None
+    #: The model the caller asked for; ``model`` is who actually answered.
+    requested: str = ""
+    #: True when the scheduler served a stand-in (``model != requested``).
+    cross_model: bool = False
 
 
 def _in_container() -> bool:
@@ -132,7 +147,7 @@ class MicroSchedulerBackend:
         timeout: float = 300.0,
         token: Optional[str] = None,
         source: str = "adk.reasoning",
-        allow_cross_model: bool = False,
+        allow_cross_model: bool = True,
         local_only: bool = True,
     ) -> None:
         self.base_url = (base_url or default_scheduler_url()).rstrip("/")
@@ -150,6 +165,7 @@ class MicroSchedulerBackend:
         self.llm_s = 0.0
         self.allow_cross_model = bool(allow_cross_model)
         self.cross_model_replies = 0
+        self._cross_model_logged: set = set()
         # Owner rule 2026-09-25: reasoning-loop and eval runs are LOCAL ONLY. The
         # scheduler honours metadata.local_only BEFORE any cloud hop (a busy local
         # slot queues or fails retryably), so refusing a cross-model reply after
@@ -282,11 +298,19 @@ class MicroSchedulerBackend:
             raise SchedulerUnavailableError("MicroScheduler returned no choices: %r" % (data,))
         route = data.get("aither_route") if isinstance(data.get("aither_route"), dict) else {}
         served_by = str(route.get("served_by") or data.get("model") or model)
-        if route.get("cross_model") or (route and served_by != model):
+        cross_model = bool(route.get("cross_model") or (route and served_by != model))
+        if cross_model:
             self.cross_model_replies += 1
             if not self.allow_cross_model:
                 self.errors += 1
                 raise CrossModelRouteError(model, served_by)
+            if served_by not in self._cross_model_logged:
+                self._cross_model_logged.add(served_by)
+                logger.info(
+                    "MicroScheduler answered '%s' with stand-in '%s'; labelled on the reply",
+                    model,
+                    served_by,
+                )
         msg = choices[0].get("message") or {}
         content = str(msg.get("content") or "")
         usage = {k: int(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, int)}
@@ -307,6 +331,8 @@ class MicroSchedulerBackend:
             latency_s=dt,
             model=served_by,
             finish_reason=choices[0].get("finish_reason"),
+            requested=model,
+            cross_model=cross_model,
         )
 
     def stats(self) -> Dict[str, Any]:
@@ -341,6 +367,9 @@ class MicroSchedulerBackend:
             model=reply.model,
             finish_reason=reply.finish_reason,
             usage=dict(reply.usage),
+            raw={"requested": reply.requested, "served_by": reply.model, "cross_model": True}
+            if reply.cross_model
+            else None,
         )
 
     async def stream(

@@ -49,8 +49,11 @@ def build_backend(args: Any) -> Any:
     if profile == "microscheduler":
         from adk.core.backends.microscheduler import MicroSchedulerBackend
 
+        # Strict (solve / eval-arc): a stand-in answer is refused, not scored.
         return MicroSchedulerBackend(
-            base_url=getattr(args, "scheduler_url", None), model=getattr(args, "model", None)
+            base_url=getattr(args, "scheduler_url", None),
+            model=getattr(args, "model", None),
+            allow_cross_model=False,
         )
     if profile in PROFILES:
         from adk.reasoning.tiers import ReasoningRouter

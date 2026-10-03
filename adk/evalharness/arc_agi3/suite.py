@@ -447,7 +447,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         from .llm_policy import llm_policy
 
-        backend = MicroSchedulerBackend(base_url=args.scheduler_url, model=args.model)
+        # Strict: a row scored on a stand-in model measures the wrong model.
+        backend = MicroSchedulerBackend(
+            base_url=args.scheduler_url, model=args.model, allow_cross_model=False
+        )
         try:
             print(
                 "model: %s (%s) via %s"
