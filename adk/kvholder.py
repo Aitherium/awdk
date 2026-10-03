@@ -64,6 +64,12 @@ CONFIG_REQ = struct.Struct("<11I")
 APPEND_REQ = struct.Struct("<III")
 ATTN_REQ = struct.Struct("<IIIf")
 ATTN_REP = struct.Struct("<IfffII")
+# PATN v4 (adk extension): appended to CONFIG when a model's attention is not Qwen3.8-shaped
+# (DeepSeek MLA: one latent KV head, keys 576 wide, values 512 wide, many query rows).
+# tag, k_dim, v_dim, rows per KV head, V row stride, V bytes per head. A v3 holder reads
+# only the first 44 bytes; ours checks the tag. Default shapes never send it.
+CONFIG_V4 = struct.Struct("<6I")
+V4_TAG = 4
 
 KV_F16, KV_Q8_0, KV_Q4_0 = 0, 1, 2
 KV_TYPES = {"f16": KV_F16, "q8_0": KV_Q8_0, "q4_0": KV_Q4_0}
@@ -95,8 +101,44 @@ class Config:
     gpu_chunk: int = 0
     store_f16: int = 0
     gpu_variant: int = 0
+    k_dim: int = HD
+    v_dim: int = HD
+    rows: int = NR  # query rows per KV head per group of 8 tokens (r = g*8 + t)
+    rs_v: int = 0  # 0: same as rs
+    hb_v: int = 0  # 0: same as hb
+
+    @property
+    def v_rs(self) -> int:
+        return self.rs_v or self.rs
+
+    @property
+    def v_hb(self) -> int:
+        return self.hb_v or self.hb
+
+    @property
+    def is_v3(self) -> bool:
+        return (
+            self.k_dim == HD
+            and self.v_dim == HD
+            and self.rows == NR
+            and self.v_rs == self.rs
+            and self.v_hb == self.hb
+        )
+
+    def side(self, which: str) -> tuple[int, int, int]:
+        """(dim, row stride, bytes per head) for "k" or "v"."""
+        if which == "v":
+            return self.v_dim, self.v_rs, self.v_hb
+        return self.k_dim, self.rs, self.hb
 
     def pack(self) -> bytes:
+        return self._pack_v3() + (
+            b""
+            if self.is_v3
+            else CONFIG_V4.pack(V4_TAG, self.k_dim, self.v_dim, self.rows, self.v_rs, self.v_hb)
+        )
+
+    def _pack_v3(self) -> bytes:
         return CONFIG_REQ.pack(
             self.n_layer,
             self.n_head_kv,
@@ -113,36 +155,61 @@ class Config:
 
     @classmethod
     def unpack(cls, b: bytes) -> "Config":
-        return cls(*CONFIG_REQ.unpack_from(b))
+        c = cls(*CONFIG_REQ.unpack_from(b))
+        if len(b) >= CONFIG_REQ.size + CONFIG_V4.size:
+            tag, kd, vd, rows, rs_v, hb_v = CONFIG_V4.unpack_from(b, CONFIG_REQ.size)
+            if tag == V4_TAG:
+                c.k_dim, c.v_dim, c.rows, c.rs_v, c.hb_v = kd, vd, rows, rs_v, hb_v
+        return c
 
     @classmethod
-    def for_model(cls, n_layer: int, n_head_kv: int, kv: str = "q8_0") -> "Config":
+    def for_model(
+        cls,
+        n_layer: int,
+        n_head_kv: int,
+        kv: str = "q8_0",
+        k_dim: int = HD,
+        v_dim: int = HD,
+        rows: int = NR,
+    ) -> "Config":
         t = KV_TYPES[kv]
-        hb = head_bytes(t)
-        return cls(n_layer=n_layer, n_head_kv=n_head_kv, rs=n_head_kv * hb, hb=hb, is_q8=t)
+        hb, hb_v = head_bytes(t, k_dim), head_bytes(t, v_dim)
+        return cls(
+            n_layer=n_layer,
+            n_head_kv=n_head_kv,
+            rs=n_head_kv * hb,
+            hb=hb,
+            is_q8=t,
+            k_dim=k_dim,
+            v_dim=v_dim,
+            rows=rows,
+            rs_v=n_head_kv * hb_v if hb_v != hb else 0,
+            hb_v=hb_v if hb_v != hb else 0,
+        )
 
 
 # ---------------------------------------------------------------- ggml row codecs
 
 
-def dequant_rows(raw: np.ndarray, n: int, cfg: Config) -> np.ndarray:
-    """``raw`` uint8 [n * rs] -> float32 [n, n_head_kv, HD]."""
-    rows = raw.reshape(n, cfg.rs)[:, : cfg.n_head_kv * cfg.hb].reshape(n, cfg.n_head_kv, cfg.hb)
+def dequant_rows(raw: np.ndarray, n: int, cfg: Config, side: str = "k") -> np.ndarray:
+    """``raw`` uint8 [n * row stride] -> float32 [n, n_head_kv, dim] for the K or V side."""
+    dim, rs, hb = cfg.side(side)
+    rows = raw.reshape(n, rs)[:, : cfg.n_head_kv * hb].reshape(n, cfg.n_head_kv, hb)
     if cfg.is_q8 == KV_F16:
         return rows.copy().view(np.float16).astype(np.float32)
-    nb = HD // 32
+    nb = dim // 32
     if cfg.is_q8 == KV_Q8_0:
         blk = rows.reshape(n, cfg.n_head_kv, nb, 34)
         d = blk[..., :2].copy().view(np.float16).astype(np.float32)  # [n, h, nb, 1]
         q = blk[..., 2:].view(np.int8).astype(np.float32)  # [n, h, nb, 32]
-        return (q * d).reshape(n, cfg.n_head_kv, HD)
+        return (q * d).reshape(n, cfg.n_head_kv, dim)
     if cfg.is_q8 == KV_Q4_0:
         blk = rows.reshape(n, cfg.n_head_kv, nb, 18)
         d = blk[..., :2].copy().view(np.float16).astype(np.float32)
         qs = blk[..., 2:]
         lo = (qs & 0x0F).astype(np.float32) - 8.0
         hi = (qs >> 4).astype(np.float32) - 8.0
-        return (np.concatenate([lo, hi], axis=-1) * d).reshape(n, cfg.n_head_kv, HD)
+        return (np.concatenate([lo, hi], axis=-1) * d).reshape(n, cfg.n_head_kv, dim)
     raise ValueError(f"unknown kv type {cfg.is_q8}")
 
 
@@ -151,10 +218,10 @@ def quant_rows(x: np.ndarray, kv_type: int) -> bytes:
 
     For hosts and tests.
     """
-    n, h, _ = x.shape
+    n, h, dim = x.shape
     if kv_type == KV_F16:
         return x.astype(np.float16).tobytes()
-    nb = HD // 32
+    nb = dim // 32
     b = x.reshape(n, h, nb, 32).astype(np.float32)
     amax = np.abs(b).max(axis=-1, keepdims=True)
     if kv_type == KV_Q8_0:
@@ -182,13 +249,15 @@ def quant_rows(x: np.ndarray, kv_type: int) -> bytes:
 # ---------------------------------------------------------------- the math
 
 
-def _attend(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Online softmax over key chunks. qs [H, r, D] scaled f32; chunks of (K, V) as [H, n, D] f32.
+def _attend(
+    qs: np.ndarray, chunks, v_dim: int | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Online softmax over key chunks. qs [H, r, Dk] scaled f32; chunks of (K [H,n,Dk], V [H,n,Dv]).
 
-    Returns the unnormalized accumulator, running max and denominator.
+    Returns the unnormalized accumulator [H, r, Dv], running max and denominator.
     """
     n_h, n_r, n_d = qs.shape
-    acc = np.zeros((n_h, n_r, n_d), np.float32)
+    acc = np.zeros((n_h, n_r, v_dim or n_d), np.float32)
     m = np.full((n_h, n_r), -np.inf, np.float32)
     den = np.zeros((n_h, n_r), np.float32)
     for k, v in chunks:
@@ -205,10 +274,10 @@ def _attend(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 
 
 def _rows(n_r: int, n_tok: int | None) -> np.ndarray:
-    """PATN query rows r = g*8 + t; t >= n_tok are padding."""
-    if n_tok is None or n_r != NR:
+    """PATN query rows r = g*8 + t (8 tokens per group); t >= n_tok are padding."""
+    if n_tok is None or n_r % 8:
         return np.arange(n_r)
-    return np.flatnonzero(np.arange(NR) % 8 < n_tok)
+    return np.flatnonzero(np.arange(n_r) % 8 < n_tok)
 
 
 def _finish(
@@ -235,8 +304,9 @@ def partial_attention(
     ``n_tok`` (PATN rows r = g*8 + t), rows with t >= n_tok are padding: skipped, left -inf.
     """
     rows = _rows(q.shape[1], n_tok)
+    out_shape = q.shape[:2] + (vals.shape[-1],)
     if keys.shape[0] == 0 or rows.size == 0:
-        return np.zeros(q.shape, np.float32), np.full(q.shape[:2], -np.inf, np.float32)
+        return np.zeros(out_shape, np.float32), np.full(q.shape[:2], -np.inf, np.float32)
     qs = np.ascontiguousarray(q[:, rows].astype(np.float32) * np.float32(scale))
     chunks = (
         (
@@ -245,7 +315,7 @@ def partial_attention(
         )
         for c in range(0, keys.shape[0], _ATTN_CHUNK)
     )
-    return _finish(q.shape, rows, *_attend(qs, chunks))
+    return _finish(out_shape, rows, *_attend(qs, chunks, vals.shape[-1]))
 
 
 # ---------------------------------------------------------------- TurboQuant-style 4-bit store
@@ -330,7 +400,7 @@ def _attend_tq4(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndar
     """
     n_h, n_r, n_d = qs.shape
     inv = np.float32(1.0 / np.sqrt(n_d))
-    acc = np.zeros((n_h, n_r, n_d), np.float32)
+    acc = None
     m = np.full((n_h, n_r), -np.inf, np.float32)
     den = np.zeros((n_h, n_r), np.float32)
     for kc, kn, vc, vn in chunks:
@@ -342,8 +412,12 @@ def _attend_tq4(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndar
         mx = np.maximum(m, scores.max(axis=-1))
         a = np.exp(m - mx)
         probs = np.exp(scores - mx[..., None])
-        v = np.take(_TQ4_PAIRS, vc, axis=0).reshape(n_h, n, n_d)
-        acc = acc * a[..., None] + np.matmul(probs * (vn * inv)[:, None, :], v)
+        v_d = vc.shape[-1] * 2
+        v = np.take(_TQ4_PAIRS, vc, axis=0).reshape(n_h, n, v_d)
+        inv_v = np.float32(1.0 / np.sqrt(v_d))
+        if acc is None:
+            acc = np.zeros((n_h, n_r, v_d), np.float32)
+        acc = acc * a[..., None] + np.matmul(probs * (vn * inv_v)[:, None, :], v)
         den = den * a + probs.sum(axis=-1)
         m = mx
     return acc, m, den
@@ -471,10 +545,10 @@ class KVHolder:
         """Bytes one key costs on every layer it is appended to (K and V)."""
         cfg = self.st.cfg
         if self.st.store == "f32":
-            return 2 * cfg.n_head_kv * HD * 4
+            return cfg.n_head_kv * (cfg.k_dim + cfg.v_dim) * 4
         if self.st.store == "tq4":
-            return 2 * cfg.n_head_kv * (HD // 2 + 4)
-        return 2 * cfg.rs
+            return cfg.n_head_kv * (cfg.k_dim // 2 + 4 + cfg.v_dim // 2 + 4)
+        return cfg.rs + cfg.v_rs
 
     def handle(self, mtype: int, p: bytes) -> tuple[int, bytes] | None:
         """One request -> (reply type, payload); None = close the session."""
@@ -486,10 +560,26 @@ class KVHolder:
             if len(p) < CONFIG_REQ.size:
                 return ERR, b"short CONFIG"
             c = Config.unpack(p)
-            if not (0 < c.n_head_kv <= 16 and 0 < c.n_layer <= 256 and c.rs >= c.n_head_kv * c.hb):
+            shape_ok = (
+                0 < c.n_head_kv <= 16
+                and 0 < c.n_layer <= 256
+                and 0 < c.rows <= 1024
+                and c.rows % 8 == 0
+                and all(0 < d <= 4096 and d % 32 == 0 for d in (c.k_dim, c.v_dim))
+                and c.rs >= c.n_head_kv * c.hb
+                and c.v_rs >= c.n_head_kv * c.v_hb
+            )
+            if not shape_ok:
                 return ERR, b"bad CONFIG"
-            if c.is_q8 not in (KV_F16, KV_Q8_0, KV_Q4_0) or c.hb != head_bytes(c.is_q8):
+            if (
+                c.is_q8 not in (KV_F16, KV_Q8_0, KV_Q4_0)
+                or c.hb != head_bytes(c.is_q8, c.k_dim)
+                or c.v_hb != head_bytes(c.is_q8, c.v_dim)
+            ):
                 return ERR, b"bad CONFIG: unsupported row format"
+            pow2 = all(d & (d - 1) == 0 for d in (c.k_dim, c.v_dim))
+            if st.store == "tq4" and not pow2:
+                return ERR, b"bad CONFIG: tq4 needs power-of-two head dims (use f32 or wire)"
             with st.lock:
                 st.cfg = c
                 st.raw = [[] for _ in range(c.n_layer)]
@@ -535,8 +625,8 @@ class KVHolder:
             return ERR, b"short APPEND"
         layer, pos0, n = APPEND_REQ.unpack_from(p)
         cfg = st.cfg
-        nbytes = n * cfg.rs
-        if layer >= cfg.n_layer or len(p) != APPEND_REQ.size + 2 * nbytes:
+        nbytes, vbytes = n * cfg.rs, n * cfg.v_rs
+        if layer >= cfg.n_layer or len(p) != APPEND_REQ.size + nbytes + vbytes:
             return ERR, b"bad APPEND"
         with st.lock:
             if pos0 != st.n[layer]:
@@ -545,10 +635,10 @@ class KVHolder:
             if st.held_bytes + cost > st.max_bytes:
                 return ERR, f"out of memory at {st.n[layer]} keys".encode()
             off = APPEND_REQ.size
-            k_raw, v_raw = p[off : off + nbytes], p[off + nbytes : off + 2 * nbytes]
+            k_raw, v_raw = p[off : off + nbytes], p[off + nbytes : off + nbytes + vbytes]
             if st.store in ("f32", "tq4"):
                 k = dequant_rows(np.frombuffer(k_raw, np.uint8), n, cfg).transpose(1, 0, 2)
-                v = dequant_rows(np.frombuffer(v_raw, np.uint8), n, cfg).transpose(1, 0, 2)
+                v = dequant_rows(np.frombuffer(v_raw, np.uint8), n, cfg, "v").transpose(1, 0, 2)
                 if st.store == "tq4":
                     st.chunks[layer].append((*tq4_encode(k), *tq4_encode(v)))
                 else:
@@ -576,10 +666,10 @@ class KVHolder:
             st.held_bytes -= (st.n[layer] - keep) * self._per_key()
             st.chunks[layer], st.n[layer] = kept, keep
             return
-        rs = st.cfg.rs
+        rs, v_rs = st.cfg.rs, st.cfg.v_rs
         k = b"".join(st.raw[layer])[: keep * rs]
-        v = b"".join(st.raw_v[layer])[: keep * rs]
-        st.held_bytes -= 2 * (st.n[layer] - keep) * rs
+        v = b"".join(st.raw_v[layer])[: keep * v_rs]
+        st.held_bytes -= (st.n[layer] - keep) * (rs + v_rs)
         st.raw[layer], st.raw_v[layer], st.n[layer] = [k], [v], keep
         st.cache.pop(layer, None)
 
@@ -590,7 +680,7 @@ class KVHolder:
             return hit[1], hit[2]
         n = st.n[layer]
         keys = dequant_rows(np.frombuffer(b"".join(st.raw[layer]), np.uint8), n, st.cfg)
-        vals = dequant_rows(np.frombuffer(b"".join(st.raw_v[layer]), np.uint8), n, st.cfg)
+        vals = dequant_rows(np.frombuffer(b"".join(st.raw_v[layer]), np.uint8), n, st.cfg, "v")
         st.cache = {
             layer: (n, keys, vals)
         }  # one layer hot: decode walks layers in order, memory stays bounded
@@ -602,7 +692,7 @@ class KVHolder:
             return ERR, b"short ATTN"
         layer, n_tok, nk, scale = ATTN_REQ.unpack_from(p)
         cfg = st.cfg
-        qn = cfg.n_head_kv * NR * HD
+        qn = cfg.n_head_kv * cfg.rows * cfg.k_dim
         body = p[ATTN_REQ.size :]
         ng = len(body) // (2 * qn)
         if (
@@ -614,7 +704,9 @@ class KVHolder:
         ):
             return ERR, b"bad ATTN"
         t0 = time.perf_counter()
-        q = np.frombuffer(body, np.float16).astype(np.float32).reshape(ng, cfg.n_head_kv, NR, HD)
+        q = np.frombuffer(body, np.float16).astype(np.float32)
+        q = q.reshape(ng, cfg.n_head_kv, cfg.rows, cfg.k_dim)
+        out_shape = (cfg.n_head_kv, cfg.rows, cfg.v_dim)
         with st.lock:
             held = st.n[layer]
             nk = held if nk == 0 else min(nk, held)
@@ -630,20 +722,20 @@ class KVHolder:
                 keys, vals = self._kv(layer)
                 keys, vals = keys[:nk], vals[:nk]
         outs, lses = [], []
-        rows = _rows(NR, n_tok)
+        rows = _rows(cfg.rows, n_tok)
         for g in range(ng):
             if st.store in ("f32", "tq4"):
                 if nk == 0 or rows.size == 0:
-                    o = np.zeros(q[g].shape, np.float32)
-                    s = np.full(q[g].shape[:2], -np.inf, np.float32)
+                    o = np.zeros(out_shape, np.float32)
+                    s = np.full(out_shape[:2], -np.inf, np.float32)
                 elif st.store == "tq4":  # scores in the rotated basis; rotate the output back
-                    rot = tq4_rotation(HD)
-                    qs = np.ascontiguousarray((q[g][:, rows] * np.float32(scale)) @ rot.T)
+                    rot_k, rot_v = tq4_rotation(cfg.k_dim), tq4_rotation(cfg.v_dim)
+                    qs = np.ascontiguousarray((q[g][:, rows] * np.float32(scale)) @ rot_k.T)
                     acc, m, den = _attend_tq4(qs, chunks)
-                    o, s = _finish(q[g].shape, rows, acc @ rot, m, den)
+                    o, s = _finish(out_shape, rows, acc @ rot_v, m, den)
                 else:
                     qs = np.ascontiguousarray(q[g][:, rows] * np.float32(scale))
-                    o, s = _finish(q[g].shape, rows, *_attend(qs, chunks))
+                    o, s = _finish(out_shape, rows, *_attend(qs, chunks, cfg.v_dim))
             else:
                 o, s = partial_attention(q[g], keys, vals, scale, n_tok=n_tok)
             outs.append(o)
@@ -749,13 +841,14 @@ class KVHolderClient:
             expect=ATTN_OK,
         )
         nk_r, ms, gpu_ms, sme_ms, gp, pages = ATTN_REP.unpack_from(rep)
-        on = ng * h * NR * HD
+        nr, dv = self.cfg.rows, self.cfg.v_dim
+        on = ng * h * nr * dv
         out = (
             np.frombuffer(rep, np.float16, on, ATTN_REP.size)
             .astype(np.float32)
-            .reshape(ng, h, NR, HD)
+            .reshape(ng, h, nr, dv)
         )
-        lse = np.frombuffer(rep, np.float32, ng * h * NR, ATTN_REP.size + on * 2).reshape(ng, h, NR)
+        lse = np.frombuffer(rep, np.float32, ng * h * nr, ATTN_REP.size + on * 2).reshape(ng, h, nr)
         meta = {
             "nk": nk_r,
             "ms": ms,

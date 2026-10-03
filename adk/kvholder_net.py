@@ -313,11 +313,15 @@ class Relay:
     def _place(self, h: _Attached) -> None:
         """Give ``h`` the next free key range (the CONFIG must be known)."""
         assert self.cfg is not None
-        row = {"f16": 2, "f32": 4}.get(h.store)
-        row_bytes = self.cfg.n_head_kv * kv.HD * row if row else self.cfg.rs
-        if h.store == "tq4":
-            row_bytes = self.cfg.n_head_kv * (kv.HD // 2 + 4)
-        per_key = 2 * row_bytes * self.cfg.n_layer
+        cfg = self.cfg
+        elem = {"f16": 2, "f32": 4}.get(h.store)
+        if elem:
+            key_bytes = cfg.n_head_kv * (cfg.k_dim + cfg.v_dim) * elem
+        elif h.store == "tq4":
+            key_bytes = cfg.n_head_kv * (cfg.k_dim // 2 + 4 + cfg.v_dim // 2 + 4)
+        else:
+            key_bytes = cfg.rs + cfg.v_rs
+        per_key = key_bytes * cfg.n_layer
         h.cap = None if h.max_bytes is None else (h.max_bytes // per_key) // 64 * 64
         h.off = 0
         for o in self.holders:
@@ -436,13 +440,13 @@ class Relay:
         if self.cfg is None or len(p) < kv.APPEND_REQ.size:
             return _err("short APPEND")
         layer, pos0, n = kv.APPEND_REQ.unpack_from(p)
-        rs = self.cfg.rs
-        if layer >= self.cfg.n_layer or len(p) != kv.APPEND_REQ.size + 2 * n * rs:
+        rs, v_rs = self.cfg.rs, self.cfg.v_rs
+        if layer >= self.cfg.n_layer or len(p) != kv.APPEND_REQ.size + n * (rs + v_rs):
             return _err("bad APPEND")
         if pos0 != self.n[layer]:
             return _err(f"APPEND pos0 {pos0} != held {self.n[layer]}")
         keys = p[kv.APPEND_REQ.size : kv.APPEND_REQ.size + n * rs]
-        vals = p[kv.APPEND_REQ.size + n * rs :]
+        vals = p[kv.APPEND_REQ.size + n * rs : kv.APPEND_REQ.size + n * (rs + v_rs)]
         plan, done = [], 0  # place every row BEFORE sending any: a refused APPEND changes nothing
         for h in self.holders:
             if done == n:
@@ -457,8 +461,9 @@ class Relay:
             return _err(f"out of memory at {pos0 + done} keys (no holder has room)")
         for i, (h, pos, take, at) in enumerate(plan):
             sub = kv.APPEND_REQ.pack(layer, pos - h.off, take)
-            a, b = at * rs, (at + take) * rs
-            rep = self._call(h, _msg(kv.APPEND, sub + keys[a:b] + vals[a:b]))
+            ka, kb = at * rs, (at + take) * rs
+            va, vb = at * v_rs, (at + take) * v_rs
+            rep = self._call(h, _msg(kv.APPEND, sub + keys[ka:kb] + vals[va:vb]))
             if _type(rep) != kv.OK:
                 if i:  # earlier holders already took their rows: the state is split, say so
                     self.broken = f"APPEND split failed at {pos} keys ({h.device}: {_text(rep)})"
@@ -488,15 +493,16 @@ class Relay:
         if len(parts) == 1 and parts[0][0].off == 0:  # one holder: pass straight through
             req = kv.ATTN_REQ.pack(layer, n_tok, nk_all, scale) + q
             return self._call(parts[0][0], _msg(mtype, req))
-        qn = self.cfg.n_head_kv * kv.NR * kv.HD
+        qn = self.cfg.n_head_kv * self.cfg.rows * self.cfg.k_dim
+        dv = self.cfg.v_dim
         ng = len(q) // (2 * qn)
-        rows = ng * self.cfg.n_head_kv * kv.NR
+        rows = ng * self.cfg.n_head_kv * self.cfg.rows
         if ng < 1 or len(q) != ng * 2 * qn:
             return _err("bad ATTN")
         if not parts:
             lse = struct.pack(f"<{rows}f", *([float("-inf")] * rows))
             head = kv.ATTN_REP.pack(0, 0.0, 0.0, 0.0, 0, 0)
-            return _msg(kv.ATTN_OK, head + bytes(rows * kv.HD * 2) + lse)
+            return _msg(kv.ATTN_OK, head + bytes(rows * dv * 2) + lse)
         np = kv.np
         if np is None:
             return _err("the relay needs numpy to merge several holders")
@@ -522,9 +528,9 @@ class Relay:
                 return rep
             body = rep[kv.HDR.size :]
             _, t_ms, _, _, _, pg = kv.ATTN_REP.unpack_from(body)
-            o = np.frombuffer(body, np.float16, rows * kv.HD, kv.ATTN_REP.size)
-            lse = np.frombuffer(body, np.float32, rows, kv.ATTN_REP.size + rows * kv.HD * 2)
-            merged.append((o.astype(np.float32).reshape(rows, kv.HD), lse))
+            o = np.frombuffer(body, np.float16, rows * dv, kv.ATTN_REP.size)
+            lse = np.frombuffer(body, np.float32, rows, kv.ATTN_REP.size + rows * dv * 2)
+            merged.append((o.astype(np.float32).reshape(rows, dv), lse))
             ms, pages = max(ms, t_ms), pages + pg
         o, lse = kv.merge_partials(merged)
         head = kv.ATTN_REP.pack(nk_all, ms, 0.0, 0.0, 0, pages)

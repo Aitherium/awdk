@@ -358,6 +358,7 @@ class Holder {
         if (p.length < 44) return this.err('short CONFIG');
         const c = {nLayer: dv.getUint32(0, true), nkv: dv.getUint32(4, true), rs: dv.getUint32(8, true), hb: dv.getUint32(12, true), type: dv.getUint32(16, true)};
         if (!(c.nkv > 0 && c.nkv <= 16 && c.nLayer > 0 && c.nLayer <= 256 && c.rs >= c.nkv * c.hb)) return this.err('bad CONFIG');
+        if (p.length >= 68 && dv.getUint32(44, true) === 4) return this.err('this holder speaks PATN v3 shapes only (keys and values 256 wide, 48 rows)');
         if (headBytes(c.type) !== c.hb) return this.err('bad CONFIG: unsupported row format');
         this.cfg = c; this.engine.configure(c); this.held = 0;
         return [T.OK, new Uint8Array(0)];
