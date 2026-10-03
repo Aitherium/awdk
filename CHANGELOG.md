@@ -4,6 +4,33 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.50] - 2026-10-03
+
+### Added
+
+- **Mesh holders find the relay themselves.** `adk kvholder phone --via lan --mesh` opens
+  a door; `adk kvholder serve --mesh` on another machine finds it (peers, this machine, a
+  LAN UDP query, tailscale/WireGuard overlay peers), asks, and waits for the owner's
+  `adk kvholder mesh approve CODE` (or a `--mesh-admit CIDR` network). Approval mints a
+  single-use join token only the asking holder can collect; the master token never
+  leaves the relay's machine. awsh tools `awsh_kvholder_{status,pending,join,elastic}`
+  and owner-gated `/kvholder/*` routes on the harness daemon.
+- **PATN v4 and the shared KV pool.** Holders take any attention shape (MLA keys 576,
+  values 512); engine sessions attach to prefix blocks already on the holders
+  (`adk.kvpool`, copy-on-write, refcounts, `adk kvholder pool status`).
+- **tq4 centers keys by default** (10.71 vs 35.96 perplexity on real Qwen3-0.6B KV), in
+  the Python holder, the browser holder and a CPU fallback when WebGPU is absent.
+- **`adk kvholder chat`**: a real model whose old context lives on the holders.
+- **Holder page and swarm view.** An Aitherium holder page, a `/swarm` owner view for
+  several phones, and `/kvholder/status|relay|join` on the adk daemon.
+- **Steam Deck.** One-command userland node; it enrols as `node_class` deck and lends
+  memory through mesh discovery when docked, on AC and idle.
+
+### Fixed
+
+- `--via usb` opens the holder on every phone on the cable; phone links open in Chrome;
+  LAN prints a QR and a firewall hint; no silent port share on Windows.
+
 ## [3.8.49] - 2026-10-03
 
 ### Added
