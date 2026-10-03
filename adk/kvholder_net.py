@@ -1219,12 +1219,11 @@ def run_phone(args) -> int:
                 file=sys.stderr,
             )
         else:
-            err = adb_link(args.web_port, url, args.serial or None)
-            print(
-                f"kvholder: {err}"
-                if err
-                else f"kvholder: opened the holder page on {args.serial or devs[0]}"
-            )
+            # every phone on the cable joins (one swarm), unless --serial picks one: a bare
+            # `adb reverse` with several phones plugged in fails with "more than one device"
+            for serial in [args.serial] if args.serial else devs:
+                err = adb_link(args.web_port, url, serial)
+                print(f"kvholder: {serial}: {err}" if err else f"kvholder: opened on {serial}")
         print(f"phone URL: {url}   (localhost on the phone = WebGPU allowed)")
     elif args.via == "lan":
         adv = args.host or lan_ip()
@@ -1254,6 +1253,7 @@ def run_phone(args) -> int:
         f"ws://<this-host>:{args.web_port}/holder --token {token}"
     )
     print("more holders on demand: adk kvholder elastic --count N")
+    print(f"swarm view (this machine): http://127.0.0.1:{args.web_port}/swarm#m={token}")
     write_state(
         {
             "engine_port": args.port,

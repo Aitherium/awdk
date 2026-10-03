@@ -106,3 +106,35 @@ def test_a_second_relay_on_the_same_port_fails_loudly():
         s.close()
     finally:
         net.stop_relay(r, servers)
+
+
+def test_usb_links_every_phone_on_the_cable(monkeypatch, tmp_path, capsys):
+    import argparse
+    import socket
+
+    def free() -> int:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    linked: list = []
+    monkeypatch.setattr(net, "adb_devices", lambda: ["A", "B", "C"])
+    monkeypatch.setattr(net, "adb_link", lambda port, url, serial=None: linked.append(serial) or "")
+    monkeypatch.setattr(net, "state_path", lambda: tmp_path / "relay.json")
+
+    def stop(_s):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(net.time, "sleep", stop)
+    args = argparse.Namespace(
+        via="usb", port=free(), web_port=free(), host="", token="tk", serial="", mesh=False
+    )
+    assert net.run_phone(args) == 0
+    assert linked == ["A", "B", "C"]
+    assert "/swarm#m=tk" in capsys.readouterr().out
+    linked.clear()
+    args.port, args.web_port, args.serial = free(), free(), "B"
+    net.run_phone(args)
+    assert linked == ["B"]
