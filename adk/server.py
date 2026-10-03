@@ -5652,6 +5652,12 @@ def create_app(
                 except (ImportError, RuntimeError, OSError) as bridge_exc:
                     logger.debug("Aither bridge startup failed (non-fatal): %s", bridge_exc)
 
+            # Mirror node rooms to the workspace relay channel (opt-in:
+            # AITHER_ROOM_BRIDGE=1 on an enrolled node). Off -> purely local.
+            room_bridge = await chat.start_room_bridge()
+            if room_bridge:
+                _state["room_bridge"] = room_bridge
+
             logger.info("Chat relay initialized (channels=%d)", len(chat._channels))
         except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("Chat relay init failed (non-fatal): %s", exc)

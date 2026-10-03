@@ -609,3 +609,244 @@ class RelayClient:
 
     def stop(self) -> None:
         self._running = False
+
+
+# ── Node room <-> platform relay bridge ─────────────────────────────────────
+
+#: How many outbound posts wait while the relay is unreachable. The node keeps
+#: working locally either way; past this the OLDEST unsent lines are dropped and
+#: counted, so a week offline cannot grow memory without bound.
+_BRIDGE_PENDING_MAX = 200
+#: Remembered fingerprints of what this bridge posted, for echo suppression when
+#: the relay's POST answer carries no message id.
+_BRIDGE_SENT_MEMORY = 500
+
+
+def _row_id(row: dict) -> str:
+    return str(row.get("id") or row.get("message_id") or row.get("msg_id") or "")
+
+
+def _echo_key(nick: str, content: str) -> str:
+    return f"{(nick or '').lower()}\x00{(content or '').strip()}"
+
+
+class RoomBridge:
+    """Mirror node chat rooms (``adk.chat.ChatRelay``) to platform relay channels.
+
+    A node's ChatRelay is its own SQLite store; without this, ``#general`` on a
+    node and the workspace room on the relay share a NAME and nothing else, so
+    awsh ``/room``, the awdesk room and Commons each show a different
+    conversation. The bridge carries messages both ways:
+
+    * local -> relay: ``ChatRelay.post()`` fans to :meth:`enqueue`; :meth:`flush`
+      posts each line to the mapped relay channel. A line written by someone
+      other than the bridge's own identity is sent as ``<nick> text`` so the room
+      still says who spoke.
+    * relay -> local: :meth:`pull_once` reads each mapped channel and hands new
+      rows to ``ChatRelay.ingest_bridged()``, which stores them WITHOUT fanning
+      them back out.
+
+    Echo suppression, both directions: a relay row this bridge posted (by the id
+    the relay returned, or by sender+content when it returned none) is never
+    pulled back in; a bridged-in local message never reaches :meth:`enqueue`
+    (``ingest_bridged`` skips the outbound fan), and :meth:`enqueue` also refuses
+    any message whose ``node_id`` marks it as relay-origin.
+
+    Offline is a normal state: a failed post stays queued (bounded) and is retried
+    on the next :meth:`flush`; a failed read is skipped. Neither ever raises into
+    the chat relay.
+    """
+
+    ORIGIN = "relay"
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        nick: str,
+        rooms: dict[str, str],
+        *,
+        poll_interval: float = _DEFAULT_POLL_S,
+        verify: Union[bool, str, None] = None,
+        window: int = _CHANNEL_WINDOW,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.nick = nick
+        #: local channel -> relay channel, both with a leading '#'.
+        self.rooms: dict[str, str] = {
+            (k if k.startswith("#") else f"#{k}"): (v if v.startswith("#") else f"#{v}")
+            for k, v in rooms.items() if k and v
+        }
+        self.poll_interval = poll_interval
+        self.verify: Union[bool, str] = tls_verify() if verify is None else verify
+        self.window = window
+        self._pending: list[tuple[str, str]] = []      # (relay channel, content)
+        self.dropped = 0
+        self._sent_ids: set[str] = set()
+        self._sent_keys: list[str] = []                # FIFO of _echo_key
+        self._seen: dict[str, set[str]] = {}           # relay channel -> row ids
+        self._primed: set[str] = set()
+        self._running = False
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+
+    def _url(self, remote: str) -> str:
+        return f"{self.base_url}/channels/{remote.lstrip('#')}/messages"
+
+    # ── local -> relay ──────────────────────────────────────────────────
+    def enqueue(self, msg: Any) -> bool:
+        """Outbound handler for ``ChatRelay.register_outbound_handler``.
+
+        Sync and non-blocking: it only queues. Returns True when queued.
+        """
+        channel = getattr(msg, "channel", "")
+        remote = self.rooms.get(channel)
+        if not remote:
+            return False
+        if getattr(msg, "msg_type", "message") != "message":
+            return False
+        if str(getattr(msg, "node_id", "")).startswith(self.ORIGIN):
+            return False                               # came FROM the relay
+        text = str(getattr(msg, "content", "") or "")
+        if not text.strip():
+            return False
+        author = str(getattr(msg, "nick", "") or "")
+        if author and author.lower() != self.nick.lower():
+            text = f"<{author}> {text}"
+        self._pending.append((remote, text))
+        if len(self._pending) > _BRIDGE_PENDING_MAX:
+            overflow = len(self._pending) - _BRIDGE_PENDING_MAX
+            del self._pending[:overflow]
+            self.dropped += overflow
+            logger.warning("room bridge: relay unreachable, dropped %d oldest unsent line(s)",
+                           overflow)
+        return True
+
+    def _remember_sent(self, remote: str, content: str, data: Any) -> None:
+        rid = ""
+        if isinstance(data, dict):
+            inner = data.get("message")
+            rid = _row_id(data) or (_row_id(inner) if isinstance(inner, dict) else "")
+        if rid:
+            self._sent_ids.add(rid)
+            self._seen.setdefault(remote, set()).add(rid)
+            return
+        self._sent_keys.append(_echo_key(self.nick, content))
+        if len(self._sent_keys) > _BRIDGE_SENT_MEMORY:
+            del self._sent_keys[: len(self._sent_keys) - _BRIDGE_SENT_MEMORY]
+
+    async def flush(self, client: httpx.AsyncClient) -> int:
+        """Post queued lines in order. Returns how many the relay accepted.
+
+        Stops at the first failure and keeps it (and everything after it) queued,
+        so order survives an outage.
+        """
+        sent = 0
+        while self._pending:
+            remote, content = self._pending[0]
+            try:
+                r = await client.post(self._url(remote), headers=self._headers(),
+                                      json={"channel": remote, "nick": self.nick,
+                                            "content": content})
+            except httpx.HTTPError as exc:
+                logger.info("room bridge: relay unreachable (%s); %d line(s) queued",
+                            type(exc).__name__, len(self._pending))
+                return sent
+            if r.status_code not in (200, 201):
+                if 400 <= r.status_code < 500 and r.status_code not in (408, 429):
+                    # The relay REFUSED this line; retrying it forever would wedge
+                    # every line behind it. Loud, then dropped.
+                    logger.error("room bridge: relay refused a line for %s (%s): %s",
+                                 remote, r.status_code, r.text[:160])
+                    self._pending.pop(0)
+                    self.dropped += 1
+                    continue
+                logger.info("room bridge: relay answered %s; %d line(s) queued",
+                            r.status_code, len(self._pending))
+                return sent
+            try:
+                data = r.json()
+            except ValueError:
+                data = None
+            self._remember_sent(remote, content, data)
+            self._pending.pop(0)
+            sent += 1
+        return sent
+
+    # ── relay -> local ──────────────────────────────────────────────────
+    def _is_echo(self, row: dict) -> bool:
+        if _row_id(row) in self._sent_ids:
+            return True
+        sender = str(row.get("nick") or row.get("from_nick") or "")
+        key = _echo_key(sender, str(row.get("content") or ""))
+        if key in self._sent_keys:
+            self._sent_keys.remove(key)   # one echo per post
+            return True
+        return False
+
+    async def pull_once(self, client: httpx.AsyncClient, chat: Any) -> int:
+        """Read every mapped relay channel; ingest new rows. Returns rows ingested.
+
+        The first read of a channel only marks its backlog, exactly like
+        ``RelayClient.poll_channel_once``: a restart must not replay the window.
+        """
+        ingested = 0
+        for local, remote in self.rooms.items():
+            try:
+                r = await client.get(f"{self._url(remote)}?limit={self.window}",
+                                     headers=self._headers())
+            except httpx.HTTPError as exc:
+                logger.debug("room bridge: read %s failed (%s)", remote, exc)
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                rows = RelayClient._rows(r.json())
+            except ValueError:
+                continue
+            seen = self._seen.setdefault(remote, set())
+            if remote not in self._primed:
+                self._primed.add(remote)
+                seen.update(i for i in (_row_id(x) for x in rows) if i)
+                continue
+            for row in rows:
+                rid = _row_id(row)
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                if self._is_echo(row):
+                    continue
+                sender = str(row.get("nick") or row.get("from_nick") or "")
+                content = str(row.get("content") or "")
+                if not content:
+                    continue
+                ts = row.get("timestamp") or row.get("created_at")
+                stored = chat.ingest_bridged(
+                    local, sender, content, remote_id=f"{remote}:{rid}",
+                    timestamp=ts if isinstance(ts, (int, float)) else 0.0)
+                if stored is not None:
+                    ingested += 1
+        return ingested
+
+    # ── lifecycle ───────────────────────────────────────────────────────
+    async def run(self, chat: Any) -> None:
+        """Flush + pull forever. Network trouble is logged, never fatal."""
+        self._running = True
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30,
+                                     verify=self.verify) as client:
+            while self._running:
+                try:
+                    await self.flush(client)
+                    await self.pull_once(client, chat)
+                except Exception as exc:  # noqa: BLE001 - the local room must survive
+                    logger.warning("room bridge: pass failed (continuing): %s", exc)
+                await asyncio.sleep(self.poll_interval)
+
+    def stop(self) -> None:
+        self._running = False
+
+    def status(self) -> dict[str, Any]:
+        return {"rooms": dict(self.rooms), "pending": len(self._pending),
+                "dropped": self.dropped, "running": self._running}

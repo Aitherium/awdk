@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -35,6 +36,11 @@ _MAX_HISTORY = 500
 _MAX_MESSAGE_LEN = 4000
 _NICK_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_\-\.]{0,31}$")
 _CHANNEL_RE = re.compile(r"^#[a-zA-Z0-9_\-]{1,48}$")
+#: node_id stamped on messages that arrived from the platform relay.
+_BRIDGE_ORIGIN = "relay"
+_BRIDGE_HANDLER = "platform-relay-bridge"
+_RELAY_CLOUD_BASE = "https://relay.aitherium.com/api/relay/v1"
+_TRUTHY = ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -112,6 +118,8 @@ class ChatRelay:
         # so an external integration (e.g. a channel gateway) can relay a room
         # message back out to its origin channel. Fire-and-forget; never blocks post().
         self._outbound_handlers: dict[str, Callable] = {}
+        # adk.relay_client.RoomBridge when this node's rooms mirror the platform relay.
+        self._room_bridge: Any = None
 
         # Setup
         self._init_db()
@@ -526,6 +534,80 @@ class ChatRelay:
         )
         self._store_message(msg)
         self._schedule(self._broadcast_ws(channel, msg.to_dict()))
+
+    # ── Platform relay bridge (node room <-> workspace relay channel) ─
+
+    def ingest_bridged(self, channel: str, nick: str, content: str, *,
+                       remote_id: str, timestamp: float = 0.0) -> ChatMessage | None:
+        """Store a message that arrived FROM the platform relay.
+
+        Shown to local listeners (WebSocket, mentions, "message" event) like any
+        post, but never handed to the outbound subscribers -- that is the echo
+        the bridge must not make. The local id is derived from ``remote_id``, so
+        a row read twice is stored once. Returns None for a duplicate or an
+        unknown channel.
+        """
+        if channel not in self._channels or not content:
+            return None
+        msg_id = "rl" + hashlib.sha1(remote_id.encode("utf-8")).hexdigest()[:14]
+        db = self._get_db()
+        try:
+            if db.execute("SELECT 1 FROM messages WHERE msg_id = ?", (msg_id,)).fetchone():
+                return None
+        finally:
+            db.close()
+        clean = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", nick or "relay")[:32] or "relay"
+        if not clean[0].isalpha() and clean[0] != "_":
+            clean = "_" + clean[:31]
+        msg = ChatMessage(
+            msg_id=msg_id, channel=channel, nick=clean,
+            content=content[:_MAX_MESSAGE_LEN], msg_type="message",
+            timestamp=float(timestamp or 0.0), node_id=_BRIDGE_ORIGIN,
+        )
+        self._store_message(msg)
+        self._schedule(self._broadcast_ws(channel, msg.to_dict()))
+        self._check_mentions(msg)
+        self._emit_sync("message", msg.to_dict())
+        return msg
+
+    def attach_room_bridge(self, bridge: Any) -> None:
+        """Fan local posts to ``bridge.enqueue`` (see ``adk.relay_client.RoomBridge``)."""
+        self._room_bridge = bridge
+        self.register_outbound_handler(_BRIDGE_HANDLER, bridge.enqueue)
+
+    def detach_room_bridge(self) -> None:
+        bridge = getattr(self, "_room_bridge", None)
+        if bridge is not None:
+            bridge.stop()
+        self._room_bridge = None
+        self.unregister_outbound_handler(_BRIDGE_HANDLER)
+
+    async def start_room_bridge(self, config: dict | None = None):
+        """Start mirroring rooms to the platform relay, if configured. Never raises.
+
+        ``config`` defaults to :func:`room_bridge_config`; None (bridge off, not
+        enrolled, or no room to map) leaves the node purely local -- today's
+        behaviour. Returns the running bridge or None.
+        """
+        try:
+            # room_bridge_config may ask the relay for the workspace room (a
+            # blocking HTTP call) -- keep it off the event loop.
+            cfg = config if config is not None else await asyncio.to_thread(room_bridge_config)
+            if not cfg:
+                return None
+            from adk.relay_client import RoomBridge
+            rooms = dict(cfg["rooms"])
+            for local in rooms:
+                if local not in self._channels:
+                    self.create_channel(local)
+            bridge = RoomBridge(cfg["base_url"], cfg["token"], cfg["nick"], rooms)
+            self.attach_room_bridge(bridge)
+            self._schedule(bridge.run(self))
+            logger.info("Room bridge on: %s", ", ".join(f"{k}->{v}" for k, v in rooms.items()))
+            return bridge
+        except Exception as exc:  # noqa: BLE001 - the local room works without it
+            logger.warning("Room bridge not started: %s", exc)
+            return None
 
     # ── IRC Protocol Bridge ──────────────────────────────────────────
 
@@ -1620,6 +1702,75 @@ class IRCServer:
 
         line = f":{nick}!{nick}@{self._server_name} PRIVMSG {channel} :\x01ACTION {action_text}\x01"
         self._fire_and_forget(self._broadcast_to_channel(channel, line))
+
+
+# ── Room bridge configuration ────────────────────────────────────────────
+
+
+def _parse_room_map(spec: str) -> dict[str, str]:
+    """``"#general=#acme-room,#dev=#acme-dev"`` -> mapping; bad pairs are skipped."""
+    out: dict[str, str] = {}
+    for pair in (spec or "").split(","):
+        local, sep, remote = pair.strip().partition("=")
+        local, remote = local.strip(), remote.strip()
+        if not sep or not local or not remote:
+            continue
+        local = local if local.startswith("#") else f"#{local}"
+        remote = remote if remote.startswith("#") else f"#{remote}"
+        if _CHANNEL_RE.match(local) and _CHANNEL_RE.match(remote):
+            out[local] = remote
+    return out
+
+
+def room_bridge_config(saved: dict | None = None, env: dict | None = None,
+                       lookup: Callable | None = None) -> dict | None:
+    """What :meth:`ChatRelay.start_room_bridge` needs, or None to stay local.
+
+    OFF unless asked: ``AITHER_ROOM_BRIDGE=1`` (or ``"room_bridge": true`` in the
+    saved config). ON also requires ENROLMENT -- a relay credential
+    (``AITHER_RELAY_TOKEN``, else the saved ``relay_token``/``api_key``/
+    ``access_token``); without one there is nothing the relay would accept, so
+    the node stays local and says why.
+
+    Rooms: ``AITHER_ROOM_BRIDGE_ROOMS="#general=#acme-room"`` names them exactly.
+    Unset, ``#general`` maps to the workspace room the RELAY names for this
+    bearer (``relay_client.home_room``) -- never a name guessed here, which could
+    point at another company's channel.
+    """
+    env = os.environ if env is None else env
+    if saved is None:
+        try:
+            from adk.config import load_saved_config
+            saved = load_saved_config()
+        except Exception:  # noqa: BLE001 - no saved login is a normal state
+            saved = {}
+    on = str(env.get("AITHER_ROOM_BRIDGE", "")).strip().lower()
+    if on not in _TRUTHY and not (on == "" and saved.get("room_bridge") is True):
+        return None
+    token = (env.get("AITHER_RELAY_TOKEN", "") or saved.get("relay_token", "")
+             or saved.get("api_key", "") or saved.get("access_token", ""))
+    if not token:
+        logger.info("Room bridge requested but this node is not enrolled "
+                    "(no relay credential) -- rooms stay local")
+        return None
+    base = (env.get("AITHER_RELAY_URL", "") or saved.get("relay_url", "")
+            or _RELAY_CLOUD_BASE).rstrip("/")
+    # "" = the relay posts as the AUTHENTICATED identity. Never invent one: a nick
+    # the bearer does not own is a 403 on every post, and refused lines are dropped.
+    nick = (env.get("AITHER_ROOM_BRIDGE_NICK", "") or saved.get("relay_nick", "")
+            or saved.get("username", "") or "")
+    rooms = _parse_room_map(env.get("AITHER_ROOM_BRIDGE_ROOMS", "")
+                            or str(saved.get("room_bridge_rooms", "") or ""))
+    if not rooms:
+        if lookup is None:
+            from adk.relay_client import home_room as lookup
+        room, reason = lookup(base, token)
+        if not room:
+            logger.info("Room bridge: no workspace room to mirror (%s) -- rooms stay local",
+                        reason)
+            return None
+        rooms = {"#general": room}
+    return {"base_url": base, "token": token, "nick": nick, "rooms": rooms}
 
 
 # ── Singleton ────────────────────────────────────────────────────────────
