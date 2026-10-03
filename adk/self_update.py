@@ -33,8 +33,15 @@ it's safe validated code"). Three gates, each of which can only refuse:
    then refuses to adopt.
 
 A busy daemon is never restarted under a live session; it reports
-``restart_pending``. ``AITHER_DAEMON_AUTO_UPDATE=0`` turns the restart off
-(detection still reports). The host supervisors (the AitherOS-HarnessDaemon /
+``restart_pending``.
+
+**Automatic restart is OPT-IN** (2026-10-03, owner: "users should be able to or have
+to opt in to automatic updates"). Detection and the ``/health`` report are always
+on; restarting onto new code happens only after the person running the daemon says
+so, with ``adk autoupdate on`` (stored in ``~/.aither/updates.json``) or
+``AITHER_DAEMON_AUTO_UPDATE=1`` (the environment wins either way, so a supervisor
+can pin it). Until then ``/health`` says an update is ready and how to opt in, and
+``adk autoupdate apply`` runs the same validated, health-gated restart once. The host supervisors (the AitherOS-HarnessDaemon /
 AdkDaemonWatchdog tasks) remain the fallback if a relaunch fails outright.
 """
 
@@ -208,6 +215,8 @@ def status() -> dict[str, Any]:
         "check_error": _STATE["error"],
         "restart_pending": _STATE["pending"],
         "auto_restart": auto_enabled(),
+        "auto_restart_source": auto_source()[1],
+        "opt_in": "adk autoupdate on  (or once: adk autoupdate apply)",
         "adoptable": _STATE["adoptable"],
         "refused_because": _STATE["refused_because"],
         "last_relaunch": _STATE["relaunch"],
@@ -219,8 +228,58 @@ def needs_restart(st: Optional[dict[str, Any]] = None) -> bool:
     return bool(st["update_available"] or st["running_code_missing"])
 
 
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off")
+
+
+def settings_path() -> Path:
+    return run_dir().parent / "updates.json"
+
+
+def read_settings() -> dict[str, Any]:
+    try:
+        data = json.loads(settings_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_settings(**changes: Any) -> dict[str, Any]:
+    data = {**read_settings(), **changes, "updated_at": time.time()}
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    settings_path().write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return data
+
+
+def auto_source() -> tuple[bool, str]:
+    """``(enabled, where the answer came from)``. OFF unless someone opted in."""
+    env = os.environ.get("AITHER_DAEMON_AUTO_UPDATE", "").strip().lower()
+    if env in _TRUE:
+        return True, "env AITHER_DAEMON_AUTO_UPDATE"
+    if env in _FALSE:
+        return False, "env AITHER_DAEMON_AUTO_UPDATE"
+    value = read_settings().get("daemon_auto_restart")
+    if value is True:
+        return True, str(settings_path())
+    if value is False:
+        return False, str(settings_path())
+    return False, "default (not opted in)"
+
+
 def auto_enabled() -> bool:
-    return os.environ.get("AITHER_DAEMON_AUTO_UPDATE", "1").strip().lower() not in ("0", "false", "no", "off")
+    return auto_source()[0]
+
+
+def _apply_requested(name: str) -> bool:
+    """A one-time ``adk autoupdate apply`` for this daemon, consumed when read."""
+    flag = run_dir() / f"{name}.apply"
+    if flag.exists():
+        try:
+            flag.unlink()
+        except OSError:
+            pass
+        return True
+    return False
 
 
 # ── which snapshots are live ────────────────────────────────────────────────
@@ -426,7 +485,7 @@ class UpdateWatcher:
             _STATE.update(pending=False, adoptable=None, refused_because="")
             return "current"
         _STATE["pending"] = True
-        if not auto_enabled():
+        if not (auto_enabled() or _apply_requested(self.name)):
             return "report-only"
         installed = Path(st["installed_at"]) if st["installed_at"] else None
         ok, why = self._validate(installed, self.name)
@@ -481,3 +540,79 @@ def start(name: str, is_idle: Callable[[], bool], interval: Optional[float] = No
     register(name)
     every = interval or float(os.environ.get("AITHER_DAEMON_UPDATE_CHECK_S", "120") or 120)
     return UpdateWatcher(name, is_idle, interval=every, health_url=health_url).start()
+
+
+# ── `adk autoupdate` ────────────────────────────────────────────────────────
+
+def _health(name: str) -> Optional[dict[str, Any]]:
+    """The daemon's own /health code_update block, by its registered port."""
+    import urllib.request
+
+    ports = {"harness-daemon": 8362, "adk-daemon": 9001}
+    if name not in ports:
+        return None
+    headers = {}
+    if name == "harness-daemon":
+        tok = Path.home() / ".aither" / "harness_token"
+        try:
+            headers["Authorization"] = "Bearer " + tok.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    req = urllib.request.Request(f"http://127.0.0.1:{ports[name]}/health", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return (json.loads(r.read()) or {}).get("code_update")
+    except Exception:  # noqa: BLE001 - a daemon that is not running has no status
+        return None
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """``adk autoupdate [status|on|off|apply]`` -- consent for daemon self-restarts."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    verb = args[0] if args else "status"
+    if verb in ("-h", "--help", "help"):
+        print("adk autoupdate status   what each daemon runs, whether an update is ready\n"
+              "adk autoupdate on       let the daemons restart onto VALIDATED new code when idle\n"
+              "adk autoupdate off      detection only (the default)\n"
+              "adk autoupdate apply    restart onto validated new code once, now-ish (next check)")
+        return 0
+    if verb == "on":
+        write_settings(daemon_auto_restart=True)
+        print(f"automatic daemon updates: ON ({settings_path()}). Only validated code is adopted,"
+              " only when a daemon is idle, and a failed restart rolls back.")
+        return 0
+    if verb == "off":
+        write_settings(daemon_auto_restart=False)
+        print(f"automatic daemon updates: OFF ({settings_path()}). Updates are still detected"
+              " and shown in /health.")
+        return 0
+    if verb == "apply":
+        run_dir().mkdir(parents=True, exist_ok=True)
+        names = [f.stem for f in run_dir().glob("*.json") if not f.name.endswith(".rollback.json")]
+        for n in names:
+            (run_dir() / f"{n}.apply").write_text(str(time.time()), encoding="utf-8")
+        print("requested a one-time update for: " + (", ".join(names) or "no running daemon")
+              + " (each acts at its next check, if the new code is validated and it is idle)")
+        return 0
+    if verb != "status":
+        print(f"unknown: {verb} (status | on | off | apply)", file=sys.stderr)
+        return 2
+    on, src = auto_source()
+    print(f"automatic daemon updates: {'ON' if on else 'OFF'}  ({src})")
+    for f in sorted(run_dir().glob("*.json")) if run_dir().is_dir() else []:
+        if f.name.endswith(".rollback.json"):
+            continue
+        name = f.stem
+        h = _health(name)
+        if not h:
+            print(f"  {name:15} not answering")
+            continue
+        state = "update ready" if h.get("update_available") else "current"
+        why = h.get("refused_because") or ""
+        print(f"  {name:15} {state:12} runs {h.get('running_from')}"
+              f" (validated: {h.get('running_validated')})" + (f"  refused: {why}" if why else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

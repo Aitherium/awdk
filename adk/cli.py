@@ -13795,6 +13795,16 @@ def _register_commands(sub):
     link_p.add_argument("link_args", nargs=argparse.REMAINDER,
                         help="start | poll <device_code> | status | refresh")
 
+    # adk autoupdate — consent for the daemons' self-restart onto validated new code
+    # (adk/self_update.py owns its parser). OFF until the person running them opts in.
+    autoupdate_p = sub.add_parser(
+        "autoupdate",
+        help="opt in/out of daemons restarting onto validated new code (status|on|off|apply)",
+        add_help=False,
+    )
+    autoupdate_p.add_argument("autoupdate_args", nargs=argparse.REMAINDER,
+                              help="status | on | off | apply")
+
     # adk harness — AitherShell core: one shell that drives every coding shell
     shell_p = sub.add_parser(
         "harness",
@@ -16598,6 +16608,7 @@ _PASSTHROUGH_VERBS = {
     "mothership": ("adk.lookout", "main"),  # the 3.8.31 spelling of lookout
     "mobile": ("adk.mobile", "main"),
     "link": ("adk.link", "main"),
+    "autoupdate": ("adk.self_update", "main"),
 }
 
 

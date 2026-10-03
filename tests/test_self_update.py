@@ -19,7 +19,8 @@ from adk import self_update as su
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch, tmp_path):
     monkeypatch.setenv("AITHER_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("AITHER_DAEMON_AUTO_UPDATE", raising=False)
+    # The restart tests below opt in; the opt-in tests at the end clear this.
+    monkeypatch.setenv("AITHER_DAEMON_AUTO_UPDATE", "1")
     su._STATE.update(checked_at=None, installed_root=None, error="", pending=False, relaunch=None)
 
 
@@ -217,3 +218,68 @@ def test_the_helper_rolls_back_when_the_new_code_is_not_healthy(tmp_path):
 
 def test_health_reports_whether_the_running_code_was_validated():
     assert "running_validated" in su.status() and "adoptable" in su.status()
+
+
+# ── opt-in (2026-10-03): automatic restart is OFF until someone says so ──────
+
+def _optin_watcher(tmp_path):
+    calls = []
+    w = su.UpdateWatcher("t", lambda: True, probe=_probe(tmp_path / "new"),
+                         relaunch=lambda n: calls.append(n) or {}, stop=lambda: calls.append("stop"),
+                         validate=lambda r, n: (True, ""), preflight_fn=lambda n: (True, ""))
+    return w, calls
+
+
+def test_by_default_an_update_is_reported_and_never_applied(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_DAEMON_AUTO_UPDATE", raising=False)
+    w, calls = _optin_watcher(tmp_path)
+    assert w.tick() == "report-only" and calls == []
+    st = su.status()
+    assert st["auto_restart"] is False and st["auto_restart_source"].startswith("default")
+    assert st["update_available"] is True and "adk autoupdate on" in st["opt_in"]
+
+
+def test_opting_in_through_the_settings_file_turns_it_on(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_DAEMON_AUTO_UPDATE", raising=False)
+    assert su.main(["on"]) == 0
+    assert json.loads(su.settings_path().read_text(encoding="utf-8"))["daemon_auto_restart"] is True
+    w, calls = _optin_watcher(tmp_path)
+    assert w.tick() == "restarting" and calls[-1] == "stop"
+
+
+def test_the_environment_overrides_the_settings_file(tmp_path, monkeypatch):
+    su.write_settings(daemon_auto_restart=True)
+    monkeypatch.setenv("AITHER_DAEMON_AUTO_UPDATE", "0")
+    assert su.auto_source() == (False, "env AITHER_DAEMON_AUTO_UPDATE")
+    w, calls = _optin_watcher(tmp_path)
+    assert w.tick() == "report-only" and calls == []
+
+
+def test_off_records_the_choice(monkeypatch):
+    monkeypatch.delenv("AITHER_DAEMON_AUTO_UPDATE", raising=False)
+    su.main(["on"])
+    assert su.main(["off"]) == 0
+    assert su.auto_source()[0] is False
+
+
+def test_apply_is_a_one_time_consent(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_DAEMON_AUTO_UPDATE", raising=False)
+    su.register("t")
+    assert su.main(["apply"]) == 0
+    w, calls = _optin_watcher(tmp_path)
+    assert w.tick() == "restarting"
+    w2, calls2 = _optin_watcher(tmp_path)
+    assert w2.tick() == "report-only" and calls2 == []  # consumed
+
+
+def test_status_and_unknown_verbs(capsys, monkeypatch):
+    monkeypatch.delenv("AITHER_DAEMON_AUTO_UPDATE", raising=False)
+    assert su.main(["status"]) == 0
+    assert "automatic daemon updates: OFF" in capsys.readouterr().out
+    assert su.main(["sideways"]) == 2
+
+
+def test_the_cli_routes_autoupdate_to_this_module():
+    from adk import cli
+
+    assert cli._PASSTHROUGH_VERBS["autoupdate"] == ("adk.self_update", "main")
