@@ -4,6 +4,16 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.53] - 2026-10-03
+
+### Fixed
+
+- **The workspace relay accepts a device that dials it over the tailnet or LAN**, not only
+  through its public host; a hello signed for a foreign relay is still refused.
+- `adk pair` confirms the pairing at Identity; the owner's devices land in their tenant.
+- The public release lane re-parents its snapshot when a develop sync moved the mirror
+  first (3.8.52 is on PyPI but its GitHub release was never cut for that reason).
+
 ## [3.8.52] - 2026-10-03
 
 ### Added
