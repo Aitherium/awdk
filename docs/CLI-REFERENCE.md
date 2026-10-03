@@ -952,6 +952,7 @@ Lend this device's memory to another host's context window (PATN v3 KV holder)
 - `adk kvholder relay-status` — Is a holder attached to the local relay
 - `adk kvholder elastic` — Add holders on demand (CI runners via awrun, or any machine), one join token each
 - `adk kvholder pool` — The shared KV pool: prefix blocks engine sessions attach to (adk.kvpool)
+- `adk kvholder mesh` — Holders found on the mesh: list, approve or deny requests
 
 ## `adk learn`
 

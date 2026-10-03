@@ -24,16 +24,26 @@ the LAN, a mesh overlay or the public internet.
 **USB (Pixel and other Android phones).** Turn on USB debugging (Settings > System >
 Developer options), plug in, accept the prompt, and check that `adb devices` lists the phone.
 `adk kvholder phone` maps the phone's `localhost` to this machine (`adb reverse`) and opens
-the holder page on the phone. Keep the tab open; the page holds a screen wake lock.
+the holder page on the phone in Chrome (a default browser without WebGPU, such as Edge,
+would run the CPU holder). Keep the tab in front and the phone unlocked: a tab sent to the
+background or a screen that locks drops the holder, and the keys with it.
+
+**LAN.** `--via lan` prints the link and a QR code to scan with the phone's camera. On
+Windows, the firewall drops inbound connections on a Private network unless your
+`python.exe` has a rule; the command prints the `netsh` line that adds one.
 
 **Tunnel.** Needs `awtunnel` (`pip install awtunnel`) and `cloudflared`. The command prints an
-`https://…` link; open it on the phone from anywhere.
+`https://…` link and its QR code once the link answers with this relay; open it on the
+phone from anywhere.
 
 **The token.** Every link carries a one-time token after `#t=`. The fragment never reaches a
 server log. A holder without the token is refused. The KV cache is derived from your prompts,
 so treat the link like a password and prefer USB or the tunnel to an open LAN.
 
 Whether the phone's GPU is used depends on its browser: the page shows `webgpu…` or `cpu`.
+Measured on a Pixel 10 Pro Fold (Chrome 154, `webgpu-f16` on the `img-tec d-series` GPU):
+exact for q8_0, f16 and q4_0 to 123,000 keys, about 3.5 s per call at 123,000 keys
+(1.35 s with `store=tq4`), and about 3x faster than the same phone's CPU holder.
 Both are exact; the GPU is much faster.
 
 **Model shapes.** The page speaks PATN v4 shapes as well as v3: key and value widths from 32

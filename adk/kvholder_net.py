@@ -848,12 +848,21 @@ def tq4_warnings(holders: list) -> list[str]:
 
 
 class _Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR lets a second relay bind the SAME port and steal half the
+    # connections: its token differs, so a phone gets "bad token" from a relay it never asked
+    # for (measured 2026-10-03). There, bind exclusively so a second relay fails loudly.
+    allow_reuse_address = os.name != "nt"
     daemon_threads = True
 
     def __init__(self, addr, handler, relay: Relay):
         super().__init__(addr, handler)
         self.relay = relay
+
+    def server_bind(self) -> None:
+        excl = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if excl is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, excl, 1)
+        super().server_bind()
 
 
 def start_relay(
@@ -862,7 +871,13 @@ def start_relay(
     ws_addr: tuple[str, int] = ("127.0.0.1", DEFAULT_WS_PORT),
 ) -> tuple[Relay, list[_Server]]:
     relay = Relay(token)
-    servers = [_Server(engine_addr, _EngineHandler, relay), _Server(ws_addr, _HTTPHandler, relay)]
+    engine = _Server(engine_addr, _EngineHandler, relay)
+    try:
+        web = _Server(ws_addr, _HTTPHandler, relay)
+    except OSError:
+        engine.server_close()  # do not keep the engine port of a relay that never started
+        raise
+    servers = [engine, web]
     for s in servers:
         threading.Thread(target=s.serve_forever, daemon=True).start()
     threading.Thread(target=relay.keepalive, daemon=True).start()
@@ -953,6 +968,9 @@ def adb_devices() -> list[str]:
     return [ln.split()[0] for ln in out.stdout.splitlines()[1:] if ln.strip().endswith("device")]
 
 
+PHONE_BROWSERS = ("com.android.chrome", "com.chrome.beta", "com.chrome.dev")
+
+
 def adb_link(port: int, url: str, serial: str | None = None) -> str:
     """Map the phone's localhost:port to ours and open the holder page on the phone."""
     adb = adb_path()
@@ -968,13 +986,20 @@ def adb_link(port: int, url: str, serial: str | None = None) -> str:
     )
     if r.returncode != 0:
         return f"adb reverse failed: {(r.stderr or r.stdout).strip()}"
-    subprocess.run(
-        base + ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"'{url}'"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=15,
-    )
+    view = ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", f"'{url}'"]
+    # Chrome first: a bare VIEW goes to the default browser, and one without WebGPU (Edge on
+    # Android, measured on a Pixel 10) silently runs the CPU holder.
+    for pkg in PHONE_BROWSERS:
+        r = subprocess.run(
+            base + view + ["-p", pkg],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+        )
+        if r.returncode == 0 and "Error" not in (r.stdout + r.stderr):
+            return ""
+    subprocess.run(base + view, capture_output=True, text=True, encoding="utf-8", timeout=15)
     return ""
 
 
@@ -1005,17 +1030,57 @@ def tunnel_up(port: int, wait_s: float = 90.0) -> tuple[str, subprocess.Popen | 
     def _read() -> None:
         for line in proc.stdout:  # type: ignore[union-attr]
             for word in line.split():
-                if word.startswith("https://") and not found:
-                    found.append(word.rstrip(".,)"))
+                url = _tunnel_url(word)
+                if url and not found:
+                    found.append(url)
 
     threading.Thread(target=_read, daemon=True).start()
     end = time.time() + wait_s
     while time.time() < end and not found and proc.poll() is None:
         time.sleep(0.2)
+    if found and not _relay_answers(found[0], max(10.0, end - time.time())):
+        print(f"kvholder: tunnel {found[0]} never served this relay; taking it down")
+        found.clear()
     if not found:
         proc.terminate()
+        subprocess.run(
+            base + ["down"], capture_output=True, text=True, encoding="utf-8", timeout=30
+        )
         return "", None
     return found[0], proc
+
+
+# cloudflared names its own API in the log line of a failed quick-tunnel request; awtunnel has
+# recorded that as "the tunnel URL" (measured 2026-10-03). It is never the relay.
+_NOT_A_TUNNEL = {"api.trycloudflare.com"}
+
+
+def _tunnel_url(word: str) -> str:
+    word = word.strip("\"'|").rstrip(".,)")
+    if not word.startswith("https://"):
+        return ""
+    host = urllib.parse.urlsplit(word).hostname or ""
+    return "" if not host or host in _NOT_A_TUNNEL else word
+
+
+def _relay_answers(url: str, wait_s: float) -> bool:
+    """Does ``url``/status come back from this relay? A fresh quick-tunnel name takes seconds
+    to resolve, so retry. A browser User-Agent: Cloudflare refuses Python's (error 1010)."""
+    import urllib.request
+
+    req = urllib.request.Request(
+        url.rstrip("/") + "/status", headers={"User-Agent": "Mozilla/5.0 (adk kvholder)"}
+    )
+    end = time.time() + wait_s
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return "attached" in json.loads(r.read() or b"{}")
+        except (OSError, ValueError):
+            pass
+        if time.time() >= end:
+            return False
+        time.sleep(2.0)
 
 
 def _down_stale_tunnel(base: list[str], port: int) -> None:
@@ -1079,6 +1144,48 @@ def holder_url(base: str, token: str) -> str:
     return f"{base.rstrip('/')}/#t={token}"
 
 
+def phone_qr(url: str) -> str:
+    """The URL as a terminal QR code for the phone's camera; '' when it cannot be drawn.
+
+    Uses ``qrcode`` (an awdk dependency). A console whose encoding lacks the block glyphs
+    (cp1252) gets '' instead of a crash: the printed URL is the essential part.
+    """
+    try:
+        import io
+
+        import qrcode
+
+        qr = qrcode.QRCode(border=2)
+        qr.add_data(url)
+        qr.make(fit=True)
+        buf = io.StringIO()
+        qr.print_ascii(out=buf, invert=True)
+        block = buf.getvalue()
+        block.encode(sys.stdout.encoding or "utf-8")
+        return block
+    except Exception:  # noqa: BLE001 - a QR is a convenience, never a failure
+        return ""
+
+
+def _show_url(label: str, url: str) -> None:
+    print(f"{label}: {url}")
+    qr = phone_qr(url)
+    if qr:
+        print(qr, end="" if qr.endswith("\n") else "\n")
+
+
+def _firewall_hint(port: int) -> str:
+    """Windows blocks inbound on a Private network unless python.exe has a rule for it: the
+    phone then times out on the page with no error on this side. Name the fix."""
+    if os.name != "nt":
+        return ""
+    return (
+        "  no page on the phone? Windows Firewall may block inbound to this python "
+        f"(admin shell): netsh advfirewall firewall add rule name=adk-kvholder dir=in "
+        f"action=allow protocol=TCP localport={port} profile=private"
+    )
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -1117,11 +1224,14 @@ def run_phone(args) -> int:
         print(f"phone URL: {url}   (localhost on the phone = WebGPU allowed)")
     elif args.via == "lan":
         adv = args.host or lan_ip()
-        print(f"phone URL: {holder_url(f'http://{adv}:{args.web_port}', token)}")
+        _show_url("phone URL", holder_url(f"http://{adv}:{args.web_port}", token))
         print(
             "  plain http on a LAN IP is not a secure context: the page runs the CPU holder."
             " Use --via usb or --via tunnel for WebGPU."
         )
+        hint = _firewall_hint(args.web_port)
+        if hint:
+            print(hint)
     elif args.via == "tunnel":
         pub, tproc = tunnel_up(args.web_port)
         if not pub:
@@ -1132,7 +1242,7 @@ def run_phone(args) -> int:
             )
         else:
             public = pub
-            print(f"phone URL: {holder_url(pub, token)}")
+            _show_url("phone URL", holder_url(pub, token))
     else:
         print(f"page URL: {holder_url(f'http://localhost:{args.web_port}', token)}")
     print(
@@ -1161,7 +1271,9 @@ def run_phone(args) -> int:
             door.close()
         if tproc is not None:
             tproc.terminate()
-        state_path().unlink(missing_ok=True)
+        st = read_state()
+        if st is None or st.get("pid") == os.getpid():  # never another relay's record
+            state_path().unlink(missing_ok=True)
     return 0
 
 
