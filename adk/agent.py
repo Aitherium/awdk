@@ -937,7 +937,11 @@ class AitherAgent:
             if not raw:
                 return None
             data = _yaml.safe_load(_P(str(raw)).read_text(encoding="utf-8")) or {}
-            pack_identity = str(data.get("identity") or "").strip()
+            # `id` when no `identity:` -- a platform app/brain pack (the synced
+            # company pack: packs/<id>/app_pack.yaml) names itself by id,
+            # and `adk up` runs it under that same name. Still an exact-name match,
+            # so a specialised agent is never hijacked.
+            pack_identity = str(data.get("identity") or data.get("id") or "").strip()
             prompt = str(data.get("system_prompt") or "").strip()
             wanted = (self.name or getattr(self._identity, "name", "") or "").strip()
             if prompt and pack_identity and pack_identity == wanted:

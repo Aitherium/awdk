@@ -42,6 +42,40 @@ def _safe_extract(tar: tarfile.TarFile, path: str) -> None:
         tar.extractall(path)
 
 
+#: Written into each synced pack dir: WHY this device holds the pack. `adk up`
+#: reads it to run as the login's COMPANY persona (source "tenant"), which a
+#: bought pack must never hijack -- the tarball alone cannot say which is which.
+ENTITLEMENT_FILE = ".aither-entitlement.json"
+
+
+def record_entitlement(dest: Path, lic: Dict[str, Any]) -> None:
+    """Record the license row that entitled ``dest`` (best-effort, never raises).
+
+    Rewritten on every sync -- also for packs already present -- so a pack
+    installed before the portal listed its source still gets its provenance.
+    """
+    try:
+        if not dest.is_dir():
+            return
+        rec = {
+            "pack_id": str(lic.get("listing_id") or dest.name),
+            "source": str(lic.get("source") or "license"),
+            "tenant_id": str(lic.get("tenant_id") or ""),
+        }
+        (dest / ENTITLEMENT_FILE).write_text(json.dumps(rec), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 - provenance is extra; the install stands
+        logger.debug("entitlement record not written for %s: %s", dest, exc)
+
+
+def _active_licenses_by_pack(licenses: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """{pack_id: license row} for the ACTIVE rows (the sync's entitled set)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for lic in licenses:
+        if isinstance(lic, dict) and lic.get("status") == "active" and lic.get("listing_id"):
+            out.setdefault(str(lic["listing_id"]), lic)
+    return out
+
+
 def _credential_hooks():
     """Return ``(mint_install_credential, revoke_install_credential)`` or ``(None, None)``.
 
@@ -480,11 +514,8 @@ class PacksPlugin(SlashCommand):
         except Exception as e:  # noqa: BLE001
             return f"ERROR: Could not reach the portal: {type(e).__name__}: {e}"
 
-        entitled = sorted({
-            lic.get("listing_id", "")
-            for lic in licenses
-            if lic.get("status") == "active" and lic.get("listing_id")
-        })
+        by_pack = _active_licenses_by_pack(licenses)
+        entitled = sorted(by_pack)
         if not entitled:
             return "No entitled packs. Buy packs at api.aitherium.com/portal/marketplace/packs"
 
@@ -493,12 +524,16 @@ class PacksPlugin(SlashCommand):
             dest = packs_root / pack_id
             if dest.is_dir() and any(dest.iterdir()):
                 skipped.append(pack_id)
+                if not dry_run:
+                    record_entitlement(dest, by_pack[pack_id])
                 continue
             if dry_run:
                 installed.append(f"{pack_id} (would install)")
                 continue
             ok, detail = self._download_verify_install(pack_id, dest)
             (installed if ok else failed).append(detail)
+            if ok:
+                record_entitlement(dest, by_pack[pack_id])
 
         lines = [f"=== PACK SYNC ({'dry run' if dry_run else 'apply'}) ==="]
         lines.append(f"Entitled: {len(entitled)} · installed: {len(installed)} · "
@@ -883,11 +918,8 @@ async def sync_entitled_packs(
         log.warning("Could not fetch entitlements: %s", e)
         return 0, 0
 
-    entitled = sorted({
-        lic.get("listing_id", "")
-        for lic in licenses
-        if lic.get("status") == "active" and lic.get("listing_id")
-    })
+    by_pack = _active_licenses_by_pack(licenses)
+    entitled = sorted(by_pack)
     if not entitled:
         log.info("No entitled packs to sync")
         return 0, 0
@@ -899,9 +931,11 @@ async def sync_entitled_packs(
         dest = packs_root / pack_id
         if dest.is_dir() and any(dest.iterdir()):
             log.debug("Pack %s: already present, skipping", pack_id)
+            record_entitlement(dest, by_pack[pack_id])
             continue
         if await _download_verify_install(pack_id, dest):
             installed += 1
+            record_entitlement(dest, by_pack[pack_id])
         else:
             failed += 1
 

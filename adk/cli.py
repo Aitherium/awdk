@@ -997,6 +997,22 @@ def cmd_up(args):
         return _fail(2, _bp_err, "pass a brain_pack.yaml, or a directory that contains one",
                      next_action="fix --brain-pack, or omit it to use --identity alone")
 
+    # ── Company persona: a login that belongs to a company runs as ITS agent ──
+    # Only when nothing chose a persona already (no --identity, no --brain-pack,
+    # no ./brain_pack.yaml, no AGENT_BRAIN_PACK) -- an explicit choice always
+    # wins. --no-tenant-persona keeps the generic 'aither'. No synced company
+    # pack (or no company login) leaves everything exactly as before.
+    tenant_pack = ""
+    if (not (getattr(args, "identity", None) or "").strip() and brain_pack is None
+            and not os.environ.get("AGENT_BRAIN_PACK", "").strip()
+            and not getattr(args, "no_tenant_persona", False)):
+        _tp_path, _tp_ident, tenant_pack = _tenant_persona_pack(load_saved_config())
+        if _tp_path:
+            brain_pack, identity = _tp_path, _tp_ident
+            if not non_interactive:
+                print(f"  [i] Running as '{identity}' -- your company's pack '{tenant_pack}' "
+                      "(--no-tenant-persona for the generic agent)")
+
     # ── Idempotency: already running? ──
     existing = daemon.read_status()
     if existing and daemon.pid_alive(existing.get("server_pid")):
@@ -1193,7 +1209,8 @@ def cmd_up(args):
                 "port": port, "will_register": will_register, "offline": offline,
                 "detached": not foreground, "persist": persist,
                 "backend": "local" if have_backend else provider,
-                "brain_pack": str(brain_pack) if brain_pack else None}
+                "brain_pack": str(brain_pack) if brain_pack else None,
+                "tenant_pack": tenant_pack or None}
         print(json.dumps(plan) if non_interactive else f"  [dry-run] {json.dumps(plan)}")
         return 0
 
@@ -1445,6 +1462,59 @@ def _pick_up_port(daemon, port: int, explicit: bool) -> tuple[int, str, str]:
         if daemon.port_owner(cand) is None:
             return cand, f":{port} is in use by {what}; starting the agent on :{cand} instead", ""
     return port, "", f":{port} is in use by {what} and no free port in :{port + 1}-:{port + 19}."
+
+
+#: Persona files a synced company pack may carry, in preference order. The
+#: platform's company packs ship their app config as packs/<id>/app_pack.yaml; a
+#: pack built by `adk pack new` ships brain_pack.yaml. Both carry system_prompt.
+_TENANT_PERSONA_FILES = ("brain_pack.yaml", "app_pack.yaml")
+
+
+def _tenant_persona_pack(
+        saved: dict, packs_root: Path | None = None) -> tuple[Path | None, str, str]:
+    """(persona yaml, identity, pack_id) of the login's COMPANY pack, or (None, "", "").
+
+    An employee's laptop should run as THEIR company's agent (the company's
+    own persona), not the generic 'aither'. The pack sync records why each pack is
+    on this device (``.aither-entitlement.json``); only a pack the portal listed
+    as ``source: tenant`` for THIS login's tenant counts -- a bought pack never
+    hijacks the persona, and another tenant's leftover pack on a shared machine
+    is ignored. The tenant is the saved login's; it only CHOOSES among packs the
+    portal already entitled to that login, it grants nothing.
+    """
+    tenant = _login_company_tenant(saved)
+    if not tenant:
+        return None, "", ""
+    root = packs_root or (Path.home() / ".aitheros" / "packs")
+    try:
+        candidates = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return None, "", ""
+    try:
+        import yaml
+    except ImportError:
+        return None, "", ""
+    for pack_dir in candidates:
+        try:
+            rec = json.loads((pack_dir / ".aither-entitlement.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (not isinstance(rec, dict) or rec.get("source") != "tenant"
+                or rec.get("tenant_id") != tenant):
+            continue
+        for fname in _TENANT_PERSONA_FILES:
+            for persona in sorted(pack_dir.rglob(fname)):
+                try:
+                    data = yaml.safe_load(persona.read_text(encoding="utf-8")) or {}
+                except (OSError, yaml.YAMLError):
+                    continue
+                if not isinstance(data, dict) or not str(data.get("system_prompt") or "").strip():
+                    continue
+                raw_id = str(data.get("identity") or data.get("id") or pack_dir.name)
+                ident = re.sub(r"[^a-z0-9_-]", "-", raw_id.strip().lower()).strip("-")
+                if ident:
+                    return persona.resolve(), ident, pack_dir.name
+    return None, "", ""
 
 
 def _resolve_up_brain_pack(raw: str) -> tuple[Path | None, str]:
@@ -6502,7 +6572,7 @@ def _up_join_company_room(daemon, saved: dict, identity: str, token: str,
                           base: str = _RELAY_CLOUD_BASE, lookup=None, join=None) -> dict:
     """`adk up`: put the device agent in its company's room. Returns a status dict.
 
-    ``{"room": "#garg-room" | None, "room_note": "...", "relay_pid": int | None}``.
+    ``{"room": "#acme-room" | None, "room_note": "...", "relay_pid": int | None}``.
     Nothing here can fail `adk up`: an agent that is up without a room is still
     up, and the note is the one line that says which of the two happened.
 
@@ -13475,7 +13545,14 @@ def _register_commands(sub):
     # adk up — one command: run a persistent, fleet-connected agent
     up_p = sub.add_parser(
         "up", help="Run a persistent agent connected to your AitherOS fleet (one command)")
-    up_p.add_argument("--identity", default="aither", help="Agent identity (default: aither)")
+    # default=None, not "aither": cmd_up must tell an EXPLICIT identity from none,
+    # because none lets a company login run as its company's synced persona.
+    up_p.add_argument("--identity", default=None,
+                      help="Agent identity (default: your company's persona when your login "
+                           "has a synced company pack, else aither)")
+    up_p.add_argument("--no-tenant-persona", action="store_true", dest="no_tenant_persona",
+                      help="Run the generic 'aither' agent even when your login's company "
+                           "pack is synced")
     up_p.add_argument("--brain-pack", dest="brain_pack", default="",
                       help="brain_pack.yaml (or a directory holding one) the agent loads; "
                            "default: ./brain_pack.yaml when present")
