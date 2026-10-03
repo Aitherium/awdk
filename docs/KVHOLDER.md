@@ -57,6 +57,30 @@ one layer, 6 calls (2026-10-03):
 The tq4 store's relative error was 0.13-0.14 on every power-of-two shape, the same as the
 Python `--store tq4` holder on the same data.
 
+**What the page shows.** The state says what the phone is doing, from its own counters:
+*Idle* (connected, no engine has sent context), *Ready* (in the pool, no keys reached it
+yet), *Holding* (keeps keys, no attention call in the last 5 s) or *Active* (calls/s).
+Below it: lent memory used of the amount lent, keys held per layer, attention calls per
+second over the last minute, last and average ms, the engine (`webgpu-f16 <adapter>` or
+`cpu`), the wake lock, and battery and CPU pressure when the browser exposes them. One tap
+changes the amount lent (a change that would drop held keys asks twice); **Stop lending**
+closes the link and frees the memory.
+
+## Several phones: the swarm view
+
+The relay takes any number of holders. Each gets a contiguous range of key positions sized
+by the memory it lends; an attention call goes to every holder that keeps keys, in parallel,
+and the partial answers are merged exactly. On the model's machine open
+`http://127.0.0.1:<web-port>/swarm#m=<owner token>` (the `t=` value in the link the relay
+printed). It shows the pooled memory, each holder's key range, memory used, last / mean /
+round-trip ms and health, and **Add another phone**: a single-use join link (15 min) with a
+QR code for each way a phone can reach the relay (tunnel, LAN, USB).
+
+`/swarm` answers only requests from this machine addressed to `127.0.0.1` or `localhost`;
+minting a link also needs the owner token. `/status` (JSON) carries the same per-holder
+numbers (`held`, `used_bytes`, `calls`, `last_ms`, `mean_ms`, `rtt_ms`, `seen_s`) and never a
+token.
+
 ## A Python holder (Pixel Linux terminal, a laptop, a server)
 
 ```bash

@@ -4,7 +4,9 @@
 ``adk.kvholder.KVHolder``) with two engines: WebGPU (WGSL online-softmax attention,
 keys split across workgroups, an exact log-sum-exp merge) and a CPU fallback. It runs
 unchanged in a browser and in Node (the tests drive the CPU engine from Node against the
-Python relay). ``webui/kvholder/index.html`` is the page the relay serves at ``/``.
+Python relay). ``webui/kvholder/index.html`` is the page the relay serves at ``/``;
+``webui/kvholder/swarm.html`` is the owner's view of every attached holder, at ``/swarm``
+(this machine only).
 """
 
 from __future__ import annotations
@@ -23,4 +25,6 @@ def __getattr__(name: str) -> str:
         return _read("holder.js")
     if name == "PAGE_HTML":
         return _read("index.html")
+    if name == "SWARM_HTML":
+        return _read("swarm.html")
     raise AttributeError(name)

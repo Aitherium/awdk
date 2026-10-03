@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#050507">
+<meta name="referrer" content="no-referrer">
+<title>KV Swarm · AitherOS</title>
+<style>
+/* Aitherium OS frame, self-contained: no external asset. Served to this machine only. */
+:root {
+  --bg:#050507; --win:#0b0c10; --tile:#101217; --ink:#EDEFF5; --dim:rgba(237,239,245,.55);
+  --faint:rgba(237,239,245,.32); --line:rgba(255,255,255,.08); --acc:#5EC9CC;
+  --glow:rgba(94,201,204,.35); --acc-soft:rgba(94,201,204,.12); --ok:#5ECC78; --warn:#E0B44C;
+  --bad:#E5675E; --on-acc:#050507;
+  --sans:"Inter","Segoe UI Variable Text","Segoe UI",Roboto,system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono","Roboto Mono",ui-monospace,Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.2,.8,.2,1);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg:#F3F4F7; --win:#FFFFFF; --tile:#F6F7F9; --ink:#0B0D12; --dim:rgba(11,13,18,.58);
+    --faint:rgba(11,13,18,.36); --line:rgba(11,13,18,.09); --acc:#16878A;
+    --glow:rgba(22,135,138,.22); --acc-soft:rgba(22,135,138,.10); --ok:#1E8F45; --warn:#9A6B00;
+    --bad:#B83A31; --on-acc:#FFFFFF;
+  }
+}
+:root[data-theme="light"] {
+  --bg:#F3F4F7; --win:#FFFFFF; --tile:#F6F7F9; --ink:#0B0D12; --dim:rgba(11,13,18,.58);
+  --faint:rgba(11,13,18,.36); --line:rgba(11,13,18,.09); --acc:#16878A;
+  --glow:rgba(22,135,138,.22); --acc-soft:rgba(22,135,138,.10); --ok:#1E8F45; --warn:#9A6B00;
+  --bad:#B83A31; --on-acc:#FFFFFF;
+}
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+html, body { margin:0; }
+body {
+  min-height:100vh; background:var(--bg); color:var(--ink); font:15px/1.45 var(--sans); letter-spacing:-.005em;
+  -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent;
+  background-image:radial-gradient(120% 60% at 50% -10%, var(--acc-soft), transparent 60%); background-repeat:no-repeat;
+}
+.mono { font-family:var(--mono); }
+.cap { font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); }
+.num { font-variant-numeric:tabular-nums; }
+.bar { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:10px; min-height:44px;
+  padding:env(safe-area-inset-top) 16px 0; background:color-mix(in srgb, var(--bg) 82%, transparent);
+  border-bottom:1px solid var(--line); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+.bar svg { width:20px; height:20px; flex:none; }
+.bar .app { font-weight:500; letter-spacing:-.01em; } .bar .sp { flex:1; }
+.live { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--faint); flex:none; display:inline-block; }
+.dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
+.dot.acc { background:var(--acc); animation:pulse 1.6s var(--ease) infinite; }
+@keyframes pulse { 0% { box-shadow:0 0 0 0 var(--glow); } 70% { box-shadow:0 0 0 8px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+#clock { font-family:var(--mono); font-size:12px; color:var(--dim); }
+
+.win { max-width:1180px; margin:0 auto; padding:0 16px calc(96px + env(safe-area-inset-bottom)); }
+.wtitle { display:flex; align-items:center; gap:10px; padding:14px 0 10px; color:var(--dim); font-size:12px; }
+.wtitle .x { margin-left:auto; color:var(--dim); text-decoration:none; font-size:16px; line-height:1; padding:4px; }
+.card { background:var(--win); border:1px solid var(--line); border-radius:16px; padding:18px; min-width:0; }
+.grid { display:grid; gap:12px; grid-template-columns:minmax(0, 1fr); }
+.rise { opacity:0; transform:translateY(8px); animation:rise .48s var(--ease) forwards; animation-delay:calc(var(--i, 0) * 60ms); }
+@keyframes rise { to { opacity:1; transform:none; } }
+
+.hero h1 { font-size:44px; line-height:1.02; font-weight:300; letter-spacing:-.03em; margin:6px 0 8px; }
+.hero h1 .of { color:var(--dim); }
+.hero p { margin:0; color:var(--dim); font-size:16px; }
+.hero p.bad { color:var(--bad); }
+.kpis { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:12px; overflow:hidden; margin-top:16px; }
+.kpis > div { background:var(--win); padding:12px 14px; min-width:0; }
+.kpis .v { font-size:22px; font-weight:300; letter-spacing:-.02em; margin-top:2px; }
+.kpis .v small { font-size:12px; color:var(--dim); margin-left:3px; letter-spacing:0; }
+
+/* the key ribbon: each holder's range, sized by the keys it can keep */
+.ribbon { display:flex; gap:3px; height:28px; margin-top:12px; }
+.ribbon .seg { position:relative; flex:1 1 0; min-width:6px; background:var(--tile); border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.ribbon .seg i { position:absolute; inset:0 auto 0 0; width:0; background:var(--acc); opacity:.85; transition:width .6s var(--ease); }
+.ribbon .seg.lost { border-color:var(--bad); }
+.legend { display:flex; justify-content:space-between; gap:10px; margin-top:8px; color:var(--dim); font-size:12px; font-family:var(--mono); }
+.hd { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+.hd .aside { color:var(--dim); font-family:var(--mono); font-size:12px; }
+
+.holders { display:grid; gap:12px; grid-template-columns:minmax(0, 1fr); }
+.h .top { display:flex; align-items:center; gap:10px; }
+.h .name { font-weight:500; font-size:16px; letter-spacing:-.01em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
+.h .idx { font-family:var(--mono); font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:6px; padding:1px 6px; }
+.h .sub { color:var(--dim); font-family:var(--mono); font-size:12px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.track { position:relative; height:8px; border-radius:999px; background:var(--tile); border:1px solid var(--line); overflow:hidden; margin:14px 0 6px; }
+.fill { position:absolute; inset:0 auto 0 0; width:0; background:var(--acc); border-radius:999px; transition:width .6s var(--ease); }
+.h .use { display:flex; justify-content:space-between; color:var(--dim); font-size:13px; }
+.h .use b { color:var(--ink); font-weight:500; }
+.h dl { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; margin:14px 0 0; }
+.h dt { font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); }
+.h dd { margin:2px 0 0; font-variant-numeric:tabular-nums; font-size:15px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.empty { color:var(--dim); text-align:center; padding:28px 18px; }
+
+.rows .r { display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px solid var(--line); font-size:14px; }
+.rows .r:last-child { border:0; padding-bottom:0; }
+.rows .k { color:var(--dim); flex:none; }
+.rows .v { text-align:right; font-family:var(--mono); font-size:12.5px; overflow-wrap:anywhere; min-width:0; }
+
+.add .qr { display:flex; gap:18px; align-items:center; flex-wrap:wrap; margin-top:14px; }
+.add .qr .code { width:200px; height:200px; padding:0; border-radius:12px; overflow:hidden; background:#fff; flex:none; }
+.add .qr .code svg { width:100%; height:100%; display:block; }
+.add .qr .meta { flex:1; min-width:200px; }
+.tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+.tabs button { font:500 13px var(--mono); color:var(--dim); background:var(--tile); border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; }
+.tabs button[aria-pressed="true"] { color:var(--acc); border-color:var(--acc); background:var(--acc-soft); }
+.url { font-family:var(--mono); font-size:12px; word-break:break-all; color:var(--ink); background:var(--tile); border:1px solid var(--line); border-radius:10px; padding:10px; }
+.quiet { background:none; border:0; color:var(--acc); font:500 13px var(--sans); padding:8px 0; cursor:pointer; }
+.note { margin-top:10px; color:var(--dim); font-size:13px; }
+.key { display:flex; gap:8px; margin-top:12px; }
+.key input { flex:1; min-width:0; font:13px var(--mono); color:var(--ink); background:var(--tile); border:1px solid var(--line); border-radius:10px; padding:10px; }
+
+.act { position:fixed; left:0; right:0; bottom:0; z-index:5; padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+  background:color-mix(in srgb, var(--bg) 86%, transparent); border-top:1px solid var(--line);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+.act .in { max-width:1180px; margin:0 auto; display:flex; align-items:center; gap:14px; }
+.act .hint { flex:1; color:var(--dim); font-size:13px; min-width:0; }
+.primary { font:600 15px var(--sans); letter-spacing:-.01em; border-radius:12px; padding:13px 22px; cursor:pointer; flex:none;
+  background:var(--acc); color:var(--on-acc); border:1px solid var(--acc); transition:transform .18s var(--ease); }
+.primary:active { transform:scale(.98); } .primary[disabled] { opacity:.5; cursor:default; }
+
+@media (min-width: 700px) {
+  .grid.top { grid-template-columns:minmax(0, 1.3fr) minmax(0, 1fr); align-items:start; }
+  .holders { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  .hero h1 { font-size:56px; }
+}
+@media (min-width: 1100px) { .holders { grid-template-columns:repeat(3, minmax(0, 1fr)); } .kpis { grid-template-columns:repeat(4, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation:none; opacity:1; transform:none; } .dot.acc { animation:none; } .fill, .ribbon .seg i { transition:none; }
+}
+</style></head>
+<body>
+<header class="bar">
+  <svg viewBox="0 0 512 512" aria-hidden="true" fill="none"><defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00e5ff"/><stop offset="1" stop-color="#0088cc"/></linearGradient></defs><g transform="translate(256 256) scale(.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="url(#mg)" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="60" fill="url(#mg)" opacity=".9"/><circle cx="256" cy="262" r="34" fill="#0a0a14"/><circle cx="256" cy="262" r="10" fill="#00e5ff"/></g></svg>
+  <span class="app">KV Swarm</span>
+  <span class="sp"></span>
+  <span class="live"><span id="ldot" class="dot"></span><span id="ltext">…</span></span>
+  <span id="clock">--:--</span>
+</header>
+
+<main class="win">
+  <div class="wtitle mono"><span>kvholder · swarm · this machine only</span><a class="x" href="#" id="themeBtn" title="Switch theme" aria-label="Switch theme">◐</a></div>
+
+  <div class="grid top">
+    <section class="card hero rise" style="--i:0" aria-live="polite">
+      <div class="cap" id="poolCap">pooled memory</div>
+      <h1 id="pool">—</h1>
+      <p id="why">Reading the relay.</p>
+      <div class="kpis">
+        <div><div class="cap">holding</div><div class="v num" id="kUsed">—</div></div>
+        <div><div class="cap">keys</div><div class="v num" id="kKeys">—</div></div>
+        <div><div class="cap">attn / s</div><div class="v num" id="kRate">—</div></div>
+        <div><div class="cap">slowest rtt</div><div class="v num" id="kSlow">—</div></div>
+      </div>
+      <div class="hd" style="margin-top:18px"><span class="cap">key ranges</span><span class="aside num" id="rTot"></span></div>
+      <div class="ribbon" id="ribbon"></div>
+      <div class="legend"><span>key 0</span><span id="rEnd"></span></div>
+    </section>
+
+    <section class="card rows rise" style="--i:1" aria-label="engine">
+      <div class="cap" style="margin-bottom:4px">engine</div>
+      <div class="r"><span class="k">Context</span><span class="v" id="eShape">not sent yet</span></div>
+      <div class="r"><span class="k">Keys held</span><span class="v" id="eHeld">0</span></div>
+      <div class="r"><span class="k">Attention calls</span><span class="v" id="eAttn">0</span></div>
+      <div class="r"><span class="k">Relay ops</span><span class="v" id="eOps">0</span></div>
+      <div class="r"><span class="k">Relay</span><span class="v" id="eHost">—</span></div>
+    </section>
+  </div>
+
+  <div class="hd" style="margin:22px 2px 10px"><span class="cap">holders</span><span class="aside" id="hCount"></span></div>
+  <div class="holders" id="holders"><div class="card empty">No holder attached. Add a phone below.</div></div>
+
+  <section class="card add rise" style="--i:2; margin-top:12px" id="add">
+    <div class="hd"><span class="cap">add another phone</span><span class="aside num" id="ttl"></span></div>
+    <div id="addBody" class="note">Mints a single-use join link (15 min). The phone opens it, and the relay gives it the next key range.</div>
+    <div class="key" id="keyRow" hidden>
+      <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="owner key: the t= value adk kvholder printed">
+      <button class="primary" id="keyGo" style="padding:10px 16px">Use</button>
+    </div>
+    <div id="link" hidden>
+      <div class="qr">
+        <div class="code" id="qr" aria-label="QR code for the join link"></div>
+        <div class="meta">
+          <div class="tabs" id="vias" role="group" aria-label="how the phone reaches this relay"></div>
+          <div class="url" id="url"></div>
+          <button class="quiet" id="copy">Copy link</button>
+          <div class="note" id="viaNote"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="act"><div class="in">
+  <div class="hint" id="hint">Every phone adds its memory to one pool.</div>
+  <button class="primary" id="mint">Add another phone</button>
+</div></footer>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const get = (s, k) => { try { return s.getItem(k) || ''; } catch (e) { return ''; } };
+  const put = (s, k, v) => { try { s.setItem(k, v); } catch (e) { /* private mode */ } };
+  // the owner key rides the #fragment (never sent to a server) or is pasted once per tab
+  let master = new URLSearchParams(location.hash.slice(1)).get('m') || get(sessionStorage, 'kvs.m');
+  if (location.hash) history.replaceState(null, '', location.pathname);
+  if (master) put(sessionStorage, 'kvs.m', master);
+
+  const GB = 1073741824;
+  const bytes = (b) => b >= GB ? (b / GB).toFixed(b >= 10 * GB ? 0 : 1) + ' GB' : Math.round(b / 1048576) + ' MB';
+  const n = (x) => Math.round(x).toLocaleString();
+  const fmtMs = (ms) => ms >= 100 ? ms.toFixed(0) : ms >= 10 ? ms.toFixed(1) : ms.toFixed(2);
+  const age = (s) => s < 60 ? Math.round(s) + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : (s / 3600).toFixed(1) + ' h';
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  const unit = (node, v, u) => { node.textContent = v; if (u) node.appendChild(el('small', '', u)); };
+
+  let prevAttn = null, prevAt = 0, rate = 0, lastCallAt = 0, fails = 0;
+  const KEEPALIVE = 25;  // the relay pings every holder this often (seconds)
+
+  function render(st) {
+    const hs = st.holders || [];
+    const lent = st.lent_bytes != null ? st.lent_bytes : hs.reduce((a, h) => a + (h.max_bytes || 0), 0);
+    const used = st.used_bytes || 0;
+    const now = Date.now() / 1000;
+    if (prevAttn !== null && st.attn_calls != null) {
+      const d = st.attn_calls - prevAttn, dt = Math.max(0.5, now - prevAt);
+      rate = Math.max(0, d / dt); if (d > 0) lastCallAt = now;
+    }
+    prevAttn = st.attn_calls; prevAt = now;
+    const busy = now - lastCallAt < 5;
+
+    $('pool').textContent = hs.length ? bytes(lent) : '0 MB';
+    $('poolCap').textContent = 'pooled memory · ' + hs.length + (hs.length === 1 ? ' holder' : ' holders');
+    const why = $('why'); why.className = '';
+    if (st.broken) { why.textContent = st.broken + ' — the engine recomputes on its next CONFIG.'; why.className = 'bad'; }
+    else if (!hs.length) why.textContent = 'No holder attached. Add a phone to start a pool.';
+    else if (!st.configured) why.textContent = 'Idle — connected, waiting for an engine to send context.';
+    else if (busy) why.textContent = 'Active — attention fans out to every holder that keeps keys, merged exactly.';
+    else why.textContent = 'Holding context. No attention calls in the last 5 s.';
+    let state = !hs.length ? ['', 'empty'] : st.broken ? ['bad', 'broken'] : !st.configured ? ['ok', 'idle'] : busy ? ['acc', 'active'] : ['ok', 'holding'];
+    $('ldot').className = 'dot ' + state[0]; $('ltext').textContent = state[1];
+
+    unit($('kUsed'), bytes(used).split(' ')[0], bytes(used).split(' ')[1]);
+    $('kKeys').textContent = n(st.held || 0);
+    $('kRate').textContent = rate.toFixed(rate && rate < 10 ? 1 : 0);
+    const slow = hs.filter((h) => h.calls).reduce((m, h) => Math.max(m, h.rtt_ms || 0), 0);
+    if (slow) unit($('kSlow'), fmtMs(slow), 'ms'); else $('kSlow').textContent = '—';
+
+    // ribbon: one segment per holder, width by the keys it can keep, filled by the keys it keeps
+    const rib = $('ribbon'); rib.textContent = '';
+    let total = 0;
+    hs.forEach((h) => { total += h.cap || 0; });
+    hs.forEach((h, i) => {
+      const s = el('div', 'seg'); const f = el('i');
+      s.style.flexGrow = String(h.cap ? h.cap : Math.max(1, total / Math.max(1, hs.length)));
+      f.style.width = (h.cap ? Math.min(100, (h.held || 0) / h.cap * 100) : (h.held ? 100 : 0)) + '%';
+      s.title = (i + 1) + ' · ' + h.device + ' · keys [' + n(h.off) + ', ' + n(h.off + (h.held || 0)) + ')';
+      s.appendChild(f); rib.appendChild(s);
+    });
+    if (!hs.length) rib.appendChild(el('div', 'seg'));
+    $('rTot').textContent = st.configured ? n(st.held || 0) + ' of ' + (total ? n(total) : '∞') + ' keys' : 'ranges are set when the engine sends context';
+    $('rEnd').textContent = st.configured && total ? 'key ' + n(total) : '';
+
+    // holder cards
+    const box = $('holders'); box.textContent = '';
+    $('hCount').textContent = hs.length ? hs.length + ' attached' : '';
+    if (!hs.length) box.appendChild(el('div', 'card empty', 'No holder attached. Add a phone below.'));
+    hs.forEach((h, i) => {
+      const c = el('section', 'card h');
+      const top = el('div', 'top');
+      const healthy = h.seen_s == null || h.seen_s < KEEPALIVE * 2 + 5;
+      const dot = el('span', 'dot ' + (!healthy ? 'warn' : busy && h.held ? 'acc' : 'ok'));
+      top.appendChild(dot); top.appendChild(el('span', 'name', h.device)); top.appendChild(el('span', 'idx', '#' + (i + 1)));
+      c.appendChild(top);
+      const range = st.configured ? 'keys ' + n(h.off) + '–' + n(h.off + (h.held || 0)) + (h.cap ? ' of ' + n(h.off + h.cap) : ' · unbounded') : 'no range yet';
+      c.appendChild(el('div', 'sub', (h.store || 'wire') + ' · ' + range));
+      const t = el('div', 'track'), f = el('div', 'fill');
+      f.style.width = (h.max_bytes ? Math.min(100, (h.used_bytes || 0) / h.max_bytes * 100) : 0) + '%';
+      t.appendChild(f); c.appendChild(t);
+      const u = el('div', 'use');
+      const l = el('span'); l.appendChild(el('b', '', bytes(h.used_bytes || 0))); l.appendChild(document.createTextNode(' of ' + (h.max_bytes ? bytes(h.max_bytes) : 'unbounded')));
+      u.appendChild(l); u.appendChild(el('span', '', healthy ? 'seen ' + age(h.seen_s || 0) + ' ago' : 'silent ' + age(h.seen_s) + ''));
+      c.appendChild(u);
+      const dl = el('dl');
+      [['last', h.calls ? fmtMs(h.last_ms) + ' ms' : '—'], ['mean', h.calls ? fmtMs(h.mean_ms) + ' ms' : '—'],
+       ['rtt', h.calls ? fmtMs(h.rtt_ms) + ' ms' : '—'], ['calls', n(h.calls || 0)]].forEach(([k, v]) => {
+        const d = el('div'); d.appendChild(el('dt', '', k)); d.appendChild(el('dd', '', v)); dl.appendChild(d);
+      });
+      c.appendChild(dl);
+      box.appendChild(c);
+    });
+
+    const sh = st.shape;
+    $('eShape').textContent = sh ? sh.n_layer + ' layers · ' + sh.n_head_kv + ' kv heads · k' + sh.k_dim + '/v' + sh.v_dim : 'not sent yet';
+    $('eHeld').textContent = n(st.held || 0) + ' per layer';
+    $('eAttn').textContent = n(st.attn_calls || 0);
+    $('eOps').textContent = n(st.calls || 0);
+    $('eHost').textContent = location.host;
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('/status', {cache: 'no-store'});
+      render(await r.json()); fails = 0;
+    } catch (e) {
+      if (++fails >= 2) { $('ldot').className = 'dot'; $('ltext').textContent = 'offline'; $('why').textContent = 'The relay does not answer on ' + location.host + '.'; }
+    }
+    $('clock').textContent = new Date().toTimeString().slice(0, 5);
+  }
+  setInterval(poll, 1000); poll();
+
+  // ---- add a phone: single-use join link + QR, minted by the relay for the owner only
+  let links = [], pick = 0, expires = 0;
+  const VIA = {tunnel: 'public https: WebGPU on the phone', lan: 'same Wi-Fi; plain http runs the CPU holder', usb: 'phone on USB with adb reverse: WebGPU allowed'};
+  function showLink() {
+    const L = links[pick]; if (!L) return;
+    $('link').hidden = false;
+    const v = $('vias'); v.textContent = '';
+    links.forEach((x, i) => { const b = el('button', '', x.via); b.setAttribute('aria-pressed', String(i === pick)); b.onclick = () => { pick = i; showLink(); }; v.appendChild(b); });
+    $('qr').innerHTML = L.svg || '';  // the relay's own SVG (qrcode matrix), no script in it
+    $('url').textContent = L.url;
+    $('viaNote').textContent = (VIA[L.via] || '') + ' · works once.';
+  }
+  async function mint() {
+    if (!master) { $('keyRow').hidden = false; $('key').focus(); $('addBody').textContent = 'Adding a phone needs the owner key: the t= value in the link adk kvholder printed. It stays in this tab.'; return; }
+    $('mint').disabled = true;
+    try {
+      const r = await fetch('/swarm/join?ttl=900', {headers: {'X-KV-Token': master}, cache: 'no-store'});
+      if (r.status === 403) { master = ''; put(sessionStorage, 'kvs.m', ''); $('keyRow').hidden = false; $('addBody').textContent = 'The relay refused that key. Paste the owner key again.'; return; }
+      const j = await r.json();
+      links = j.links || []; expires = j.expires; pick = 0;
+      $('addBody').textContent = 'Scan with the phone camera, or open the link on it. A new link per phone.';
+      showLink();
+    } catch (e) {
+      $('addBody').textContent = 'The relay did not answer: ' + e;
+    } finally { $('mint').disabled = false; }
+  }
+  setInterval(() => {
+    if (!expires) return;
+    const s = expires - Date.now() / 1000;
+    $('ttl').textContent = s > 0 ? 'expires in ' + age(s) : 'expired';
+    if (s <= 0) { $('link').hidden = true; expires = 0; $('addBody').textContent = 'That link expired. Mint a new one.'; }
+  }, 1000);
+  $('mint').onclick = mint;
+  $('keyGo').onclick = () => { master = $('key').value.trim(); $('key').value = ''; if (master) { put(sessionStorage, 'kvs.m', master); $('keyRow').hidden = true; mint(); } };
+  $('key').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('keyGo').click(); });
+  $('copy').onclick = async () => { try { await navigator.clipboard.writeText($('url').textContent); $('copy').textContent = 'Copied'; setTimeout(() => { $('copy').textContent = 'Copy link'; }, 1500); } catch (e) { /* no clipboard */ } };
+  $('themeBtn').onclick = (e) => {
+    e.preventDefault();
+    const root = document.documentElement;
+    const cur = root.dataset.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    root.dataset.theme = cur === 'dark' ? 'light' : 'dark'; put(localStorage, 'kvs.theme', root.dataset.theme);
+  };
+  const th = get(localStorage, 'kvs.theme'); if (th) document.documentElement.dataset.theme = th;
+})();
+</script>
+</body></html>

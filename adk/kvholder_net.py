@@ -210,6 +210,11 @@ class _Attached:
     cap: int | None = None  # keys per layer it keeps, from max_bytes and the CONFIG
     lock: threading.Lock = field(default_factory=threading.Lock)
     session: str = ""  # lets the same holder reattach after a dropped link
+    calls: int = 0  # attention calls it answered
+    last_ms: float = 0.0  # its own compute time on the last call (from its reply)
+    sum_ms: float = 0.0
+    rtt_ms: float = 0.0  # the last call's round trip as the relay saw it
+    seen: float = field(default_factory=time.time)  # last successful exchange
 
 
 class HolderLostError(ConnectionError):
@@ -235,6 +240,7 @@ class Relay:
         self.n: list[int] = []  # keys held per layer, across all holders
         self.broken = ""
         self.calls = 0
+        self.attn_calls = 0
         self.stop = threading.Event()
         self.joins: dict[str, float] = {}  # join token -> expiry: handed to an on-demand holder
         self.sessions: set[str] = set()  # issued on a join, so that holder can reconnect
@@ -313,15 +319,7 @@ class Relay:
     def _place(self, h: _Attached) -> None:
         """Give ``h`` the next free key range (the CONFIG must be known)."""
         assert self.cfg is not None
-        cfg = self.cfg
-        elem = {"f16": 2, "f32": 4}.get(h.store)
-        if elem:
-            key_bytes = cfg.n_head_kv * (cfg.k_dim + cfg.v_dim) * elem
-        elif h.store == "tq4":
-            key_bytes = cfg.n_head_kv * (cfg.k_dim // 2 + 4 + cfg.v_dim // 2 + 4)
-        else:
-            key_bytes = cfg.rs + cfg.v_rs
-        per_key = key_bytes * cfg.n_layer
+        per_key = self._key_bytes(h) * self.cfg.n_layer
         h.cap = None if h.max_bytes is None else (h.max_bytes // per_key) // 64 * 64
         h.off = 0
         for o in self.holders:
@@ -331,6 +329,18 @@ class Relay:
                 h.off = 1 << 62  # behind an unbounded holder: never reached
                 break
             h.off = max(h.off, o.off + o.cap)
+
+    def _key_bytes(self, h: _Attached) -> int:
+        """Bytes ``h`` spends on one key position of one layer (keys and values)."""
+        cfg = self.cfg
+        if cfg is None:
+            return 0
+        elem = {"f16": 2, "f32": 4}.get(h.store)
+        if elem:
+            return cfg.n_head_kv * (cfg.k_dim + cfg.v_dim) * elem
+        if h.store == "tq4":
+            return cfg.n_head_kv * (cfg.k_dim // 2 + 4 + cfg.v_dim // 2 + 4)
+        return cfg.rs + cfg.v_rs
 
     def detach(self, h: _Attached) -> None:
         if h not in self.holders:
@@ -355,6 +365,7 @@ class Relay:
     ) -> bytes:
         with h.lock:
             try:
+                t0 = time.perf_counter()
                 h.ws.sock.settimeout(timeout)
                 h.ws.send(msg)
                 if not expect_reply:
@@ -362,6 +373,12 @@ class Relay:
                 op, reply = h.ws.recv()
                 if op != OP_BIN or len(reply) < kv.HDR.size:
                     raise ConnectionError("holder sent a non-PATN reply")
+                h.seen = time.time()
+                if _type(reply) == kv.ATTN_OK and len(reply) >= kv.HDR.size + kv.ATTN_REP.size:
+                    h.rtt_ms = (time.perf_counter() - t0) * 1000.0
+                    h.last_ms = float(kv.ATTN_REP.unpack_from(reply, kv.HDR.size)[1])
+                    h.calls += 1
+                    h.sum_ms += h.last_ms
                 return reply
             except (OSError, ConnectionError) as e:
                 self.detach(h)
@@ -399,6 +416,7 @@ class Relay:
                 if mtype == kv.TRUNCATE:
                     return self._truncate(p)
                 if mtype in (kv.ATTN, kv.ATTN_BIG):
+                    self.attn_calls += 1
                     return self._attn(mtype, p)
                 return self._call(self.holders[0], msg)
             except HolderLostError as e:
@@ -546,6 +564,7 @@ class Relay:
                 try:
                     h.ws.send(b"ka", OP_PING)
                     ok = True
+                    h.seen = time.time()
                 except OSError:
                     ok = False
                 finally:
@@ -555,18 +574,54 @@ class Relay:
                         self.detach(h)
 
     def status(self) -> dict:
+        """What /status serves: no token, ever. The original keys keep their meaning."""
         hs = list(self.holders)
+        cfg, now = self.cfg, time.time()
+        n_glob = max(self.n) if self.n else 0
+        holders = []
+        for h in hs:
+            held = self._local(h, n_glob)
+            used = held * self._key_bytes(h) * (cfg.n_layer if cfg else 0)
+            holders.append(
+                {
+                    "device": h.device,
+                    "off": h.off,
+                    "cap": h.cap,
+                    "max_bytes": h.max_bytes,
+                    "since": h.since,
+                    "store": h.store,
+                    "held": held,  # key positions it keeps, on every layer
+                    "used_bytes": used,
+                    "calls": h.calls,
+                    "last_ms": round(h.last_ms, 3),
+                    "mean_ms": round(h.sum_ms / h.calls, 3) if h.calls else 0.0,
+                    "rtt_ms": round(h.rtt_ms, 3),
+                    "seen_s": round(now - h.seen, 1),
+                }
+            )
+        shape = None
+        if cfg is not None:
+            shape = {
+                "n_layer": cfg.n_layer,
+                "n_head_kv": cfg.n_head_kv,
+                "k_dim": cfg.k_dim,
+                "v_dim": cfg.v_dim,
+            }
         return {
             "attached": bool(hs),
             "device": hs[0].device if hs else None,
             "since": hs[0].since if hs else None,
-            "holders": [
-                {"device": h.device, "off": h.off, "cap": h.cap, "max_bytes": h.max_bytes}
-                for h in hs
-            ],
+            "holders": holders,
             "held": self.n[0] if self.n else 0,
+            "held_per_layer": list(self.n),
             "broken": self.broken or None,
             "calls": self.calls,
+            "attn_calls": self.attn_calls,
+            "configured": cfg is not None,
+            "shape": shape,
+            "lent_bytes": sum(h.max_bytes or 0 for h in hs),
+            "used_bytes": sum(x["used_bytes"] for x in holders),
+            "now": now,
         }
 
 
@@ -637,6 +692,14 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             return self._send(200, "application/json", json.dumps(relay.status()).encode())
         if route == "/join":
             return self._join(path, hdrs, relay)
+        if route == "/swarm":
+            if not self._loopback(hdrs):
+                return self._send(403, "text/plain", b"the swarm view is for this machine only")
+            from adk.kvholder_page import SWARM_HTML
+
+            return self._send(200, "text/html; charset=utf-8", SWARM_HTML.encode())
+        if route == "/swarm/join":
+            return self._swarm_join(path, hdrs, relay)
         if route in ("/", "/index.html"):
             from adk.kvholder_page import PAGE_HTML
 
@@ -661,6 +724,34 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
         return self._send(
             200, "application/json", json.dumps({"token": tok, "expires": exp}).encode()
         )
+
+    def _loopback(self, hdrs: dict) -> bool:
+        """A request from this machine, addressed to this machine (no DNS rebinding)."""
+        host = hdrs.get("host", "").rsplit(":", 1)[0].strip("[]").lower()
+        return self.client_address[0] in ("127.0.0.1", "::1") and host in (
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        )
+
+    def _swarm_join(self, path: str, hdrs: dict, relay: Relay) -> None:
+        """The swarm view's "add a phone": a single-use join link per way a phone can reach
+        this relay, each with a QR. Loopback and the master token, like /join."""
+        if not self._loopback(hdrs) or relay.admit(hdrs.get("x-kv-token", "")) != "master":
+            return self._send(403, "text/plain", b"forbidden")
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+        try:
+            ttl = min(max(float(q.get("ttl", ["900"])[0]), 30.0), 86400.0)
+        except ValueError:
+            ttl = 900.0
+        tok, exp = relay.mint_join(ttl)
+        port = self.server.server_address[1]
+        links = [
+            {"via": via, "url": holder_url(base, tok), "svg": qr_svg(holder_url(base, tok))}
+            for via, base in phone_bases(port, self.server.server_address[0])
+        ]
+        body = {"token": tok, "expires": exp, "links": links}
+        return self._send(200, "application/json", json.dumps(body).encode())
 
     def _send(self, code: int, ctype: str, body: bytes) -> None:
         reason = {200: "OK", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed"}.get(
@@ -912,6 +1003,44 @@ def _down_stale_tunnel(base: list[str], port: int) -> None:
             base + ["down"], capture_output=True, text=True, encoding="utf-8", timeout=30
         )
         print(f"kvholder: took down a stale tunnel to :{port} ({st.get('url', '')})")
+
+
+def phone_bases(web_port: int, bind: str) -> list[tuple[str, str]]:
+    """Every base URL a phone could open this relay's page on, best first: the tunnel the
+    running relay recorded, the LAN address when the page listens beyond loopback, and
+    localhost on the phone (USB, ``adb reverse``)."""
+    out: list[tuple[str, str]] = []
+    st = read_state() or {}
+    if st.get("web_port") == web_port:
+        if st.get("public"):
+            out.append(("tunnel", str(st["public"])))
+        if st.get("lan"):
+            out.append(("lan", str(st["lan"])))
+    if bind not in ("127.0.0.1", "::1", "localhost") and not any(v == "lan" for v, _ in out):
+        host = lan_ip() if bind in ("", "0.0.0.0", "::") else bind
+        out.append(("lan", f"http://{host}:{web_port}"))
+    out.append(("usb", f"http://localhost:{web_port}"))
+    return out
+
+
+def qr_svg(text: str) -> str:
+    """``text`` as an inline SVG QR (one path, currentColor on a light quiet zone); '' when
+    ``qrcode`` is missing. No xmlns: it is pasted into HTML, never served as a file."""
+    try:
+        import qrcode
+    except ImportError:
+        return ""
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(text)
+    qr.make(fit=True)
+    m = qr.get_matrix()
+    n = len(m)
+    d = "".join(f"M{x} {y}h1v1h-1z" for y, row in enumerate(m) for x, on in enumerate(row) if on)
+    return (
+        f'<svg viewBox="0 0 {n} {n}" shape-rendering="crispEdges" role="img" '
+        f'aria-label="QR code"><rect width="{n}" height="{n}" fill="#fff"/>'
+        f'<path d="{d}" fill="#050507"/></svg>'
+    )
 
 
 def holder_url(base: str, token: str) -> str:

@@ -1,74 +1,451 @@
 <!doctype html>
 <html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KV Holder</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#050507">
+<title>KV Holder · AitherOS</title>
 <style>
-:root { --bg:#0b0d12; --card:#141821; --ink:#e8ecf3; --dim:#8a94a7; --ok:#3ecf8e; --warn:#f5a524; --bad:#f2555a; --acc:#7c9cff; }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg:#f6f7fb; --card:#fff; --ink:#141821; --dim:#5b6475; } }
-* { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
-main { max-width:520px; margin:0 auto; padding:24px 16px; }
-h1 { font-size:20px; margin:0 0 4px } p.sub { color:var(--dim); margin:0 0 20px }
-.card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:12px; }
-.row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(128,128,128,.15) } .row:last-child { border:0 }
-.k { color:var(--dim) } .v { font-variant-numeric:tabular-nums; text-align:right }
-.dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; background:var(--dim) }
-.on { background:var(--ok) } .wait { background:var(--warn) } .off { background:var(--bad) }
-label { display:block; color:var(--dim); margin-bottom:6px } input[type=range] { width:100% }
-button { background:var(--acc); color:#fff; border:0; border-radius:10px; padding:10px 14px; font-size:15px; width:100% }
+/* Aitherium OS frame, self-contained: the page ships no external asset (a test asserts it). */
+:root {
+  --bg:#050507; --win:#0b0c10; --tile:#101217; --ink:#EDEFF5; --dim:rgba(237,239,245,.55);
+  --faint:rgba(237,239,245,.32); --line:rgba(255,255,255,.08); --acc:#5EC9CC;
+  --glow:rgba(94,201,204,.35); --acc-soft:rgba(94,201,204,.12); --ok:#5ECC78; --warn:#E0B44C;
+  --bad:#E5675E; --on-acc:#050507;
+  --sans:"Inter","Segoe UI Variable Text","Segoe UI",Roboto,system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono","Roboto Mono",ui-monospace,Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.2,.8,.2,1);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg:#F3F4F7; --win:#FFFFFF; --tile:#F6F7F9; --ink:#0B0D12; --dim:rgba(11,13,18,.58);
+    --faint:rgba(11,13,18,.36); --line:rgba(11,13,18,.09); --acc:#16878A;
+    --glow:rgba(22,135,138,.22); --acc-soft:rgba(22,135,138,.10); --ok:#1E8F45; --warn:#9A6B00;
+    --bad:#B83A31; --on-acc:#FFFFFF;
+  }
+}
+:root[data-theme="light"] {
+  --bg:#F3F4F7; --win:#FFFFFF; --tile:#F6F7F9; --ink:#0B0D12; --dim:rgba(11,13,18,.58);
+  --faint:rgba(11,13,18,.36); --line:rgba(11,13,18,.09); --acc:#16878A;
+  --glow:rgba(22,135,138,.22); --acc-soft:rgba(22,135,138,.10); --ok:#1E8F45; --warn:#9A6B00;
+  --bad:#B83A31; --on-acc:#FFFFFF;
+}
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+html, body { margin:0; }
+body {
+  min-height:100vh; background:var(--bg); color:var(--ink); font:15px/1.45 var(--sans); letter-spacing:-.005em;
+  -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent;
+  background-image:radial-gradient(120% 60% at 50% -10%, var(--acc-soft), transparent 60%);
+  background-repeat:no-repeat;
+}
+.mono { font-family:var(--mono); }
+.cap { font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); }
+.num { font-variant-numeric:tabular-nums; }
+
+/* menubar */
+.bar { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:10px;
+  min-height:44px; padding:env(safe-area-inset-top) 16px 0;
+  background:color-mix(in srgb, var(--bg) 82%, transparent); border-bottom:1px solid var(--line);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+.bar svg { width:20px; height:20px; flex:none; }
+.bar .app { font-weight:500; letter-spacing:-.01em; }
+.bar .sp { flex:1; }
+.live { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--faint); flex:none; }
+.dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
+.dot.acc { background:var(--acc); animation:pulse 1.6s var(--ease) infinite; }
+@keyframes pulse { 0% { box-shadow:0 0 0 0 var(--glow); } 70% { box-shadow:0 0 0 8px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+#clock { font-family:var(--mono); font-size:12px; color:var(--dim); }
+
+/* the window */
+.win { max-width:1080px; margin:0 auto; padding:0 16px calc(96px + env(safe-area-inset-bottom)); }
+.wtitle { display:flex; align-items:center; gap:10px; padding:14px 0 10px; color:var(--dim); font-size:12px; }
+.wtitle .x { margin-left:auto; color:var(--dim); text-decoration:none; font-size:16px; line-height:1; padding:4px; }
+.cols { display:grid; gap:12px; grid-template-columns:minmax(0, 1fr); }
+.stack { display:grid; gap:12px; grid-template-columns:minmax(0, 1fr); align-content:start; }
+.card { background:var(--win); border:1px solid var(--line); border-radius:16px; padding:18px; min-width:0; }
+.rise { opacity:0; transform:translateY(8px); animation:rise .48s var(--ease) forwards; animation-delay:calc(var(--i, 0) * 60ms); }
+@keyframes rise { to { opacity:1; transform:none; } }
+
+.hero h1 { font-size:44px; line-height:1.02; font-weight:300; letter-spacing:-.03em; margin:6px 0 8px; }
+.hero p { margin:0; color:var(--dim); font-size:16px; }
+.hero .facts { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
+.pill { font-family:var(--mono); font-size:11.5px; color:var(--dim); border:1px solid var(--line);
+  border-radius:999px; padding:4px 10px; white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+.pill b { color:var(--ink); font-weight:500; }
+
+.meter .big { display:flex; align-items:baseline; gap:8px; margin:8px 0 12px; flex-wrap:wrap; }
+.meter .big .v { font-size:34px; font-weight:300; letter-spacing:-.03em; }
+.meter .big .of { color:var(--dim); }
+.track { position:relative; height:10px; border-radius:999px; background:var(--tile); border:1px solid var(--line); overflow:hidden; }
+.fill { position:absolute; inset:0 auto 0 0; width:0; background:var(--acc); border-radius:999px;
+  transition:width .6s var(--ease); box-shadow:0 0 18px var(--glow); }
+.meter .sub { display:flex; justify-content:space-between; gap:10px; margin-top:10px; color:var(--dim); font-size:13px; }
+
+.tiles { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+.tile { background:var(--win); padding:14px 16px; min-width:0; }
+.tile .v { font-size:26px; font-weight:300; letter-spacing:-.02em; margin-top:4px; }
+.tile .v small { font-size:13px; color:var(--dim); margin-left:3px; letter-spacing:0; }
+
+.spark svg { display:block; width:100%; height:64px; margin-top:10px; color:var(--ink); }
+.hd { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+.hd .aside { color:var(--dim); font-family:var(--mono); font-size:12px; }
+.strip { display:flex; align-items:flex-end; gap:2px; height:56px; margin-top:12px; }
+.strip i { flex:1; min-width:1px; background:var(--acc); opacity:.85; border-radius:2px 2px 0 0; height:2px; transition:height .5s var(--ease); }
+.strip.empty i { background:var(--faint); opacity:.4; }
+.note { margin-top:10px; color:var(--dim); font-size:13px; }
+
+.rows .r { display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px solid var(--line); font-size:14px; }
+.rows .r:last-child { border:0; padding-bottom:0; }
+.rows .k { color:var(--dim); flex:none; }
+.rows .v { text-align:right; font-family:var(--mono); font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+
+.seg { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:6px; margin-top:12px; }
+.seg button { font:500 14px var(--sans); color:var(--ink); background:var(--tile); border:1px solid var(--line);
+  border-radius:12px; padding:12px 0; cursor:pointer; transition:background .18s var(--ease), border-color .18s var(--ease); }
+.seg button[aria-pressed="true"] { border-color:var(--acc); background:var(--acc-soft); color:var(--acc); }
+.seg button.arm { border-color:var(--warn); color:var(--warn); }
+
+.log { font-family:var(--mono); font-size:12px; color:var(--dim); margin:10px 0 0; padding:0; list-style:none; }
+.log li { padding:3px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.log li span { color:var(--faint); margin-right:8px; }
+
+/* the one primary action: a slim bottom bar */
+.act { position:fixed; left:0; right:0; bottom:0; z-index:5; padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+  background:color-mix(in srgb, var(--bg) 86%, transparent); border-top:1px solid var(--line);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+.act .in { max-width:1080px; margin:0 auto; display:flex; align-items:center; gap:14px; }
+.act .hint { flex:1; color:var(--dim); font-size:13px; min-width:0; }
+.primary { font:600 15px var(--sans); letter-spacing:-.01em; border-radius:12px; padding:13px 22px; cursor:pointer; flex:none;
+  background:var(--acc); color:var(--on-acc); border:1px solid var(--acc); transition:transform .18s var(--ease), background .18s var(--ease); }
+.primary:active { transform:scale(.98); }
+.primary.stop { background:transparent; color:var(--ink); border-color:var(--faint); }
+
+@media (min-width: 700px) {
+  .cols { grid-template-columns:minmax(0, 1.15fr) minmax(0, 1fr); align-items:start; }
+  .hero h1 { font-size:56px; }
+}
+@media (min-width: 1000px) { .tiles { grid-template-columns:repeat(4, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation:none; opacity:1; transform:none; }
+  .dot.acc { animation:none; }
+  .fill, .strip i { transition:none; }
+}
 </style></head>
-<body><main>
-<h1>KV Holder</h1>
-<p class="sub">This device keeps the oldest part of a model's context and does the attention over it. Keep this tab open and the screen on.</p>
-<div class="card"><div class="row"><span><span id="dot" class="dot wait"></span><span id="state">starting</span></span><span class="v" id="engine"></span></div></div>
-<div class="card">
-  <div class="row"><span class="k">Model shape</span><span class="v" id="shape">-</span></div>
-  <div class="row"><span class="k">Held keys (layer 0)</span><span class="v" id="held">0</span></div>
-  <div class="row"><span class="k">Memory used</span><span class="v" id="mem">0 MB</span></div>
-  <div class="row"><span class="k">Attention calls</span><span class="v" id="calls">0</span></div>
-  <div class="row"><span class="k">Last call</span><span class="v" id="last">-</span></div>
-</div>
-<div class="card"><label for="budget">Memory to lend: <b id="bv"></b> MB</label>
-<input id="budget" type="range" min="256" max="8192" step="256" value="2048"><button id="go" style="margin-top:12px">Reconnect</button></div>
+<body>
+<header class="bar">
+  <svg viewBox="0 0 512 512" aria-hidden="true" fill="none"><defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00e5ff"/><stop offset="1" stop-color="#0088cc"/></linearGradient></defs><g transform="translate(256 256) scale(.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="url(#mg)" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="60" fill="url(#mg)" opacity=".9"/><circle cx="256" cy="262" r="34" fill="#0a0a14"/><circle cx="256" cy="262" r="10" fill="#00e5ff"/></g></svg>
+  <span class="app">KV Holder</span>
+  <span class="sp"></span>
+  <span class="live"><span id="ldot" class="dot"></span><span id="ltext">off</span></span>
+  <span id="clock">--:--</span>
+</header>
+
+<main class="win">
+  <div class="wtitle mono"><span>kvholder · lend memory to a model</span><a class="x" href="#" id="themeBtn" title="Switch theme" aria-label="Switch theme">◐</a></div>
+  <div class="cols">
+    <div class="stack">
+      <section class="card hero rise" style="--i:0" aria-live="polite">
+        <div class="cap">state</div>
+        <h1 id="state">Starting</h1>
+        <p id="why">Starting the attention engine on this device.</p>
+        <div class="facts">
+          <span class="pill">engine <b id="engine">—</b></span>
+          <span class="pill">relay <b id="relay">—</b></span>
+        </div>
+      </section>
+
+      <section class="card meter rise" style="--i:1">
+        <div class="cap">lent memory</div>
+        <div class="big"><span class="v num" id="used">0 MB</span><span class="of">used of <span id="cap" class="num">—</span> lent</span></div>
+        <div class="track" role="meter" aria-label="lent memory used" id="track" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="fill" id="fill"></div></div>
+        <div class="sub"><span id="keys">no context yet</span><span id="pct" class="num">0%</span></div>
+      </section>
+
+      <section class="card spark rise" style="--i:2">
+        <div class="hd"><span class="cap">attention calls / s · 60 s</span><span class="aside num" id="peak">peak 0</span></div>
+        <svg viewBox="0 0 300 64" preserveAspectRatio="none" aria-hidden="true">
+          <line x1="0" y1="63.5" x2="300" y2="63.5" stroke="currentColor" stroke-opacity=".14"/>
+          <path id="area" d="" fill="var(--acc)" fill-opacity=".14"/>
+          <path id="line" d="" fill="none" stroke="var(--acc)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+        </svg>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="tiles rise" style="--i:3" aria-label="attention">
+        <div class="tile"><div class="cap">calls / s</div><div class="v num" id="rate">0</div></div>
+        <div class="tile"><div class="cap">last</div><div class="v num" id="last">—</div></div>
+        <div class="tile"><div class="cap">average</div><div class="v num" id="avg">—</div></div>
+        <div class="tile"><div class="cap">total calls</div><div class="v num" id="calls">0</div></div>
+      </section>
+
+      <section class="card rise" style="--i:4">
+        <div class="hd"><span class="cap">keys held per layer</span><span class="aside num" id="lsum">—</span></div>
+        <div class="strip empty" id="strip"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="note" id="lnote">The engine has not sent a model shape yet.</div>
+      </section>
+
+      <section class="card rise" style="--i:5">
+        <div class="hd"><span class="cap">memory to lend</span><span class="aside" id="devmem"></span></div>
+        <div class="seg" id="seg" role="group" aria-label="memory to lend"></div>
+        <div class="note" id="lendNote">Announced to the relay when this device connects.</div>
+      </section>
+
+      <section class="card rows rise" style="--i:6" aria-label="this device">
+        <div class="cap" style="margin-bottom:4px">this device</div>
+        <div class="r"><span class="k">Device</span><span class="v" id="dev">—</span></div>
+        <div class="r"><span class="k">Screen</span><span class="v" id="wake">—</span></div>
+        <div class="r" id="batRow" hidden><span class="k">Battery</span><span class="v" id="bat">—</span></div>
+        <div class="r" id="presRow" hidden><span class="k">CPU pressure</span><span class="v" id="pres">—</span></div>
+        <div class="r"><span class="k">Link</span><span class="v" id="link">—</span></div>
+      </section>
+
+      <section class="card rise" style="--i:7">
+        <div class="cap">events</div>
+        <ul class="log" id="log"></ul>
+      </section>
+    </div>
+  </div>
 </main>
+
+<footer class="act"><div class="in">
+  <div class="hint" id="hint">Keep this tab open and the screen on.</div>
+  <button class="primary stop" id="go">Stop lending</button>
+</div></footer>
+
 <script src="holder.js"></script>
 <script>
 (function () {
+  'use strict';
   const $ = (id) => document.getElementById(id);
-  let token = new URLSearchParams(location.hash.slice(1)).get('t') || '';
+  const frag = new URLSearchParams(location.hash.slice(1));
+  let token = frag.get('t') || '';
+  const tq4 = frag.get('store') === 'tq4';  // ~4x keys per MB on WebGPU, approximate
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/holder';
-  const budget = $('budget'); budget.value = localStorageGet('kvh.mb', '2048'); $('bv').textContent = budget.value;
-  budget.oninput = () => { $('bv').textContent = budget.value; localStorageSet('kvh.mb', budget.value); };
-  function localStorageGet(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } }
-  function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
-  function set(state, cls) { $('state').textContent = state; $('dot').className = 'dot ' + cls; }
-  let ws = null, lock = null;
-  async function start() {
-    if (ws) { ws.onclose = null; ws.close(); }
-    if (!token) { set('no token in the link: open the URL the host printed', 'off'); return; }
-    let engine = null;
-    const tq4 = new URLSearchParams(location.hash.slice(1)).get('store') === 'tq4';  // ~4x keys/MB, approximate
+  const CHOICES = [512, 1024, 2048, 4096, 8192];
+  const get = (k, d) => { try { return localStorage.getItem(k) || d; } catch (e) { return d; } };
+  const put = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
+
+  // ---- formatting
+  const GB = 1073741824;
+  const mb = (b) => b >= GB ? (b / GB).toFixed(b >= 10 * GB ? 0 : 1) + ' GB' : (b > 0 && b < 1048576 ? (b / 1048576).toFixed(2) : Math.round(b / 1048576)) + ' MB';
+  const label = (m) => m >= 1024 ? (m / 1024) + ' GB' : m + ' MB';
+  const fmtMs = (ms) => ms >= 100 ? ms.toFixed(0) : ms >= 10 ? ms.toFixed(1) : ms.toFixed(2);
+  const n = (x) => Math.round(x).toLocaleString();
+  const fmtRate = (r) => r.toFixed(r && r < 10 ? 1 : 0);
+
+  // ---- state
+  let budgetMb = Number(get('kvh.mb', '2048'));
+  if (CHOICES.indexOf(budgetMb) < 0) budgetMb = 2048;
+  let ws = null, lock = null, engine = null, holder = null, deviceName = 'browser';
+  let phase = 'starting', lastErr = '', stopped = false, retryAt = 0, armed = 0, cfgSeen = false;
+  let prevCalls = 0, lastCallAt = 0, rate = 0;
+  const samples = new Array(60).fill(0), log = [];
+
+  function event(text) {
+    log.unshift([new Date().toTimeString().slice(0, 8), text]);
+    log.length = Math.min(log.length, 6);
+    const ul = $('log'); ul.textContent = '';
+    for (const [ts, msg] of log) {
+      const li = document.createElement('li'), s = document.createElement('span');
+      s.textContent = ts; li.appendChild(s); li.appendChild(document.createTextNode(msg)); ul.appendChild(li);
+    }
+  }
+  function ms(id, v) { const el = $(id); el.textContent = v === null ? '—' : fmtMs(v); if (v !== null) { const s = document.createElement('small'); s.textContent = 'ms'; el.appendChild(s); } }
+
+  // ---- what the page says, derived from the holder's own counters only
+  function view() {
+    const h = holder, cfg = h && h.cfg;
+    const keys = cfg ? h.maxHeld() : 0;
+    const now = Date.now(), busy = now - lastCallAt < 5000;
+    let st = phase;
+    if (phase === 'attached') st = !cfg ? 'waiting' : busy ? 'active' : keys ? 'holding' : 'ready';
+    const copy = {
+      starting: ['Starting', 'Starting the attention engine on this device.', 'warn', 'starting'],
+      connecting: ['Connecting', 'Dialing the relay on ' + location.host + '.', 'warn', 'dialing'],
+      waiting: ['Idle', 'Connected — waiting for an engine to send context.', 'ok', 'idle'],
+      ready: ['Ready', 'In the pool with a key range of its own. No keys have reached this device yet.', 'ok', 'ready'],
+      holding: ['Holding', 'Keeping ' + n(keys) + ' keys per layer. No attention calls in the last 5 s.', 'ok', 'holding'],
+      active: ['Active', 'Answering attention: ' + fmtRate(rate) + ' calls/s over ' + n(keys) + ' keys.', 'acc', 'active'],
+      retrying: ['Offline', 'The link dropped. Retrying in ' + Math.max(0, Math.ceil((retryAt - now) / 1000)) + ' s.', 'warn', 'retrying'],
+      refused: ['Refused', lastErr || 'The relay refused this link.', 'bad', 'refused'],
+      notoken: ['No link', 'Open the link the host printed: it carries the join key.', 'bad', 'no link'],
+      stopped: ['Stopped', 'Not lending. Nothing is held on this device.', '', 'off'],
+    }[st];
+    $('state').textContent = copy[0]; $('why').textContent = copy[1];
+    $('ldot').className = 'dot ' + copy[2]; $('ltext').textContent = copy[3];
+
+    const lentMb = h ? Math.floor(h.budget / 1048576) : budgetMb;
+    const used = h ? h.used() : 0, pct = Math.min(100, used / (lentMb * 1048576) * 100);
+    $('used').textContent = mb(used); $('cap').textContent = label(lentMb);
+    $('fill').style.width = pct.toFixed(2) + '%'; $('track').setAttribute('aria-valuenow', pct.toFixed(0));
+    $('pct').textContent = (pct < 1 && used > 0 ? '<1' : pct.toFixed(0)) + '%';
+    $('keys').textContent = cfg ? n(keys) + ' keys × ' + cfg.nLayer + ' layer' + (cfg.nLayer > 1 ? 's' : '') : 'no context yet';
+
+    $('rate').textContent = fmtRate(rate);
+    $('calls').textContent = h ? n(h.calls) : '0';
+    ms('last', h && h.calls ? h.lastMs : null);
+    ms('avg', h && h.calls ? h.sumMs / h.calls : null);
+
+    // per-layer strip: real counts against this device's per-layer capacity
+    const strip = $('strip');
+    if (cfg) {
+      const L = cfg.nLayer, per = h.engine.bytesPerKey();
+      const capKeys = per ? Math.max(1, Math.floor(h.budget / (per * L))) : 1;
+      if (strip.childElementCount !== L) { strip.textContent = ''; for (let i = 0; i < L; i++) strip.appendChild(document.createElement('i')); }
+      strip.className = 'strip';
+      const top = Math.max(1, keys);  // bars compare the layers; the aside gives the room left
+      for (let i = 0; i < L; i++) strip.children[i].style.height = Math.max(2, h.engine.held(i) / top * 56) + 'px';
+      $('lsum').textContent = n(keys) + ' of ' + n(capKeys) + ' room';
+      $('lnote').textContent = 'model shape: ' + L + ' layer' + (L > 1 ? 's' : '') + ' · ' + cfg.nkv + ' KV head' + (cfg.nkv > 1 ? 's' : '') +
+        (cfg.kd ? ' · keys ' + cfg.kd + ' / values ' + cfg.vd : '') + ' · ' + per.toLocaleString() + ' B per key';
+    } else {
+      strip.className = 'strip empty'; $('lsum').textContent = '—';
+      $('lnote').textContent = st === 'stopped' ? 'Nothing held.' : 'The engine has not sent a model shape yet.';
+    }
+
+    $('link').textContent = ws && ws.readyState === 1 ? 'open · ' + (location.protocol === 'https:' ? 'wss' : 'ws') : st === 'stopped' ? 'closed' : 'down';
+    $('relay').textContent = location.host || 'local file';
+    $('wake').textContent = !('wakeLock' in navigator) ? 'no wake lock: keep it on' : lock && !lock.released ? 'kept awake' : 'may sleep';
+
+    const go = $('go'), off = st === 'stopped' || st === 'refused' || st === 'notoken';
+    go.textContent = off ? 'Start lending' : 'Stop lending'; go.className = off ? 'primary' : 'primary stop';
+    $('hint').textContent = off ? 'Lends ' + label(budgetMb) + ' when started.' : 'Keep this tab open and the screen on.';
+  }
+
+  function drawSpark() {
+    const max = Math.max(1, ...samples), W = 300, H = 62;
+    let d = '';
+    samples.forEach((v, i) => { d += (i ? 'L' : 'M') + (i / 59 * W).toFixed(1) + ' ' + (H - v / max * (H - 4) + 1).toFixed(1); });
+    $('line').setAttribute('d', d); $('area').setAttribute('d', d + 'L' + W + ' 64L0 64Z');
+    $('peak').textContent = 'peak ' + fmtRate(Math.max(...samples));
+  }
+
+  // ---- once a second: the rate is the holder's own call counter, nothing invented
+  setInterval(() => {
+    const c = holder ? holder.calls : 0, d = Math.max(0, c - prevCalls);
+    prevCalls = c;
+    if (d) lastCallAt = Date.now();
+    rate = d; samples.push(d); samples.shift();
+    drawSpark(); view();
+    $('clock').textContent = new Date().toTimeString().slice(0, 5);
+  }, 1000);
+
+  // ---- lend control: one tap; a tap that would drop held keys asks twice
+  function renderSeg() {
+    const seg = $('seg'); seg.textContent = '';
+    for (const m of CHOICES) {
+      const b = document.createElement('button');
+      b.textContent = label(m); b.setAttribute('aria-pressed', String(m === budgetMb));
+      if (m === armed) b.className = 'arm';
+      b.onclick = () => choose(m); seg.appendChild(b);
+    }
+  }
+  function choose(m) {
+    if (m === budgetMb) { armed = 0; renderSeg(); return; }
+    const keys = holder && holder.cfg ? holder.maxHeld() : 0;
+    if (keys && armed !== m && !stopped) {
+      armed = m; renderSeg();
+      $('lendNote').textContent = 'Holding ' + n(keys) + ' keys: changing drops them and the engine recomputes. Tap ' + label(m) + ' again.';
+      return;
+    }
+    armed = 0; budgetMb = m; put('kvh.mb', String(m)); renderSeg();
+    $('lendNote').textContent = stopped ? 'Lends ' + label(m) + ' when started.' : 'Reconnecting to lend ' + label(m) + '.';
+    event('lend set to ' + label(m));
+    holder = null; cfgSeen = false;  // the next link announces the new amount
+    if (!stopped) start();
+  }
+
+  async function makeEngine() {
+    if (engine) return engine;
     try { engine = await KVHolder.GpuEngine.create(navigator.gpu, {tq4}); } catch (e) { engine = null; }
     if (!engine) engine = new KVHolder.CpuEngine();
     $('engine').textContent = engine.describe();
-    const name = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'browser';
-    const holder = new KVHolder.Holder(engine, Number(budget.value) * 1048576, name);
-    set('connecting', 'wait');
+    event('engine ready · ' + engine.describe());
+    return engine;
+  }
+
+  async function keepAwake() {
+    try {
+      if ('wakeLock' in navigator && (!lock || lock.released) && document.visibilityState === 'visible') {
+        lock = await navigator.wakeLock.request('screen');
+        lock.addEventListener('release', () => view());
+      }
+    } catch (e) { /* not granted: the page says "may sleep" */ }
+  }
+
+  function close() { if (ws) { ws.onclose = null; try { ws.close(); } catch (e) { /* gone */ } ws = null; } }
+
+  async function start() {
+    close(); stopped = false;
+    if (!token) { phase = 'notoken'; view(); return; }
+    phase = engine ? 'connecting' : 'starting'; view();
+    await makeEngine();
+    // one holder per lend amount: a reconnect re-announces the keys it kept, so the relay swaps
+    // the link and loses nothing
+    if (!holder) { holder = new KVHolder.Holder(engine, budgetMb * 1048576, deviceName); prevCalls = 0; }
+    phase = 'connecting'; view();
     ws = KVHolder.connect(url, token, holder, {
       session: (s) => { token = s; },  // a join link works once; reconnect with the session
-      attached: () => set('attached: lending memory', 'on'),
-      error: (e) => set('error: ' + e, 'off'),
-      closed: () => { set('disconnected, retrying', 'wait'); setTimeout(start, 3000); },
-      activity: (h) => {
-        $('held').textContent = h.cfg ? h.engine.held(0).toLocaleString() : '0';
-        $('shape').textContent = h.cfg ? h.cfg.nLayer + ' layers, ' + h.cfg.nkv + ' KV heads, keys ' + h.cfg.kd + ' / values ' + h.cfg.vd : '-';
-        $('mem').textContent = (h.used() / 1048576).toFixed(0) + ' MB';
-        $('calls').textContent = h.calls.toLocaleString(); $('last').textContent = h.lastMs.toFixed(1) + ' ms';
+      attached: () => { phase = 'attached'; event('attached · lending ' + label(budgetMb)); view(); },
+      error: (e) => { lastErr = String(e); event('error: ' + lastErr); if (/token|refused/.test(lastErr)) phase = 'refused'; view(); },
+      closed: () => {
+        ws = null;
+        if (stopped || phase === 'refused') { view(); return; }
+        phase = 'retrying'; retryAt = Date.now() + 3000; event('link dropped'); view();
+        setTimeout(() => { if (!stopped && phase === 'retrying') start(); }, 3000);
+      },
+      activity: () => {
+        if (holder && holder.cfg && !cfgSeen) { cfgSeen = true; event('engine sent context · ' + holder.cfg.nLayer + ' layers'); }
       },
     });
-    try { if ('wakeLock' in navigator && !lock) lock = await navigator.wakeLock.request('screen'); } catch (e) { /* not granted */ }
+    keepAwake();
   }
-  $('go').onclick = start;
-  start();
+
+  function stop() {
+    stopped = true; close(); holder = null; cfgSeen = false; phase = 'stopped';
+    if (lock) { lock.release().catch(() => {}); lock = null; }
+    event('stopped lending'); view();
+  }
+
+  $('go').onclick = () => { if (stopped || phase === 'refused' || phase === 'notoken') { lastErr = ''; start(); } else stop(); };
+  $('themeBtn').onclick = (e) => {
+    e.preventDefault();
+    const root = document.documentElement;
+    const cur = root.dataset.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    root.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+    put('kvh.theme', root.dataset.theme);
+  };
+  const th = get('kvh.theme', ''); if (th) document.documentElement.dataset.theme = th;
+  document.addEventListener('visibilitychange', () => { if (!stopped) keepAwake(); });
+
+  // ---- device facts the browser actually exposes; their rows stay hidden when it does not
+  if (navigator.deviceMemory) $('devmem').textContent = 'device ~' + navigator.deviceMemory + ' GB';
+  deviceName = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'browser';
+  $('dev').textContent = deviceName;
+  if (navigator.getBattery) {
+    navigator.getBattery().then((b) => {
+      const show = () => { $('batRow').hidden = false; $('bat').textContent = Math.round(b.level * 100) + '% · ' + (b.charging ? 'charging' : 'on battery'); };
+      show(); b.addEventListener('levelchange', show); b.addEventListener('chargingchange', show);
+    }).catch(() => {});
+  }
+  if ('PressureObserver' in window) {
+    try {
+      const po = new PressureObserver((recs) => { $('presRow').hidden = false; $('pres').textContent = recs[recs.length - 1].state; });
+      po.observe('cpu').catch(() => {});
+    } catch (e) { /* not exposed */ }
+  }
+
+  renderSeg(); view(); drawSpark();
+  const boot = () => start();
+  if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+    navigator.userAgentData.getHighEntropyValues(['model']).then((v) => {
+      if (v.model) { deviceName = v.model; $('dev').textContent = v.model; }
+    }).catch(() => {}).finally(boot);
+  } else boot();
 })();
 </script>
 </body></html>
