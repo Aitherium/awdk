@@ -212,92 +212,147 @@ function concat(arrs) {
 }
 
 // ---------------------------------------------------------------- WebGPU engine
-// Shaders are specialized per CONFIG shape (key width KD, value width VD, rows R per KV head):
-// one workgroup of 256 threads per (row, KV head, key chunk). A thread scores one key of each
-// 256-key tile and owns value dims i, i+256, ... of the output. Queries sit in workgroup memory
-// when they fit (KD <= 2048), else they are read from storage.
-const WG = 256, QS_MAX = 2048;
+// One workgroup of 256 threads per (block of RB live query rows, KV head, key chunk). Each tile
+// of TK = 256 / RB keys is read from memory ONCE for all RB rows: thread (row j, key t) scores
+// one dot against queries kept in workgroup memory, and each thread owns value dims i, i+256, ...
+// of all RB rows. (One workgroup per row re-read every key 48 times; on a phone GPU that memory
+// traffic was the whole cost.) Padding rows (t >= n_tok) are never computed: live rows are
+// packed, and the merge writes padding as -inf. Shaders are specialized per CONFIG shape.
+const WG = 256;
 const f32lit = (x) => { const t = String(x); return /[.e]/.test(t) ? t : t + '.0'; };
-const partialHead = (KD, VD, R, extra) => {
-  const shared = KD <= QS_MAX;
-  return {shared, OPT: Math.ceil(VD / WG), qv: (d) => shared ? `qs[${d}]` : `(Q[row * ${KD}u + ${d}] * p.scale)`, src: `
-struct P { nk: u32, nkv: u32, slot: u32, ntok: u32, scale: f32, rows: u32, chunk: u32, b: u32 };
+function gpuPlan(KD, VD, lim) {
+  const OPT = Math.ceil(VD / WG), M = 4;  // M keys per thread per tile
+  const need = (rb) => (rb * KD + rb * (WG / rb) * M + WG + 3 * rb) * 4;  // workgroup bytes
+  // 16 rows per workgroup (each key read once for 16 rows) when queries fit in workgroup memory
+  const RB = OPT <= 2 && need(16) <= lim ? 16 : OPT <= 4 ? 8 : 4, TK = WG / RB, TT = TK * M;
+  const shared = need(RB) <= lim;  // else queries are read from storage
+  return {OPT, RB, TK, M, TT, shared};
+}
+const PARTIAL_WGSL = (kind, KD, VD, R, lim) => {  // kind: 'f32' | 'f16' | 'tq4'
+  const {OPT, RB, TK, M, TT, shared} = gpuPlan(KD, VD, lim || 16384), tq = kind === 'tq4', K4 = KD / 4;
+  const qv = (d4) => shared ? `qs[j * ${K4}u + ${d4}]` : `(Q[qb + ${d4}] * p.scale)`;
+  // a thread scores keys t, t + TK, ... (M of them) for its row j; vec4 loads of K and Q
+  const dot = tq ? `
+        let kw = (k * p.nkv + h) * ${KD / 32}u;
+        for (var w = 0u; w < ${KD / 32}u; w = w + 1u) {
+          let wd = K[kw + w];
+          for (var e = 0u; e < 4u; e = e + 1u) {
+            let word = wd[e]; let qb4 = w * 8u + e * 2u;
+            let a = ${qv('qb4')}; let b2 = ${qv('qb4 + 1u')};
+            acc = acc + dot(a, vec4<f32>(C[word & 15u], C[(word >> 4u) & 15u], C[(word >> 8u) & 15u], C[(word >> 12u) & 15u]))
+                      + dot(b2, vec4<f32>(C[(word >> 16u) & 15u], C[(word >> 20u) & 15u], C[(word >> 24u) & 15u], C[word >> 28u]));
+          }
+        }
+        s = acc * KN[k * p.nkv + h] * INVK;` : `
+        let kb = (k * p.nkv + h) * ${K4}u;
+        for (var d = 0u; d < ${K4}u; d = d + 1u) { acc = acc + dot(${qv('d')}, vec4<f32>(K[kb + d])); }
+        s = acc;`;
+  const vval = tq
+    ? `let key = (t0 + u) * p.nkv + h; let v = C[(V[key * ${VD / 8}u + d / 8u] >> ((d % 8u) * 4u)) & 15u] * VN[key] * INVV;`
+    : `let v = f32(V[((t0 + u) * p.nkv + h) * ${VD}u + d]);`;
+  return `${kind === 'f16' ? 'enable f16;' : ''}
+struct P { nk: u32, nkv: u32, slot: u32, ntok: u32, scale: f32, rows: u32, chunk: u32, nl: u32 };
 @group(0) @binding(0) var<uniform> p: P;
-${extra}
-@group(0) @binding(3) var<storage, read> Q: array<f32>;
+@group(0) @binding(1) var<storage, read> K: array<${tq ? 'vec4<u32>' : `vec4<${kind}>`}>;
+@group(0) @binding(2) var<storage, read> V: array<${tq ? 'u32' : kind}>;
+@group(0) @binding(3) var<storage, read> Q: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> PO: array<f32>;
 @group(0) @binding(5) var<storage, read_write> PML: array<f32>;
-${shared ? `var<workgroup> qs: array<f32, ${KD}>;` : ''}
-var<workgroup> sc: array<f32, 256>;
+${tq ? `@group(0) @binding(6) var<storage, read> KN: array<f32>;
+@group(0) @binding(7) var<storage, read> VN: array<f32>;
+var<private> C: array<f32, 16> = array<f32, 16>(${TQ4_C.map((c) => c.toFixed(4)).join(', ')});
+const INVK: f32 = ${f32lit(1 / Math.sqrt(KD))};
+const INVV: f32 = ${f32lit(1 / Math.sqrt(VD))};` : ''}
+${shared ? `var<workgroup> qs: array<vec4<f32>, ${RB * K4}>;` : ''}
+var<workgroup> sc: array<vec4<f32>, ${RB / 4 * TT}>;  // [key][row / 4]: 4 rows per load
 var<workgroup> red: array<f32, 256>;
-const NEG: f32 = -3.0e38;`};
-};
-const partialPrologue = (KD, VD, R, shared, OPT) => `
+var<workgroup> rm: array<f32, ${RB}>;
+var<workgroup> rl: array<f32, ${RB}>;
+var<workgroup> ra: array<f32, ${RB}>;
+const NEG: f32 = -3.0e38;
+fn qrow(li: u32) -> u32 { return (li / p.ntok) * 8u + li % p.ntok; }  // live row -> PATN row
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i: u32) {
-  let r = wg.x; let h = wg.y; let row = h * ${R}u + r;
-  let slot = p.slot + wg.z;
+  let h = wg.y; let slot = p.slot + wg.z;
   let k0 = wg.z * p.chunk;
   let k1 = min(k0 + p.chunk, p.nk);
-  let ob = (slot * p.rows + row) * ${VD}u;
-  let mb = (slot * p.rows + row) * 2u;
-  if ((r % 8u) >= p.ntok || k0 >= p.nk) {
-    for (var d = i; d < ${VD}u; d = d + 256u) { PO[ob + d] = 0.0; }
-    if (i == 0u) { PML[mb] = NEG; PML[mb + 1u] = 0.0; }
-    return;
-  }
-  ${shared ? `for (var d = i; d < ${KD}u; d = d + 256u) { qs[d] = Q[row * ${KD}u + d] * p.scale; }
-  workgroupBarrier();` : ''}
-  var m = NEG; var l = 0.0;
-  var o: array<f32, ${OPT}>;
-  for (var t0 = k0; t0 < k1; t0 = t0 + 256u) {
-    let k = t0 + i;
-    var s = NEG;`;
-const partialSoftmax = `
-    red[i] = s;
+  let li0 = wg.x * ${RB}u;
+  ${shared ? `for (var x = i; x < ${RB * K4}u; x = x + 256u) {
+    let li = li0 + x / ${K4}u;
+    var qv = vec4<f32>(0.0);
+    if (li < p.nl) { qv = Q[(h * ${R}u + qrow(li)) * ${K4}u + x % ${K4}u] * p.scale; }
+    qs[x] = qv;
+  }` : ''}
+  if (i < ${RB}u) { rm[i] = NEG; rl[i] = 0.0; }
+  workgroupBarrier();
+  let j = i / ${TK}u; let t = i % ${TK}u;
+  let jok = li0 + j < p.nl;
+  ${shared ? '' : `let qb = (h * ${R}u + qrow(min(li0 + j, p.nl - 1u))) * ${K4}u;`}
+  var o: array<vec4<f32>, ${RB / 4 * OPT}>;  // [row / 4][c]
+  var sv: array<f32, ${M}>;
+  for (var t0 = k0; t0 < k1; t0 = t0 + ${TT}u) {
+    var lm = NEG;
+    for (var m = 0u; m < ${M}u; m = m + 1u) {
+      let k = t0 + t + m * ${TK}u;
+      var s = NEG;
+      if (k < k1 && jok) {
+        var acc = 0.0;${dot}
+      }
+      sv[m] = s; lm = max(lm, s);
+    }
+    red[i] = lm;
     workgroupBarrier();
-    for (var w = 128u; w > 0u; w = w >> 1u) { if (i < w) { red[i] = max(red[i], red[i + w]); } workgroupBarrier(); }
-    let tm = red[0];
+    if (i < ${RB}u) {
+      var tm = NEG;
+      for (var u = 0u; u < ${TK}u; u = u + 1u) { tm = max(tm, red[i * ${TK}u + u]); }
+      let nm = max(rm[i], tm);
+      ra[i] = exp(rm[i] - nm); rm[i] = nm;
+    }
     workgroupBarrier();
-    let nm = max(m, tm);
-    let alpha = exp(m - nm);
-    var pv = 0.0;
-    if (k < k1) { pv = exp(s - nm); }
-    sc[i] = pv; red[i] = pv;
+    var ls = 0.0;
+    for (var m = 0u; m < ${M}u; m = m + 1u) {
+      let k = t0 + t + m * ${TK}u;
+      var pv = 0.0;
+      if (k < k1 && jok) { pv = exp(sv[m] - rm[j]); }
+      sc[(t + m * ${TK}u) * ${RB / 4}u + j / 4u][j % 4u] = pv; ls = ls + pv;
+    }
+    red[i] = ls;
     workgroupBarrier();
-    for (var w = 128u; w > 0u; w = w >> 1u) { if (i < w) { red[i] = red[i] + red[i + w]; } workgroupBarrier(); }
-    let ps = red[0];
-    let cnt = min(256u, k1 - t0);`;
-const partialEpilogue = (VD, OPT) => `
-    l = l * alpha + ps;
-    m = nm;
-    workgroupBarrier();
-  }
-  for (var c = 0u; c < ${OPT}u; c = c + 1u) { let d = i + c * 256u; if (d < ${VD}u) { PO[ob + d] = o[c]; } }
-  if (i == 0u) { PML[mb] = m; PML[mb + 1u] = l; }
-}`;
-const PARTIAL_WGSL = (KT, KD, VD, R) => {
-  const {shared, OPT, qv, src} = partialHead(KD, VD, R, `
-@group(0) @binding(1) var<storage, read> K: array<${KT}>;
-@group(0) @binding(2) var<storage, read> V: array<${KT}>;`);
-  return (KT === 'f16' ? 'enable f16;' : '') + src + partialPrologue(KD, VD, R, shared, OPT) + `
-    if (k < k1) {
-      let kb = k * p.nkv * ${KD}u + h * ${KD}u;
-      var acc = 0.0;
-      for (var d = 0u; d < ${KD}u; d = d + 1u) { acc = acc + ${qv('d')} * f32(K[kb + d]); }
-      s = acc;
-    }` + partialSoftmax + `
+    if (i < ${RB}u) {
+      var ps = 0.0;
+      for (var u = 0u; u < ${TK}u; u = u + 1u) { ps = ps + red[i * ${TK}u + u]; }
+      rl[i] = rl[i] * ra[i] + ps;
+    }
+    let cnt = min(${TT}u, k1 - t0);
     for (var c = 0u; c < ${OPT}u; c = c + 1u) {
       let d = i + c * 256u;
       if (d < ${VD}u) {
-        var acc2 = 0.0;
-        for (var j = 0u; j < cnt; j = j + 1u) { acc2 = acc2 + sc[j] * f32(V[(t0 + j) * p.nkv * ${VD}u + h * ${VD}u + d]); }
-        o[c] = o[c] * alpha + acc2;
+        for (var g = 0u; g < ${RB / 4}u; g = g + 1u) {
+          o[g * ${OPT}u + c] = o[g * ${OPT}u + c] * vec4<f32>(ra[g * 4u], ra[g * 4u + 1u], ra[g * 4u + 2u], ra[g * 4u + 3u]);
+        }
+        for (var u = 0u; u < cnt; u = u + 1u) {
+          ${vval}
+          for (var g = 0u; g < ${RB / 4}u; g = g + 1u) { o[g * ${OPT}u + c] = o[g * ${OPT}u + c] + sc[u * ${RB / 4}u + g] * v; }
+        }
       }
-    }` + partialEpilogue(VD, OPT);
+    }
+    workgroupBarrier();
+  }
+  for (var jj = 0u; jj < ${RB}u; jj = jj + 1u) {
+    let li = li0 + jj;
+    if (li < p.nl) {
+      let base = slot * p.rows + h * ${R}u + qrow(li);
+      for (var c = 0u; c < ${OPT}u; c = c + 1u) {
+        let d = i + c * 256u;
+        if (d < ${VD}u) { PO[base * ${VD}u + d] = o[(jj / 4u) * ${OPT}u + c][jj % 4u]; }
+      }
+      if (i == 0u) { PML[base * 2u] = rm[jj]; PML[base * 2u + 1u] = rl[jj]; }
+    }
+  }
+}`;
 };
-const MERGE_WGSL = (VD) => `
-struct M { nslots: u32, rows: u32, a: u32, b: u32 };
+const MERGE_WGSL = (VD, R) => `
+struct M { nslots: u32, rows: u32, ntok: u32, b: u32 };
 @group(0) @binding(0) var<uniform> mp: M;
 @group(0) @binding(1) var<storage, read> PO: array<f32>;
 @group(0) @binding(2) var<storage, read> PML: array<f32>;
@@ -307,6 +362,11 @@ const NEG: f32 = -3.0e38;
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i: u32) {
   let row = wg.x;
+  if ((row % ${R}u) % 8u >= mp.ntok) {  // padding: never computed
+    for (var d = i; d < ${VD}u; d = d + 256u) { OUT[row * ${VD}u + d] = 0.0; }
+    if (i == 0u) { LSE[row] = NEG; }
+    return;
+  }
   var mx = NEG;
   for (var s = 0u; s < mp.nslots; s = s + 1u) {
     let b = (s * mp.rows + row) * 2u;
@@ -380,40 +440,6 @@ function tq4Encode(x, vecs, D) {
   }
   return {codes, norms};
 }
-const PARTIAL_TQ4_WGSL = (KD, VD, R) => {
-  const {shared, OPT, qv, src} = partialHead(KD, VD, R, `
-@group(0) @binding(1) var<storage, read> K: array<u32>;
-@group(0) @binding(2) var<storage, read> V: array<u32>;
-@group(0) @binding(6) var<storage, read> KN: array<f32>;
-@group(0) @binding(7) var<storage, read> VN: array<f32>;
-var<private> C: array<f32, 16> = array<f32, 16>(${TQ4_C.map((c) => c.toFixed(4)).join(', ')});
-const INVK: f32 = ${f32lit(1 / Math.sqrt(KD))};
-const INVV: f32 = ${f32lit(1 / Math.sqrt(VD))};`);
-  return src + partialPrologue(KD, VD, R, shared, OPT) + `
-    if (k < k1) {
-      let kw = (k * p.nkv + h) * ${KD / 8}u;
-      var acc = 0.0;
-      for (var w = 0u; w < ${KD / 8}u; w = w + 1u) {
-        let word = K[kw + w];
-        for (var j = 0u; j < 8u; j = j + 1u) { acc = acc + ${qv('w * 8u + j')} * C[(word >> (j * 4u)) & 15u]; }
-      }
-      s = acc * KN[k * p.nkv + h] * INVK;
-    }` + partialSoftmax + `
-    for (var c = 0u; c < ${OPT}u; c = c + 1u) {
-      let d = i + c * 256u;
-      if (d < ${VD}u) {
-        var acc2 = 0.0;
-        let sh = (d % 8u) * 4u;
-        for (var j = 0u; j < cnt; j = j + 1u) {
-          let key = (t0 + j) * p.nkv + h;
-          let word = V[key * ${VD / 8}u + d / 8u];
-          acc2 = acc2 + sc[j] * C[(word >> sh) & 15u] * VN[key] * INVV;
-        }
-        o[c] = o[c] * alpha + acc2;
-      }
-    }` + partialEpilogue(VD, OPT);
-};
-
 class GpuEngine {
   static async create(gpu, opts) {
     if (!gpu) return null;
@@ -451,11 +477,10 @@ class GpuEngine {
     const key = cfg.kd + 'x' + cfg.vd + 'x' + cfg.rows;
     if (!this.pipes[key]) {
       const lim = this.device.limits.maxComputeWorkgroupStorageSize || 16384;
-      if (cfg.kd <= QS_MAX && (cfg.kd + 2 * WG) * 4 > lim) return 'bad CONFIG: k_dim ' + cfg.kd + ' exceeds this GPU\'s workgroup memory';
-      const code = this.tq4 ? PARTIAL_TQ4_WGSL(cfg.kd, cfg.vd, cfg.rows) : PARTIAL_WGSL(this.f16 ? 'f16' : 'f32', cfg.kd, cfg.vd, cfg.rows);
+      const code = PARTIAL_WGSL(this.tq4 ? 'tq4' : this.f16 ? 'f16' : 'f32', cfg.kd, cfg.vd, cfg.rows, lim);
       const mk = (src) => this.device.createComputePipelineAsync({layout: 'auto', compute: {module: this.device.createShaderModule({code: src}), entryPoint: 'main'}});
       try {
-        const [partial, merge] = await Promise.all([mk(code), mk(MERGE_WGSL(cfg.vd))]);
+        const [partial, merge] = await Promise.all([mk(code), mk(MERGE_WGSL(cfg.vd, cfg.rows))]);
         this.pipes[key] = {partial, merge};
       } catch (err) {
         return 'bad CONFIG: shader for k' + cfg.kd + ' v' + cfg.vd + ' rows ' + cfg.rows + ' failed: ' + String(err && err.message || err).slice(0, 120);
@@ -463,6 +488,7 @@ class GpuEngine {
     }
     if (this.layers) for (const L of this.layers) for (const s of L.segs) this.dropSeg(s);
     this.cfg = cfg; this.partial = this.pipes[key].partial; this.merge = this.pipes[key].merge;
+    this.rb = gpuPlan(cfg.kd, cfg.vd, this.device.limits.maxComputeWorkgroupStorageSize || 16384).RB;
     const widest = Math.max(this.sideBytes(cfg.kd), this.sideBytes(cfg.vd));
     this.segKeys = Math.max(256, Math.floor(Math.min(this.maxBind, 64 * 1024 * 1024) / widest / 256) * 256);
     this.layers = []; for (let i = 0; i < cfg.nLayer; i++) this.layers.push({n: 0, segs: []});
@@ -541,6 +567,7 @@ class GpuEngine {
     if (nk === 0) return {O, lse};
     // flash-decoding split: chunks of keys run in parallel workgroups, ~128 partials per call
     const chunk = Math.max(256, Math.ceil(nk / 128 / 256) * 256);
+    const ntok = Math.min(nTok, 8), nl = R / 8 * ntok, blk = this.rb;  // live rows per KV head
     const nseg = Math.ceil(nk / this.segKeys), plan = [];
     let nslots = 0;
     for (let s = 0; s < nseg; s++) {
@@ -564,7 +591,7 @@ class GpuEngine {
         const pu = new ArrayBuffer(32), pv = new DataView(pu);
         pv.setUint32(0, ks, true); pv.setUint32(4, nkv, true); pv.setUint32(8, base, true);
         pv.setUint32(12, nTok, true); pv.setFloat32(16, scale, true); pv.setUint32(20, rows, true);
-        pv.setUint32(24, chunk, true);
+        pv.setUint32(24, chunk, true); pv.setUint32(28, nl, true);
         d.queue.writeBuffer(ub, 256 * s, pu);
         const bg = d.createBindGroup({layout: this.partial.getBindGroupLayout(0), entries: [
           {binding: 0, resource: {buffer: ub, offset: 256 * s, size: 32}},
@@ -572,10 +599,11 @@ class GpuEngine {
           {binding: 3, resource: {buffer: qb}}, {binding: 4, resource: {buffer: po}}, {binding: 5, resource: {buffer: pml}},
           ...(this.tq4 ? [{binding: 6, resource: {buffer: L.segs[s].kn}}, {binding: 7, resource: {buffer: L.segs[s].vn}}] : [])]});
         const pass = enc2.beginComputePass(); pass.setPipeline(this.partial); pass.setBindGroup(0, bg);
-        pass.dispatchWorkgroups(R, nkv, nc); pass.end();
+        if (nl) { pass.dispatchWorkgroups(Math.ceil(nl / blk), nkv, nc); }
+        pass.end();
       }
       const mu = new ArrayBuffer(16), mv = new DataView(mu);
-      mv.setUint32(0, nslots, true); mv.setUint32(4, rows, true);
+      mv.setUint32(0, nslots, true); mv.setUint32(4, rows, true); mv.setUint32(8, ntok, true);
       d.queue.writeBuffer(ub, 256 * nseg, mu);
       const mbg = d.createBindGroup({layout: this.merge.getBindGroupLayout(0), entries: [
         {binding: 0, resource: {buffer: ub, offset: 256 * nseg, size: 16}},
@@ -726,7 +754,22 @@ function connect(url, token, holder, on) {
   return ws;
 }
 
-const api = {Holder, CpuEngine, CpuTq4Engine, GpuEngine, connect, h2f, f2h, dequant, mkCfg, headBytes, tq4Encode, tq4Rotate, tq4Unrotate, VERSION,
-  wgsl: {partial: PARTIAL_WGSL, tq4: PARTIAL_TQ4_WGSL, merge: MERGE_WGSL}};
+// A phone browser freezes a background tab: its socket stays open but nothing answers, so the
+// engine's next call waits out the relay's timeout. Close the link while the page is hidden (the
+// relay drops the holder at its next call and the next CONFIG places keys on the others), and
+// reattach when it is visible again: with the session token and the same keys the relay swaps
+// the link and nothing is lost. on.pause / on.resume do the closing and the dialing.
+function pauseWhenHidden(doc, win, on) {
+  let paused = false;
+  const pause = () => { if (!paused) { paused = true; on.pause(); } };
+  const resume = () => { if (paused && doc.visibilityState !== 'hidden') { paused = false; on.resume(); } };
+  doc.addEventListener('visibilitychange', () => (doc.visibilityState === 'hidden' ? pause() : resume()));
+  win.addEventListener('pagehide', pause);
+  win.addEventListener('pageshow', resume);
+  return {get paused() { return paused; }};
+}
+
+const api = {Holder, CpuEngine, CpuTq4Engine, GpuEngine, connect, pauseWhenHidden, h2f, f2h, dequant, mkCfg, headBytes, tq4Encode, tq4Rotate, tq4Unrotate, VERSION,
+  wgsl: {partial: PARTIAL_WGSL, merge: MERGE_WGSL, plan: gpuPlan}};
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.KVHolder = api;
 })(typeof window !== 'undefined' ? window : globalThis);

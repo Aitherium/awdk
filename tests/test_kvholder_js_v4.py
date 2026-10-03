@@ -284,23 +284,33 @@ def test_js_tq4_round_trips_within_the_4_bit_bound_at_any_pow2_width(tmp_path, d
 
 
 def test_js_shaders_are_specialized_per_shape(tmp_path):
-    """The WGSL a WebGPU holder compiles carries the CONFIG's widths and rows, and the v3 shape
-    keeps its queries in workgroup memory (no storage reads in the score loop)."""
+    """The WGSL a WebGPU holder compiles carries the CONFIG's widths and rows. Each workgroup
+    takes a block of 16 (or 8) query rows, so a key is read once per block instead of once per
+    row; the block shrinks to fit the GPU's workgroup memory, and very wide queries are read
+    from storage instead."""
     got = _node(
         tmp_path,
         "const w = K.wgsl, out = {};\n"
-        "out.v3 = w.partial('f32', 256, 256, 48); out.qwen = w.partial('f16', 128, 128, 16);\n"
-        "out.mla = w.partial('f32', 576, 512, 128); out.wide = w.partial('f32', 4096, 4096, 8);\n"
-        "out.tq = w.tq4(128, 64, 16); out.merge = w.merge(512);\n"
+        "out.v3 = w.partial('f32', 256, 256, 48, 32768);"
+        " out.v3small = w.partial('f32', 256, 256, 48, 16384);\n"
+        "out.qwen = w.partial('f16', 128, 128, 16, 16384);"
+        " out.mla = w.partial('f32', 576, 512, 128, 32768);\n"
+        "out.wide = w.partial('f32', 4096, 4096, 8, 32768); out.tq = w.partial('tq4', 128, 64, 16);\n"
+        "out.merge = w.merge(512, 48); out.plan = w.plan(256, 256, 32768);\n"
         "console.log(JSON.stringify(out));\n",
     )
-    assert "row = h * 48u + r" in got["v3"] and "array<f32, 256>;" in got["v3"]
-    assert "enable f16;" in got["qwen"] and "row = h * 16u + r" in got["qwen"]
-    assert "var o: array<f32, 2>;" in got["mla"] and "qs: array<f32, 576>" in got["mla"]
-    assert "var<workgroup> qs" not in got["wide"] and "var o: array<f32, 16>;" in got["wide"]
+    assert "(h * 48u + qrow(li))" in got["v3"] and "qs: array<vec4<f32>, 1024>;" in got["v3"]
+    assert "qs: array<vec4<f32>, 512>;" in got["v3small"]  # 16 KB of workgroup memory: 8 rows
+    assert "enable f16;" in got["qwen"] and "array<vec4<f16>>" in got["qwen"]
+    assert "h * 16u" in got["qwen"]
+    assert (
+        "var o: array<vec4<f32>, 4>;" in got["mla"] and "qs: array<vec4<f32>, 1152>" in got["mla"]
+    )
+    assert "var<workgroup> qs" not in got["wide"] and "Q[qb + d]" in got["wide"]
     assert "INVK: f32 = 0.0883883476" in got["tq"] and "INVV: f32 = 0.125" in got["tq"]
-    assert "* 16u + w" not in got["tq"] and "(k * p.nkv + h) * 16u" in got["tq"]
-    assert "d < 512u" in got["merge"]
+    assert "array<vec4<u32>>" in got["tq"] and "(k * p.nkv + h) * 4u" in got["tq"]
+    assert "d < 512u" in got["merge"] and "(row % 48u) % 8u >= mp.ntok" in got["merge"]
+    assert got["plan"]["RB"] == 16 and got["plan"]["shared"] is True
 
 
 # ---------------------------------------------------------------- tq4 key centering
@@ -420,3 +430,121 @@ def test_js_tq4_holder_announces_centering_to_the_relay(relay, tmp_path):
         for p in procs:
             p.kill()
             p.communicate(timeout=10)
+
+
+# ---------------------------------------------------------------- a phone tab in the background
+
+_PAGE_GLUE = """
+const K = require('./holder.js');
+// the page's own wiring (index.html): pause = close the link, resume = dial with the session
+const doc = new EventTarget(), win = new EventTarget();
+doc.visibilityState = 'visible';
+const h = new K.Holder(new K.CpuEngine(), 64 * 1048576, 'phone-tab');
+let token = process.argv[2], ws = null, did = '';
+const dial = () => { ws = K.connect(process.argv[3], token, h, {session: (s) => { token = s; }}); };
+K.pauseWhenHidden(doc, win, {
+  pause: () => { ws.onclose = null; ws.close(); ws = null; did = 'paused'; },
+  resume: () => { dial(); did = 'resumed'; },
+});
+dial();
+const flip = (state, ev) => { doc.visibilityState = state; (ev === 'vis' ? doc : win)
+  .dispatchEvent(new Event(ev === 'vis' ? 'visibilitychange' : ev)); };
+require('readline').createInterface({input: process.stdin}).on('line', (l) => {
+  const [state, ev] = l.trim().split(' '); did = 'nothing'; flip(state, ev); console.log(did);
+});
+setTimeout(() => process.exit(0), 120000);
+"""
+
+
+def _tab(tmp_path, token, wp):
+    (tmp_path / "holder.js").write_text(HOLDER_JS, encoding="utf-8")
+    (tmp_path / "tab.js").write_text(_PAGE_GLUE, encoding="utf-8")
+    return subprocess.Popen(
+        [NODE, "tab.js", token, f"ws://127.0.0.1:{wp}/holder"],
+        cwd=tmp_path,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _say(proc, line: str, expect: str) -> None:
+    proc.stdin.write(line + "\n")
+    proc.stdin.flush()
+    assert proc.stdout.readline().strip() == expect
+
+
+def _wait(cond, timeout=10.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return
+        time.sleep(0.05)
+    raise AssertionError("condition never held")
+
+
+def test_hidden_tab_detaches_so_the_engine_is_not_left_waiting(relay, tmp_path):
+    """A frozen background tab used to stay attached and silent: the engine's next CONFIG sat
+    out the relay's 60 s call timeout. Now the tab closes its link when hidden, the relay finds
+    it gone at once, and when the tab is visible again it rejoins and is configured."""
+    r, token, ep, wp = relay
+    tab = _tab(tmp_path, token, wp)
+    try:
+        _wait(lambda: len(r.holders) == 1)
+        c = kv.KVHolderClient("127.0.0.1", ep, timeout=120)
+        cfg = kv.Config.for_model(1, 2, "q8_0", k_dim=128, v_dim=128, rows=16)
+        c.configure(cfg)
+        _say(tab, "hidden vis", "paused")
+        t0 = time.time()
+        try:
+            c.configure(cfg)  # the relay meets the closed link: no 60 s wait
+        except RuntimeError as e:
+            assert "lost" in str(e) or "no holder" in str(e), e
+        assert time.time() - t0 < 5
+        _wait(lambda: not r.holders)
+        _say(tab, "visible vis", "resumed")
+        _wait(lambda: len(r.holders) == 1)
+        c.configure(cfg)
+        rng = np.random.default_rng(2)
+        keys = rng.standard_normal((300, 2, 128)).astype(np.float32)
+        vals = rng.standard_normal((300, 2, 128)).astype(np.float32)
+        assert c.append(0, 0, keys, vals) == 300
+        q = rng.standard_normal((2, 16, 128)).astype(np.float32)
+        o, _, meta = c.attn(0, q, 128**-0.5, n_tok=8)
+        ref = _ref(q, _wire(keys, cfg, "k"), _wire(vals, cfg, "v"), 128**-0.5)
+        np.testing.assert_allclose(o, ref, atol=3e-3)
+        c.close()
+    finally:
+        tab.kill()
+        tab.communicate(timeout=10)
+
+
+def test_a_quick_trip_to_the_background_keeps_every_key(relay, tmp_path):
+    """Hidden and back before the engine calls: the tab rejoins with its session token and the
+    same keys, the relay swaps the link, and attention over the held keys is still exact."""
+    r, token, ep, wp = relay
+    tab = _tab(tmp_path, token, wp)
+    try:
+        _wait(lambda: len(r.holders) == 1)
+        c = kv.KVHolderClient("127.0.0.1", ep, timeout=120)
+        cfg = kv.Config.for_model(1, 2, "f16", k_dim=64, v_dim=128, rows=8)
+        c.configure(cfg)
+        rng = np.random.default_rng(4)
+        keys = rng.standard_normal((500, 2, 64)).astype(np.float32)
+        vals = rng.standard_normal((500, 2, 128)).astype(np.float32)
+        c.append(0, 0, keys, vals)
+        first, old_link = r.holders[0], r.holders[0].ws
+        _say(tab, "hidden pagehide", "paused")
+        _say(tab, "visible pageshow", "resumed")
+        _wait(lambda: r.holders and r.holders[0].ws is not old_link)
+        assert r.holders == [first] and not r.broken  # same entry, new link, nothing lost
+        q = rng.standard_normal((2, 8, 64)).astype(np.float32)
+        o, _, meta = c.attn(0, q, 0.125, n_tok=8)
+        assert meta["nk"] == 500
+        np.testing.assert_allclose(
+            o, _ref(q, _wire(keys, cfg, "k"), _wire(vals, cfg, "v"), 0.125), atol=3e-3
+        )
+        c.close()
+    finally:
+        tab.kill()
+        tab.communicate(timeout=10)

@@ -225,11 +225,17 @@ body {
   const $ = (id) => document.getElementById(id);
   const frag = new URLSearchParams(location.hash.slice(1));
   let token = frag.get('t') || '';
-  const tq4 = frag.get('store') === 'tq4';  // ~4x keys per MB on WebGPU, approximate
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/holder';
   const CHOICES = [512, 1024, 2048, 4096, 8192];
   const get = (k, d) => { try { return localStorage.getItem(k) || d; } catch (e) { return d; } };
   const put = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
+  // the store survives a reload: the link's choice wins, else the last one this page used
+  if (frag.has('store')) put('kvh.store', frag.get('store'));
+  const tq4 = (frag.get('store') || get('kvh.store', '')) === 'tq4';  // ~4x keys per MB, approximate
+  // keep the hash current (session token + store) so a reload reconnects as the same holder
+  function keepHash() {
+    try { history.replaceState(null, '', '#t=' + encodeURIComponent(token) + (tq4 ? '&store=tq4' : '')); } catch (e) { /* file: or sandboxed */ }
+  }
 
   // ---- formatting
   const GB = 1073741824;
@@ -243,7 +249,7 @@ body {
   let budgetMb = Number(get('kvh.mb', '2048'));
   if (CHOICES.indexOf(budgetMb) < 0) budgetMb = 2048;
   let ws = null, lock = null, engine = null, holder = null, deviceName = 'browser';
-  let phase = 'starting', lastErr = '', stopped = false, retryAt = 0, armed = 0, cfgSeen = false;
+  let phase = 'starting', lastErr = '', stopped = false, retryAt = 0, armed = 0, cfgSeen = false, parked = false;
   let prevCalls = 0, calls = KVState.counter(), rate = 0;
   const samples = new Array(60).fill(0), log = [];
 
@@ -274,6 +280,7 @@ body {
       ready: ['Ready', 'In the pool with a key range of its own. No keys have reached this device yet.', 'ok', 'ready'],
       holding: ['Holding', n(keys) + ' keys ready, waiting for the engine · ' + (ago < 0 ? 'no call yet' : 'last call ' + (ago < 60 ? ago + ' s' : Math.round(ago / 60) + ' min') + ' ago') + '.', 'ok', 'holding'],
       active: ['Active', 'Answering attention: ' + fmtRate(rate) + ' calls/s over ' + n(keys) + ' keys.', 'acc', 'active'],
+      paused: ['Paused', 'This tab is in the background, so the link is closed and the engine places keys on its other holders. It reconnects when you come back.', 'warn', 'paused'],
       retrying: ['Offline', 'The link dropped. Retrying in ' + Math.max(0, Math.ceil((retryAt - now) / 1000)) + ' s.', 'warn', 'retrying'],
       refused: ['Refused', lastErr || 'The relay refused this link.', 'bad', 'refused'],
       notoken: ['No link', 'Open the link the host printed: it carries the join key.', 'bad', 'no link'],
@@ -387,6 +394,7 @@ body {
   async function start() {
     close(); stopped = false;
     if (!token) { phase = 'notoken'; view(); return; }
+    if (parked) { phase = 'paused'; view(); return; }  // a retry that fires while hidden waits
     phase = engine ? 'connecting' : 'starting'; view();
     await makeEngine();
     // one holder per lend amount: a reconnect re-announces the keys it kept, so the relay swaps
@@ -394,7 +402,7 @@ body {
     if (!holder) { holder = new KVHolder.Holder(engine, budgetMb * 1048576, deviceName); prevCalls = 0; calls = KVState.counter(); }
     phase = 'connecting'; view();
     ws = KVHolder.connect(url, token, holder, {
-      session: (s) => { token = s; },  // a join link works once; reconnect with the session
+      session: (s) => { token = s; keepHash(); },  // a join link works once; reconnect with the session
       attached: () => { phase = 'attached'; event('attached · lending ' + label(budgetMb)); view(); },
       error: (e) => { lastErr = String(e); event('error: ' + lastErr); if (/token|refused/.test(lastErr)) phase = 'refused'; view(); },
       closed: () => {
@@ -426,6 +434,11 @@ body {
   };
   const th = get('kvh.theme', ''); if (th) document.documentElement.dataset.theme = th;
   document.addEventListener('visibilitychange', () => { if (!stopped) keepAwake(); });
+  // a hidden tab is frozen: close the link so the engine is not left waiting on it
+  KVHolder.pauseWhenHidden(document, window, {
+    pause: () => { if (stopped) return; parked = true; close(); phase = 'paused'; event('in the background: link closed'); view(); },
+    resume: () => { if (!parked) return; parked = false; if (stopped) return; event('back: reconnecting'); start(); },
+  });
 
   // ---- device facts the browser actually exposes; their rows stay hidden when it does not
   if (navigator.deviceMemory) $('devmem').textContent = 'device ~' + navigator.deviceMemory + ' GB';
@@ -444,6 +457,7 @@ body {
     } catch (e) { /* not exposed */ }
   }
 
+  if (token) keepHash();
   renderSeg(); view(); drawSpark();
   const boot = () => start();
   if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {

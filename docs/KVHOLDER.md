@@ -25,8 +25,13 @@ the LAN, a mesh overlay or the public internet.
 Developer options), plug in, accept the prompt, and check that `adb devices` lists the phone.
 `adk kvholder phone` maps the phone's `localhost` to this machine (`adb reverse`) and opens
 the holder page on the phone in Chrome (a default browser without WebGPU, such as Edge,
-would run the CPU holder). Keep the tab in front and the phone unlocked: a tab sent to the
-background or a screen that locks drops the holder, and the keys with it.
+would run the CPU holder). Keep the tab in front and the phone unlocked. A browser freezes a
+background tab, so the page closes its link when it is hidden. The engine's next call fails at
+once instead of waiting out a 60 s timeout, and the next CONFIG places keys on the other
+holders. When the tab is in front again it rejoins. If no engine call came in between, it
+rejoins as the same holder with every key. The link in the address bar is kept current (session
+token and `store`), so a reload rejoins too, and the page remembers `store=tq4` across a
+reload.
 
 **LAN.** `--via lan` prints the link and a QR code to scan with the phone's camera. On
 Windows, the firewall drops inbound connections on a Private network unless your
@@ -41,10 +46,19 @@ server log. A holder without the token is refused. The KV cache is derived from 
 so treat the link like a password and prefer USB or the tunnel to an open LAN.
 
 Whether the phone's GPU is used depends on its browser: the page shows `webgpu…` or `cpu`.
-Measured on a Pixel 10 Pro Fold (Chrome 154, `webgpu-f16` on the `img-tec d-series` GPU):
-exact for q8_0, f16 and q4_0 to 123,000 keys, about 3.5 s per call at 123,000 keys
-(1.35 s with `store=tq4`), and about 3x faster than the same phone's CPU holder.
-Both are exact; the GPU is much faster.
+Both are exact; the GPU is much faster. A WebGPU workgroup takes a block of 16 query rows,
+so every key is read once per block; it used to be read once per row. Pixel 10 Pro Fold
+(Chrome, `webgpu-f16` on the `img-tec d-series` GPU), 4 KV heads, 48 rows, one layer,
+median of 5 calls (2026-10-03):
+
+| keys | before (per-row kernel) | now | tq4 before / now |
+|---|---|---|---|
+| 10,000 | 316 ms | 67 ms | 126 / 66 ms |
+| 50,000 | 1,564 ms | 255 ms | — / 210 ms |
+| 123,000 | 3,557 ms | 649 ms | 1,233 / 463 ms |
+| 123,000, 1 token (decode) | 529 ms | 134 ms | |
+
+The maximum error against numpy was unchanged (1.1e-5 at 123,000 keys).
 
 **Model shapes.** The page speaks PATN v4 shapes as well as v3: key and value widths from 32
 to 4096 (multiples of 32, and they may differ), any number of query rows per KV head that is a
