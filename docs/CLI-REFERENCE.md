@@ -85,6 +85,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk join`](#adk-join) | One-command community node onboarding (GitHub auth + hardware detection + serve + mesh join + earnings) |
 | [`adk kb`](#adk-kb) | Tenant knowledge base on the platform: ingest, query |
 | [`adk keys`](#adk-keys) | Manage cloud provider API keys (set, list, test, remove) |
+| [`adk kvholder`](#adk-kvholder) | Lend this device's memory to another host's context window (PATN v3 KV holder) |
 | [`adk learn`](#adk-learn) | Aither Learn in the terminal: the /learn link, and practice a quest |
 | [`adk license`](#adk-license) | Show or sync your license (purchases follow your Aitherium account) |
 | [`adk link`](#adk-link) | link this machine to aitherium.com (one sign-in, role-aware bundle) |
@@ -927,6 +928,16 @@ Manage cloud provider API keys (set, list, test, remove)
 - `adk keys pull` — Sync DOWN from AitherOS: show which providers have keys in your workspace vault
 - `adk keys test` — Test API keys (all or specific)
 - `adk keys remove` — Remove a provider key
+
+## `adk kvholder`
+
+Lend this device's memory to another host's context window (PATN v3 KV holder)
+
+**Subcommands**
+
+- `adk kvholder serve` — Hold old KV pages and answer attention over them
+- `adk kvholder probe` — HELLO + link latency + STATS against a holder (an adk holder or a Backburner iPhone)
+- `adk kvholder plan` — How much context a holder with this much free memory can keep
 
 ## `adk learn`
 
