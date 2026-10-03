@@ -57,6 +57,14 @@ one layer, 6 calls (2026-10-03):
 The tq4 store's relative error was 0.13-0.14 on every power-of-two shape, the same as the
 Python `--store tq4` holder on the same data.
 
+The page's tq4 store is the Python holder's, code for code: the same rotation and codebook,
+and keys centered on the per-head mean of the first append to each layer. ATTN puts
+`scale * q.mu` back into the lse, so the merge stays exact. The page announces
+`"tq4": "centered"` in its hello, so the relay raises no tq4 warning for it. Without WebGPU, a
+tq4 link uses the CPU tq4 engine. Against the Python centered holder on the same messages, the
+WebGPU page's partials differ by at most 1.2e-4 and its lse by at most 3e-6 (headed Chromium,
+RTX 5090, 2026-10-03). Turning centering off moves the output by 0.15-0.19.
+
 **What the page shows.** The state says what the phone is doing, from its own counters:
 *Idle* (connected, no engine has sent context), *Ready* (in the pool, no keys reached it
 yet), *Holding* (keeps keys, no attention call in the last 5 s) or *Active* (calls/s).

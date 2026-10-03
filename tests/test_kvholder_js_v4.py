@@ -301,3 +301,122 @@ def test_js_shaders_are_specialized_per_shape(tmp_path):
     assert "INVK: f32 = 0.0883883476" in got["tq"] and "INVV: f32 = 0.125" in got["tq"]
     assert "* 16u + w" not in got["tq"] and "(k * p.nkv + h) * 16u" in got["tq"]
     assert "d < 512u" in got["merge"]
+
+
+# ---------------------------------------------------------------- tq4 key centering
+
+
+def _tq4_session(kd, vd, rows, h, kvt, shift, seed=0):
+    """CONFIG + two APPENDs (the first fixes mu) + one ATTN, as raw PATN messages."""
+    cfg = kv.Config.for_model(1, h, kvt, k_dim=kd, v_dim=vd, rows=rows)
+    rng = np.random.default_rng(seed)
+    n = 400
+    off = (shift * rng.standard_normal((1, h, kd))).astype(np.float32)  # a shared per-head offset
+    keys = (rng.standard_normal((n, h, kd)) + off).astype(np.float32)
+    vals = rng.standard_normal((n, h, vd)).astype(np.float32)
+    q = rng.standard_normal((h, rows, kd)).astype(np.float16)
+    t = cfg.is_q8
+    msgs = [
+        (kv.CONFIG, cfg.pack()),
+        (
+            kv.APPEND,
+            kv.APPEND_REQ.pack(0, 0, 250)
+            + kv.quant_rows(keys[:250], t)
+            + kv.quant_rows(vals[:250], t),
+        ),
+        (
+            kv.APPEND,
+            kv.APPEND_REQ.pack(0, 250, 150)
+            + kv.quant_rows(keys[250:], t)
+            + kv.quant_rows(vals[250:], t),
+        ),
+        (kv.ATTN, kv.ATTN_REQ.pack(0, 5, 0, kd**-0.5) + q.tobytes()),
+    ]
+    return cfg, keys, vals, q.astype(np.float32), msgs
+
+
+def _js_replies(tmp_path, msgs, engine="new K.CpuTq4Engine()"):
+    (tmp_path / "m.json").write_text(json.dumps([[t, p.hex()] for t, p in msgs]))
+    got = _node(
+        tmp_path,
+        "const m = require('./m.json');\n"
+        f"(async () => {{ const h = new K.Holder({engine}, 1 << 30); const out = [];\n"
+        "  for (const [t, hx] of m) { const [rt, p] = await h.handle(t, Buffer.from(hx, 'hex'));\n"
+        "    out.push([rt, Buffer.from(p).toString('hex')]); }\n"
+        "  console.log(JSON.stringify({out})); })();\n",
+    )
+    return [(t, bytes.fromhex(p)) for t, p in got["out"]]
+
+
+def _attn_rep(rep, cfg):
+    on = cfg.n_head_kv * cfg.rows * cfg.v_dim
+    o = np.frombuffer(rep, np.float16, on, kv.ATTN_REP.size).astype(np.float32)
+    lse = np.frombuffer(rep, np.float32, cfg.n_head_kv * cfg.rows, kv.ATTN_REP.size + 2 * on)
+    return o.reshape(cfg.n_head_kv, cfg.rows, cfg.v_dim), lse.reshape(cfg.n_head_kv, cfg.rows)
+
+
+@pytest.mark.parametrize("center", [True, False])
+@pytest.mark.parametrize(
+    "kd,vd,rows,h,kvt",
+    [(128, 128, 16, 2, "q8_0"), (64, 128, 8, 2, "f16"), (256, 256, 48, 1, "q4_0")],
+)
+def test_js_tq4_matches_the_python_tq4_holder(tmp_path, kd, vd, rows, h, kvt, center):
+    """Same rotation, codes, mean and lse correction as adk.kvholder --store tq4: the partials
+    agree to f16 rounding, centered (the default) and uncentered."""
+    cfg, _, _, _, msgs = _tq4_session(kd, vd, rows, h, kvt, shift=5.0)
+    py = kv.KVHolder(1 << 30, store="tq4", tq4_center=center)
+    want = [py.handle(t, p) for t, p in msgs]
+    got = _js_replies(tmp_path, msgs, f"new K.CpuTq4Engine({{center: {str(center).lower()}}})")
+    assert [g[0] for g in got] == [w[0] for w in want] == [kv.OK, kv.OK, kv.OK, kv.ATTN_OK]
+    (o_js, l_js), (o_py, l_py) = _attn_rep(got[-1][1], cfg), _attn_rep(want[-1][1], cfg)
+    np.testing.assert_allclose(o_js, o_py, atol=4e-3)
+    assert (np.isneginf(l_js) == np.isneginf(l_py)).all()
+    live = np.isfinite(l_py)
+    np.testing.assert_allclose(l_js[live], l_py[live], rtol=1e-5, atol=1e-4)
+
+
+def test_js_tq4_centering_keeps_the_merge_exact(tmp_path):
+    """The holder's (O, lse) merged with a host tail over other keys equals full attention over
+    [decode(k - mu) + mu, tail]: the lse carries scale * q.mu back. Keys share a large per-head
+    offset (5 sigma), so a holder that dropped the correction would be far off."""
+    cfg, keys, vals, q, msgs = _tq4_session(128, 128, 16, 2, "q8_0", shift=5.0, seed=3)
+    o, lse = _attn_rep(_js_replies(tmp_path, msgs)[-1][1], cfg)
+    n, scale = keys.shape[0], 128**-0.5
+    kq = kv.dequant_rows(np.frombuffer(kv.quant_rows(keys, 1), np.uint8), n, cfg)
+    vq = kv.dequant_rows(np.frombuffer(kv.quant_rows(vals, 1), np.uint8), n, cfg, "v")
+    mu = kq[:250].mean(axis=0)  # [H, D]: the FIRST append's mean, frozen
+    k_held = kv.tq4_decode(*kv.tq4_encode(kq - mu)) + mu
+    v_held = kv.tq4_decode(*kv.tq4_encode(vq))
+    rng = np.random.default_rng(9)
+    tail_k = (kq[:1] + rng.standard_normal((60, 2, 128))).astype(np.float32)
+    tail_v = rng.standard_normal((60, 2, 128)).astype(np.float32)
+    out, _ = kv.merge_partials([kv.partial_attention(q, tail_k, tail_v, scale), (o, lse)])
+    ref = _ref(q, np.concatenate([k_held, tail_k]), np.concatenate([v_held, tail_v]), scale)
+    live = [r for r in range(16) if r % 8 < 5]
+    np.testing.assert_allclose(out[:, live], ref[:, live], atol=5e-3)
+
+
+def test_js_tq4_holder_announces_centering_to_the_relay(relay, tmp_path):
+    r, token, _, wp = relay
+    (tmp_path / "holder.js").write_text(HOLDER_JS, encoding="utf-8")
+    procs = []
+    for i, center in enumerate(("true", "false")):
+        (tmp_path / f"run{i}.js").write_text(
+            "const K = require('./holder.js');\n"
+            f"const h = new K.Holder(new K.CpuTq4Engine({{center: {center}}}), 1 << 26, 'js{i}');\n"
+            f"K.connect('ws://127.0.0.1:{wp}/holder', '{token}', h, {{}});\n"
+            "setTimeout(() => process.exit(0), 60000);\n",
+            encoding="utf-8",
+        )
+        procs.append(subprocess.Popen([NODE, f"run{i}.js"], cwd=tmp_path))
+        end = time.time() + 10
+        while len(r.holders) <= i and time.time() < end:
+            time.sleep(0.05)
+    try:
+        assert [h.store for h in r.holders] == ["tq4", "tq4"]
+        assert [h.tq4 for h in r.holders] == ["centered", ""]
+        assert net.tq4_warnings(r.holders) == [f"js1 (cpu-tq4): {net.TQ4_UNCENTERED}"]
+    finally:
+        for p in procs:
+            p.kill()
+            p.communicate(timeout=10)

@@ -40,5 +40,5 @@ skills/feature-development.md
 
 ---
 
-sha256 `f4ad475a0ba8e121ad76c89ed0940a44cf47fa9a83f5c96f1c3729a82d259d70`  
+sha256 `d02e3a8d7541a6f4df4b0b404ab3ce90f3ea7cb52ffb82bbb2844de69bb2ee7c`  
 Built from `v3.8.49` (adk 3.8.49). [All packs](../packs.md)

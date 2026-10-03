@@ -110,7 +110,97 @@ class CpuEngine {
     }
     return {O, lse};
   }
+  storeName() { return 'wire'; }
   describe() { return 'cpu'; }
+}
+
+// tq4 key centering (hello "tq4": "centered"; adk.kvholder does the same). A model's keys share a
+// large per-head offset that the 4-bit codebook spends its levels on (Qwen3-0.6B: perplexity 37.3
+// uncentered, 10.84 centered, fp32 10.27). The first APPEND to a layer after CONFIG fixes
+// mu[h] = that append's mean key per head; every key is encoded as k - mu. Scores then lack the
+// per-row constant scale * q.mu: softmax and O are unchanged, and ATTN adds it back to the lse so
+// the relay's log-sum-exp merge stays exact. TRUNCATE keeps mu; only CONFIG clears it.
+function tq4Center(L, k, n, nkv, D) {  // k: f32 [n][nkv][D], centered in place
+  if (!L.mu) {
+    const mu = new Float64Array(nkv * D);
+    for (let j = 0; j < n; j++) for (let i = 0; i < nkv * D; i++) mu[i] += k[j * nkv * D + i];
+    L.mu = Float32Array.from(mu, (x) => x / n);
+  }
+  for (let j = 0; j < n; j++) for (let i = 0; i < nkv * D; i++) k[j * nkv * D + i] -= L.mu[i];
+  return k;
+}
+function tq4Uncenter(L, lse, q, scale, g, nkv, R, D) {  // lse of group g += scale * q.mu
+  if (!L.mu) return;
+  for (let h = 0; h < nkv; h++) for (let r = 0; r < R; r++) {
+    const row = (g * nkv + h) * R + r;
+    if (!Number.isFinite(lse[row])) continue;
+    let c = 0; for (let i = 0; i < D; i++) c += q[row * D + i] * L.mu[h * D + i];
+    lse[row] += scale * c;
+  }
+}
+
+// tq4 on the CPU: the same 4-bit codes, rotation and math as the Python holder's --store tq4
+// (adk.kvholder._attend_tq4), so a phone without WebGPU still fits ~4x the keys per MB.
+class CpuTq4Engine {
+  constructor(opts) { this.kind = 'cpu-tq4'; this.tq4 = true; this.center = !(opts && opts.center === false); }
+  storeName() { return 'tq4'; }
+  configure(cfg) { this.cfg = cfg; this.layers = []; for (let i = 0; i < cfg.nLayer; i++) this.layers.push({n: 0, parts: []}); }
+  bytesPerKey() { const {nkv, kd, vd} = this.cfg; return nkv * (kd / 2 + 4 + vd / 2 + 4); }
+  append(layer, n, kRaw, vRaw) {
+    const {nkv, kd, vd} = this.cfg, L = this.layers[layer];
+    let k = dequant(kRaw, n, this.cfg, 'k');
+    if (this.center) k = tq4Center(L, k, n, nkv, kd);
+    const K = tq4Encode(k, n * nkv, kd), V = tq4Encode(dequant(vRaw, n, this.cfg, 'v'), n * nkv, vd);
+    L.parts.push({n, kc: K.codes, kn: K.norms, vc: V.codes, vn: V.norms}); L.n += n;
+  }
+  truncate(keep) {
+    const {nkv, kd, vd} = this.cfg;
+    for (const L of this.layers) {
+      if (L.n <= keep) continue;
+      const kept = []; let have = 0;
+      for (const p of L.parts) {
+        const take = Math.min(p.n, keep - have);
+        if (take <= 0) break;
+        kept.push(take === p.n ? p : {n: take, kc: p.kc.slice(0, take * nkv * kd / 2), kn: p.kn.slice(0, take * nkv),
+          vc: p.vc.slice(0, take * nkv * vd / 2), vn: p.vn.slice(0, take * nkv)});
+        have += take;
+      }
+      L.parts = kept; L.n = keep;
+    }
+  }
+  held(layer) { return this.layers[layer].n; }
+  async attn(layer, nk, scale, q, nTok, ng) {
+    const {nkv, kd: KD, vd: VD, rows: R} = this.cfg, rows = nkv * R, L = this.layers[layer];
+    const O = new Float32Array(ng * rows * VD), lse = new Float32Array(ng * rows).fill(-Infinity);
+    const invK = 1 / Math.sqrt(KD), invV = 1 / Math.sqrt(VD), hk = KD / 2, hv = VD / 2;
+    const s = new Float64Array(nk), acc = new Float64Array(VD), qs = new Float32Array(KD);
+    for (let g = 0; g < ng; g++) for (let h = 0; h < nkv; h++) for (let r = 0; r < R; r++) {
+      const row = g * rows + h * R + r;
+      if (nk === 0 || (r % 8) >= nTok) continue;
+      for (let i = 0; i < KD; i++) qs[i] = q[row * KD + i] * scale;
+      tq4Rotate(qs, 0, KD);
+      let m = -Infinity, k = 0;
+      for (const p of L.parts) for (let j = 0; j < p.n && k < nk; j++, k++) {
+        const co = (j * nkv + h) * hk; let d = 0;
+        for (let i = 0; i < hk; i++) { const b = p.kc[co + i]; d += qs[2 * i] * TQ4_C[b & 15] + qs[2 * i + 1] * TQ4_C[b >> 4]; }
+        s[k] = d * p.kn[j * nkv + h] * invK; if (s[k] > m) m = s[k];
+      }
+      acc.fill(0); let l = 0; k = 0;
+      for (const p of L.parts) for (let j = 0; j < p.n && k < nk; j++, k++) {
+        const e = Math.exp(s[k] - m); l += e;
+        const w = e * p.vn[j * nkv + h] * invV, co = (j * nkv + h) * hv;
+        for (let i = 0; i < hv; i++) { const b = p.vc[co + i]; acc[2 * i] += w * TQ4_C[b & 15]; acc[2 * i + 1] += w * TQ4_C[b >> 4]; }
+      }
+      const o = new Float32Array(VD);
+      for (let i = 0; i < VD; i++) o[i] = acc[i];
+      tq4Unrotate(o, 0, VD);
+      for (let i = 0; i < VD; i++) O[row * VD + i] = o[i] / l;
+      lse[row] = m + Math.log(l);
+    }
+    for (let g = 0; g < ng; g++) tq4Uncenter(L, lse, q, scale, g, nkv, R, KD);
+    return {O, lse};
+  }
+  describe() { return 'cpu-tq4'; }
 }
 
 function concat(arrs) {
@@ -242,11 +332,25 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) i
 // Rotate (signs, then a Walsh-Hadamard transform), quantize each coordinate to 16 Lloyd-Max
 // levels for a unit Gaussian, keep one norm per vector. The shader unpacks nibbles in
 // registers while it multiplies; norms fold into scores and weights. ~4x the keys per MB of f16.
-// Any power-of-two width up to MAX_DIM; the sign vector's first 256 entries are the v3 ones.
+// Any power-of-two width up to MAX_DIM. The signs are the Python holder's (adk.kvholder.tq4_rotation:
+// numpy default_rng(0x7A5), one bit per sign, set = -1), so both holders store identical codes.
 const TQ4_C = [-2.7326, -2.0690, -1.6181, -1.2562, -0.9424, -0.6568, -0.3881, -0.1284,
   0.1284, 0.3881, 0.6568, 0.9424, 1.2562, 1.6181, 2.0690, 2.7326];
 const TQ4_EDGES = TQ4_C.slice(1).map((c, i) => (c + TQ4_C[i]) / 2);
-const TQ4_SIGN = new Float32Array(MAX_DIM).map((_, j) => ((Math.imul(j + 1, 2654435761) >>> 13) & 1) ? -1 : 1);
+const TQ4_SIGN_B64 = (
+  'sLU+CofxvBX5tjyCAWPBbdpbGBbX4aVylMf28Q0NnleVJaLd65zL4WEUMYoMCmQaokthWq+w5afNghfQxQdk68hDq7v7519w' +
+  'Rsu9tgPcp5US5BahPs/3Ir2VbHjC2qx6mPVCmsBWogDqqW+7/c5yA6kKQfpmvSBCNod0vSOzf7MPuHGfALLEzIz0U2dPq9mS' +
+  'V/x1S+sysMKxziVvSyzZx5BrVJFAW7AKBKlr68IxO/utic8PkfhtQHY1jazZQp+NRDTQFa2WDep8mitElL+SBU1z4qUV0ecA' +
+  '9vUNJhnSYexc14h4KudPUnAV+4D0KFbIZGa0X55c1eEbK5M+Cz0nvH7rqKQ4l1PHJRnHRFfIBZZJku4D5KKSVUyzw2IJT0ld' +
+  'qnod2WnG5Q3BqIxLzugbqgNHcotwmkEZON0KDhUS92tL8mTc3mOS56TWXErbSIJPcdFDV7naFmQ3xb++5FaZ3gExpN/iSocU' +
+  'VHfi8L4sLvzf7ZpZ39xfRYegDk3Ohp/TLy1YXO+NTrNW4RGxf/SBtzVtaHl5gMb8r/pgweVj+ba7i0KBnHDnj8DcmoFaS+pG' +
+  'CQf3+nLxSqr+9iisBojlo4f694STzA2ygqFW1x7HgufXwKHKSSs3NEnPMyHts1NsgHh+JJ+EZIOqLil+ctieQmp01lYvHGZL' +
+  'Ecwi5m1XNB8=');
+const TQ4_SIGN = (() => {
+  const raw = atob(TQ4_SIGN_B64), out = new Float32Array(MAX_DIM);
+  for (let j = 0; j < MAX_DIM; j++) out[j] = (raw.charCodeAt(j >> 3) >> (j & 7)) & 1 ? -1 : 1;
+  return out;
+})();
 function fwht(a, off, D) {  // in place, length D; applying it twice multiplies by D
   for (let h = 1; h < D; h <<= 1)
     for (let i = 0; i < D; i += h << 1)
@@ -322,7 +426,7 @@ class GpuEngine {
       requiredLimits: {maxStorageBufferBindingSize: want, maxBufferSize: want},
     });
     const e = new GpuEngine();
-    e.tq4 = !!(opts && opts.tq4);
+    e.tq4 = !!(opts && opts.tq4); e.center = e.tq4 && opts.center !== false;
     e.device = device; e.f16 = f16 && !e.tq4; e.maxBind = want; e.pipes = {};
     e.kind = 'webgpu' + (e.tq4 ? '-tq4' : f16 ? '-f16' : '');
     const info = adapter.info || {};
@@ -389,7 +493,9 @@ class GpuEngine {
   }
   appendTq4(layer, n, kRaw, vRaw) {
     const L = this.layers[layer], cfg = this.cfg, nkv = cfg.nkv, cbk = nkv * cfg.kd / 2, cbv = nkv * cfg.vd / 2, nb = nkv * 4;
-    const K = tq4Encode(dequant(kRaw, n, cfg, 'k'), n * nkv, cfg.kd), V = tq4Encode(dequant(vRaw, n, cfg, 'v'), n * nkv, cfg.vd);
+    let k = dequant(kRaw, n, cfg, 'k');
+    if (this.center) k = tq4Center(L, k, n, nkv, cfg.kd);
+    const K = tq4Encode(k, n * nkv, cfg.kd), V = tq4Encode(dequant(vRaw, n, cfg, 'v'), n * nkv, cfg.vd);
     const u = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     let done = 0;
     while (done < n) {
@@ -449,6 +555,7 @@ class GpuEngine {
     const rb = this.buf('rb', rows * VD * 4, GPUBufferUsage.MAP_READ | CD);
     const rbl = this.buf('rbl', rows * 4, GPUBufferUsage.MAP_READ | CD);
     const ub = this.buf('u' + nseg, 256 * (nseg + 1), GPUBufferUsage.UNIFORM | CD);
+    const q0 = q;
     if (this.tq4) { q = q.slice(); for (let v = 0; v < ng * rows; v++) tq4Rotate(q, v * KD, KD); }
     for (let g = 0; g < ng; g++) {
       d.queue.writeBuffer(qb, 0, q, g * rows * KD, rows * KD);
@@ -486,6 +593,7 @@ class GpuEngine {
       for (let i = 0; i < rows; i++) lse[g * rows + i] = l[i] < -1e37 ? -Infinity : l[i];
       rb.unmap(); rbl.unmap();
       if (this.tq4) for (let v = 0; v < rows; v++) tq4Unrotate(O, (g * rows + v) * VD, VD);
+      if (this.center) tq4Uncenter(L, lse, q0, scale, g, nkv, R, KD);
       this.lastPhase = 'gpu+map=' + (performance.now() - tw).toFixed(1) + 'ms slots=' + nslots;
     }
     return {O, lse};
@@ -576,8 +684,8 @@ class Holder {
     this.phase = 'q=' + (t1 - t0).toFixed(1) + 'ms engine=' + (ms - (t1 - t0)).toFixed(1) + 'ms' + (this.engine.lastPhase ? ' (' + this.engine.lastPhase + ')' : '');
     this.calls++; this.lastMs = ms; this.sumMs += ms;
     const out = new Uint8Array(24 + O.length * 2 + lse.length * 4), ov = new DataView(out.buffer);
-    ov.setUint32(0, nk, true); ov.setFloat32(4, ms, true); ov.setFloat32(8, this.engine.kind === 'cpu' ? 0 : ms, true);
-    ov.setFloat32(12, this.engine.kind === 'cpu' ? ms : 0, true); ov.setUint32(16, 0, true); ov.setUint32(20, Math.ceil(nk / 4096), true);
+    ov.setUint32(0, nk, true); ov.setFloat32(4, ms, true); ov.setFloat32(8, this.engine.kind.startsWith('cpu') ? 0 : ms, true);
+    ov.setFloat32(12, this.engine.kind.startsWith('cpu') ? ms : 0, true); ov.setUint32(16, 0, true); ov.setUint32(20, Math.ceil(nk / 4096), true);
     for (let i = 0; i < O.length; i++) ov.setUint16(24 + 2 * i, f2h(O[i]), true);
     const lo = 24 + O.length * 2;
     for (let i = 0; i < lse.length; i++) ov.setFloat32(lo + 4 * i, lse[i], true);
@@ -597,7 +705,7 @@ function connect(url, token, holder, on) {
   ws.binaryType = 'arraybuffer';
   let chain = Promise.resolve();
   ws.onopen = () => ws.send(JSON.stringify({hello: 'kvholder', token: token, device: holder.device + ' (' + holder.engine.kind + ')', version: VERSION, max_bytes: holder.budget, held: holder.maxHeld(),
-    store: holder.engine.kind === 'cpu' ? 'wire' : holder.engine.storeName()}));
+    store: holder.engine.storeName(), ...(holder.engine.tq4 && holder.engine.center ? {tq4: 'centered'} : {})}));
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const m = JSON.parse(ev.data);
@@ -618,7 +726,7 @@ function connect(url, token, holder, on) {
   return ws;
 }
 
-const api = {Holder, CpuEngine, GpuEngine, connect, h2f, f2h, dequant, mkCfg, headBytes, tq4Encode, tq4Rotate, tq4Unrotate, VERSION,
+const api = {Holder, CpuEngine, CpuTq4Engine, GpuEngine, connect, h2f, f2h, dequant, mkCfg, headBytes, tq4Encode, tq4Rotate, tq4Unrotate, VERSION,
   wgsl: {partial: PARTIAL_WGSL, tq4: PARTIAL_TQ4_WGSL, merge: MERGE_WGSL}};
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.KVHolder = api;
 })(typeof window !== 'undefined' ? window : globalThis);
