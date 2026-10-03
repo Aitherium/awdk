@@ -1170,6 +1170,7 @@ Pair this machine with the portal as an inference node (6-char code from the por
 | `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab |
 | `--portal` | str |  |  | Portal base URL (default: pair directly with Identity) |
 | `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
+| `--no-autostart` | str |  | `false` | Do not install the per-user heartbeat autostart (python -m adk.node_beat) |
 
 ## `adk patterns`
 

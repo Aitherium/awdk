@@ -440,10 +440,30 @@ function tq4Encode(x, vecs, D) {
   }
   return {codes, norms};
 }
+// Which GPU to lend. 'high-performance' (the default) asks for the discrete GPU of a two-GPU
+// laptop or desktop; 'low-power' for the integrated one; 'battery' = low-power only while the
+// device runs on battery. A browser may ignore the preference (Chrome on Windows does: start it
+// with --use-webgpu-power-preference=default-high-performance, or Electron with the switch
+// force_high_performance_gpu); describe() and the hello name the adapter actually used.
+function resolvePower(setting, battery) {
+  if (setting === 'low-power') return 'low-power';
+  if (setting === 'battery') return battery && battery.charging === false ? 'low-power' : 'high-performance';
+  return 'high-performance';
+}
+async function pickAdapter(gpu, power) {
+  // no adapter for that preference: take whatever the browser offers rather than no GPU
+  return (await gpu.requestAdapter({powerPreference: power || 'high-performance'})) || gpu.requestAdapter();
+}
+function adapterLabel(adapter) {
+  const info = adapter.info || {};
+  return [info.vendor, info.architecture, info.device || info.description].filter(Boolean).join(' ') || 'gpu';
+}
+
 class GpuEngine {
   static async create(gpu, opts) {
     if (!gpu) return null;
-    const adapter = await gpu.requestAdapter({powerPreference: 'high-performance'});
+    const power = (opts && opts.power) || 'high-performance';
+    const adapter = await pickAdapter(gpu, power);
     if (!adapter) return null;
     const f16 = adapter.features.has('shader-f16');
     const want = Math.min(adapter.limits.maxStorageBufferBindingSize, adapter.limits.maxBufferSize, 256 * 1024 * 1024);
@@ -455,8 +475,7 @@ class GpuEngine {
     e.tq4 = !!(opts && opts.tq4); e.center = e.tq4 && opts.center !== false;
     e.device = device; e.f16 = f16 && !e.tq4; e.maxBind = want; e.pipes = {};
     e.kind = 'webgpu' + (e.tq4 ? '-tq4' : f16 ? '-f16' : '');
-    const info = adapter.info || {};
-    e.adapterName = [info.vendor, info.architecture, info.device].filter(Boolean).join(' ') || 'gpu';
+    e.power = power; e.adapterName = adapterLabel(adapter);
     // warm-up: the first dispatch pays the driver's first-use costs; pay them now, not on a call
     const bad = await e.configure(mkCfg(1, 1, 0));
     if (bad) throw new Error(bad);
@@ -734,7 +753,8 @@ function connect(url, token, holder, on) {
   let chain = Promise.resolve();
   ws.onopen = async () => {
     const hello = {hello: 'kvholder', token: token, device: holder.device + ' (' + holder.engine.kind + ')', version: VERSION, max_bytes: holder.budget, held: holder.maxHeld(),
-      store: holder.engine.storeName(), ...(holder.engine.tq4 && holder.engine.center ? {tq4: 'centered'} : {})};
+      store: holder.engine.storeName(), ...(holder.engine.tq4 && holder.engine.center ? {tq4: 'centered'} : {}),
+      ...(holder.engine.adapterName ? {adapter: holder.engine.adapterName, power: holder.engine.power} : {})};
     // on.hello: extra fields, e.g. a workspace device's signature (the Android app signs each dial)
     if (on.hello) { try { Object.assign(hello, await on.hello()); } catch (e) { on.error && on.error('sign-in: ' + e); ws.close(); return; } }
     ws.send(JSON.stringify(hello));
@@ -774,7 +794,7 @@ function pauseWhenHidden(doc, win, on) {
   return {get paused() { return paused; }};
 }
 
-const api = {Holder, CpuEngine, CpuTq4Engine, GpuEngine, connect, pauseWhenHidden, h2f, f2h, dequant, mkCfg, headBytes, tq4Encode, tq4Rotate, tq4Unrotate, VERSION,
+const api = {Holder, CpuEngine, CpuTq4Engine, GpuEngine, connect, pauseWhenHidden, resolvePower, pickAdapter, adapterLabel, h2f, f2h, dequant, mkCfg, headBytes, tq4Encode, tq4Rotate, tq4Unrotate, VERSION,
   wgsl: {partial: PARTIAL_WGSL, merge: MERGE_WGSL, plan: gpuPlan}};
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.KVHolder = api;
 })(typeof window !== 'undefined' ? window : globalThis);

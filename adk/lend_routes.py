@@ -282,6 +282,36 @@ def create_lend_router(guard: Callable[[Request], str]) -> APIRouter:
         logger.info("kvholder: minted a join token (ttl %ss, %s MB)", int(ttl), max_mb)
         return out
 
+    # ── The workspace swarm (adk kvholder workspace serve, kvholder_workspace.py) ──
+    # Read and toggled through THAT module's own status file and Grants store, the
+    # same ones awsh and awdesk use -- this is a door to it, not a second copy.
+    # Behind the same guard, so with AITHER_LOCAL_AUTH=required only a page that
+    # paired as the owner (adk/browser_grant.py) reaches it.
+    @router.get("/workspace")
+    async def _workspace(request: Request) -> dict:
+        guard(request)
+        from adk import kvholder_workspace
+
+        st = await asyncio.to_thread(kvholder_workspace.read_status)
+        if st is None:
+            return {"running": False}
+        return {"running": True, **st}
+
+    @router.post("/workspace/grant")
+    async def _workspace_grant(request: Request) -> dict:
+        guard(request)
+        from adk import kvholder_workspace
+
+        body = await _json(request)
+        did = str(body.get("device_id") or "").strip()
+        if not kvholder_workspace._DEVICE_ID.match(did):
+            raise HTTPException(status_code=400, detail="device_id is required")
+        lend = body.get("lend") is True
+        await asyncio.to_thread(kvholder_workspace.Grants().set, did, lend)
+        logger.info("kvholder workspace: %s lend=%s (from the owner's page)", did, lend)
+        return {"device_id": did, "lend": lend,
+                "note": "applied at the relay's next sweep (5 s)"}
+
     return router
 
 

@@ -769,8 +769,16 @@ async def enroll_on_boot(
         log.info("Node already enrolled: %s", node_auth["node_id"])
         _backfill_node_tenant_id(node_auth)
         # Still upsert agents and start heartbeat if enabled
+        # A machine paired with a code has no person signed in; it beats as itself
+        # with the capability token its registration answer carried, never with
+        # the local-root placeholder (which only ever reached a dead legacy hub).
+        paired = (node_auth.get("enrolled_via") == "pairing-code"
+                  and bool(node_auth.get("bearer_token"))
+                  and not auth.get("access_token"))
+        if paired:
+            api_key = str(node_auth["bearer_token"])
         if enable_heartbeat:
-            if node_auth.get("mode") == "rich":
+            if node_auth.get("mode") == "rich" or paired:
                 # The identity spine's heartbeat, re-probing the url that was
                 # persisted at registration — not a fresh ladder walk.
                 from adk.enrollment import heartbeat_loop as _rich_heartbeat
@@ -791,6 +799,7 @@ async def enroll_on_boot(
                     harness_provider=(
                         (lambda: (harness_url, bool(harness_url))) if harness_url else None
                     ),
+                    device=paired,
                 ))
             else:
                 _start_heartbeat_task(_heartbeat_loop(

@@ -40,7 +40,9 @@ from fastapi.responses import (
 )
 
 from adk import __version__
+from adk import browser_grant as _browser_grant
 from adk import local_auth as _local_auth
+from adk import node_commands
 from adk._tls import tls_verify
 from adk.agent import AitherAgent, AgentResponse
 from adk.config import Config
@@ -1067,6 +1069,8 @@ def create_app(
         logger.warning("local auth token unavailable (%s): gated routes need the API key", exc)
         _local_token = None
 
+    _browser_pair_paths = frozenset({"/local/browser-pair/challenge", "/local/browser-pair"})
+
     def _local_token_ok(request: Request) -> bool:
         return _local_auth.matches(_local_auth.presented(request.headers), _local_token)
 
@@ -1224,6 +1228,13 @@ def create_app(
             auth_header = request.headers.get("authorization", "")
             tok = auth_header[7:] if auth_header.startswith("Bearer ") else ""
             if _server_api_key and tok and hmac.compare_digest(tok, _server_api_key):
+                return await call_next(request)
+            # The browser-pair door verifies an Identity-signed grant itself; a
+            # browser token it minted opens ONLY its scope, ONLY from its origin.
+            if request.url.path in _browser_pair_paths:
+                return await call_next(request)
+            if tok and _browser_grant.token_allows(
+                    tok, request.headers.get("origin"), request.url.path):
                 return await call_next(request)
             return JSONResponse(status_code=401, content={
                 "error": "local credential required: send X-Aither-Local-Token with the "
@@ -2049,6 +2060,69 @@ def create_app(
             },
             "harness_link": _rc.harness_link_status(),
         }
+
+    # ── Browser pairing: the signed-in owner's page earns a scoped token ────────
+    # adk/browser_grant.py has the why. Both routes open with _handoff_guard
+    # (loopback peer + first-party Origin + the AITHER_BROWSER_HANDOFF switch).
+    @app.get("/local/browser-pair/challenge")
+    async def browser_pair_challenge(request: Request):
+        _handoff_guard(request)
+        from adk.fleet_enroll import _load_node_auth
+
+        node_id = str((_load_node_auth() or {}).get("node_id") or "")
+        if not node_id:
+            raise HTTPException(status_code=409, detail="this machine is not enrolled")
+        return {"nonce": _browser_grant.new_nonce(), "node_id": node_id,
+                "local_auth": "required" if _local_auth_required else "off"}
+
+    @app.post("/local/browser-pair")
+    async def browser_pair(request: Request):
+        origin = _handoff_guard(request)
+        from adk.fleet_enroll import _load_node_auth
+
+        node_id = str((_load_node_auth() or {}).get("node_id") or "")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        grant = body.get("grant") if isinstance(body, dict) else None
+        key = node_commands.load_key(node_id) if node_id else ""
+        if node_id and not key:
+            key = await asyncio.to_thread(_browser_grant_fetch_key, node_id)
+        why = _browser_grant.verify_grant(grant, origin=origin, node_id=node_id, key_hex=key)
+        if why:
+            logger.warning("browser pair refused for %s: %s", origin, why)
+            raise HTTPException(status_code=401, detail=f"browser pairing refused: {why}")
+        token, ttl = _browser_grant.issue_token(origin, str(grant["scope"]))
+        logger.info("browser pair: %s granted scope %s for %ds", origin, grant["scope"], ttl)
+        return {"token": token, "expires_in": ttl, "scope": grant["scope"]}
+
+    def _browser_grant_fetch_key(node_id: str) -> str:
+        """A device enrolled before the command channel has no key: re-register once
+        under the signed-in profile (the answer carries it). '' when that is not
+        possible -- the grant is then refused, never waved through."""
+        try:
+            import httpx
+
+            from adk.enrollment import build_registration
+            from adk.fleet_enroll import _load_node_auth
+
+            rec = _load_node_auth() or {}
+            token = _active_access_token()
+            if not token or rec.get("mode") != "rich":
+                return ""
+            base = str(rec.get("enroll_base") or "https://idp.aitherium.com").rstrip("/")
+            reg = build_registration(node_id, inference_url=rec.get("inference_url") or None,
+                                     node_class=rec.get("node_class") or "laptop")
+            r = httpx.post(f"{base}/v1/nodes/register", json=reg, timeout=30.0,
+                           headers={"Authorization": f"Bearer {token}"})
+            key = str(r.json().get("command_key") or "") if r.status_code == 200 else ""
+            if key:
+                node_commands.save_key(node_id, key)
+            return key
+        except Exception as exc:  # noqa: BLE001 -- no key means no grant
+            logger.warning("command key fetch failed: %s", exc)
+            return ""
 
     # ── Lend context: the local KV-holder relay, driven from a first-party page ──
     # Same _handoff_guard as the identity, mesh and Space routes. The relay's master

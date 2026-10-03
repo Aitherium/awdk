@@ -13752,6 +13752,9 @@ def _register_commands(sub):
     pair_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
         default="laptop", help="What this device is (default: laptop)")
+    pair_p.add_argument(
+        "--no-autostart", action="store_true",
+        help="Do not install the per-user heartbeat autostart (python -m adk.node_beat)")
 
     # adk whoami
     _whoami = sub.add_parser(

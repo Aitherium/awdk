@@ -16,6 +16,15 @@ Or download [`join-aither-fleet.desktop`](join-aither-fleet.desktop) and double-
 A sign-in code appears. Open the link on your phone, type the code, and the Deck
 enrols itself in your workspace. Check it with `adk devices list`.
 
+Already signed in on another screen? Mint a pairing code there ("Add a laptop or
+Steam Deck") and pair instead of signing in on the Deck:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Aitherium/awdk/main/install/deck/deck-install.sh | bash -s -- --pair CODE
+```
+
+Codes live 5 minutes.
+
 ## What it installs (all under your home directory)
 
 | piece | where | what it is for |
@@ -75,4 +84,4 @@ created them. `--keep-enrollment` leaves the device listed in your workspace.
 `--holder-max-mb N` (default 6144), `--no-dock-required`, `--lend-compute`,
 `--rpc-worker-bin F`, `--rpc-worker-sha256 H`, `--rpc-bind ADDR`, `--rpc-max-mb N`,
 `--api-key-file F`
-(headless sign-in), `--awdk-spec S`.
+(headless sign-in), `--pair CODE` (enrol with a pairing code), `--awdk-spec S`.

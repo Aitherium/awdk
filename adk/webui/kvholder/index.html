@@ -232,6 +232,9 @@ body {
   // the store survives a reload: the link's choice wins, else the last one this page used
   if (frag.has('store')) put('kvh.store', frag.get('store'));
   const tq4 = (frag.get('store') || get('kvh.store', '')) === 'tq4';  // ~4x keys per MB, approximate
+  // GPU power: '' = high-performance, 'low-power', or 'battery' (low-power while unplugged)
+  if (frag.has('power')) put('kvh.power', frag.get('power'));
+  const powerSetting = frag.get('power') || get('kvh.power', '');
   // keep the hash current (session token + store) so a reload reconnects as the same holder
   function keepHash() {
     try { history.replaceState(null, '', '#t=' + encodeURIComponent(token) + (tq4 ? '&store=tq4' : '')); } catch (e) { /* file: or sandboxed */ }
@@ -372,7 +375,11 @@ body {
 
   async function makeEngine() {
     if (engine) return engine;
-    try { engine = await KVHolder.GpuEngine.create(navigator.gpu, {tq4}); } catch (e) { engine = null; }
+    try {
+      const bat = navigator.getBattery ? await navigator.getBattery().catch(() => null) : null;
+      const power = KVHolder.resolvePower ? KVHolder.resolvePower(powerSetting, bat) : undefined;
+      engine = await KVHolder.GpuEngine.create(navigator.gpu, {tq4, power});
+    } catch (e) { engine = null; }
     // tq4 without WebGPU: the CPU tq4 engine when this holder.js has it, else the exact CPU one
     if (!engine) engine = tq4 && KVHolder.CpuTq4Engine ? new KVHolder.CpuTq4Engine() : new KVHolder.CpuEngine();
     $('engine').textContent = engine.describe();

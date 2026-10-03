@@ -82,6 +82,10 @@ async def pair_with_code(code: str, portal_url: str,
             "public_url": data.get("public_url", ""),
             "paired_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "enrolled_via": "pairing-code",
+            # An Identity registration: every later start (`adk rc`, the daemon,
+            # boot enrollment) runs the Identity heartbeat, as this device, with
+            # bearer_token -- never the legacy hub loop.
+            "mode": "rich",
             # Where the device beats with its own token (/v1/nodes/device/*).
             **({"enroll_base": base} if confirm_path == IDENTITY_CONFIRM_PATH else {}),
             "node_class": reg.get("node_class", node_class),
@@ -128,6 +132,17 @@ def cmd_pair(args: Any) -> int:
         return 1
 
     print(f"  ✓ Paired as node {result['node_id']} (tenant {result.get('tenant_id') or '?'})")
+    if not getattr(args, "no_autostart", False):
+        # The device keeps beating (and taking the owner's commands) after this
+        # command exits and after a reboot: a per-user autostart, no elevation.
+        from adk.node_beat import install_autostart
+
+        auto = install_autostart()
+        if auto.get("autostart") in ("systemd-user", "windows-run-key"):
+            print(f"    Heartbeat: running, starts at login ({auto['autostart']})")
+        else:
+            print(f"    Heartbeat: NOT installed ({auto.get('detail', auto.get('autostart'))});"
+                  " run `python -m adk.node_beat` to keep this machine online")
     if result.get("public_url"):
         print(f"    Reachable via {result['public_url']}")
     if not result.get("cert_enrolled"):

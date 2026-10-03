@@ -128,12 +128,21 @@ adk kvholder workspace deny kvh-fold      # drops it within 5 s
 - **Offline / sovereign.** `serve --keys-file keys.json` trusts the keys in a file of the
   seal-keys shape instead of identity.
 
+A Windows, macOS or Linux computer needs no terminal: Aither Desktop takes the owner's
+`desk://enroll?...` link from aitherium.com's "Connect this device", makes its own device key,
+and lends memory from a hidden WebGPU window when it is on AC power and idle
+(see the Aither Desktop integration notes).
+
 A machine enrolled with `adk enroll` joins the same way, with its own device key:
 `adk kvholder serve --connect wss://kv.aitherium.com/holder --device`.
 
-**The Android app** (`awdk/android/kvholder`, `python awdk/android/kvholder/build.py
---install <serial>`) is a foreground service that runs `holder.js`, the same engine as the
-page, in a WebView it owns, and dials the relay outbound. A browser tab dies when the phone
+**The Android app** is "Aither" (`awdk/android/aither`; `python awdk/android/aither/build_llama.py`
+once, then `python awdk/android/aither/build.py --install <serial>`). It is AitherOS itself
+(aitherium.com, full screen) plus this phone's extras: the model on the phone (llama.cpp
+`llama-server` with Bonsai 1.7B behind `127.0.0.1:8486`, token- and origin-locked, never on a
+child's phone), the household check-in in the background, and lending memory. Lending is a
+foreground service that runs `holder.js`, the same engine as the page, in a WebView it owns,
+and dials the relay outbound. A browser tab dies when the phone
 locks; the service does not: it keeps a partial wake lock and a Wi-Fi lock while lending,
 starts again after a reboot, and its notification always says what it is doing. By default it
 lends only while charging and on Wi-Fi; the owner can change both on the phone. "Allow running

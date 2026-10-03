@@ -457,7 +457,7 @@ def _codegen_diagnostic_strategies() -> list:
                       "outage", score=0.55,
                 falsifier="probe aither-llamacpp-bonsai's health in-network "
                           "right now (podman exec any peer container: "
-                          "curl http://aither-llamacpp-bonsai:8090/health) "
+                          "curl https://aither-llamacpp-bonsai:8090/health) "
                           "-- live-measured 2026-08-24: this was exactly "
                           "what happened, Bonsai was healthy 2 minutes after "
                           "the tool reported this status",

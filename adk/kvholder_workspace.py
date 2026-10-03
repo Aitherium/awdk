@@ -45,6 +45,7 @@ HELLO_DOMAIN = "aither-kvholder-hello/1"
 DEFAULT_PUBLIC_HOST = "kv.aitherium.com"
 CLOCK_SKEW_S = 120.0
 KEYS_REFRESH_S = 60.0
+KEYS_EARLY_S = 15.0  # an unknown device may pull a refresh this often
 KEYS_STALE_S = 600.0  # an identity outage longer than this stops NEW sign-ins (fail closed)
 SWEEP_S = 5.0
 _DEVICE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
@@ -117,10 +118,20 @@ class SealKeys:
         self._fetch = fetch or fetch_seal_keys
         self.keys: dict[str, str] = {}
         self.at = 0.0  # last authoritative answer
+        self.tried = 0.0  # last attempt, answered or not
         self.error = ""
         self.lock = threading.Lock()
 
+    def refresh_soon(self, min_gap_s: float = KEYS_EARLY_S) -> bool:
+        """Refresh now unless one ran in the last ``min_gap_s``: a device that just paired
+        is let in at its first dial, not a minute later, and a stranger cannot make every
+        dial a call to identity."""
+        if time.time() - self.tried < min_gap_s:
+            return False
+        return self.refresh()
+
     def refresh(self) -> bool:
+        self.tried = time.time()
         try:
             status, keys = self._fetch()
         except Exception as e:  # noqa: BLE001 - any transport failure is an outage, not a list
@@ -382,6 +393,8 @@ class DeviceGate:
         if not isinstance(ts, int) or abs(time.time() - ts) > CLOCK_SKEW_S:
             return None, "device clock is off (or the hello is old)"
         pub = self.keys.get(did)
+        if not pub and self.keys.refresh_soon():  # paired a moment ago?
+            pub = self.keys.get(did)
         if not pub:
             return None, "not a device of this workspace (enroll or pair it first)"
         if not verify_sig(pub, hello_message(relay_id, did, ts, nonce), sig):

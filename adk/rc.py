@@ -245,7 +245,18 @@ def _signed_in() -> bool:
     return bool(
         auth.get("access_token") or auth.get("api_key") or auth.get("token")
         or auth.get("tenant_slug") or (auth.get("user") or {}).get("tenant_slug")
-    )
+    ) or _paired()
+
+
+def _paired() -> bool:
+    """Was this machine paired with a code? Its own device token is an identity:
+    Identity issued it to this node, for this node, at confirm time."""
+    try:
+        from adk.fleet_enroll import _load_node_auth
+        rec = _load_node_auth()
+    except Exception:  # noqa: BLE001
+        return False
+    return rec.get("enrolled_via") == "pairing-code" and bool(rec.get("bearer_token"))
 
 
 def cmd_rc(args) -> int:

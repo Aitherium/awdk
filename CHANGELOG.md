@@ -4,6 +4,35 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.55] - 2026-10-03
+
+### Fixed
+
+- **A device heartbeat recovers on its own after an identity redeploy.** A refused or failed
+  beat now gets a fresh HTTP client; measured: the long-lived client answered 404 for 12
+  minutes while a fresh one on the same box got 200, until the process was restarted.
+
+
+## [3.8.54] - 2026-10-03
+
+### Fixed
+
+- **A machine paired with a code keeps heartbeating.** `adk pair` records an Identity
+  registration; `adk rc`, the daemon and boot enrollment run the Identity heartbeat as the
+  device itself (its own token), never the legacy hub loop. `adk rc` accepts a paired machine.
+
+### Added
+
+- **The signed-in owner's page drives this machine's lend routes** with
+  `AITHER_LOCAL_AUTH=required`: the page pairs through an Identity-signed grant over a
+  daemon nonce and gets a token scoped to `/kvholder/*` and bound to its origin. Everyone
+  else still gets 401.
+- `adk pair` installs a per-user heartbeat autostart (`python -m adk.node_beat`: systemd
+  user unit with linger, or the Windows Run key), so a paired box stays online after
+  reboot with no service file written by hand. `--no-autostart` opts out.
+- `/kvholder/workspace` and `/kvholder/workspace/grant`: the workspace swarm and the
+  owner's lend toggle, through the same status file and grants store as awsh and awdesk.
+
 ## [3.8.53] - 2026-10-03
 
 ### Fixed

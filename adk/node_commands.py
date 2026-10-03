@@ -126,9 +126,10 @@ def verify(cmd: Any, key_hex: str, node_id: str, *, now: Optional[float] = None,
         return "addressed to another device"
     t = time.time() if now is None else now
     try:
-        if float(cmd.get("expires_at") or 0) <= t:
-            return "expired"
+        expires = float(cmd.get("expires_at") or 0)
     except (TypeError, ValueError):
+        expires = 0.0  # unreadable expiry = already expired
+    if expires <= t:
         return "expired"
     if str(cmd.get("id") or "") in (seen if seen is not None else _load_seen()):
         return "already run"

@@ -4,7 +4,7 @@ Two independent bugs made `adk gobbonet --backend URL` refuse a healthy model
 server. Both were measured against a REAL llama.cpp (bonsai-27b) that answered
 /v1/models with 200 and completed chat requests the whole time:
 
-    NotConfigured: nothing usable at http://aither-llamacpp-bonsai:8090
+    NotConfigured: nothing usable at https://aither-llamacpp-bonsai:8090
 
 1. THE HOST WAS DISCARDED. The call site did
    `_probe(int(pinned.rsplit(":", 1)[-1]))` -- keep the last colon-segment as a

@@ -52,7 +52,7 @@ import platform
 import time
 from pathlib import Path
 from typing import (
-    Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple,
+    Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple,
 )
 
 log = logging.getLogger("adk.enrollment")
@@ -681,17 +681,29 @@ async def heartbeat_loop(
     # fresh SSL context per beat, and on Windows that walks the system
     # certificate store -- the daemon's largest remaining idle CPU cost once its
     # file polls were cached (measured 2026-09-27). Same verify policy as before.
-    client = httpx.AsyncClient(timeout=10.0)
+    holder = {"client": httpx.AsyncClient(timeout=10.0)}
+
+    async def _renew() -> Any:
+        # A refused or failed beat gets a NEW client. Measured 2026-10-03: after an
+        # identity redeploy the long-lived client kept answering 404 for 12 minutes
+        # while a fresh client on the same box got 200 -- only a restart healed it.
+        old, holder["client"] = holder["client"], httpx.AsyncClient(timeout=10.0)
+        try:
+            await old.aclose()
+        except Exception as e:  # noqa: BLE001 -- a client that will not close is dropped
+            log.debug("old heartbeat client close failed: %s", e)
+        return holder["client"]
+
     try:
         await _heartbeat_beats(
-            client, base, headers, node_id, interval=interval,
+            holder["client"], base, headers, node_id, interval=interval,
             inference_url=inference_url, node_class=node_class, max_beats=max_beats,
             reach_provider=reach_provider, harness_provider=harness_provider,
             token_provider=token_provider, beat_immediately=beat_immediately,
-            device=device,
+            device=device, renew=_renew,
         )
     finally:
-        await client.aclose()
+        await holder["client"].aclose()
 
 
 async def _heartbeat_beats(
@@ -709,8 +721,10 @@ async def _heartbeat_beats(
     token_provider: Optional[Callable[[], str]] = None,
     beat_immediately: bool = False,
     device: bool = False,
+    renew: Optional[Callable[[], Awaitable[Any]]] = None,
 ) -> None:
-    """The beat loop of :func:`heartbeat_loop`, on a caller-owned client."""
+    """The beat loop of :func:`heartbeat_loop`, on a caller-owned client. ``renew``
+    swaps in a fresh client after a refused or failed beat."""
     beat_path = "/v1/nodes/device/heartbeat" if device else "/v1/nodes/heartbeat"
     beats = 0
     while max_beats is None or beats < max_beats:
@@ -780,12 +794,19 @@ async def _heartbeat_beats(
                                                   device=device)
             else:
                 _record_beat(status, "refused", f"heartbeat answered HTTP {status}")
+                if renew is not None:
+                    client = await renew()
         except asyncio.CancelledError:
             log.info("Heartbeat loop cancelled")
             break
         except Exception as e:
             log.debug("Heartbeat error: %s", e)
             _record_beat(None, "error", f"{e.__class__.__name__}: {e}")
+            if renew is not None:
+                try:
+                    client = await renew()
+                except Exception as re:  # noqa: BLE001 -- keep the old client, keep beating
+                    log.debug("heartbeat client renew failed: %s", re)
 
 
 async def _run_delivered_commands(

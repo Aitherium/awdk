@@ -23,6 +23,10 @@ NODE = "deck-1"
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+    # Never write a real Run key / user unit or spawn a beat from a test (it did once).
+    from adk import node_beat
+    monkeypatch.setattr(node_beat, "install_autostart",
+                        lambda: {"autostart": "test-disabled"})
     yield tmp_path
 
 
@@ -216,6 +220,153 @@ def test_adk_pair_defaults_to_identitys_own_confirm_route(monkeypatch):
     monkeypatch.setattr(devices, "enroll_base", lambda: "https://idp.test")
     monkeypatch.setattr(node_pairing, "pair_with_code", fake_pair)
     assert node_pairing.cmd_pair(SimpleNamespace(code="ABCD2345", portal="",
-                                                 node_class="spark")) == 0
+                                                 node_class="spark", no_autostart=True)) == 0
     assert seen == {"code": "ABCD2345", "base": "https://idp.test", "node_class": "spark",
                     "path": "/v1/nodes/pairing/confirm"}
+
+
+def test_a_paired_machine_boots_into_the_identity_heartbeat_as_itself(monkeypatch):
+    """deck's finding: a paired box fell into the LEGACY hub loop with the local-root
+    placeholder and went stale after one beat."""
+    from adk import fleet_enroll
+
+    rec = {"node_id": NODE, "bearer_token": "device-tok", "enrolled_via": "pairing-code",
+           "mode": "rich", "enroll_base": "https://idp.test", "node_class": "deck"}
+    monkeypatch.setenv("AITHER_FLEET_ENROLL", "1")
+    monkeypatch.setattr(fleet_enroll, "_load_node_auth", lambda: dict(rec))
+    monkeypatch.setattr(fleet_enroll, "_load_auth_config", lambda: {})
+    monkeypatch.setattr(fleet_enroll, "_backfill_node_tenant_id", lambda r: None)
+    started = {}
+
+    async def rich(base, token, node_id, **kw):
+        started.update(base=base, token=token, node_id=node_id, **kw)
+
+    async def legacy(*a, **kw):
+        started["legacy"] = True
+
+    monkeypatch.setattr(enrollment, "heartbeat_loop", rich)
+    monkeypatch.setattr(fleet_enroll, "_heartbeat_loop", legacy)
+    monkeypatch.setattr(fleet_enroll, "_start_heartbeat_task", _drive)
+    out = asyncio.run(fleet_enroll.enroll_on_boot(start_link=False))
+    assert out["enrolled"] and out["already_registered"]
+    assert "legacy" not in started
+    assert (started["base"], started["token"], started["device"], started["node_class"]) == (
+        "https://idp.test", "device-tok", True, "deck")
+
+
+def _drive(coro):
+    """Run a coroutine that never suspends to completion (the fake loop above)."""
+    try:
+        coro.send(None)
+    except StopIteration:
+        return True
+    raise AssertionError("the heartbeat stand-in was expected to finish in one step")
+
+
+def test_rc_accepts_a_paired_machine_as_signed_in(monkeypatch):
+    from adk import fleet_enroll, rc
+
+    monkeypatch.setattr(fleet_enroll, "_load_auth_config", lambda: {})
+    monkeypatch.setattr(fleet_enroll, "_load_node_auth", lambda: {})
+    assert rc._signed_in() is False
+    monkeypatch.setattr(fleet_enroll, "_load_node_auth", lambda: {
+        "node_id": NODE, "enrolled_via": "pairing-code", "bearer_token": "device-tok"})
+    assert rc._signed_in() is True
+
+
+def test_pairing_marks_the_record_as_an_identity_registration(monkeypatch):
+    from adk import fleet_enroll, node_pairing
+
+    saved = {}
+    monkeypatch.setattr(fleet_enroll, "_load_node_auth", lambda: {})
+    monkeypatch.setattr(fleet_enroll, "_save_node_auth", lambda d: saved.update(d))
+    monkeypatch.setattr(enrollment, "build_registration", lambda node_id, **kw: {
+        "node_id": node_id, "node_class": kw.get("node_class", "laptop"),
+        "inference_url": ""})
+    monkeypatch.setattr(enrollment, "_persist_device_cert", lambda d: {"success": True})
+    monkeypatch.setattr(enrollment, "_save_workspace", lambda w: None)
+
+    class _C:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None):
+            assert url == "https://idp.test/v1/nodes/pairing/confirm"
+            return _Resp(200, {"node_id": json["node_id"], "tenant_id": "platform",
+                               "bearer_token": "device-tok", "command_key": KEY})
+
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", _C)
+    out = asyncio.run(node_pairing.pair_with_code(
+        "ABCD2345", "https://idp.test", node_class="deck",
+        confirm_path=node_pairing.IDENTITY_CONFIRM_PATH))
+    assert out["paired"]
+    assert (saved["mode"], saved["enroll_base"], saved["enrolled_via"], saved["node_class"]) == (
+        "rich", "https://idp.test", "pairing-code", "deck")
+    assert node_commands.load_key(saved["node_id"]) == KEY
+
+
+def test_pair_installs_the_heartbeat_autostart_unless_told_not_to(monkeypatch):
+    from types import SimpleNamespace
+
+    from adk import devices, node_beat, node_pairing
+
+    async def fake_pair(code, base, node_class="laptop", confirm_path=""):
+        return {"paired": True, "node_id": NODE, "tenant_id": "platform"}
+
+    installed = []
+    monkeypatch.delenv("AITHER_PORTAL_URL", raising=False)
+    monkeypatch.setattr(devices, "enroll_base", lambda: "https://idp.test")
+    monkeypatch.setattr(node_pairing, "pair_with_code", fake_pair)
+    monkeypatch.setattr(node_beat, "install_autostart",
+                        lambda: installed.append(1) or {"autostart": "systemd-user"})
+    args = SimpleNamespace(code="ABCD2345", portal="", node_class="spark", no_autostart=False)
+    assert node_pairing.cmd_pair(args) == 0 and installed == [1]
+    args.no_autostart = True
+    assert node_pairing.cmd_pair(args) == 0 and installed == [1]
+
+
+def test_node_beat_resumes_as_the_device_when_nobody_is_signed_in(monkeypatch):
+    from adk import fleet_enroll, node_beat
+
+    seen = {}
+    monkeypatch.setattr(fleet_enroll, "_load_auth_config", lambda: {})
+    monkeypatch.setattr(enrollment, "resume_heartbeat",
+                        lambda tok, default_base_url: seen.update(tok=tok, base=default_base_url)
+                        or {"started": False, "reason": "not registered", "node_id": ""})
+    monkeypatch.delenv("AITHER_IDP_URL", raising=False)
+    monkeypatch.delenv("AITHER_IDP_BASE_URL", raising=False)
+    assert asyncio.run(node_beat._main()) == 1
+    assert seen == {"tok": "", "base": "https://idp.aitherium.com"}
+
+
+def test_a_refused_beat_gets_a_fresh_client(monkeypatch):
+    """After an identity redeploy a long-lived client answered 404 for 12 minutes while a
+    fresh one got 200 (measured 2026-10-03); a refused beat now swaps the client."""
+    class _Stuck(_Client):
+        async def post(self, url, json=None, headers=None):
+            self.posts.append((url, json))
+            return _Resp(404, {"detail": "Not Found"})
+
+    stuck, fresh = _Stuck([]), _Client([])
+    renewed = []
+
+    async def renew():
+        renewed.append(1)
+        return fresh
+
+    monkeypatch.setattr(enrollment, "build_registration", lambda node_id, **kw: {
+        "node_id": node_id, "inference_ready": False, "available_models": [],
+        "gpu_vram_mb": 0, "inference_url": "", "inference_kind": "none"})
+    asyncio.run(enrollment._heartbeat_beats(
+        stuck, "https://idp.test", {"Authorization": "Bearer t"}, NODE, interval=0,
+        inference_url=None, node_class="spark", max_beats=2, reach_provider=None,
+        harness_provider=None, beat_immediately=True, device=True, renew=renew))
+    assert renewed == [1]
+    assert len(stuck.posts) == 1 and len(fresh.posts) == 1

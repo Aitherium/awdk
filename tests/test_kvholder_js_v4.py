@@ -548,3 +548,59 @@ def test_a_quick_trip_to_the_background_keeps_every_key(relay, tmp_path):
     finally:
         tab.kill()
         tab.communicate(timeout=10)
+
+
+# ---------------------------------------------------------------- which GPU a holder lends
+
+
+def test_js_holder_asks_for_the_high_performance_gpu_and_names_it(tmp_path):
+    """A two-GPU machine lent its integrated GPU (33 ms/call next to an idle RTX 5090). The
+    holder asks for 'high-performance' unless the lend setting says otherwise, falls back to any
+    adapter rather than none, and its hello names the adapter it got."""
+    got = _node(
+        tmp_path,
+        "const asked = [];\n"
+        "const fake = (ret) => ({requestAdapter: async (o) => { asked.push(o || null);"
+        " return ret(o); }});\n"
+        "const dgpu = {info: {vendor: 'nvidia', architecture: 'blackwell', device: ''}};\n"
+        "const igpu = {info: {vendor: 'amd', architecture: '', description: 'AMD Radeon'}};\n"
+        "(async () => {\n"
+        "  const out = {};\n"
+        "  out.hp = K.adapterLabel(await K.pickAdapter(fake(() => dgpu), undefined));\n"
+        "  out.fallback = K.adapterLabel(await K.pickAdapter(fake((o) => o ? null : igpu),"
+        " 'high-performance'));\n"
+        "  out.asked = asked;\n"
+        "  out.power = [K.resolvePower(undefined, null), K.resolvePower('low-power', null),\n"
+        "    K.resolvePower('battery', {charging: false}), K.resolvePower('battery',"
+        " {charging: true}),\n"
+        "    K.resolvePower('battery', null)];\n"
+        "  let sent = null;\n"
+        "  globalThis.WebSocket = class { constructor() { setTimeout(() => this.onopen(), 0); }\n"
+        "    send(m) { sent = JSON.parse(m); } close() {} };\n"
+        "  const eng = new K.CpuEngine(); eng.adapterName = 'nvidia blackwell';"
+        " eng.power = 'high-performance';\n"
+        "  K.connect('ws://x/holder', 't', new K.Holder(eng, 1 << 20, 'pc'), {});\n"
+        "  const cpu = new K.CpuEngine(); let sentCpu = null;\n"
+        "  await new Promise((r) => setTimeout(r, 20)); out.hello = sent;\n"
+        "  K.connect('ws://x/holder', 't', new K.Holder(cpu, 1 << 20, 'pc'), {});\n"
+        "  await new Promise((r) => setTimeout(r, 20)); out.helloCpu = sent;\n"
+        "  console.log(JSON.stringify(out));\n"
+        "})();\n",
+    )
+    assert got["hp"] == "nvidia blackwell"
+    assert got["fallback"] == "amd AMD Radeon"
+    assert got["asked"] == [
+        {"powerPreference": "high-performance"},
+        {"powerPreference": "high-performance"},
+        None,
+    ]
+    assert got["power"] == [
+        "high-performance",
+        "low-power",
+        "low-power",
+        "high-performance",
+        "high-performance",
+    ]
+    assert got["hello"]["adapter"] == "nvidia blackwell"
+    assert got["hello"]["power"] == "high-performance"
+    assert "adapter" not in got["helloCpu"]  # a CPU holder's hello is unchanged

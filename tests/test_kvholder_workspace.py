@@ -410,3 +410,19 @@ def test_serve_accepts_hellos_for_its_public_host_and_tailnet_address_only(ws_re
         assert ok == "kvh-fold", (relay_id, why)
     ok, why = env["gate"].admit(kw.sign_hello(env["fold"], "kv.evil.example", "kvh-fold"))
     assert ok is None and "another relay" in why
+
+
+def test_a_device_paired_a_moment_ago_is_let_in_at_its_first_dial(ws_relay):
+    env = ws_relay
+    new = ed.Ed25519PrivateKey.generate()
+    env["grants"].set("kvh-new", True)
+    env["ident"].keys["kvh-new"] = _pub_hex(new)  # identity knows it; the relay's copy does not
+    env["keys"].tried = 0.0
+    assert env["gate"].admit(kw.sign_hello(new, "127.0.0.1", "kvh-new"))[0] == "kvh-new"
+    # a stranger cannot make every dial a call to identity
+    calls = []
+    env["keys"]._fetch = lambda: calls.append(1) or (200, dict(env["ident"].keys))
+    stranger = ed.Ed25519PrivateKey.generate()
+    for _ in range(5):
+        env["gate"].admit(kw.sign_hello(stranger, "127.0.0.1", "kvh-nobody"))
+    assert len(calls) <= 1

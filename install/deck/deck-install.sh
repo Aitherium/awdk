@@ -37,6 +37,8 @@
 #                        has no authentication, so never 0.0.0.0
 #   --rpc-max-mb N       memory cap for the worker (default 4096 of the Deck's 16 GB)
 #   --api-key-file F     sign in non-interactively with a key read from file F
+#   --pair CODE          enrol with a pairing code from "Add a laptop or Steam Deck"
+#                        instead of signing in on the Deck (needs awdk >= 3.8.54)
 #   --awdk-spec S        pip spec for awdk (default: awdk)
 
 set -euo pipefail
@@ -57,9 +59,11 @@ LEND_MEMORY=0
 HOLDER_MAX_MB=6144
 REQUIRE_DOCK=1
 API_KEY_FILE=""
-# 3.8.53: kvholder serve --device/--mesh and node class deck. The --help probes below stay,
+PAIR_CODE=""
+# 3.8.53: kvholder serve --device/--mesh and node class deck; 3.8.54: adk pair heartbeats
+# at Identity. The --help probes below stay,
 # for a user who passes an older --awdk-spec.
-AWDK_SPEC="${AITHER_DECK_AWDK_SPEC:-awdk>=3.8.53}"
+AWDK_SPEC="${AITHER_DECK_AWDK_SPEC:-awdk>=3.8.54}"
 LEND_COMPUTE=0
 RPC_SRC=""
 RPC_SHA256=""
@@ -84,6 +88,7 @@ while [ $# -gt 0 ]; do
         --rpc-bind) shift; RPC_BIND="${1:?--rpc-bind needs an address}" ;;
         --rpc-max-mb) shift; RPC_MAX_MB="${1:?--rpc-max-mb needs a number}" ;;
         --api-key-file) shift; API_KEY_FILE="${1:?--api-key-file needs a path}" ;;
+        --pair) shift; PAIR_CODE="${1:?--pair needs the code}" ;;
         --awdk-spec) shift; AWDK_SPEC="${1:?--awdk-spec needs a value}" ;;
         -h|--help) sed -n '2,32p' "$0" 2>/dev/null || true; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
@@ -367,15 +372,24 @@ loginctl enable-linger "$(id -un)" 2>/dev/null || true
 
 # 7. Sign in + enrol, then hand the link to the unit.
 if [ "$ENROLL" = 1 ]; then
-    if [ -n "$API_KEY_FILE" ]; then
+    if [ -n "$PAIR_CODE" ]; then
+        adk pair --help 2>/dev/null | grep -q -- '--no-autostart' \
+            || die "this adk cannot pair a Deck; re-run without --pair, or with --awdk-spec 'awdk>=3.8.54'"
+        say "pairing this Deck with code $PAIR_CODE"
+        # aither-deck-node (adk rc) carries the heartbeat; adk's own autostart would be a
+        # second beat loop the uninstaller does not know about.
+        adk pair "$PAIR_CODE" --node-class "$NODE_CLASS" --no-autostart
+    elif [ -n "$API_KEY_FILE" ]; then
         [ -r "$API_KEY_FILE" ] || die "cannot read $API_KEY_FILE"
         adk login --api-key "$(tr -d '[:space:]' < "$API_KEY_FILE")" --no-sync
     elif [ ! -f "$DECK_HOME/.aither/auth.json" ]; then
         say "sign in: a code appears below. Open the link on your phone and type it."
         adk login --no-sync </dev/tty
     fi
-    say "enrolling this Deck in your workspace"
-    adk rc --node-class "$NODE_CLASS" --once
+    if [ -z "$PAIR_CODE" ]; then
+        say "enrolling this Deck in your workspace"
+        adk rc --node-class "$NODE_CLASS" --once
+    fi
 fi
 
 systemctl --user enable --now aither-deck-shell.service aither-deck-guard.service >/dev/null 2>&1
