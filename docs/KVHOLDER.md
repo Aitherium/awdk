@@ -384,10 +384,29 @@ key on the host through the same code. Measured with Qwen3-0.6B (fp32, CPU host)
 
 Decode ran at 0.8 tokens/s, bound by the host's CPU, which other jobs held at 100%.
 
+**Far-KV row format.** `--kv auto` (the default) measures the model before it starts: the
+perplexity of the last 128 of the prompt's first 640 tokens, with the far keys on an
+in-process holder as f16, q8_0 and q4_0, keys raw and centered. It takes the most compact
+format within `--kv-tol` (default 2%) of f16. Centering ships k - mu, mu the per-(layer, KV
+head) mean key of the layer's first append. Keys share a large per-head offset that 4-bit
+rows otherwise spend their range on. Every far score then drops by q . mu, a constant per
+query, so the holder's softmax and output are unchanged; the engine adds scale * q . mu back
+to the holder's lse before the merge, which keeps it exact. Measured 2026-10-03 on 2,048
+tokens of these docs, the last 512 scored, window 128 (1,920 keys per layer on the holder):
+
+| model | local | f16 | q8_0 | q8_0 centered | q4_0 | q4_0 centered |
+|---|---|---|---|---|---|---|
+| Qwen2.5-0.5B | 11.845 | 11.844 | 11.860 | 11.851 | 12.150 | 11.822 |
+| Qwen3-0.6B | 12.824 | 12.825 | 12.836 | 12.855 | 13.675 | 13.120 |
+
+So auto picks q4_0 centered for Qwen2.5-0.5B (a quarter of f16's bytes) and q8_0 for
+Qwen3-0.6B at the 2% default. `--ppl N` prints the perplexity of the last N tokens of
+`--prompt-file` through the holders; `--kv` and `--no-center` pin a format.
+
 Any causal LM whose attention goes through transformers' `AttentionInterface` works (Qwen3,
 Qwen2, Llama, Mistral). torch and transformers are imported only by `chat`; the rest of
 `adk kvholder` stays light enough for a phone. On a busy host, keep thread counts low:
-`--threads` (default half the cores, at most 8) for the engine and `OPENBLAS_NUM_THREADS=4`
+`--threads` (default half the cores, at most 4) for the engine and `OPENBLAS_NUM_THREADS=4`
 for a Python holder on the same machine. Oversubscribed BLAS threads were 16x slower here.
 
 ## The engine side

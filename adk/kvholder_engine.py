@@ -49,6 +49,11 @@ class HolderLink:
     ``wire="v4"`` sends the model's own shapes (the adk holders and the phone page read them).
     ``wire="v3"`` zero-pads heads to 256 and rows to 48 for a holder that speaks only PATN v3
     (a Backburner iPhone); zeros change no dot product, but the holder does ~6x the work.
+
+    ``center=True`` ships k - mu, mu the per-(layer, KV head) mean of the layer's first
+    append. Keys share a large per-head offset that a 4-bit row spends its range on; without
+    it the residual gets the bits. Every far score drops by q . mu, a constant per query, so
+    the holder's softmax and output are unchanged and its lse gets scale * q . mu back: exact.
     """
 
     def __init__(
@@ -60,10 +65,14 @@ class HolderLink:
         head_dim: int,
         kv_type: str = "f16",
         wire: str = "v4",
+        center: bool | None = None,
     ):
         from adk import kvholder as kv
 
         self.kv = kv
+        self.kv_type = kv_type
+        self.center = kv_type != "f16" if center is None else center
+        self.mu: dict = {}  # layer -> mean key [n_kv, head_dim], fixed at the first append
         self.client = client
         self.n_kv, self.groups, self.head_dim = n_kv, n_heads // n_kv, head_dim
         if wire == "v3":
@@ -88,6 +97,11 @@ class HolderLink:
     def append(self, layer: int, keys, vals) -> None:
         """K/V float32 [n, n_kv, head_dim] -> the holders, after what they already hold."""
         np = self.kv.np
+        if self.center:
+            mu = self.mu.get(layer)
+            if mu is None:
+                mu = self.mu[layer] = keys.mean(axis=0).astype(np.float32)
+            keys = keys - mu[None]
         pad = self.dim - self.head_dim
         if pad:
             keys = np.pad(keys, ((0, 0), (0, 0), (0, pad)))
@@ -124,7 +138,11 @@ class HolderLink:
             lse = lse[:, :, : g * 8].reshape(ng, hkv, g, 8).transpose(0, 3, 1, 2)
             outs.append(o.reshape(ng * 8, n_h, dim)[:t, :, :hd])
             lses.append(lse.reshape(ng * 8, n_h)[:t])
-        return np.concatenate(outs), np.concatenate(lses)
+        lse = np.concatenate(lses)
+        mu = self.mu.get(layer)
+        if mu is not None:  # the holder scored k - mu: put q . mu back (-inf stays -inf)
+            lse = lse + np.float32(scale) * np.einsum("thd,hd->th", q, np.repeat(mu, g, axis=0))
+        return np.concatenate(outs), lse
 
 
 class Engine:
@@ -215,12 +233,16 @@ class Engine:
 
     # ------------------------------------------------------------ feeding and decoding
 
-    def feed(self, ids: list[int]):
-        """Run ``ids`` (after any pending token) through the model; logits of the last one."""
+    def feed(self, ids: list[int], all_logits: bool = False):
+        """Run ``ids`` (after any pending token) through the model.
+
+        Returns the last token's logits, or with ``all_logits`` every fed token's [T, vocab].
+        """
         torch = self.torch
         ids = self.pending + list(ids)
         self.pending = []
         logits = None
+        every: list = []
         cfg = self.model.config
         prev = cfg._attn_implementation
         cfg._attn_implementation = ATTN_NAME
@@ -240,16 +262,18 @@ class Engine:
                         input_ids=torch.tensor([part]),
                         position_ids=pos,
                         use_cache=False,
-                        logits_to_keep=1,
+                        logits_to_keep=0 if all_logits else 1,
                     )
                     self.pos += len(part)
                     logits = out.logits[0, -1].float()
+                    if all_logits:
+                        every.append(out.logits[0].float())
         finally:
             _ACTIVE.pop()
             cfg._attn_implementation = prev
             if had:
                 del base._update_causal_mask  # back to the class method
-        return logits
+        return torch.cat(every) if all_logits else logits
 
     def generate(
         self, ids: list[int], max_new: int, stop: set[int] | None = None, on_token=None
@@ -327,6 +351,83 @@ def reference_greedy(model, ids: list[int], n: int, chunk: int = 2048) -> list[i
     return out
 
 
+def perplexity(eng: Engine, ids: list[int], n_eval: int, chunk: int = 64) -> float:
+    """exp(mean NLL) of the last ``n_eval`` tokens of ``ids`` given everything before them.
+
+    The prefix goes in one pass (its old keys land on the holders); the scored tokens go in
+    chunks of ``chunk``, so each chunk attends over the far keys through the holders.
+    """
+    torch = eng.torch
+    logp = []
+    prev = eng.feed(ids[:-n_eval])
+    tail = ids[-n_eval:]
+    keep, eng.chunk = eng.chunk, chunk
+    try:
+        for a in range(0, n_eval, chunk):
+            part = tail[a : a + chunk]
+            got = eng.feed(part, all_logits=True)  # [c, V]
+            pred = torch.cat([prev[None], got[:-1]])
+            lp = torch.log_softmax(pred, -1)
+            logp.append(lp[torch.arange(len(part)), torch.tensor(part)])
+            prev = got[-1]
+    finally:
+        eng.chunk = keep
+    return float(torch.exp(-torch.cat(logp).mean()))
+
+
+def measure_kv(
+    model, ids: list[int], n_eval: int = 128, window: int = 64
+) -> dict[tuple[str, bool], float]:
+    """Perplexity of the last ``n_eval`` tokens of ``ids`` with the far keys in each row format.
+
+    Each format runs through an in-process holder, keys raw and centered, with a small window
+    so most of the context is far. A quick, model-specific check: what --kv auto decides on.
+    """
+    import threading
+
+    from adk import kvholder as kv
+
+    c = model.config
+    out: dict[tuple[str, bool], float] = {}
+    for name, center in (
+        ("f16", False),
+        ("q8_0", False),
+        ("q8_0", True),
+        ("q4_0", False),
+        ("q4_0", True),
+    ):
+        srv = kv.HolderServer(("127.0.0.1", 0), kv.KVHolder(4 << 30, store="f32"))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        client = kv.KVHolderClient("127.0.0.1", srv.server_address[1], timeout=600)
+        try:
+            link = HolderLink(
+                client,
+                c.num_hidden_layers,
+                c.num_key_value_heads,
+                c.num_attention_heads,
+                getattr(c, "head_dim", None) or c.hidden_size // c.num_attention_heads,
+                kv_type=name,
+                center=center,
+            )
+            eng = Engine(model, link, window=window, block=max(8, window // 2))
+            out[(name, center)] = perplexity(eng, ids, n_eval, chunk=32)
+        finally:
+            client.close()
+            srv.shutdown()
+            srv.server_close()
+    return out
+
+
+def choose_kv(ppl: dict[tuple[str, bool], float], tol: float) -> tuple[str, bool]:
+    """The most compact (format, center) whose perplexity is within ``tol`` (relative) of f16."""
+    base = ppl[("f16", False)]
+    for name in ("q4_0", "q8_0"):
+        best = min((v, c) for (n, c), v in ppl.items() if n == name)
+        if best[0] <= base * (1 + tol):
+            return name, best[1]
+    return "f16", False
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -396,10 +497,27 @@ def run(args) -> int:
     from adk import kvholder as kv
 
     # torch's default (every core) thrashes on a busy host: 16x slower measured at 100% load
-    torch.set_num_threads(args.threads or max(1, min(8, (os.cpu_count() or 2) // 2)))
+    torch.set_num_threads(args.threads or max(1, min(4, (os.cpu_count() or 2) // 2)))
     print(f"kvholder chat: loading {args.model}", flush=True)
     model, tok = load_model(args.model)
     c = model.config
+    doc = (
+        Path(args.prompt_file).read_text(encoding="utf-8", errors="replace")
+        if args.prompt_file
+        else _SAMPLE_DOC
+    )
+    kv_type, center = args.kv, args.center
+    if kv_type == "auto" and not args.local:
+        calib = tok(doc, add_special_tokens=False)["input_ids"][: args.calib]
+        t0 = time.perf_counter()
+        ppl = measure_kv(model, calib, n_eval=min(128, len(calib) // 4))
+        kv_type, center = choose_kv(ppl, args.kv_tol)
+        print(
+            "kvholder chat: far-KV perplexity on this model "
+            + ", ".join(f"{n}{'+c' if c else ''} {v:.3f}" for (n, c), v in ppl.items())
+            + f" ({time.perf_counter() - t0:.0f}s) -> {kv_type}{' centered' if center else ''}",
+            flush=True,
+        )
     link = None
     if not args.local:
         host, port = _relay_addr(args.relay)
@@ -414,8 +532,9 @@ def run(args) -> int:
                         c.num_key_value_heads,
                         c.num_attention_heads,
                         getattr(c, "head_dim", None) or c.hidden_size // c.num_attention_heads,
-                        kv_type=args.kv,
+                        kv_type=kv_type,
                         wire=args.wire,
+                        center=center and kv_type != "f16",
                     )
                     break
                 except RuntimeError as e:
@@ -432,7 +551,8 @@ def run(args) -> int:
             return 1
         print(
             f"kvholder chat: holders via {host}:{port}: {hello['device']} "
-            f"(PATN {args.wire}, {args.kv}, host window {args.window})",
+            f"(PATN {args.wire}, {kv_type}{' centered' if link.center else ''}, "
+            f"host window {args.window})",
             flush=True,
         )
     eng = Engine(model, link, window=args.window, block=args.block, chunk=args.chunk)
@@ -470,12 +590,16 @@ def run(args) -> int:
         return out, st
 
     try:
-        if args.prompt_file or args.verify:
-            doc = (
-                Path(args.prompt_file).read_text(encoding="utf-8", errors="replace")
-                if args.prompt_file
-                else _SAMPLE_DOC
+        if args.ppl:
+            ids = tok(doc, add_special_tokens=False)["input_ids"]
+            t0 = time.perf_counter()
+            ppl = perplexity(eng, ids, args.ppl)
+            print(
+                f"perplexity {ppl:.3f} over the last {args.ppl} of {len(ids)} tokens "
+                f"({time.perf_counter() - t0:.1f}s), far keys {eng.far:,} on holders"
             )
+            return 0
+        if args.prompt_file or args.verify:
             user = f"{doc}\n\n{args.question}"
             n = args.verify or args.max_new
             out, st = turn(user, n if args.verify else args.max_new, show=not args.verify)
@@ -558,9 +682,34 @@ def register_args(p) -> None:
     )
     p.add_argument(
         "--kv",
-        choices=["f16", "q8_0"],
-        default="f16",
-        help="row format on the wire (f16 is exact to fp16)",
+        choices=["auto", "f16", "q8_0", "q4_0"],
+        default="auto",
+        help="far-KV row format; auto measures each one's perplexity on this model (keys raw "
+        "and centered) and takes the most compact within --kv-tol of f16",
+    )
+    p.add_argument(
+        "--kv-tol",
+        type=float,
+        default=0.02,
+        help="with --kv auto: perplexity allowed above f16, relative (0.02 = 2%%)",
+    )
+    p.add_argument(
+        "--calib", type=int, default=640, help="with --kv auto: tokens of the prompt measured"
+    )
+    p.add_argument(
+        "--no-center",
+        dest="center",
+        action="store_false",
+        help="ship raw keys (with a fixed --kv q8_0/q4_0, keys are centered per (layer, "
+        "KV head) by default; --kv auto measures both)",
+    )
+    p.add_argument(
+        "--ppl",
+        type=int,
+        default=0,
+        metavar="N",
+        help="print the perplexity of the last N tokens of --prompt-file given the rest, "
+        "with the far keys on the holders, then exit",
     )
     p.add_argument(
         "--wire",
@@ -586,6 +735,6 @@ def register_args(p) -> None:
         "--threads",
         type=int,
         default=0,
-        help="torch CPU threads (default: half the cores, at most 8)",
+        help="torch CPU threads (default: half the cores, at most 4)",
     )
     p.add_argument("--timeout", type=float, default=300.0, help="seconds per holder call")

@@ -157,3 +157,101 @@ def test_v3_refuses_a_shape_it_cannot_pad():
 
     with pytest.raises(ValueError, match="v4"):
         eng.HolderLink(_C(), 2, 1, 8, 128, wire="v3")  # 8 query heads per KV head > 6
+
+
+def _offset_keys(n=600, h=2, d=64, seed=0):
+    """Keys with a large shared per-head offset, the shape real models' keys have."""
+    rng = np.random.default_rng(seed)
+    off = 6.0 * rng.standard_normal((1, h, d)).astype(np.float32)
+    keys = rng.standard_normal((n, h, d)).astype(np.float32) + off
+    vals = rng.standard_normal((n, h, d)).astype(np.float32)
+    q = rng.standard_normal((5, 2 * h, d)).astype(np.float32)  # 5 tokens, 2 query heads per KV
+    return q, keys, vals
+
+
+def _exact(q, keys, vals, scale):
+    """Reference over every key: O [T, H, D], lse [T, H] (query head h reads KV head h // 2)."""
+    s = np.einsum("thd,nhd->thn", q.astype(np.float64), np.repeat(keys, 2, 1)) * scale
+    m = s.max(-1, keepdims=True)
+    p = np.exp(s - m)
+    o = np.einsum("thn,nhd->thd", p / p.sum(-1, keepdims=True), np.repeat(vals, 2, 1))
+    return o, (m[..., 0] + np.log(p.sum(-1)))
+
+
+# q4_0 tol: the 4-bit VALUES alone cost ~0.1 on random data; the lse check is the exactness one
+@pytest.mark.parametrize("kv_type, center, tol", [("f16", True, 3e-3), ("q4_0", True, 0.15)])
+def test_centered_far_keys_are_exact_up_to_the_row_format(kv_type, center, tol):
+    q, keys, vals = _offset_keys()
+    srv, client = _holder()
+    try:
+        link = eng.HolderLink(client, 1, 2, 4, 64, kv_type=kv_type, center=center)
+        link.append(0, keys[:256], vals[:256])
+        link.append(0, keys[256:], vals[256:])  # one mean, fixed at the first append
+        o, lse = link.attn(0, q, 0.125)
+        want_o, want_lse = _exact(q, keys, vals, 0.125)
+        # the lse carries scale * q . mu back: drop that and this fails by whole nats
+        assert np.abs(lse - want_lse).max() < 0.05
+        assert np.linalg.norm(o - want_o) / np.linalg.norm(want_o) < tol
+    finally:
+        client.close()
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_centering_is_what_makes_q4_0_usable():
+    q, keys, vals = _offset_keys(seed=3)
+    want_o, _ = _exact(q, keys, vals, 0.125)
+    err = {}
+    for center in (False, True):
+        srv, client = _holder()
+        try:
+            link = eng.HolderLink(client, 1, 2, 4, 64, kv_type="q4_0", center=center)
+            link.append(0, keys, vals)
+            o, _ = link.attn(0, q, 0.125)
+            err[center] = np.linalg.norm(o - want_o) / np.linalg.norm(want_o)
+        finally:
+            client.close()
+            srv.shutdown()
+            srv.server_close()
+    assert err[True] < err[False] / 2, err
+
+
+def test_perplexity_through_a_holder_matches_local():
+    model = _tiny(11)
+    ids = _prompt(96, 12)
+    local = eng.perplexity(eng.Engine(model, None, window=10**9), ids, 32, chunk=8)
+    srv, client = _holder()
+    try:
+        e = eng.Engine(model, _link(model, client), window=16, block=8)
+        far = eng.perplexity(e, ids, 32, chunk=8)
+        assert e.far > 0
+        assert abs(far - local) / local < 1e-3
+    finally:
+        client.close()
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_choose_kv_takes_the_most_compact_format_within_tol():
+    ppl = {
+        ("f16", False): 12.8,
+        ("q8_0", False): 12.84,
+        ("q8_0", True): 12.86,
+        ("q4_0", False): 13.7,
+        ("q4_0", True): 13.1,
+    }
+    assert eng.choose_kv(ppl, 0.03) == ("q4_0", True)  # centered is the q4_0 that fits
+    assert eng.choose_kv(ppl, 0.01) == ("q8_0", False)
+    assert eng.choose_kv(ppl, 0.001) == ("f16", False)
+
+
+def test_measure_kv_runs_every_format_through_a_holder():
+    ppl = eng.measure_kv(_tiny(13), _prompt(96, 14), n_eval=32, window=16)
+    assert set(ppl) == {
+        ("f16", False),
+        ("q8_0", False),
+        ("q8_0", True),
+        ("q4_0", False),
+        ("q4_0", True),
+    }
+    assert abs(ppl[("q8_0", True)] - ppl[("f16", False)]) / ppl[("f16", False)] < 0.05
