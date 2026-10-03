@@ -1786,6 +1786,24 @@ def create_app(
             "display_name": user.get("display_name") or user.get("username") or "",
         }
 
+    # ── VRoid Hub link: the loopback catcher for the registered redirect URI ──
+    #
+    # VRoid sends the browser back to http://127.0.0.1:47835/callback, the app's
+    # one registered redirect. Persona asks for the catcher right before it opens
+    # the authorize URL; the catcher bounces code+state to the Persona deep link
+    # and Persona POSTs them to Genesis, which holds the PKCE verifier. Same guard
+    # as the identity routes: loopback peer + first-party Origin + kill switch.
+    # The daemon's bearer is not involved at all.
+    @app.post("/avatars/vroid/catcher")
+    async def vroid_catcher(request: Request):
+        """Start the one-shot loopback listener for the VRoid Hub callback."""
+        origin = _handoff_guard(request)
+        from adk.vroid_callback import CatcherError, start_catcher
+        try:
+            return start_catcher(origin)
+        except CatcherError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
     # ── One-click mesh enrollment from the desktop ──────────────────────────
     #
     # "Create my own mesh and enroll it into AitherNet." Three things already
