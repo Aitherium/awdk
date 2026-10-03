@@ -659,6 +659,15 @@ def run(args) -> int:
     return 2
 
 
+def serve_relay_ids(public_host: str, bound_ip: str) -> set[str]:
+    """The relay ids ``workspace serve`` accepts a signed hello for: its public host, the
+    address its public listener binds (a tailnet holder dials it directly), and every local
+    address (adk.kvholder_mesh.relay_ids). Anything else was signed for another relay."""
+    from adk.kvholder_mesh import relay_ids
+
+    return {i.lower() for i in relay_ids() | {public_host, bound_ip} if i}
+
+
 def run_serve(args) -> int:
     from adk import kvholder_net as net
 
@@ -688,10 +697,7 @@ def run_serve(args) -> int:
     keys.refresh()
     household = Household()
     household.refresh()
-    from adk.kvholder_mesh import relay_ids
-
-    # the public host, and every address a tailnet/LAN holder may dial the listener by directly
-    gate = DeviceGate(relay_ids() | {args.public_host, pub_ip}, keys, grants, household)
+    gate = DeviceGate(serve_relay_ids(args.public_host, pub_ip), keys, grants, household)
     relay.device_gate = gate
     public_url = f"wss://{args.public_host}/holder"
     net.write_state(

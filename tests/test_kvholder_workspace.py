@@ -394,3 +394,19 @@ def test_registry_outage_refuses_every_new_admission_but_keeps_attached(ws_relay
     ok, why = env["gate"].admit(kw.sign_hello(env["fold"], "127.0.0.1", "kvh-fold"))
     assert ok is None and "unreachable" in why  # NEW sign-in refused
     assert kw.sweep(env["relay"], env["gate"]) == []  # the attached one stays
+
+
+def test_serve_accepts_hellos_for_its_public_host_and_tailnet_address_only(ws_relay, monkeypatch):
+    """The relay ids are built as `workspace serve` builds them at startup."""
+    from adk import kvholder_mesh
+
+    # this host's own addresses must not decide the test (it may itself be 100.64.0.31)
+    monkeypatch.setattr(kvholder_mesh, "relay_ids", lambda: {"localhost", "127.0.0.1"})
+    env = ws_relay
+    env["grants"].set("kvh-fold", True)
+    env["gate"].relay_ids = kw.serve_relay_ids("kv.aitherium.com", "100.64.0.31")
+    for relay_id in ("100.64.0.31", "kv.aitherium.com", "KV.aitherium.com"):
+        ok, why = env["gate"].admit(kw.sign_hello(env["fold"], relay_id, "kvh-fold"))
+        assert ok == "kvh-fold", (relay_id, why)
+    ok, why = env["gate"].admit(kw.sign_hello(env["fold"], "kv.evil.example", "kvh-fold"))
+    assert ok is None and "another relay" in why
