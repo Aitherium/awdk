@@ -180,6 +180,15 @@ def reap(req):  # nothing a command started outlives it (shell jail and verifier
             os.kill(-1, signal.SIGKILL)  # every process but pid 1 (this server)
         except OSError:
             pass
+def unzombie():  # pid 1 inherits every orphan: unreaped, each holds a --pids-limit slot
+    if os.getpid() != 1:
+        return
+    while True:
+        try:
+            if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                return
+        except ChildProcessError:
+            return
 for line in sys.stdin:
     try:
         req = json.loads(line)
@@ -207,6 +216,7 @@ for line in sys.stdin:
     except OSError as exc:
         err = str(exc).encode()
     reap(req)
+    unzombie()
     sys.stdout.write(json.dumps({"id": req.get("id"), "n": req.get("n"), "rc": rc, "to": to,
                                  "o": base64.b64encode(out[-65536:]).decode(),
                                  "e": base64.b64encode(err[-65536:]).decode()}) + "\n")
@@ -258,7 +268,7 @@ def _reserved_id_ranges(
             continue  # no such file: nothing is delegated there
         for line in lines:
             parts = line.split("#", 1)[0].strip().split(":")
-            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            if len(parts) == 3 and parts[1].isdecimal() and parts[2].isdecimal():
                 out.append((int(parts[1]), int(parts[2])))
     try:
         pids = [n for n in os.listdir(proc) if n.isdigit()]
@@ -277,7 +287,7 @@ def _reserved_id_ranges(
             seen.add(text)
             for line in text.splitlines():
                 f = line.split()
-                if len(f) != 3 or not all(x.isdigit() for x in f):
+                if len(f) != 3 or not all(x.isdecimal() for x in f):
                     continue
                 inside, outside, count = int(f[0]), int(f[1]), int(f[2])
                 if inside == 0 and outside == 0 and count >= 0xFFFFFFFF:
@@ -810,6 +820,10 @@ class Jail:
             proc.wait(timeout=CLOSE_WAIT_S)
         except (OSError, subprocess.SubprocessError):
             proc.kill()
+            try:  # collect the podman client, or it lingers as a zombie of the harness
+                proc.wait(timeout=10)
+            except subprocess.SubprocessError:
+                _log.warning("the podman client of %s did not exit after SIGKILL", self.name)
             # never leave a jail behind, and KNOW it is gone: killing the podman client
             # does not kill the container, and what still runs in it shares the workspace
             # the host harness (root, by name) is about to touch again

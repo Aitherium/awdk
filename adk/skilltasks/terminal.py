@@ -1001,7 +1001,17 @@ class SkillTaskTerminalEnv:
             elif not _is_regular(p):  # a FIFO or device would block or misbehave
                 raise OSError("not a regular file")
             else:
-                text, kind = p.read_text(encoding="utf-8", errors="replace"), "file"
+                data = _read_exact(p)  # never through a link swapped in since the lstat
+                if isinstance(data, str):
+                    raise OSError(
+                        "not a regular file" if data == "special"
+                        else "unreadable" if data == "unreadable"
+                        else "over the %d MiB read cap; use run() with head, tail or grep"
+                        % (_READ_CAP >> 20)
+                    )
+                # read_text() semantics: CRLF and CR become LF (what _known_lines hashes)
+                text = data.decode("utf-8", errors="replace")
+                text, kind = text.replace("\r\n", "\n").replace("\r", "\n"), "file"
                 self.reads[rel] = self.reads.get(rel, 0) + 1
         except OSError as exc:
             step.output, step.exit_class = "ERROR: %s" % exc, 1
@@ -1074,6 +1084,7 @@ class SkillTaskTerminalEnv:
         p = _inside(self.root, rel)
         assert p is not None
         p.parent.mkdir(parents=True, exist_ok=True)
+        _refuse_special(p)
         mode = "r+" if p.is_file() else "w"
         with open(p, mode, encoding="utf-8", newline="\n") as fh:  # same file, same inode
             fh.seek(0)
@@ -1087,6 +1098,7 @@ class SkillTaskTerminalEnv:
                 p = _inside(self.root, step.args["path"])
                 assert p is not None
                 p.parent.mkdir(parents=True, exist_ok=True)
+                _refuse_special(p)
                 with open(p, "r+b" if p.is_file() else "wb") as fh:
                     fh.seek(0)
                     fh.write(step.args["data"])
@@ -1104,6 +1116,9 @@ class SkillTaskTerminalEnv:
         p = _inside(self.root, rel)
         assert p is not None
         try:
+            _refuse_special(p)
+            if p.stat().st_size > _READ_CAP:
+                raise OSError("over the %d MiB read cap" % (_READ_CAP >> 20))
             text = p.read_text(encoding="utf-8")
         except OSError as exc:
             return "ERROR: %s" % exc, 1
@@ -1113,7 +1128,10 @@ class SkillTaskTerminalEnv:
                 "ERROR: patch needs exactly one occurrence of old in %s, found %d%s"
                 % (rel, n, " (old is empty)" if not old else "")
             ), 1
-        self._write_text(rel, text.replace(old, new, 1))
+        try:
+            self._write_text(rel, text.replace(old, new, 1))
+        except OSError as exc:
+            return "ERROR: %s" % exc, 1
         return "patched %s (%+d chars)" % (rel, len(new) - len(old)), 0
 
     def _do_patch(self, step: Step) -> None:
@@ -1203,7 +1221,10 @@ class SkillTaskTerminalEnv:
             if s[0] == "patch":
                 txt, code = self._patch_text(s[1], s[2], s[3])
             elif s[0] == "write":
-                txt, code = self._write_text(s[1], s[2]), 0
+                try:
+                    txt, code = self._write_text(s[1], s[2]), 0
+                except OSError as exc:
+                    txt, code = "ERROR: %s" % exc, 1
             else:
                 txt, code = self._run_sh(s[1])
             out.append("%s: %s" % (s[0], txt[:400]))
@@ -1892,32 +1913,38 @@ def _writable(p: Path) -> None:
 class _Tree:
     """A byte-exact picture of a directory: files (bytes + mode), directories, and every
     other entry (a symlink with its target, a FIFO...) so a planted link cannot survive a
-    rollback unseen. Walks with ``followlinks=False``: a link is an entry, never a door."""
+    rollback unseen. Walks with ``followlinks=False``: a link is an entry, never a door.
 
-    files: Dict[str, Tuple[bytes, int]]
+    A file is read through :func:`_read_exact`: never through a link swapped in after the
+    walk saw a file, and one too large to hold is kept as a ``str`` digest -- compared,
+    never restored, so a rollback that would need its bytes reports it as differing."""
+
+    files: Dict[str, Tuple["bytes | str", int]]
     dirs: List[str]
     others: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def take(cls, root: Path) -> "_Tree":
-        files: Dict[str, Tuple[bytes, int]] = {}
+        files: Dict[str, Tuple["bytes | str", int]] = {}
         dirs: List[str] = []
         others: Dict[str, str] = {}
-        for base, dnames, fnames in os.walk(root, followlinks=False):
-            for name in dnames + fnames:
-                p = Path(base) / name
-                rel = p.relative_to(root).as_posix()
-                if p.is_symlink():
-                    try:
-                        others[rel] = "link:" + os.readlink(p)
-                    except OSError:
-                        others[rel] = "link:?"
-                elif p.is_dir():
-                    dirs.append(rel)
-                elif p.is_file():
-                    files[rel] = (p.read_bytes(), os.stat(p).st_mode)
+        for p, st in _entries(root):
+            rel = p.relative_to(root).as_posix()
+            if stat.S_ISLNK(st.st_mode):
+                try:
+                    others[rel] = "link:" + os.readlink(p)
+                except OSError:
+                    others[rel] = "link:?"
+            elif stat.S_ISDIR(st.st_mode):
+                dirs.append(rel)
+            elif stat.S_ISREG(st.st_mode):
+                data = _read_exact(p)
+                if data in ("special", "unreadable"):  # swapped or locked since the lstat
+                    others[rel] = data
                 else:
-                    others[rel] = "special"
+                    files[rel] = (data, st.st_mode)
+            else:
+                others[rel] = "special"
         return cls(files, sorted(dirs), others)
 
     def restore(self, root: Path) -> List[str]:
@@ -1946,8 +1973,10 @@ class _Tree:
             (root / rel).mkdir(parents=True, exist_ok=True)
         for rel, (data, mode) in self.files.items():
             p = root / rel
-            if p.is_file() and not p.is_symlink():
-                if p.read_bytes() != data:
+            if isinstance(data, str):  # too large to hold: compared below, never rewritten
+                continue
+            if _is_regular(p):
+                if _read_exact(p) != data:
                     _writable(p)
                     with open(p, "r+b") as fh:
                         fh.seek(0)
@@ -1975,18 +2004,33 @@ class _Tree:
 
 
 _READ_CAP = 8 << 20  # bytes of one workspace file held in memory; larger ones are hashed
+_HASH_CAP = 256 << 20  # bytes hashed per file per look; larger ones are judged by fstat
 
 
 def _entries(root: Path) -> List[Tuple[Path, os.stat_result]]:
-    """Every entry under ``root`` with its lstat, never descending through a link."""
+    """Every entry under ``root`` with its lstat, never descending through a link.
+
+    An explicit stack, not ``os.walk``: on Python < 3.12 ``os.walk`` recurses, and a
+    model can ``mkdir -p`` a tree deeper than the interpreter's recursion limit (CI
+    gates on 3.10), which raised ``RecursionError`` out of the harness."""
     out: List[Tuple[Path, os.stat_result]] = []
-    for base, dnames, fnames in os.walk(root, followlinks=False):
-        for name in dnames + fnames:
+    stack = [str(root)]
+    while stack:
+        base = stack.pop()
+        try:
+            with os.scandir(base) as it:
+                names = [e.name for e in it]
+        except OSError:
+            continue
+        for name in names:
             p = Path(base) / name
             try:
-                out.append((p, os.lstat(p)))
+                st = os.lstat(p)
             except OSError:
                 continue
+            out.append((p, st))
+            if stat.S_ISDIR(st.st_mode):
+                stack.append(str(p))
     return out
 
 
@@ -2004,23 +2048,40 @@ def _is_dir_not_link(p: Path) -> bool:
         return False
 
 
-def _read_regular(p: Path, cap: int = _READ_CAP) -> bytes:
-    """Bytes of a REGULAR file, opened without following a link and without blocking; a
-    file over ``cap`` becomes its sha256 so a huge file cannot exhaust memory."""
+def _large(st: os.stat_result, size: str) -> str:
+    return "large:%s:%d:%d:%d:%d" % (size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino)
+
+
+def _refuse_special(p: Path) -> None:
+    """A write by name into a FIFO or device blocks or misbehaves: refuse it."""
+    if p.exists() and not p.is_file() and not p.is_dir():
+        raise OSError("not a regular file: %s" % p.name)
+
+
+def _read_exact(p: Path, cap: int = _READ_CAP, hash_cap: int = _HASH_CAP) -> "bytes | str":
+    """Bytes of a REGULAR file, opened without following a link and without blocking, or a
+    ``str`` stand-in that never compares equal to content: ``"sha256:<hex>"`` for a file
+    over ``cap`` (it cannot exhaust memory), ``"large:<size>:<mtime>:<ctime>:<dev>:<ino>"``
+    for one over ``hash_cap`` (a sparse terabyte file costs one fstat, not a terabyte of
+    reads; ctime is in it because the jail can put mtime back after an in-place write,
+    and no unprivileged call can set ctime),
+    ``"special"`` for anything not a regular file, ``"unreadable"`` when it cannot open."""
     flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
              | getattr(os, "O_BINARY", 0))
     try:
         fd = os.open(p, flags)
     except OSError:
-        return b"<unreadable>"
+        return "unreadable"
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            return b"<not a regular file>"
+            return "special"
+        if st.st_size > hash_cap:
+            return _large(st, "%d" % st.st_size)
         h = hashlib.sha256()
         chunks: List[bytes] = []
         size = 0
-        while True:
+        while size <= hash_cap:  # a file still growing past the fstat stops here too
             b = os.read(fd, 1 << 20)
             if not b:
                 break
@@ -2028,13 +2089,24 @@ def _read_regular(p: Path, cap: int = _READ_CAP) -> bytes:
             h.update(b)
             if size <= cap:
                 chunks.append(b)
+        if size > hash_cap:
+            return _large(st, "%d+" % size)
         if size > cap:
-            return b"<sha256:" + h.hexdigest().encode() + b">"
+            return "sha256:" + h.hexdigest()
         return b"".join(chunks)
     except OSError:
-        return b"<unreadable>"
+        return "unreadable"
     finally:
         os.close(fd)
+
+
+def _read_regular(p: Path, cap: int = _READ_CAP) -> bytes:
+    """:func:`_read_exact` as bytes for display and change detection: a stand-in becomes
+    ``<...>`` text (``<sha256:...>`` for a file over ``cap``)."""
+    data = _read_exact(p, cap)
+    if isinstance(data, str):
+        return ("<%s>" % ("not a regular file" if data == "special" else data)).encode()
+    return data
 
 
 def _tree_hash(root: Path) -> str:
@@ -2042,7 +2114,9 @@ def _tree_hash(root: Path) -> str:
     h = hashlib.sha256()
     t = _Tree.take(root)
     for rel in sorted(t.files):
-        h.update(rel.encode() + b"\0" + t.files[rel][0] + b"\0")
+        data = t.files[rel][0]  # tagged: content never collides with a digest stand-in
+        body = b"B" + data if isinstance(data, bytes) else b"D" + data.encode()
+        h.update(rel.encode() + b"\0" + body + b"\0")
     for rel in sorted(t.others):
         h.update(rel.encode() + b"\0" + t.others[rel].encode() + b"\0")
     return h.hexdigest()

@@ -300,6 +300,28 @@ def test_the_jail_has_no_network_even_for_a_program_the_policy_cannot_read(tmp_p
 
 
 @needs_podman
+def test_orphans_are_reaped_so_the_jail_never_runs_out_of_pids(tmp_path):
+    # The command server is pid 1: every backgrounded process that outlives its shell is
+    # reparented to it. Unreaped, each zombie held a --pids-limit slot (256) and the jail
+    # stopped forking for the rest of the episode (measured A/B in awnix, 2026-10-03:
+    # 80 orphans under --pids-limit 64 -> "bash: fork: retry: Resource temporarily
+    # unavailable" with the old server, rc 0 and one transient zombie with this one).
+    env = _env(tmp_path, jail="podman")
+    try:
+        for _ in range(300):  # more orphans than the jail has pids
+            env.sh("(sleep 0.01 &) ; true")
+        assert env._jail is not None
+        # straight to the jail: the shell policy refuses /proc as outside the workspace
+        rc, out, err, _ = env._jail.run(
+            "sleep 0.3; grep -l 'State:.*Z' /proc/[0-9]*/status 2>/dev/null | wc -l", timeout=30
+        )
+        assert rc == 0 and "Resource temporarily unavailable" not in err, (rc, err)
+        assert int(out.strip().splitlines()[-1]) < 8, out
+    finally:
+        env.close()
+
+
+@needs_podman
 def test_writes_outside_the_workspace_really_fail_in_the_jail(tmp_path):
     env = _env(tmp_path, jail="podman")
     try:
@@ -1464,6 +1486,18 @@ def test_reserved_id_ranges_come_from_subid_files_and_live_user_namespaces(tmp_p
         (200000, 1000),
         (1073741824, 65536),
     ]  # ... and not the initial namespace's identity map
+
+
+def test_a_subid_line_with_a_non_ascii_digit_is_skipped_not_a_crash(tmp_path):
+    # "²".isdigit() is True but int("²") raises: one such line in /etc/subuid
+    # made every rootful episode fail to pick an id block (review follow-up of #10876)
+    from adk.skilltasks.jail import _reserved_id_ranges
+
+    subuid = tmp_path / "subuid"
+    subuid.write_text("bob:²:65536\nalice:100000:65536\n", encoding="utf-8")
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    assert _reserved_id_ranges((str(subuid),), str(proc)) == [(100000, 65536)]
 
 
 @needs_posix

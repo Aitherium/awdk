@@ -581,3 +581,115 @@ def test_an_unchanged_crlf_file_is_reported_unchanged(tmp_path):
         assert "CHANGED" not in line and "DELETED" not in line
     finally:
         env.close()
+
+
+# --- reads are bounded in size and never follow a link (jail review follow-ups) ---------------
+
+
+def test_a_sparse_giant_file_costs_an_fstat_not_a_full_read(tmp_path):
+    from adk.skilltasks.terminal import _read_exact, _read_regular
+
+    p = tmp_path / "sparse.bin"
+    with open(p, "wb") as fh:
+        fh.truncate(1 << 30)  # 1 GiB of holes: hashing it every turn was the stall
+    got = _read_exact(p, cap=1024, hash_cap=4096)
+    assert isinstance(got, str) and got.startswith("large:%d:" % (1 << 30))
+    assert _read_regular(p, cap=1024).startswith(b"<")  # never the bytes themselves
+
+
+def test_the_rollback_snapshot_keeps_a_huge_file_as_a_digest_and_compares_it(
+    tmp_path, monkeypatch
+):
+    import adk.skilltasks.terminal as term
+
+    real = term._read_exact
+    monkeypatch.setattr(term, "_read_exact", lambda p, cap=64, hash_cap=1 << 20: real(p, cap, hash_cap))
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "big.bin").write_bytes(b"x" * 1000)
+    (root / "small.txt").write_bytes(b"hi")
+    snap = term._Tree.take(root)
+    assert isinstance(snap.files["big.bin"][0], str)  # a digest, never 1000 bytes in memory
+    assert snap.files["small.txt"][0] == b"hi"
+    (root / "small.txt").write_bytes(b"changed")
+    assert snap.restore(root) == []  # small file rewritten, big file untouched and equal
+    (root / "big.bin").write_bytes(b"y" * 1000)
+    assert snap.restore(root) == ["big.bin"]  # cannot be rewritten: reported, never hidden
+    assert term._tree_hash(root) != ""
+
+
+def test_reading_a_file_over_the_cap_is_refused_with_a_way_forward(tmp_path, monkeypatch):
+    import adk.skilltasks.terminal as term
+    from adk.skilltasks.terminal import Step
+
+    real = term._read_exact
+    monkeypatch.setattr(term, "_read_exact", lambda p, cap=64, hash_cap=1 << 20: real(p, cap, hash_cap))
+    env = _env(tmp_path)
+    try:
+        (env.root / "big.log").write_bytes(b"z" * 1000)
+        step = Step(aid=0, args={"path": "big.log"})
+        env._do_read(step)
+        assert step.exit_class == 1 and "read cap" in step.output and "head" in step.output
+    finally:
+        env.close()
+
+
+def test_an_in_place_change_with_mtime_put_back_is_still_seen(tmp_path, monkeypatch):
+    # Security review of #10935: size + mtime + inode was forgeable from inside the jail
+    # (write in place, os.utime the old mtime back); ctime cannot be set by the model.
+    import time
+
+    import adk.skilltasks.terminal as term
+
+    real = term._read_exact
+    monkeypatch.setattr(term, "_read_exact", lambda p, cap=16, hash_cap=64: real(p, cap, hash_cap))
+    root = tmp_path / "ws"
+    root.mkdir()
+    big = root / "big.bin"
+    big.write_bytes(b"GOOD" * 64)
+    snap = term._Tree.take(root)
+    assert snap.files["big.bin"][0].startswith("large:")
+    st = os.stat(big)
+    time.sleep(0.05)
+    with open(big, "r+b") as fh:  # same size, same inode
+        fh.write(b"EVIL")
+    os.utime(big, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert term._Tree.take(root) != snap, "the tamper check missed an in-place change"
+    assert snap.restore(root) == ["big.bin"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this host")
+def test_a_write_into_a_fifo_is_refused_not_blocked(tmp_path):
+    from adk.skilltasks.terminal import Step
+
+    env = _env(tmp_path)
+    try:
+        os.mkfifo(env.root / "pipe")
+        step = Step(aid=0, args={"path": "pipe", "text": "x"})
+        env._do_write(step)
+        assert step.exit_class == 1 and "not a regular file" in step.output
+        assert env._patch_text("pipe", "a", "b")[1] == 1
+    finally:
+        env.close()
+
+
+def test_a_tree_deeper_than_the_recursion_limit_is_walked(tmp_path):
+    # os.walk recursed before Python 3.12 (CI gates on 3.10): a model's `mkdir -p` past the
+    # recursion limit raised RecursionError out of every walk of the workspace.
+    import inspect
+    import sys
+
+    from adk.skilltasks.terminal import _entries
+
+    d = tmp_path
+    for _ in range(60):
+        d = d / "d"
+    d.mkdir(parents=True)
+    (d / "leaf.txt").write_bytes(b"x")
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(len(inspect.stack()) + 30)  # far shallower than the tree
+    try:
+        got = _entries(tmp_path)
+    finally:
+        sys.setrecursionlimit(old)
+    assert any(p.name == "leaf.txt" for p, _ in got) and len(got) == 61
