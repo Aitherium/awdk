@@ -151,7 +151,7 @@ body {
       <div class="kpis">
         <div><div class="cap">holding</div><div class="v num" id="kUsed">—</div></div>
         <div><div class="cap">keys</div><div class="v num" id="kKeys">—</div></div>
-        <div><div class="cap">attn / s</div><div class="v num" id="kRate">—</div></div>
+        <div><div class="cap">attn / s · 5 s</div><div class="v num" id="kRate">—</div></div>
         <div><div class="cap">slowest rtt</div><div class="v num" id="kSlow">—</div></div>
       </div>
       <div class="hd" style="margin-top:18px"><span class="cap">key ranges</span><span class="aside num" id="rTot"></span></div>
@@ -217,7 +217,19 @@ body {
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
   const unit = (node, v, u) => { node.textContent = v; if (u) node.appendChild(el('small', '', u)); };
 
-  let prevAttn = null, prevAt = 0, rate = 0, lastCallAt = 0, fails = 0;
+  let rate = 0, fails = 0;
+  // Active = a call in the last 5 s; every rate shown is over those same 5 s, so the page never
+  // says Active next to 0 calls/s. hist keeps [seconds, count] per counter for that window.
+  const hist = new Map(), lastAt = new Map();
+  function window5(key, count, now) {
+    const a = hist.get(key) || []; a.push([now, count]);
+    while (a.length > 1 && now - a[1][0] >= 5) a.shift();
+    hist.set(key, a);
+    const d = count - a[0][1];
+    if (a.length > 1 && count > a[a.length - 2][1]) lastAt.set(key, now);
+    return d > 0 ? d / 5 : 0;
+  }
+  const since = (key, now) => lastAt.has(key) ? age(now - lastAt.get(key)) + ' ago' : 'none yet';
   const KEEPALIVE = 25;  // the relay pings every holder this often (seconds)
 
   function render(st) {
@@ -225,12 +237,8 @@ body {
     const lent = st.lent_bytes != null ? st.lent_bytes : hs.reduce((a, h) => a + (h.max_bytes || 0), 0);
     const used = st.used_bytes || 0;
     const now = Date.now() / 1000;
-    if (prevAttn !== null && st.attn_calls != null) {
-      const d = st.attn_calls - prevAttn, dt = Math.max(0.5, now - prevAt);
-      rate = Math.max(0, d / dt); if (d > 0) lastCallAt = now;
-    }
-    prevAttn = st.attn_calls; prevAt = now;
-    const busy = now - lastCallAt < 5;
+    rate = window5('relay', st.attn_calls || 0, now);
+    const busy = rate > 0;
 
     $('pool').textContent = hs.length ? bytes(lent) : '0 MB';
     $('poolCap').textContent = 'pooled memory · ' + hs.length + (hs.length === 1 ? ' holder' : ' holders');
@@ -239,7 +247,7 @@ body {
     else if (!hs.length) why.textContent = 'No holder attached. Add a phone to start a pool.';
     else if (!st.configured) why.textContent = 'Idle — connected, waiting for an engine to send context.';
     else if (busy) why.textContent = 'Active — attention fans out to every holder that keeps keys, merged exactly.';
-    else why.textContent = 'Holding context. No attention calls in the last 5 s.';
+    else why.textContent = 'Holding — ' + n(st.held || 0) + ' keys ready, waiting for the engine · last call ' + since('relay', now) + '.';
     let state = !hs.length ? ['', 'empty'] : st.broken ? ['bad', 'broken'] : !st.configured ? ['ok', 'idle'] : busy ? ['acc', 'active'] : ['ok', 'holding'];
     $('ldot').className = 'dot ' + state[0]; $('ltext').textContent = state[1];
 
@@ -272,7 +280,10 @@ body {
       const c = el('section', 'card h');
       const top = el('div', 'top');
       const healthy = h.seen_s == null || h.seen_s < KEEPALIVE * 2 + 5;
-      const dot = el('span', 'dot ' + (!healthy ? 'warn' : busy && h.held ? 'acc' : 'ok'));
+      const key = h.device + '|' + h.since, hr = window5(key, h.calls || 0, now);
+      const dot = el('span', 'dot ' + (!healthy ? 'warn' : hr > 0 ? 'acc' : 'ok'));
+      const doing = !healthy ? 'silent ' + age(h.seen_s) : hr > 0 ? 'active · ' + hr.toFixed(hr < 10 ? 1 : 0) + ' calls/s'
+        : h.held ? 'holding · last call ' + since(key, now) : st.configured ? 'ready · no keys yet' : 'idle';
       top.appendChild(dot); top.appendChild(el('span', 'name', h.device)); top.appendChild(el('span', 'idx', '#' + (i + 1)));
       c.appendChild(top);
       const range = st.configured ? 'keys ' + n(h.off) + '–' + n(h.off + (h.held || 0)) + (h.cap ? ' of ' + n(h.off + h.cap) : ' · unbounded') : 'no range yet';
@@ -282,7 +293,7 @@ body {
       t.appendChild(f); c.appendChild(t);
       const u = el('div', 'use');
       const l = el('span'); l.appendChild(el('b', '', bytes(h.used_bytes || 0))); l.appendChild(document.createTextNode(' of ' + (h.max_bytes ? bytes(h.max_bytes) : 'unbounded')));
-      u.appendChild(l); u.appendChild(el('span', '', healthy ? 'seen ' + age(h.seen_s || 0) + ' ago' : 'silent ' + age(h.seen_s) + ''));
+      u.appendChild(l); u.appendChild(el('span', '', doing));
       c.appendChild(u);
       const dl = el('dl');
       [['last', h.calls ? fmtMs(h.last_ms) + ' ms' : '—'], ['mean', h.calls ? fmtMs(h.mean_ms) + ' ms' : '—'],

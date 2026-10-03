@@ -153,7 +153,7 @@ body {
         <p id="why">Starting the attention engine on this device.</p>
         <div class="facts">
           <span class="pill">engine <b id="engine">—</b></span>
-          <span class="pill">relay <b id="relay">—</b></span>
+          <span class="pill"><b id="who">this phone</b></span>
         </div>
       </section>
 
@@ -176,7 +176,7 @@ body {
 
     <div class="stack">
       <section class="tiles rise" style="--i:3" aria-label="attention">
-        <div class="tile"><div class="cap">calls / s</div><div class="v num" id="rate">0</div></div>
+        <div class="tile"><div class="cap">calls / s · 5 s</div><div class="v num" id="rate">0</div></div>
         <div class="tile"><div class="cap">last</div><div class="v num" id="last">—</div></div>
         <div class="tile"><div class="cap">average</div><div class="v num" id="avg">—</div></div>
         <div class="tile"><div class="cap">total calls</div><div class="v num" id="calls">0</div></div>
@@ -200,6 +200,7 @@ body {
         <div class="r"><span class="k">Screen</span><span class="v" id="wake">—</span></div>
         <div class="r" id="batRow" hidden><span class="k">Battery</span><span class="v" id="bat">—</span></div>
         <div class="r" id="presRow" hidden><span class="k">CPU pressure</span><span class="v" id="pres">—</span></div>
+        <div class="r"><span class="k">Relay</span><span class="v" id="relay">—</span></div>
         <div class="r"><span class="k">Link</span><span class="v" id="link">—</span></div>
       </section>
 
@@ -260,15 +261,18 @@ body {
   function view() {
     const h = holder, cfg = h && h.cfg;
     const keys = cfg ? h.maxHeld() : 0;
-    const now = Date.now(), busy = now - lastCallAt < 5000;
+    // Active means a call arrived in the last 5 s, and the rate shown is over those same 5 s,
+    // so the page never says Active next to 0 calls/s
+    const now = Date.now(), busy = rate > 0;
+    const ago = lastCallAt ? Math.round((now - lastCallAt) / 1000) : -1;
     let st = phase;
     if (phase === 'attached') st = !cfg ? 'waiting' : busy ? 'active' : keys ? 'holding' : 'ready';
     const copy = {
       starting: ['Starting', 'Starting the attention engine on this device.', 'warn', 'starting'],
-      connecting: ['Connecting', 'Dialing the relay on ' + location.host + '.', 'warn', 'dialing'],
+      connecting: ['Connecting', 'Dialing the relay.', 'warn', 'dialing'],
       waiting: ['Idle', 'Connected — waiting for an engine to send context.', 'ok', 'idle'],
       ready: ['Ready', 'In the pool with a key range of its own. No keys have reached this device yet.', 'ok', 'ready'],
-      holding: ['Holding', 'Keeping ' + n(keys) + ' keys per layer. No attention calls in the last 5 s.', 'ok', 'holding'],
+      holding: ['Holding', n(keys) + ' keys ready, waiting for the engine · ' + (ago < 0 ? 'no call yet' : 'last call ' + (ago < 60 ? ago + ' s' : Math.round(ago / 60) + ' min') + ' ago') + '.', 'ok', 'holding'],
       active: ['Active', 'Answering attention: ' + fmtRate(rate) + ' calls/s over ' + n(keys) + ' keys.', 'acc', 'active'],
       retrying: ['Offline', 'The link dropped. Retrying in ' + Math.max(0, Math.ceil((retryAt - now) / 1000)) + ' s.', 'warn', 'retrying'],
       refused: ['Refused', lastErr || 'The relay refused this link.', 'bad', 'refused'],
@@ -329,7 +333,8 @@ body {
     const c = holder ? holder.calls : 0, d = Math.max(0, c - prevCalls);
     prevCalls = c;
     if (d) lastCallAt = Date.now();
-    rate = d; samples.push(d); samples.shift();
+    samples.push(d); samples.shift();
+    rate = samples.slice(-5).reduce((a, x) => a + x, 0) / 5;
     drawSpark(); view();
     $('clock').textContent = new Date().toTimeString().slice(0, 5);
   }, 1000);
@@ -443,7 +448,7 @@ body {
   const boot = () => start();
   if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
     navigator.userAgentData.getHighEntropyValues(['model']).then((v) => {
-      if (v.model) { deviceName = v.model; $('dev').textContent = v.model; }
+      if (v.model) { deviceName = v.model; $('dev').textContent = v.model; $('who').textContent = 'this phone · ' + v.model; }
     }).catch(() => {}).finally(boot);
   } else boot();
 })();
