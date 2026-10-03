@@ -90,7 +90,7 @@ AGENT_TOKEN_FILE_ENV = "AITHER_HARNESS_AGENT_TOKEN_FILE"
 #: could answer, cancel, steer or raise any card, including a credential card.
 #: ``/wakes`` and ``/awrun`` stay root-only because both schedule or run commands.
 AGENT_TOKEN_PATHS = ("/sessions", "/events", "/rooms", "/harnesses", "/steer",
-                     "/profiles", "/health")
+                     "/profiles", "/health", "/kvholder")
 
 #: Hosts where minting is meaningful: the token lands in THIS machine's registry, so
 #: a daemon elsewhere would never know it and every call would 403.
@@ -1222,6 +1222,10 @@ TOOLS: list = [
                 "required": ["run_id"]},
      "fn": lambda a: _req("POST", "/awrun/cancel/%s" % a["run_id"], {})},
 ]
+
+from adk.harnesses.kvholder_tools import TOOLS as _KVHOLDER_TOOLS  # noqa: E402
+
+TOOLS += _KVHOLDER_TOOLS
 
 BY_NAME = {t["name"]: t for t in TOOLS}
 

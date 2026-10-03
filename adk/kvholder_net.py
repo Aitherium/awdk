@@ -701,6 +701,10 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             return self._send(200, "text/html; charset=utf-8", SWARM_HTML.encode())
         if route == "/swarm/join":
             return self._swarm_join(path, hdrs, relay)
+        if route.startswith("/mesh"):
+            from adk import kvholder_mesh
+
+            return kvholder_mesh.handle_http(self, path, hdrs, relay)
         if route in ("/", "/index.html"):
             from adk.kvholder_page import PAGE_HTML
 
@@ -1088,8 +1092,12 @@ def run_phone(args) -> int:
     except OSError as e:
         print(f"kvholder: cannot listen ({e}); is another relay running?", file=sys.stderr)
         return 1
-    tproc, public = None, ""
+    tproc, public, door = None, "", None
     print(f"kvholder: engine port 127.0.0.1:{args.port} (point LLAMA_KV_REMOTE here)")
+    if getattr(args, "mesh", False):
+        from adk import kvholder_mesh
+
+        door = kvholder_mesh.open_door(relay, args)
     if args.via == "usb":
         devs = adb_devices()
         url = holder_url(f"http://localhost:{args.web_port}", token)
@@ -1149,6 +1157,8 @@ def run_phone(args) -> int:
         print("kvholder: relay stopped")
     finally:
         stop_relay(relay, servers)
+        if door is not None:
+            door.close()
         if tproc is not None:
             tproc.terminate()
         state_path().unlink(missing_ok=True)

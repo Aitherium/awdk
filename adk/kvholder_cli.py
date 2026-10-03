@@ -6,6 +6,8 @@ kvholder verbs and imports the holder (numpy) and its transports only when one o
 
 from __future__ import annotations
 
+import sys
+
 DEFAULT_PORT = 50062  # PATN, the engine side (adk.kvholder.DEFAULT_PORT)
 DEFAULT_WS_PORT = 50063  # page + WebSocket (adk.kvholder_net.DEFAULT_WS_PORT)
 PROFILE_NAMES = ("bonsai2-27b", "qwen38-27b")  # adk.kvholder.PROFILES
@@ -43,6 +45,14 @@ def register(sub) -> None:
     sv.add_argument(
         "--max-mb", type=int, default=0, help="Memory to lend (default: free RAM minus 2 GB)"
     )
+    sv.add_argument(
+        "--mesh",
+        action="store_true",
+        help="find a relay on the LAN or mesh overlay and ask to join (the owner approves)",
+    )
+    sv.add_argument("--peer", action="append", default=[], help="with --mesh: also try HOST")
+    sv.add_argument("--relay-name", default="", help="with --mesh: the relay to join")
+    sv.add_argument("--mesh-wait", type=float, default=600.0, help="seconds to wait for approval")
 
     pr = s.add_parser(
         "probe",
@@ -74,6 +84,18 @@ def register(sub) -> None:
     ph.add_argument("--host", default="", help="address to bind/advertise for --via lan (mesh IP)")
     ph.add_argument("--token", default="", help="reuse a token (default: a fresh one)")
     ph.add_argument("--serial", default="", help="adb device serial when several are plugged in")
+    ph.add_argument(
+        "--mesh",
+        action="store_true",
+        help="let holders on the LAN or mesh find this relay and ask to join",
+    )
+    ph.add_argument(
+        "--mesh-admit",
+        action="append",
+        default=[],
+        metavar="CIDR",
+        help="with --mesh: admit requests from this network without asking (e.g. 100.64.0.0/10)",
+    )
 
     st = s.add_parser("relay-status", help="Is a holder attached to the local relay")
     st.add_argument("--web-port", type=int, default=DEFAULT_WS_PORT)
@@ -111,8 +133,26 @@ def register(sub) -> None:
         help="HOST[:PORT] of a holder or the relay's engine port",
     )
 
+    from adk import kvholder_mesh  # stdlib only
+
+    kvholder_mesh.register(s)
+
 
 def run(args) -> int:
+    action = getattr(args, "kvholder_action", None)
+    if action == "mesh" or (action == "serve" and args.mesh and not args.connect):
+        import importlib.util
+
+        from adk import kvholder_mesh
+
+        if action == "mesh":
+            return kvholder_mesh.run(args)
+        if importlib.util.find_spec("numpy") is None:
+            print("kvholder serve needs numpy: pip install numpy", file=sys.stderr)
+            return 2
+        rc = kvholder_mesh.resolve_serve(args)
+        if rc:
+            return rc
     from adk import kvholder  # numpy (optional) is imported here, never at parser build
 
     return kvholder.run(args)

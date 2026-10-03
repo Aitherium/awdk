@@ -222,6 +222,49 @@ references) on the holders until a `CONFIG` on the same session id resets it. A 
 that joins the relay while a pooled session is loaded gets that session's `CONFIG` on
 first use. It never receives shared blocks that were published before it joined.
 
+## Mesh: holders that find the relay themselves
+
+On a LAN or a mesh overlay, a holder needs no URL and no token copied to it. The model's
+machine opens a door; the holder finds it, asks, and waits for the owner's yes.
+
+```bash
+adk kvholder phone --via lan --mesh            # the relay, with a door
+adk kvholder serve --mesh                      # on the other machine: find, ask, wait
+#   kvholder mesh: waiting for approval, code RT4WDZ
+adk kvholder mesh approve RT4WDZ               # back on the model's machine
+```
+
+The holder looks for relays in this order: `--peer HOST[:PORT]` and `AITHER_KVHOLDER_PEERS`,
+this machine, a UDP query on the LAN (port 50064), then the online peers of the mesh
+overlay (`tailscale status --json` and `wg show all allowed-ips`). A broadcast does not cross
+a WireGuard overlay, so the overlay's own peer list is asked as well. `adk kvholder mesh
+discover` shows what this machine can find.
+
+Approving mints one **join token** on the relay's machine. The holder that asked collects it
+itself: its request carries the hash of a secret only it knows, and it can collect the token
+once. The token never appears in the owner's list, a tool result or a log, and the master token
+never leaves the relay's machine. To skip the approval for a network you trust, name it:
+`--mesh-admit 100.64.0.0/10` admits every request from the overlay at once. Without `--mesh`
+the relay has no door: `/mesh` answers 404.
+
+`adk kvholder mesh pending | approve CODE | deny CODE | status` manage the door. A request
+expires after 5 minutes; an approved token after 10. On a LAN the join token crosses the wire
+in plain http, as `--via lan` already does; on a WireGuard overlay the tunnel encrypts it.
+
+### From an agent
+
+| surface | tools | who |
+|---|---|---|
+| awsh MCP server (`awsh`) | `awsh_kvholder_status`, `awsh_kvholder_pending`, `awsh_kvholder_join`, `awsh_kvholder_elastic` | the relay's machine, as its user |
+| harness daemon | `GET /kvholder/status`, `POST /kvholder/{pending,join,elastic}` | status: any daemon token; the rest: the owner |
+| AitherOS MCP gateway | `kvholder_status`, `kvholder_join`, `kvholder_elastic` | the owner, proven by Identity |
+
+The gateway runs elsewhere and cannot reach the relay's loopback routes, so its tools call the
+harness daemon on the relay's machine. Each call carries an owner assertion over the exact
+action, signed by the gateway and checked against the public key the daemon pins (the same
+keys as owner steering); a daemon token alone cannot approve or launch anything. `elastic`
+is a dry run unless `dry_run` is false.
+
 ## Plan and check
 
 ```bash

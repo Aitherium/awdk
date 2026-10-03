@@ -4041,6 +4041,11 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # The KV relay on this host, for the MCP gateway; owner-gated (adk.kvholder_mesh).
+    from adk.harnesses.kvholder_routes import mount as mount_kvholder
+
+    mount_kvholder(app, auth, load_owner_verifier())
+
     return app
 
 
