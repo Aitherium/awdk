@@ -13749,6 +13749,9 @@ def _register_commands(sub):
     pair_p.add_argument("code", help="Pairing code shown in the signed-in portal tab")
     pair_p.add_argument("--portal", default="",
                         help="Portal base URL (default: https://api.aitherium.com)")
+    pair_p.add_argument(
+        "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
+        default="laptop", help="What this device is (default: laptop)")
 
     # adk whoami
     _whoami = sub.add_parser(
@@ -14485,7 +14488,8 @@ def _register_commands(sub):
              "'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), "
              "11434 (Ollama), 8120 (vLLM) in that order")
     enroll_p.add_argument(
-        "--node-class", choices=["phone", "laptop", "sovereign"], default="laptop",
+        "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
+        default="laptop",
         help="What this device is (default: laptop)")
     enroll_p.add_argument(
         "--no-link", action="store_true",
@@ -14500,7 +14504,8 @@ def _register_commands(sub):
         help="Remote control: enrol this machine and hold the link so its "
              "sessions are reachable from your phone")
     rc_p.add_argument(
-        "--node-class", choices=["phone", "laptop", "sovereign"], default="laptop",
+        "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
+        default="laptop",
         help="What this device is (default: laptop)")
     rc_p.add_argument(
         "--harness-url",
@@ -15200,7 +15205,8 @@ def _register_commands(sub):
         "--inference-url", default="auto",
         help="Passed to `adk enroll` (default: auto-probe the local inference ladder)")
     quickstart_p.add_argument(
-        "--node-class", choices=["phone", "laptop", "sovereign"], default="laptop",
+        "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
+        default="laptop",
         help="Passed to `adk enroll` (default: laptop)")
 
     # adk quickstart-local — local-only inference quickstart

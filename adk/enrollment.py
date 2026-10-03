@@ -63,7 +63,7 @@ _WORKSPACE_FILE = _AITHER_DIR / "workspace.json"
 #: What kind of device this is. Sent as ``node_class`` on register; the portal
 #: groups and bills on it. ``laptop`` is the default because it is the only class
 #: a plain ``adk enroll`` on an unknown box can honestly claim.
-NODE_CLASSES: Tuple[str, ...] = ("phone", "laptop", "sovereign")
+NODE_CLASSES: Tuple[str, ...] = ("phone", "laptop", "desktop", "deck", "spark", "sovereign")
 
 #: What answered the inference probe. ``none`` means nothing did.
 INFERENCE_KINDS: Tuple[str, ...] = ("llama-server", "awnode", "ollama", "vllm", "none")
@@ -552,6 +552,20 @@ def resume_heartbeat(
 
     if not node_id:
         return _skip("not registered")
+    device_token = str(node_auth.get("bearer_token") or "")
+    if not token and device_token and node_auth.get("enrolled_via") == "pairing-code":
+        # Paired with a code: no person is signed in here, so the device beats as
+        # itself with the capability token its registration answer carried.
+        started = start_heartbeat(
+            str(node_auth.get("enroll_base") or default_base_url), device_token, node_id,
+            interval=interval, inference_url=node_auth.get("inference_url") or None,
+            node_class=node_auth.get("node_class") or "laptop", device=True,
+            beat_immediately=True,
+        )
+        if not started:
+            return {"started": False, "reason": "no event loop", "node_id": node_id}
+        log.info("Resumed device-token heartbeat for %s", node_id)
+        return {"started": True, "reason": "", "node_id": node_id}
     if node_auth.get("mode") != "rich":
         # A legacy hub registration beats on its own loop (fleet_enroll).
         return _skip("not an identity registration")
@@ -628,6 +642,7 @@ async def heartbeat_loop(
     harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
     token_provider: Optional[Callable[[], str]] = None,
     beat_immediately: bool = False,
+    device: bool = False,
 ) -> None:
     """Background heartbeat — POST /v1/nodes/heartbeat every ``interval`` seconds.
 
@@ -653,6 +668,9 @@ async def heartbeat_loop(
         beat_immediately: Send the first beat at once instead of after
             ``interval`` — for a loop resumed from a stored registration, where
             nothing has told the platform this node is back.
+        device: ``token`` is the DEVICE's capability token (a machine paired
+            with a code, no person signed in): beat and report on
+            ``/v1/nodes/device/*``, and never try to re-register with it.
     """
     import httpx
 
@@ -670,6 +688,7 @@ async def heartbeat_loop(
             inference_url=inference_url, node_class=node_class, max_beats=max_beats,
             reach_provider=reach_provider, harness_provider=harness_provider,
             token_provider=token_provider, beat_immediately=beat_immediately,
+            device=device,
         )
     finally:
         await client.aclose()
@@ -689,8 +708,10 @@ async def _heartbeat_beats(
     harness_provider: Optional[Callable[[], Tuple[str, bool]]],
     token_provider: Optional[Callable[[], str]] = None,
     beat_immediately: bool = False,
+    device: bool = False,
 ) -> None:
     """The beat loop of :func:`heartbeat_loop`, on a caller-owned client."""
+    beat_path = "/v1/nodes/device/heartbeat" if device else "/v1/nodes/heartbeat"
     beats = 0
     while max_beats is None or beats < max_beats:
         if beats or not beat_immediately:
@@ -735,11 +756,12 @@ async def _heartbeat_beats(
                     hb["harness_ready"] = bool(h_ready)
                 except Exception as e:  # noqa: BLE001
                     log.debug("harness_provider failed: %s", e)
-            resp = await client.post(
-                f"{base}/v1/nodes/heartbeat", json=hb, headers=headers
-            )
+            resp = await client.post(f"{base}{beat_path}", json=hb, headers=headers)
             status = int(resp.status_code)
-            if status == 200 and resp.json().get("status") == "unknown_node":
+            if status == 200 and resp.json().get("status") == "unknown_node" and device:
+                # A device token cannot re-register: the device was removed.
+                _record_beat(status, "refused", "this device was removed from the workspace")
+            elif status == 200 and resp.json().get("status") == "unknown_node":
                 # Registry lost us — re-register with the full payload.
                 again = await client.post(
                     f"{base}/v1/nodes/register", json=reg, headers=headers
@@ -752,6 +774,10 @@ async def _heartbeat_beats(
                                  f"re-register answered HTTP {again_status}")
             elif status == 200:
                 _record_beat(status, "ok")
+                cmds = resp.json().get("commands")
+                if cmds:
+                    await _run_delivered_commands(client, base, headers, node_id, reg, cmds,
+                                                  device=device)
             else:
                 _record_beat(status, "refused", f"heartbeat answered HTTP {status}")
         except asyncio.CancelledError:
@@ -760,6 +786,39 @@ async def _heartbeat_beats(
         except Exception as e:
             log.debug("Heartbeat error: %s", e)
             _record_beat(None, "error", f"{e.__class__.__name__}: {e}")
+
+
+async def _run_delivered_commands(
+    client: Any,
+    base: str,
+    headers: Dict[str, str],
+    node_id: str,
+    reg: Dict[str, Any],
+    cmds: Any,
+    *,
+    device: bool = False,
+) -> None:
+    """Run the commands a beat delivered (``adk.node_commands`` decides which) and
+    report each result. A device enrolled before the channel existed has no key
+    yet: one re-registration fetches it. Never raises into the beat loop."""
+    from adk import node_commands
+
+    try:
+        key = node_commands.load_key(node_id)
+        if not key and not device:
+            again = await client.post(f"{base}/v1/nodes/register", json=reg, headers=headers)
+            if int(getattr(again, "status_code", 0) or 0) == 200:
+                key = str(again.json().get("command_key") or "")
+                node_commands.save_key(node_id, key)
+        results = await asyncio.to_thread(node_commands.run_commands, cmds, node_id, key)
+        for res in results:
+            path = (f"/v1/nodes/device/results/{res['id']}" if device
+                    else f"/v1/nodes/{node_id}/commands/{res['id']}/result")
+            r = await client.post(f"{base}{path}", json=res, headers=headers)
+            if int(getattr(r, "status_code", 0) or 0) != 200:
+                log.warning("command %s result refused: HTTP %s", res["id"], r.status_code)
+    except Exception as e:  # noqa: BLE001 -- control never breaks liveness
+        log.warning("node commands not run: %s: %s", e.__class__.__name__, e)
 
 
 def _persist_device_cert(register_response: Dict[str, Any]) -> Dict[str, Any]:
@@ -870,6 +929,10 @@ async def rich_enroll(
         # _persist_device_cert.)
         tenant_id = data.get("tenant_id", "")
         cert_result = _persist_device_cert(data)
+        if data.get("command_key"):
+            from adk import node_commands
+
+            node_commands.save_key(node_id, str(data["command_key"]))
         cert_enrolled = cert_result.get("success", False)
 
         if enable_heartbeat:

@@ -31,7 +31,8 @@ log = logging.getLogger("adk.node_pairing")
 _CONFIRM_PATH = "/api/node-pairing/confirm"
 
 
-async def pair_with_code(code: str, portal_url: str) -> Dict[str, Any]:
+async def pair_with_code(code: str, portal_url: str,
+                         node_class: str = "laptop") -> Dict[str, Any]:
     """Present a portal pairing code and register this machine as a node.
 
     Returns ``{"paired": bool, ...}`` — never raises; failures carry ``error``.
@@ -49,7 +50,7 @@ async def pair_with_code(code: str, portal_url: str) -> Dict[str, Any]:
         node_auth = _load_node_auth()
         node_id = node_auth.get("node_id") or _generate_node_id()
 
-        reg = build_registration(node_id)
+        reg = build_registration(node_id, node_class=node_class)
         payload = {"code": code, **reg}
 
         base = portal_url.rstrip("/")
@@ -76,8 +77,14 @@ async def pair_with_code(code: str, portal_url: str) -> Dict[str, Any]:
             "public_url": data.get("public_url", ""),
             "paired_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "enrolled_via": "pairing-code",
+            "node_class": reg.get("node_class", node_class),
+            "inference_url": reg.get("inference_url", ""),
         })
         _save_node_auth(node_auth)
+        if data.get("command_key"):
+            from adk import node_commands
+
+            node_commands.save_key(node_auth["node_id"], str(data["command_key"]))
 
         return {
             "paired": True,
@@ -102,7 +109,8 @@ def cmd_pair(args: Any) -> int:
     code = getattr(args, "code", "")
 
     print(f"  Pairing this machine with {portal_url} …")
-    result = asyncio.run(pair_with_code(code, portal_url))
+    result = asyncio.run(pair_with_code(
+        code, portal_url, node_class=getattr(args, "node_class", None) or "laptop"))
 
     if not result.get("paired"):
         print(f"  ✗ Pairing failed: {result.get('error', 'unknown error')}")

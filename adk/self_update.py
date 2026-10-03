@@ -282,6 +282,16 @@ def _apply_requested(name: str) -> bool:
     return False
 
 
+def request_apply() -> list[str]:
+    """Ask every running daemon for a one-time validated update (``adk autoupdate
+    apply``; also the control plane's ``update`` command). Returns the names asked."""
+    run_dir().mkdir(parents=True, exist_ok=True)
+    names = [f.stem for f in run_dir().glob("*.json") if not f.name.endswith(".rollback.json")]
+    for n in names:
+        (run_dir() / f"{n}.apply").write_text(str(time.time()), encoding="utf-8")
+    return names
+
+
 # ── which snapshots are live ────────────────────────────────────────────────
 
 def register(name: str) -> Path:
@@ -587,10 +597,7 @@ def main(argv: Optional[list[str]] = None) -> int:
               " and shown in /health.")
         return 0
     if verb == "apply":
-        run_dir().mkdir(parents=True, exist_ok=True)
-        names = [f.stem for f in run_dir().glob("*.json") if not f.name.endswith(".rollback.json")]
-        for n in names:
-            (run_dir() / f"{n}.apply").write_text(str(time.time()), encoding="utf-8")
+        names = request_apply()
         print("requested a one-time update for: " + (", ".join(names) or "no running daemon")
               + " (each acts at its next check, if the new code is validated and it is idle)")
         return 0
