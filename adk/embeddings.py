@@ -98,13 +98,37 @@ SPACE_NOMIC = "nomic"
 SPACE_CODE_EMBED = "aither-code-embed"
 
 
-def _embed_space() -> str:
-    """The active embedding space from ``AITHER_EMBED_SPACE`` (default nomic).
+def _saved(key: str) -> str:
+    """A key of the saved adk config (``adk models use`` writes the embedding ones)."""
+    try:
+        from adk.config import load_saved_config  # noqa: PLC0415 -- optional at import
 
+        return str(load_saved_config().get(key) or "").strip()
+    except Exception:  # noqa: BLE001 -- no config is the default, never an error
+        return ""
+
+
+def _embed_space() -> str:
+    """The active embedding space: ``AITHER_EMBED_SPACE``, else the ``embed_space`` that
+    ``adk models use <embedder>`` saved, else nomic.
+
+    Until 2026-10-02 the saved key was written and never read: `adk models use
+    aither-code-embed` served the model and told the user to set the env by hand.
     An unknown value raises, exactly as the platform's EmbeddingSpace does: staying
     on nomic while ``lib`` refuses would put one process's SDK and services in two
     spaces on a typo, and every write would still succeed."""
-    raw = (os.getenv("AITHER_EMBED_SPACE", "") or SPACE_NOMIC).strip().lower()
+    raw = os.getenv("AITHER_EMBED_SPACE", "").strip().lower()
+    if not raw:
+        saved = _saved("embed_space").lower()
+        if saved in ("code-embed", "ce1024", "aither-code-embed-1024"):
+            saved = SPACE_CODE_EMBED
+        if saved and saved not in (SPACE_NOMIC, SPACE_CODE_EMBED):
+            # a catalogue id from a newer `adk models use` is not a space this SDK knows:
+            # stay on the default and say so, never crash every memory write at import
+            logging.getLogger("adk.embeddings").warning(
+                "saved embed_space=%r is not a known space; using %s", saved, SPACE_NOMIC)
+            saved = ""
+        raw = saved or SPACE_NOMIC
     if raw in ("code-embed", "ce1024", "aither-code-embed-1024"):
         raw = SPACE_CODE_EMBED
     if raw not in (SPACE_NOMIC, SPACE_CODE_EMBED):
@@ -172,6 +196,10 @@ def _explicit_url() -> str:
     url = os.getenv(  # embedder-direct-ok: SDK runs outside the fleet; operator-set lane
         "AITHER_EMBEDDINGS_URL", ""
     ).strip()
+    if not url:
+        # `adk models use <embedder>` saves the OpenAI base WITH /v1; the probe appends it
+        url = _saved("embeddings_url").rstrip("/")
+        url = url[:-3] if url.endswith("/v1") else url
     return _CODE_EMBED_DEFAULT_URL if _is_retired_url(url) else url
 
 

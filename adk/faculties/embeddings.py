@@ -25,8 +25,21 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("adk.faculties.embeddings")
 
-_EMBEDDING_DIM = 768  # Default dimension (nomic-embed-text)
-_FEATURE_HASH_DIM = 768  # Feature hash output dimension
+# The space comes from adk.embeddings (env AITHER_EMBED_SPACE or the saved `adk models use`
+# choice): one process never embeds in two spaces. nomic = 768-d; aither-code-embed = 1024-d.
+try:
+    from adk.embeddings import CANONICAL_DIM as _SPACE_DIM
+    from adk.embeddings import CANONICAL_MODEL as _SPACE_MODEL
+    from adk.embeddings import EMBED_SPACE as _SPACE
+except Exception:  # noqa: BLE001 -- a broken space config must not take the faculty down
+    _SPACE, _SPACE_DIM, _SPACE_MODEL = "nomic", 768, "nomic-embed-text"
+_CODE_EMBED_SPACE = _SPACE == "aither-code-embed"
+_EMBEDDING_DIM = _SPACE_DIM
+# Feature hashing is not a semantic vector. In the nomic space it keeps its old 768-d shape;
+# in the code-embed space it is 384-d on purpose (adk.embeddings' degraded width), so a
+# 1024-d store refuses it instead of filing garbage next to real vectors.
+_FEATURE_HASH_DIM = 384 if _CODE_EMBED_SPACE else 768
+_SERVED_MODEL = _SPACE_MODEL    # the id an OpenAI/Ollama server knows the model by
 _MODEL_NAME = os.getenv("AITHER_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 _OLLAMA_URL_RAW = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 _OLLAMA_URL = _OLLAMA_URL_RAW.replace("0.0.0.0", "localhost") if "0.0.0.0" in _OLLAMA_URL_RAW else _OLLAMA_URL_RAW
@@ -106,7 +119,7 @@ class EmbeddingProvider:
                 for text in texts:
                     resp = await client.post(
                         f"{_OLLAMA_URL}/api/embeddings",
-                        json={"model": "nomic-embed-text", "prompt": text},
+                        json={"model": _SERVED_MODEL, "prompt": text},
                     )
                     if resp.status_code == 200:
                         data = resp.json()
@@ -140,7 +153,7 @@ class EmbeddingProvider:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
                     f"{_ELYSIUM_URL}/v1/embeddings",
-                    json={"input": texts, "model": "nomic-embed-text"},
+                    json={"input": texts, "model": _SERVED_MODEL},
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
                 if resp.status_code == 200:
@@ -197,20 +210,18 @@ class EmbeddingProvider:
             return []
         self.stats["total_texts"] += len(texts)
 
-        # 1. sentence-transformers
-        async with self._async_lock:
-            if self._st_model is not None or self._try_load_sentence_transformers():
-                return await self._embed_st(texts)
+        # 1. sentence-transformers -- a local nomic model, so never in the code-embed space
+        if not _CODE_EMBED_SPACE:
+            async with self._async_lock:
+                if self._st_model is not None or self._try_load_sentence_transformers():
+                    return await self._embed_st(texts)
 
-        # 2. Ollama
-        results = await self._embed_ollama(texts)
-        if any(r is not None for r in results):
-            return results
-
-        # 3. Elysium
-        results = await self._embed_elysium(texts)
-        if any(r is not None for r in results):
-            return results
+        # 2. Ollama, 3. Elysium -- a vector of the wrong width is no vector (code-embed space)
+        for rung in (self._embed_ollama, self._embed_elysium):
+            results = [r if r is None or not _CODE_EMBED_SPACE or len(r) == _EMBEDDING_DIM
+                       else None for r in await rung(texts)]
+            if any(r is not None for r in results):
+                return results
 
         # 4. Feature hashing (always works)
         if self._backend != "feature_hash":
