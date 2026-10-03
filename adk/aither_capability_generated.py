@@ -202,10 +202,11 @@ CAPABILITIES: List[Capability] = [
         available=True,
         description=(
             'Set up EMBEDDINGS + GraphRAG the way the fleet runs it â€” serve nomic-embed-text (76'
-            "8-dim, the fleet's canonical vector space) or CodeRankEmbed via vLLM, wire it into a "
-            'local knowledge graph, ingest a corpus, and verify BOTH halves: the embedder returns '
-            'the right vector dimension, and retrieval actually returns ingested content (not a si'
-            'lent-empty 200). All tools are fail-soft dict-returners.'
+            '8-dim; the fleet itself moved to aither-code-embed 1024-dim on 2026-10-02) or CodeRan'
+            'kEmbed via vLLM, wire it into a local knowledge graph, ingest a corpus, and verify BO'
+            'TH halves: the embedder returns the right vector dimension, and retrieval actually re'
+            'turns ingested content (not a silent-empty 200). All tools are fail-soft dict-returne'
+            'rs.'
             ),
         tier='free',
         requires_auth=False,
@@ -263,11 +264,11 @@ CAPABILITIES: List[Capability] = [
         available=True,
         description=(
             'Install vLLM and serve the AitherOS fleet models (Nemotron-Orchestrator-8B, gemma4-12'
-            'b, qwen-27b, deepseek-r1-14b) with quantization and serve flags OPTIMIZED to the dete'
-            'cted GPU architecture â€” NVFP4 on Blackwell, AWQ/W8A16 on Ampere, bitsandbytes on ol'
-            "der cards, fp8 KV where supported. Detects hardware, resolves each model's best runna"
-            'ble quant, plans the vLLM command, applies it, and verifies with a real chat round-tr'
-            'ip. All tools are fail-soft dict-returners.'
+            'b, qwen-27b) with quantization and serve flags OPTIMIZED to the detected GPU architec'
+            'ture â€” NVFP4 on Blackwell, AWQ/W8A16 on Ampere, bitsandbytes on older cards, fp8 KV'
+            " where supported. Detects hardware, resolves each model's best runnable quant, plans "
+            'the vLLM command, applies it, and verifies with a real chat round-trip. All tools are'
+            ' fail-soft dict-returners.'
             ),
         tier='free',
         requires_auth=False,
