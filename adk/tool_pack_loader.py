@@ -269,6 +269,12 @@ class ToolPackLoader:
             ui=ui_block if isinstance(ui_block, dict) else {},
             mcp_server=mcp_server_block if isinstance(mcp_server_block, dict) else {})
 
+    def rediscover(self) -> dict[str, ToolPackManifest]:
+        """Forget the scan and run it again -- for a pack written after the first one."""
+        self._discovered = False
+        self._manifests = {}
+        return self.discover()
+
     def load_packs(self, pack_ids: list[str] | None = None) -> list[ToolPackManifest]:
         self.discover()
         if pack_ids is None:

@@ -180,7 +180,9 @@ def activate(agent: Any, manifest: Any, loader: Any) -> PackActivation:
     reg = _registry(agent)
     before = dict(getattr(reg, "_tools", {})) if reg is not None else {}
 
-    if reg is not None and manifest.tool_modules:
+    # Empty tool_modules is the scaffold default: the loader file-loads __init__.py.
+    has_code = bool(manifest.tool_modules) or (Path(manifest.path) / "__init__.py").is_file()
+    if reg is not None and has_code:
         loader.register_on_adk_agent(manifest, agent)
         after = getattr(reg, "_tools", {})
         for name, td in after.items():

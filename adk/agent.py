@@ -632,6 +632,10 @@ class AitherAgent:
             env_packs = os.environ.get("AITHER_TOOL_PACKS", "")
             if env_packs:
                 config_packs = [p.strip() for p in env_packs.split(",") if p.strip()]
+        # Creator mode: the agent can author, load and unload its own packs.
+        if os.environ.get("AITHER_CREATOR_MODE", "").strip() == "1":
+            from adk.creator import enable_creator
+            enable_creator(self)
         # Persona fragments collected from licensed packs
         self._pack_persona_fragments: list[str] = []
 
@@ -1040,6 +1044,9 @@ class AitherAgent:
 
         loader = get_tool_pack_loader(extra_dirs=[Path(packs_dir)] if packs_dir else None)
         found = loader.load_packs([pack_id])
+        if not found:  # the cached loader predates a pack written since
+            loader.rediscover()
+            found = loader.load_packs([pack_id])
         if not found:
             return {"error": f"pack {pack_id!r} not found"}
         allowed, why = loader.check_license(found[0])
