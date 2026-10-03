@@ -43,6 +43,10 @@ pip install awdk numpy
 adk kvholder serve --connect ws://<model-host>:50063/holder --token <token>
 ```
 
+A Python holder stores keys as `f32` by default: decode attention over 123k keys takes about
+80 ms on one CPU, at 3.8x the bytes of the q8 rows it receives. `--store wire` keeps the rows
+as received (most context per MB; about 300 ms for the same call).
+
 On the model's machine use `adk kvholder phone --via lan` (or `--via tunnel` with a `wss://`
 URL) so the holder can reach it. `adk kvholder serve` without `--connect` listens on
 `127.0.0.1:50062` instead; PATN has no authentication, so bind a LAN address only on a
@@ -73,6 +77,14 @@ adk kvholder serve --connect "$RELAY" --token "$JOIN" --max-mb "$MAX_MB"
 
 Without awrun it calls `gh workflow run`. `--print-only` mints the tokens and prints that
 command for any other machine: a container, a VM, a laptop on the mesh.
+
+Any deployer that can start a container can add a holder. The container needs only outbound
+https to the relay:
+
+```bash
+docker run --rm -e RELAY=wss://<relay>/holder -e JOIN=<join token> python:3.11-slim \
+  sh -c 'pip install -q awdk numpy && exec adk kvholder serve --connect "$RELAY" --token "$JOIN" --max-mb 4096'
+```
 
 ## Plan and check
 

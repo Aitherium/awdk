@@ -182,34 +182,70 @@ def quant_rows(x: np.ndarray, kv_type: int) -> bytes:
 # ---------------------------------------------------------------- the math
 
 
+def _attend(qs: np.ndarray, chunks) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Online softmax over key chunks. qs [H, r, D] scaled f32; chunks of (K, V) as [H, n, D] f32.
+
+    Returns the unnormalized accumulator, running max and denominator.
+    """
+    n_h, n_r, n_d = qs.shape
+    acc = np.zeros((n_h, n_r, n_d), np.float32)
+    m = np.full((n_h, n_r), -np.inf, np.float32)
+    den = np.zeros((n_h, n_r), np.float32)
+    for k, v in chunks:
+        if k.shape[1] == 0:
+            continue
+        scores = np.matmul(qs, k.transpose(0, 2, 1))  # BLAS, transposed view: no copy
+        mx = np.maximum(m, scores.max(axis=-1))
+        a = np.exp(m - mx)
+        probs = np.exp(scores - mx[..., None])
+        acc = acc * a[..., None] + np.matmul(probs, v)
+        den = den * a + probs.sum(axis=-1)
+        m = mx
+    return acc, m, den
+
+
+def _rows(n_r: int, n_tok: int | None) -> np.ndarray:
+    """PATN query rows r = g*8 + t; t >= n_tok are padding."""
+    if n_tok is None or n_r != NR:
+        return np.arange(n_r)
+    return np.flatnonzero(np.arange(NR) % 8 < n_tok)
+
+
+def _finish(
+    shape: tuple, rows: np.ndarray, acc: np.ndarray, m: np.ndarray, den: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    out_o = np.zeros(shape, np.float32)
+    out_l = np.full(shape[:2], -np.inf, np.float32)
+    ok = den > 0
+    sel_o = np.where(ok[..., None], acc / np.where(ok, den, 1)[..., None], 0)
+    sel_l = np.where(ok, m + np.log(np.where(ok, den, 1)), -np.inf)
+    out_o[:, rows] = sel_o
+    out_l[:, rows] = sel_l
+    return out_o, out_l
+
+
 def partial_attention(
-    q: np.ndarray, keys: np.ndarray, vals: np.ndarray, scale: float
+    q: np.ndarray, keys: np.ndarray, vals: np.ndarray, scale: float, n_tok: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """One holder's share.
 
     Q [H, R, D] unscaled, K/V [N, H, D] -> (O normalized [H, R, D], lse [H, R]).
 
-    lse = m + log(l) of the scaled scores; -inf (and O = 0) where there are no keys.
+    lse = m + log(l) of the scaled scores; -inf (and O = 0) where there are no keys. With
+    ``n_tok`` (PATN rows r = g*8 + t), rows with t >= n_tok are padding: skipped, left -inf.
     """
-    n_h, n_r, n_d = q.shape
-    if keys.shape[0] == 0:
-        return np.zeros((n_h, n_r, n_d), np.float32), np.full((n_h, n_r), -np.inf, np.float32)
-    out = np.zeros((n_h, n_r, n_d), np.float64)
-    m = np.full((n_h, n_r), -np.inf)
-    den = np.zeros((n_h, n_r))
-    q_scaled = q.astype(np.float64) * scale
-    for s in range(0, keys.shape[0], _ATTN_CHUNK):
-        k = keys[s : s + _ATTN_CHUNK].astype(np.float64)
-        v = vals[s : s + _ATTN_CHUNK].astype(np.float64)
-        scores = np.einsum("hrd,nhd->hrn", q_scaled, k)
-        mc = scores.max(axis=-1)
-        mx = np.maximum(m, mc)
-        a = np.exp(m - mx)
-        probs = np.exp(scores - mx[..., None])
-        out = out * a[..., None] + np.einsum("hrn,nhd->hrd", probs, v)
-        den = den * a + probs.sum(axis=-1)
-        m = mx
-    return (out / den[..., None]).astype(np.float32), (m + np.log(den)).astype(np.float32)
+    rows = _rows(q.shape[1], n_tok)
+    if keys.shape[0] == 0 or rows.size == 0:
+        return np.zeros(q.shape, np.float32), np.full(q.shape[:2], -np.inf, np.float32)
+    qs = np.ascontiguousarray(q[:, rows].astype(np.float32) * np.float32(scale))
+    chunks = (
+        (
+            np.ascontiguousarray(keys[c : c + _ATTN_CHUNK].transpose(1, 0, 2), np.float32),
+            np.ascontiguousarray(vals[c : c + _ATTN_CHUNK].transpose(1, 0, 2), np.float32),
+        )
+        for c in range(0, keys.shape[0], _ATTN_CHUNK)
+    )
+    return _finish(q.shape, rows, *_attend(qs, chunks))
 
 
 def merge_partials(parts: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
@@ -308,6 +344,10 @@ class HolderState:
     sum_attn_ms: float = 0.0
     cache: dict = field(default_factory=dict)  # layer -> (n, K f32, V f32)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # "f32": keys dequantized once at APPEND into [H, n, D] float32 chunks (fast, 3.8x the q8
+    # bytes); "wire": rows kept as received (most context per MB, dequantized per call)
+    store: str = "f32"
+    chunks: list = field(default_factory=list)  # per layer: [(K [H,n,D], V [H,n,D]), ...]
 
 
 class KVHolder:
@@ -316,15 +356,24 @@ class KVHolder:
     Transport-free, so tests and other transports (a mesh relay) can drive it.
     """
 
-    def __init__(self, max_bytes: int, device: str = "adk-kvholder"):
-        self.st = HolderState(max_bytes=max_bytes)
+    def __init__(self, max_bytes: int, device: str = "adk-kvholder", store: str = "f32"):
+        if store not in ("f32", "wire"):
+            raise ValueError("store must be 'f32' or 'wire'")
+        self.st = HolderState(max_bytes=max_bytes, store=store)
         self.device = device
+
+    def _per_key(self) -> int:
+        """Bytes one key costs on every layer it is appended to (K and V)."""
+        cfg = self.st.cfg
+        if self.st.store == "f32":
+            return 2 * cfg.n_head_kv * HD * 4
+        return 2 * cfg.rs
 
     def handle(self, mtype: int, p: bytes) -> tuple[int, bytes] | None:
         """One request -> (reply type, payload); None = close the session."""
         st = self.st
         if mtype == HELLO:
-            dev = f"{self.device} numpy max_mb={st.max_bytes >> 20}".encode()[:63]
+            dev = f"{self.device} {st.store} max_mb={st.max_bytes >> 20}".encode()[:63]
             return HELLO_OK, HELLO_REP.pack(VERSION, 0, dev)
         if mtype == CONFIG:
             if len(p) < CONFIG_REQ.size:
@@ -339,6 +388,7 @@ class KVHolder:
                 st.raw = [[] for _ in range(c.n_layer)]
                 st.raw_v = [[] for _ in range(c.n_layer)]
                 st.n = [0] * c.n_layer
+                st.chunks = [[] for _ in range(c.n_layer)]
                 st.held_bytes = 0
                 st.cache.clear()
             return OK, b""
@@ -362,7 +412,7 @@ class KVHolder:
                     f"state=idle attn_calls={st.attn_calls} last_ms={st.last_attn_ms:.3f} "
                     f"mean_ms={mean:.3f} "
                     f"held={held} appended={st.appended} held_mb={st.held_bytes / 1048576:.1f} "
-                    f"max_mb={st.max_bytes >> 20}"
+                    f"max_mb={st.max_bytes >> 20} store={st.store}"
                 )
             return OK, s.encode()
         if mtype == PING:
@@ -384,19 +434,39 @@ class KVHolder:
         with st.lock:
             if pos0 != st.n[layer]:
                 return ERR, f"APPEND pos0 {pos0} != held {st.n[layer]}".encode()
-            if st.held_bytes + 2 * nbytes > st.max_bytes:
+            cost = n * self._per_key()
+            if st.held_bytes + cost > st.max_bytes:
                 return ERR, f"out of memory at {st.n[layer]} keys".encode()
             off = APPEND_REQ.size
-            st.raw[layer].append(p[off : off + nbytes])
-            st.raw_v[layer].append(p[off + nbytes : off + 2 * nbytes])
+            k_raw, v_raw = p[off : off + nbytes], p[off + nbytes : off + 2 * nbytes]
+            if st.store == "f32":
+                k = dequant_rows(np.frombuffer(k_raw, np.uint8), n, cfg).transpose(1, 0, 2)
+                v = dequant_rows(np.frombuffer(v_raw, np.uint8), n, cfg).transpose(1, 0, 2)
+                st.chunks[layer].append((np.ascontiguousarray(k), np.ascontiguousarray(v)))
+            else:
+                st.raw[layer].append(k_raw)
+                st.raw_v[layer].append(v_raw)
             st.n[layer] += n
-            st.held_bytes += 2 * nbytes
+            st.held_bytes += cost
             st.appended += n
             st.cache.pop(layer, None)
             return OK, struct.pack("<I", st.n[layer])
 
     def _truncate_layer(self, layer: int, keep: int) -> None:
         st = self.st
+        if st.store == "f32":
+            kept, have = [], 0
+            for k, v in st.chunks[layer]:
+                take = min(k.shape[1], keep - have)
+                if take <= 0:
+                    break
+                kept.append(
+                    (k[:, :take].copy(), v[:, :take].copy()) if take < k.shape[1] else (k, v)
+                )
+                have += take
+            st.held_bytes -= (st.n[layer] - keep) * self._per_key()
+            st.chunks[layer], st.n[layer] = kept, keep
+            return
         rs = st.cfg.rs
         k = b"".join(st.raw[layer])[: keep * rs]
         v = b"".join(st.raw_v[layer])[: keep * rs]
@@ -435,15 +505,33 @@ class KVHolder:
         ):
             return ERR, b"bad ATTN"
         t0 = time.perf_counter()
+        q = np.frombuffer(body, np.float16).astype(np.float32).reshape(ng, cfg.n_head_kv, NR, HD)
         with st.lock:
             held = st.n[layer]
             nk = held if nk == 0 else min(nk, held)
-            keys, vals = self._kv(layer)
-        keys, vals = keys[:nk], vals[:nk]
-        q = np.frombuffer(body, np.float16).astype(np.float32).reshape(ng, cfg.n_head_kv, NR, HD)
+            if st.store == "f32":
+                chunks, have = [], 0
+                for k, v in st.chunks[layer]:
+                    take = min(k.shape[1], nk - have)
+                    if take <= 0:
+                        break
+                    chunks.append((k[:, :take], v[:, :take]))
+                    have += take
+            else:
+                keys, vals = self._kv(layer)
+                keys, vals = keys[:nk], vals[:nk]
         outs, lses = [], []
+        rows = _rows(NR, n_tok)
         for g in range(ng):
-            o, s = partial_attention(q[g], keys, vals, scale)
+            if st.store == "f32":
+                if nk == 0 or rows.size == 0:
+                    o = np.zeros(q[g].shape, np.float32)
+                    s = np.full(q[g].shape[:2], -np.inf, np.float32)
+                else:
+                    qs = np.ascontiguousarray(q[g][:, rows] * np.float32(scale))
+                    o, s = _finish(q[g].shape, rows, *_attend(qs, chunks))
+            else:
+                o, s = partial_attention(q[g], keys, vals, scale, n_tok=n_tok)
             outs.append(o)
             lses.append(s)
         ms = (time.perf_counter() - t0) * 1000
@@ -615,6 +703,12 @@ def register(sub) -> None:
     )
     sv.add_argument("--token", default="", help="Relay token (with --connect)")
     sv.add_argument(
+        "--store",
+        choices=["f32", "wire"],
+        default="f32",
+        help="f32: fast attention, 3.8x the q8 bytes per key; wire: most context per MB, slower",
+    )
+    sv.add_argument(
         "--max-mb", type=int, default=0, help="Memory to lend (default: free RAM minus 2 GB)"
     )
     pr = s.add_parser(
@@ -645,7 +739,7 @@ def run(args) -> int:
         if max_b <= 0:
             print("kvholder: cannot size the loan; pass --max-mb", file=sys.stderr)
             return 2
-        holder = KVHolder(max_b, device=f"adk-kvholder@{socket.gethostname()}")
+        holder = KVHolder(max_b, device=f"adk-kvholder@{socket.gethostname()}", store=args.store)
         if args.connect:
             from adk import kvholder_net
 

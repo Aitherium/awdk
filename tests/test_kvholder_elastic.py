@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 import pytest
+
 from adk import kvholder as kv
 from adk import kvholder_net as net
 from adk.kvholder_page import HOLDER_JS
@@ -38,9 +39,9 @@ def relay():
     net.stop_relay(r, servers)
 
 
-def _add_holder(r, token, wp, name, keys=CAP):
+def _add_holder(r, token, wp, name, keys=CAP, store="wire"):
     before = len(r.holders)
-    h = kv.KVHolder(keys * PER_KEY, device=name)
+    h = kv.KVHolder(keys * PER_KEY, device=name, store=store)
     url = f"ws://127.0.0.1:{wp}/holder"
     threading.Thread(target=net.dial_holder, args=(url, token, h), daemon=True).start()
     end = time.time() + 10
@@ -222,7 +223,7 @@ def test_join_token_mint_needs_the_master_token(relay):
 def test_join_token_works_once_and_the_session_reconnects(relay):
     r, token, ep, wp = relay
     join = _mint(wp, token)
-    h = kv.KVHolder(CAP * PER_KEY, device="runner")
+    h = kv.KVHolder(CAP * PER_KEY, device="runner", store="wire")
     threading.Thread(
         target=net.dial_holder, args=(f"ws://127.0.0.1:{wp}/holder", join, h), daemon=True
     ).start()
@@ -342,3 +343,16 @@ def test_a_holder_that_comes_back_empty_fails_loudly(relay):
     q = np.zeros((H, kv.NR, kv.HD), np.float32)
     with pytest.raises(RuntimeError, match="holder lost"):
         e.c.attn(0, q, 0.1)
+
+
+def test_f32_holders_get_ranges_sized_for_f32(relay):
+    """The fast store costs 2x f16 rows per key: the relay gives such a holder half the range."""
+    r, token, ep, wp = relay
+    _add_holder(r, token, wp, "fast-a", store="f32")
+    _add_holder(r, token, wp, "fast-b", store="f32")
+    e = Engine(ep, seed=9)
+    e.push(500)
+    assert [h["off"] for h in r.status()["holders"]] == [0, CAP // 2]
+    e.check(n_tok=1)
+    with pytest.raises(RuntimeError, match="out of memory at 512 keys"):
+        e.push(13)

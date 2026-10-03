@@ -763,6 +763,7 @@ def dial_holder(url: str, token: str, holder: "kv.KVHolder", once: bool = False)
                         "device": holder.device,
                         "max_bytes": holder.st.max_bytes,
                         "held": max(holder.st.n) if holder.st.n else 0,
+                        "store": holder.st.store,
                     }
                 )
             )
