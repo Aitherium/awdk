@@ -414,6 +414,10 @@ class DeviceGate:
         if local and not local.get("lend") and "changed" in local:
             return False, "denied by the workspace owner"
         rows = self.household.fresh() if self.household is not None else None
+        if self.household is not None and rows is None:
+            # fail closed: while the registry cannot answer, no device can be shown NOT to be a
+            # child with lending off, so nothing new is admitted (sweep keeps who is attached)
+            return False, "household registry unreachable: lending refused until it answers"
         row = rows.get(did) if rows is not None else None
         if row is not None:
             if row.get("revoked"):
@@ -422,8 +426,8 @@ class DeviceGate:
                 kind = "child " if row.get("profile_kind") == "child" else ""
                 return False, f"the owner has not turned on lending for this {kind}device"
             return True, ""
-        if did.startswith("fdev_"):  # a household device the registry cannot vouch for now
-            return False, "household registry unreachable: lending refused until it answers"
+        if did.startswith("fdev_"):  # a household id the registry does not list
+            return False, "not in the household registry"
         if not self.grants.allowed(did):
             return False, NOT_ALLOWED
         return True, ""

@@ -379,3 +379,18 @@ def test_mesh_admit_network_refuses_a_child_unless_the_owner_enabled_it(ws_relay
         assert door.request("127.0.0.1", "kid", "b" * 64, signed)[1]["status"] == "approved"
     finally:
         door.close()
+
+
+def test_registry_outage_refuses_every_new_admission_but_keeps_attached(ws_relay):
+    """A child phone paired under any id cannot slip in while the household registry is down."""
+    env = ws_relay
+    env["grants"].set("kvh-fold", True)  # locally allowed, no household row
+    fake, hh = _household(env, {})
+    _dial(env, env["fold"], once=False)
+    assert _wait(lambda: env["relay"].holder is not None)  # registry up: admitted
+    fake["status"] = 503
+    hh.at = 0.0  # the last good answer is too old: an outage
+    hh.refresh()
+    ok, why = env["gate"].admit(kw.sign_hello(env["fold"], "127.0.0.1", "kvh-fold"))
+    assert ok is None and "unreachable" in why  # NEW sign-in refused
+    assert kw.sweep(env["relay"], env["gate"]) == []  # the attached one stays
