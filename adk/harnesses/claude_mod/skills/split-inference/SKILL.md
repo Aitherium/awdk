@@ -9,7 +9,7 @@ argument-hint: "[--recipe bonsai-27b-5090-dgx-rpc|multi-node-rpc-generic|single-
 ## Context
 - Tools: `split_*` from the `split_inference` toolpack (`adk/toolpacks/split_inference`).
 - CLI: `python -m adk.toolpacks.split_inference {topology|resolve|plan|apply|verify}`.
-- Reference topology: main node = local RTX 5090 (`aither-llamacpp-bonsai`, llama.cpp
+- Reference topology: main node = local RTX 5090 (a llama.cpp Bonsai container, llama.cpp
   source at `/work`, model `/work/bonsai.gguf`); RPC backend = `spark.local` (DGX Spark).
 - Request: `$ARGUMENTS`
 

@@ -427,7 +427,7 @@ def _store_for_scope(scope: str, key: str, value: str) -> tuple[bool, str]:
     # Leg 0 — a fleet host. The vault is an IN-NETWORK name this host cannot
     # resolve, so the write goes through the same engine-resolving,
     # in-container path the standalone GUI prompt uses (`<engine> exec -i
-    # aither-worker sh -s`, value on stdin, never argv). One implementation of
+    # <worker container> sh -s`, value on stdin, never argv). One implementation of
     # "reach the vault from here", and the same read-back proof.
     ok, why = _push_via_fleet_host(key, value, want)
     if ok:

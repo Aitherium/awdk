@@ -318,7 +318,7 @@ def recurse_query(context: str, query: str, chunk_size: int = 2000,
 # ── structured reasoning trace, LOCAL (awreason taxonomy, no server) ─────
 # Real AitherReasoning exists (lib/faculties/AitherReasoningBridge.py,
 # lib/clients/reasoning.py, port 8093) but its standalone service is
-# MASKED fleet-wide (`systemctl status aither-reasoning` -> "Loaded: masked")
+# MASKED fleet-wide (its unit reports "Loaded: masked")
 # — the compose definition explains why: a ~10GB local reasoning model
 # co-resident with the orchestrator on a single 5090 starves the
 # orchestrator's KV cache and disconnects live chats. Unmasking it to build
@@ -642,7 +642,7 @@ _DEFAULT_CALLER_INNETWORK = "aither-llamacpp-bonsai:8090"
 _LOAD_POLL_INTERVAL_S = 5
 _LOAD_TIMEOUT_S = 120
 _TEARDOWN_TIMEOUT_S = 20
-# Was 60 -- live-measured 2026-08-24: aither-llamacpp-bonsai (27B Q1_0, -ngl 99)
+# Was 60 -- live-measured 2026-08-24: the Bonsai llama.cpp server (27B Q1_0, -ngl 99)
 # came back and served correctly, but past the 60s window, so this reported
 # "caller_restore_failed" on a caller that was actually fine -- a false-negative
 # outage report. A cold reload of a 27B GGUF is the same class of cost as

@@ -5,7 +5,7 @@ description: >-
   The AitherOS general-purpose text embedder — nomic-embed-text-v1.5, 768-dim,
   served via vLLM. This is what the fleet's memory/RAG (nomic-space vectors) are
   keyed on, so a self-host that matches it stays vector-compatible with the fleet.
-  Serve args mirror the proven aither-vllm-embeddings config exactly.
+  Serve args mirror a proven production embeddings config exactly.
 
 model:
   hf_repo: nomic-ai/nomic-embed-text-v1.5

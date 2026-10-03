@@ -47,7 +47,7 @@ logger = logging.getLogger("adk.local_inference")
 # "your local node" means:
 #   8080  aitherium.com/install-bonsai.sh, phone.sh (llama-server --alias bonsai-selfhost)
 #   8090  `adk bonsai-local` (Docker), awnode gateway
-#   8092  aither-llamacpp-bonsai container
+#   8092  the Bonsai llama.cpp container
 #   8889  selfhost-bonsai skill
 #   8081  install-bonsai.sh --port 8081 (the port it suggests when 8080 is taken)
 #   8000  bare vllm / adk server

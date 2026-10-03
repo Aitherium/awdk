@@ -4,11 +4,11 @@ model_role: perception
 description: >-
   gemma4-12b — the AitherOS perception/vision model. AWQ-4bit on Blackwell,
   W8A16 (DGX-parity) on Ampere. Multimodal. Serve args mirror the fleet's
-  aither-vllm-gemma4 config, including the enforce-eager it requires.
+  production Gemma 4 config, including the enforce-eager it requires.
 
 model:
   served_name: gemma4-reasoning
-  # AWQ-4bit MoE checkpoint the 5090 runs (the fleet's aither-vllm-gemma4 model).
+  # AWQ-4bit MoE checkpoint the 5090 runs (the production Gemma 4 model).
   quant_repos:
     awq: cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
 

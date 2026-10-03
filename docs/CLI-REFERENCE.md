@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**126 commands.**
+**129 commands.**
 
 | command | what it does |
 |---|---|
@@ -31,6 +31,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk agents`](#adk-agents) | Discover agents in the mesh (ls) |
 | [`adk ambient`](#adk-ambient) | Make the agent an expert on what you're doing in this terminal |
 | [`adk approvals`](#adk-approvals) | List/approve/deny A2A permission cards blocking federated agents |
+| [`adk autoupdate`](#adk-autoupdate) | opt in/out of daemons restarting onto validated new code (status\|on\|off\|apply) |
 | [`adk awconnect`](#adk-awconnect) | Install / check the Awconnect browser extension |
 | [`adk backend`](#adk-backend) | Manage LLM backends (list, set, test, switch, status) |
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
@@ -98,6 +99,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk memory`](#adk-memory) | Tenant memory on the platform: remember, recall |
 | [`adk mesh`](#adk-mesh) | AitherMesh overlay operations (onboard, list peers) |
 | [`adk mobile`](#adk-mobile) | Test Android/iOS apps end to end (Maestro) and keep screenshots as proof |
+| [`adk models`](#adk-models) | Browse the model catalogue, pick one for this machine, pull it verified, serve it (list \| recommend \| pull \| use) |
 | [`adk mothership`](#adk-mothership) |  |
 | [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
 | [`adk notebook`](#adk-notebook) | Plan, run, and inspect Agent Notebooks (.anb) on Genesis |
@@ -255,6 +257,14 @@ List/approve/deny A2A permission cards blocking federated agents
 | `--url` | str |  |  | A2A gateway base URL (default $AITHER_A2A_URL or https://127.0.0.1:8766) |
 | `--json` | str |  | `false` | Emit raw JSON |
 
+## `adk autoupdate`
+
+opt in/out of daemons restarting onto validated new code (status|on|off|apply)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<autoupdate_args>` | str |  |  | status \| on \| off \| apply |
+
 ## `adk awconnect`
 
 Install / check the Awconnect browser extension
@@ -309,7 +319,7 @@ Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `--port` | int |  | `8090` | Host port to serve on (default: 8090) |
-| `--model` | str |  | `bonsai2-27b` | bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork >= prism-b10685) or bonsai-27b (the previous generation) |
+| `--model` | str |  | `bonsai2-27b` | bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork >= prism-b10685), bonsai-27b (the previous generation) or ling-tiny-8b (CPU fallback, weaker than Bonsai; 4.8 GB GGUF downloaded once) |
 | `--dry-run` | str |  | `false` | Show what would run without starting anything |
 | `--stop` | str |  | `false` | Stop and remove the local Bonsai container |
 
@@ -1060,6 +1070,17 @@ Test Android/iOS apps end to end (Maestro) and keep screenshots as proof
 |---|---|---|---|---|
 | `<mobile_args>` | str |  |  | devices \| shot \| test FLOW |
 
+## `adk models`
+
+Browse the model catalogue, pick one for this machine, pull it verified, serve it (list | recommend | pull | use)
+
+**Subcommands**
+
+- `adk models list` — Every catalogue model, its licence and whether it fits
+- `adk models recommend` — The largest permitted model this machine can run
+- `adk models pull` — Download a model (resumable, size + sha256 checked)
+- `adk models use` — Serve a pulled model and point adk at it
+
 ## `adk mothership`
 
 | option | type | required | default | description |
@@ -1551,6 +1572,7 @@ Run a persistent agent connected to your AitherOS fleet (one command)
 | `--force` | str |  | `false` | Restart even if an agent is already running |
 | `--offline` | str |  | `false` | Sovereign/local-only: no tunnel, no portal (or set AITHER_OFFLINE=1) |
 | `--no-register` | str |  | `false` | Run locally only — no tunnel, no fleet registration |
+| `--no-room` | str |  | `false` | Do not join your company's room (a login that belongs to a company joins it by default) |
 | `--require-register` | str |  | `false` | Fail (non-zero) if the fleet registration cannot complete |
 | `--token` | str |  |  | Portal token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN) |
 | `--auth-token` | str |  |  | Callback bearer the control plane presents back (minted if omitted) |

@@ -42,5 +42,5 @@ skills/image-generation.md
 
 ---
 
-sha256 `65d8dfa54ae4d7b8667c56433bb261271e9d94c69c0f34a6428c2f9b2e7a7283`  
+sha256 `51177381fa9de1913d62e14ae0afecbd0742c9ec12da35a7f35c9a34fae105ca`  
 Built from `v3.8.46` (adk 3.8.46). [All packs](../packs.md)
