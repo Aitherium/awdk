@@ -33,7 +33,7 @@ button { background:var(--acc); color:#fff; border:0; border-radius:10px; paddin
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const token = new URLSearchParams(location.hash.slice(1)).get('t') || '';
+  let token = new URLSearchParams(location.hash.slice(1)).get('t') || '';
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/holder';
   const budget = $('budget'); budget.value = localStorageGet('kvh.mb', '2048'); $('bv').textContent = budget.value;
   budget.oninput = () => { $('bv').textContent = budget.value; localStorageSet('kvh.mb', budget.value); };
@@ -52,6 +52,7 @@ button { background:var(--acc); color:#fff; border:0; border-radius:10px; paddin
     const holder = new KVHolder.Holder(engine, Number(budget.value) * 1048576, name);
     set('connecting', 'wait');
     ws = KVHolder.connect(url, token, holder, {
+      session: (s) => { token = s; },  // a join link works once; reconnect with the session
       attached: () => set('attached: lending memory', 'on'),
       error: (e) => set('error: ' + e, 'off'),
       closed: () => { set('disconnected, retrying', 'wait'); setTimeout(start, 3000); },

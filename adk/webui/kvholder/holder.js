@@ -393,6 +393,7 @@ class Holder {
       default: return this.err('unknown message ' + type);
     }
   }
+  maxHeld() { if (!this.cfg) return 0; let m = 0; for (let l = 0; l < this.cfg.nLayer; l++) m = Math.max(m, this.engine.held(l)); return m; }
   used() { if (!this.cfg) return 0; let n = 0; for (let l = 0; l < this.cfg.nLayer; l++) n += this.engine.held(l); return n * this.engine.bytesPerKey(); }
   err(text) { return [T.ERR, enc.encode(text)]; }
   async attn(p, dv, big) {
@@ -430,11 +431,12 @@ function connect(url, token, holder, on) {
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   let chain = Promise.resolve();
-  ws.onopen = () => ws.send(JSON.stringify({hello: 'kvholder', token: token, device: holder.device + ' (' + holder.engine.kind + ')', version: VERSION}));
+  ws.onopen = () => ws.send(JSON.stringify({hello: 'kvholder', token: token, device: holder.device + ' (' + holder.engine.kind + ')', version: VERSION, max_bytes: holder.budget, held: holder.maxHeld(),
+    store: holder.engine.kind === 'cpu' ? 'wire' : (holder.engine.f16 ? 'f16' : 'f32')}));
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const m = JSON.parse(ev.data);
-      if (m.ok) { on.attached && on.attached(); } else { on.error && on.error(m.error || 'refused'); ws.close(); }
+      if (m.ok) { if (m.session) on.session && on.session(m.session); on.attached && on.attached(); } else { on.error && on.error(m.error || 'refused'); ws.close(); }
       return;
     }
     const msg = new Uint8Array(ev.data);

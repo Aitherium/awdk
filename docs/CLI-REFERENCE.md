@@ -950,6 +950,7 @@ Lend this device's memory to another host's context window (PATN v3 KV holder)
 - `adk kvholder plan` — How much context a holder with this much free memory can keep
 - `adk kvholder phone` — Use a phone (or any browser) as the holder: USB, LAN, mesh or tunnel
 - `adk kvholder relay-status` — Is a holder attached to the local relay
+- `adk kvholder elastic` — Add holders on demand (CI runners via awrun, or any machine), one join token each
 
 ## `adk learn`
 

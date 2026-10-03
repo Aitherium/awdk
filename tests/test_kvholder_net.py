@@ -158,7 +158,7 @@ def test_relay_reattach_after_holder_drops(relay):
     )
     t.start()
     _wait_attached(r)
-    r.holder.ws.sock.close()  # the cable is pulled
+    r.holders[0].ws.sock.close()  # the cable is pulled
     c = kv.KVHolderClient("127.0.0.1", ep, timeout=10)
     with pytest.raises(RuntimeError):
         c.hello()

@@ -48,6 +48,32 @@ URL) so the holder can reach it. `adk kvholder serve` without `--connect` listen
 `127.0.0.1:50062` instead; PATN has no authentication, so bind a LAN address only on a
 network you trust.
 
+## Elastic: add holders on demand
+
+One relay takes any number of holders. Each gets a range of key positions sized from the
+memory it lends; every attention call goes to the holders that hold keys, in parallel, and
+the relay merges their partials exactly. A holder that joins mid-session adds capacity at
+once. A holder that drops reconnects without losing its keys. If it comes back empty, every
+call fails loudly until the engine starts over; it never gets a partial answer.
+
+```bash
+adk kvholder phone --via tunnel              # the relay, reachable from anywhere
+adk kvholder elastic --count 4 --minutes 60 --max-mb 8192
+```
+
+`elastic` mints one **join token** per holder. A join token works once and expires; on first
+use the holder gets a session token for reconnects, and the relay's master token never leaves
+the machine. With [awrun](https://github.com/Aitherium/awrun) installed, each holder is an
+awrun `ci` run of a `workflow_dispatch` workflow in your repo (`--workflow`, inputs `relay`,
+`join`, `minutes`, `max_mb`) that runs:
+
+```bash
+adk kvholder serve --connect "$RELAY" --token "$JOIN" --max-mb "$MAX_MB"
+```
+
+Without awrun it calls `gh workflow run`. `--print-only` mints the tokens and prints that
+command for any other machine: a container, a VM, a laptop on the mesh.
+
 ## Plan and check
 
 ```bash

@@ -35,7 +35,8 @@ import sys
 import threading
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from adk import kvholder as kv
 
@@ -203,82 +204,378 @@ class _Attached:
     ws: WebSocket
     device: str
     since: float
+    max_bytes: int | None = None  # what the holder said it lends; None = unbounded
+    store: str = "wire"  # how it stores a key: as received ("wire"), or dequantized "f16"/"f32"
+    off: int = 0  # first global key position this holder keeps (same for every layer)
+    cap: int | None = None  # keys per layer it keeps, from max_bytes and the CONFIG
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    session: str = ""  # lets the same holder reattach after a dropped link
+
+
+class HolderLostError(ConnectionError):
+    pass
 
 
 class Relay:
-    """Engine-side PATN over TCP  <->  one dialed-in holder over WebSocket."""
+    """Engine-side PATN over TCP  <->  any number of dialed-in holders over WebSocket.
+
+    The engine sees ONE holder. With several, the relay gives each a contiguous range of key
+    positions (the same range on every layer, sized from the memory it lends), splits APPENDs
+    by range, sends each attention call to the holders that hold keys in parallel, and merges
+    their partials (exact log-sum-exp merge). A holder that joins later takes the next range,
+    so capacity grows while the engine runs. A holder lost while holding keys makes every call
+    fail loudly until the engine re-CONFIGs: the engine recomputes, never gets a partial answer.
+    """
 
     def __init__(self, token: str):
         self.token = token
-        self.lock = threading.Lock()  # one PATN call in flight, as the protocol requires
-        self.holder: _Attached | None = None
+        self.lock = threading.Lock()  # one engine op at a time, as the protocol requires
+        self.holders: list[_Attached] = []
+        self.cfg: kv.Config | None = None
+        self.n: list[int] = []  # keys held per layer, across all holders
+        self.broken = ""
         self.calls = 0
         self.stop = threading.Event()
+        self.joins: dict[str, float] = {}  # join token -> expiry: handed to an on-demand holder
+        self.sessions: set[str] = set()  # issued on a join, so that holder can reconnect
+
+    # ------------------------------------------------------------ membership
+
+    @property
+    def holder(self) -> _Attached | None:
+        return self.holders[0] if self.holders else None
 
     def check_token(self, token: str) -> bool:
-        return hmac.compare_digest(token.encode(), self.token.encode())
+        return self.admit(token) is not None
 
-    def attach(self, ws: WebSocket, device: str) -> None:
+    def admit(self, token: str) -> str | None:
+        """'master', 'session', 'join' (consumed) or None. Constant-time per candidate."""
+        b = token.encode()
+        if hmac.compare_digest(b, self.token.encode()):
+            return "master"
+        if any(hmac.compare_digest(b, t.encode()) for t in list(self.sessions)):
+            return "session"
+        now = time.time()
+        for t, exp in list(self.joins.items()):
+            if exp < now:
+                self.joins.pop(t, None)
+            elif hmac.compare_digest(b, t.encode()):
+                self.joins.pop(t, None)  # one holder per join token
+                return "join"
+        return None
+
+    def mint_join(self, ttl_s: float = 900.0) -> tuple[str, float]:
+        """A token an on-demand holder (a CI runner, a container) uses ONCE to attach.
+
+        It may sit in a CI log or a job's inputs; it expires in ``ttl_s`` and dies on first
+        use. The master token never leaves this machine.
+        """
+        tok, exp = "j-" + secrets.token_urlsafe(18), time.time() + ttl_s
+        self.joins[tok] = exp
+        return tok, exp
+
+    def attach(
+        self,
+        ws: WebSocket,
+        device: str,
+        max_bytes: int | None = None,
+        store: str = "wire",
+        session: str = "",
+        held: int | None = None,
+    ) -> None:
+        h = _Attached(ws, device, time.time(), max_bytes=max_bytes, store=store, session=session)
         with self.lock:
-            if self.holder:
-                self.holder.ws.close()
-            self.holder = _Attached(ws, device, time.time())
-        log.info("kvholder relay: holder attached: %s", device)
-        print(f"kvholder: holder attached: {device}", flush=True)
+            old = next((o for o in self.holders if session and o.session == session), None)
+            if old is not None:
+                expect = self._local(old, max(self.n) if self.n else 0)
+                if held == expect:  # same holder, same keys: swap the link, lose nothing
+                    with old.lock:
+                        dead, old.ws = old.ws, ws
+                    dead.close()
+                    print(f"kvholder: holder reattached: {device} ({expect} keys kept)", flush=True)
+                    return
+                self.detach(old)  # it came back without its keys: fail loudly, never guess
+            self.holders.append(h)
+            if self.cfg is not None:
+                self._place(h)
+                try:
+                    # short: the engine waits behind this lock while a newcomer configures
+                    rep = self._call(h, _msg(kv.CONFIG, self.cfg.pack()), timeout=10.0)
+                except HolderLostError:
+                    return
+                if _type(rep) != kv.OK:
+                    self.holders.remove(h)
+                    ws.close()
+                    return
+        lend = "unbounded" if max_bytes is None else f"lends {max_bytes >> 20} MB"
+        print(f"kvholder: holder attached: {device} ({lend})", flush=True)
 
-    def detach(self, ws: WebSocket | None = None) -> None:
-        if self.holder and (ws is None or self.holder.ws is ws):
-            print(f"kvholder: holder gone: {self.holder.device}", flush=True)
-            self.holder = None
+    def _place(self, h: _Attached) -> None:
+        """Give ``h`` the next free key range (the CONFIG must be known)."""
+        assert self.cfg is not None
+        row = {"f16": 2, "f32": 4}.get(h.store)
+        row_bytes = self.cfg.n_head_kv * kv.HD * row if row else self.cfg.rs
+        per_key = 2 * row_bytes * self.cfg.n_layer
+        h.cap = None if h.max_bytes is None else (h.max_bytes // per_key) // 64 * 64
+        h.off = 0
+        for o in self.holders:
+            if o is h:
+                break
+            if o.cap is None:
+                h.off = 1 << 62  # behind an unbounded holder: never reached
+                break
+            h.off = max(h.off, o.off + o.cap)
 
-    def call(self, msg: bytes, expect_reply: bool = True) -> bytes:
-        """Forward one PATN message; returns the reply message (header + payload)."""
-        with self.lock:
-            h = self.holder
-            if h is None:
-                return _err("no holder attached")
+    def detach(self, h: _Attached) -> None:
+        if h not in self.holders:
+            return
+        self.holders.remove(h)
+        held = self._local(h, max(self.n) if self.n else 0)
+        if held:
+            self.broken = f"holder lost: {h.device} held keys [{h.off}, {h.off + held})"
+        print(f"kvholder: holder gone: {h.device}" + (" (keys lost)" if held else ""), flush=True)
+
+    def _local(self, h: _Attached, n_global: int) -> int:
+        """How many of the first ``n_global`` positions ``h`` holds."""
+        top = n_global - h.off
+        if h.cap is not None:
+            top = min(top, h.cap)
+        return max(0, top)
+
+    # ------------------------------------------------------------ one holder call
+
+    def _call(
+        self, h: _Attached, msg: bytes, expect_reply: bool = True, timeout: float = CALL_TIMEOUT_S
+    ) -> bytes:
+        with h.lock:
             try:
-                h.ws.sock.settimeout(CALL_TIMEOUT_S)
+                h.ws.sock.settimeout(timeout)
                 h.ws.send(msg)
                 if not expect_reply:
                     return b""
                 op, reply = h.ws.recv()
                 if op != OP_BIN or len(reply) < kv.HDR.size:
                     raise ConnectionError("holder sent a non-PATN reply")
-                self.calls += 1
                 return reply
             except (OSError, ConnectionError) as e:
-                self.detach(h.ws)
-                return _err(f"holder lost: {e}")
+                self.detach(h)
+                raise HolderLostError(f"holder lost: {h.device}: {e}") from e
             finally:
-                if self.holder is h:
+                if h in self.holders:
                     h.ws.sock.settimeout(None)
+
+    # ------------------------------------------------------------ the engine's view
+
+    def call(self, msg: bytes, expect_reply: bool = True) -> bytes:
+        """One PATN request from the engine -> the reply message (header + payload)."""
+        _, mtype, n = kv.HDR.unpack_from(msg)
+        p = msg[kv.HDR.size : kv.HDR.size + n]
+        with self.lock:
+            if mtype == kv.BYE:
+                for h in list(self.holders):
+                    try:
+                        self._call(h, msg, expect_reply=False)
+                    except HolderLostError:
+                        continue
+                return b""
+            if not self.holders:
+                return _err("no holder attached")
+            try:
+                self.calls += 1
+                if mtype in (kv.HELLO, kv.STATS, kv.PING):
+                    return self._info(mtype, msg)
+                if mtype == kv.CONFIG:
+                    return self._config(msg, p)
+                if self.broken and mtype in (kv.APPEND, kv.ATTN, kv.ATTN_BIG):
+                    return _err(self.broken)
+                if mtype == kv.APPEND:
+                    return self._append(p)
+                if mtype == kv.TRUNCATE:
+                    return self._truncate(p)
+                if mtype in (kv.ATTN, kv.ATTN_BIG):
+                    return self._attn(mtype, p)
+                return self._call(self.holders[0], msg)
+            except HolderLostError as e:
+                return _err(self.broken or str(e))
+
+    def _info(self, mtype: int, msg: bytes) -> bytes:
+        if len(self.holders) == 1:
+            return self._call(self.holders[0], msg)
+        if mtype == kv.PING:
+            _, _, n = kv.HDR.unpack_from(msg)
+            k = struct.unpack_from("<I", msg, kv.HDR.size)[0] if n >= 4 else 0
+            return _msg(kv.OK, b"\x5a" * min(k, 64 << 20))
+        if mtype == kv.HELLO:
+            mb = sum(h.max_bytes or 0 for h in self.holders) >> 20
+            dev = f"adk-relay holders={len(self.holders)} max_mb={mb}".encode()[:63]
+            return _msg(kv.HELLO_OK, kv.HELLO_REP.pack(kv.VERSION, 0, dev))
+        lines = [f"relay holders={len(self.holders)} held={self.n[0] if self.n else 0}"]
+        for h in list(self.holders):
+            rep = self._call(h, msg)
+            lines.append(f"[{h.device} off={h.off}] {_text(rep)}")
+        return _msg(kv.OK, " | ".join(lines).encode())
+
+    def _config(self, msg: bytes, p: bytes) -> bytes:
+        if len(p) < kv.CONFIG_REQ.size:
+            return _err("short CONFIG")
+        self.cfg = kv.Config.unpack(p)
+        self.n = [0] * self.cfg.n_layer
+        self.broken = ""
+        for h in self.holders:
+            self._place(h)
+        for h in list(self.holders):
+            rep = self._call(h, msg)
+            if _type(rep) != kv.OK:
+                self.cfg = None
+                return rep
+        return _msg(kv.OK, b"")
+
+    def _append(self, p: bytes) -> bytes:
+        if self.cfg is None or len(p) < kv.APPEND_REQ.size:
+            return _err("short APPEND")
+        layer, pos0, n = kv.APPEND_REQ.unpack_from(p)
+        rs = self.cfg.rs
+        if layer >= self.cfg.n_layer or len(p) != kv.APPEND_REQ.size + 2 * n * rs:
+            return _err("bad APPEND")
+        if pos0 != self.n[layer]:
+            return _err(f"APPEND pos0 {pos0} != held {self.n[layer]}")
+        keys = p[kv.APPEND_REQ.size : kv.APPEND_REQ.size + n * rs]
+        vals = p[kv.APPEND_REQ.size + n * rs :]
+        plan, done = [], 0  # place every row BEFORE sending any: a refused APPEND changes nothing
+        for h in self.holders:
+            if done == n:
+                break
+            pos = pos0 + done
+            end = pos0 + n if h.cap is None else min(pos0 + n, h.off + h.cap)
+            if pos < h.off or end <= pos:
+                continue
+            plan.append((h, pos, end - pos, done))
+            done += end - pos
+        if done != n:
+            return _err(f"out of memory at {pos0 + done} keys (no holder has room)")
+        for i, (h, pos, take, at) in enumerate(plan):
+            sub = kv.APPEND_REQ.pack(layer, pos - h.off, take)
+            a, b = at * rs, (at + take) * rs
+            rep = self._call(h, _msg(kv.APPEND, sub + keys[a:b] + vals[a:b]))
+            if _type(rep) != kv.OK:
+                if i:  # earlier holders already took their rows: the state is split, say so
+                    self.broken = f"APPEND split failed at {pos} keys ({h.device}: {_text(rep)})"
+                return _err(f"out of memory at {pos} keys ({h.device}: {_text(rep)})")
+        self.n[layer] += n
+        return _msg(kv.OK, struct.pack("<I", self.n[layer]))
+
+    def _truncate(self, p: bytes) -> bytes:
+        keep = struct.unpack_from("<I", p)[0] if len(p) >= 4 else 0
+        for h in list(self.holders):
+            rep = self._call(h, _msg(kv.TRUNCATE, struct.pack("<I", self._local(h, keep))))
+            if _type(rep) != kv.OK:
+                return rep
+        self.n = [min(x, keep) for x in self.n]
+        return _msg(kv.OK, b"")
+
+    def _attn(self, mtype: int, p: bytes) -> bytes:
+        if self.cfg is None or len(p) < kv.ATTN_REQ.size:
+            return _err("short ATTN")
+        layer, n_tok, nk, scale = kv.ATTN_REQ.unpack_from(p)
+        if layer >= self.cfg.n_layer:
+            return _err("bad ATTN")
+        q = p[kv.ATTN_REQ.size :]
+        nk_all = self.n[layer] if nk == 0 else min(nk, self.n[layer])
+        parts = [(h, self._local(h, nk_all)) for h in self.holders]
+        parts = [(h, k) for h, k in parts if k > 0]
+        if len(parts) == 1 and parts[0][0].off == 0:  # one holder: pass straight through
+            req = kv.ATTN_REQ.pack(layer, n_tok, nk_all, scale) + q
+            return self._call(parts[0][0], _msg(mtype, req))
+        qn = self.cfg.n_head_kv * kv.NR * kv.HD
+        ng = len(q) // (2 * qn)
+        rows = ng * self.cfg.n_head_kv * kv.NR
+        if ng < 1 or len(q) != ng * 2 * qn:
+            return _err("bad ATTN")
+        if not parts:
+            lse = struct.pack(f"<{rows}f", *([float("-inf")] * rows))
+            head = kv.ATTN_REP.pack(0, 0.0, 0.0, 0.0, 0, 0)
+            return _msg(kv.ATTN_OK, head + bytes(rows * kv.HD * 2) + lse)
+        np = kv.np
+        if np is None:
+            return _err("the relay needs numpy to merge several holders")
+        replies: list = [None] * len(parts)
+
+        def run(i: int, h: _Attached, k: int) -> None:
+            try:
+                req = kv.ATTN_REQ.pack(layer, n_tok, k, scale) + q
+                replies[i] = self._call(h, _msg(mtype, req))
+            except HolderLostError as e:
+                replies[i] = e
+
+        threads = [threading.Thread(target=run, args=(i, h, k)) for i, (h, k) in enumerate(parts)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        merged, ms, pages = [], 0.0, 0
+        for rep in replies:
+            if isinstance(rep, Exception):
+                raise rep
+            if _type(rep) != kv.ATTN_OK:
+                return rep
+            body = rep[kv.HDR.size :]
+            _, t_ms, _, _, _, pg = kv.ATTN_REP.unpack_from(body)
+            o = np.frombuffer(body, np.float16, rows * kv.HD, kv.ATTN_REP.size)
+            lse = np.frombuffer(body, np.float32, rows, kv.ATTN_REP.size + rows * kv.HD * 2)
+            merged.append((o.astype(np.float32).reshape(rows, kv.HD), lse))
+            ms, pages = max(ms, t_ms), pages + pg
+        o, lse = kv.merge_partials(merged)
+        head = kv.ATTN_REP.pack(nk_all, ms, 0.0, 0.0, 0, pages)
+        return _msg(kv.ATTN_OK, head + o.astype(np.float16).tobytes() + lse.tobytes())
+
+    # ------------------------------------------------------------ upkeep
 
     def keepalive(self) -> None:
         while not self.stop.wait(KEEPALIVE_S):
-            if not self.lock.acquire(timeout=0.1):
-                continue
-            try:
-                if self.holder:
-                    self.holder.ws.send(b"ka", OP_PING)
-            except OSError:
-                self.detach()
-            finally:
-                self.lock.release()
+            for h in list(self.holders):
+                if not h.lock.acquire(timeout=0.1):
+                    continue
+                try:
+                    h.ws.send(b"ka", OP_PING)
+                    ok = True
+                except OSError:
+                    ok = False
+                finally:
+                    h.lock.release()
+                if not ok:
+                    with self.lock:
+                        self.detach(h)
 
     def status(self) -> dict:
-        h = self.holder
+        hs = list(self.holders)
         return {
-            "attached": bool(h),
-            "device": h.device if h else None,
-            "since": h.since if h else None,
+            "attached": bool(hs),
+            "device": hs[0].device if hs else None,
+            "since": hs[0].since if hs else None,
+            "holders": [
+                {"device": h.device, "off": h.off, "cap": h.cap, "max_bytes": h.max_bytes}
+                for h in hs
+            ],
+            "held": self.n[0] if self.n else 0,
+            "broken": self.broken or None,
             "calls": self.calls,
         }
 
 
+def _msg(mtype: int, payload: bytes) -> bytes:
+    return kv.HDR.pack(kv.MAGIC, mtype, len(payload)) + payload
+
+
+def _type(rep: bytes) -> int:
+    return kv.HDR.unpack_from(rep)[1]
+
+
+def _text(rep: bytes) -> str:
+    return rep[kv.HDR.size :].decode(errors="replace")
+
+
 def _err(text: str) -> bytes:
-    b = text.encode()
-    return kv.HDR.pack(kv.MAGIC, kv.ERR, len(b)) + b
+    return _msg(kv.ERR, text.encode())
 
 
 class _EngineHandler(socketserver.BaseRequestHandler):
@@ -327,6 +624,8 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             return self._upgrade(sock, hdrs, relay)
         if route == "/status":
             return self._send(200, "application/json", json.dumps(relay.status()).encode())
+        if route == "/join":
+            return self._join(path, hdrs, relay)
         if route in ("/", "/index.html"):
             from adk.kvholder_page import PAGE_HTML
 
@@ -337,8 +636,25 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             return self._send(200, "text/javascript; charset=utf-8", HOLDER_JS.encode())
         return self._send(404, "text/plain", b"not found")
 
+    def _join(self, path: str, hdrs: dict, relay: Relay) -> None:
+        """Mint a join token: this machine only, and only with the master token."""
+        peer = self.client_address[0]
+        if peer not in ("127.0.0.1", "::1") or relay.admit(hdrs.get("x-kv-token", "")) != "master":
+            return self._send(403, "text/plain", b"forbidden")
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+        try:
+            ttl = min(max(float(q.get("ttl", ["900"])[0]), 30.0), 86400.0)
+        except ValueError:
+            ttl = 900.0
+        tok, exp = relay.mint_join(ttl)
+        return self._send(
+            200, "application/json", json.dumps({"token": tok, "expires": exp}).encode()
+        )
+
     def _send(self, code: int, ctype: str, body: bytes) -> None:
-        reason = {200: "OK", 404: "Not Found", 405: "Method Not Allowed"}.get(code, "")
+        reason = {200: "OK", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed"}.get(
+            code, ""
+        )
         head = (
             f"HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\n"
             "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
@@ -365,16 +681,37 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             hello = json.loads(data.decode()) if op == OP_TEXT else {}
         except (ConnectionError, OSError, ValueError):
             return
-        if hello.get("hello") != "kvholder" or not relay.check_token(str(hello.get("token", ""))):
+        kind = (
+            relay.admit(str(hello.get("token", ""))) if hello.get("hello") == "kvholder" else None
+        )
+        if kind is None:
             ws.send(json.dumps({"ok": False, "error": "bad token"}))
             ws.close()
             return
+        ack: dict = {"ok": True}
+        session = (
+            str(hello.get("token", "")) if kind == "session" else "s-" + secrets.token_urlsafe(18)
+        )
+        if kind != "session":
+            relay.sessions.add(session)
+            ack["session"] = session
+        held = hello.get("held")
         device = str(hello.get("device", "holder"))[:80]
+        mb = hello.get("max_bytes")
+        max_bytes = int(mb) if isinstance(mb, (int, float)) and mb > 0 else None
+        store = str(hello.get("store", "wire"))
         sock.settimeout(None)
-        ws.send(json.dumps({"ok": True}))
-        relay.attach(ws, device)
-        # This thread now only parks: the relay drives the socket under its lock.
-        while self.server.relay.holder and self.server.relay.holder.ws is ws:  # type: ignore[attr-defined]
+        ws.send(json.dumps(ack))
+        relay.attach(
+            ws,
+            device,
+            max_bytes,
+            store if store in ("wire", "f16", "f32") else "f32",
+            session=session,
+            held=held if isinstance(held, int) else None,
+        )
+        # This thread now only parks: the relay drives the socket under the holder's lock.
+        while any(h.ws is ws for h in relay.holders):
             time.sleep(0.5)
 
 
@@ -402,8 +739,8 @@ def start_relay(
 
 def stop_relay(relay: Relay, servers: list[_Server]) -> None:
     relay.stop.set()
-    if relay.holder:
-        relay.holder.ws.close()
+    for h in list(relay.holders):
+        h.ws.close()
     for s in servers:
         s.shutdown()
         s.server_close()
@@ -418,12 +755,23 @@ def dial_holder(url: str, token: str, holder: "kv.KVHolder", once: bool = False)
     while True:
         try:
             ws = ws_connect(url)
-            ws.send(json.dumps({"hello": "kvholder", "token": token, "device": holder.device}))
+            ws.send(
+                json.dumps(
+                    {
+                        "hello": "kvholder",
+                        "token": token,
+                        "device": holder.device,
+                        "max_bytes": holder.st.max_bytes,
+                        "held": max(holder.st.n) if holder.st.n else 0,
+                    }
+                )
+            )
             op, data = ws.recv()
             ack = json.loads(data.decode()) if op == OP_TEXT else {}
             if not ack.get("ok"):
                 print(f"kvholder: relay refused: {ack.get('error', 'no reason')}", file=sys.stderr)
                 return 1
+            token = ack.get("session") or token  # a join token is single-use: reconnect with this
             print(f"kvholder: attached to {url.split('#')[0]}", flush=True)
             backoff = 1.0
             while True:
@@ -562,6 +910,27 @@ def register(s) -> None:
     ph.add_argument("--serial", default="", help="adb device serial when several are plugged in")
     st = s.add_parser("relay-status", help="Is a holder attached to the local relay")
     st.add_argument("--web-port", type=int, default=DEFAULT_WS_PORT)
+    el = s.add_parser(
+        "elastic",
+        help="Add holders on demand (CI runners via awrun, or any machine), one join token each",
+    )
+    el.add_argument("--count", type=int, default=1, help="holders to add")
+    el.add_argument("--minutes", type=int, default=30, help="how long each lends its memory")
+    el.add_argument("--max-mb", type=int, default=4096, help="memory each holder lends")
+    el.add_argument(
+        "--workflow",
+        default="kvholder-runner.yml",
+        help="a workflow_dispatch workflow in your repo that runs `adk kvholder serve --connect` "
+        "(inputs: relay, join, minutes, max_mb)",
+    )
+    el.add_argument("--ref", default="develop")
+    el.add_argument("--priority", type=int, default=5, help="awrun priority")
+    el.add_argument(
+        "--print-only",
+        action="store_true",
+        help="mint the tokens and print one command per holder; launch nothing",
+    )
+    el.add_argument("--dry-run", action="store_true", help="show what would be launched")
 
 
 def run_phone(args) -> int:
@@ -574,7 +943,7 @@ def run_phone(args) -> int:
     except OSError as e:
         print(f"kvholder: cannot listen ({e}); is another relay running?", file=sys.stderr)
         return 1
-    tproc = None
+    tproc, public = None, ""
     print(f"kvholder: engine port 127.0.0.1:{args.port} (point LLAMA_KV_REMOTE here)")
     if args.via == "usb":
         devs = adb_devices()
@@ -609,12 +978,24 @@ def run_phone(args) -> int:
                 file=sys.stderr,
             )
         else:
+            public = pub
             print(f"phone URL: {holder_url(pub, token)}")
     else:
         print(f"page URL: {holder_url(f'http://localhost:{args.web_port}', token)}")
     print(
         "python holder: adk kvholder serve --connect "
         f"ws://<this-host>:{args.web_port}/holder --token {token}"
+    )
+    print("more holders on demand: adk kvholder elastic --count N")
+    write_state(
+        {
+            "engine_port": args.port,
+            "web_port": args.web_port,
+            "token": token,
+            "public": public,
+            "lan": f"http://{args.host or lan_ip()}:{args.web_port}" if args.via == "lan" else "",
+            "pid": os.getpid(),
+        }
     )
     try:
         while True:
@@ -625,7 +1006,136 @@ def run_phone(args) -> int:
         stop_relay(relay, servers)
         if tproc is not None:
             tproc.terminate()
+        state_path().unlink(missing_ok=True)
     return 0
+
+
+# ---------------------------------------------------------------- elastic: holders on demand
+
+
+def state_path() -> Path:
+    return Path(
+        os.environ.get("AITHER_KVHOLDER_STATE")
+        or Path.home() / ".aither" / "kvholder" / "relay.json"
+    )
+
+
+def write_state(st: dict) -> None:
+    """The running relay's ports, master token and public URL, readable by this user only."""
+    p = state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(st, f)
+
+
+def read_state() -> dict | None:
+    try:
+        return json.loads(state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def mint_join_remote(st: dict, ttl_s: float) -> str:
+    """Ask the local relay for a join token (loopback + master token only)."""
+    import urllib.request
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{st['web_port']}/join?ttl={int(ttl_s)}",
+        headers={"X-KV-Token": st["token"]},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())["token"]
+
+
+def relay_ws_url(base: str) -> str:
+    u = urllib.parse.urlsplit(base)
+    scheme = "wss" if u.scheme == "https" else "ws"
+    return f"{scheme}://{u.netloc}/holder"
+
+
+def launch_argv(args, relay: str, join: str) -> list[list[str]]:
+    """The commands that start one on-demand holder: awrun when installed, else gh."""
+    fields = {
+        "relay": relay,
+        "join": join,
+        "minutes": str(args.minutes),
+        "max_mb": str(args.max_mb),
+    }
+    try:
+        import awrun  # noqa: F401  (presence check)
+
+        have_awrun = True
+    except ImportError:
+        have_awrun = False
+    if have_awrun:
+        sub = [
+            sys.executable,
+            "-m",
+            "awrun",
+            "submit",
+            "--kind",
+            "ci",
+            "--workflow",
+            args.workflow,
+            "--ref",
+            args.ref,
+            "--priority",
+            str(args.priority),
+        ]
+        for k, v in fields.items():
+            sub += ["--field", f"{k}={v}"]
+        return [sub, [sys.executable, "-m", "awrun.dispatcher", "--once"]]
+    gh = ["gh", "workflow", "run", args.workflow, "--ref", args.ref]
+    for k, v in fields.items():
+        gh += ["-f", f"{k}={v}"]
+    return [gh]
+
+
+def run_elastic(args) -> int:
+    st = read_state()
+    if not st:
+        print(
+            "kvholder elastic: no relay running here; start `adk kvholder phone --via tunnel`",
+            file=sys.stderr,
+        )
+        return 2
+    base = st.get("public") or ""
+    if not base and not args.print_only:
+        print(
+            "kvholder elastic: runners reach the relay over the internet; start it with "
+            "`adk kvholder phone --via tunnel` (or use --print-only for machines that can reach "
+            "this one)",
+            file=sys.stderr,
+        )
+        return 2
+    relay = relay_ws_url(base or st.get("lan") or f"http://<this-host>:{st['web_port']}")
+    ttl = max(3600.0, args.minutes * 60.0)  # a queued runner may start late; the token dies on use
+    rc = 0
+    for i in range(args.count):
+        try:
+            join = mint_join_remote(st, ttl) if not args.dry_run else "j-DRYRUN"
+        except OSError as e:
+            print(f"kvholder elastic: the relay did not mint a token ({e})", file=sys.stderr)
+            return 1
+        if args.print_only:
+            print(f"adk kvholder serve --connect {relay} --token {join} --max-mb {args.max_mb}")
+            continue
+        for argv in launch_argv(args, relay, join):
+            shown = " ".join(
+                a if not a.startswith(("join=", "j-")) else a.split("=")[0] + "=***" for a in argv
+            )
+            if args.dry_run:
+                print(f"[{i + 1}/{args.count}] would run: {shown}")
+                continue
+            r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=180)
+            out = (r.stdout + r.stderr).strip().splitlines()
+            print(
+                f"[{i + 1}/{args.count}] {shown.split(' --field')[0]} -> exit {r.returncode}"
+                + (f": {out[-1]}" if out else "")
+            )
+            rc = rc or r.returncode
+    return rc
 
 
 def run_relay_status(args) -> int:

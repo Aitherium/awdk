@@ -691,13 +691,16 @@ def run(args) -> int:
             f"{r['reserve_bytes'] >> 20} MB reserve)"
         )
         return 0
-    if action in ("phone", "relay-status"):
+    if action in ("phone", "relay-status", "elastic"):
         from adk import kvholder_net
 
-        return (kvholder_net.run_phone if action == "phone" else kvholder_net.run_relay_status)(
-            args
-        )
-    print("usage: adk kvholder {serve,probe,plan,phone,relay-status}", file=sys.stderr)
+        fn = {
+            "phone": kvholder_net.run_phone,
+            "relay-status": kvholder_net.run_relay_status,
+            "elastic": kvholder_net.run_elastic,
+        }[action]
+        return fn(args)
+    print("usage: adk kvholder {serve,probe,plan,phone,relay-status,elastic}", file=sys.stderr)
     return 2
 
 
