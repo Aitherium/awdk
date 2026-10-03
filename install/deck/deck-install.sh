@@ -61,9 +61,9 @@ REQUIRE_DOCK=1
 API_KEY_FILE=""
 PAIR_CODE=""
 # 3.8.53: kvholder serve --device/--mesh and node class deck; 3.8.54: adk pair heartbeats
-# at Identity. The --help probes below stay,
-# for a user who passes an older --awdk-spec.
-AWDK_SPEC="${AITHER_DECK_AWDK_SPEC:-awdk>=3.8.54}"
+# at Identity; 3.8.56: the heartbeat renews after a refused beat, and it has a GitHub
+# release. The --help probes below stay, for a user who passes an older --awdk-spec.
+AWDK_SPEC="${AITHER_DECK_AWDK_SPEC:-awdk>=3.8.56}"
 LEND_COMPUTE=0
 RPC_SRC=""
 RPC_SHA256=""
@@ -374,7 +374,7 @@ loginctl enable-linger "$(id -un)" 2>/dev/null || true
 if [ "$ENROLL" = 1 ]; then
     if [ -n "$PAIR_CODE" ]; then
         adk pair --help 2>/dev/null | grep -q -- '--no-autostart' \
-            || die "this adk cannot pair a Deck; re-run without --pair, or with --awdk-spec 'awdk>=3.8.54'"
+            || die "this adk cannot pair a Deck; re-run without --pair, or with --awdk-spec 'awdk>=3.8.56'"
         say "pairing this Deck with code $PAIR_CODE"
         # aither-deck-node (adk rc) carries the heartbeat; adk's own autostart would be a
         # second beat loop the uninstaller does not know about.
