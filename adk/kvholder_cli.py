@@ -36,6 +36,11 @@ def register(sub) -> None:
     )
     sv.add_argument("--token", default="", help="Relay token (with --connect)")
     sv.add_argument(
+        "--device",
+        action="store_true",
+        help="Sign in to a workspace relay as this enrolled device (adk enroll), no token",
+    )
+    sv.add_argument(
         "--store",
         choices=["f32", "wire", "tq4"],
         default="f32",
@@ -127,6 +132,10 @@ def register(sub) -> None:
     )
     el.add_argument("--dry-run", action="store_true", help="show what would be launched")
 
+    from adk.kvholder_workspace import register as _workspace
+
+    _workspace(s)
+
     po = s.add_parser(
         "pool", help="The shared KV pool: prefix blocks engine sessions attach to (adk.kvpool)"
     )
@@ -152,6 +161,10 @@ def register(sub) -> None:
 
 def run(args) -> int:
     action = getattr(args, "kvholder_action", None)
+    if action == "workspace":
+        from adk import kvholder_workspace
+
+        return kvholder_workspace.run(args)
     if action == "chat":
         from adk import kvholder_engine  # torch + transformers, imported only here
 

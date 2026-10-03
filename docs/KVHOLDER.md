@@ -98,6 +98,51 @@ second over the last minute, last and average ms, the engine (`webgpu-f16 <adapt
 changes the amount lent (a change that would drop held keys asks twice); **Stop lending**
 closes the link and frees the memory.
 
+## Phones anywhere: the workspace relay and the Android app
+
+The setups above need someone at the machine: a cable, a LAN, a link with a token. The
+workspace relay is the always-on form. It runs on the model's machine, is reachable at
+`wss://kv.aitherium.com/holder` through the platform's tunnel, and lets in only phones that
+sign in as devices of your workspace.
+
+```bash
+adk kvholder workspace install            # start it at logon (Windows task / systemd user unit)
+adk kvholder workspace pair --name fold --max-mb 4096 --serial <adb serial>
+adk kvholder workspace status             # the swarm by device, grants, devices waiting
+adk kvholder workspace deny kvh-fold      # drops it within 5 s
+```
+
+- **Sign-in.** Each phone has an Ed25519 key that never leaves it. `pair` mints a one-time
+  pairing code (identity `POST /v1/nodes/pairing/init`, 5 minutes) and hands the phone an
+  `aitherkv://pair?...` link (over adb once, or as a QR code). The app confirms the code with
+  identity, which enrolls it as a device of your workspace with that key. Every dial is a
+  signed hello (`aither-kvholder-hello/1`: relay host, device id, time, nonce) that the relay
+  checks against your enrolled keys (`GET /v1/nodes/seal-keys`). No token is copied anywhere.
+- **The owner decides.** A device lends only after `allow` (or `pair`, which allows the one it
+  creates); nothing is allowed by default, so a child's phone never lends unless you say so.
+  `--max-mb` caps what it may lend. Removing the device from the workspace (`adk devices rm`)
+  revokes it at the next key refresh (60 s); an identity outage revokes nothing.
+- **The public listener is narrow.** It serves the holder page, `holder.js` and the
+  `/holder` socket only. `/status`, `/swarm` and token minting stay on loopback, and the
+  relay's master token is refused there.
+- **Offline / sovereign.** `serve --keys-file keys.json` trusts the keys in a file of the
+  seal-keys shape instead of identity.
+
+A machine enrolled with `adk enroll` joins the same way, with its own device key:
+`adk kvholder serve --connect wss://kv.aitherium.com/holder --device`.
+
+**The Android app** (`awdk/android/kvholder`, `python awdk/android/kvholder/build.py
+--install <serial>`) is a foreground service that runs `holder.js`, the same engine as the
+page, in a WebView it owns, and dials the relay outbound. A browser tab dies when the phone
+locks; the service does not: it keeps a partial wake lock and a Wi-Fi lock while lending,
+starts again after a reboot, and its notification always says what it is doing. By default it
+lends only while charging and on Wi-Fi; the owner can change both on the phone. "Allow running
+with the screen off" asks Android to stop battery-optimizing it. The APK is debug-signed for
+adb installs; it is not in any store.
+
+awsh and Desk read the same swarm: `adk kvholder workspace status --json`, or the snapshot
+the relay writes to `~/.aither/kvholder/workspace.json` every 5 s (no tokens in it).
+
 ## Several phones: the swarm view
 
 The relay takes any number of holders. Each gets a contiguous range of key positions sized

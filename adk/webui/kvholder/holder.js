@@ -732,8 +732,13 @@ function connect(url, token, holder, on) {
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   let chain = Promise.resolve();
-  ws.onopen = () => ws.send(JSON.stringify({hello: 'kvholder', token: token, device: holder.device + ' (' + holder.engine.kind + ')', version: VERSION, max_bytes: holder.budget, held: holder.maxHeld(),
-    store: holder.engine.storeName(), ...(holder.engine.tq4 && holder.engine.center ? {tq4: 'centered'} : {})}));
+  ws.onopen = async () => {
+    const hello = {hello: 'kvholder', token: token, device: holder.device + ' (' + holder.engine.kind + ')', version: VERSION, max_bytes: holder.budget, held: holder.maxHeld(),
+      store: holder.engine.storeName(), ...(holder.engine.tq4 && holder.engine.center ? {tq4: 'centered'} : {})};
+    // on.hello: extra fields, e.g. a workspace device's signature (the Android app signs each dial)
+    if (on.hello) { try { Object.assign(hello, await on.hello()); } catch (e) { on.error && on.error('sign-in: ' + e); ws.close(); return; } }
+    ws.send(JSON.stringify(hello));
+  };
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const m = JSON.parse(ev.data);

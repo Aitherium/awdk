@@ -1183,7 +1183,12 @@ def run(args) -> int:
             from adk import kvholder_net
 
             print(f"kvholder: lending {max_b >> 20} MB to {args.connect}")
-            return kvholder_net.dial_holder(args.connect, args.token, holder)
+            sign = None
+            if getattr(args, "device", False):  # sign in as this workspace device, no token
+                from adk import kvholder_workspace
+
+                sign = kvholder_workspace.device_hello(args.connect)
+            return kvholder_net.dial_holder(args.connect, args.token, holder, sign=sign)
         srv = HolderServer((args.host, args.port), holder)
         print(f"kvholder: PATN v{VERSION} on {args.host}:{args.port}, lending {max_b >> 20} MB")
         try:

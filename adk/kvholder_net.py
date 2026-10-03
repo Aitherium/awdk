@@ -48,6 +48,7 @@ CALL_TIMEOUT_S = 60.0
 KEEPALIVE_S = 25.0  # under Cloudflare's 100 s idle cut
 _MAX_WS = 1 << 31
 _HELLO_MAX = 4096
+_PUBLIC_ROUTES = ("/holder", "/", "/index.html", "/holder.js", "/state.js")  # all, when public
 
 OP_CONT, OP_TEXT, OP_BIN, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
 
@@ -244,6 +245,8 @@ class Relay:
         self.stop = threading.Event()
         self.joins: dict[str, float] = {}  # join token -> expiry: handed to an on-demand holder
         self.sessions: set[str] = set()  # issued on a join, so that holder can reconnect
+        # adk.kvholder_workspace.DeviceGate: holders that sign in as workspace devices
+        self.device_gate = None
 
     # ------------------------------------------------------------ membership
 
@@ -341,6 +344,13 @@ class Relay:
         if h.store == "tq4":
             return cfg.n_head_kv * (cfg.k_dim // 2 + 4 + cfg.v_dim // 2 + 4)
         return cfg.rs + cfg.v_rs
+
+    def revoke(self, session: str) -> None:
+        """Drop the holder on ``session`` now (a device the owner denied or removed)."""
+        for h in [o for o in self.holders if o.session == session]:
+            with self.lock:
+                self.detach(h)
+            h.ws.close()
 
     def detach(self, h: _Attached) -> None:
         if h not in self.holders:
@@ -698,6 +708,9 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
         route = urllib.parse.urlsplit(path).path
         if method != "GET":
             return self._send(405, "text/plain", b"GET only")
+        if getattr(self.server, "public", False) and route not in _PUBLIC_ROUTES:
+            # the tunnel's listener: the holder page and its socket, nothing that reports
+            return self._send(404, "text/plain", b"not found")
         if route == "/holder" and hdrs.get("upgrade", "").lower() == "websocket":
             return self._upgrade(sock, hdrs, relay)
         if route == "/status":
@@ -803,24 +816,39 @@ class _HTTPHandler(socketserver.BaseRequestHandler):
             hello = json.loads(data.decode()) if op == OP_TEXT else {}
         except (ConnectionError, OSError, ValueError):
             return
-        kind = (
-            relay.admit(str(hello.get("token", ""))) if hello.get("hello") == "kvholder" else None
-        )
+        kind, why, device_id = None, "bad token", ""
+        if hello.get("hello") != "kvholder":
+            pass
+        elif hello.get("auth") == "device":
+            gate = relay.device_gate
+            device_id, why = gate.admit(hello) if gate is not None else (None, "no device sign-in")
+            kind = "device" if device_id else None
+        else:
+            kind = relay.admit(str(hello.get("token", "")))
+            if kind == "master" and getattr(self.server, "public", False):
+                kind = None  # the master token never crosses the public listener
         if kind is None:
-            ws.send(json.dumps({"ok": False, "error": "bad token"}))
+            ws.send(json.dumps({"ok": False, "error": why}))
             ws.close()
             return
         ack: dict = {"ok": True}
-        session = (
-            str(hello.get("token", "")) if kind == "session" else "s-" + secrets.token_urlsafe(18)
-        )
-        if kind != "session":
+        if kind == "device":
+            session = "dev:" + str(device_id)  # an id, not a token: reconnects sign again
+        elif kind == "session":
+            session = str(hello.get("token", ""))
+        else:
+            session = "s-" + secrets.token_urlsafe(18)
+        if kind not in ("session", "device"):
             relay.sessions.add(session)
             ack["session"] = session
         held = hello.get("held")
         device = str(hello.get("device", "holder"))[:80]
         mb = hello.get("max_bytes")
         max_bytes = int(mb) if isinstance(mb, (int, float)) and mb > 0 else None
+        if kind == "device" and relay.device_gate is not None:  # the owner's cap wins
+            cap = relay.device_gate.grants.max_bytes(str(device_id))
+            if cap and (max_bytes is None or max_bytes > cap):
+                max_bytes = cap
         store = str(hello.get("store", "wire"))
         sock.settimeout(None)
         ws.send(json.dumps(ack))
@@ -884,7 +912,10 @@ def start_relay(
     token: str,
     engine_addr: tuple[str, int] = ("127.0.0.1", kv.DEFAULT_PORT),
     ws_addr: tuple[str, int] = ("127.0.0.1", DEFAULT_WS_PORT),
+    public_addr: tuple[str, int] | None = None,
 ) -> tuple[Relay, list[_Server]]:
+    """``public_addr``: a second holder listener for a tunnel. It serves only the holder page
+    and socket, and refuses the master token (adk.kvholder_workspace)."""
     relay = Relay(token)
     engine = _Server(engine_addr, _EngineHandler, relay)
     try:
@@ -893,6 +924,10 @@ def start_relay(
         engine.server_close()  # do not keep the engine port of a relay that never started
         raise
     servers = [engine, web]
+    if public_addr is not None:
+        pub = _Server(public_addr, _HTTPHandler, relay)
+        pub.public = True  # type: ignore[attr-defined]
+        servers.append(pub)
     for s in servers:
         threading.Thread(target=s.serve_forever, daemon=True).start()
     threading.Thread(target=relay.keepalive, daemon=True).start()
@@ -911,25 +946,26 @@ def stop_relay(relay: Relay, servers: list[_Server]) -> None:
 # ---------------------------------------------------------------- a Python holder that dials in
 
 
-def dial_holder(url: str, token: str, holder: "kv.KVHolder", once: bool = False) -> int:
-    """Attach ``holder`` to a relay at ``url`` (ws[s]://host[:port]/holder); serve until stopped."""
+def dial_holder(url: str, token: str, holder: "kv.KVHolder", once: bool = False, sign=None) -> int:
+    """Attach ``holder`` to a relay at ``url`` (ws[s]://host[:port]/holder); serve until stopped.
+
+    ``sign``: returns the signed device fields (adk.kvholder_workspace.device_hello)."""
     backoff = 1.0
     while True:
         try:
             ws = ws_connect(url)
-            ws.send(
-                json.dumps(
-                    {
-                        "hello": "kvholder",
-                        "token": token,
-                        "device": holder.device,
-                        "max_bytes": holder.st.max_bytes,
-                        "held": max(holder.st.n) if holder.st.n else 0,
-                        "store": holder.st.store,
-                        "tq4": "centered" if getattr(holder, "tq4_center", False) else "",
-                    }
-                )
-            )
+            hello = {
+                "hello": "kvholder",
+                "token": token,
+                "device": holder.device,
+                "max_bytes": holder.st.max_bytes,
+                "held": max(holder.st.n) if holder.st.n else 0,
+                "store": holder.st.store,
+                "tq4": "centered" if getattr(holder, "tq4_center", False) else "",
+            }
+            if sign is not None:  # a workspace device: a fresh signature on every dial
+                hello.update(sign())
+            ws.send(json.dumps(hello))
             op, data = ws.recv()
             ack = json.loads(data.decode()) if op == OP_TEXT else {}
             if not ack.get("ok"):
