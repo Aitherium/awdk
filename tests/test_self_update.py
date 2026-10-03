@@ -37,7 +37,9 @@ def _watcher(root, idle=True):
     def stop():
         calls["stop"] += 1
 
-    w = su.UpdateWatcher("t", lambda: idle, probe=_probe(root), relaunch=relaunch, stop=stop)
+    w = su.UpdateWatcher("t", lambda: idle, probe=_probe(root), relaunch=relaunch, stop=stop,
+                         validate=lambda r, n: (True, "validated"),
+                         preflight_fn=lambda n: (True, "preflight ok"))
     return w, calls
 
 
@@ -126,3 +128,92 @@ def test_the_helper_waits_for_the_old_pid_then_starts_the_command(tmp_path):
     while not marker.exists() and time.time() < deadline:
         time.sleep(0.2)
     assert marker.read_text() == "up"
+
+
+# ── the validation gates (2026-10-03) ─────────────────────────────────────────
+
+def _root(tmp_path, name, verdict=None):
+    r = tmp_path / name / "awdk"
+    (r / "adk").mkdir(parents=True)
+    if verdict is not None:
+        (r / su.MARKER).write_text(json.dumps({"validated": verdict}), encoding="utf-8")
+    return r
+
+
+def test_unvalidated_code_is_refused_and_never_restarted_onto(tmp_path):
+    root = _root(tmp_path, "adk-dev")
+    calls = []
+    w = su.UpdateWatcher("t", lambda: True, probe=_probe(root), relaunch=lambda n: calls.append(n),
+                         stop=lambda: calls.append("stop"), preflight_fn=lambda n: (True, ""))
+    assert w.tick() == "refused"
+    st = su.status()
+    assert st["adoptable"] is False and "not validated" in st["refused_because"]
+    assert calls == []
+
+
+def test_code_whose_tests_failed_is_refused(tmp_path):
+    root = _root(tmp_path, "adk-red", {"ok": False, "summary": "2 failed, 9 passed"})
+    ok, why = su.validation_of(root)
+    assert not ok and "2 failed" in why
+
+
+def test_validated_code_is_adopted(tmp_path):
+    root = _root(tmp_path, "adk-green", {"ok": True, "commit": "abcdef1234567", "summary": "11 passed"})
+    assert su.validation_of(root)[0] is True
+
+
+def test_opt_in_adopts_unvalidated(tmp_path, monkeypatch):
+    monkeypatch.setenv("AITHER_DAEMON_ADOPT_UNVALIDATED", "1")
+    assert su.validation_of(_root(tmp_path, "adk-dev"))[0] is True
+
+
+def test_a_root_that_was_rolled_back_is_refused_even_if_validated(tmp_path):
+    root = _root(tmp_path, "adk-bad", {"ok": True})
+    su.run_dir().mkdir(parents=True, exist_ok=True)
+    (su.run_dir() / "t.rollback.json").write_text(json.dumps({"refused": [str(root)]}), encoding="utf-8")
+    ok, why = su.validation_of(root, "t")
+    assert not ok and "rolled back" in why
+
+
+def test_a_failing_preflight_blocks_the_restart(tmp_path):
+    calls = []
+    w = su.UpdateWatcher("t", lambda: True, probe=_probe(tmp_path / "new"),
+                         relaunch=lambda n: calls.append(n), stop=lambda: calls.append("stop"),
+                         validate=lambda r, n: (True, ""),
+                         preflight_fn=lambda n: (False, "preflight failed: ImportError"))
+    assert w.tick() == "refused"
+    assert "ImportError" in su.status()["refused_because"] and calls == []
+
+
+def test_preflight_runs_the_daemon_code_in_a_fresh_interpreter(monkeypatch):
+    monkeypatch.setitem(su.PREFLIGHTS, "t-ok", "import adk.self_update")
+    monkeypatch.setitem(su.PREFLIGHTS, "t-bad", "raise SystemExit('boom')")
+    assert su.preflight("t-ok") == (True, "preflight ok")
+    ok, why = su.preflight("t-bad")
+    assert not ok and "boom" in why
+
+
+def test_the_helper_rolls_back_when_the_new_code_is_not_healthy(tmp_path):
+    rolled = tmp_path / "rolled-back.txt"
+    run = tmp_path / "run"
+    spec = {
+        "pid": 0, "cwd": str(tmp_path), "log": str(tmp_path / "relaunch.log"),
+        "root": str(su.RUNNING_ROOT), "name": "t", "run_dir": str(run), "python": sys.executable,
+        "argv": [sys.executable, "-c", "import time; time.sleep(30)"],          # never healthy
+        "rollback_argv": [sys.executable, "-c", f"open(r'{rolled}', 'w').write('old code')"],
+        "health_url": "http://127.0.0.1:9/health", "health_timeout": 3,
+        "previous_root": "", "installed_root": str(tmp_path / "adk-bad" / "awdk"),
+        "reinstall": False, "flags": 0,
+    }
+    helper = subprocess.run([sys.executable, "-c", su._HELPER, json.dumps(spec)], timeout=90)
+    assert helper.returncode == 0
+    deadline = time.time() + 15
+    while not rolled.exists() and time.time() < deadline:
+        time.sleep(0.2)
+    assert rolled.read_text() == "old code"
+    rec = json.loads((run / "t.rollback.json").read_text(encoding="utf-8"))
+    assert rec["refused"] == [str(tmp_path / "adk-bad" / "awdk")]
+
+
+def test_health_reports_whether_the_running_code_was_validated():
+    assert "running_validated" in su.status() and "adoptable" in su.status()

@@ -7396,6 +7396,7 @@ def main():
         self_update.start(
             "adk-daemon",
             lambda: _inflight is None or int((_inflight.snapshot() or {}).get("inflight", 0)) == 0,
+            health_url=f"http://127.0.0.1:{port}/health",
         )
     except Exception as exc:  # noqa: BLE001 - detection is an aid, never a reason not to serve
         print(f"  self-update watcher not started: {exc}")

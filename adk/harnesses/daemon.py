@@ -4089,7 +4089,8 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
         live = {"starting", "ready", "busy", "idle"}
         return not any(str(s.get("state", "")) in live for s in default_manager().list_sessions())
 
-    self_update.start("harness-daemon", _no_live_session)
+    self_update.start("harness-daemon", _no_live_session,
+                      health_url=f"http://127.0.0.1:{bind_port}/health")
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
     return 0
 
