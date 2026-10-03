@@ -283,6 +283,45 @@ adk kvholder relay-status                    # is a holder attached
 adk kvholder probe 127.0.0.1:50062           # HELLO, link latency, holder stats
 ```
 
+## Engine: a real model on the holders
+
+`adk kvholder chat` runs a Hugging Face model on this machine and keeps only the most recent
+tokens of its context here. Everything older goes to the holders behind the running relay.
+
+```bash
+pip install awdk torch transformers numpy
+adk kvholder phone                                   # the relay; open the page on the phone
+adk kvholder chat                                    # Qwen/Qwen3-0.6B, interactive
+adk kvholder chat --prompt-file report.txt --question "What changed in Q3?" --once
+adk kvholder chat --prompt-file report.txt --verify 32
+```
+
+Every layer keeps its last `--window` tokens (default 1024) of keys and values on the host.
+Older keys are appended to the holders in blocks of `--block` tokens. Each attention op asks
+the holders for their share over the old keys, computes the window here, and merges the two
+by log-sum-exp. The result is attention over every key the model has seen, rounded to fp16 on
+the wire. A long `--prompt-file` therefore lands mostly on the phones: prefill runs in chunks
+of `--chunk` tokens, and each chunk's old keys are shipped once the window is full. After each
+reply the engine prints decode tokens/s, the keys the holders hold, and the average holder
+round trip next to the part of it the holders spent computing.
+
+`--wire v4` (the default) sends the model's own shapes; the Python holder and the phone page
+read them. `--wire v3` pads every head to 256 values and 48 query rows for a holder that
+speaks only PATN v3, such as a Backburner iPhone. Zeros change no dot product, but the holder
+does about six times the work.
+
+`--verify N` runs the same prompt again, fully on the host with the model's own attention and
+KV cache, and exits 1 unless the first N greedy tokens are identical. `--local` keeps every
+key on the host through the same code. Measured on Qwen3-0.6B (fp32, CPU) through a relay
+and a Python holder, a 3,871-token prompt with a 256-token window: 3,584 keys per layer on
+the holder, 32 of 32 greedy tokens identical to the local run (2026-10-03).
+
+Any causal LM whose attention goes through transformers' `AttentionInterface` works (Qwen3,
+Qwen2, Llama, Mistral). torch and transformers are imported only by `chat`; the rest of
+`adk kvholder` stays light enough for a phone. On a busy host, keep thread counts low:
+`--threads` (default half the cores, at most 8) for the engine and `OPENBLAS_NUM_THREADS=4`
+for a Python holder on the same machine. Oversubscribed BLAS threads were 16x slower here.
+
 ## The engine side
 
 The engine connects to the relay's PATN port `127.0.0.1:50062`. Backburner's llama.cpp fork

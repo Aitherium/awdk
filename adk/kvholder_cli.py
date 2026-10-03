@@ -133,6 +133,13 @@ def register(sub) -> None:
         help="HOST[:PORT] of a holder or the relay's engine port",
     )
 
+    ch = s.add_parser(
+        "chat", help="Chat with a real model whose old context lives on the holders (torch)"
+    )
+    from adk.kvholder_engine import register_args  # stdlib only at import
+
+    register_args(ch)
+
     from adk import kvholder_mesh  # stdlib only
 
     kvholder_mesh.register(s)
@@ -140,6 +147,10 @@ def register(sub) -> None:
 
 def run(args) -> int:
     action = getattr(args, "kvholder_action", None)
+    if action == "chat":
+        from adk import kvholder_engine  # torch + transformers, imported only here
+
+        return kvholder_engine.run(args)
     if action == "mesh" or (action == "serve" and args.mesh and not args.connect):
         import importlib.util
 
