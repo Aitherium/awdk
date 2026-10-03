@@ -122,7 +122,8 @@ ok "uv $(uv --version 2>/dev/null | awk '{print $2}')"
 
 # 2. awdk. uv brings its own Python, so SteamOS's system Python is never touched.
 say "installing awdk ($AWDK_SPEC)"
-uv tool install --quiet --force --python 3.12 --with numpy "$AWDK_SPEC"
+# numpy for the KV holder; awseal signs the holder's hello with the enrolled device key.
+uv tool install --quiet --force --python 3.12 --with numpy --with "awseal>=0.1.0" "$AWDK_SPEC"
 command -v adk >/dev/null || die "adk is not on PATH after install"
 ok "$(adk --version 2>/dev/null | head -1 || echo adk)"
 

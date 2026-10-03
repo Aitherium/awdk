@@ -43,6 +43,11 @@ supports `kvholder serve --mesh`, or a relay URL in `DECK_HOLDER_CONNECT` in
 `~/.config/aither-deck/deck.env`), the Deck is on AC power, it is docked (an
 external display; `--no-dock-required` drops this), and no game is running.
 
+With an `adk` that has `kvholder serve --device`, the holder dials the workspace
+relay (`wss://kv.aitherium.com/holder`) signed with this Deck's enrolled device key;
+no token. Allow it once from any signed-in machine:
+`adk kvholder workspace allow <node id>` (the id is in `adk devices list`).
+
 A mesh join prints a 6-letter code (`journalctl --user -u aither-deck-holder`);
 approve it from your desktop with `adk kvholder mesh approve CODE`.
 
