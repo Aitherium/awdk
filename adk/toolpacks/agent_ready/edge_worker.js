@@ -51,6 +51,9 @@ export const CONTENT_TYPES = {
   '/SKILLS.md': 'text/markdown; charset=utf-8',
 };
 
+/** Who may frame the OS homepage: the apex itself and its own subdomains. */
+export const FRAME_ANCESTORS = "frame-ancestors 'self' https://*.aitherium.com";
+
 // RFC 8288 Link header for the homepage. Registered relation types only.
 export const HOMEPAGE_LINKS = [
   '</.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"',
@@ -242,6 +245,13 @@ async function handle(request) {
   }
   if (path === '/' || path === '/index.html') {
     extra['link'] = HOMEPAGE_LINKS;
+    // The OS at / mints a sign-in code ("Set up this computer", ?app=setup). Pages
+    // cannot send headers, so nothing stopped a stranger's page from framing it under
+    // a decoy (security review, 2026-10-04). Our own surfaces
+    // (one label under the apex) may still frame it.
+    if ((response.headers.get('content-type') || '').includes('text/html')) {
+      extra['content-security-policy'] = FRAME_ANCESTORS;
+    }
   }
   if ((response.headers.get('content-type') || '').includes('text/html')) {
     extra['vary'] = 'Accept, Accept-Encoding';

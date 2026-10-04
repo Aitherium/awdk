@@ -13699,8 +13699,10 @@ def _register_commands(sub):
     pair_p = sub.add_parser(
         "pair",
         help="Pair this machine with the portal as an inference node (6-char code from the portal)")
-    pair_p.add_argument("code", help="Pairing code shown in the signed-in portal tab"
-                        " ('-' reads it from stdin)")
+    pair_p.add_argument(
+        "code", nargs="?", default="",
+        help="Pairing code shown in the signed-in portal tab ('-' reads it from stdin; "
+             "omit it to read $AITHER_PAIR_CODE: argv is visible to every process)")
     pair_p.add_argument(
         "--inference-url", default="",
         help="Advertise this OpenAI-compatible server (default: probe the usual ports)")

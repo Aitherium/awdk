@@ -1207,7 +1207,7 @@ Pair this machine with the portal as an inference node (6-char code from the por
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab ('-' reads it from stdin) |
+| `<code>` | str |  |  | Pairing code shown in the signed-in portal tab ('-' reads it from stdin; omit it to read $AITHER_PAIR_CODE: argv is visible to every process) |
 | `--inference-url` | str |  |  | Advertise this OpenAI-compatible server (default: probe the usual ports) |
 | `--portal` | str |  |  | Portal base URL (default: pair directly with Identity) |
 | `--node-class` | str |  | `laptop` | What this device is (default: laptop) |

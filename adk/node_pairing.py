@@ -124,13 +124,19 @@ def cmd_pair(args: Any) -> int:
         from adk.devices import enroll_base
 
         portal_url, confirm_path = enroll_base(), IDENTITY_CONFIRM_PATH
-    code = getattr(args, "code", "")
+    # The code never needs argv: `-` reads it from stdin, and with no code at all it
+    # comes from AITHER_PAIR_CODE (the installers do this). A process list shows argv to
+    # every user on the machine; popped so a child never inherits a spent credential.
+    code = (getattr(args, "code", "") or "").strip()
     if code == "-":
-        # `adk pair -` reads the code from stdin, so a remote onboarding run never
-        # puts the credential on an argv another user on the box could read in ps.
         import sys
 
         code = sys.stdin.readline().strip()
+    if not code:
+        code = os.environ.pop("AITHER_PAIR_CODE", "").strip()
+    if not code:
+        print("  ✗ No pairing code: pass it, '-' for stdin, or set AITHER_PAIR_CODE")
+        return 2
 
     print(f"  Pairing this machine with {portal_url} …")
     extra = {}

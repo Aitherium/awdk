@@ -225,6 +225,32 @@ def test_adk_pair_defaults_to_identitys_own_confirm_route(monkeypatch):
                     "path": "/v1/nodes/pairing/confirm"}
 
 
+def test_adk_pair_takes_the_code_from_the_environment_not_argv(monkeypatch):
+    """The installers pass the one-time code as AITHER_PAIR_CODE: argv is world-visible
+    (security review, 2026-10-04). The variable is consumed, never inherited."""
+    import os
+    from types import SimpleNamespace
+
+    from adk import devices, node_pairing
+
+    seen = {}
+
+    async def fake_pair(code, base, node_class="laptop", confirm_path=""):
+        seen["code"] = code
+        return {"paired": True, "node_id": NODE}
+
+    monkeypatch.setattr(devices, "enroll_base", lambda: "https://idp.test")
+    monkeypatch.setattr(node_pairing, "pair_with_code", fake_pair)
+    monkeypatch.delenv("AITHER_PORTAL_URL", raising=False)
+    monkeypatch.setenv("AITHER_PAIR_CODE", "ENVC0DE9")
+    assert node_pairing.cmd_pair(SimpleNamespace(code="", portal="", node_class="laptop",
+                                                 no_autostart=True)) == 0
+    assert seen["code"] == "ENVC0DE9"
+    assert "AITHER_PAIR_CODE" not in os.environ
+    assert node_pairing.cmd_pair(SimpleNamespace(code="", portal="", node_class="laptop",
+                                                 no_autostart=True)) == 2  # nothing given
+
+
 def test_a_paired_machine_boots_into_the_identity_heartbeat_as_itself(monkeypatch):
     """deck's finding: a paired box fell into the LEGACY hub loop with the local-root
     placeholder and went stale after one beat."""
