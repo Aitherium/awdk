@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.BatteryManager;
 import android.os.PowerManager;
+import android.util.Log;
 import android.webkit.CookieManager;
 
 import org.json.JSONArray;
@@ -33,6 +34,7 @@ final class FamilyShare implements Runnable {
     static final int WAIT_S = 25;
     static final int MAX_TOKENS = 1024;
     static volatile String state = "off";
+    static volatile long stateAt;
     static volatile int answered;
 
     private final Context ctx;
@@ -43,6 +45,17 @@ final class FamilyShare implements Runnable {
     private String offered = "";
     private boolean optedIn;
     private String lastPath = "";
+    private int strikes;
+
+    /** Every change of what sharing is doing goes to logcat (tag AitherShare) and the
+     *  service dump, so a phone that stopped answering the pool says why without its UI:
+     *  {@code adb logcat -s AitherShare} or {@code adb shell dumpsys activity service
+     *  com.aitherium.aither/.LlmService}. */
+    static void setState(String s) {
+        if (!s.equals(state)) Log.i("AitherShare", s);
+        state = s;
+        stateAt = System.currentTimeMillis();
+    }
 
     FamilyShare(Context c, LocalProxy.Backend backend) {
         ctx = c.getApplicationContext();
@@ -74,13 +87,13 @@ final class FamilyShare implements Runnable {
             } catch (InterruptedException e) {
                 break;
             } catch (Exception e) {
-                state = "error: " + e.getClass().getSimpleName() + "; retrying";
-                backoff = 60_000;
+                setState("error: " + e.getClass().getSimpleName() + "; retrying");
+                backoff = retry(60_000);
             }
         }
         withdraw();
         if (optedIn && !cfg.shareFamily()) optOut();
-        state = "off";
+        setState("off");
     }
 
     /** The owner turned sharing off on this phone: tell the pool, not just stop polling. */
@@ -97,7 +110,7 @@ final class FamilyShare implements Runnable {
         String why = paused(token);
         if (!why.isEmpty()) {
             withdraw();
-            state = "paused: " + why;
+            setState("paused: " + why);
             return 60_000;
         }
         // the household already switched this phone on (the owner from a browser, or a
@@ -107,7 +120,7 @@ final class FamilyShare implements Runnable {
             Resp r = post("/share", new JSONObject().put("token", token).put("compute_share", true));
             if (r.code != 200) {
                 if (r.code == 403 && r.body.contains("child_needs_guardian")) {
-                    state = "waiting: only a guardian can share a child's phone";
+                    setState("waiting: only a guardian can share a child's phone");
                     return 10 * 60_000;
                 }
                 return refused(r);
@@ -122,8 +135,13 @@ final class FamilyShare implements Runnable {
             if (r.code != 200) return refused(r);
             offered = st.toString();
         }
-        state = "sharing · " + answered + " answered";
+        // keep the model loaded while sharing: a job that has to cold-load it misses the
+        // pool's deadline (measured 2026-10-04: the first job after idle answered 504, the
+        // next one 4 s), and the household's 5 s tutor budget cannot wait for a load
+        if (llm.ensurePool().isEmpty()) llm.touched();
+        setState("sharing · " + answered + " answered");
         Resp r = post("/next", new JSONObject().put("token", token).put("wait_s", WAIT_S));
+        if (r.code == 204 || r.code == 200) strikes = 0;
         if (r.code == 204) return 0;
         if (r.code != 200) {
             offered = "";
@@ -161,19 +179,33 @@ final class FamilyShare implements Runnable {
         try { err = new JSONObject(r.body).optString("detail", new JSONObject(r.body).optString("error", "")); }
         catch (Exception e) { /* not JSON */ }
         if (r.code == 403 && err.contains("compute_share_off")) {
-            state = "waiting: a guardian has not turned on family sharing";
-            return 10 * 60_000;
+            setState("waiting: a guardian has not turned on family sharing");
+            return retry(10 * 60_000);
         }
         if (r.code == 401) {
-            state = "signed out: open AitherOS to sign in again";
-            return 15 * 60_000;
+            setState("signed out: open AitherOS to sign in again");
+            return retry(15 * 60_000);
         }
         if (r.code == 410) {
-            state = "removed from the household";
-            return 15 * 60_000;
+            setState("removed from the household");
+            return retry(15 * 60_000);
         }
-        state = lastPath + ": the pool answered " + r.code + (err.isEmpty() ? "" : " (" + err + ")") + "; retrying";
-        return 60_000;
+        setState(lastPath + ": the pool answered " + r.code + (err.isEmpty() ? "" : " (" + err + ")") + "; retrying");
+        return retry(60_000);
+    }
+
+    /**
+     * How long to wait after a failed pool call: 15 s, then 30 s, 1 min, ... up to
+     * {@code cap}; a 200/204 from the long-poll resets it. While the phone is charging,
+     * idle and switched on it must keep a continuous long-poll: one wrong answer (a Genesis
+     * roll, an auth blip) used to park it for 10-15 minutes. Measured 2026-10-04: three
+     * phones polled about a minute in every 10-15, then re-offered within the same second,
+     * so no device was live when a household job arrived.
+     */
+    private long retry(long cap) {
+        long wait = Math.min(cap, 15_000L << Math.min(strikes, 6));
+        strikes++;
+        return wait;
     }
 
     /** Run one pool job on the local model. Fills {@code out}; returns the HTTP status. */

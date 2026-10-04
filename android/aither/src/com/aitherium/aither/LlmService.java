@@ -14,10 +14,12 @@ import android.os.IBinder;
 import android.os.PowerManager;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
@@ -116,6 +118,18 @@ public class LlmService extends Service implements LocalProxy.Backend {
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
         if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) unload("unloaded: the phone is low on memory");
+    }
+
+    /** {@code adb shell dumpsys activity service com.aitherium.aither/.LlmService}. */
+    @Override
+    protected void dump(FileDescriptor fd, PrintWriter out, String[] args) {
+        out.println("model: " + reason);
+        out.println("family sharing: " + FamilyShare.state + " ("
+                + (System.currentTimeMillis() - FamilyShare.stateAt) / 1000 + " s ago), "
+                + FamilyShare.answered + " answered");
+        out.println("share switch: " + cfg.shareFamily() + " ac_only=" + cfg.shareAcOnly()
+                + " idle_only=" + cfg.shareIdleOnly() + " profile=" + cfg.profileKind());
+        out.println("household check-in: " + HeartbeatJob.last);
     }
 
     @Override
