@@ -149,7 +149,9 @@ function markdownResponse(body, status, source) {
     headers: {
       'content-type': 'text/markdown; charset=utf-8',
       'vary': 'Accept',
-      'cache-control': 'public, max-age=600',
+      // private: a shared cache keyed on the URL alone (Cloudflare's subrequest
+      // cache ignores Vary: Accept) would hand this to an HTML client.
+      'cache-control': 'private, max-age=600',
       'x-markdown-tokens': String(Math.ceil(body.length / 4)),
       'x-markdown-source': source,
       'access-control-allow-origin': '*',
@@ -243,6 +245,11 @@ async function handle(request) {
   }
   if ((response.headers.get('content-type') || '').includes('text/html')) {
     extra['vary'] = 'Accept, Accept-Encoding';
+    // Measured 2026-10-04: the isitagentready.com scanner (a Worker) got HTML
+    // for Accept: text/markdown on / only -- the URL its other probes had just
+    // fetched as HTML. Pages sends max-age=600 and a URL-keyed shared cache
+    // ignores Vary, so the HTML was replayed. Browsers keep their 10 minutes.
+    extra['cache-control'] = 'private, max-age=600';
   }
   return Object.keys(extra).length ? withHeaders(response, extra) : response;
 }
