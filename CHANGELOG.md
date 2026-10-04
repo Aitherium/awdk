@@ -4,6 +4,17 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.57] - 2026-10-03
+
+### Added
+
+- **`agent_ready` toolpack (free).** Make a website discoverable and usable by AI agents and
+  prove it. `agent_ready_probe` checks content signals, Link headers, markdown negotiation,
+  the API catalog, OAuth discovery, protected-resource metadata, auth.md, the MCP server card,
+  the A2A card and the agent-skills index with no third party; `agent_ready_scan` runs
+  isitagentready.com; `agent_ready_worker_template` returns the Cloudflare Worker that adds
+  what static hosting cannot. Ships with the `agent-readiness` skill.
+
 ## [3.8.56] - 2026-10-03
 
 ### Fixed
