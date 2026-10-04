@@ -166,8 +166,14 @@ async function serveMarkdown(request, url) {
   // The homepage is an interactive desktop with almost no static text; its
   // agent-facing summary IS llms.txt (which is markdown by its own spec).
   if (url.pathname === '/' || url.pathname === '/index.html') {
-    const r = await fetch(new URL('/llms.txt', url).toString());
-    if (r.ok) return markdownResponse(await r.text(), 200, '/llms.txt');
+    // Measured 2026-10-04: a caller that is itself a Worker (the
+    // isitagentready.com scanner) got HTML here while a plain client got
+    // markdown -- this inner subrequest is the one call such a caller never
+    // reaches. Any failure on it now falls through to converting the page.
+    try {
+      const r = await fetch(new URL('/llms.txt', url).toString());
+      if (r.ok) return markdownResponse(await r.text(), 200, '/llms.txt');
+    } catch { /* convert the page itself below */ }
   }
   const origin = await fetch(request);
   const type = origin.headers.get('content-type') || '';
