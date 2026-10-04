@@ -41,6 +41,14 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="aitherium.com" />
+            </intent-filter>
+            <!-- app.aitherium.com is a verified App Link (its /.well-known/assetlinks.json names
+                 this package and the release certificate): its links and QR codes open here,
+                 not in the browser -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="app.aitherium.com" />
             </intent-filter>
             <!-- a QR or link that must open in this app, not the browser:
