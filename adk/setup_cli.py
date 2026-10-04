@@ -89,7 +89,10 @@ class GPUInfo:
 
 def _run(cmd: list[str], timeout: int = 10) -> Optional[str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # CREATE_NO_WINDOW: the harness daemon has no console, so on Windows each
+        # nvidia-smi probe otherwise opened a new terminal tab (2026-10-03).
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
