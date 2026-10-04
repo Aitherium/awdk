@@ -32,6 +32,9 @@ export const IDP_ISSUER = 'https://idp.aitherium.com/identity';
 const AUTH_METADATA = {
   '/.well-known/openid-configuration': `${IDP_ISSUER}/.well-known/openid-configuration`,
   '/.well-known/oauth-authorization-server': `${IDP_ISSUER}/.well-known/oauth-authorization-server`,
+  // Clients verifying our tokens ask the apex for the signing keys (31 requests in
+  // one day of edge analytics, all 404). They are the issuer's keys, served as-is.
+  '/.well-known/jwks.json': `${IDP_ISSUER}/.well-known/jwks.json`,
 };
 
 // The live auth.md is the identity service's; public/auth.md is the fallback
