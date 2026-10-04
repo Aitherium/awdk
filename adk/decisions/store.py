@@ -786,6 +786,20 @@ class DecisionCard:
         )
 
 
+def _archive_delivered(path: Path) -> Path:
+    """Move a mailbox file to its ``delivered/`` sibling (the drains' convention)."""
+    try:
+        dest_dir = path.parent / "delivered"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / path.name
+        if dest.exists():
+            dest = dest_dir / f"{int(time.time() * 1000)}-{path.name}"
+        path.replace(dest)
+        return dest
+    except OSError:
+        return path  # still pending: a duplicate beats a lost answer
+
+
 class DecisionStore:
     """Disk-backed card store. Safe across processes; cheap enough to poll."""
 
@@ -1525,7 +1539,13 @@ class DecisionStore:
         try:
             from adk.decisions import steerback
 
-            steerback.deliver(card, "\n".join(lines[3:]))
+            landed, _how = steerback.deliver(card, "\n".join(lines[3:]))
+            if landed:
+                # Owner, 2026-10-04: answers "don't properly coordinate into my
+                # terminal". A live tier already put the answer IN the session;
+                # leaving the mailbox file pending made the next drain inject it
+                # a SECOND time. Archive it exactly as a drain would.
+                written = _archive_delivered(written)
         except ImportError as exc:  # pragma: no cover - packaging accident
             import sys as _sys
 
