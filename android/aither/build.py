@@ -6,8 +6,9 @@
 Needs a JDK (javac, keytool) and an Android SDK with ``platforms;android-35`` and
 ``build-tools;35.0.0`` (``sdkmanager``). ``holder.js`` is copied from
 ``awdk/adk/webui/kvholder/`` at build time, so the app runs the same engine as the browser page.
-The APK is signed with the local debug key (``~/.android/debug.keystore``): it installs over
-adb, it is not a store release.
+Signed with the local debug key (``~/.android/debug.keystore``) unless ``--keystore`` and
+``--storepass-file`` name the release key; a release build must carry the release certificate
+(SHA-256 ``RELEASE_CERT_SHA256`` below) or the build fails. Not a store release.
 """
 
 from __future__ import annotations
@@ -78,7 +79,10 @@ def debug_keystore() -> Path:
     return ks
 
 
-def build(out: Path) -> Path:
+RELEASE_CERT_SHA256 = "A5:5F:DD:95:F1:4C:FA:BE:19:4C:AA:78:A2:98:76:95:61:DC:4A:C5:FE:5E:8D:BB:9E:73:47:27:74:E8:1D:56"
+
+
+def build(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
     root = sdk()
     jar = root / "platforms" / f"android-{API}" / "android.jar"
     bt = root / "build-tools" / TOOLS
@@ -155,20 +159,23 @@ def build(out: Path) -> Path:
     aligned = out / "aligned.apk"
     run([tool(bt, "zipalign"), "-f", "-p", "4", str(base), str(aligned)])
     apk = out / "aither.apk"
-    run(
-        [
-            tool(bt, "apksigner"),
-            "sign",
-            "--ks",
-            str(debug_keystore()),
-            "--ks-pass",
-            "pass:android",
-            "--out",
-            str(apk),
-            str(aligned),
-        ]
-    )
+    if keystore:  # the release key: the password is read from a file, never an argument
+        signer = ["--ks", keystore, "--ks-pass", f"file:{storepass_file}"]
+    else:
+        signer = ["--ks", str(debug_keystore()), "--ks-pass", "pass:android"]
+    run([tool(bt, "apksigner"), "sign", *signer, "--out", str(apk), str(aligned)])
     run([tool(bt, "apksigner"), "verify", str(apk)])
+    if keystore:
+        r = subprocess.run(
+            [tool(bt, "apksigner"), "verify", "--print-certs", str(apk)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        got = RELEASE_CERT_SHA256.replace(":", "").lower()
+        if got not in r.stdout.replace(":", "").lower():
+            raise SystemExit("build: the APK is not signed by the Aither release key")
     return apk
 
 
@@ -178,8 +185,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--install", default="", metavar="SERIAL", help="adb install -r to this phone"
     )
+    ap.add_argument(
+        "--keystore", default="", help="release keystore (PKCS12); default: debug key"
+    )
+    ap.add_argument(
+        "--storepass-file", default="", help="file holding the keystore password"
+    )
     a = ap.parse_args(argv)
-    apk = build(Path(a.out))
+    if bool(a.keystore) != bool(a.storepass_file):
+        ap.error("--keystore and --storepass-file go together")
+    apk = build(Path(a.out), a.keystore, a.storepass_file)
     print(f"build: {apk} ({apk.stat().st_size // 1024} KB)")
     if a.install:
         run(["adb", "-s", a.install, "install", "-r", str(apk)])

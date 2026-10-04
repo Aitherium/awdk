@@ -146,8 +146,20 @@ and dials the relay outbound. A browser tab dies when the phone
 locks; the service does not: it keeps a partial wake lock and a Wi-Fi lock while lending,
 starts again after a reboot, and its notification always says what it is doing. By default it
 lends only while charging and on Wi-Fi; the owner can change both on the phone. "Allow running
-with the screen off" asks Android to stop battery-optimizing it. The APK is debug-signed for
-adb installs; it is not in any store.
+with the screen off" asks Android to stop battery-optimizing it. It is not in any store.
+
+Releases are on GitHub (`Aitherium/awdk`, tags `aither-android-v*`, with `SHA256SUMS`), signed
+with one release key. Check a download before installing it:
+
+```
+apksigner verify --print-certs aither.apk
+# Signer #1 certificate SHA-256 digest must be
+# a55fdd95f14cfabe194caa78a298769561dc4ac5fe5e8dbb9e73472774e81d56
+```
+
+An app signed with a different key cannot update this one: Android refuses it, so a phone
+that has a debug-signed build must uninstall it first. `build.py` without `--keystore`
+still makes a debug-signed APK for development.
 
 awsh and Desk read the same swarm: `adk kvholder workspace status --json`, or the snapshot
 the relay writes to `~/.aither/kvholder/workspace.json` every 5 s (no tokens in it).
