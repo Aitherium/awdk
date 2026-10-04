@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**131 commands.**
+**132 commands.**
 
 | command | what it does |
 |---|---|
@@ -104,6 +104,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
 | [`adk notebook`](#adk-notebook) | Plan, run, and inspect Agent Notebooks (.anb) on Genesis |
 | [`adk onboard`](#adk-onboard) | Interactive onboarding — detect, configure, integrate |
+| [`adk onboard-remote`](#adk-onboard-remote) | Add a computer you can SSH into to your devices (install, pair, verify online) |
 | [`adk operator`](#adk-operator) | Ask your workspace's Aither Operator (same policy and audit as Aither Control) |
 | [`adk pack`](#adk-pack) | Manage ToolPack extensions (list, search, install, remove, info) |
 | [`adk packs`](#adk-packs) | List available agent packs |
@@ -1142,6 +1143,25 @@ Interactive onboarding — detect, configure, integrate
 | `--run` | str |  | `false` | launch the Discord bot after onboarding (stays connected) |
 | `--skip-pack-install` | str |  | `false` | don't `adk install` the --pack (assume it's already installed) |
 
+## `adk onboard-remote`
+
+Add a computer you can SSH into to your devices (install, pair, verify online)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<host>` | str | yes |  | Hostname or IP of the box |
+| `--user` | str | yes |  | SSH user on the box |
+| `--key` | str |  |  | SSH private key file (default: ssh agent/config) |
+| `--port` | int |  | `22` |  |
+| `--node-class` | str |  | `desktop` |  |
+| `--inference-url` | str |  |  | Advertise this server on the box (default: probe the usual ports) |
+| `--pip-spec` | str |  | `awdk` | pip requirement, or a local .whl to upload (default: awdk from PyPI) |
+| `--identity` | str |  |  | Identity base (default: as adk pair) |
+| `--windows` | str |  | `false` | Force the Windows path |
+| `--online-timeout` | float |  | `120.0` |  |
+| `--plan` | str |  | `false` | Print the steps; touch nothing |
+| `--json` | str |  | `false` |  |
+
 ## `adk operator`
 
 Ask your workspace's Aither Operator (same policy and audit as Aither Control)
@@ -1187,7 +1207,8 @@ Pair this machine with the portal as an inference node (6-char code from the por
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab |
+| `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab ('-' reads it from stdin) |
+| `--inference-url` | str |  |  | Advertise this OpenAI-compatible server (default: probe the usual ports) |
 | `--portal` | str |  |  | Portal base URL (default: pair directly with Identity) |
 | `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
 | `--no-autostart` | str |  | `false` | Do not install the per-user heartbeat autostart (python -m adk.node_beat) |

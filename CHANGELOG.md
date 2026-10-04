@@ -4,14 +4,28 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.58] - 2026-10-04
+
 ### Added
 
+- **`adk wallet`** (alias of `adk balance`): your Aitherium token balance, where tokens
+  came from (bought / earned / granted) and went (spent), from `<gateway>/v1/wallet`;
+  `--ledger N` lists recent rows, `--json` for scripts.
 - **Custom voices.** A voice id `custom:<name>` synthesizes with a voice built for your
   workspace (`POST /voice-builds/voices/<name>/say` on Genesis, `AITHER_API_KEY` bearer),
   through `VoiceClient.synthesize`, `adk.voice.say` and the `say_to_file` tool, whatever
   `AITHER_VOICE_BACKEND` is. New `list_custom_voices` voice tool and
   `adk.custom_voices.list_custom_voices()`; an empty workspace returns `[]`. Stock voices
   are unchanged.
+
+### Fixed
+
+- **`adk volunteer start` could never claim a job.** It posted to
+  `https://api.aitherium.com/volunteer/...`, which redirects to the login page; the
+  public path is `https://api.aitherium.com/api/genesis/volunteer/...`. A bare
+  `AITHER_GENESIS_URL=https://api.aitherium.com` is corrected the same way.
+- **`adk volunteer status`** read a job-status route with the peer id; it now shows this
+  peer's reputation and verified / submitted / active jobs from the volunteer roster.
 
 ## [3.8.57] - 2026-10-03
 
