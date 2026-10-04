@@ -553,6 +553,12 @@ class VoiceClient:
         return await self._backend.transcribe(audio_path, language)
 
     async def synthesize(self, text: str, voice: str = _DEFAULT_VOICE, output_path: str | None = None) -> SynthesisResult:
+        # "custom:<name>" = a voice built for this workspace on Genesis, whatever the
+        # backend -- except the offline mock backend, which must never touch the network.
+        from adk.custom_voices import is_custom, synthesize_custom
+
+        if is_custom(voice) and self._backend.name != "mock":
+            return await synthesize_custom(text, voice, output_path=output_path)
         return await self._backend.synthesize(text, voice=voice, output_path=output_path)
 
     async def analyze_emotion(self, audio_path: str | bytes) -> EmotionResult:

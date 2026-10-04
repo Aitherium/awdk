@@ -4,6 +4,15 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Custom voices.** A voice id `custom:<name>` synthesizes with a voice built for your
+  workspace (`POST /voice-builds/voices/<name>/say` on Genesis, `AITHER_API_KEY` bearer),
+  through `VoiceClient.synthesize`, `adk.voice.say` and the `say_to_file` tool, whatever
+  `AITHER_VOICE_BACKEND` is. New `list_custom_voices` voice tool and
+  `adk.custom_voices.list_custom_voices()`; an empty workspace returns `[]`. Stock voices
+  are unchanged.
+
 ## [3.8.57] - 2026-10-03
 
 ### Added

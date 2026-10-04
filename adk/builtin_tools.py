@@ -3022,9 +3022,17 @@ def _init_voice_tools():
     try:
         # say_to_file (returns a path string), NOT say (returns raw bytes that would
         # be JSON-stringified into the model's context).
-        from adk.builtin_tools_voice import hear, say_to_file, analyze_voice_emotion
-        TOOL_CATEGORIES["voice"] = [hear, say_to_file, analyze_voice_emotion]
-        logger.info("Voice tools initialized (hear, say_to_file, analyze_voice_emotion)")
+        from adk.builtin_tools_voice import (
+            analyze_voice_emotion,
+            hear,
+            list_custom_voices,
+            say_to_file,
+        )
+        TOOL_CATEGORIES["voice"] = [hear, say_to_file, list_custom_voices, analyze_voice_emotion]
+        logger.info(
+            "Voice tools initialized "
+            "(hear, say_to_file, list_custom_voices, analyze_voice_emotion)"
+        )
     except ImportError:
         logger.debug("Voice tools not available; voice category remains empty")
         TOOL_CATEGORIES["voice"] = []

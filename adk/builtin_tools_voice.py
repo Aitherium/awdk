@@ -8,6 +8,7 @@ ElevenLabs).
 Tools:
   - hear(path, language): Transcribe audio file to text (STT)
   - say(text, voice_id): Synthesize text to audio bytes (TTS)
+  - list_custom_voices(): Workspace-built voices, usable as voice_id 'custom:<name>'
   - analyze_voice_emotion(path): Detect emotion from audio (optional)
 
 For testing without network/models, set AITHER_VOICE_MODE=mock.
@@ -144,7 +145,9 @@ async def say(text: str, voice_id: str = "nova") -> bytes:
 
     Args:
         text: Text to speak.
-        voice_id: Voice name ('nova' default, or 'shimmer', 'echo', etc. on OpenAI).
+        voice_id: Voice name ('nova' default, or 'shimmer', 'echo', etc. on OpenAI),
+            or 'custom:<name>' for a voice built for this workspace (see
+            ``list_custom_voices``).
 
     Returns:
         Audio bytes (WAV or MP3 format, depending on backend).
@@ -174,7 +177,9 @@ async def say_to_file(text: str, output_path: str = "", voice_id: str = "nova") 
     Args:
         text: Text to speak.
         output_path: Where to write the audio. Omit for an auto temp .wav file.
-        voice_id: Voice name ('nova' default, or 'shimmer', 'echo', etc.).
+        voice_id: Voice name ('nova' default, or 'shimmer', 'echo', etc.), or
+            'custom:<name>' for a voice built for this workspace (ids come from
+            ``list_custom_voices``).
 
     Returns:
         JSON string: {"audio_path": "...", "bytes": N, "voice": "..."} or {"error": ...}.
@@ -189,6 +194,9 @@ async def say_to_file(text: str, output_path: str = "", voice_id: str = "nova") 
             tmp.close()
             output_path = tmp.name
         result = await client.synthesize(text, voice=voice_id, output_path=output_path)
+        if getattr(result, "success", True) is False:
+            reason = getattr(result, "error", "") or "unknown error"
+            return json.dumps({"error": f"synthesis failed: {reason}"})
         audio = _audio_bytes(result)
         path = getattr(result, "audio_path", "") or output_path
         # If the backend returned bytes but didn't write a file, persist them here.
@@ -200,6 +208,29 @@ async def say_to_file(text: str, output_path: str = "", voice_id: str = "nova") 
     except Exception as e:
         logger.error("say_to_file() failed: %s", e)
         return json.dumps({"error": f"synthesis failed: {str(e)}"})
+
+
+async def list_custom_voices() -> str:
+    """List the custom voices built for this workspace (LLM-facing tool).
+
+    Each voice's ``id`` (``custom:<name>``) can be passed as ``voice_id`` to
+    ``say_to_file``. Stock voices (nova, shimmer, ...) are not listed here.
+
+    Returns:
+        JSON string: {"voices": [{"id", "name", "reader", "language", "built_at", "gate"}]},
+        with a "note" when the workspace has none, or {"error": ...}.
+    """
+    from adk.custom_voices import list_custom_voices as _list
+
+    try:
+        voices = await _list()
+    except Exception as e:  # noqa: BLE001 — reported to the model, never silent
+        logger.error("list_custom_voices() failed: %s", e)
+        return json.dumps({"error": f"could not list custom voices: {e}"})
+    out: dict = {"voices": voices}
+    if not voices:
+        out["note"] = "no custom voices built in this workspace"
+    return json.dumps(out)
 
 
 async def analyze_voice_emotion(path: str) -> dict:
