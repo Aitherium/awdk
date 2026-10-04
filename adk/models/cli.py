@@ -160,6 +160,11 @@ def cmd_use(args: Any, cat: Dict[str, Any]) -> int:
     if m is None:
         return 1
     role = str(m.get("role") or "chat")
+    if role == "tts":
+        # A voice is a file a local runtime reads, not an endpoint llama.cpp serves.
+        _err(f"adk models use: '{args.id}' is a voice, not a served model; speak with: "
+             'adk home voice --say "hello"')
+        return 1
     port = int(args.port or (serve.EMBED_PORT if role == "embedding" else serve.CHAT_PORT))
     gguf = (Path(args.dir) if args.dir else serve.models_dir()) / m["file"]
     size = m.get("size_bytes")

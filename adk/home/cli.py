@@ -5,6 +5,8 @@
     adk home model --local bonsai|bonsai2|llamacpp|ollama|awnode | --byo deepseek|openai|anthropic
     adk home model --local bonsai2 [--quant ..] [--backend ..] [--data-dir D] [--stop]
                                                 Bonsai 2 27B on our shipped PrismML build
+    adk home voice --local aither               install the Aither voice (verified, resumable)
+    adk home voice --say "text" [-o out.wav]    speak it on this machine, no service
     adk home harness aither|claude|openclaw|hermes
     adk home status                             everything at a glance
     adk home signin                             Sign in with Aitherium: purchases unlock
@@ -108,6 +110,18 @@ def _build(p: argparse.ArgumentParser) -> None:
     b2.add_argument("--dry-run", action="store_true", help="Print the plan; download nothing")
     b2.add_argument("--stop", action="store_true",
                     help="Stop the llama-server this started (nothing else)")
+
+    vo = hs.add_parser("voice", help="The Aither voice on this machine: install it "
+                                     "(--local aither) or speak with it (--say TEXT)")
+    vo.add_argument("--local", choices=["aither"], default="",
+                    help="Install this voice (download + sha256 verify; idempotent)")
+    vo.add_argument("--say", default="", metavar="TEXT",
+                    help="Synthesize TEXT into a wav (installs the voice if needed)")
+    vo.add_argument("-o", "--output", default="aither-say.wav",
+                    help="Where --say writes the wav (default: aither-say.wav)")
+    vo.add_argument("--speed", type=float, default=1.0, help="0.5-2.0 (default 1.0)")
+    vo.add_argument("--dir", default="", help="Voice directory (default: the shared "
+                    "local model directory; or $AITHER_VOICE_DIR)")
 
     h = hs.add_parser("harness", help="Choose who runs the agent loop")
     h.add_argument("kind", nargs="?", choices=list(harness.HARNESSES))
@@ -393,6 +407,37 @@ def _bonsai2_ensure(cfg: hc.HomeConfig) -> None:
         bonsai2.ensure_running(bonsai2.data_dir(pointer.get("data_dir", "")), print)
     except hc.HomeError as exc:
         print(f"bonsai2: {exc}", file=sys.stderr)
+
+
+def cmd_voice(args: argparse.Namespace) -> int:
+    """``adk home voice``: install the Aither voice and/or speak with it locally."""
+    from . import aither_voice_runtime as rt
+    from . import voice
+
+    directory = getattr(args, "dir", "") or ""
+    text = getattr(args, "say", "") or ""
+    try:
+        if getattr(args, "local", ""):
+            out = voice.install(args.local, directory)
+            print(f"Ready: {out['model']} (size and sha256 verified)")
+            if not text:
+                print('  next: adk home voice --say "Welcome to Aitherium."')
+        if text:
+            secs = voice.say_to_file(text, Path(args.output), directory,
+                                     speed=float(getattr(args, "speed", 1.0) or 1.0))
+            print(f"Wrote {args.output} ({secs:.2f} s, Aither voice, on this machine)")
+    except rt.RuntimeMissingError as exc:
+        print(f"voice: {exc}; install it with: {voice.EXTRA_HINT}", file=sys.stderr)
+        return EXIT_SETUP
+    except ValueError as exc:
+        print(f"voice: {exc}", file=sys.stderr)
+        return EXIT_SETUP
+    except (voice.VoiceInstallError, rt.VoiceError) as exc:
+        print(f"voice: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    if not getattr(args, "local", "") and not text:
+        _emit(voice.status(directory), False)
+    return EXIT_OK
 
 
 def cmd_harness(args: argparse.Namespace) -> int:
@@ -1418,7 +1463,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
-    "init": cmd_init, "persona": cmd_persona, "model": cmd_model,
+    "init": cmd_init, "persona": cmd_persona, "model": cmd_model, "voice": cmd_voice,
     "harness": cmd_harness, "status": cmd_status, "license": cmd_license,
     "signin": cmd_signin, "teach": cmd_teach,
     "chat": cmd_chat, "join": cmd_join, "enroll": cmd_enroll,

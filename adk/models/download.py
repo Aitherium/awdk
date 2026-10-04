@@ -205,6 +205,24 @@ def _digest_ok(path: Path, sha256: str, say: Say) -> bool:
     return sha256_file(path) == sha256.lower()
 
 
+def fetch_companions(model: dict, models_dir: Path, say: Say = print,
+                     timeout: float = TIMEOUT) -> List[Path]:
+    """Fetch the files that must sit beside a model (a voice's ``.onnx.json``).
+
+    The catalogue pins each companion's size AND sha256 (the generator refuses one
+    without), so every companion is verified exactly like the model itself.
+
+    Raises:
+        DownloadError: A companion could not be fetched whole and verified.
+    """
+    out = []
+    for comp in model.get("companions") or []:
+        out.append(fetch(list(comp["urls"]), Path(models_dir) / comp["file"],
+                         size_bytes=comp.get("size_bytes"), sha256=str(comp["sha256"]),
+                         say=say, timeout=timeout))
+    return out
+
+
 def fetch_model(model: dict, models_dir: Path, say: Say = print,
                 timeout: float = TIMEOUT) -> Tuple[Path, bool]:
     """Fetch a catalogue entry into ``models_dir``. -> (path, sha256_verified).
@@ -222,6 +240,7 @@ def fetch_model(model: dict, models_dir: Path, say: Say = print,
     if not model.get("join"):
         fetch(list(model["urls"]), dest, size_bytes=size, sha256=digest, say=say,
               timeout=timeout)
+        fetch_companions(model, models_dir, say=say, timeout=timeout)
         return dest, bool(digest)
     if dest.exists() and (not size or dest.stat().st_size == size) \
             and (digest or size) and _digest_ok(dest, digest, say):

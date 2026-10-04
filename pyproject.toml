@@ -265,7 +265,11 @@ voice-cloud = [
     "deepgram-sdk>=3.0",
     "elevenlabs>=0.2",
 ]
-voice = ["awdk[voice-local,voice-cloud]"]
+# The Aither voice, on-device (`adk home voice`): onnxruntime + espeak-ng only. Not
+# piper-tts, which ships abi3 wheels a free-threaded CPython cannot load;
+# espeakng-loader is a py3-none wheel that bundles libespeak-ng and its data.
+aither-voice = ["onnxruntime>=1.17", "espeakng-loader>=0.2", "numpy>=1.24"]
+voice = ["awdk[voice-local,voice-cloud,aither-voice]"]
 all = [
     "awdk[graphs,embedding,channels,federation,sync,addons,node,shell,voice,pdf]",
     "anthropic>=0.18.0",

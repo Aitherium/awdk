@@ -42,6 +42,47 @@
       },
       "size_bytes": 639145920
     },
+    "aither-voice": {
+      "id": "aither-voice",
+      "role": "tts",
+      "file": "aither-voice.onnx",
+      "size_mb": 61,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://artifact.aitherium.com/aither-voice-v1/aither-voice.onnx",
+        "https://weights.aitherium.com/aither-voice-v1/aither-voice.onnx",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/aither-voice-v1/aither-voice.onnx.part0"
+      ],
+      "opt_in": false,
+      "on_ladder": false,
+      "quant": "fp32",
+      "purpose": "The Aither voice: on-device text to speech (en-US). Not a chat model.",
+      "runtime": "piper-onnx",
+      "licence_id": "aither-voice",
+      "licence": {
+        "record": "aither-voice",
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 63511038,
+      "sha256": "ff3c7973e0ccdc89ebc5913c728cb4805b4bf6ad09af25f649ff16e3316c461e",
+      "companions": [
+        {
+          "file": "aither-voice.onnx.json",
+          "size_bytes": 7088,
+          "sha256": "754bd23cd559811254498ab78880e2ff21ab7aa67d9e2b20c24cf49295afdc29",
+          "urls": [
+            "https://artifact.aitherium.com/aither-voice-v1/aither-voice.onnx.json",
+            "https://weights.aitherium.com/aither-voice-v1/aither-voice.onnx.json",
+            "https://github.com/Aitherium/aitherkvcache/releases/download/aither-voice-v1/aither-voice.onnx.json.part0"
+          ]
+        }
+      ]
+    },
     "bonsai-1.7b": {
       "id": "bonsai-1.7b",
       "role": "chat",
