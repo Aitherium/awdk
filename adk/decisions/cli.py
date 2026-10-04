@@ -139,8 +139,7 @@ def _detect_transcript(explicit: str = "", session_id: str = "") -> str:
     sid = (session_id or _detect_session_id()).strip()
     if not sid:
         return ""
-    config_dir = os.getenv("CLAUDE_CONFIG_DIR")
-    root = Path(config_dir) if config_dir else Path.home() / ".claude"
+    root = Path(os.getenv("CLAUDE_CONFIG_DIR", "")) if os.getenv("CLAUDE_CONFIG_DIR") else Path.home() / ".claude"
     projects = root / "projects"
     if not projects.is_dir():
         return ""
@@ -586,8 +585,7 @@ def cmd_promise(args: argparse.Namespace, store: DecisionStore) -> int:
     except DecisionError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    due = _time.strftime('%Y-%m-%d %H:%M', _time.localtime(deadline))
-    print(f"{card.id} promise recorded (due {due})")
+    print(f"{card.id} promise recorded (due {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(deadline))})")
     return 0
 
 
@@ -937,8 +935,7 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("id")
     cancel.add_argument("--note", default="")
 
-    promise = sub.add_parser(
-        "promise", help="record work owed (an agent commitment with a due time)")
+    promise = sub.add_parser("promise", help="record work owed (an agent commitment with a due time)")
     promise.add_argument("title")
     promise.add_argument("--due", required=True, metavar="30m|ISO",
                          help="when the promise must be kept; overdue promises BREACH")
