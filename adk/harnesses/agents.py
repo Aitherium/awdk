@@ -165,10 +165,10 @@ AGENT_ROSTER: list[dict[str, str]] = [
         ),
     },
     {
-        "id": "lust",
-        "label": "Lust",
-        "role": "Charismatic engagement",
-        "persona": "Charismatic engagement, AgentChan selfie threads",
+        "id": "love",
+        "label": "Love",
+        "role": "Warm engagement and connection",
+        "persona": "Warm engagement and connection, AgentChan selfie threads",
     },
     {
         "id": "lyra",

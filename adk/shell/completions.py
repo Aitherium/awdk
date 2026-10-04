@@ -70,7 +70,7 @@ def setup_argcomplete(parser):
             agents = [
                 "atlas", "demiurge", "lyra", "vera", "hera", "hydra",
                 "ignis", "terra", "aeros", "saga", "iris", "prometheus",
-                "aither", "mrrobot", "wrath", "lust",
+                "aither", "mrrobot", "wrath", "love",
             ]
             return [a for a in agents if a.startswith(prefix)]
 
