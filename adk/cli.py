@@ -9857,6 +9857,10 @@ def cmd_sync(args):
     import asyncio
 
     action = getattr(args, "sync_action", None)
+    if action == "packs":
+        # Workspace pack convergence: its own plane, not the AitherDrive file sync.
+        from adk.sync.packs import main as _sync_packs_main
+        return _sync_packs_main(args)
     if not action:
         # Default: show status
         action = "status"
@@ -15756,6 +15760,10 @@ def _register_commands(sub):
     sync_ignore_p = sync_sub.add_parser("ignore", help="Add ignore pattern")
     sync_ignore_p.add_argument("pattern", help="Glob pattern to ignore")
     sync_sub.add_parser("config", help="Show sync configuration")
+    sync_packs_p = sync_sub.add_parser(
+        "packs", help="Sync your workspace's agent/skill/tool packs and apps to this machine")
+    from adk.sync.packs import add_arguments as _sync_packs_args
+    _sync_packs_args(sync_packs_p)
 
     # adk train — training pipeline management
     train_p = sub.add_parser("train", help="Manage model training (launch, monitor, cancel)")

@@ -12,13 +12,14 @@ no action and should not interrupt:
   - No options and no deadline
   - Status-only phrases like "background run in progress"
 
-Context cards are auto-acknowledged after 24 hours by a daemon sweep.
+Context cards of kind=info are auto-closed after 24 hours by the grouping
+sweep (adk.decisions.grouping G3, run on a schedule).
 DECISION cards stay open until the owner acts or they are cancelled.
 """
 
 import re
 import time
-from typing import Literal
+from typing import Any, Iterable, Literal
 
 TriageResult = Literal["decision", "context"]
 
@@ -87,7 +88,12 @@ def triage(card: dict) -> tuple[TriageResult, str]:
     if kind == "blocked":
         return "decision", "kind=blocked"
 
-    # Has a deadline? Time-dependent, so it's a decision.
+    # Has a deadline? Time-dependent, so it's a decision -- unless it is INFO.
+    # An info card is a report, never a decision, deadline or not: before this
+    # an info digest carrying a deadline counted toward "N decisions waiting",
+    # the exact noise the badge exists to keep out (adk.decisions.grouping G3).
+    if kind == "info" and not options:
+        return "context", "info-only (kind=info, no options)"
     if deadline is not None and deadline > time.time():
         return "decision", f"deadline in {deadline - time.time():.0f}s"
 
@@ -109,12 +115,26 @@ def triage(card: dict) -> tuple[TriageResult, str]:
     return "context", "info-only (no options, no deadline)"
 
 
+def decisions_waiting(cards: Iterable[Any]) -> list:
+    """The cards that count toward "N decisions waiting": those :func:`triage`
+    calls a decision. Accepts ``DecisionCard`` objects or their dicts and
+    returns them unchanged. An info digest never counts (grouping G3), so the
+    toast, the CLI summary and the desk badge all read the same number."""
+    out = []
+    for card in cards:
+        data = card if isinstance(card, dict) else card.to_dict()
+        if triage(data)[0] == "decision":
+            out.append(card)
+    return out
+
+
 # ── triage patterns for the desk ──────────────────────────────────────────────
 # These patterns are read by decision-cards.cjs and must agree with the Python triage above.
 
 TRIAGE_PATTERNS = {
     "decision_kinds": frozenset({"credential", "blocked"}),
     "context_phrases": _STATUS_ONLY,
+    "context_kinds": frozenset({"info"}),
 }
 
 
@@ -127,4 +147,5 @@ def is_decision_pattern_json() -> dict:
     return {
         "decision_kinds": list(TRIAGE_PATTERNS["decision_kinds"]),
         "context_phrases": list(TRIAGE_PATTERNS["context_phrases"]),
+        "context_kinds": sorted(TRIAGE_PATTERNS["context_kinds"]),
     }

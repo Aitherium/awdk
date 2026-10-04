@@ -32,6 +32,7 @@ from adk.decisions.store import (
     STATUS_EXPIRED,
     DecisionCard,
 )
+from adk.decisions.triage import decisions_waiting
 
 # ── colour ──────────────────────────────────────────────────────────────────────
 
@@ -247,15 +248,22 @@ def render_row(card: DecisionCard, *, colour: bool = False) -> str:
 
 
 def render_summary(cards: list[DecisionCard]) -> str:
-    """The one line a toast or a status bar shows."""
-    if not cards:
-        return "no decisions waiting"
-    if len(cards) == 1:
-        return cards[0].title
-    oldest = max(cards, key=lambda c: c.age_seconds)
+    """The one line a toast or a status bar shows.
+
+    Only cards :func:`triage` calls a decision count toward "N decisions
+    waiting"; an info digest is context, never a decision (grouping G3).
+    """
+    waiting = decisions_waiting(cards)
+    context = len(cards) - len(waiting)
+    tail = f" · {context} for context" if context else ""
+    if not waiting:
+        return "no decisions waiting" + tail
+    if len(waiting) == 1:
+        return waiting[0].title + tail
+    oldest = max(waiting, key=lambda c: c.age_seconds)
     return (
-        f"{len(cards)} decisions waiting · "
-        f"oldest {human_age(oldest.age_seconds)}: {oldest.title}"
+        f"{len(waiting)} decisions waiting · "
+        f"oldest {human_age(oldest.age_seconds)}: {oldest.title}" + tail
     )
 
 

@@ -4,6 +4,18 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`adk sync packs`** -- one client that converges this machine onto the packs the
+  signed-in account's workspace holds (agent, skill and tool packs and apps). It reads
+  the workspaces, the link bundle, the workspace-scoped entitlements and the catalog
+  through the portal's Genesis bridge, prints the diff (install / update / remove /
+  unchanged / unmanaged), and applies it with sha256 + Ed25519 verification and a hot
+  reload of the running agent server. `--dry-run` changes nothing; `--json` is the
+  report awdesk and awconnect render. A pack is removed only when a sync installed it
+  for the same workspace; hand-installed packs are never touched, and an entitlement
+  outage never reads as "you own nothing".
+
 ## [3.8.60] - 2026-10-04
 
 ### Fixed

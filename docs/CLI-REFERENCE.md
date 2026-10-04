@@ -1559,6 +1559,7 @@ Sync local directory with AitherOS platform
 - `adk sync stop` — Stop background watcher
 - `adk sync ignore` — Add ignore pattern
 - `adk sync config` — Show sync configuration
+- `adk sync packs` — Sync your workspace's agent/skill/tool packs and apps to this machine
 
 ## `adk test`
 
