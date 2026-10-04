@@ -94,6 +94,7 @@ public class MainActivity extends Activity {
                             fresh = true;
                         }
                         fresh |= cfg.acceptPairCode(j.optString("p", ""));
+                        if (!cfg.familyDevice().isEmpty()) askBatteryOnce();
                     } catch (Exception e) { /* nothing stored yet */ }
                     // on every open (and at once when the page just handed over a device or
                     // a pairing code): link this phone, collect what the owner sent it
@@ -170,6 +171,23 @@ public class MainActivity extends Activity {
         super.onResume();
         if (freshIfAsked()) web.loadUrl(HOME);
         ticks.postDelayed(poll, 5000);
+    }
+
+    /**
+     * Once, when this phone is in a household: Android's own "let Aither run in the
+     * background" dialog. Without it a phone that rarely opens the app drops to the RARE
+     * standby bucket and the 15-minute check-in runs about once a day (measured on both
+     * kids' phones, 2026-10-04), so the household sees a stale phone and sharing never wakes.
+     */
+    private void askBatteryOnce() {
+        android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+        if (cfg.batteryAsked()) return;
+        cfg.set("battery_asked", true);
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (RuntimeException e) { /* settings app refused: Settings has the button */ }
     }
 
     /** The owner's refresh-app command: drop the cached AitherOS so it loads fresh. */

@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.3.3";
+    static final String VERSION = "0.3.4";
 
     private final SharedPreferences p;
 
@@ -86,6 +86,8 @@ final class Config {
     /** "owner" | "child" | "" (not known yet), from the family registry's heartbeat. */
     String profileKind() { return p.getString("profile_kind", ""); }
     String familyDevice() { return p.getString("family_device", ""); }
+    /** Has this app asked Android to stop battery-optimizing it (once, for a household phone)? */
+    boolean batteryAsked() { return p.getBoolean("battery_asked", false); }
 
     /** May this phone run the owner's local model? Never a child's; and only once the
      *  workspace has vouched for it (registry says owner, or the owner paired it). */

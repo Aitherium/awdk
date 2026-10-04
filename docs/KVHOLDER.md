@@ -183,6 +183,14 @@ phone, can flip it from any browser and the phone follows at its next check-in. 
 phone shares only what its guardian turned on, only while charging and not in use, and still
 never runs the model for the child's own use.
 
+Every household phone joins the mesh by itself. If no guardian QR handed it a pairing code
+and no owner portal session can mint one, the app asks the household for a code with its
+own device token (`/api/tutor/me/device/pair-code`; a child's phone gets one minted for its
+guardian, marked as a child's device), confirms it with Identity as its household device id,
+and links the two. Once, in a household, the app asks Android to let it run in the
+background: without that a phone that rarely opens the app falls to the RARE standby bucket
+and checks in about once a day.
+
 "Make Aither this phone's assistant" asks Android to make Aither the assistant (long-press
 power opens "Ask Aither"). An agent there answers with the model on the phone and the tools
 the owner allowed; today one, reading the calendar ("Agents may read my calendar", and

@@ -104,8 +104,11 @@ final class NodeLink {
             return;
         }
         // a guardian's QR carried a code for this phone (a child cannot mint one); else the
-        // signed-in owner's session mints one
+        // household mints one for this device (its own token: a child's phone that joined
+        // through /learn, an owner's phone without a portal session); else the signed-in
+        // owner's portal session mints one
         String code = cfg.takePairCode();
+        if (code.isEmpty()) code = householdCode();
         if (code.isEmpty()) {
             String cookie = CookieManager.getInstance().getCookie(PORTAL);
             if (cookie == null || cookie.isEmpty()) {
@@ -134,6 +137,20 @@ final class NodeLink {
         Resp r = call("POST", idp + "/v1/nodes/pairing/confirm", null, null, body.toString());
         if (r.code != 200 || !remember(r.json())) {
             last = "not linked: Identity answered " + r.code;
+        }
+    }
+
+    /** A pairing code the household mints for this device (family's /pair-code), or "". */
+    private String householdCode() {
+        try {
+            String token = new JSONObject(cfg.familyDevice()).optString("token", "");
+            if (token.isEmpty()) return "";
+            String cookie = CookieManager.getInstance().getCookie("https://api.aitherium.com");
+            Resp r = call("POST", FAMILY + "/pair-code", null, cookie,
+                    new JSONObject().put("token", token).toString());
+            return r.code == 200 ? r.json().optString("code", "") : "";
+        } catch (Exception e) {
+            return "";
         }
     }
 
