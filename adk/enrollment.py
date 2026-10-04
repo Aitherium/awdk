@@ -37,6 +37,9 @@ __all__ = [
     "heartbeat_status",
     "classify_refusal",
     "probe_inference",
+    "advertised_inference_url",
+    "save_advertised_inference_url",
+    "validate_advertised_inference_url",
     "default_candidates",
     "InferenceProbe",
     "Candidate",
@@ -49,6 +52,7 @@ import json
 import logging
 import os
 import platform
+import re
 import time
 from pathlib import Path
 from typing import (
@@ -221,6 +225,66 @@ def _normalize_base(url: str) -> str:
     return base
 
 
+#: The inference URL a device may be told to advertise (``advertise-inference``):
+#: http(s), a host (name, IPv4 or bracketed IPv6) and an explicit port, optionally
+#: ``/v1``. No user info, query, fragment, whitespace or control characters. Same
+#: rule as identity_node_commands.ADVERTISE_URL_RE.
+ADVERTISE_URL_RE = re.compile(
+    r"\Ahttps?://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]{2,45}\])"
+    r":[0-9]{1,5}(?:/v1)?/?\Z")
+ADVERTISE_URL_MAX = 256
+
+
+def _advertise_path() -> Path:
+    """``~/.aither/node-inference.json`` (``$AITHER_HOME`` when set, read per call)."""
+    home = os.environ.get("AITHER_HOME") or str(Path.home() / ".aither")
+    return Path(home) / "node-inference.json"
+
+
+def validate_advertised_inference_url(url: str) -> str:
+    """The normalised URL to advertise, '' to clear ('' or ``auto``); ValueError otherwise."""
+    raw = str(url or "")
+    if raw.strip().lower() in ("", "auto"):
+        return ""
+    if len(raw) > ADVERTISE_URL_MAX or not ADVERTISE_URL_RE.match(raw):
+        raise ValueError("url must be http(s)://host:port[/v1], at most 256 characters")
+    port = int(raw.split("://", 1)[1].rsplit(":", 1)[1].split("/", 1)[0])
+    if not 0 < port < 65536:
+        raise ValueError("url port must be 1-65535")
+    return _normalize_base(raw)
+
+
+def save_advertised_inference_url(url: str) -> str:
+    """Persist the URL the heartbeat advertises (the ``advertise-inference`` command);
+    '' / ``auto`` removes the file. Returns what is now stored. Raises ValueError for a
+    URL outside :data:`ADVERTISE_URL_RE`, OSError when it cannot be written."""
+    clean = validate_advertised_inference_url(url)
+    path = _advertise_path()
+    if not clean:
+        if path.exists():
+            path.unlink()
+        return ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"url": clean, "set_at": int(time.time())}), encoding="utf-8")
+    os.replace(tmp, path)
+    return clean
+
+
+def advertised_inference_url() -> str:
+    """The inference URL this host pins: ``AITHER_NODE_INFERENCE_URL`` when set, else the
+    one the owner sent with ``advertise-inference`` (re-validated), else ''. Read on every
+    call, so a heartbeat picks a change up on its next beat."""
+    env = (os.environ.get("AITHER_NODE_INFERENCE_URL") or "").strip()
+    if env:
+        return env
+    try:
+        data = json.loads(_advertise_path().read_text(encoding="utf-8"))
+        return validate_advertised_inference_url(str(data.get("url") or ""))
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def probe_inference(
     explicit_url: Optional[str] = None,
     *,
@@ -246,7 +310,9 @@ def probe_inference(
         # :8114) names it once in its environment; the heartbeat then advertises it on
         # every beat. Dedicated name: AITHER_INFERENCE_URL already means the CLOUD
         # inference base elsewhere in adk and must never be advertised as this node's.
-        explicit_url = (os.environ.get("AITHER_NODE_INFERENCE_URL") or "").strip() or None
+        # Without the env, the URL the owner set over the command channel
+        # (``advertise-inference``, ~/.aither/node-inference.json) is used.
+        explicit_url = advertised_inference_url() or None
     if explicit_url and explicit_url.strip().lower() != "auto":
         base = _normalize_base(explicit_url)
         ok, models = _openai_models(base)
@@ -752,9 +818,12 @@ async def _heartbeat_beats(
                     headers = {**headers, "Authorization": f"Bearer {fresh}"}
             # build_registration probes the inference server with a blocking
             # urlopen; off the loop so a slow probe never stalls the daemon.
+            # A URL pinned on this host (env, or the owner's advertise-inference
+            # command) beats the one registration stored, and is re-read every beat.
             reg = await asyncio.to_thread(
                 build_registration,
-                node_id, inference_url=inference_url, node_class=node_class,
+                node_id, inference_url=advertised_inference_url() or inference_url,
+                node_class=node_class,
             )
             hb = {
                 "node_id": node_id,

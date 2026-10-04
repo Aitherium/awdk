@@ -396,3 +396,153 @@ def test_a_refused_beat_gets_a_fresh_client(monkeypatch):
         harness_provider=None, beat_immediately=True, device=True, renew=renew))
     assert renewed == [1]
     assert len(stuck.posts) == 1 and len(fresh.posts) == 1
+
+
+# ── upgrade: one exact release, a fixed pip argv, a restart after the answer ─
+
+
+@pytest.mark.parametrize("version", [
+    "1.2.3; rm -rf /", ">=1", "1.2", "1.2.3.4", "https://evil/awdk.whl", "../awdk",
+    "1.2.3 --index-url https://evil", "1.2.3\n", "\uff11.2.3", "", "--pre",
+])
+def test_upgrade_refuses_anything_but_an_exact_release(version):
+    why = node_commands.verify(_cmd(verb="upgrade", args={"version": version}), KEY, NODE,
+                               seen=[])
+    assert "is not a valid version" in why, why
+    assert "takes exactly version" in node_commands.verify(
+        _cmd(verb="upgrade", args={"version": "1.2.3", "index": "x"}), KEY, NODE, seen=[])
+    assert node_commands._upgrade({"version": version})["ok"] is False
+
+
+def _fake_run(calls, *, pip_rc=0, installed="3.8.59", units=("aither-node-beat.service",)):
+    class _P:
+        def __init__(self, rc, out="", err=""):
+            self.returncode, self.stdout, self.stderr = rc, out, err
+
+    def run(argv, **kw):
+        calls.append((list(argv), kw))
+        if argv[1:3] == ["-m", "pip"]:
+            return _P(pip_rc, err="" if pip_rc == 0 else "No matching distribution")
+        if argv[1] == "-c":
+            return _P(0, out=installed + "\n")
+        return _P(0)
+    return run
+
+
+def test_upgrade_runs_exactly_the_fixed_pip_argv_and_restarts_its_unit(monkeypatch):
+    import shutil
+    import subprocess
+    import sys
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _fake_run(calls))
+    monkeypatch.setattr(shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(node_commands, "_own_user_unit", lambda: "aither-node-beat.service")
+    assert node_commands.verify(_cmd(verb="upgrade", args={"version": "3.8.59"}), KEY, NODE,
+                                seen=[]) == ""
+    out = node_commands._upgrade({"version": "3.8.59"})
+    pip_argv, pip_kw = calls[0]
+    assert pip_argv == [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+                        "-q", "awdk==3.8.59"]
+    assert pip_kw.get("shell") is not True and pip_kw["timeout"] == 600
+    assert calls[1][0][:2] == [sys.executable, "-c"] and "importlib.metadata" in calls[1][0][2]
+    assert calls[2][0] == ["/usr/bin/systemd-run", "--user", "--on-active=30",
+                           "--timer-property=AccuracySec=1s", "/usr/bin/systemctl", "--user",
+                           "restart", "aither-node-beat.service"]
+    assert out["ok"] is True and out["to"] == "3.8.59" and out["rc"] == 0
+    assert out["restart"]["mechanism"] == "systemd-run" and out["restart"]["scheduled"] is True
+
+
+def test_a_failed_or_mismatched_install_restarts_nothing(monkeypatch):
+    import subprocess
+
+    for kw in ({"pip_rc": 1}, {"installed": "3.8.58"}):
+        calls = []
+        monkeypatch.setattr(subprocess, "run", _fake_run(calls, **kw))
+        monkeypatch.setattr(node_commands, "_own_user_unit",
+                            lambda: "aither-node-beat.service")
+        out = node_commands._upgrade({"version": "3.8.59"})
+        assert out["ok"] is False and "restart" not in out, out
+        assert not any("systemd-run" in c[0][0] for c in calls)
+
+
+def test_outside_a_user_unit_the_upgrade_says_nothing_restarts(monkeypatch):
+    import subprocess
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _fake_run(calls))
+    monkeypatch.setattr(node_commands, "_own_user_unit", lambda: "")
+    out = node_commands._upgrade({"version": "3.8.59"})
+    assert out["ok"] is True and out["restart"]["mechanism"] == "none"
+    assert len(calls) == 2
+
+
+def test_own_user_unit_reads_the_cgroup(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    cg = tmp_path / "cgroup"
+    cg.write_text("0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+                  "aither-node-beat.service\n", encoding="utf-8")
+    real = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: real(
+        cg if str(self).replace("\\", "/") == "/proc/self/cgroup" else self, *a, **k))
+    assert node_commands._own_user_unit() == "aither-node-beat.service"
+    cg.write_text("0::/system.slice/aither-genesis.service\n", encoding="utf-8")
+    assert node_commands._own_user_unit() == ""
+
+
+# ── advertise-inference: the owner names the URL the heartbeat advertises ───
+
+
+@pytest.mark.parametrize("url", [
+    "ftp://10.0.0.5:8114", "http://10.0.0.5", "http://user:pw@10.0.0.5:8114",
+    "http://10.0.0.5:8114/v1?x=1", "http://10.0.0.5:8114\n", "http://10.0.0.5:99999",
+    "http://10.0.0.5:8114/other", "http://" + "a" * 260 + ":1", "file:///etc/passwd",
+])
+def test_advertise_inference_refuses_a_bad_url(url):
+    why = node_commands.verify(_cmd(verb="advertise-inference", args={"url": url}), KEY, NODE,
+                               seen=[])
+    assert "is not a valid url" in why, why
+
+
+def test_advertise_inference_persists_and_the_probe_uses_it(monkeypatch, _home):
+    monkeypatch.delenv("AITHER_NODE_INFERENCE_URL", raising=False)
+    probed = []
+    monkeypatch.setattr(enrollment, "_openai_models",
+                        lambda base: probed.append(base) or (True, ["m"]))
+    monkeypatch.setattr(enrollment, "_fingerprint", lambda base: "llama-server")
+    url = "http://10.0.0.5:8114/v1"
+    assert node_commands.verify(_cmd(verb="advertise-inference", args={"url": url}), KEY,
+                                NODE, seen=[]) == ""
+    out = node_commands._advertise_inference({"url": url})
+    assert out["ok"] is True and out["url"] == "http://10.0.0.5:8114"
+    assert json.loads((_home / "node-inference.json").read_text())["url"] == out["url"]
+    assert enrollment.probe_inference().inference_url == "http://10.0.0.5:8114"
+    # the env still wins over the file
+    monkeypatch.setenv("AITHER_NODE_INFERENCE_URL", "http://127.0.0.1:9999")
+    assert enrollment.probe_inference().inference_url == "http://127.0.0.1:9999"
+    monkeypatch.delenv("AITHER_NODE_INFERENCE_URL")
+    # 'auto' clears it: back to the ladder
+    assert node_commands._advertise_inference({"url": "auto"})["cleared"] is True
+    assert not (_home / "node-inference.json").exists()
+    assert enrollment.advertised_inference_url() == ""
+    assert enrollment.probe_inference(candidates=[]).inference_url == ""
+
+
+def test_the_heartbeat_picks_up_a_changed_url_on_its_next_beat(monkeypatch, _home):
+    monkeypatch.delenv("AITHER_NODE_INFERENCE_URL", raising=False)
+    seen = []
+
+    def reg(node_id, **kw):
+        seen.append(kw["inference_url"])
+        if len(seen) == 1:  # the owner's command lands between beats
+            enrollment.save_advertised_inference_url("http://10.0.0.5:8114")
+        return {"node_id": node_id, "inference_ready": False, "available_models": [],
+                "gpu_vram_mb": 0, "inference_url": "", "inference_kind": "none"}
+
+    monkeypatch.setattr(enrollment, "build_registration", reg)
+    asyncio.run(enrollment._heartbeat_beats(
+        _Client([]), "https://idp.test", {"Authorization": "Bearer t"}, NODE, interval=0,
+        inference_url="http://127.0.0.1:8114", node_class="spark", max_beats=2,
+        reach_provider=None, harness_provider=None, beat_immediately=True, device=True))
+    assert seen == ["http://127.0.0.1:8114", "http://10.0.0.5:8114"]

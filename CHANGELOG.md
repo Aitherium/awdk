@@ -4,6 +4,22 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.59] - 2026-10-04
+
+### Added
+
+- **`upgrade` device command** (`args {"version": "X.Y.Z"}`): a paired device runs
+  `python -m pip install --disable-pip-version-check -q awdk==X.Y.Z` in the interpreter
+  that runs its heartbeat (fixed argv, no shell; the version must be three integers),
+  checks the installed version in a fresh interpreter, and, when it runs in a systemd
+  user unit (`aither-node-beat.service` from `adk pair`), restarts that unit 30 s later
+  through a transient `systemd-run --user` timer so the result is reported first.
+  Elsewhere the new code runs from the next start and the result says so.
+- **`advertise-inference` device command** (`args {"url": "http(s)://host:port[/v1]"}`;
+  `""` or `"auto"` clears): stores the inference URL the heartbeat advertises in
+  `~/.aither/node-inference.json`. `AITHER_NODE_INFERENCE_URL` still wins; the file wins
+  over the URL stored at registration and is re-read on every beat.
+
 ## [3.8.58] - 2026-10-04
 
 ### Added
