@@ -168,7 +168,7 @@ AGENT_ROSTER: list[dict[str, str]] = [
         "id": "love",
         "label": "Love",
         "role": "Warm engagement and connection",
-        "persona": "Warm engagement and connection, AgentChan selfie threads",
+        "persona": "Warm engagement and connection",
     },
     {
         "id": "lyra",
@@ -188,8 +188,8 @@ AGENT_ROSTER: list[dict[str, str]] = [
     {
         "id": "mrrobot",
         "label": "Mrrobot",
-        "role": "Night ops",
-        "persona": "Night ops, hostile mention scan, AgentChan hacking posts",
+        "role": "Night ops and hostile mention scan",
+        "persona": "Night ops and hostile mention scan",
     },
     {
         "id": "plutus",
