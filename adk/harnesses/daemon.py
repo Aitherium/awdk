@@ -159,7 +159,9 @@ DEFAULT_ORIGINS = (
     "https://aitherium.com",
     "https://www.aitherium.com",
     "https://api.aitherium.com",
-    "https://api.aitherium.com",
+    # The ONE live page host (hostname consolidation, 2026-10-04): the PWA, the Android app
+    # and every signed-in desktop probe this daemon from app.aitherium.com.
+    "https://app.aitherium.com",
     "https://tunnel.aitherium.com",
     # The Aither Hub (gobbonet.aitherium.com + apex /gobbonet/): the browser
     # page on the user's machine reaches this daemon over 127.0.0.1:8362 —

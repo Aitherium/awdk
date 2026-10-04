@@ -62,6 +62,8 @@ def build_app(agent: Agent) -> Any:
         "https://aitherium.com",
         "https://www.aitherium.com",
         "https://api.aitherium.com",
+        # The ONE live page host (hostname consolidation, 2026-10-04).
+        "https://app.aitherium.com",
         "http://localhost",
         "http://127.0.0.1",
         "http://localhost:3000",

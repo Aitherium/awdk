@@ -942,6 +942,10 @@ def create_app(
         "https://aitherium.com",
         "https://www.aitherium.com",
         "https://api.aitherium.com",
+        # The ONE live page host (hostname consolidation, 2026-10-04). Also matched by
+        # the tenant rule below, but that rule is off whenever AITHER_CORS_ORIGINS is set
+        # or the daemon is offline-narrowed, so the page host is named explicitly.
+        "https://app.aitherium.com",
         "https://veil.aitherium.com",
         # GobboNet surfaces. The adapter's ALLOWED_HOSTS is the authority for this set.
         "https://desktop.aitherium.com",
