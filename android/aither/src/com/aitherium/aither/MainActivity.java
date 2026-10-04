@@ -49,9 +49,6 @@ public class MainActivity extends Activity {
         s.setUserAgentString(s.getUserAgentString() + UA_TOKEN);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true); // api.aitherium.com
-        // window.AitherApp: the page reads and asks for the app's notification permission
-        // (it has no web Notification API in here). Only aitherium.com pages load.
-        web.addJavascriptInterface(new FamilyNotices.Bridge(this), "AitherApp");
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
@@ -89,7 +86,6 @@ public class MainActivity extends Activity {
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
         }
         HeartbeatJob.schedule(this);
-        Shortcuts.apply(this, cfg.childDevice());
         if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
         if (cfg.enabled()) startForegroundService(new Intent(this, HolderService.class));
         freshIfAsked();
@@ -99,15 +95,12 @@ public class MainActivity extends Activity {
     /**
      * What the household page left in this WebView's storage: the device it enrolled
      * (family: aither.family.device) and, from a guardian's QR, a single-use pairing code
-     * for the workspace (aither.family.device.pair), and whether a child uses this phone
-     * (aither.device.child: the launcher shortcuts follow it). Read on every page load and
-     * every few seconds while AitherOS is on screen, because the page signs in without
-     * reloading.
+     * for the workspace (aither.family.device.pair). Read on every page load and every few
+     * seconds while AitherOS is on screen, because the page signs in without reloading.
      */
     private void readHousehold(boolean quiet) {
         web.evaluateJavascript("(function(){try{return JSON.stringify({d:localStorage.getItem('aither.family.device')||'',"
-                        + "p:localStorage.getItem('aither.family.device.pair')||'',"
-                        + "k:localStorage.getItem('aither.device.child')==='1'})}catch(e){return '{}'}})()",
+                        + "p:localStorage.getItem('aither.family.device.pair')||''})}catch(e){return '{}'}})()",
                 val -> {
                     boolean fresh = false;
                     try {
@@ -121,11 +114,6 @@ public class MainActivity extends Activity {
                             fresh = true;
                         }
                         fresh |= cfg.acceptPairCode(j.optString("p", ""));
-                        boolean child = j.optBoolean("k", false);
-                        if (j.has("k") && child != cfg.childDevice()) {
-                            cfg.set("child_device", child);
-                            Shortcuts.apply(MainActivity.this, child);
-                        }
                         if (!cfg.familyDevice().isEmpty()) askBatteryOnce();
                     } catch (Exception e) { /* nothing stored yet */ }
                     // on every open (and at once when the page just handed over a device or

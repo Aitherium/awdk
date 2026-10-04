@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="s_hearth">Hearth</string>
+    <string name="s_family">Family</string>
+    <string name="s_learn">Learn</string>
+    <string name="s_phone">This phone</string>
+</resources>
