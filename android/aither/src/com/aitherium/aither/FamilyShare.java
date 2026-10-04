@@ -130,7 +130,23 @@ final class FamilyShare implements Runnable {
         String id = job.optString("id", "");
         if (id.isEmpty() || !id.matches("[A-Za-z0-9_-]{1,128}")) return 0;
         JSONObject reply = new JSONObject();
-        int status = answer(job.optJSONObject("body"), reply);
+        // The answer must come back before the pool's deadline, whatever happens here: with
+        // the screen off Android parks the CPU unless a wake lock is held (measured on the
+        // Fold: a job picked up while locked never answered), and a failure is reported, not
+        // swallowed, so the household is served by the fleet at once instead of at the deadline.
+        long until = System.currentTimeMillis() + Math.max(10, job.optLong("deadline_s", 120) - 5) * 1000L;
+        PowerManager.WakeLock wake = ctx.getSystemService(PowerManager.class)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "aither:family-share");
+        int status;
+        wake.acquire(Math.max(1000L, until - System.currentTimeMillis()));
+        try {
+            status = answer(job.optJSONObject("body"), reply, until);
+        } catch (Exception e) {
+            status = 504;
+            reply = new JSONObject().put("error", "the phone could not answer: " + e.getClass().getSimpleName());
+        } finally {
+            if (wake.isHeld()) wake.release();
+        }
         Resp done = post("/result/" + id, new JSONObject().put("token", token)
                 .put("status", status).put("body", reply));
         if (done.code == 200 && status == 200) answered++;
@@ -158,7 +174,7 @@ final class FamilyShare implements Runnable {
     }
 
     /** Run one pool job on the local model. Fills {@code out}; returns the HTTP status. */
-    private int answer(JSONObject req, JSONObject out) throws Exception {
+    private int answer(JSONObject req, JSONObject out, long until) throws Exception {
         if (req == null || req.optJSONArray("messages") == null) {
             out.put("error", "no messages");
             return 400;
@@ -179,7 +195,7 @@ final class FamilyShare implements Runnable {
                 + "/v1/chat/completions").openConnection();
         c.setRequestMethod("POST");
         c.setConnectTimeout(5000);
-        c.setReadTimeout(115_000);
+        c.setReadTimeout((int) Math.max(1000, until - System.currentTimeMillis()));
         c.setDoOutput(true);
         c.setRequestProperty("Content-Type", "application/json");
         c.setRequestProperty("Authorization", "Bearer " + llm.key());
