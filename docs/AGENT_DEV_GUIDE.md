@@ -127,6 +127,41 @@ agent = AitherAgent("researcher",
                     system_prompt=sysp, builtin_tools=False)   # default-deny tools
 ```
 
+### Switch tool packs on and off in a live agent
+
+A tool pack can be mounted on a running agent and taken off again. Unloading
+reverses everything the pack added: its tools, its persona directives and its
+skills. A built-in tool the pack overrode comes back.
+
+```python
+agent.activate_pack("cloudflare")     # -> {"pack", "tools", "skills", "skills_missing", ...}
+agent.deactivate_pack("cloudflare")   # registry + system prompt exactly as before
+```
+
+A pack's `skills:` list (bare names or relative paths to `SKILL.md` files) reaches
+the agent only while the pack is active. The prompt lists each skill's name and
+description, and `load_pack_skill(name)` returns the full text. A skill that cannot
+be found is reported in `skills_missing`, never silently dropped.
+
+### Creator mode: the agent builds its own packs
+
+Set `AITHER_CREATOR_MODE=1` and the agent gets the pack-authoring verbs as tools:
+
+| tool | what it does |
+|---|---|
+| `aw_pack_new(pack_id)` | scaffold a working pack (or hand back an existing one) |
+| `aw_pack_read(pack_id, path)` / `aw_pack_write(pack_id, path, content)` | read or replace one file of that pack, and nothing outside it |
+| `aw_pack_validate(pack_id)` | static checks; nothing is imported |
+| `aw_pack_on(pack_id)` | validate, then load it onto this agent; reloads edited source |
+| `aw_pack_off(pack_id)` / `aw_pack_active()` | unload it / list what is mounted |
+
+Packs live in `AITHER_CREATOR_PACKS_DIR` (default `~/.aither/packs/creator`).
+`aw_pack_on` runs pack code with your user's permissions, so **every call needs
+approval**: the turn pauses with `requires_action`, and
+`agent.resume(session_id, [{"tool_use_id": ..., "result": "allow"}])` runs exactly
+the approved call, once, then continues the turn with its result. Anything other
+than `"result": "allow"` is recorded as a deny.
+
 ---
 
 ## 3. Memory model — and how to *never forget*

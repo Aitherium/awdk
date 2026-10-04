@@ -8,6 +8,22 @@ All notable changes to aither-adk will be documented in this file.
 
 ### Added
 
+- **Reversible tool packs.** `agent.activate_pack(id)` / `agent.deactivate_pack(id)` mount
+  and unmount a pack on a live agent; unloading reverses every tool, directive and skill the
+  pack added and restores any tool it overrode. A pack's `skills:` now reach the agent while
+  it is active (`load_pack_skill(name)`); before, the field was parsed and ignored.
+- **Creator mode** (`AITHER_CREATOR_MODE=1`). The agent authors, validates, loads and unloads
+  its own packs: `aw_pack_new|read|write|validate|on|off|active`. `aw_pack_on` runs pack code
+  and always asks for approval. See `docs/AGENT_DEV_GUIDE.md`.
+
+### Fixed
+
+- **Approval resume runs the approved call.** `agent.resume()` used to replay the turn and
+  rely on the model asking again; a real model often re-planned, so an approved action never
+  ran. It now runs exactly the approved call, once, and continues with its result.
+- Scaffolded packs (`tool_modules: []`) now load their tools on activation, and
+  `activate_pack` finds a pack written after the first discovery scan.
+
 - **`agent_ready` toolpack (free).** Make a website discoverable and usable by AI agents and
   prove it. `agent_ready_probe` checks content signals, Link headers, markdown negotiation,
   the API catalog, OAuth discovery, protected-resource metadata, auth.md, the MCP server card,
