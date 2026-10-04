@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.3.1";
+    static final String VERSION = "0.3.3";
 
     private final SharedPreferences p;
 
@@ -29,8 +29,41 @@ final class Config {
     boolean onlyWifi() { return p.getBoolean("only_wifi", true); }
     String pubkey() { return p.getString("pubkey", ""); }
     boolean refreshApp() { return p.getBoolean("refresh_app", false); }
-    /** Answer the household's Family AI Pool with this phone's model (off until the owner says). */
+    /**
+     * Answer the household's Family AI Pool with this phone's model. The household's own
+     * flag (compute_share on this device's row) is the switch: the owner or a guardian sets it
+     * from any browser, and the check-in carries it here. The toggle on this phone writes the
+     * same flag; for a few minutes after it is flipped here, the phone's choice wins over a
+     * check-in that has not seen it yet.
+     */
     boolean shareFamily() { return p.getBoolean("share_family", false); }
+    static final long LOCAL_WINS_MS = 10 * 60_000L;
+
+    void setShareLocally(boolean on) {
+        p.edit().putBoolean("share_family", on).putLong("share_family_at", System.currentTimeMillis()).apply();
+    }
+
+    /** From the household check-in: compute_share and its share_limits. */
+    void shareFromHousehold(boolean on, boolean acOnly, boolean idleOnly) {
+        SharedPreferences.Editor e = p.edit().putBoolean("share_ac_only", acOnly)
+                .putBoolean("share_idle_only", idleOnly);
+        if (System.currentTimeMillis() - p.getLong("share_family_at", 0) > LOCAL_WINS_MS) {
+            e.putBoolean("share_family", on);
+        }
+        e.apply();
+    }
+
+    boolean shareAcOnly() { return p.getBoolean("share_ac_only", true); }
+    boolean shareIdleOnly() { return p.getBoolean("share_idle_only", true); }
+
+    /** Why this phone may not answer the pool now, or "". A child's phone shares only what
+     *  its guardian switched on, and never runs the model for the child's own use. */
+    String poolBlocked() {
+        if (!shareFamily()) return "sharing is off";
+        return "";
+    }
+    /** May agents on this phone read the calendar (the owner's switch; Android asks too)? */
+    boolean toolCalendar() { return p.getBoolean("tool_calendar", false); }
 
     // ---- local AI (LlmService) and the household registry (HeartbeatJob)
     boolean llmEnabled() { return p.getBoolean("llm_enabled", true); }

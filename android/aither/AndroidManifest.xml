@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="4"
-    android:versionName="0.3.1">
+    android:versionCode="6"
+    android:versionName="0.3.3">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
 
@@ -17,6 +17,8 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- self-update: Android still asks the owner to confirm every install -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- the calendar_read agent tool: asked for only when the owner turns that tool on -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
 
     <application
         android:label="Aither"
@@ -76,6 +78,25 @@
                 <data android:scheme="aitherkv" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- Aither as the phone's assistant (Android's assistant role, granted by the owner) -->
+        <activity
+            android:name=".AssistActivity"
+            android:label="Ask Aither"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- measures the on-device agent; only adb can start it (DUMP), tools run dry -->
+        <activity
+            android:name=".EvalActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
 
         <!-- the one tap on the update notification: hands a verified APK to the installer -->
         <activity

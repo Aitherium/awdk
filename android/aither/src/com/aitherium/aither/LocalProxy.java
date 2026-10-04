@@ -31,6 +31,9 @@ final class LocalProxy {
     interface Backend {
         /** Make sure the model is up; "" when ready, else why not (503). */
         String ensure();
+        /** The same, for a Family AI Pool job: allowed on a phone whose household switched
+         *  sharing on (a child's phone included), where the page's own use may be blocked. */
+        String ensurePool();
         int port();
         String key();
         String modelId();

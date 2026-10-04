@@ -133,10 +133,18 @@ public class LlmService extends Service implements LocalProxy.Backend {
 
     @Override
     public String ensure() {
+        return load(cfg.localAiBlocked());
+    }
+
+    @Override
+    public String ensurePool() {
+        return load(cfg.poolBlocked());
+    }
+
+    private String load(String blocked) {
         synchronized (lock) {
             if (proc != null && proc.isAlive()) return "";
             proc = null;
-            String blocked = cfg.localAiBlocked();
             if (!blocked.isEmpty()) return reason = blocked;
             PowerManager pm = getSystemService(PowerManager.class);
             if (pm.getCurrentThermalStatus() >= PowerManager.THERMAL_STATUS_SEVERE) {
@@ -163,7 +171,8 @@ public class LlmService extends Service implements LocalProxy.Backend {
                 ProcessBuilder pb = new ProcessBuilder(bin.getAbsolutePath(),
                         "-m", model.getAbsolutePath(), "--host", "127.0.0.1", "--port", String.valueOf(INNER_PORT),
                         "--api-key", key, "--alias", MODEL_ID, "-c", "2048", "-np", "1", "-t", "4",
-                        "-ub", "128", "--cache-ram", "0", "--no-webui");
+                        "-ub", "128", "--cache-ram", "0", "--no-webui",
+                        "--jinja"); // the model's own chat template: tool calls for the on-device agent
                 pb.redirectErrorStream(true);
                 pb.redirectOutput(new File(getFilesDir(), "llm.log"));
                 proc = pb.start();

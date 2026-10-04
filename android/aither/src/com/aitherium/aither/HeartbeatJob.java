@@ -113,6 +113,19 @@ public class HeartbeatJob extends JobService {
             String kind = j.optString("profile_kind", "");
             if (!kind.isEmpty()) cfg.set("profile_kind", kind);
             cfg.set("family_kv_lend", j.optBoolean("kv_lend", false));
+            JSONObject lim = j.optJSONObject("share_limits");
+            boolean was = cfg.shareFamily();
+            cfg.shareFromHousehold(j.optBoolean("compute_share", false),
+                    lim == null || lim.optBoolean("ac_only", true),
+                    lim == null || lim.optBoolean("idle_only", true));
+            if (cfg.shareFamily() != was && cfg.llmEnabled()) {
+                // the share worker lives in the model service: start it (or let it stop itself)
+                try {
+                    ctx.startForegroundService(new android.content.Intent(ctx, LlmService.class));
+                } catch (RuntimeException e) {
+                    last = "sharing changed; it applies when Aither next runs";
+                }
+            }
             last = "sent " + new java.util.Date();
             return true;
         } catch (Exception e) {

@@ -177,7 +177,16 @@ and not run before. `check_commands.py` proves the app and Identity agree on eve
 phone's model. The phone never becomes reachable: it asks the pool for a job (a long poll,
 outbound only), answers it on its own model and posts the answer back. The pool refuses until
 a guardian has turned sharing on; the phone never shares from a child's profile and pauses
-while it is not charging, is warm, or is in battery saver.
+while it is not charging, is in use, is warm, or is in battery saver. The switch is the
+household's own (compute_share on the device's row): the owner, or a guardian for a child's
+phone, can flip it from any browser and the phone follows at its next check-in. A child's
+phone shares only what its guardian turned on, only while charging and not in use, and still
+never runs the model for the child's own use.
+
+"Make Aither this phone's assistant" asks Android to make Aither the assistant (long-press
+power opens "Ask Aither"). An agent there answers with the model on the phone and the tools
+the owner allowed; today one, reading the calendar ("Agents may read my calendar", and
+Android asks for calendar access). Agents are off on a child's phone.
 
 awsh and Desk read the same swarm: `adk kvholder workspace status --json`, or the snapshot
 the relay writes to `~/.aither/kvholder/workspace.json` every 5 s (no tokens in it).

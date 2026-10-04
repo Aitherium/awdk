@@ -62,11 +62,36 @@ public class SettingsActivity extends Activity {
         fam.setText("Share it with my family (only while charging)");
         fam.setChecked(cfg.shareFamily());
         fam.setPadding(0, 12, 0, 12);
+        if ("child".equals(cfg.profileKind())) {
+            fam.setEnabled(false);
+            fam.setText("Shared with the family when your guardian turns it on");
+        }
         fam.setOnCheckedChangeListener((v, checked) -> {
-            cfg.set("share_family", checked);
+            cfg.setShareLocally(checked);
             if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
         });
         col.addView(fam);
+
+        TextView ag = new TextView(this);
+        ag.setText("Assistant and agents");
+        ag.setTextSize(18);
+        ag.setPadding(0, pad * 2, 0, pad / 2);
+        col.addView(ag);
+        Button assistant = new Button(this);
+        assistant.setText("Make Aither this phone's assistant");
+        assistant.setOnClickListener(v -> askAssistantRole());
+        col.addView(assistant);
+        Switch cal = new Switch(this);
+        cal.setText("Agents may read my calendar");
+        cal.setChecked(cfg.toolCalendar());
+        cal.setPadding(0, 12, 0, 12);
+        cal.setOnCheckedChangeListener((v, checked) -> {
+            cfg.set("tool_calendar", checked);
+            if (checked && checkSelfPermission(Manifest.permission.READ_CALENDAR) != 0) {
+                requestPermissions(new String[] {Manifest.permission.READ_CALENDAR}, 2);
+            }
+        });
+        col.addView(cal);
         Button pair = new Button(this);
         pair.setText("Use it from AitherOS in the browser");
         pair.setOnClickListener(v -> {
@@ -131,6 +156,22 @@ public class SettingsActivity extends Activity {
             askBattery();
         } else if (cfg.enabled()) {
             startForegroundService(new Intent(this, HolderService.class));
+        }
+    }
+
+    /** Android's own dialog: the owner decides, and can undo it in Android's settings. */
+    private void askAssistantRole() {
+        android.app.role.RoleManager rm = getSystemService(android.app.role.RoleManager.class);
+        if (rm == null || !rm.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT)) return;
+        if (rm.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT)) {
+            android.widget.Toast.makeText(this, "Aither is already the assistant", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            startActivityForResult(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_ASSISTANT), 3);
+        } catch (RuntimeException e) {
+            // some phones only offer it in Settings > Apps > Default apps > Digital assistant app
+            try { startActivity(new Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)); } catch (RuntimeException ignored) { /* none */ }
         }
     }
 

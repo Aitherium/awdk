@@ -100,6 +100,9 @@ final class FamilyShare implements Runnable {
             state = "paused: " + why;
             return 60_000;
         }
+        // the household already switched this phone on (the owner from a browser, or a
+        // guardian for a child's phone): nothing to ask for
+        if (!optedIn && "child".equals(cfg.profileKind())) optedIn = true;
         if (!optedIn) {
             Resp r = post("/share", new JSONObject().put("token", token).put("compute_share", true));
             if (r.code != 200) {
@@ -179,7 +182,7 @@ final class FamilyShare implements Runnable {
             out.put("error", "no messages");
             return 400;
         }
-        String not = llm.ensure();
+        String not = llm.ensurePool();
         if (!not.isEmpty()) {
             out.put("error", not);
             return 503;
@@ -229,14 +232,15 @@ final class FamilyShare implements Runnable {
     }
 
     private String paused(String token) {
-        if (!cfg.shareFamily()) return "turned off on this phone";
+        if (!cfg.shareFamily()) return "turned off";
         if (token.isEmpty()) return "this phone is not in a household";
-        String blocked = cfg.localAiBlocked();
-        if (!blocked.isEmpty()) return blocked;
+        boolean child = "child".equals(cfg.profileKind());
         PowerManager pm = ctx.getSystemService(PowerManager.class);
         if (pm.isPowerSaveMode()) return "battery saver is on";
         if (pm.getCurrentThermalStatus() >= PowerManager.THERMAL_STATUS_MODERATE) return "the phone is warm";
-        if (!charging()) return "not charging";
+        // a child's phone: only while charging and nobody is using it, whatever the limits say
+        if ((child || cfg.shareAcOnly()) && !charging()) return "not charging";
+        if ((child || cfg.shareIdleOnly()) && pm.isInteractive()) return "in use";
         return "";
     }
 
