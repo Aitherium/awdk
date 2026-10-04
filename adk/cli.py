@@ -13699,7 +13699,11 @@ def _register_commands(sub):
     pair_p = sub.add_parser(
         "pair",
         help="Pair this machine with the portal as an inference node (6-char code from the portal)")
-    pair_p.add_argument("code", help="Pairing code shown in the signed-in portal tab")
+    pair_p.add_argument("code", help="Pairing code shown in the signed-in portal tab"
+                        " ('-' reads it from stdin)")
+    pair_p.add_argument(
+        "--inference-url", default="",
+        help="Advertise this OpenAI-compatible server (default: probe the usual ports)")
     pair_p.add_argument("--portal", default="",
                         help="Portal base URL (default: pair directly with Identity)")
     pair_p.add_argument(
@@ -13708,6 +13712,10 @@ def _register_commands(sub):
     pair_p.add_argument(
         "--no-autostart", action="store_true",
         help="Do not install the per-user heartbeat autostart (python -m adk.node_beat)")
+
+    # adk onboard-remote — add a computer this machine can SSH into (no typing on it)
+    from adk.remote_onboard import add_parser as _add_onboard_remote
+    _add_onboard_remote(sub)
 
     # adk whoami
     _whoami = sub.add_parser(
@@ -16813,6 +16821,9 @@ def main():
     elif args.command == "pair":
         from adk.node_pairing import cmd_pair
         sys.exit(cmd_pair(args))
+    elif args.command == "onboard-remote":
+        from adk.remote_onboard import cmd_onboard_remote
+        sys.exit(cmd_onboard_remote(args))
     elif args.command == "whoami":
         sys.exit(cmd_whoami(args))
     elif args.command == "logout":

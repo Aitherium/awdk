@@ -37,7 +37,8 @@ IDENTITY_CONFIRM_PATH = "/v1/nodes/pairing/confirm"
 
 async def pair_with_code(code: str, portal_url: str,
                          node_class: str = "laptop",
-                         confirm_path: str = _CONFIRM_PATH) -> Dict[str, Any]:
+                         confirm_path: str = _CONFIRM_PATH,
+                         inference_url: str = "") -> Dict[str, Any]:
     """Present a portal pairing code and register this machine as a node.
 
     Returns ``{"paired": bool, ...}`` — never raises; failures carry ``error``.
@@ -55,7 +56,10 @@ async def pair_with_code(code: str, portal_url: str,
         node_auth = _load_node_auth()
         node_id = node_auth.get("node_id") or _generate_node_id()
 
-        reg = build_registration(node_id, node_class=node_class)
+        # An explicit inference url wins over the probe ladder (a server on a port
+        # the ladder does not walk, e.g. a pool router); empty = probe as before.
+        reg = build_registration(node_id, node_class=node_class,
+                                 inference_url=inference_url or None)
         payload = {"code": code, **reg}
 
         base = portal_url.rstrip("/")
@@ -121,11 +125,20 @@ def cmd_pair(args: Any) -> int:
 
         portal_url, confirm_path = enroll_base(), IDENTITY_CONFIRM_PATH
     code = getattr(args, "code", "")
+    if code == "-":
+        # `adk pair -` reads the code from stdin, so a remote onboarding run never
+        # puts the credential on an argv another user on the box could read in ps.
+        import sys
+
+        code = sys.stdin.readline().strip()
 
     print(f"  Pairing this machine with {portal_url} …")
+    extra = {}
+    if getattr(args, "inference_url", ""):
+        extra["inference_url"] = args.inference_url
     result = asyncio.run(pair_with_code(
         code, portal_url, node_class=getattr(args, "node_class", None) or "laptop",
-        confirm_path=confirm_path))
+        confirm_path=confirm_path, **extra))
 
     if not result.get("paired"):
         print(f"  ✗ Pairing failed: {result.get('error', 'unknown error')}")

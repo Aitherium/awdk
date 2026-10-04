@@ -241,6 +241,12 @@ def probe_inference(
         :class:`InferenceProbe` ``(models, inference_url, inference_kind, ready)``.
         In auto mode with nothing listening: ``([], "", "none", False)``.
     """
+    if not explicit_url and candidates is None:
+        # A box whose server is off the ladder (a pool router on a non-standard port such as
+        # :8114) names it once in its environment; the heartbeat then advertises it on
+        # every beat. Dedicated name: AITHER_INFERENCE_URL already means the CLOUD
+        # inference base elsewhere in adk and must never be advertised as this node's.
+        explicit_url = (os.environ.get("AITHER_NODE_INFERENCE_URL") or "").strip() or None
     if explicit_url and explicit_url.strip().lower() != "auto":
         base = _normalize_base(explicit_url)
         ok, models = _openai_models(base)
