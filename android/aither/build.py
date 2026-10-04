@@ -332,11 +332,16 @@ def build(
             str(jar),
             "-A",
             str(out / "assets"),
+            # R.java, so code names a resource (R.mipmap.ic_shortcut_sprite) and a missing
+            # one fails the build instead of a lookup at run time
+            "--java",
+            str(out / "rgen"),
             "-o",
             str(base),
         ]
     )
     srcs = [str(p) for p in (HERE / "src").rglob("*.java")]
+    srcs += [str(p) for p in (out / "rgen").rglob("*.java")]
     if store:
         srcs = store_sources(out, srcs)
     run(
