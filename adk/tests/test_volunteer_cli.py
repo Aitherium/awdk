@@ -299,3 +299,66 @@ class TestEnrollTenantDefault:
         asyncio.run(vol.enroll(SimpleNamespace(tenant=None)))
         assert "No tenant" in capsys.readouterr().out
         assert called == []  # returned before touching the mesh
+
+
+class TestGenesisBase:
+    """The public volunteer routes live behind Veil's /api/genesis proxy.
+
+    The old default (https://api.aitherium.com/volunteer/...) answered every claim
+    with a 307 to /login, so no volunteer could ever claim a job."""
+
+    def test_default_is_the_public_genesis_proxy(self, monkeypatch):
+        from adk.commands.volunteer import PUBLIC_GENESIS, _genesis_base
+
+        monkeypatch.delenv("AITHER_GENESIS_URL", raising=False)
+        assert _genesis_base() == PUBLIC_GENESIS
+        assert PUBLIC_GENESIS.endswith("/api/genesis")
+
+    def test_bare_api_host_is_corrected(self, monkeypatch):
+        from adk.commands.volunteer import PUBLIC_GENESIS, _genesis_base
+
+        monkeypatch.setenv("AITHER_GENESIS_URL", "https://api.aitherium.com/")
+        assert _genesis_base() == PUBLIC_GENESIS
+
+    def test_in_fleet_override_is_kept(self, monkeypatch):
+        from adk.commands.volunteer import _genesis_base
+
+        monkeypatch.setenv("AITHER_GENESIS_URL", "https://aitheros-genesis:8001/")
+        assert _genesis_base() == "https://aitheros-genesis:8001"
+
+
+@pytest.mark.asyncio
+async def test_status_reads_this_peer_from_the_roster(monkeypatch, capsys):
+    """status must not pass the peer id to /volunteer/status/{job_id}."""
+    monkeypatch.delenv("AITHER_GENESIS_URL", raising=False)
+    monkeypatch.setenv("AITHER_PEER_ID", "peer-mine")
+    monkeypatch.setenv("AITHER_AUTH_TOKEN", "tok")
+    seen = []
+
+    class Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"roster": [{"peer_id": "peer-other", "reputation": 1},
+                               {"peer_id": "peer-mine", "reputation": 7, "jobs_verified": 3,
+                                "jobs_submitted": 4, "jobs_active": 1}],
+                    "queue_depth": 12}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None, timeout=None):
+            seen.append(url)
+            return Resp()
+
+    monkeypatch.setattr("adk.commands.volunteer.httpx.AsyncClient", lambda *a, **k: Client())
+    await status(MagicMock(peer_id=None))
+    out = capsys.readouterr().out
+    assert seen == ["https://api.aitherium.com/api/genesis/volunteer/roster"]
+    assert "Jobs verified:     3" in out and "Reputation:        7" in out
+    assert "Queue depth:       12" in out

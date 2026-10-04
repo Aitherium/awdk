@@ -32,6 +32,21 @@ HEARTBEAT_INTERVAL = 300  # 5 minutes
 HEARTBEAT_TTL = 1800  # 30 minutes
 
 
+PUBLIC_GENESIS = "https://api.aitherium.com/api/genesis"
+
+
+def _genesis_base() -> str:
+    """Where the volunteer routes live. Genesis publishes no public host: the
+    public path is Veil's /api/genesis proxy. A bare ``https://api.aitherium.com``
+    (the old default) answered every claim with a 307 to /login, so it is
+    corrected here rather than left to fail. AITHER_GENESIS_URL still points a
+    node at Genesis directly (in-fleet)."""
+    url = os.getenv("AITHER_GENESIS_URL", "").strip().rstrip("/") or PUBLIC_GENESIS
+    if url.rstrip("/") in ("https://api.aitherium.com", "http://api.aitherium.com"):
+        url = PUBLIC_GENESIS
+    return url
+
+
 def _get_auth_token() -> str | None:
     """Resolve auth token from environment or config."""
     token = os.getenv("AITHER_AUTH_TOKEN", "").strip()
@@ -266,7 +281,7 @@ async def start(args: Any) -> None:
     Usage: adk volunteer start [--batch-size 64]
     """
     batch_size = getattr(args, "batch_size", 64)
-    genesis_url = os.getenv("AITHER_GENESIS_URL", "https://api.aitherium.com")
+    genesis_url = _genesis_base()
 
     try:
         # Get peer_id and auth token
@@ -461,7 +476,7 @@ async def status(args: Any) -> None:
     Usage: adk volunteer status [--peer-id PEER_ID]
     """
     peer_id = getattr(args, "peer_id", None)
-    genesis_url = os.getenv("AITHER_GENESIS_URL", "https://api.aitherium.com")
+    genesis_url = _genesis_base()
 
     try:
         if not peer_id:
@@ -472,27 +487,31 @@ async def status(args: Any) -> None:
             print("✗ Not authenticated. Run: adk login")
             sys.exit(1)
 
-        # Query status endpoint
+        # There is no per-peer status route: /volunteer/status/{id} takes a JOB id.
+        # The tenant roster carries this peer's row and the queue depth.
         headers = {"Authorization": f"Bearer {auth_token}"}
-        status_url = f"{genesis_url}/volunteer/status/{peer_id}"
+        roster_url = f"{genesis_url}/volunteer/roster"
 
         async with httpx.AsyncClient() as c:
-            r = await c.get(status_url, headers=headers, timeout=10.0)
-            if r.status_code == 200:
-                vol_status = r.json()
-                print("\nVolunteer Status")
-                print("================")
-                print(f"Peer ID:           {peer_id}")
-                print(f"Status:            {vol_status.get('status')}")
-                print(f"Reputation:        {vol_status.get('reputation', 0)}")
-                print(f"Tokens Earned:     {vol_status.get('tokens_earned', 0)}")
-                print(f"Batches Verified:  {vol_status.get('batches_verified', 0)}")
-                vr = vol_status.get('verification_rate', 0)
-                print(f"Verification Rate: {vr:.1%}")
-                print()
-            else:
-                print(f"✗ Status query failed ({r.status_code}): {r.text}")
-                sys.exit(1)
+            r = await c.get(roster_url, headers=headers, timeout=10.0)
+        if r.status_code != 200:
+            print(f"✗ Status query failed ({r.status_code}): {r.text[:200]}")
+            sys.exit(1)
+        data = r.json()
+        row = next((p for p in data.get("roster", []) if p.get("peer_id") == peer_id), None)
+        print("\nVolunteer Status")
+        print("================")
+        print(f"Peer ID:           {peer_id}")
+        if row is None:
+            print("Jobs:              none yet (this peer has not claimed a job)")
+        else:
+            print(f"Reputation:        {row.get('reputation', 0)}")
+            print(f"Jobs verified:     {row.get('jobs_verified', 0)}")
+            print(f"Jobs submitted:    {row.get('jobs_submitted', 0)}")
+            print(f"Jobs active:       {row.get('jobs_active', 0)}")
+        print(f"Queue depth:       {data.get('queue_depth', 0)}")
+        print("Tokens earned:     adk wallet")
+        print()
 
     except Exception as e:
         print(f"✗ Status failed: {e}")
