@@ -13,7 +13,6 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from adk.toolpacks.node_bootstrap import tools
 
 
@@ -555,8 +554,9 @@ class TestRenderComposeServeArgs:
 
     def test_every_shipped_recipe_renders_or_fails_loud(self):
         """No shipped recipe may render a compose that drops its own flags."""
-        import yaml
         from pathlib import Path
+
+        import yaml
 
         rdir = Path(tools.__file__).parent / "recipes"
         for path in sorted(rdir.glob("*.yaml")):
@@ -575,3 +575,216 @@ class TestRenderComposeServeArgs:
                     assert token in out, (
                         f"{path.name}: serve_arg token {token!r} silently dropped"
                     )
+
+
+# ── engine-table verify + recipe-declared paths + register name ─────────
+
+
+def _resp(status=200, body=None):
+    m = MagicMock(status_code=status, text="")
+    m.json = lambda: body if body is not None else {}
+    return m
+
+
+class TestVerifyOpenAICompatibleEngines:
+    """Every non-ollama engine speaks the OpenAI shape (chat first, then completions)."""
+
+    @pytest.mark.parametrize(
+        "engine", ["llamacpp", "llamacpp_remote", "strata", "dgpp", "sglang", "vllm"]
+    )
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_chat_completions_reports_healthy(self, mock_post, mock_get, engine):
+        mock_get.return_value = _resp(200)
+        mock_post.return_value = _resp(
+            200, {"choices": [{"message": {"content": "ML learns patterns from data."}}]}
+        )
+        result = tools.node_verify(base_url="http://node:8080", backend_type=engine)
+        assert result["status"] == "healthy", result
+        assert mock_post.call_args_list[0].args[0] == "http://node:8080/v1/chat/completions"
+        assert "messages" in mock_post.call_args_list[0].kwargs["json"]
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_falls_back_to_completions(self, mock_post, mock_get):
+        mock_get.return_value = _resp(200)
+        mock_post.side_effect = [
+            _resp(404),
+            _resp(200, {"choices": [{"text": "ML learns patterns from data."}]}),
+        ]
+        result = tools.node_verify(base_url="http://node:8080", backend_type="llamacpp")
+        assert result["status"] == "healthy", result
+        urls = [c.args[0] for c in mock_post.call_args_list]
+        assert urls == [
+            "http://node:8080/v1/chat/completions",
+            "http://node:8080/v1/completions",
+        ]
+        assert "prompt" in mock_post.call_args_list[1].kwargs["json"]
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_ollama_keeps_native_path(self, mock_post, mock_get):
+        mock_get.return_value = _resp(200)
+        mock_post.return_value = _resp(200, {"response": "ML learns patterns from data."})
+        result = tools.node_verify(base_url="http://node:11434", backend_type="ollama")
+        assert result["status"] == "healthy", result
+        assert mock_get.call_args.args[0] == "http://node:11434/api/tags"
+        assert mock_post.call_args.args[0] == "http://node:11434/api/generate"
+        assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_all_paths_failing_is_degraded(self, mock_post, mock_get):
+        mock_get.return_value = _resp(200)
+        mock_post.return_value = _resp(500)
+        result = tools.node_verify(base_url="http://node:8080", backend_type="sglang")
+        assert result["status"] == "degraded"
+        assert mock_post.call_count == 2
+
+
+class TestVerifyOllamaRemote:
+    """A ``<engine>_remote`` backend type speaks its engine's protocol."""
+
+    def test_protocol_alias(self):
+        assert tools._engine_protocol("ollama_remote")["health_path"] == "/api/tags"
+        assert tools._engine_protocol("OLLAMA_REMOTE")["completion_paths"] == ("/api/generate",)
+        assert tools._engine_protocol("llamacpp_remote")["health_path"] == "/health"
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_ollama_remote_without_recipe_is_healthy(self, mock_post, mock_get):
+        def get(url, **_):
+            return _resp(200 if url.endswith("/api/tags") else 404)
+
+        def post(url, **_):
+            if url.endswith("/api/generate"):
+                return _resp(200, {"response": "ML learns patterns from data."})
+            return _resp(404)
+
+        mock_get.side_effect = get
+        mock_post.side_effect = post
+        result = tools.node_verify(base_url="http://h:11434", backend_type="ollama_remote")
+        assert result["status"] == "healthy", result
+        assert mock_get.call_args.args[0] == "http://h:11434/api/tags"
+        assert mock_post.call_args.args[0] == "http://h:11434/api/generate"
+
+
+class TestApplyNextHint:
+    """The ``next`` hint after an apply carries the recipe so verify reads its paths."""
+
+    def test_hint_carries_recipe_and_backend_type(self):
+        plan = {"port": 11434, "env": {"AITHER_BACKEND_TYPE": "ollama_remote"}}
+        hint = tools._verify_hint("cpu-ollama", "localhost", plan)
+        assert hint == (
+            "node_verify(base_url='http://localhost:11434', recipe_id='cpu-ollama', "
+            "backend_type='ollama_remote')"
+        )
+
+    def test_hint_without_backend_type(self):
+        hint = tools._verify_hint("r1", "10.0.0.5", {"port": 8000, "env": {}})
+        assert hint == "node_verify(base_url='http://10.0.0.5:8000', recipe_id='r1')"
+
+    @patch("adk.toolpacks.node_bootstrap.tools._run", return_value=(0, "ok"))
+    def test_local_compose_apply_returns_recipe_hint(self, _mock_run, tmp_path, monkeypatch):
+        monkeypatch.setattr(tools, "_BOOTSTRAP_DIR", tmp_path)
+        plan = {
+            "port": 11434,
+            "env": {"AITHER_BACKEND_TYPE": "ollama_remote"},
+            "compose_yaml": "services: {}\n",
+        }
+        result = tools._apply_local("cpu-ollama", plan, "docker-compose")
+        assert result["applied"] is True, result
+        assert "recipe_id='cpu-ollama'" in result["next"]
+        assert "backend_type='ollama_remote'" in result["next"]
+
+
+class TestVerifyRecipeDeclaredPaths:
+    """backend_config.health_path / completion_path from the recipe win."""
+
+    def test_health_path_override_beats_engine_map(self):
+        assert tools._health_path_for("vllm", {"health_path": "/v1/models"}) == "/v1/models"
+        assert tools._health_path_for("vllm", "v1/models") == "/v1/models"
+        # an empty declaration (e.g. a cloud recipe) falls back to the engine default
+        assert tools._health_path_for("ollama", {"health_path": ""}) == "/api/tags"
+        assert tools._health_path_for("llamacpp") == "/health"
+
+    @patch("adk.toolpacks.node_bootstrap.tools.get_recipe")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_recipe_backend_config_drives_paths(self, mock_post, mock_get, mock_recipe):
+        mock_recipe.return_value = {
+            "backend_config": {
+                "backend_type": "llamacpp_remote",
+                "health_path": "/v1/models",
+                "completion_path": "/v1/completions",
+            }
+        }
+        mock_get.return_value = _resp(200)
+        mock_post.return_value = _resp(
+            200, {"choices": [{"text": "ML learns patterns from data."}]}
+        )
+        result = tools.node_verify(base_url="http://node:8090", recipe_id="any-recipe")
+        assert result["status"] == "healthy", result
+        assert result["backend_type"] == "llamacpp_remote"
+        assert mock_get.call_args.args[0] == "http://node:8090/v1/models"
+        # the declared completion path is tried FIRST
+        assert mock_post.call_args_list[0].args[0] == "http://node:8090/v1/completions"
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_real_recipe_health_path_is_read(self, mock_post, mock_get):
+        mock_get.return_value = _resp(503)
+        tools.node_verify(base_url="http://node:11434", recipe_id="cpu-ollama")
+        assert mock_get.call_args.args[0] == "http://node:11434/api/tags"
+        mock_post.assert_not_called()
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
+    def test_explicit_args_beat_recipe(self, mock_get):
+        mock_get.return_value = _resp(503)
+        tools.node_verify(
+            base_url="http://node:11434", recipe_id="cpu-ollama", health_path="/ready"
+        )
+        assert mock_get.call_args.args[0] == "http://node:11434/ready"
+
+
+class TestRegisterBackendName:
+    """The control plane requires a name; it must be present and stable."""
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_payload_has_stable_name(self, mock_post):
+        mock_post.return_value = _resp(200, {"ok": True})
+        kw = dict(
+            genesis_url="https://cp.example",
+            base_url="http://10.0.0.5:8000",
+            backend_type="vllm",
+            models=["org/My-Model"],
+            token="t",
+        )
+        r1 = tools.node_register_backend(**kw)
+        name1 = mock_post.call_args.kwargs["json"]["name"]
+        tools.node_register_backend(**kw)
+        name2 = mock_post.call_args.kwargs["json"]["name"]
+        assert name1 == name2 == "My-Model@10.0.0.5-8000"
+        assert r1["name"] == name1
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["base_url"] == "http://10.0.0.5:8000"
+        assert payload["backend_type"] == "vllm"
+        assert payload["models"] == ["org/My-Model"]
+
+    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
+    def test_name_falls_back_to_backend_type_and_explicit_wins(self, mock_post):
+        mock_post.return_value = _resp(200, {"ok": True})
+        tools.node_register_backend(
+            genesis_url="https://cp.example", base_url="http://box:8080",
+            backend_type="llamacpp_remote", token="t",
+        )
+        assert mock_post.call_args.kwargs["json"]["name"] == "llamacpp_remote@box-8080"
+        tools.node_register_backend(
+            genesis_url="https://cp.example", base_url="http://box:8080",
+            backend_type="llamacpp_remote", token="t", name="custom",
+        )
+        assert mock_post.call_args.kwargs["json"]["name"] == "custom"
+
+    def test_name_is_sanitized(self):
+        name = tools.backend_registration_name("not a url", "a b/c d")
+        assert name and " " not in name

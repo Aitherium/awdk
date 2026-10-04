@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -488,7 +489,7 @@ def _apply_local(recipe_id: str, plan: dict, target: str) -> dict:
                 "recipe_id": recipe_id,
                 "mode": "docker-compose",
                 "compose_file": str(compose_file),
-                "next": f"node_verify(base_url='http://localhost:{plan.get('port', 8000)}')",
+                "next": _verify_hint(recipe_id, "localhost", plan),
             }
         if target == "native":
             # Native engine (e.g. ollama on Apple Silicon). Pull models only if
@@ -599,7 +600,7 @@ def _apply_remote(
             "node_ip": node_ip,
             "ssh_user": ssh_user,
             "steps": outputs,
-            "next": f"node_verify(base_url='http://{node_ip}:{plan.get('port', 8000)}')",
+            "next": _verify_hint(recipe_id, node_ip, plan),
         }
     except Exception as e:
         logger.exception("Remote deployment failed")
@@ -692,6 +693,29 @@ def _mask_token(token: str, show_chars: int = 4) -> str:
     return token[:show_chars] + "..." + token[-show_chars:]
 
 
+def backend_registration_name(base_url: str, label: str) -> str:
+    """Stable registry name for a backend: ``<label>@<host>[-<port>]``.
+
+    Deterministic for the same endpoint + model, so a repeat registration
+    updates the existing entry. Characters outside ``[A-Za-z0-9._-]`` become
+    ``-``.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(base_url if "://" in base_url else f"//{base_url}")
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        host, port = "", None
+    host = host or base_url or "local"
+    if port:
+        host = f"{host}-{port}"
+    label = (label or "backend").rsplit("/", 1)[-1]
+    raw = f"{label}@{host}"
+    return re.sub(r"[^A-Za-z0-9._@-]+", "-", raw).strip("-")[:128]
+
+
 # ── 6. BACKEND REGISTRATION ────────────────────────────────────────────
 
 
@@ -702,6 +726,7 @@ def node_register_backend(
     models: Optional[list] = None,
     preferred: bool = False,
     token: str = "",
+    name: str = "",
 ) -> dict:
     """Register a backend with Genesis.
 
@@ -711,6 +736,11 @@ def node_register_backend(
     let any caller point fleet routing at an arbitrary URL. AUTHORIZATION is
     enforced server-side by Genesis against the token's identity; this client
     never decides permission, it just always presents identity.
+
+    ``name`` is the backend's registry name (the control plane requires one);
+    when omitted a stable one is derived from the first model (or the backend
+    type) and the endpoint host, so re-registering the same endpoint upserts
+    rather than duplicates.
     """
     if not token:
         token = os.environ.get("AITHER_AUTH_TOKEN", "")
@@ -740,7 +770,11 @@ def node_register_backend(
 
     try:
         models = models or []
+        name = name or backend_registration_name(
+            base_url, models[0] if models else backend_type
+        )
         payload = {
+            "name": name,
             "base_url": base_url,
             "backend_type": backend_type,
             "models": models,
@@ -764,6 +798,7 @@ def node_register_backend(
                 body = r.json()
                 return {
                     "registered": True,
+                    "name": name,
                     "backend_type": backend_type,
                     "base_url": base_url,
                     "models": models,
@@ -772,6 +807,7 @@ def node_register_backend(
             except ValueError:
                 return {
                     "registered": True,
+                    "name": name,
                     "backend_type": backend_type,
                     "base_url": base_url,
                     "status": r.status_code,
@@ -801,14 +837,22 @@ def node_register_backend(
 
 def node_verify(
     base_url: str,
-    backend_type: str = "vllm",
+    backend_type: str = "",
     model: str = "",
     timeout_s: float = 60.0,
+    recipe_id: str = "",
+    health_path: str = "",
+    completion_path: str = "",
 ) -> dict:
     """Verify backend health and inference capability.
 
     GET health path + POST one completion, return {status, health,
     completion_text, latency_ms}. Coherence = non-empty text.
+
+    Paths resolve in order: explicit ``health_path``/``completion_path`` args,
+    then the recipe's ``backend_config`` (when ``recipe_id`` is given), then the
+    per-engine defaults. ``backend_type`` defaults to the recipe's declared
+    backend, else ``vllm``.
     """
     if not base_url:
         return {
@@ -816,15 +860,16 @@ def node_verify(
             "fix": "provide the backend service URL",
         }
 
-    backend_type = backend_type or "vllm"
-
     try:
+        backend_cfg = _recipe_backend_config(recipe_id)
+        backend_type = (
+            backend_type or backend_cfg.get("backend_type") or "vllm"
+        )
         base = base_url.rstrip("/")
         timeout = float(timeout_s)
 
         # Health check
-        health_path = _health_path_for(backend_type)
-        health_url = f"{base}{health_path}"
+        health_url = f"{base}{_health_path_for(backend_type, health_path or backend_cfg)}"
 
         try:
             r = httpx.get(health_url, timeout=timeout)
@@ -842,7 +887,12 @@ def node_verify(
             start = time.time()
             try:
                 completion = _test_completion(
-                    base, backend_type, model or "default", timeout
+                    base,
+                    backend_type,
+                    model or "default",
+                    timeout,
+                    completion_path=completion_path
+                    or str(backend_cfg.get("completion_path") or ""),
                 )
                 latency_ms = (time.time() - start) * 1000
                 completion_text = completion.get("text", "")
@@ -867,14 +917,90 @@ def node_verify(
         }
 
 
-def _health_path_for(backend_type: str) -> str:
-    """Get the health check path for a backend."""
-    paths = {
-        "vllm": "/health",
-        "ollama": "/api/tags",
-        "llamacpp": "/health",
-    }
-    return paths.get(backend_type, "/health")
+# Per-engine protocol table. Every engine NOT listed here is treated as
+# OpenAI-compatible (vllm, llamacpp, llamacpp_remote, sglang, strata, ...):
+# that is the shape nearly every modern serving stack exposes.
+_ENGINE_PROTOCOLS = {
+    "ollama": {
+        "health_path": "/api/tags",
+        "completion_paths": ("/api/generate",),
+    },
+}
+_OPENAI_PROTOCOL = {
+    "health_path": "/health",
+    "completion_paths": ("/v1/chat/completions", "/v1/completions"),
+}
+
+
+def _engine_protocol(backend_type: str) -> dict:
+    """Protocol for an engine; a ``<engine>_remote`` name speaks ``<engine>``'s."""
+    name = (backend_type or "").strip().lower()
+    if name not in _ENGINE_PROTOCOLS and name.endswith("_remote"):
+        name = name[: -len("_remote")]
+    return _ENGINE_PROTOCOLS.get(name, _OPENAI_PROTOCOL)
+
+
+def _verify_hint(recipe_id: str, host: str, plan: dict) -> str:
+    """The ``node_verify`` call to run after an apply. It carries ``recipe_id`` so
+    verify reads the recipe's declared health/completion paths and backend type."""
+    port = plan.get("port", 8000)
+    backend_type = (plan.get("env") or {}).get("AITHER_BACKEND_TYPE", "")
+    args = [f"base_url='http://{host}:{port}'", f"recipe_id='{recipe_id}'"]
+    if backend_type:
+        args.append(f"backend_type='{backend_type}'")
+    return f"node_verify({', '.join(args)})"
+
+
+def _recipe_backend_config(recipe_id: str) -> dict:
+    """The recipe's ``backend_config`` block, or {} (unknown id / no recipe)."""
+    if not recipe_id:
+        return {}
+    try:
+        recipe = get_recipe(recipe_id) or {}
+    except Exception:  # noqa: BLE001 - a bad recipe must not break verify
+        logger.debug("recipe %s failed to load", recipe_id, exc_info=True)
+        return {}
+    cfg = recipe.get("backend_config")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _health_path_for(backend_type: str, override=None) -> str:
+    """Health check path: declared override (str or backend_config dict) first,
+    then the engine default."""
+    declared = override.get("health_path") if isinstance(override, dict) else override
+    if isinstance(declared, str) and declared.strip():
+        path = declared.strip()
+        return path if path.startswith("/") else f"/{path}"
+    return _engine_protocol(backend_type)["health_path"]
+
+
+def _completion_text(path: str, body: dict) -> str:
+    """Pull generated text out of an ollama / chat / completions response."""
+    if not isinstance(body, dict):
+        return ""
+    if "response" in body and isinstance(body.get("response"), str):
+        return body["response"].strip()
+    choices = body.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return ""
+    first = choices[0]
+    message = first.get("message")
+    if isinstance(message, dict) and message.get("content"):
+        return str(message["content"]).strip()
+    return str(first.get("text") or "").strip()
+
+
+def _completion_payload(path: str, model: str, prompt: str) -> dict:
+    if path.startswith("/api/"):  # ollama native
+        return {"model": model, "prompt": prompt, "stream": False}
+    if path.endswith("/chat/completions"):
+        return {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 16,
+            "temperature": 0.1,
+        }
+    return {"model": model, "prompt": prompt, "max_tokens": 16, "temperature": 0.1}
 
 
 def _test_completion(
@@ -882,37 +1008,39 @@ def _test_completion(
     backend_type: str,
     model: str,
     timeout: float,
+    completion_path: str = "",
 ) -> dict:
-    """Test inference with a simple completion."""
+    """Test inference with a simple completion.
+
+    Tries the declared ``completion_path`` first (if any), then the engine's
+    default paths in order — for OpenAI-compatible engines that is
+    /v1/chat/completions then /v1/completions. Returns {"text": ...} from the
+    first path that yields text, else {}.
+    """
     prompt = "What is machine learning? Answer in 1-2 sentences."
 
-    if backend_type == "vllm":
-        url = f"{base_url}/v1/completions"
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "max_tokens": 16,
-            "temperature": 0.1,
-        }
-        r = httpx.post(url, json=payload, timeout=timeout)
-        if r.status_code == 200:
-            body = r.json()
-            choices = body.get("choices") or []
-            if choices:
-                return {"text": choices[0].get("text", "").strip()}
-        return {}
+    paths = list(_engine_protocol(backend_type)["completion_paths"])
+    declared = (completion_path or "").strip()
+    if declared:
+        declared = declared if declared.startswith("/") else f"/{declared}"
+        paths = [declared] + [p for p in paths if p != declared]
 
-    elif backend_type == "ollama":
-        url = f"{base_url}/api/generate"
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-        }
-        r = httpx.post(url, json=payload, timeout=timeout)
-        if r.status_code == 200:
-            body = r.json()
-            return {"text": body.get("response", "").strip()}
-        return {}
-
+    for path in paths:
+        try:
+            r = httpx.post(
+                f"{base_url}{path}",
+                json=_completion_payload(path, model, prompt),
+                timeout=timeout,
+            )
+        except httpx.HTTPError as e:
+            logger.debug("completion probe %s failed: %s", path, e)
+            continue
+        if r.status_code != 200:
+            continue
+        try:
+            text = _completion_text(path, r.json())
+        except ValueError:
+            continue
+        if text:
+            return {"text": text, "path": path}
     return {}

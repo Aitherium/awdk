@@ -310,17 +310,24 @@ def llm_register_backend(
     recipe_id = resolve_by_role_or_id(model)
     recipe = get_recipe(recipe_id) if recipe_id else {}
     served = (recipe or {}).get("model", {}).get("served_name", "")
+    # The control plane requires a registry name; derive a stable one from the
+    # served model (else recipe id / requested model) and the endpoint host so a
+    # repeat registration of the same endpoint upserts instead of duplicating.
+    from adk.toolpacks.node_bootstrap.tools import backend_registration_name
+
+    name = backend_registration_name(base_url, served or recipe_id or model)
     try:
         r = httpx.post(
             f"{genesis_url.rstrip('/')}/deploy/cloud-model/register-backend",
-            json={"base_url": base_url, "backend_type": "vllm",
+            json={"name": name, "base_url": base_url, "backend_type": "vllm",
                   "models": [served], "category": (recipe or {}).get(
                       "fleet_wiring", {}).get("catalog_entry", {}).get("category", "")},
             headers={"Authorization": f"Bearer {token}"},
             timeout=15.0,
         )
         if r.status_code == 200:
-            return {"registered": True, "served_name": served, "base_url": base_url}
+            return {"registered": True, "name": name, "served_name": served,
+                    "base_url": base_url}
         return {"error": f"genesis HTTP {r.status_code}", "detail": r.text[:200]}
     except httpx.HTTPError as e:
         return {"error": f"registration failed: {e}"}

@@ -1,0 +1,190 @@
+id: dgpp-gb10
+name: dgpp engine (HawkBearPig) - Qwen3.8-Flash-Next on one NVIDIA DGX Spark / GB10
+# gpu-hpc: the top tier, shared with the other big unified-memory recipe. The tier only
+# matters for auto-resolution, which this recipe never enters (auto_select: false below).
+tier: gpu-hpc
+# NEVER auto-selected. The single-node template plans ~89 GiB (weights ~65 GiB resident,
+# K/V pool, graphs, pinned staging) of a GB10's ~121 GiB, and the engine runs on nothing
+# but GB10 (sm_121a). On a box whose memory is already held by another model it cannot
+# start, and the scorer has no way to tell a GB10 from any other NVIDIA box with big RAM.
+# A person chooses this, by explicit id; a node bootstrap must never pick it for them.
+auto_select: false
+description: >-
+  Serves Qwen3.8-Flash-Next (125B MoE) on ONE NVIDIA DGX Spark (GB10) with the
+  upstream dgpp engine (github.com/HawkBearPig/dgpp, Apache-2.0) - a native
+  C++/CUDA engine with its own kernels, scheduler, prefix cache and
+  OpenAI-compatible server. GB10 only. Wraps the PUBLIC upstream setup wizard
+  rather than a fleet script.
+
+# WHY THIS RECIPE EXISTS, AND WHY IT WRAPS UPSTREAM INSTEAD OF PORTING IT
+# dgpp is not a llama.cpp or vLLM fork: it ships its own CUDA kernels, tokenizer, Jinja
+# chat-template interpreter, graph decode with MTP speculative decoding, and a scheduler
+# that serves packed int4/NVFP4 checkpoints without a dequantized copy. None of that can be
+# expressed as llama.cpp or vLLM flags. Upstream's wizard (scripts/setup.sh) already checks
+# dependencies, builds the release server, downloads the checkpoint and runs a serving
+# preflight - wrapping it is the strata-moe-offload / bonsai-selfhost pattern and stays
+# correct as they ship.
+#
+# WHAT THE SCORER CANNOT EXPRESS. hardware_requirements can say "nvidia" and "unified
+# memory", not "GB10". An x86 box with an RTX card and 128 GB RAM would score as a fit on
+# an explicit pick; the build then fails (CMAKE_CUDA_ARCHITECTURES 121a). The guard is
+# auto_select: false plus the platform_traps below, which an explicit pick surfaces as
+# warnings.
+#
+# MULTI-NODE IS OUT OF SCOPE. Upstream also serves bigger models (GLM-5.3, DeepSeek-V4.x)
+# over tensor parallelism on 2 or 4 Sparks joined by RoCE. This recipe is world 1 only.
+
+hardware_requirements:
+  # A GB10 shows ~121 GiB of OS-visible unified memory. The single-node template's memory
+  # plan is ~89 GiB plus headroom, so the box must be (nearly) empty of other models.
+  min_ram_gb: 110
+  min_cpu_cores: 16
+  gpu_vendor: nvidia
+  # 0 on purpose: a unified-memory GB10 may report its GPU memory as 0 or as the whole
+  # shared pool depending on the probe. min_ram_gb carries the real floor.
+  min_vram_gb: 0
+  unified_memory: true
+  notes: >-
+    NVIDIA DGX Spark or another GB10 system only (aarch64, sm_121a). Needs the
+    NVIDIA driver and CUDA 13 toolkit from DGX OS (upstream's measurements used
+    CUDA 13.0 and driver 580.173.02), libibverbs-dev (the serving target links
+    it even at world 1), GCC 13, CMake 3.25+ and Python 3.10+. Disk: the
+    AutoRound checkpoint, the n-gram table shard of the FP8 release (~49 GiB,
+    read through mmap), and a per-rank resident image cache written on the
+    first boot (roughly the size of the resident weights, ~65 GiB here) -
+    plan on several hundred GB of NVMe. Upstream measured 45.9-71.5 tok/s
+    single-request engine decode and 78-116 tok/s completed output at 4
+    concurrent requests for this template on one Spark; not re-measured here.
+    Other single-node templates upstream ships: nvidia/Qwen3.8-Flash-Next-NVFP4
+    (42-50 tok/s C1 upstream) and Qwen/Qwen3.8-27B-FP8.
+
+inference_config:
+  engine: dgpp
+  models:
+    - name: qwen3.8-flash-next-autoround-int4
+      source: hf://Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN
+      # Packed int4 experts + int8 head as resident on the device (upstream's memory plan).
+      size_gb: 65.3
+      quantization: AutoRound-W4A16-int4
+      # The template's K/V pool is 262144 tokens SHARED by 4 slots. Advertise what one
+      # request is guaranteed with every slot busy, because the router trusts this value;
+      # /v1/models reports the live ceiling as context.request_limit_tokens.
+      context_window: 65536
+      # The template sets engine.model_alias = "qwen"; that is the id the server reports.
+      served_name: qwen
+  serve_args:
+    # dgpp takes no serve flags here: the deployment JSON (deploy/*.example.json) and the
+    # site .env configure it. Upstream defaults, stated so nobody has to read their README:
+    - DGPP_HTTP_BIND=127.0.0.1
+    - DGPP_HTTP_PORT=18080
+  image: ""
+  platform_traps:
+    # The build pins CMAKE_CUDA_ARCHITECTURES 121a and CUDA 13. It fails on any other GPU.
+    - gb10-sm121a-only-build-fails-on-any-other-gpu
+    # No authentication and no TLS. Loopback by default; a LAN bind publishes an open
+    # inference server. Put an authenticating proxy in front before binding elsewhere.
+    - loopback-bind-no-auth-no-tls
+    # ~89 GiB planned of ~121 GiB. Another resident model must be stopped first; the
+    # startup memory plan refuses to allocate rather than swap.
+    - needs-the-whole-box-stop-other-models-first
+    # The first boot builds the per-rank resident image (about a minute on this template,
+    # minutes on bigger ones); later boots stream it in ~15-30 s. A health probe during
+    # the first boot times out - wait for READY, do not restart it.
+    - first-boot-builds-the-resident-image-cache
+    # Not the 8080 that bonsai-selfhost / strata use, and not on the browser loopback
+    # probe list. Point clients at 18080 explicitly.
+    - port-18080-not-on-the-browser-probe-list
+
+oneclick:
+  # Upstream's wizard, unattended: pick the single-node template, never prompt, start after
+  # every preflight check passes. System packages need sudo only with --install-system-deps.
+  windows: ""
+  unix: "./scripts/setup.sh --non-interactive --template cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json --start"
+  prompts: 0
+  requires_token: false
+  requires_admin: false
+
+setup:
+  repo: https://github.com/HawkBearPig/dgpp.git
+  env: {}
+  steps:
+    - "git clone https://github.com/HawkBearPig/dgpp.git && cd dgpp"
+    - "./scripts/setup.sh --check"             # read-only prerequisite checks
+    - "./scripts/setup.sh --non-interactive --template cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json"   # build + download + preflight
+    - "./scripts/setup.sh --non-interactive --template cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json --start"   # serves 127.0.0.1:18080
+  # GB10 runs Linux (DGX OS). No Windows path.
+  windows_steps: []
+
+deployment:
+  # Upstream's launcher (scripts/dgpp-cluster up/down) IS the deployment.
+  target: user-managed
+  compose_template: ""
+  delegate: ""
+  port: 18080
+
+backend_config:
+  # OpenAI-compatible (/v1/chat/completions, /v1/completions, /v1/models, /health,
+  # /metrics) - the shape the existing llamacpp_remote backend already speaks. No new
+  # backend type.
+  backend_type: llamacpp_remote
+  # /health is liveness only; verify with a completion.
+  health_path: /health
+  completion_path: /v1/chat/completions
+
+verify:
+  # The first boot builds the resident image (upstream: 66 s cold for this template, longer
+  # for bigger ones); allow for the checkpoint read on a slow disk.
+  health_timeout_s: 900
+  completion:
+    model: qwen
+    prompt: "What is the capital of France? Answer in one short sentence."
+    min_tokens: 3
+    # Reasoning tokens count toward max_tokens upstream; keep the budget generous.
+    timeout_s: 300
+  # For a comparison against another engine on the same box. Report the two timing scopes
+  # separately, as upstream's benchmarks do: ENGINE decode rate (from the server's own
+  # counters, excluding prefill and the first token) and CLIENT wall rate (completion
+  # tokens over request wall time). Judge decode speed from the engine rate.
+  #   python -m adk.toolpacks.node_bootstrap bench --url http://127.0.0.1:18080 --model qwen
+  # That command reports a CLIENT-side streaming decode rate (TTFT + tok/s, including
+  # network and SSE overhead); it does not read /metrics. Do not compare its number with
+  # upstream_c1_engine_tok_s. A parity/tournament run needs a reference engine serving the
+  # SAME model.
+  # The bench block below is REFERENCE ONLY: no tool consumes it. The /metrics counters are
+  # cumulative since boot, so the engine rate is a DELTA: scrape /metrics immediately before
+  # and after the run and difference each counter. One scrape gives a lifetime average.
+  bench:
+    consumed_by_tooling: false
+    metrics_path: /metrics
+    engine_rate: "1000 * delta(tokens_generated - prompts_prefilled) / delta(step_ms)"
+    client_rate: "completion_tokens / request_wall_s"
+    upstream_c1_engine_tok_s: [45.9, 71.5]
+    re_measured_here: false
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp_remote
+    category: reasoning
+    # Must equal inference_config.models[0].context_window.
+    context_window: 65536
+    # Unified memory: no discrete VRAM slot to account for.
+    vram_gb: 0
+    speed: 8
+    quality: 9
+  ms_env_var: AITHER_GRID_LLAMACPP_URL
+
+discovery:
+  browser_probe: "http://127.0.0.1:18080"
+  probe_gate: "/health"
+  chat_path: "/v1/chat/completions"
+  notes: >-
+    18080 is not on the browser loopback probe list (8080/8090); register the
+    URL explicitly.
+
+mesh_share:
+  onboard: "adk mesh onboard"
+  advertise: "adk mesh provide --inference-url http://127.0.0.1:18080/v1 --model qwen"
+  gate: operator-trust-grant
+  notes: >-
+    Optional. The engine has no authentication of its own; keep it on loopback
+    and let the mesh provider front it.

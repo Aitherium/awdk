@@ -88,6 +88,9 @@ def _isolate_env(monkeypatch, tmp_path):
     # file under ~/.aither. Without this every run of the suite writes into the
     # developer's real home (same class as 'tests wrote the owner's card store').
     monkeypatch.setenv("AITHER_MCP_KEY_FILE", str(tmp_path / ".aither" / "mcp-session-key"))
+    # resolve_recipe reads a measured engine-tournament ranking from ~/.aither; a
+    # tournament run on the dev machine must not reorder recipe resolution in tests.
+    monkeypatch.setenv("AITHER_TOURNAMENT_FILE", str(tmp_path / ".aither" / "tournament.json"))
     # Non-Claude harness sessions write session-focus records (adk.harnesses.focus);
     # a test codex turn must never land in the owner's ~/.aither/focus.
     monkeypatch.setenv("AITHER_FOCUS_DIR", str(tmp_path / ".aither" / "focus"))

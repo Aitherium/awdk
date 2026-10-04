@@ -155,10 +155,29 @@ def _score_recipe(recipe: dict, system_info: dict) -> tuple[float, list[str]]:
     return 1.0, warnings
 
 
+def _measured_ranking(ranking: Optional[list[str]]) -> list[str]:
+    """The node's engine-tournament ranking, or [] -- never raises.
+
+    ``ranking`` given explicitly wins (tests, callers that already loaded it); otherwise
+    the verdict file written by ``tournament.run_tournament`` is read. Any failure means
+    "no ranking", so resolution falls back to the pure hardware/tier order.
+    """
+    try:
+        if ranking is None:
+            from .tournament import load_ranking
+
+            ranking = load_ranking()
+        return [r for r in ranking if isinstance(r, str)]
+    except Exception as e:  # noqa: BLE001 -- a broken ranking must never break resolution
+        logger.debug("Ignoring tournament ranking: %s", e)
+        return []
+
+
 def resolve_recipe(
     system_info: dict,
     prefer_backend: str = "auto",
     recipe_id: str = "",
+    ranking: Optional[list[str]] = None,
 ) -> dict:
     """Resolve the best recipe for the given system hardware.
 
@@ -167,6 +186,10 @@ def resolve_recipe(
                      unified_memory, gpu_name
         prefer_backend: "auto" (use resolution), or specific backend name (e.g., "ollama")
         recipe_id: explicit recipe ID to use (overrides resolution)
+        ranking: measured recipe order from an engine tournament; None reads the
+                 node's tournament file. A measured recipe sorts ahead of tier rank,
+                 but only among recipes that already passed hardware scoring and
+                 auto-select rules (auto_select: false or score 0 can never win).
 
     Returns:
         {
@@ -241,10 +264,31 @@ def resolve_recipe(
         # ship, so it must never win by alphabetical accident (cpu-1bit-llamacpp
         # was beating cpu-ollama for every big CPU box exactly this way).
         needs_delegate = 1 if recipe.get("deployment", {}).get("delegate") else 0
-        # Sort: desc score, desc tier rank, self-contained first, then ID (stability)
+        # Sort: desc score, desc tier rank, self-contained first, then ID
         return (-score, -tier_rank, needs_delegate, rid)
 
     candidates.sort(key=sort_key)
+
+    # Engine-tournament ranking: measured order beats tier order AMONG THE RECIPES
+    # THAT WERE MEASURED. Their slots in the hardware/tier order are refilled in
+    # measured order; every unmeasured recipe keeps its slot, because a tournament
+    # between A and B says nothing about C (a CPU-only entrant must not leapfrog an
+    # unmeasured GPU recipe). Only fitting recipes (score > 0) take part, so the
+    # always-present cloud fallback gets no boost, and auto_select:false recipes never
+    # reach this list at all.
+    measured = _measured_ranking(ranking)
+    measured_pos = {rid: i for i, rid in reversed(list(enumerate(measured)))}
+    measured_ids: set = set()
+    for score_group in sorted({c[2] for c in candidates if c[2] > 0}):
+        # never across score groups: measured order beats tier, never hardware fit
+        slots = [i for i, c in enumerate(candidates)
+                 if c[0] in measured_pos and c[2] == score_group]
+        if len(slots) < 2:
+            continue
+        reordered = sorted((candidates[i] for i in slots), key=lambda c: measured_pos[c[0]])
+        for i, c in zip(slots, reordered):
+            candidates[i] = c
+        measured_ids.update(c[0] for c in reordered)
 
     # prefer_backend filter: keep only recipes whose engine matches the requested
     # backend. If nothing matches (e.g. prefer "ollama" on a box that scored no
@@ -280,6 +324,8 @@ def resolve_recipe(
     if gpu_vram_gb > 0:
         rationale_parts.append(f"{gpu_vram_gb:.1f}GB VRAM")
     rationale = " — ".join(rationale_parts) + f". Best match: {best_id} (score {best_score:.1f})"
+    if best_id in measured_ids:
+        rationale += f"; measured engine-tournament rank {measured_pos[best_id] + 1}"
 
     return {
         "recipe": best_recipe,
