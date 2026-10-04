@@ -173,6 +173,12 @@ device page. It runs only these: `collect-diagnostics`, `lend-on`, `lend-off`, `
 `update-model`, `check-update`; and only when the command is signed for this phone, unexpired
 and not run before. `check_commands.py` proves the app and Identity agree on every byte.
 
+"Share it with my family" (off by default) lets the household's Family AI Pool use the
+phone's model. The phone never becomes reachable: it asks the pool for a job (a long poll,
+outbound only), answers it on its own model and posts the answer back. The pool refuses until
+a guardian has turned sharing on; the phone never shares from a child's profile and pauses
+while it is not charging, is warm, or is in battery saver.
+
 awsh and Desk read the same swarm: `adk kvholder workspace status --json`, or the snapshot
 the relay writes to `~/.aither/kvholder/workspace.json` every 5 s (no tokens in it).
 

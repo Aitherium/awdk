@@ -55,6 +55,7 @@ public class LlmService extends Service implements LocalProxy.Backend {
     private volatile long lastUse;
     private final Object lock = new Object();
     private Thread idleWatch;
+    private FamilyShare share;
 
     @Override
     public void onCreate() {
@@ -87,18 +88,24 @@ public class LlmService extends Service implements LocalProxy.Backend {
         }, "aither-llm-idle");
         idleWatch.setDaemon(true);
         idleWatch.start();
+        share = new FamilyShare(this, this);
+        if (cfg.shareFamily()) share.start();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if ((intent != null && "stop".equals(intent.getAction())) || !cfg.llmEnabled()) {
             stopSelf();
+        } else if (share != null) {
+            if (cfg.shareFamily()) share.start();
+            else share.stop();
         }
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
+        if (share != null) share.stop();
         unload("off");
         if (proxy != null) proxy.stop();
         if (idleWatch != null) idleWatch.interrupt();

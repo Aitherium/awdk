@@ -58,6 +58,15 @@ public class SettingsActivity extends Activity {
         ai.setPadding(0, pad * 2, 0, pad / 2);
         col.addView(ai);
         col.addView(toggleLlm());
+        Switch fam = new Switch(this);
+        fam.setText("Share it with my family (only while charging)");
+        fam.setChecked(cfg.shareFamily());
+        fam.setPadding(0, 12, 0, 12);
+        fam.setOnCheckedChangeListener((v, checked) -> {
+            cfg.set("share_family", checked);
+            if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
+        });
+        col.addView(fam);
         Button pair = new Button(this);
         pair.setText("Use it from AitherOS in the browser");
         pair.setOnClickListener(v -> {
@@ -183,6 +192,7 @@ public class SettingsActivity extends Activity {
             status.setText(sb.toString());
             String blocked = cfg.localAiBlocked();
             localStatus.setText((blocked.isEmpty() ? LlmService.reason : "Off: " + blocked)
+                    + "\nFamily sharing: " + FamilyShare.state
                     + "\nHousehold check-in: " + HeartbeatJob.last
                     + (cfg.profileKind().isEmpty() ? "" : " (" + cfg.profileKind() + ")"));
             NodeLink n = new NodeLink(SettingsActivity.this);
