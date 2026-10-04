@@ -14535,6 +14535,10 @@ def _register_commands(sub):
     devices_rm_p = devices_sub.add_parser("rm", help="Remove a device from the workspace")
     devices_rm_p.add_argument("node_id", help="Node id to remove")
 
+    # adk operator — your workspace's Aither Operator (same policy + audit as Aither Control)
+    from adk.operator_cli import add_parser as _add_operator_parser
+    _add_operator_parser(sub)
+
     # aither host — one command: serve a self-hosted agent + connect it to your fleet
     host_p = sub.add_parser(
         "host",
@@ -16934,6 +16938,9 @@ def main():
     elif args.command == "devices":
         from adk.devices import cmd_devices
         sys.exit(cmd_devices(args))
+    elif args.command == "operator":
+        from adk.operator_cli import cmd_operator
+        sys.exit(cmd_operator(args))
     elif args.command == "rc":
         from adk.rc import cmd_rc
         sys.exit(cmd_rc(args))

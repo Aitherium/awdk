@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**129 commands.**
+**130 commands.**
 
 | command | what it does |
 |---|---|
@@ -104,6 +104,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
 | [`adk notebook`](#adk-notebook) | Plan, run, and inspect Agent Notebooks (.anb) on Genesis |
 | [`adk onboard`](#adk-onboard) | Interactive onboarding — detect, configure, integrate |
+| [`adk operator`](#adk-operator) | Ask your workspace's Aither Operator (same policy and audit as Aither Control) |
 | [`adk pack`](#adk-pack) | Manage ToolPack extensions (list, search, install, remove, info) |
 | [`adk packs`](#adk-packs) | List available agent packs |
 | [`adk pair`](#adk-pair) | Pair this machine with the portal as an inference node (6-char code from the portal) |
@@ -1133,6 +1134,18 @@ Interactive onboarding — detect, configure, integrate
 | `--tools-module` | str |  |  | optional module path whose @tool tools register (e.g. pack.tools.shop) |
 | `--run` | str |  | `false` | launch the Discord bot after onboarding (stays connected) |
 | `--skip-pack-install` | str |  | `false` | don't `adk install` the --pack (assume it's already installed) |
+
+## `adk operator`
+
+Ask your workspace's Aither Operator (same policy and audit as Aither Control)
+
+**Subcommands**
+
+- `adk operator ask` — Ask the operator to do something
+- `adk operator approvals` — Cards waiting for your answer
+- `adk operator approve` — Answer a card
+- `adk operator audit` — What the operator did and why
+- `adk operator policy` — Tiers per action, your role, added packs
 
 ## `adk pack`
 
