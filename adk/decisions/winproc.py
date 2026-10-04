@@ -24,7 +24,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 IS_WINDOWS = os.name == "nt"
 
@@ -315,6 +315,354 @@ def focus_window(hwnd: int) -> bool:
     return ok
 
 
+# ── Windows Terminal tabs (UI Automation, ctypes only) ─────────────────────────
+#
+# Raising the WINDOW was the old ceiling: Windows Terminal has no supported
+# command to activate a tab of an EXISTING window from another process
+# (``wt -w <id> focus-tab`` needs a window id the session never learns, and
+# ``-w 0`` means "the most recent window", which is the wrong one exactly when it
+# matters). What DOES work is the accessibility tree: every WT tab is a UIA
+# ``TabItem`` whose Name is the tab title, and ``SelectionItemPattern.Select``
+# switches to it. The tab title is the session console's title, which we can
+# read -- and, when two tabs share it, briefly make unique -- by attaching to
+# that console. All of this is plain COM vtable calls through ctypes: no
+# comtypes, no pywinauto, because this module is loaded under ``python -S``.
+
+_UIA_CLSID = "{ff48dba4-60ef-4201-aa87-54103eef594e}"  # CUIAutomation
+_UIA_IID = "{30cbe57d-d9d0-452a-ab13-7ac5ac4825ee}"  # IUIAutomation
+_SELECTION_ITEM_IID = "{a8efa66a-0fda-421a-9194-38021f3578ea}"
+_UIA_CONTROL_TYPE_PROPERTY = 30003
+_UIA_TAB_ITEM_CONTROL_TYPE = 50019
+_UIA_SELECTION_ITEM_PATTERN = 10010
+_TREE_SCOPE_DESCENDANTS = 4
+_VT_I4 = 3
+
+# IUnknown occupies slots 0-2 of every vtable; the slots below are the method
+# positions in UIAutomationClient.h. A wrong slot calls a different method with
+# the wrong arguments, so each one is named where it is used.
+_RELEASE = 2
+_UIA_ELEMENT_FROM_HANDLE = 6
+_UIA_CREATE_PROPERTY_CONDITION = 23
+_ELEMENT_FIND_ALL = 6
+_ELEMENT_GET_CURRENT_PATTERN_AS = 14
+_ELEMENT_GET_CURRENT_NAME = 23
+_ARRAY_LENGTH = 3
+_ARRAY_ELEMENT = 4
+_SELECTION_ITEM_SELECT = 3
+_SELECTION_ITEM_IS_SELECTED = 6
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", ctypes.c_ulong), ("Data2", ctypes.c_ushort),
+                ("Data3", ctypes.c_ushort), ("Data4", ctypes.c_ubyte * 8)]
+
+
+class _VARIANT(ctypes.Structure):
+    # 16 bytes on x86, 24 on x64: an 8-byte header then a pointer-pair union.
+    _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort),
+                ("r2", ctypes.c_ushort), ("r3", ctypes.c_ushort),
+                ("lVal", ctypes.c_long),
+                ("pad", ctypes.c_byte * (2 * ctypes.sizeof(ctypes.c_void_p) - 4))]
+
+
+def _guid(text: str) -> _GUID:
+    guid = _GUID()
+    ctypes.windll.ole32.CLSIDFromString(ctypes.c_wchar_p(text), ctypes.byref(guid))
+    return guid
+
+
+def _vcall(obj: int, slot: int, argtypes: tuple, *args) -> int:
+    """Call vtable ``slot`` of COM object ``obj``; returns the HRESULT."""
+    vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+    proto = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)
+    return int(proto(vtable[slot])(obj, *args))
+
+
+def _release(obj: Optional[int]) -> None:
+    if obj:
+        _vcall(obj, _RELEASE, ())
+
+
+class _Uia:
+    """One IUIAutomation instance for the duration of a ``with`` block."""
+
+    def __init__(self) -> None:
+        self.automation = 0
+        self._uninit = False
+
+    def __enter__(self) -> "_Uia":
+        ole32 = ctypes.windll.ole32
+        ole32.CoInitializeEx.restype = ctypes.c_long
+        ole32.CoCreateInstance.restype = ctypes.c_long
+        hr = ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+        # S_OK / S_FALSE are ours to balance; RPC_E_CHANGED_MODE means the
+        # thread is already initialised MTA, which UIA also accepts.
+        self._uninit = hr in (0, 1)
+        out = ctypes.c_void_p()
+        clsid, iid = _guid(_UIA_CLSID), _guid(_UIA_IID)
+        hr = ole32.CoCreateInstance(ctypes.byref(clsid), None, 0x1 | 0x4,
+                                    ctypes.byref(iid), ctypes.byref(out))
+        if hr < 0 or not out.value:
+            self.__exit__()
+            raise OSError(f"UI Automation unavailable (hr=0x{hr & 0xFFFFFFFF:08x})")
+        self.automation = int(out.value)
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        _release(self.automation)
+        self.automation = 0
+        if self._uninit:
+            ctypes.windll.ole32.CoUninitialize()
+            self._uninit = False
+
+    def tab_items(self, hwnd: int) -> list[int]:
+        """Element pointers of every TabItem under ``hwnd`` (caller releases)."""
+        element = ctypes.c_void_p()
+        hr = _vcall(self.automation, _UIA_ELEMENT_FROM_HANDLE,
+                    (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)),
+                    ctypes.c_void_p(hwnd), ctypes.byref(element))
+        if hr < 0 or not element.value:
+            return []
+        condition = ctypes.c_void_p()
+        array = ctypes.c_void_p()
+        try:
+            value = _VARIANT()
+            value.vt = _VT_I4
+            value.lVal = _UIA_TAB_ITEM_CONTROL_TYPE
+            hr = _vcall(self.automation, _UIA_CREATE_PROPERTY_CONDITION,
+                        (ctypes.c_int, _VARIANT, ctypes.POINTER(ctypes.c_void_p)),
+                        _UIA_CONTROL_TYPE_PROPERTY, value, ctypes.byref(condition))
+            if hr < 0 or not condition.value:
+                return []
+            hr = _vcall(element.value, _ELEMENT_FIND_ALL,
+                        (ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)),
+                        _TREE_SCOPE_DESCENDANTS, condition, ctypes.byref(array))
+            if hr < 0 or not array.value:
+                return []
+            length = ctypes.c_int(0)
+            _vcall(array.value, _ARRAY_LENGTH, (ctypes.POINTER(ctypes.c_int),),
+                   ctypes.byref(length))
+            items: list[int] = []
+            for index in range(max(0, length.value)):
+                item = ctypes.c_void_p()
+                hr = _vcall(array.value, _ARRAY_ELEMENT,
+                            (ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)),
+                            index, ctypes.byref(item))
+                if hr >= 0 and item.value:
+                    items.append(int(item.value))
+            return items
+        finally:
+            _release(array.value)
+            _release(condition.value)
+            _release(element.value)
+
+    @staticmethod
+    def name(item: int) -> str:
+        bstr = ctypes.c_void_p()
+        hr = _vcall(item, _ELEMENT_GET_CURRENT_NAME, (ctypes.POINTER(ctypes.c_void_p),),
+                    ctypes.byref(bstr))
+        if hr < 0 or not bstr.value:
+            return ""
+        try:
+            return ctypes.wstring_at(bstr.value)
+        finally:
+            ctypes.windll.oleaut32.SysFreeString(ctypes.c_void_p(bstr.value))
+
+    @staticmethod
+    def _selection(item: int) -> int:
+        pattern = ctypes.c_void_p()
+        iid = _guid(_SELECTION_ITEM_IID)
+        hr = _vcall(item, _ELEMENT_GET_CURRENT_PATTERN_AS,
+                    (ctypes.c_int, ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p)),
+                    _UIA_SELECTION_ITEM_PATTERN, ctypes.byref(iid), ctypes.byref(pattern))
+        return int(pattern.value) if hr >= 0 and pattern.value else 0
+
+    @classmethod
+    def is_selected(cls, item: int) -> bool:
+        pattern = cls._selection(item)
+        if not pattern:
+            return False
+        try:
+            flag = ctypes.c_int(0)
+            hr = _vcall(pattern, _SELECTION_ITEM_IS_SELECTED,
+                        (ctypes.POINTER(ctypes.c_int),), ctypes.byref(flag))
+            return hr >= 0 and bool(flag.value)
+        finally:
+            _release(pattern)
+
+    @classmethod
+    def select(cls, item: int) -> bool:
+        pattern = cls._selection(item)
+        if not pattern:
+            return False
+        try:
+            return _vcall(pattern, _SELECTION_ITEM_SELECT, ()) >= 0
+        finally:
+            _release(pattern)
+
+
+def list_tabs(hwnd: int) -> list[tuple[str, bool]]:
+    """``[(tab title, is_selected), …]`` of the terminal window ``hwnd``.
+
+    Read-only: nothing on screen changes. Empty when the window exposes no tabs
+    (a classic conhost window) or UI Automation is unavailable.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return []
+    try:
+        with _Uia() as uia:
+            items = uia.tab_items(hwnd)
+            try:
+                return [(uia.name(i), uia.is_selected(i)) for i in items]
+            finally:
+                for item in items:
+                    _release(item)
+    except OSError:
+        return []
+
+
+def select_tab(hwnd: int, index: int, title: str) -> bool:
+    """Switch window ``hwnd`` to tab ``index`` — only if it still reads ``title``.
+
+    Re-enumerates rather than trusting a cached element, and re-checks the
+    title: a tab opened or closed between the list and the click shifts every
+    index after it, and selecting by a stale index is a wrong tab that LOOKS
+    like success. Does not raise the window; :func:`focus_window` does that.
+    """
+    if not IS_WINDOWS or not hwnd or index < 0:
+        return False
+    try:
+        with _Uia() as uia:
+            items = uia.tab_items(hwnd)
+            try:
+                if index >= len(items) or uia.name(items[index]) != title:
+                    return False
+                return uia.select(items[index])
+            finally:
+                for item in items:
+                    _release(item)
+    except OSError:
+        return False
+
+
+def normalize_tab_title(title: str) -> str:
+    """A tab title without the part that changes while the session works.
+
+    Claude Code prefixes its title with a status glyph — a spinner frame while
+    busy, a star while idle — so the title read from the console and the one
+    read from the tab strip a moment later routinely differ in that glyph alone.
+    It is dropped, with case and spacing. Everything else is KEPT, the trailing
+    clock above all: measured 2026-10-04, the owner's tabs read
+    ``"AitherOS-Fresh develop HH:MM"`` and nine of thirteen differ ONLY in that
+    clock — it is the session's start time, i.e. its identity, not noise.
+    """
+    text = (title or "").strip()
+    start = 0
+    while start < len(text) and not text[start].isalnum():
+        start += 1
+    return " ".join(text[start:].split()).casefold()
+
+
+def match_tab(titles: Sequence[str], wanted: str,
+              hints: Sequence[str] = ()) -> tuple[int, str]:
+    """Which ONE of ``titles`` is the session's tab: ``(index, how)`` or ``(-1, why)``.
+
+    Pure, so the rules are testable without a terminal. In order:
+
+    1. ``wanted`` (the session console's live title), compared after
+       :func:`normalize_tab_title` — the glyph-only difference between the
+       console read and the tab-strip read a moment later is not a mismatch;
+    2. only when the title could NOT BE READ (``wanted`` is empty): the one tab
+       whose title contains every hint (the card's directory name, its branch).
+
+    A title that WAS read but matches no tab is ``-1``, never a hint guess: it
+    means the session's tab does not show its own title (the owner renamed it,
+    say), so the one tab that does name the directory and branch is most likely
+    ANOTHER session's tab, and selecting it would report a wrong tab as success.
+
+    Never guesses between equals: two tabs that both match is ``-1`` with the
+    count, because selecting the wrong one of two identical tabs is the
+    silent-wrong-answer this module exists to avoid. That includes two tabs
+    that differ only in their status glyph — an exact-glyph match would pick by
+    whichever spinner frame happened to be showing. The caller resolves a tie
+    by making the title unique, not by picking the first.
+    """
+    if not titles:
+        return -1, "the window exposes no tabs"
+    key = normalize_tab_title(wanted)
+    if key:
+        same = [i for i, t in enumerate(titles) if normalize_tab_title(t) == key]
+        if len(same) == 1:
+            how = "exact title" if titles[same[0]] == wanted else "title, ignoring status glyph"
+            return same[0], how
+        if len(same) > 1:
+            return -1, f"{len(same)} tabs share that title"
+        return -1, "no tab carries the session's title"
+    needles = [normalize_tab_title(h) for h in hints if normalize_tab_title(h)]
+    if needles:
+        hits = [i for i, t in enumerate(titles)
+                if all(n in normalize_tab_title(t) for n in needles)]
+        if len(hits) == 1:
+            return hits[0], "directory/branch in the title"
+        if len(hits) > 1:
+            return -1, f"{len(hits)} tabs name that directory/branch"
+    return -1, "the session's title could not be read and no hint singles out a tab"
+
+
+# ── the session's console title ─────────────────────────────────────────────────
+
+
+def _on_console(pid: int, action):
+    """Run ``action(kernel32)`` attached to ``pid``'s console. None if we cannot.
+
+    Detaches from our own console for the duration and re-attaches to our
+    parent's afterwards, so a CLI caller can still print. A GUI caller (the
+    card window) has no console to lose.
+    """
+    if not IS_WINDOWS or pid <= 0:
+        return None
+    kernel32 = ctypes.windll.kernel32
+    had_console = bool(kernel32.GetConsoleWindow())
+    kernel32.FreeConsole()
+    try:
+        if not kernel32.AttachConsole(int(pid)):
+            return None
+        try:
+            return action(kernel32)
+        finally:
+            kernel32.FreeConsole()
+    finally:
+        if had_console:
+            kernel32.AttachConsole(0xFFFFFFFF)  # ATTACH_PARENT_PROCESS
+
+
+def console_title(pid: int) -> str:
+    """The title of ``pid``'s console — under Windows Terminal, its TAB title."""
+    def read(kernel32) -> str:
+        buffer = ctypes.create_unicode_buffer(1024)
+        kernel32.GetConsoleTitleW(buffer, 1024)
+        return buffer.value
+
+    return _on_console(pid, read) or ""
+
+
+def set_console_title(pid: int, title: str) -> bool:
+    """Set ``pid``'s console title; Windows Terminal shows it as the tab title."""
+    return bool(_on_console(
+        pid, lambda kernel32: bool(kernel32.SetConsoleTitleW(ctypes.c_wchar_p(title)))))
+
+
+def terminal_frames(owner_pid: int) -> list[int]:
+    """Every real top-level frame of ``owner_pid``, largest first.
+
+    One ``WindowsTerminal.exe`` hosts ALL of its windows, so "the" window of the
+    process is ambiguous; the tab search runs over every one of them.
+    """
+    frames = [m for m in _windows_for_pids([owner_pid]) if _is_real_frame(m)]
+    frames.sort(key=lambda m: m[3][0] * m[3][1], reverse=True)
+    return [m[0] for m in frames]
+
+
 # ── self-test ───────────────────────────────────────────────────────────────────
 
 
@@ -366,6 +714,17 @@ def _self_test() -> int:
     if not _is_real_frame((1, 1, "Windows Terminal", (1200, 800))):
         problems.append("_is_real_frame rejected a genuine frame")
 
+    # Tab matching decides WHICH tab a card's "Go to that terminal" selects.
+    owner_tabs = ["◐ AitherOS-Fresh develop 16:03", "✳ AitherOS-Fresh develop 07:37"]
+    if match_tab(owner_tabs, "◑ AitherOS-Fresh develop 07:37")[0] != 1:
+        problems.append("match_tab lost a tab whose spinner glyph changed")
+    if match_tab(owner_tabs, "◑ AitherOS-Fresh develop 07:38")[0] != -1:
+        problems.append("match_tab matched a different session's clock")
+    if match_tab(owner_tabs * 2, owner_tabs[0])[0] != -1:
+        problems.append("match_tab guessed between two identical tabs")
+    if match_tab(owner_tabs, "renamed by the owner", ("16:03",))[0] != -1:
+        problems.append("match_tab let a hint override a title it could read")
+
     if IS_WINDOWS:
         window = find_terminal_window(os.getpid())
         # No window is a legitimate outcome (a detached/service context), so this
@@ -377,6 +736,16 @@ def _self_test() -> int:
             safe = window[2][:60].encode("ascii", "replace").decode("ascii")
             print(f"  ok   terminal window: hwnd={window[0]} pid={window[1]} "
                   f"title={safe!r}")
+            owner_name = process_table().get(window[1], (0, ""))[1].lower()
+            if owner_name == "windowsterminal.exe":
+                # Read-only enumeration: nothing on screen changes. A WT frame
+                # with no readable tabs means the UIA path is broken, and every
+                # card would silently fall back to focusing the window.
+                tabs = [t for f in terminal_frames(window[1]) for t in list_tabs(f)]
+                if not tabs:
+                    problems.append("Windows Terminal frame exposes no tabs via UIA")
+                else:
+                    print(f"  ok   UIA reads {len(tabs)} Windows Terminal tab(s)")
         else:
             print("  ok   terminal window: none found (headless?)")
 

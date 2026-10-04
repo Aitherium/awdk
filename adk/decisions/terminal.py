@@ -10,12 +10,16 @@ what it actually did, because a control that silently does nothing is worse than
 no control — that is `.claude/rules/security-review-patterns.md` §5, and this
 module is where it would hide.
 
-1. **focus** — bring the hosting window forward. Works whenever the session
-   process is still alive and owns (or is descended from something that owns) a
-   real window. This focuses the WINDOW, not the TAB: Windows Terminal exposes
-   no supported way to activate one tab of an existing window from outside, so
-   the honest promise is "your terminal is now in front, on whatever tab it was
-   on". The tab TITLE is reported so the owner knows which one to look for.
+1. **focus** — switch to the session's TAB and bring its window forward.
+   Windows Terminal has no CLI to activate a tab of an existing window from
+   outside (``wt focus-tab`` needs a window id we never learn), so the tab is
+   found through UI Automation (:func:`winproc.list_tabs`): the session
+   console's live title is read by attaching to it, matched against every tab
+   of every WT window (:func:`winproc.match_tab`), and that tab is selected.
+   When two tabs share the title, the console title is briefly set to a unique
+   marker, the marker tab is selected, and the title is put back. When no tab
+   can be pinned down (a conhost window, UIA unavailable, a renamed tab) it
+   falls back to focusing the WINDOW and says so, naming the tab to look for.
 2. **open** — start a new terminal already `cd`-ed to the card's directory.
    Always available; it just is not the same tab.
 3. **type** — write text into the session's console input buffer, so an
@@ -37,8 +41,10 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 try:  # normal package import
     from adk.decisions import winproc
@@ -73,6 +79,8 @@ class TerminalTarget:
     pid: int = 0
     alive: bool = False
     hwnd: int = 0
+    #: The process that owns ``hwnd`` (``WindowsTerminal.exe`` for a WT tab).
+    owner: int = 0
     title: str = ""
     chain: str = ""
 
@@ -102,7 +110,7 @@ def locate(pid: int) -> TerminalTarget:
         if target.alive:
             found = winproc.find_terminal_window(target.pid)
             if found:
-                target.hwnd, _owner, target.title = found
+                target.hwnd, target.owner, target.title = found
     except OSError as exc:
         # A process table we cannot read is a real answer ("could not look"),
         # so it is surfaced in the field the UI shows rather than swallowed.
@@ -110,16 +118,104 @@ def locate(pid: int) -> TerminalTarget:
     return target
 
 
-def focus(pid: int) -> tuple[bool, str]:
-    """Bring the session's terminal to the front. ``(ok, what happened)``."""
+def _tab_listing(frames: list[int]) -> list[tuple[int, int, str]]:
+    """``[(frame hwnd, tab index, tab title), …]`` across every frame, in order."""
+    listing: list[tuple[int, int, str]] = []
+    for frame in frames:
+        for index, (name, _selected) in enumerate(winproc.list_tabs(frame)):
+            listing.append((frame, index, name))
+    return listing
+
+
+def _marker_select(pid: int, frames: list[int], original: str) -> tuple[int, str]:
+    """Tie-break: give the session's tab a unique title, select it, restore it.
+
+    Used only when the live title matches several tabs. The title is put back
+    ONLY if it still reads the marker — if the session retitled itself in the
+    meantime, the newer title wins and ours must not overwrite it.
+    """
+    marker = f"aither-card {pid} {time.time_ns() % 1_000_000_000}"
+    if not winproc.set_console_title(pid, marker):
+        return 0, ""
+    chosen, name = 0, ""
+    try:
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and not chosen:
+            for frame, index, title in _tab_listing(frames):
+                if title == marker and winproc.select_tab(frame, index, title):
+                    chosen, name = frame, original
+                    break
+            else:
+                time.sleep(0.1)
+    finally:
+        if winproc.console_title(pid) == marker:
+            winproc.set_console_title(pid, original)
+    return chosen, name
+
+
+def select_session_tab(target: TerminalTarget,
+                       hints: tuple[str, ...] = ()) -> tuple[int, str, str]:
+    """Switch the session's terminal to the session's own tab.
+
+    Returns ``(frame hwnd, tab title, live title)`` on success, or
+    ``(0, why not, live title)``. The live title is the session console's own
+    title as read here (``""`` when unreadable) — returned so a caller that
+    falls back can name the session's tab without reading the console twice.
+    Does not raise the window — :func:`focus` does that, after, so the tab is
+    already showing when the window comes forward.
+    """
+    if os.name != "nt" or not target.hwnd:
+        return 0, "tab switching is implemented for Windows Terminal only", ""
+    live = winproc.console_title(target.pid)
+    frames = winproc.terminal_frames(target.owner) if target.owner else []
+    if target.hwnd not in frames:
+        frames.insert(0, target.hwnd)
+    listing = _tab_listing(frames)
+    if not listing:
+        return 0, "that window has no tabs UI Automation can read", live
+    index, how = winproc.match_tab([t for _f, _i, t in listing], live, hints)
+    if index >= 0:
+        frame, tab_index, title = listing[index]
+        if winproc.select_tab(frame, tab_index, title):
+            return frame, title, live
+        how = "the tab moved before it could be selected"
+    if live and "share" in how:
+        frame, title = _marker_select(target.pid, frames, live)
+        if frame:
+            return frame, title, live
+    return 0, how, live
+
+
+def focus(pid: int, hints: tuple[str, ...] = (),
+          raise_window: Callable[[int], bool] | None = None) -> tuple[bool, str]:
+    """Bring the session's TAB to the front. ``(ok, what happened)``.
+
+    ``hints`` (the card's directory name, branch) are used only when the live
+    console title cannot be read. A tab that cannot be pinned down degrades to
+    focusing the window, and the message says which one happened — naming the
+    SESSION's tab title, not the window title (that is whichever tab is active).
+
+    ``raise_window`` replaces :func:`winproc.focus_window` for the last step, so
+    a GUI caller can do the slow tab search on a worker thread and still bring
+    the window forward from its own UI thread (the one Windows lets take focus).
+    """
     target = locate(pid)
     if not target.focusable:
         return False, target.describe()
-    ok = winproc.focus_window(target.hwnd)
+    frame, tab_note, live = select_session_tab(target, hints)
+    ok = (raise_window or winproc.focus_window)(frame or target.hwnd)
     if not ok:
+        if frame:
+            return False, ("switched to the tab, but Windows refused to bring "
+                           "the window forward")
         return False, "Windows refused to change the foreground window"
-    tab = target.title.strip()
-    return True, (f"focused — look for the tab: {tab}" if tab else "focused the terminal")
+    if frame:
+        return True, f"focused the tab: {tab_note.strip()}"
+    # NOT target.title: the window title is the ACTIVE tab, which is exactly
+    # the tab this fallback failed to move away from.
+    tab = live.strip()
+    where = f" — look for the tab: {tab}" if tab else ""
+    return True, f"focused the window, not the tab ({tab_note}){where}"
 
 
 def open_terminal(cwd: str, app: str = "") -> tuple[bool, str]:
@@ -314,6 +410,10 @@ def capabilities(pid: int, cwd: str) -> dict[str, str]:
     that will not work is labelled before it is clicked instead of after.
     """
     target = locate(pid)
+    # The SESSION's tab title, read from its console. The window title is the
+    # title of whichever tab is active, which is the wrong tab exactly when the
+    # card is needed (the owner is somewhere else).
+    tab = winproc.console_title(target.pid) if target.alive else ""
     return {
         "focus": "ready" if target.focusable else f"unavailable — {target.describe()}",
         "open": "ready" if (cwd and os.path.isdir(cwd)) else "unavailable — no directory",
@@ -322,7 +422,7 @@ def capabilities(pid: int, cwd: str) -> dict[str, str]:
             else ("off — set AITHER_DECISIONS_CONSOLE_INPUT=1"
                   if not console_input_enabled() else "unavailable — session gone")
         ),
-        "tab": target.title.strip(),
+        "tab": (tab or target.title).strip(),
         "chain": target.chain,
     }
 
@@ -477,6 +577,97 @@ def live_console_probe(conpty: bool = False) -> int:
     return 1
 
 
+def _wait_for_tab(frames: list[int], title: str, seconds: float) -> tuple[int, int]:
+    """``(frame, index)`` of the tab reading exactly ``title``, or ``(0, -1)``."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        for frame, index, name in _tab_listing(frames):
+            if name == title:
+                return frame, index
+        time.sleep(0.2)
+    return 0, -1
+
+
+def _selected_index(frame: int) -> int:
+    for index, (_name, selected) in enumerate(winproc.list_tabs(frame)):
+        if selected:
+            return index
+    return -1
+
+
+def live_tab_switch_probe() -> int:
+    """Does :func:`winproc.select_tab` switch to a tab that is NOT active? Find out.
+
+    The read-only self-test proves the tabs can be READ and the right one found;
+    it never proves ``SelectionItem.Select`` moves the terminal off the active
+    tab, because doing so changes what the owner is looking at. This does, so it
+    is opt-in (``AITHER_DECISIONS_LIVE_TAB=1`` on the self-test, or
+    ``--live-tab``) and meant to be run once with the owner watching:
+
+    1. open a scratch tab in this session's terminal window (WT makes it active;
+       it closes itself after ~20 s);
+    2. select the tab that was active before, through UI Automation;
+    3. assert, by re-reading ``IsSelected``, that it is now the active tab.
+
+    Exit 0 the switch worked, 1 it did not, 2 no verdict (not Windows Terminal,
+    ``wt`` missing, the scratch tab never appeared) — never 0 on silence.
+    """
+    if os.name != "nt":
+        print("live tab probe: not Windows — no verdict")
+        return 2
+    wt = shutil.which("wt") or shutil.which("wt.exe")
+    target = locate(winproc.resolve_owner_pid(os.getpid()))
+    if not wt or not target.hwnd:
+        print(f"live tab probe: no verdict — wt={wt!r}, window={target.hwnd}")
+        return 2
+    frames = winproc.terminal_frames(target.owner) or [target.hwnd]
+    before = _selected_index(target.hwnd)
+    tabs = winproc.list_tabs(target.hwnd)
+    if before < 0 or not tabs:
+        print("live tab probe: no verdict — this window shows no selected tab")
+        return 2
+    original = tabs[before][0]
+    scratch = f"aither-tab-probe {time.time_ns() % 1_000_000_000}"
+    subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+        [wt, "-w", "0", "new-tab", "--title", scratch, "--suppressApplicationTitle",
+         "cmd", "/c", "ping -n 20 127.0.0.1 >nul"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    frame, index = _wait_for_tab(frames, scratch, 8.0)
+    if not frame:
+        print("live tab probe: no verdict — the scratch tab never appeared")
+        return 2
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and _selected_index(frame) != index:
+        time.sleep(0.1)
+    if _selected_index(frame) != index:
+        print("live tab probe: no verdict — the scratch tab never became active")
+        return 2
+    # Go back to the tab that was active before — in the scratch tab's frame
+    # when it is ours, else any other tab of the scratch frame.
+    if frame == target.hwnd:
+        back_index, back_title = before, original
+    else:
+        names = [n for n, _sel in winproc.list_tabs(frame)]
+        back_index = 0 if index != 0 else 1
+        if back_index >= len(names):
+            print("live tab probe: no verdict — the scratch window has one tab")
+            return 2
+        back_title = names[back_index]
+    if not winproc.select_tab(frame, back_index, back_title):
+        print(f"live tab probe: FAIL — Select refused tab {back_index} "
+              f"({ascii_safe(back_title)})")
+        return 1
+    time.sleep(0.3)
+    now = _selected_index(frame)
+    if now != back_index:
+        print(f"live tab probe: FAIL — Select returned ok but tab {now} is active, "
+              f"not {back_index}")
+        return 1
+    print(f"live tab probe: ok — switched off the active scratch tab to tab "
+          f"{back_index} ({ascii_safe(back_title)}); the scratch tab closes itself")
+    return 0
+
+
 def _self_test() -> int:
     """Prove the honest-failure paths really fail, not that a terminal appeared.
 
@@ -503,7 +694,10 @@ def _self_test() -> int:
     check("opening a missing directory fails", not ok and "no such directory" in why, why)
 
     previous = os.environ.get("AITHER_DECISIONS_CONSOLE_INPUT")
-    os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = ""
+    # An explicit "0", not "": an empty env falls through to the persisted
+    # ~/.aither/decisions.json, and on a box where the owner armed typing that
+    # made this check type into its own console and fail (measured 2026-10-04).
+    os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "0"
     ok, why = type_into_console(os.getpid(), "echo hi")
     check("typing is refused while opt-out", not ok and "off" in why, why)
     os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "1"
@@ -516,6 +710,27 @@ def _self_test() -> int:
     else:
         os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = previous
 
+    # The tab matcher is what decides WHICH tab gets selected; a regression here
+    # selects a wrong tab and reports success, so its rules are pinned here too.
+    owner_tabs = ["◐ AitherOS-Fresh develop 16:03", "✳ AitherOS-Fresh develop 07:37",
+                  "◑ AitherOS-Fresh develop 09:29"]
+    index, how = winproc.match_tab(owner_tabs, "◑ AitherOS-Fresh develop 07:37")
+    check("a spinner-frame change still finds the tab", index == 1, how)
+    index, how = winproc.match_tab(owner_tabs + [owner_tabs[1]], owner_tabs[1])
+    check("two identical tabs are never guessed between", index == -1 and "2" in how, how)
+    index, how = winproc.match_tab(owner_tabs, "", ("AitherOS-Fresh", "develop"))
+    check("hints that name three tabs pick none", index == -1, how)
+    # The OWNER pid (claude.exe, say), not ours: a tool-spawned interpreter has
+    # its own hidden console whose title is no tab's title.
+    target = locate(winproc.resolve_owner_pid(os.getpid()))
+    if target.hwnd:
+        frames = winproc.terminal_frames(target.owner) or [target.hwnd]
+        listing = _tab_listing(frames)  # read-only: nothing on screen changes
+        print(f"  info {len(listing)} tab(s) readable in this terminal")
+        live = winproc.console_title(target.pid)
+        index, how = winproc.match_tab([t for *_x, t in listing], live)
+        print(f"  info this session's tab: index {index} ({ascii_safe(how)})")
+
     caps = capabilities(os.getpid(), os.getcwd())
     check("capabilities names every control",
           set(caps) >= {"focus", "open", "type"}, str(sorted(caps)))
@@ -524,6 +739,14 @@ def _self_test() -> int:
     here = locate(os.getpid())
     print(f"  info this process resolves to: {ascii_safe(here.describe())[:80]}")
     print(f"  info chain: {ascii_safe(here.chain)}")
+
+    if os.environ.get("AITHER_DECISIONS_LIVE_TAB") == "1":
+        # Opt-in: it changes the owner's active tab. No verdict (2) is reported,
+        # not failed; a real failure (1) fails the self-test.
+        check("Select switches to a tab that is not active",
+              live_tab_switch_probe() != 1)
+    else:
+        print("  info live tab switch not run (AITHER_DECISIONS_LIVE_TAB=1 runs it)")
 
     print()
     if problems:
@@ -534,6 +757,8 @@ def _self_test() -> int:
 
 
 if __name__ == "__main__":
+    if "--live-tab" in sys.argv:
+        raise SystemExit(live_tab_switch_probe())
     if "--live-console" in sys.argv:
         raise SystemExit(live_console_probe(conpty="--conpty" in sys.argv))
     raise SystemExit(_self_test())

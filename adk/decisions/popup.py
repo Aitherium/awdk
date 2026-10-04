@@ -1019,7 +1019,8 @@ class CardWindow:
         if caps.get("type") == "ready":
             self._plain_button(buttons, "Type it into that terminal",
                                self._type_into_terminal, side="left",
-                               hint="types the reply box into the session, as if you had")
+                               hint="types the reply box into the session's prompt"
+                                    " without pressing Enter")
 
     def _plain_button(self, parent, text, command, *, primary=False, enabled=True,
                       side="top", hint: str = "") -> None:
@@ -1325,8 +1326,47 @@ class CardWindow:
     def _focus_terminal(self) -> None:
         from adk.decisions import terminal
 
-        ok, why = terminal.focus(self.card.source.session_pid)
-        self._flash(why, GREEN if ok else GOLD)
+        source = self.card.source
+        # Hints only matter when the session's live title cannot be read; they
+        # never override it (terminal.focus / winproc.match_tab).
+        hints = tuple(h for h in (os.path.basename(source.cwd.rstrip("\\/")),
+                                  source.branch) if h)
+        pid = source.session_pid
+        self._flash("finding that terminal's tab…", GOLD)
+
+        import threading
+
+        from adk.decisions import winproc
+
+        def raise_on_ui_thread(hwnd: int) -> bool:
+            # The tab search runs on the worker; the foreground change stays on
+            # the Tk thread — the thread that owns the window the owner clicked,
+            # which is the one Windows lets hand focus away.
+            done = threading.Event()
+            result = [False]
+
+            def run() -> None:
+                try:
+                    result[0] = winproc.focus_window(hwnd)
+                finally:
+                    done.set()
+
+            self.root.after(0, run)
+            return done.wait(5.0) and result[0]
+
+        def worker() -> None:
+            # Off the Tk thread: reading every tab through UI Automation, and the
+            # marker tie-break above all (up to 1.5 s), would freeze the card.
+            try:
+                ok, why = terminal.focus(pid, hints, raise_on_ui_thread)
+            except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+                ok, why = False, f"focusing the terminal failed: {exc}"
+            try:
+                self.root.after(0, lambda: self._flash(why, GREEN if ok else GOLD))
+            except RuntimeError:
+                pass  # the card closed while we searched; nothing left to tell
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _open_terminal(self) -> None:
         from adk.decisions import terminal
@@ -1348,10 +1388,15 @@ class CardWindow:
         if not text:
             self._flash("type something first", GOLD)
             return
-        ok, why = terminal.type_into_console(self.card.source.session_pid, text)
+        # submit=False: the text lands as a DRAFT in that prompt, no Enter. The
+        # owner may be half-way through typing there; pressing Enter for them
+        # would send their half-typed line with ours glued on.
+        ok, why = terminal.type_into_console(self.card.source.session_pid, text,
+                                             submit=False)
         if ok:
             self.reply.delete("1.0", "end")
             self._reply_empty = True
+            why = f"{why} — not sent; press Enter in that tab"
         self._flash(why, GREEN if ok else GOLD)
 
     def _copy_cwd(self) -> None:
