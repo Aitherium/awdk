@@ -76,6 +76,17 @@ final class NodeLink {
         }
     }
 
+    /**
+     * A DNS-safe name for Identity's hostname field, which refuses '_' (a household id is
+     * fdev_...): the phone's model, lower-cased, anything outside [a-z0-9-] made '-'.
+     */
+    static String hostname(String model) {
+        String h = (model == null ? "" : model).toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("[^a-z0-9-]+", "-").replaceAll("^-+|-+$", "");
+        if (h.length() > 63) h = h.substring(0, 63).replaceAll("-+$", "");
+        return h.isEmpty() ? "android-phone" : h;
+    }
+
     /** Link this phone if it is not yet, then tie the household row to it. Never throws. */
     void ensureLinked() {
         try {
@@ -112,7 +123,7 @@ final class NodeLink {
         JSONObject body = new JSONObject()
                 .put("code", code)
                 .put("node_id", id)
-                .put("hostname", id)
+                .put("hostname", hostname(android.os.Build.MODEL))
                 .put("platform", "android")
                 .put("node_class", "phone")
                 .put("inference_kind", "llama-server")
