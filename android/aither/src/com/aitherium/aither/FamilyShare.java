@@ -22,12 +22,14 @@ import java.nio.charset.StandardCharsets;
  * dials out: it long-polls the pool for a job routed to it, runs it on the local
  * llama-server, and posts the answer back (computepool's pull contract).
  *
- * Off unless the owner turns it on here, and the pool itself refuses until a guardian has
- * enabled sharing for the household. It never runs on a child's phone, and it pauses
- * (withdrawing its offer) while the phone is not charging, is warm, or is saving power.
+ * Off unless the owner turns it on here. On an adult's own phone that switch IS the opt-in:
+ * the app tells the pool (POST /compute/share, the device token plus the signed-in owner
+ * of the device) and opts out again when it is turned off. A child's phone is refused by
+ * the pool (only a guardian can opt it in) and this app never shares from one anyway. It
+ * pauses (withdrawing its offer) while the phone is not charging, is warm, or is saving power.
  */
 final class FamilyShare implements Runnable {
-    static final String POOL = "https://api.aitherium.com/api/v1/tutor/me/device/compute";
+    static final String POOL = "https://api.aitherium.com/api/tutor/me/device/compute"; // the same edge path as the household heartbeat
     static final int WAIT_S = 25;
     static final int MAX_TOKENS = 1024;
     static volatile String state = "off";
@@ -39,6 +41,8 @@ final class FamilyShare implements Runnable {
     private volatile boolean stop;
     private Thread thread;
     private String offered = "";
+    private boolean optedIn;
+    private String lastPath = "";
 
     FamilyShare(Context c, LocalProxy.Backend backend) {
         ctx = c.getApplicationContext();
@@ -75,7 +79,16 @@ final class FamilyShare implements Runnable {
             }
         }
         withdraw();
+        if (optedIn && !cfg.shareFamily()) optOut();
         state = "off";
+    }
+
+    /** The owner turned sharing off on this phone: tell the pool, not just stop polling. */
+    private void optOut() {
+        optedIn = false;
+        try {
+            post("/share", new JSONObject().put("token", token()).put("compute_share", false));
+        } catch (Exception e) { /* withdrawn already; the pool drops a silent device */ }
     }
 
     /** One step. Returns how long to wait before the next one (0 = right away). */
@@ -86,6 +99,17 @@ final class FamilyShare implements Runnable {
             withdraw();
             state = "paused: " + why;
             return 60_000;
+        }
+        if (!optedIn) {
+            Resp r = post("/share", new JSONObject().put("token", token).put("compute_share", true));
+            if (r.code != 200) {
+                if (r.code == 403 && r.body.contains("child_needs_guardian")) {
+                    state = "waiting: only a guardian can share a child's phone";
+                    return 10 * 60_000;
+                }
+                return refused(r);
+            }
+            optedIn = true;
         }
         JSONObject st = deviceState();
         if (!st.toString().equals(offered)) {
@@ -129,7 +153,7 @@ final class FamilyShare implements Runnable {
             state = "removed from the household";
             return 15 * 60_000;
         }
-        state = "the pool answered " + r.code + "; retrying";
+        state = lastPath + ": the pool answered " + r.code + (err.isEmpty() ? "" : " (" + err + ")") + "; retrying";
         return 60_000;
     }
 
@@ -232,6 +256,7 @@ final class FamilyShare implements Runnable {
     }
 
     private Resp post(String path, JSONObject json) throws java.io.IOException {
+        lastPath = path;
         HttpURLConnection c = (HttpURLConnection) new URL(POOL + path).openConnection();
         c.setRequestMethod("POST");
         c.setConnectTimeout(20000);
