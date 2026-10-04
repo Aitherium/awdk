@@ -770,6 +770,14 @@ async def _heartbeat_beats(
                     hb["harness_ready"] = bool(h_ready)
                 except Exception as e:  # noqa: BLE001
                     log.debug("harness_provider failed: %s", e)
+            try:
+                from adk.restartable_units import restartable_units
+
+                units = restartable_units()
+                if units:  # the host's own list; the server refuses a restart off it
+                    hb["restartable_units"] = units
+            except Exception as e:  # noqa: BLE001 -- the list never breaks a beat
+                log.debug("restartable_units failed: %s", e)
             resp = await client.post(f"{base}{beat_path}", json=hb, headers=headers)
             status = int(resp.status_code)
             if status == 200 and resp.json().get("status") == "unknown_node" and device:

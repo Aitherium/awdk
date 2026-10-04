@@ -41,6 +41,13 @@ VERBS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "update": {},
     "lend-on": {"via": ("lan", "tunnel", "local")},
     "lend-off": {},
+    # Restart ONE unit from this host's own restartable list (adk.restartable_units);
+    # its single argument is checked against that list, not a fixed tuple.
+    "restart-lane": {},
+}
+#: verb -> {argument: check}. An argument whose allowed values live on this host.
+_HOST_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
+    "restart-lane": {"unit": lambda v: v in _restartable()},
 }
 SIGNED_FIELDS = ("id", "tenant_id", "node_id", "verb", "args", "issued_by",
                  "issued_at", "expires_at")
@@ -139,6 +146,14 @@ def verify(cmd: Any, key_hex: str, node_id: str, *, now: Optional[float] = None,
     args = cmd.get("args") or {}
     if not isinstance(args, dict):
         return "bad args"
+    host_args = _HOST_ARGS.get(verb)
+    if host_args is not None:
+        if set(args) != set(host_args):
+            return f"{verb} takes exactly {', '.join(sorted(host_args))}"
+        for k, check in host_args.items():
+            if not check(str(args[k])):
+                return f"{verb} {k} {str(args[k])[:60]!r} is not on this host's list"
+        return ""
     for k, v in args.items():
         if k not in VERBS[verb] or str(v) not in VERBS[verb][k]:
             return f"argument {str(k)[:40]!r} is not allowed for {verb}"
@@ -188,11 +203,34 @@ def _lend_off(_args: Dict[str, str]) -> Dict[str, Any]:
     return lend_routes.stop()
 
 
+def _restartable() -> List[str]:
+    from adk.restartable_units import restartable_units
+    return restartable_units()
+
+
+def _restart_lane(args: Dict[str, str]) -> Dict[str, Any]:
+    """``systemctl restart <unit>`` for a unit on this host's own list -- no shell, no
+    other command, checked again here in case the list changed since verify()."""
+    import subprocess
+
+    unit = str(args.get("unit") or "")
+    if unit not in _restartable():
+        return {"ok": False, "error": "unit is not on this host's restartable list"}
+    try:
+        proc = subprocess.run(["systemctl", "restart", unit], capture_output=True, text=True,
+                              timeout=180, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "unit": unit, "error": type(exc).__name__}
+    return {"ok": proc.returncode == 0, "unit": unit, "rc": proc.returncode,
+            "stderr": (proc.stderr or "")[-400:]}
+
+
 _HANDLERS: Dict[str, Callable[[Dict[str, str]], Any]] = {
     "collect-diagnostics": _diagnostics,
     "update": _update,
     "lend-on": _lend_on,
     "lend-off": _lend_off,
+    "restart-lane": _restart_lane,
 }
 
 
