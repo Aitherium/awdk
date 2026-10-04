@@ -2,7 +2,7 @@
 <!-- the same shortcuts the AitherOS page offers -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut android:shortcutId="hearth" android:enabled="true"
-        android:icon="@android:drawable/ic_menu_compass"
+        android:icon="@mipmap/ic_shortcut_hearth"
         android:shortcutShortLabel="@string/s_hearth">
         <intent android:action="android.intent.action.VIEW"
             android:targetPackage="com.aitherium.aither"
@@ -10,7 +10,7 @@
             android:data="https://app.aitherium.com/?app=hearth" />
     </shortcut>
     <shortcut android:shortcutId="family" android:enabled="true"
-        android:icon="@android:drawable/ic_menu_myplaces"
+        android:icon="@mipmap/ic_shortcut_family"
         android:shortcutShortLabel="@string/s_family">
         <intent android:action="android.intent.action.VIEW"
             android:targetPackage="com.aitherium.aither"
@@ -18,7 +18,7 @@
             android:data="https://app.aitherium.com/?app=family" />
     </shortcut>
     <shortcut android:shortcutId="learn" android:enabled="true"
-        android:icon="@android:drawable/ic_menu_info_details"
+        android:icon="@mipmap/ic_shortcut_learn"
         android:shortcutShortLabel="@string/s_learn">
         <intent android:action="android.intent.action.VIEW"
             android:targetPackage="com.aitherium.aither"
@@ -26,7 +26,7 @@
             android:data="https://app.aitherium.com/?app=learn" />
     </shortcut>
     <shortcut android:shortcutId="phone" android:enabled="true"
-        android:icon="@android:drawable/ic_menu_manage"
+        android:icon="@mipmap/ic_shortcut_phone"
         android:shortcutShortLabel="@string/s_phone">
         <intent android:action="android.intent.action.VIEW"
             android:targetPackage="com.aitherium.aither"
