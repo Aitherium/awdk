@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.3.5";
+    static final String VERSION = "0.3.6";
 
     private final SharedPreferences p;
 
@@ -29,6 +29,8 @@ final class Config {
     boolean onlyWifi() { return p.getBoolean("only_wifi", true); }
     String pubkey() { return p.getString("pubkey", ""); }
     boolean refreshApp() { return p.getBoolean("refresh_app", false); }
+    /** A child signed in on this phone (the page's aither.device.child): child shortcuts. */
+    boolean childDevice() { return p.getBoolean("child_device", false); }
     /**
      * Answer the household's Family AI Pool with this phone's model. The household's own
      * flag (compute_share on this device's row) is the switch: the owner or a guardian sets it

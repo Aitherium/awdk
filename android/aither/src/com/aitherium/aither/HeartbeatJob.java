@@ -57,6 +57,7 @@ public class HeartbeatJob extends JobService {
     /** Everything the 15-minute check-in does. True when done (no retry needed). */
     static boolean checkIn(Context ctx) {
         boolean family = beat(ctx);
+        FamilyNotices.poll(ctx);
         NodeLink node = new NodeLink(ctx);
         node.ensureLinked();
         boolean commands = node.checkIn();
