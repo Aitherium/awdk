@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**130 commands.**
+**131 commands.**
 
 | command | what it does |
 |---|---|
@@ -35,7 +35,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk awconnect`](#adk-awconnect) | Install / check the Awconnect browser extension |
 | [`adk backend`](#adk-backend) | Manage LLM backends (list, set, test, switch, status) |
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
-| [`adk balance`](#adk-balance) | Show your Aitherium credit balance and earnings |
+| [`adk balance`](#adk-balance) | Your Aitherium wallet: balance, bought/earned/spent, how to buy |
 | [`adk bonsai`](#adk-bonsai) | Small on-device Bonsai model (llama.cpp, CPU; phone-friendly) |
 | [`adk bonsai-local`](#adk-bonsai-local) | Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally |
 | [`adk bricks`](#adk-bricks) | Aither World bricks and the awnix OS — list, outdated, upgrade (tested, auto-rollback), rollback |
@@ -146,6 +146,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk vault`](#adk-vault) | Lockbox for the live secrets vault (setup, ls, get, search, rotate, lock) |
 | [`adk voice`](#adk-voice) | Voice services (serve standalone HTTP server) |
 | [`adk volunteer`](#adk-volunteer) | Volunteer embedding compute for DGG (enroll, serve, start) |
+| [`adk wallet`](#adk-wallet) | Your Aitherium wallet: balance, bought/earned/spent, how to buy |
 | [`adk whoami`](#adk-whoami) | Show current auth status, config and entitlement tier |
 | [`adk wizard`](#adk-wizard) | First-run wizard — hardware detection, setup recommendations, auth token |
 | [`adk wm`](#adk-wm) | World model management (status, inspect, train, reset) |
@@ -302,7 +303,13 @@ Backup all agent data (memory, graphs, config)
 
 ## `adk balance`
 
-Show your Aitherium credit balance and earnings
+Your Aitherium wallet: balance, bought/earned/spent, how to buy
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--ledger` | int |  | `0` | Also show the last N ledger rows |
+| `--json` | str |  | `false` | Machine-readable output |
+| `--gateway` | str |  |  | Gateway URL (default gateway.aitherium.com) |
 
 ## `adk bonsai`
 
@@ -1648,6 +1655,16 @@ Volunteer embedding compute for DGG (enroll, serve, start)
 - `adk volunteer serve` — Download model and start llama-server
 - `adk volunteer start` — Claim batches, embed, and submit results
 - `adk volunteer status` — Show volunteer status (reputation, tokens, batches)
+
+## `adk wallet`
+
+Your Aitherium wallet: balance, bought/earned/spent, how to buy
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--ledger` | int |  | `0` | Also show the last N ledger rows |
+| `--json` | str |  | `false` | Machine-readable output |
+| `--gateway` | str |  |  | Gateway URL (default gateway.aitherium.com) |
 
 ## `adk whoami`
 

@@ -3084,126 +3084,79 @@ def cmd_ambient(args) -> int:
 
 
 def cmd_balance(args) -> int:
-    """Show Aitherium credit account (balance, earnings, spending)."""
+    """Show your Aitherium wallet: balance, bought/earned/spent, recent ledger, how to buy.
+
+    Reads GET <gateway>/v1/wallet (and /v1/wallet/ledger with --ledger N) with your
+    saved key. The same answer the workspace, awsh and the MCP wallet_status tool show.
+    """
     import requests
+
+    from adk._tls import tls_verify
 
     saved = load_saved_config()
     api_key = saved.get("api_key", "")
-    username = saved.get("username", "")
-    email = saved.get("email", "")
-    tenant_id = saved.get("tenant_id", "")
-
     if not api_key:
         print("  Error: Not logged in. Run: adk login")
         return 1
+    gateway = (getattr(args, "gateway", None) or os.environ.get("AITHER_GATEWAY_URL")
+               or saved.get("gateway_url") or "https://gateway.aitherium.com").rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": "awdk"}
 
-    # Resolve user_id: use tenant_id if set, else username or email
-    user_id = tenant_id or username or email
-    if not user_id:
-        print("  Error: Could not determine user ID from config")
+    def _get(path: str, **params):
+        # Never disable verification: this request carries a bearer token.
+        return requests.get(f"{gateway}{path}", headers=headers, params=params or None,
+                            timeout=15, verify=tls_verify())
+
+    try:
+        resp = _get("/v1/wallet")
+    except requests.RequestException as exc:
+        print(f"  Error: could not reach {gateway}: {exc}")
         return 1
-
-    # Call the ACTA endpoint: GET /v1/billing/member/{user_id}
-    # Try several possible endpoints (local, cloud, configured)
-    acta_urls = [
-        "http://localhost:8200",  # Local fleet
-        "https://localhost:8200",  # Local fleet with TLS
-        "https://portal-gateway.aitherium.com",  # Cloud
-    ]
-
-    account_info = None
-    last_error = None
-
-    for base_url in acta_urls:
-        try:
-            url = f"{base_url}/v1/billing/member/{user_id}"
-            headers = {"Authorization": f"Bearer {api_key}"}
-            # Never disable verification here: this request carries a bearer
-            # token, so an unverified TLS session hands the API key to any MITM.
-            # tls_verify() verifies by default and returns the AitherNet CA
-            # bundle when present, so self-signed internal certs are trusted
-            # *with* verification rather than by turning it off.
-            from adk._tls import tls_verify
-
-            resp = requests.get(
-                url, headers=headers, timeout=5, verify=tls_verify()
-            )
-            if resp.status_code == 200:
-                account_info = resp.json()
-                break
-            elif resp.status_code == 401:
-                print("  Error: Authentication failed (invalid API key)")
-                return 1
-            elif resp.status_code == 403:
-                print("  Error: Access denied (cannot view this account)")
-                return 1
-            elif resp.status_code == 404:
-                print("  Error: Account not found")
-                return 1
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    if not account_info:
-        print("  Error: Could not reach ACTA service")
-        if last_error:
-            print(f"  Last error: {last_error}")
-        print("  Make sure you are connected to AitherOS (adk login / adk connect)")
+    if resp.status_code == 401:
+        print("  Error: your key was not accepted. Run: adk login")
         return 1
+    if resp.status_code != 200:
+        print(f"  Error: wallet answered HTTP {resp.status_code}: {resp.text[:200]}")
+        return 1
+    w = resp.json()
 
-    # Format and display the account info
+    if getattr(args, "json", False):
+        out = {"wallet": w}
+        n = int(getattr(args, "ledger", 0) or 0)
+        if n:
+            out["ledger"] = _get("/v1/wallet/ledger", limit=n).json()
+        print(json.dumps(out, indent=2))
+        return 0
+
+    per_usd = int(w.get("credits_per_usd") or 1000)
     print()
-    print("  Aitherium Credit Account")
-    print("  ════════════════════════")
+    print("  Aitherium Wallet")
+    print("  ════════════════")
+    print(f"  Balance:   {int(w.get('balance', 0)):,} tokens  (~${int(w.get('balance', 0)) / per_usd:,.2f})")
+    print(f"  Plan:      {w.get('plan', 'free')}")
     print()
-
-    # Spendable balance
-    spendable = account_info.get("spendable_tokens", 0)
-    print(f"  Spendable Credits:  {spendable:,} tokens")
-
-    # Monthly allotment
-    monthly = account_info.get("monthly", {})
-    allotment = monthly.get("plan_allotment", 0)
-    used = monthly.get("used_this_month", 0)
-    remaining = monthly.get("remaining", 0)
-    if allotment > 0:
-        pct = (used / allotment * 100) if allotment else 0
-        print(f"  Monthly Plan:       {used:,}/{allotment:,} used ({pct:.1f}%)")
-        print(f"  Remaining This Mo:  {remaining:,} tokens")
-
+    print(f"  Bought:    {int(w.get('bought', 0)):,}")
+    print(f"  Earned:    {int(w.get('earned', 0)):,}   (contribute compute: adk volunteer)")
+    print(f"  Granted:   {int(w.get('granted', 0)):,}")
+    print(f"  Spent:     {int(w.get('spent', 0)):,}")
+    n = int(getattr(args, "ledger", 0) or 0)
+    if n:
+        rows = _get("/v1/wallet/ledger", limit=n).json().get("events", [])
+        print()
+        print("  Recent activity")
+        print("  ───────────────")
+        for e in rows:
+            sign = "+" if e.get("delta", 0) > 0 else ""
+            print(f"  {str(e.get('at', ''))[:19]}  {sign}{int(e.get('delta', 0)):>9,}  "
+                  f"{e.get('type', '')}")
+    buy = w.get("buy") or {}
     print()
-    print("  Lifetime Earnings")
-    print("  ─────────────────")
-    earning = account_info.get("earning", {})
-    earned_tokens = earning.get("lifetime_settled_tokens", 0)
-    earned_usd = earning.get("lifetime_usd", 0)
-    print(f"  Total Earned:       {earned_tokens:,} tokens (${earned_usd:.2f})")
-
-    recent_earnings = earning.get("recent_earnings", [])
-    if recent_earnings:
-        print(f"  Recent Serves:      {len(recent_earnings)} (last 10)")
-        for rc in recent_earnings[:3]:
-            ts = rc.get("created_at", "")[:10]
-            toks = rc.get("tokens", 0)
-            print(f"    • {ts}: {toks} tokens")
-        if len(recent_earnings) > 3:
-            print(f"    + {len(recent_earnings) - 3} more...")
-
-    print()
-    print("  Lifetime Spending")
-    print("  ─────────────────")
-    spending = account_info.get("spending", {})
-    spent_tokens = spending.get("lifetime_consumed_tokens", 0)
-    spent_usd = spending.get("lifetime_usd", 0)
-    print(f"  Total Spent:        {spent_tokens:,} tokens (${spent_usd:.2f})")
-
-    print()
-    print("  Account Summary")
-    print("  ───────────────")
-    net = account_info.get("net", {})
-    net_earned = net.get("earned_minus_spent", 0)
-    print(f"  Net Position:       {net_earned:,} tokens")
-
+    print("  Buy more")
+    print("  ────────")
+    if buy.get("card"):
+        print(f"  Card:      {buy['card']}")
+    if buy.get("x402_quote"):
+        print(f"  USDC:      {buy['x402_quote']}  (x402; agents pay and retry)")
     print()
     return 0
 
@@ -13775,7 +13728,12 @@ def _register_commands(sub):
     sub.add_parser("logout", help="Clear saved auth tokens")
 
     # adk balance — show Aitherium credit account info
-    sub.add_parser("balance", help="Show your Aitherium credit balance and earnings")
+    for _name in ("balance", "wallet"):
+        _bp = sub.add_parser(_name, help="Your Aitherium wallet: balance, bought/earned/spent, how to buy")
+        _bp.add_argument("--ledger", type=int, default=0, metavar="N",
+                         help="Also show the last N ledger rows")
+        _bp.add_argument("--json", action="store_true", help="Machine-readable output")
+        _bp.add_argument("--gateway", default=None, help="Gateway URL (default gateway.aitherium.com)")
 
     # adk ambient — terminal sensor for the ambient expertise loop
     ambient_p = sub.add_parser(
@@ -16859,7 +16817,7 @@ def main():
         sys.exit(cmd_whoami(args))
     elif args.command == "logout":
         sys.exit(cmd_logout(args))
-    elif args.command == "balance":
+    elif args.command in ("balance", "wallet"):
         sys.exit(cmd_balance(args))
     elif args.command == "ambient":
         sys.exit(cmd_ambient(args))
