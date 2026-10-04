@@ -312,8 +312,40 @@ def _installed_awdk_version() -> str:
     return (proc.stdout or "").strip() if proc.returncode == 0 else ""
 
 
+def _uv_binary() -> Optional[str]:
+    """uv on PATH, else where its installer puts it (a systemd user unit's PATH is short)."""
+    import shutil
+
+    found = shutil.which("uv")
+    if found:
+        return found
+    for cand in (Path.home() / ".local" / "bin" / "uv", Path.home() / ".cargo" / "bin" / "uv"):
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+def _installer_argv(version: str) -> Optional[List[str]]:
+    """The fixed argv that installs ``awdk==<version>`` into THIS interpreter.
+
+    pip when this interpreter has it; otherwise ``uv pip install --python <this>``.
+    A venv made by uv has no pip (measured 2026-10-04 on the DGX Spark's heartbeat venv:
+    ``No module named pip``), so a pip-only upgrade could never reach it.
+    """
+    import importlib.util
+
+    spec = f"awdk=={version}"
+    if importlib.util.find_spec("pip") is not None:
+        return [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q",
+                spec]
+    uv = _uv_binary()
+    if uv:
+        return [uv, "pip", "install", "--python", sys.executable, "-q", spec]
+    return None
+
+
 def _upgrade(args: Dict[str, str]) -> Dict[str, Any]:
-    """``pip install awdk==<version>`` into THIS interpreter, then restart onto it.
+    """Install ``awdk==<version>`` into THIS interpreter (pip, or uv), then restart onto it.
 
     The argv is fixed; only the version is filled in, and it is checked again here.
     When this process runs in a systemd user unit (``adk pair`` installs
@@ -331,8 +363,10 @@ def _upgrade(args: Dict[str, str]) -> Dict[str, Any]:
         from adk import __version__ as before
     except Exception:  # noqa: BLE001
         before = "unknown"
-    argv = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q",
-            f"awdk=={version}"]
+    argv = _installer_argv(version)
+    if argv is None:
+        return {"ok": False, "from": before, "to": version, "rc": None,
+                "error": "no installer: this interpreter has no pip and no uv was found"}
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=UPGRADE_TIMEOUT_S, check=False)

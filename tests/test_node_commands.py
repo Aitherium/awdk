@@ -453,6 +453,46 @@ def test_upgrade_runs_exactly_the_fixed_pip_argv_and_restarts_its_unit(monkeypat
     assert out["restart"]["mechanism"] == "systemd-run" and out["restart"]["scheduled"] is True
 
 
+def _no_pip(monkeypatch):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a, **k: None if name == "pip" else real(name, *a, **k))
+
+
+def test_a_venv_without_pip_upgrades_through_uv(monkeypatch):
+    """The DGX Spark's heartbeat venv was made by uv and has no pip (2026-10-04)."""
+    import shutil
+    import subprocess
+    import sys
+
+    _no_pip(monkeypatch)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _fake_run(calls))
+    monkeypatch.setattr(shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(node_commands, "_own_user_unit", lambda: "aither-node-beat.service")
+    out = node_commands._upgrade({"version": "3.8.59"})
+    assert calls[0][0] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable, "-q",
+                           "awdk==3.8.59"]
+    assert calls[0][1].get("shell") is not True
+    assert out["ok"] is True and out["restart"]["scheduled"] is True
+
+
+def test_no_pip_and_no_uv_runs_nothing(monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    _no_pip(monkeypatch)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _fake_run(calls))
+    monkeypatch.setattr(shutil, "which", lambda n: None)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    out = node_commands._upgrade({"version": "3.8.59"})
+    assert out["ok"] is False and "no installer" in out["error"] and calls == []
+
+
 def test_a_failed_or_mismatched_install_restarts_nothing(monkeypatch):
     import subprocess
 

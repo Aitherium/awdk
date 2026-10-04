@@ -4,6 +4,16 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.60] - 2026-10-04
+
+### Fixed
+
+- **`upgrade` works in a venv without pip.** A venv made by uv has no pip (the DGX Spark's
+  heartbeat venv: `No module named pip`), so the 3.8.59 verb could never reach it. It now
+  runs `uv pip install --python <this interpreter> -q awdk==X.Y.Z` when pip is missing
+  (uv from PATH, `~/.local/bin` or `~/.cargo/bin`; still a fixed argv, no shell), and
+  reports `no installer` when neither exists.
+
 ## [3.8.59] - 2026-10-04
 
 ### Added
