@@ -92,17 +92,22 @@ final class NodeLink {
             last = "not linked: open AitherOS and add this phone to your household";
             return;
         }
-        String cookie = CookieManager.getInstance().getCookie(PORTAL);
-        if (cookie == null || cookie.isEmpty()) {
-            last = "not linked: sign in to AitherOS on this phone";
-            return;
-        }
-        Resp mint = call("POST", PORTAL + "/api/me/machines", null, cookie, "{}");
-        String code = mint.code == 200 ? mint.json().optString("code", "") : "";
+        // a guardian's QR carried a code for this phone (a child cannot mint one); else the
+        // signed-in owner's session mints one
+        String code = cfg.takePairCode();
         if (code.isEmpty()) {
-            // 402 = no plan or no room; 401 = signed out. Said plainly, retried next open.
-            last = "not linked: the portal answered " + mint.code + " " + mint.json().optString("error", "");
-            return;
+            String cookie = CookieManager.getInstance().getCookie(PORTAL);
+            if (cookie == null || cookie.isEmpty()) {
+                last = "not linked: sign in to AitherOS on this phone";
+                return;
+            }
+            Resp mint = call("POST", PORTAL + "/api/me/machines", null, cookie, "{}");
+            code = mint.code == 200 ? mint.json().optString("code", "") : "";
+            if (code.isEmpty()) {
+                // 402 = no plan or no room; 401 = signed out. Said plainly, retried next open.
+                last = "not linked: the portal answered " + mint.code + " " + mint.json().optString("error", "");
+                return;
+            }
         }
         JSONObject body = new JSONObject()
                 .put("code", code)

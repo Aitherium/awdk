@@ -90,6 +90,30 @@ final class Config {
         return true;
     }
 
+    /** A guardian's single-use workspace pairing code ({code, until}), kept until it expires. */
+    boolean acceptPairCode(String json) {
+        try {
+            JSONObject j = new JSONObject(json);
+            String code = j.optString("code", "");
+            long until = j.optLong("until", 0);
+            if (!code.matches("[A-Z0-9]{6,12}") || until <= System.currentTimeMillis()) return false;
+            if (code.equals(p.getString("last_pair_code", ""))) return false; // used once
+            if (code.equals(p.getString("pair_code", ""))) return false; // already waiting
+            p.edit().putString("pair_code", code).putLong("pair_until", until).apply();
+            return true;
+        } catch (JSONException e) {
+            return false;
+        }
+    }
+
+    /** The waiting pairing code, or "" (none, or expired). Taking it spends it. */
+    String takePairCode() {
+        String code = p.getString("pair_code", "");
+        if (code.isEmpty() || p.getLong("pair_until", 0) <= System.currentTimeMillis()) return "";
+        p.edit().remove("pair_code").putString("last_pair_code", code).apply();
+        return code;
+    }
+
     /** What the holder page needs. No pairing code: the page never sees a credential. */
     String forPage() {
         try {

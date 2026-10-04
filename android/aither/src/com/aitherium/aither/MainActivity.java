@@ -61,24 +61,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView v, String url) {
                 if (!ours(Uri.parse(url))) return;
                 CookieManager.getInstance().flush();
-                // the household device the page enrolled (family): the background check-in uses it
-                v.evaluateJavascript("(function(){try{return localStorage.getItem('aither.family.device')||''}catch(e){return ''}})()",
-                        val -> {
-                            String dev = val == null ? "" : val.replaceAll("^\"|\"$", "").replace("\\\"", "\"");
-                            if (dev.startsWith("{") && !dev.equals(cfg.familyDevice())) {
-                                cfg.set("family_device", dev);
-                                new Thread(() -> HeartbeatJob.beat(MainActivity.this)).start();
-                            }
-                            // on every open: link this phone, collect what the owner sent it
-                            if (!checking && System.currentTimeMillis() - lastCheck > 60_000) {
-                                checking = true;
-                                lastCheck = System.currentTimeMillis();
-                                new Thread(() -> {
-                                    HeartbeatJob.checkIn(MainActivity.this);
-                                    checking = false;
-                                }, "aither-open-checkin").start();
-                            }
-                        });
+                readHousehold(false);
             }
         });
         setContentView(web);
@@ -89,9 +72,66 @@ public class MainActivity extends Activity {
         web.loadUrl(startUrl(getIntent()));
     }
 
+    /**
+     * What the household page left in this WebView's storage: the device it enrolled
+     * (family: aither.family.device) and, from a guardian's QR, a single-use pairing code
+     * for the workspace (aither.family.device.pair). Read on every page load and every few
+     * seconds while AitherOS is on screen, because the page signs in without reloading.
+     */
+    private void readHousehold(boolean quiet) {
+        web.evaluateJavascript("(function(){try{return JSON.stringify({d:localStorage.getItem('aither.family.device')||'',"
+                        + "p:localStorage.getItem('aither.family.device.pair')||''})}catch(e){return '{}'}})()",
+                val -> {
+                    boolean fresh = false;
+                    try {
+                        // evaluateJavascript hands back a JSON string literal holding our JSON
+                        Object lit = new org.json.JSONTokener(val).nextValue();
+                        org.json.JSONObject j = new org.json.JSONObject(String.valueOf(lit));
+                        String dev = j.optString("d", "");
+                        if (dev.startsWith("{") && !dev.equals(cfg.familyDevice())) {
+                            cfg.set("family_device", dev);
+                            new Thread(() -> HeartbeatJob.beat(MainActivity.this)).start();
+                            fresh = true;
+                        }
+                        fresh |= cfg.acceptPairCode(j.optString("p", ""));
+                    } catch (Exception e) { /* nothing stored yet */ }
+                    // on every open (and at once when the page just handed over a device or
+                    // a pairing code): link this phone, collect what the owner sent it
+                    long since = System.currentTimeMillis() - lastCheck;
+                    if (!checking && (fresh || (!quiet && since > 60_000))) {
+                        checking = true;
+                        lastCheck = System.currentTimeMillis();
+                        new Thread(() -> {
+                            HeartbeatJob.checkIn(MainActivity.this);
+                            checking = false;
+                        }, "aither-open-checkin").start();
+                    }
+                });
+    }
+
+    private final android.os.Handler ticks = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable poll = new Runnable() {
+        @Override
+        public void run() {
+            if (ours(Uri.parse(String.valueOf(web.getUrl())))) readHousehold(true);
+            ticks.postDelayed(this, 5000);
+        }
+    };
+
+    /** A link meant for this app: an aitherium.com page, or aither://open?url=<that page>. */
+    static Uri target(Intent i) {
+        Uri u = i == null ? null : i.getData();
+        if (u == null) return null;
+        if ("aither".equals(u.getScheme()) && "open".equals(u.getHost())) {
+            String inner = u.getQueryParameter("url");
+            u = inner == null ? null : Uri.parse(inner);
+        }
+        return u != null && ours(u) ? u : null;
+    }
+
     /** The page to open: a pairing hand-off once, else AitherOS. */
     private String startUrl(Intent i) {
-        if (i != null && i.getData() != null && ours(i.getData())) return i.getData().toString();
+        if (target(i) != null) return target(i).toString();
         if (cfg.llmEnabled() && !cfg.llmPaired() && cfg.localAiBlocked().isEmpty()) {
             String token = cfg.llmToken(); // first: making a token resets "paired"
             cfg.set("llm_paired", true);
@@ -109,7 +149,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
-        if (i.getData() != null && ours(i.getData())) web.loadUrl(i.getData().toString());
+        if (target(i) != null) web.loadUrl(target(i).toString());
     }
 
     @Override
@@ -120,6 +160,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        ticks.removeCallbacks(poll);
         CookieManager.getInstance().flush();
         super.onPause();
     }
@@ -128,6 +169,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (freshIfAsked()) web.loadUrl(HOME);
+        ticks.postDelayed(poll, 5000);
     }
 
     /** The owner's refresh-app command: drop the cached AitherOS so it loads fresh. */

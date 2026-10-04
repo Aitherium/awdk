@@ -43,6 +43,14 @@
                 <data android:scheme="https" android:host="aitherium.com" />
                 <data android:scheme="https" android:host="app.aitherium.com" />
             </intent-filter>
+            <!-- a QR or link that must open in this app, not the browser:
+                 aither://open?url=https://app.aitherium.com/... (only aitherium.com pages load) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="aither" android:host="open" />
+            </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
