@@ -59,6 +59,7 @@ public class AssistActivity extends Activity {
         row.addView(send);
         col.addView(row);
         setContentView(col);
+        Edge.fit(col);
         Config cfg = new Config(this);
         String blocked = cfg.localAiBlocked();
         if (!blocked.isEmpty()) {

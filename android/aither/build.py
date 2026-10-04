@@ -2,13 +2,22 @@
 
     python awdk/android/aither/build_llama.py         # once: the on-phone model engine (NDK)
     python awdk/android/aither/build.py [--install SERIAL]
+    python awdk/android/aither/build.py --store --aab     # the Google Play bundle
 
-Needs a JDK (javac, keytool) and an Android SDK with ``platforms;android-35`` and
-``build-tools;35.0.0`` (``sdkmanager``). ``holder.js`` is copied from
-``awdk/adk/webui/kvholder/`` at build time, so the app runs the same engine as the browser page.
+Needs a JDK (javac, keytool, jarsigner) and an Android SDK with ``platforms;android-36`` and
+``build-tools;36.0.0`` (``sdkmanager``); ``--aab`` fetches bundletool (pinned by SHA-256).
+``holder.js`` is copied from ``awdk/adk/webui/kvholder/`` at build time, so the app runs the
+same engine as the browser page.
 Signed with the local debug key (``~/.android/debug.keystore``) unless ``--keystore`` and
 ``--storepass-file`` name the release key; a release build must carry the release certificate
-(SHA-256 ``RELEASE_CERT_SHA256`` below) or the build fails. Not a store release.
+(SHA-256 ``RELEASE_CERT_SHA256`` below) or the build fails.
+
+``--store`` is the Google Play build: Flavor.STORE = true (no self-update; Play updates it) and
+the manifest without the permissions Play restricts (STORE_DROPS). ``--aab`` writes the App
+Bundle Play requires, signed with the same key: that key is the Play UPLOAD key, and Play App
+Signing should be given the same key as the app signing key (exported with Google's pepk)
+so Play installs and GitHub installs carry one certificate and update each
+other. Native code must be 16 KB page aligned (Play, target 35+); PAGE_ALIGN is checked here.
 """
 
 from __future__ import annotations
@@ -24,7 +33,17 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ENGINE = HERE.parents[1] / "adk" / "webui" / "kvholder" / "holder.js"
-API, TOOLS = "35", "35.0.0"
+API, TOOLS = "36", "36.0.0"
+BUNDLETOOL = (
+    "1.18.3",
+    "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29",
+)
+PAGE_ALIGN = 16384
+# permissions Google Play restricts and the store build does not need (see Flavor.java)
+STORE_DROPS = (
+    "android.permission.REQUEST_INSTALL_PACKAGES",
+    "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+)
 
 
 def sdk() -> Path:
@@ -96,7 +115,179 @@ def pins() -> None:
         raise SystemExit("build: Updater.RELEASE_CERT and RELEASE_CERT_SHA256 differ")
 
 
-def build(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
+def page_align(so: Path) -> int:
+    """The smallest LOAD segment alignment of a 64-bit little-endian ELF file."""
+    import struct
+
+    b = so.read_bytes()
+    if b[:4] != b"\x7fELF" or b[4] != 2:
+        raise SystemExit(f"build: {so.name} is not a 64-bit ELF")
+    phoff = struct.unpack_from("<Q", b, 0x20)[0]
+    size, num = struct.unpack_from("<HH", b, 0x36)
+    aligns = [
+        struct.unpack_from("<IIQQQQQQ", b, phoff + i * size)[7]
+        for i in range(num)
+        if struct.unpack_from("<I", b, phoff + i * size)[0] == 1
+    ]
+    return min(aligns) if aligns else 0
+
+
+def store_manifest(out: Path) -> Path:
+    """The manifest without STORE_DROPS; refuses a drop that is not there to drop."""
+    text = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
+    for perm in STORE_DROPS:
+        line = re.compile(
+            r'[ \t]*<uses-permission android:name="%s" />\r?\n' % re.escape(perm)
+        )
+        text, n = line.subn("", text)
+        if n != 1:
+            raise SystemExit(
+                f"build: --store expected one {perm} in the manifest, found {n}"
+            )
+    path = out / "AndroidManifest.xml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def store_sources(out: Path, srcs: list[str]) -> list[str]:
+    """Flavor.java compiled with STORE = true in place of the checked-in one."""
+    flavor = HERE / "src" / "com" / "aitherium" / "aither" / "Flavor.java"
+    text = flavor.read_text(encoding="utf-8")
+    if text.count("STORE = false;") != 1:
+        raise SystemExit("build: Flavor.java has no single 'STORE = false;'")
+    gen = out / "gen" / "Flavor.java"
+    gen.parent.mkdir(parents=True)
+    gen.write_text(text.replace("STORE = false;", "STORE = true;"), encoding="utf-8")
+    return [s for s in srcs if Path(s).resolve() != flavor.resolve()] + [str(gen)]
+
+
+def bundletool() -> Path:
+    """bundletool-all-<v>.jar in ~/.android/cache, downloaded once and checked by SHA-256."""
+    import hashlib
+    import urllib.request
+
+    ver, sha = BUNDLETOOL
+    jar = Path.home() / ".android" / "cache" / f"bundletool-all-{ver}.jar"
+    if not jar.exists():
+        jar.parent.mkdir(parents=True, exist_ok=True)
+        url = f"https://github.com/google/bundletool/releases/download/{ver}/{jar.name}"
+        with urllib.request.urlopen(url, timeout=120) as r:  # noqa: S310 - fixed https URL
+            jar.write_bytes(r.read())
+    if hashlib.sha256(jar.read_bytes()).hexdigest() != sha:
+        jar.unlink()
+        raise SystemExit(f"build: {jar.name} does not match its pinned SHA-256; removed")
+    return jar
+
+
+def key_alias(keystore: str, storepass_file: str) -> str:
+    r = subprocess.run(
+        [
+            "keytool",
+            "-list",
+            "-keystore",
+            keystore,
+            "-storetype",
+            "PKCS12",
+            "-storepass:file",
+            storepass_file,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    # "<alias>, <date with its own comma>, PrivateKeyEntry,"
+    m = re.search(r"^([^,\n]+), .*, PrivateKeyEntry", r.stdout, re.M)
+    if r.returncode != 0 or not m:
+        raise SystemExit("build: keytool could not list the release keystore")
+    return m.group(1)
+
+
+def bundle(
+    out: Path, proto: Path, engine: Path, keystore: str, storepass_file: str
+) -> Path:
+    """An Android App Bundle from aapt2's proto-format APK, the dex and the engine, signed."""
+    module = out / "base.zip"
+    with zipfile.ZipFile(proto) as src, zipfile.ZipFile(
+        module, "w", zipfile.ZIP_DEFLATED
+    ) as z:
+        for name in src.namelist():
+            if name == "AndroidManifest.xml":
+                z.writestr("manifest/AndroidManifest.xml", src.read(name))
+            elif name == "resources.pb" or name.startswith(("res/", "assets/")):
+                z.writestr(name, src.read(name))
+            else:
+                z.writestr(f"root/{name}", src.read(name))
+        z.write(out / "dex" / "classes.dex", "dex/classes.dex")
+        z.write(engine, "lib/arm64-v8a/libllamaserver.so")
+    config = out / "BundleConfig.json"
+    # llama-server is run as a program from nativeLibraryDir, so it must be extracted on
+    # install (extractNativeLibs=true): keep native libraries compressed in the bundle
+    config.write_text(
+        '{"optimizations": {"uncompressNativeLibraries": {"enabled": false}}}',
+        encoding="utf-8",
+    )
+    aab = out / "aither.aab"
+    bt = ["java", "-jar", str(bundletool())]
+    run(
+        [
+            *bt,
+            "build-bundle",
+            "--modules",
+            str(module),
+            "--config",
+            str(config),
+            "--output",
+            str(aab),
+            "--overwrite",
+        ]
+    )
+    if keystore:
+        alias = key_alias(keystore, storepass_file)
+        signer = [
+            "-keystore",
+            keystore,
+            "-storetype",
+            "PKCS12",
+            "-storepass:file",
+            storepass_file,
+        ]
+    else:
+        alias = "androiddebugkey"
+        signer = ["-keystore", str(debug_keystore()), "-storepass", "android"]
+    run(
+        [
+            "jarsigner",
+            "-sigalg",
+            "SHA256withRSA",
+            "-digestalg",
+            "SHA-256",
+            *signer,
+            str(aab),
+            alias,
+        ]
+    )
+    run([*bt, "validate", "--bundle", str(aab)])
+    if keystore:
+        r = subprocess.run(
+            ["keytool", "-printcert", "-jarfile", str(aab)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if RELEASE_CERT_SHA256 not in r.stdout:
+            raise SystemExit("build: the bundle is not signed by the Aither release key")
+    return aab
+
+
+def build(
+    out: Path,
+    keystore: str = "",
+    storepass_file: str = "",
+    store: bool = False,
+    aab: bool = False,
+) -> Path:
     pins()
     root = sdk()
     jar = root / "platforms" / f"android-{API}" / "android.jar"
@@ -108,16 +299,35 @@ def build(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
     for f in (HERE / "assets").iterdir():
         shutil.copy2(f, out / "assets" / f.name)
     shutil.copy2(ENGINE, out / "assets" / "holder.js")
+    manifest = store_manifest(out) if store else HERE / "AndroidManifest.xml"
+    engine = HERE / "jniLibs" / "arm64-v8a" / "libllamaserver.so"
+    if engine.exists() and page_align(engine) < PAGE_ALIGN:
+        raise SystemExit(
+            f"build: {engine.name} LOAD segments are aligned to {page_align(engine)}, "
+            f"Play needs {PAGE_ALIGN}: rebuild it with build_llama.py"
+        )
+    if (store or aab) and not engine.exists():
+        raise SystemExit("build: a store build ships the engine: run build_llama.py first")
     base = out / "base.apk"
     flat = out / "res.zip"
     run([tool(bt, "aapt2"), "compile", "--dir", str(HERE / "res"), "-o", str(flat)])
+    link = [tool(bt, "aapt2"), "link", str(flat), "--manifest", str(manifest)]
+    if aab:  # a bundle carries the proto-format manifest and resource table
+        run(
+            [
+                *link,
+                "--proto-format",
+                "-I",
+                str(jar),
+                "-A",
+                str(out / "assets"),
+                "-o",
+                str(out / "proto.apk"),
+            ]
+        )
     run(
         [
-            tool(bt, "aapt2"),
-            "link",
-            str(flat),
-            "--manifest",
-            str(HERE / "AndroidManifest.xml"),
+            *link,
             "-I",
             str(jar),
             "-A",
@@ -127,6 +337,8 @@ def build(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
         ]
     )
     srcs = [str(p) for p in (HERE / "src").rglob("*.java")]
+    if store:
+        srcs = store_sources(out, srcs)
     run(
         [
             "javac",
@@ -158,7 +370,8 @@ def build(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
             *classes,
         ]
     )
-    engine = HERE / "jniLibs" / "arm64-v8a" / "libllamaserver.so"
+    if aab:
+        return bundle(out, out / "proto.apk", engine, keystore, storepass_file)
     with zipfile.ZipFile(base, "a", zipfile.ZIP_DEFLATED) as z:
         z.write(out / "dex" / "classes.dex", "classes.dex")
         if (
@@ -206,10 +419,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--storepass-file", default="", help="file holding the keystore password"
     )
+    ap.add_argument(
+        "--store",
+        action="store_true",
+        help="the Google Play build (Flavor.STORE, STORE_DROPS)",
+    )
+    ap.add_argument("--aab", action="store_true", help="write an App Bundle, not an APK")
     a = ap.parse_args(argv)
     if bool(a.keystore) != bool(a.storepass_file):
         ap.error("--keystore and --storepass-file go together")
-    apk = build(Path(a.out), a.keystore, a.storepass_file)
+    if a.aab and a.install:
+        ap.error("--install takes an APK; a bundle is uploaded to Google Play")
+    apk = build(Path(a.out), a.keystore, a.storepass_file, a.store, a.aab)
     print(f"build: {apk} ({apk.stat().st_size // 1024} KB)")
     if a.install:
         run(["adb", "-s", a.install, "install", "-r", str(apk)])

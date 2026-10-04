@@ -22,8 +22,9 @@ import android.webkit.WebViewClient;
  */
 public class MainActivity extends Activity {
     static final String HOME = "https://app.aitherium.com/";
-    /** The page hides its own install cards for this (localapp); one app, one icon. */
-    static final String UA_TOKEN = " AitherAndroid/" + Config.VERSION;
+    /** The page hides its own install cards for this (localapp); one app, one icon. The Play
+     *  build adds " Play": the page then offers no purchase (Play's payments policy). */
+    static final String UA_TOKEN = " AitherAndroid/" + Config.VERSION + (Flavor.STORE ? " Play" : "");
 
     private WebView web;
     private Config cfg;
@@ -65,6 +66,12 @@ public class MainActivity extends Activity {
             }
         });
         setContentView(web);
+        Edge.fit(web);
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            // Android 13+ with predictive back (default from target 36) never calls onBackPressed
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
+        }
         HeartbeatJob.schedule(this);
         if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
         if (cfg.enabled()) startForegroundService(new Intent(this, HolderService.class));
@@ -154,9 +161,13 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onBackPressed() {
+    public void onBackPressed() { // Android 12 and older
+        back();
+    }
+
+    private void back() {
         if (web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+        else moveTaskToBack(true); // what Android does for a launcher activity's last back
     }
 
     @Override
@@ -185,8 +196,7 @@ public class MainActivity extends Activity {
         if (cfg.batteryAsked()) return;
         cfg.set("battery_asked", true);
         try {
-            startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:" + getPackageName())));
+            startActivity(Flavor.battery(this));
         } catch (RuntimeException e) { /* settings app refused: Settings has the button */ }
     }
 

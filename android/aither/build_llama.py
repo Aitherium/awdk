@@ -67,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
             f"-DCMAKE_TOOLCHAIN_FILE={ndk / 'build' / 'cmake' / 'android.toolchain.cmake'}",
             "-DANDROID_ABI=arm64-v8a",
             "-DANDROID_PLATFORM=android-29",
+            # Google Play refuses native code whose LOAD segments are not 16 KB aligned
+            # (apps targeting 35+); build.py checks the result (PAGE_ALIGN)
+            "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+            "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DBUILD_SHARED_LIBS=OFF",
             "-DLLAMA_CURL=OFF",

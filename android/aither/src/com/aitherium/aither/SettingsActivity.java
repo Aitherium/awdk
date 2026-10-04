@@ -118,13 +118,14 @@ public class SettingsActivity extends Activity {
             Updater.Check c = new Updater(this).check(false);
             if (c.apk != null) startActivity(new Intent(this, UpdateActivity.class));
         }, "aither-update").start());
-        col.addView(upd);
+        if (!Flavor.STORE) col.addView(upd); // the Play build is updated by Google Play
         nodeStatus = new TextView(this);
         nodeStatus.setTextSize(14);
         col.addView(nodeStatus);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.addView(col);
         setContentView(scroll);
+        Edge.fit(scroll);
         // only a fresh launch carries a link to act on, never a task restored from history
         if (b == null && (getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
             handle(getIntent());
@@ -178,9 +179,7 @@ public class SettingsActivity extends Activity {
     private void askBattery() {
         PowerManager pm = getSystemService(PowerManager.class);
         if (pm.isIgnoringBatteryOptimizations(getPackageName())) return;
-        Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                Uri.parse("package:" + getPackageName()));
-        try { startActivity(i); } catch (RuntimeException e) { /* settings app refused */ }
+        try { startActivity(Flavor.battery(this)); } catch (RuntimeException e) { /* settings app refused */ }
     }
 
     private View toggleLlm() {

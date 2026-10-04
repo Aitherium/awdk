@@ -66,6 +66,10 @@ final class Updater {
         Check c = new Check();
         try {
             p.edit().putLong("checked_at", System.currentTimeMillis()).apply();
+            if (Flavor.STORE) {
+                c.state = "updates come from Google Play";
+                return done(c, false);
+            }
             String mine = ownCert();
             if (!RELEASE_CERT.equals(mine)) {
                 c.state = "this build is not release-signed; it cannot update itself";
