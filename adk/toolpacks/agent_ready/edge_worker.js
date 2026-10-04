@@ -64,6 +64,17 @@ export const HOMEPAGE_LINKS = [
 
 const UPSTREAM_TIMEOUT_MS = 4000;
 
+// The homepage's agent-facing markdown, bundled at deploy time (main.js) so
+// Accept: text/markdown on / needs no subrequest. Measured 2026-10-04: a caller
+// that is itself a Worker (isitagentready.com) got HTML for / while plain
+// clients got markdown; nested same-zone subrequests are what differ.
+let homepageMarkdown = null;
+
+/** Set the markdown served for / (e.g. your llms.txt, imported as text). */
+export function setHomepageMarkdown(md) {
+  homepageMarkdown = typeof md === 'string' && md.trim() ? md : null;
+}
+
 /** True when the client asked for markdown at least as strongly as for HTML. */
 export function wantsMarkdown(accept) {
   if (!accept) return false;
@@ -165,6 +176,9 @@ function withHeaders(response, extra) {
 async function serveMarkdown(request, url) {
   // The homepage is an interactive desktop with almost no static text; its
   // agent-facing summary IS llms.txt (which is markdown by its own spec).
+  if ((url.pathname === '/' || url.pathname === '/index.html') && homepageMarkdown) {
+    return markdownResponse(homepageMarkdown, 200, 'bundled');
+  }
   if (url.pathname === '/' || url.pathname === '/index.html') {
     // Measured 2026-10-04: a caller that is itself a Worker (the
     // isitagentready.com scanner) got HTML here while a plain client got
