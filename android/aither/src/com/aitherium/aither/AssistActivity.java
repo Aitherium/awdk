@@ -24,6 +24,7 @@ public class AssistActivity extends Activity {
     private EditText input;
     private Button send;
     private volatile boolean busy;
+    private String lastAnswer = "";
 
     @Override
     protected void onCreate(Bundle b) {
@@ -58,6 +59,10 @@ public class AssistActivity extends Activity {
         send.setOnClickListener(v -> ask());
         row.addView(send);
         col.addView(row);
+        Button report = new Button(this); // flag an answer (Google Play's generative-AI policy)
+        report.setText("Report an answer");
+        report.setOnClickListener(v -> Report.open(this, lastAnswer, "Ask Aither"));
+        col.addView(report);
         setContentView(col);
         Edge.fit(col);
         Config cfg = new Config(this);
@@ -89,6 +94,7 @@ public class AssistActivity extends Activity {
             String used = names.length() > 0 ? "  [used " + names + "]" : "";
             String text = t.error.isEmpty() ? t.answer : "Sorry, that did not work (" + t.error + ").";
             main.post(() -> {
+                lastAnswer = "Q: " + q + "\nA: " + text;
                 CharSequence s = log.getText();
                 log.setText(s.subSequence(0, s.length() - 1));
                 log.append("Aither: " + text + used);

@@ -119,6 +119,10 @@ public class SettingsActivity extends Activity {
             if (c.apk != null) startActivity(new Intent(this, UpdateActivity.class));
         }, "aither-update").start());
         if (!Flavor.STORE) col.addView(upd); // the Play build is updated by Google Play
+        Button report = new Button(this); // flag AI content or anything else (Play AI policy)
+        report.setText("Report a problem or an AI answer");
+        report.setOnClickListener(v -> Report.open(this, "", "Aither settings"));
+        col.addView(report);
         nodeStatus = new TextView(this);
         nodeStatus.setTextSize(14);
         col.addView(nodeStatus);

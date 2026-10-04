@@ -53,9 +53,22 @@ public class MainActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                 Uri u = r.getUrl();
+                if (Purchases.refuse(Flavor.STORE, u.getHost())) { // Play payments policy
+                    android.widget.Toast.makeText(MainActivity.this, Purchases.REFUSED,
+                            android.widget.Toast.LENGTH_LONG).show();
+                    return true;
+                }
                 if (ours(u)) return false;
                 try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (RuntimeException e) { /* none */ }
                 return true;
+            }
+
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                // a payment page in a frame or a script is refused too, not only a navigation
+                if (!Purchases.refuse(Flavor.STORE, r.getUrl().getHost())) return null;
+                return new android.webkit.WebResourceResponse("text/plain", "utf-8", 403, "Forbidden",
+                        null, new java.io.ByteArrayInputStream(new byte[0]));
             }
 
             @Override
@@ -198,6 +211,30 @@ public class MainActivity extends Activity {
         try {
             startActivity(Flavor.battery(this));
         } catch (RuntimeException e) { /* settings app refused: Settings has the button */ }
+    }
+
+    static final int REPORT_ID = 0x4a17;
+
+    /**
+     * "Report" on any text selected in AitherOS: the in-app way to flag an AI answer
+     * (Google Play's generative-AI policy). Report asks what is wrong and files it.
+     */
+    @Override
+    public void onActionModeStarted(android.view.ActionMode mode) {
+        super.onActionModeStarted(mode);
+        android.view.Menu m = mode.getMenu();
+        if (m.findItem(REPORT_ID) != null) return;
+        m.add(android.view.Menu.NONE, REPORT_ID, 200, "Report").setOnMenuItemClickListener(item -> {
+            web.evaluateJavascript("(function(){try{return String(window.getSelection())}catch(e){return ''}})()",
+                    val -> {
+                        String sel = "";
+                        try { sel = String.valueOf(new org.json.JSONTokener(val).nextValue()); }
+                        catch (Exception e) { /* nothing selected */ }
+                        mode.finish();
+                        Report.open(this, sel, String.valueOf(web.getUrl()));
+                    });
+            return true;
+        });
     }
 
     /** The owner's refresh-app command: drop the cached AitherOS so it loads fresh. */
