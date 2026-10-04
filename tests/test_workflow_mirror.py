@@ -104,6 +104,18 @@ def test_parse_run_info_from_tool_response():
     assert wm.parse_run_info("no run here") == (None, None)
 
 
+def test_parse_run_info_from_a_structured_response():
+    # PostToolUse may carry the response as a dict or a list of content blocks; the
+    # transcript dir must come back as the real path, not escaped JSON to end of string.
+    text = ("Workflow launched.\nTranscript dir: C:\\Users\\x\\subagents\\workflows"
+            "\\wf_c1de533a-21b\nScript file: s.js\nRun ID: wf_c1de533a-21b\n")
+    want = ("wf_c1de533a-21b", "C:\\Users\\x\\subagents\\workflows\\wf_c1de533a-21b")
+    assert wm.parse_run_info({"content": text}) == want
+    assert wm.parse_run_info([{"type": "text", "text": text}]) == want
+    assert wm.parse_run_info(json.dumps([{"type": "text", "text": text}])) == want
+    assert wm.parse_run_info(None) == (None, None)
+
+
 # --- journal -> events ---------------------------------------------------------
 
 
@@ -219,6 +231,20 @@ def test_scan_and_mirror_resumes_from_cursor_across_passes(tmp_path):
     assert not any(c[0] == "expedition_mirror_create" for c in gw.calls)
 
 
+def test_scan_and_mirror_skips_old_unbound_runs_but_keeps_bound_ones(tmp_path):
+    root = tmp_path / "projects"
+    month = time.time() - 30 * 86400
+    _journal(root / "s" / "subagents" / "workflows" / "wf_oldunbound01", REAL_ENTRIES, month)
+    bound = root / "s" / "subagents" / "workflows" / "wf_oldbound0001"
+    _journal(bound, REAL_ENTRIES, month)
+    wm.record_run("wf_oldbound0001", "s", str(bound),
+                  {"sha": "x", "meta": wm.parse_script_meta(SCRIPT)})
+    gw = FakeGateway()
+    summary = wm.scan_and_mirror(root=root, client=gw)
+    created = [c[1]["run_id"] for c in gw.calls if c[0] == "expedition_mirror_create"]
+    assert created == ["wf_oldbound0001"] and summary["runs"] == 1
+
+
 def test_scan_and_mirror_reports_a_dark_fleet_half(tmp_path):
     root = tmp_path / "projects"
     _journal(root / "s" / "subagents" / "workflows" / "wf_dark00000001", REAL_ENTRIES[:2])
@@ -332,6 +358,30 @@ def test_client_treats_unknown_tool_and_is_error_and_401_as_errors():
         c.call("x", {})
 
 
+def test_client_reinitializes_when_the_gateway_expired_the_session():
+    # Measured live: after a 15-minute quiet spell the gateway answers HTTP 404 with a
+    # JSON-RPC "Session not found". The client must re-handshake and retry once.
+    expired = urllib.error.HTTPError(
+        "u", 404, "nf", {"Content-Type": "application/json"},
+        io.BytesIO(b'{"jsonrpc":"2.0","id":"server-error","error":'
+                   b'{"code":-32600,"message":"Session not found"}}'))
+    ok = _Resp(200, json.dumps({"jsonrpc": "2.0", "id": 4, "result": {
+        "content": [{"type": "text", "text": json.dumps({"ok": 1})}]}}))
+    op = _opener_with([
+        expired,
+        _Resp(200, '{"jsonrpc":"2.0","id":2,"result":{}}',
+              {"Content-Type": "application/json", "Mcp-Session-Id": "S2"}),
+        _Resp(202, ""),
+        ok,
+    ])
+    c = wm.GatewayClient(bearer="b", opener=op)
+    c._session_id = "S1"
+    assert c.call("t", {}) == {"ok": 1}
+    assert [m.get("method") for m in op.calls] == ["tools/call", "initialize",
+                                                  "notifications/initialized", "tools/call"]
+    assert c._session_id == "S2"
+
+
 def test_client_decodes_event_stream_frames():
     frame = json.dumps({"jsonrpc": "2.0", "id": 3, "result": {
         "content": [{"type": "text", "text": json.dumps({"ok": 1})}]}})
@@ -357,3 +407,13 @@ def test_scan_runs_accepts_projects_root_session_dir_and_workflows_dir(tmp_path)
     assert [p.name for p in wm.scan_runs(root / "s2" / "subagents" / "workflows")] == ["wf_b"]
     assert [p.name for p in wm.scan_runs(b)] == ["wf_b"]
     assert list(wm.scan_runs(tmp_path / "missing")) == []
+
+
+def test_scan_runs_finds_the_real_project_session_layout(tmp_path):
+    # ~/.claude/projects/<project>/<session>/subagents/workflows/wf_*: what Claude Code
+    # actually writes, and what the default root must find.
+    root = tmp_path / "projects"
+    run = root / "C--repo" / "0491-session" / "subagents" / "workflows" / "wf_real"
+    _journal(run, [{"type": "launched"}])
+    assert [p.name for p in wm.scan_runs(root)] == ["wf_real"]
+    assert [p.name for p in wm.scan_runs(root / "C--repo")] == ["wf_real"]

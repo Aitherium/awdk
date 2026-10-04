@@ -176,10 +176,34 @@ def script_sha256(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
 
 
-def parse_run_info(response_text: str) -> Tuple[Optional[str], Optional[str]]:
-    """``(run_id, transcript_dir)`` from the Workflow tool's response text."""
-    run = _RUN_ID_RE.search(response_text or "")
-    tdir = _TRANSCRIPT_RE.search(response_text or "")
+def response_text(response: Any) -> str:
+    """The plain text of a tool response, however the hook payload carried it.
+
+    PostToolUse can hand over a string, a dict or a list of content blocks. JSON-dumping
+    a structured one turns its newlines into a literal backslash-n and doubles every
+    path backslash, so the transcript-dir match ran to the end of the string and bound
+    a directory that does not exist. Every string inside is joined by real newlines.
+    """
+    if isinstance(response, str):
+        stripped = response.strip()
+        if stripped[:1] in ("{", "[") and "\n" not in stripped:
+            try:
+                return response_text(json.loads(stripped))
+            except ValueError:
+                return response
+        return response
+    if isinstance(response, dict):
+        return "\n".join(response_text(v) for v in response.values())
+    if isinstance(response, (list, tuple)):
+        return "\n".join(response_text(v) for v in response)
+    return "" if response is None else str(response)
+
+
+def parse_run_info(response: Any) -> Tuple[Optional[str], Optional[str]]:
+    """``(run_id, transcript_dir)`` from the Workflow tool's response (text or structured)."""
+    text = response_text(response)
+    run = _RUN_ID_RE.search(text)
+    tdir = _TRANSCRIPT_RE.search(text)
     return (run.group(1) if run else None, tdir.group(1).strip() if tdir else None)
 
 
@@ -263,6 +287,12 @@ class GatewayClient:
                 f"gateway refused the bearer ({status}); re-mint with "
                 f"python AitherOS/dev/tools/mint_session_bearer.py",
             )
+        if status == 404 and b"Session not found" in raw and method != "initialize":
+            # The gateway expires idle sessions and answers 404 with a JSON-RPC error.
+            # Hand that error back so call() re-initializes and retries once; raising
+            # here made every event after a long quiet spell (a 15-minute spend card)
+            # fail for the rest of the run.
+            return self._decode(raw, hdrs.get("content-type", ""))
         if status >= 400:
             raise MirrorError(f"gateway HTTP {status}: {raw[:200]!r}")
         sid = hdrs.get("mcp-session-id")
@@ -349,7 +379,10 @@ def scan_runs(root: Optional[Path] = None) -> Iterator[Path]:
     base = Path(root) if root else default_root()
     if not base.is_dir():
         return
+    # The real layout is projects/<project>/<session>/subagents/workflows/wf_*: the
+    # first pattern is the one the default root needs. Without it no run was ever found.
     patterns = (
+        "*/*/subagents/workflows/wf_*/journal.jsonl",
         "*/subagents/workflows/wf_*/journal.jsonl",
         "subagents/workflows/wf_*/journal.jsonl",
         "wf_*/journal.jsonl",
@@ -689,8 +722,20 @@ def scan_and_mirror(root: Optional[Path] = None, gateway_url: str = DEFAULT_GATE
     states = load_states()
     runs = read_runs()
     cli = client
+    # A run the post-hook never bound is mirrored only while its journal is recent: the
+    # scan sees every run on the machine, and a first pass must not open hundreds of
+    # expeditions for work that finished weeks ago.
+    backfill_s = float(os.environ.get("AITHER_WORKFLOW_MIRROR_BACKFILL_HOURS", "24")) * 3600
+    clock = time.time() if now is None else now
     for run_dir in scan_runs(root):
         run_id = run_dir.name
+        if run_id not in runs and run_id not in states:
+            try:
+                age = clock - (run_dir / "journal.jsonl").stat().st_mtime
+            except OSError:
+                continue
+            if age > backfill_s:
+                continue
         summary["runs"] += 1
         state = states.get(run_id) or RunState(run_id=run_id)
         states[run_id] = state
