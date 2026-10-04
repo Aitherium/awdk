@@ -22,6 +22,7 @@ public class SettingsActivity extends Activity {
     private Config cfg;
     private TextView status;
     private TextView localStatus;
+    private TextView nodeStatus;
     private final Handler h = new Handler(Looper.getMainLooper());
 
     @Override
@@ -71,6 +72,22 @@ public class SettingsActivity extends Activity {
         localStatus = new TextView(this);
         localStatus.setTextSize(14);
         col.addView(localStatus);
+
+        TextView ws = new TextView(this);
+        ws.setText("Workspace and updates");
+        ws.setTextSize(18);
+        ws.setPadding(0, pad * 2, 0, pad / 2);
+        col.addView(ws);
+        Button upd = new Button(this);
+        upd.setText("Check for an update");
+        upd.setOnClickListener(v -> new Thread(() -> {
+            Updater.Check c = new Updater(this).check(false);
+            if (c.apk != null) startActivity(new Intent(this, UpdateActivity.class));
+        }, "aither-update").start());
+        col.addView(upd);
+        nodeStatus = new TextView(this);
+        nodeStatus.setTextSize(14);
+        col.addView(nodeStatus);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.addView(col);
         setContentView(scroll);
@@ -168,6 +185,10 @@ public class SettingsActivity extends Activity {
             localStatus.setText((blocked.isEmpty() ? LlmService.reason : "Off: " + blocked)
                     + "\nHousehold check-in: " + HeartbeatJob.last
                     + (cfg.profileKind().isEmpty() ? "" : " (" + cfg.profileKind() + ")"));
+            NodeLink n = new NodeLink(SettingsActivity.this);
+            nodeStatus.setText("Version " + Config.VERSION
+                    + "\nWorkspace node: " + (n.linked() ? n.nodeId() : "-") + " · " + NodeLink.last
+                    + "\nUpdates: " + Updater.last);
             h.postDelayed(this, 1000);
         }
     };

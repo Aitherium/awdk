@@ -9,6 +9,9 @@ import org.json.JSONObject;
 
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
+    /** The app's version; build.py refuses a manifest whose versionName differs. */
+    static final String VERSION = "0.3.0";
+
     private final SharedPreferences p;
 
     Config(Context c) {
@@ -25,6 +28,7 @@ final class Config {
     boolean onlyCharging() { return p.getBoolean("only_charging", true); }
     boolean onlyWifi() { return p.getBoolean("only_wifi", true); }
     String pubkey() { return p.getString("pubkey", ""); }
+    boolean refreshApp() { return p.getBoolean("refresh_app", false); }
 
     // ---- local AI (LlmService) and the household registry (HeartbeatJob)
     boolean llmEnabled() { return p.getBoolean("llm_enabled", true); }

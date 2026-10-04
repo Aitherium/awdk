@@ -45,7 +45,7 @@ public class HeartbeatJob extends JobService {
 
     @Override
     public boolean onStartJob(JobParameters params) {
-        new Thread(() -> jobFinished(params, !beat(this)), "aither-heartbeat").start();
+        new Thread(() -> jobFinished(params, !checkIn(this)), "aither-heartbeat").start();
         return true;
     }
 
@@ -54,7 +54,17 @@ public class HeartbeatJob extends JobService {
         return true; // retry with back-off
     }
 
-    /** One check-in. Returns true when it is done (sent, or nothing to send). */
+    /** Everything the 15-minute check-in does. True when done (no retry needed). */
+    static boolean checkIn(Context ctx) {
+        boolean family = beat(ctx);
+        NodeLink node = new NodeLink(ctx);
+        node.ensureLinked();
+        boolean commands = node.checkIn();
+        new Updater(ctx).maybeCheck();
+        return family && commands;
+    }
+
+    /** The household check-in. Returns true when it is done (sent, or nothing to send). */
     static boolean beat(Context ctx) {
         Config cfg = new Config(ctx);
         String dev = cfg.familyDevice();

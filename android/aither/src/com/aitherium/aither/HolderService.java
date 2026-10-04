@@ -272,6 +272,11 @@ public class HolderService extends Service {
                 }
                 int code2 = c.getResponseCode();
                 if (code2 == 200) {
+                    // the same confirm makes this phone an Identity node: keep its device
+                    // token and command key for the check-in (NodeLink)
+                    try {
+                        new NodeLink(this).remember(new JSONObject(NodeLink.read(c.getInputStream(), 1 << 20)));
+                    } catch (Exception e) { /* lending is paired either way; the link retries */ }
                     cfg.set("paired", true);
                     cfg.set("code", "");
                     result = "paired";

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="2"
-    android:versionName="0.2.0">
+    android:versionCode="3"
+    android:versionName="0.3.0">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
 
@@ -15,6 +15,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- self-update: Android still asks the owner to confirm every install -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="Aither"
@@ -58,6 +60,13 @@
                 <data android:scheme="aitherkv" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- the one tap on the update notification: hands a verified APK to the installer -->
+        <activity
+            android:name=".UpdateActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <service
             android:name=".HolderService"

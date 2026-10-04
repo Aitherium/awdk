@@ -23,10 +23,12 @@ import android.webkit.WebViewClient;
 public class MainActivity extends Activity {
     static final String HOME = "https://app.aitherium.com/";
     /** The page hides its own install cards for this (localapp); one app, one icon. */
-    static final String UA_TOKEN = " AitherAndroid/0.2.0";
+    static final String UA_TOKEN = " AitherAndroid/" + Config.VERSION;
 
     private WebView web;
     private Config cfg;
+    private volatile boolean checking;
+    private long lastCheck;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -67,6 +69,15 @@ public class MainActivity extends Activity {
                                 cfg.set("family_device", dev);
                                 new Thread(() -> HeartbeatJob.beat(MainActivity.this)).start();
                             }
+                            // on every open: link this phone, collect what the owner sent it
+                            if (!checking && System.currentTimeMillis() - lastCheck > 60_000) {
+                                checking = true;
+                                lastCheck = System.currentTimeMillis();
+                                new Thread(() -> {
+                                    HeartbeatJob.checkIn(MainActivity.this);
+                                    checking = false;
+                                }, "aither-open-checkin").start();
+                            }
                         });
             }
         });
@@ -74,6 +85,7 @@ public class MainActivity extends Activity {
         HeartbeatJob.schedule(this);
         if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
         if (cfg.enabled()) startForegroundService(new Intent(this, HolderService.class));
+        freshIfAsked();
         web.loadUrl(startUrl(getIntent()));
     }
 
@@ -110,5 +122,19 @@ public class MainActivity extends Activity {
     protected void onPause() {
         CookieManager.getInstance().flush();
         super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (freshIfAsked()) web.loadUrl(HOME);
+    }
+
+    /** The owner's refresh-app command: drop the cached AitherOS so it loads fresh. */
+    private boolean freshIfAsked() {
+        if (!cfg.refreshApp()) return false;
+        web.clearCache(true);
+        cfg.set("refresh_app", false);
+        return true;
     }
 }

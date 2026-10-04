@@ -161,6 +161,18 @@ An app signed with a different key cannot update this one: Android refuses it, s
 that has a debug-signed build must uninstall it first. `build.py` without `--keystore`
 still makes a debug-signed APK for development.
 
+A release-signed app updates itself from those releases: once a day on an unmetered network
+(or when the owner asks) it downloads a newer APK, accepts it only if its SHA-256 matches
+`SHA256SUMS` and it carries the release certificate above, and then offers it in a
+notification; Android's installer asks before anything is installed.
+
+The app is also a node of the owner's workspace (the same record as its household device).
+With the owner signed in to AitherOS on the phone it links itself, and every check-in (about
+every 15 minutes, and when AitherOS is opened) collects commands the owner sent it from the
+device page. It runs only these: `collect-diagnostics`, `lend-on`, `lend-off`, `refresh-app`,
+`update-model`, `check-update`; and only when the command is signed for this phone, unexpired
+and not run before. `check_commands.py` proves the app and Identity agree on every byte.
+
 awsh and Desk read the same swarm: `adk kvholder workspace status --json`, or the snapshot
 the relay writes to `~/.aither/kvholder/workspace.json` every 5 s (no tokens in it).
 

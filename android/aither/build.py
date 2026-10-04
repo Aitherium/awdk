@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -82,7 +83,21 @@ def debug_keystore() -> Path:
 RELEASE_CERT_SHA256 = "A5:5F:DD:95:F1:4C:FA:BE:19:4C:AA:78:A2:98:76:95:61:DC:4A:C5:FE:5E:8D:BB:9E:73:47:27:74:E8:1D:56"
 
 
+def pins() -> None:
+    """The version and the release cert are written in two places each; refuse a drift."""
+    src = HERE / "src" / "com" / "aitherium" / "aither"
+    manifest = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
+    name = re.search(r'android:versionName="([^"]+)"', manifest)
+    code = re.search(r'VERSION = "([^"]+)"', (src / "Config.java").read_text(encoding="utf-8"))
+    if not name or not code or name.group(1) != code.group(1):
+        raise SystemExit("build: AndroidManifest versionName and Config.VERSION differ")
+    cert = re.search(r'RELEASE_CERT = "([0-9a-f]{64})"', (src / "Updater.java").read_text(encoding="utf-8"))
+    if not cert or cert.group(1) != RELEASE_CERT_SHA256.replace(":", "").lower():
+        raise SystemExit("build: Updater.RELEASE_CERT and RELEASE_CERT_SHA256 differ")
+
+
 def build(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
+    pins()
     root = sdk()
     jar = root / "platforms" / f"android-{API}" / "android.jar"
     bt = root / "build-tools" / TOOLS
