@@ -5339,10 +5339,13 @@ def create_app(
             a = await get_agent()
             if a:
                 # Register search_tools: find tools by query
-                from adk.tools_meta import search_tools as search_tools_impl
+                from adk.tools_meta import search_tools_ranked
 
                 async def search_tools(query: str = "", limit: int = 8) -> str:
-                    return search_tools_impl(query, _state.get("all_mcp_tools", []), limit)
+                    return await search_tools_ranked(
+                        query, _state.get("all_mcp_tools", []), limit,
+                        _state.get("gateway_mcp_client"),
+                    )
 
                 search_tools.__doc__ = (
                     "Search available tools by name and description. Returns "
@@ -5573,11 +5576,11 @@ def create_app(
                         _state["all_mcp_tools"] = tools
 
                         # Register meta-tools (search_tools, call_tool)
-                        from adk.tools_meta import search_tools as search_tools_impl
+                        from adk.tools_meta import search_tools_ranked
 
                         async def search_tools(query: str = "", limit: int = 8) -> str:
-                            return search_tools_impl(
-                                query, _state.get("all_mcp_tools", []), limit
+                            return await search_tools_ranked(
+                                query, _state.get("all_mcp_tools", []), limit, mcp_client
                             )
 
                         search_tools.__doc__ = (

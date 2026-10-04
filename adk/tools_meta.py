@@ -101,7 +101,11 @@ def search_tools(
 
     # Return top limit
     results = [
-        {"name": tool.get("name", ""), "description": tool.get("description", "")}
+        {
+            "name": tool.get("name", ""),
+            "description": tool.get("description", ""),
+            "parameters": _schema_of(tool),
+        }
         for _, tool in scored[:limit]
     ]
 
@@ -110,6 +114,54 @@ def search_tools(
         "count": len(results),
         "query": query,
     })
+
+
+def _schema_of(tool: dict) -> dict:
+    """The tool's argument schema, so the model calls it with real arguments."""
+    return tool.get("inputSchema") or tool.get("parameters") or {}
+
+
+async def search_tools_ranked(
+    query: str,
+    all_tools: list[dict],
+    limit: int = 8,
+    mcp_client: GatewayMCPClient | None = None,
+) -> str:
+    """Semantic search on the gateway first, keyword search over the catalogue second.
+
+    The gateway ranks with embeddings and filters by the caller's entitlements;
+    keyword matching misses tools whose names do not share the query's words
+    ("which units are down" vs ``fleet_runtime_status``). Any gateway failure or
+    empty answer falls back to the local keyword search, so offline agents keep
+    working exactly as before.
+    """
+    if query and query.strip() and mcp_client is not None:
+        search = getattr(mcp_client, "search_tools", None)
+        hits = None
+        if search is not None:
+            try:
+                hits = await search(query, limit)
+            except Exception as exc:  # noqa: BLE001 — fall back to keyword search
+                logger.debug("gateway tool search failed: %s", exc)
+        if hits:
+            by_name = {t.get("name", ""): t for t in all_tools or []}
+            results = [
+                {
+                    "name": h.get("name", ""),
+                    "description": h.get("description", ""),
+                    "parameters": _schema_of(by_name.get(h.get("name", ""), {}))
+                    or h.get("parameters")
+                    or {},
+                }
+                for h in hits[:limit]
+            ]
+            return json.dumps({
+                "results": results,
+                "count": len(results),
+                "query": query,
+                "ranking": "semantic",
+            })
+    return search_tools(query, all_tools, limit)
 
 
 async def call_tool(

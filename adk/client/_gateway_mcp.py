@@ -307,6 +307,31 @@ class GatewayMCPClient:
             logger.warning("Tool discovery failed: %s", exc)
             return []
 
+    async def search_tools(self, query: str, top_k: int = 8) -> list[dict] | None:
+        """Semantic, entitlement-filtered tool search on the gateway.
+
+        Returns ranked ``[{name, description, parameters}, ...]``, or None when
+        the gateway cannot answer (no key, older gateway, network error) so the
+        caller can fall back to its own keyword search.
+        """
+        if not self.api_key or not query.strip():
+            return None
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, headers=self._headers()
+            ) as client:
+                resp = await client.get(
+                    f"{self.gateway_url}/v1/tools/search",
+                    params={"query": query, "top_k": max(1, min(int(top_k), 50))},
+                )
+            if resp.status_code != 200:
+                return None
+            results = (resp.json() or {}).get("results")
+            return results if isinstance(results, list) else None
+        except Exception as exc:  # noqa: BLE001 — caller falls back
+            logger.debug("gateway tool search failed: %s", exc)
+            return None
+
     async def call_tool(self, name: str, arguments: dict | None = None) -> dict:
         """Call a tool on the gateway.
 
