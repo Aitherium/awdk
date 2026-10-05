@@ -4450,7 +4450,12 @@ def create_app(
                              "list without availability: %s", exc)
         try:
             models = await a.llm.list_models()
-        except (RuntimeError, OSError, ConnectionError):
+        except Exception as exc:  # noqa: BLE001 - a listing never 500s
+            # Measured 2026-10-04 with the fleet quiesced: the provider raised an upstream
+            # error type outside this tuple, /v1/models answered 500, and the page's node
+            # probe -- whose ONLY gate is this route -- reported "no node" on a machine
+            # whose daemon was up and paired. An empty list is the honest answer.
+            logger.warning("list_models failed, serving an empty listing: %s", exc)
             models = []
 
         return {
