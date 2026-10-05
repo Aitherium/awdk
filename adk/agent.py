@@ -155,6 +155,90 @@ def image_reference(text: str) -> str:
     return m.group(0) if m else ""
 
 
+#: The platform reach, named to the model. Registered is enough for ``execute()``; it
+#: is not enough for an 8B to know the capability exists — measured 2026-10-05: with
+#: search_tools registered AND on the menu, "is the fleet healthy?" answered "I don't
+#: have real-time access" with zero tool calls, and used it in 9.3s once named. One
+#: line, paid only while the meta-tools exist.
+_PLATFORM_REACH_LINE = (
+    "\n\nThe AitherOS platform (fleet and service health, deployments, mail, "
+    "memory) is reachable through search_tools: call it with a query, then "
+    "call_tool with the best match. When the question is about platform state "
+    "and no direct tool fits, call search_tools FIRST — never answer that you "
+    "cannot access platform data before trying it."
+)
+
+
+def register_crystal_memory_tools(agent, crystal) -> int:
+    """Give a crystal-bound agent model-callable memory: remember_fact + recall_facts.
+
+    The crystal writes facts automatically on compaction and injects a recall block
+    per turn, but until 2026-10-05 the MODEL could not save or query a fact itself —
+    the awm store was write-only from the loop's perspective. These two tools open
+    it, honestly: an unbound store or a raised store call returns an error object
+    naming the reason, never an empty success. Returns the number of tools
+    registered (2, or fewer when the registry refuses one).
+    """
+    registered = 0
+
+    async def remember_fact(fact: str) -> str:
+        fact = (fact or "").strip()
+        if not fact:
+            return json.dumps({"error": "empty_fact"})
+        store = getattr(crystal, "store", None)
+        if store is None:
+            return json.dumps({"error": "awm_unbound", "degraded": list(
+                crystal.telemetry.get("degraded", []))[:3]})
+        try:
+            key, subject = store.put_fact(
+                fact, {"src": "agent-tool", "ts": round(time.time(), 1)})
+            return json.dumps({"ok": True, "key": key, "subject": subject or ""})
+        except Exception as exc:  # noqa: BLE001 — a memory fault is reported, not raised
+            return json.dumps({"error": type(exc).__name__, "message": str(exc)[:200]})
+
+    remember_fact.__doc__ = (
+        "Save one durable fact about this machine, project or task to long-term "
+        "memory so future turns recall it. Pass the fact as a single sentence."
+    )
+    try:
+        agent._tools.register(
+            remember_fact,
+            name="remember_fact",
+            description=remember_fact.__doc__,
+            intent_categories=["question", "analysis", "command"],
+        )
+        registered += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to register remember_fact: %s", exc)
+
+    async def recall_facts(query: str = "") -> str:
+        try:
+            facts = await crystal.recall_facts(query or "")
+        except Exception as exc:  # noqa: BLE001 — report, never raise into the loop
+            return json.dumps({"error": type(exc).__name__, "message": str(exc)[:200]})
+        return json.dumps({
+            "facts": list(facts or [])[:20],
+            "degraded": list(crystal.telemetry.get("degraded", []))[:3],
+        })
+
+    recall_facts.__doc__ = (
+        "Search long-term memory for facts this agent saved or crystallized "
+        "earlier. Check it before re-deriving something already known."
+    )
+    try:
+        agent._tools.register(
+            recall_facts,
+            name="recall_facts",
+            description=recall_facts.__doc__,
+            intent_categories=["question", "analysis"],
+        )
+        registered += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to register recall_facts: %s", exc)
+
+    return registered
+
+
 def tool_result_failed(obs: str) -> bool:
     """True when a tool observation is a failure OR answered nothing.
 
@@ -506,6 +590,11 @@ class AitherAgent:
 
         # Tools
         self._tools = ToolRegistry()
+        if getattr(self, "crystal", None) is not None:
+            # Model-callable memory exists only where a crystal (and thus a real
+            # fact store) is bound; the tools report store faults instead of
+            # pretending an empty answer.
+            register_crystal_memory_tools(self, self.crystal)
         if tools:
             items = tools if isinstance(tools, list) else [tools]
             for item in items:
@@ -1621,6 +1710,13 @@ class AitherAgent:
                     messages.insert(1, Message(role="system", content=_crystal_block))
             except Exception as _cexc:  # noqa: BLE001
                 logger.warning("[CRYSTAL] recall failed: %s", _cexc)
+
+        # The platform reach, named — the stream_react twin of this line (see
+        # _PLATFORM_REACH_LINE): the native loop lists schemas, and an 8B still
+        # answers "I don't have real-time access" without the sentence.
+        if self._tools.get("search_tools") is not None:
+            messages.insert(1, Message(role="system",
+                                       content=_PLATFORM_REACH_LINE.strip()))
 
         # Inject typed-memory: active decisions/corrections + authority-ranked
         # recall (non-fatal). Constraints go last so they sit closest to the user
@@ -2909,6 +3005,9 @@ class AitherAgent:
             _intent = coarse_code_intent(message)
         except Exception:
             pass
+        # Routing is part of the pipeline; the trace says which intent drove the
+        # menu rather than leaving the filtering unexplained.
+        await _emit({"type": "intent", "intent": _intent or "default"})
 
         # System prompt = agent instructions + the ReAct text protocol + tools.
         # Same selection as chat(): an unclassified turn lists the core set plus
@@ -2946,13 +3045,7 @@ class AitherAgent:
         # in 9.3s once named. Registered is enough for execute(); it is not enough
         # for the model to know the capability exists.
         if self._tools.get("search_tools") is not None:
-            sys_prompt += (
-                "\n\nThe AitherOS platform (fleet and service health, deployments, mail, "
-                "memory) is reachable through search_tools: call it with a query, then "
-                "call_tool with the best match. When the question is about platform state "
-                "and no direct tool fits, call search_tools FIRST — never answer that you "
-                "cannot access platform data before trying it."
-            )
+            sys_prompt += _PLATFORM_REACH_LINE
         # The user named an image: say which tool SEES it (image_* tools make images).
         _img = image_reference(message)
         # Registered is enough: the intent filter may leave look_at off the menu, and the
@@ -2963,6 +3056,38 @@ class AitherAgent:
                            "only CREATE images.")
 
         msgs = [Message(role="system", content=sys_prompt)]
+        # Context assembly, visible. Until 2026-10-05 stream_react never recalled at
+        # all — the crystal fired in chat() only, so the owner's path ran contextless
+        # while the log said the crystal was bound. The recall block (awm facts +
+        # graph symbols, one capped system message) and the classified intent are
+        # emitted so the trace shows what context the turn started from.
+        if getattr(self, "crystal", None) is not None:
+            _crystal_block = ""
+            try:
+                _crystal_block = await self.crystal.recall_block(message)
+            except Exception as _cexc:  # noqa: BLE001 — a memory fault must not kill a turn
+                logger.warning("[CRYSTAL] recall failed: %s", _cexc)
+            _entries = sum(1 for ln in (_crystal_block or "").splitlines()
+                           if ln.startswith("- "))
+            await _emit({
+                "type": "crystal",
+                "facts": _entries,
+                "chars": len(_crystal_block or ""),
+                "degraded": list(self.crystal.telemetry.get("degraded") or [])[:3],
+            })
+            if _crystal_block:
+                msgs.insert(1, Message(role="system", content=_crystal_block))
+        if getattr(self, "_typed", None):
+            try:
+                _recalled = await self._typed.context_block(message, limit=5)
+                if _recalled:
+                    msgs.insert(1, Message(role="system", content=_recalled))
+                _constraints = await self._typed.constraints_block()
+                if _constraints:
+                    msgs.insert(1, Message(role="system", content=_constraints))
+            except Exception:
+                pass
+        _tokens_streamed = 0
         for h in (history or [])[-8:]:
             if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
                 msgs.append(Message(role=h["role"], content=str(h["content"])[:3000]))
@@ -3030,6 +3155,7 @@ class AitherAgent:
                         delta = getattr(chunk, "content", "") or ""
                         if not delta:
                             continue
+                        _tokens_streamed += 1
                         full += delta
                         buf += delta
                         progress = True
@@ -3195,6 +3321,12 @@ class AitherAgent:
         return AgentResponse(
             content=answer or "",
             session_id=sid,
+            # The stream's `complete` event reads these: model="" and tokens=0 read
+            # as "nothing happened" in every consumer that trusts the metadata.
+            model=(getattr(self.llm, "model", None)
+                   or getattr(self.llm, "_model", None) or ""),
+            tokens_used=_tokens_streamed,
+            completion_tokens=_tokens_streamed,
             tool_calls_made=tools_made,
             latency_ms=round((time.perf_counter() - _t0) * 1000, 1),
             finish_reason="stop",

@@ -6929,7 +6929,11 @@ async def _aitheros_stream(
                 register_mcp_endpoint_tools(agent, mcp_endpoints)
             except Exception:
                 pass
-        model_name = getattr(agent.llm, "provider_name", "unknown")
+        # The MODEL, not the backend profile: "desktop" told every client the routing
+        # name while the turn actually ran on the configured lane (aither-orchestrator).
+        model_name = (getattr(agent.llm, "model", None)
+                      or getattr(agent.llm, "_model", None)
+                      or getattr(agent.llm, "provider_name", "unknown"))
 
         # session_start
         yield f"event: session_start\ndata: {json.dumps({'type': 'session_start', 'session_id': session_id, 'agent': agent.name, 'model': model_name})}\n\n"
@@ -6987,6 +6991,18 @@ async def _aitheros_stream(
 
             _turn_task = asyncio.ensure_future(_run_turn())
 
+            # Thinking streams as its OWN channel, accumulated. Per-chunk passthrough
+            # would print one brain line per token in the CLI; relaying it as `token`
+            # (the old behavior here) made a model's reasoning indistinguishable from
+            # its answer. One event per thinking phase, capped, flushed when a
+            # non-thinking event or the turn's end arrives.
+            _think_buf = ""
+            _think_cap = 4000
+
+            def _think_event(buf: str) -> str:
+                return (f"event: thinking\ndata: "
+                        f"{json.dumps({'type': 'thinking', 't': buf})}\n\n")
+
             while True:
                 try:
                     ev = await asyncio.wait_for(_q.get(), timeout=2.0)
@@ -6995,17 +7011,43 @@ async def _aitheros_stream(
                     yield f"event: heartbeat\ndata: {json.dumps(_hb)}\n\n"
                     continue
                 if ev is _done:
+                    if _think_buf:
+                        yield _think_event(_think_buf)
+                        _think_buf = ""
                     break
                 ev_type = ev.get("type", "")
+
+                if ev_type != "thinking" and _think_buf:
+                    yield _think_event(_think_buf)
+                    _think_buf = ""
 
                 if ev_type == "thinking":
                     text = ev.get("text", "")
                     if text:
-                        yield f"event: token\ndata: {json.dumps({'type': 'token', 't': text})}\n\n"
+                        _think_buf += str(text)
+                        if len(_think_buf) >= _think_cap:
+                            yield _think_event(_think_buf[:_think_cap])
+                            _think_buf = ""
                 elif ev_type == "token":
                     text = ev.get("text", "")
                     if text:
                         yield f"event: token\ndata: {json.dumps({'type': 'token', 't': text})}\n\n"
+                elif ev_type in ("crystal", "intent"):
+                    # Context assembly and routing, visible: what memory the turn
+                    # started from and which intent drove the tool menu. Rendered by
+                    # the CLI's pipeline/stage formatter as a trace line.
+                    if ev_type == "crystal":
+                        _pmsg = (f"recall: {ev.get('facts', 0)} entries, "
+                                 f"{ev.get('chars', 0)} chars")
+                        _deg = ev.get("degraded") or []
+                        if _deg:
+                            _pmsg += " (degraded: " + ", ".join(map(str, _deg)) + ")"
+                    else:
+                        _pmsg = f"intent: {ev.get('intent', 'default')}"
+                    yield ("event: pipeline\ndata: "
+                           + json.dumps({'type': 'pipeline', 'stage': ev_type,
+                                         'message': _pmsg})
+                           + "\n\n")
                 elif ev_type == "tool":
                     tool_name = ev.get("name", "?")
                     yield f"event: tool_call\ndata: {json.dumps({'type': 'tool_call', 'tools': [{'name': tool_name, 'args': ev.get('args', {})}]})}\n\n"
