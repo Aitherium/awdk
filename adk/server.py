@@ -765,6 +765,45 @@ def _prioritise_mcp_specs(specs: list) -> list:
     return head + tail
 
 
+def gateway_tool_denied(name: str) -> bool:
+    """True when a gateway tool name matches the process deny list.
+
+    ADK_GATEWAY_TOOL_DENY is a comma-separated list of exact names or lowercase
+    ``prefix*`` patterns — the smallest real per-host tool grant until packs carry
+    per-agent scopes. Empty (the default) denies nothing: today's behavior.
+    """
+    n = str(name or "").strip().lower()
+    if not n:
+        return True  # an empty name reaches nothing
+    for pat in (os.environ.get("ADK_GATEWAY_TOOL_DENY", "") or "").split(","):
+        p = pat.strip().lower()
+        if not p:
+            continue
+        if p.endswith("*"):
+            if n.startswith(p[:-1]):
+                return True
+        elif n == p:
+            return True
+    return False
+
+
+def _filter_search_json(out: str) -> str:
+    """Drop denied tools from a search_tools JSON answer. Non-JSON passes through
+    (the gateway's own ranking format may change; call_tool still refuses)."""
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return out
+    rows = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return out
+    kept = [r for r in rows
+            if not gateway_tool_denied(str((r or {}).get("name") or ""))]
+    data["results"] = kept
+    data["count"] = len(kept)
+    return json.dumps(data)
+
+
 def register_gateway_tools_on(
     agent,
     *,
@@ -804,9 +843,10 @@ def register_gateway_tools_on(
     registered = 0
 
     async def search_tools(query: str = "", limit: int = 8) -> str:
-        return await search_tools_ranked(
+        out = await search_tools_ranked(
             query, catalogue_getter() or [], limit, client_getter()
         )
+        return _filter_search_json(out)
 
     search_tools.__doc__ = (
         "Search available tools by name and description. Returns "
@@ -829,6 +869,10 @@ def register_gateway_tools_on(
         logger.warning("Failed to register search_tools: %s", e)
 
     async def call_tool(name: str, arguments: dict | None = None) -> str:
+        # A grant that only filters discovery is not a grant: call_tool reaches
+        # anything in the catalogue BY NAME, so the refusal lives here too.
+        if gateway_tool_denied(name):
+            return json.dumps({"error": "denied_by_grant", "tool": str(name)[:120]})
         return await call_tool_impl(name, arguments or {}, client_getter())
 
     call_tool.__doc__ = (
@@ -849,7 +893,11 @@ def register_gateway_tools_on(
     except Exception as e:  # noqa: BLE001
         logger.warning("Failed to register call_tool: %s", e)
 
-    for tool_spec in _prioritise_mcp_specs(catalogue_getter() or [])[:max_tools]:
+    # Grants shape the EAGER set too: a denied tool must not sit in the menu even
+    # when it would have won the priority ordering.
+    _catalogue = [s for s in (catalogue_getter() or [])
+                  if not gateway_tool_denied(str((s or {}).get("name") or ""))]
+    for tool_spec in _prioritise_mcp_specs(_catalogue)[:max_tools]:
         tool_name = str(tool_spec.get("name") or "").strip()
         if not tool_name:
             continue

@@ -2345,6 +2345,266 @@ def _init_find_tools():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Instruments — bricks that extend the agent itself (awrecurse, awpredict, awrepl)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Three installed bricks the owner asked into the loop (2026-10-05). Each follows
+# the awfind contract: the optional package is imported per call, a missing one
+# returns {"error": ... "fix": ...}, and nothing raises out of a tool. Anything
+# blocking (subprocess, subprocess-backed session I/O, the sync awrecurse
+# engine) runs off the event loop.
+
+async def recurse_file(path: str = "", query: str = "", context: str = "",
+                       chunk_size: int = 2000, max_iterations: int = 10) -> str:
+    """Answer a question from a file too large to read whole (awrecurse).
+
+    Reads the file in chunks, asks a model which chunks matter, and returns one
+    answer plus exactly what was read. Use it instead of file_read for big logs,
+    dumps or documents.
+
+    Args:
+        path: File to read (any size; the point is you did not have to open it).
+        query: The question to answer from the file.
+        context: Raw text to use instead of a file.
+    """
+    try:
+        from awrecurse import RecurseClient  # type: ignore[import-not-found]
+    except ImportError:
+        return json.dumps({"error": "awrecurse not available", "fix": "pip install awrecurse"})
+
+    text = context or ""
+    if not text and path:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError as e:
+            return json.dumps({"error": f"cannot read {path}: {e}"})
+    if not text.strip():
+        return json.dumps({"error": "no context: pass a readable path or context text"})
+    if not (query or "").strip():
+        return json.dumps({"error": "query is empty"})
+
+    loop = asyncio.get_running_loop()
+
+    def _complete(prompt: str) -> str:
+        # awrecurse is a SYNC library; its complete_fn runs in the worker thread
+        # below, so the async model call is handed back to the main loop. "" on
+        # failure follows the AitherRetrieval precedent: the chunk counts as not
+        # read and the result dict reports the rest honestly.
+        async def _ask_once() -> str:
+            from adk.llm.base import Message
+            from adk.model_tools import _ask, _model
+
+            return await _ask(
+                [Message(role="user", content=prompt)],
+                _model("AITHER_REASONING_MODEL", "deepseek-v4-flash"), 1024)
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_ask_once(), loop)
+            return fut.result(timeout=120) or ""
+        except Exception:  # noqa: BLE001 — the engine handles "" as not-read
+            return ""
+
+    def _run() -> dict:
+        client = RecurseClient(complete_fn=_complete)
+        return client.recurse(text, query, chunk_size=int(chunk_size or 2000),
+                              max_iterations=int(max_iterations or 10))
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except ValueError as e:  # recurse_body validation, before any model call
+        return json.dumps({"error": str(e)})
+    except Exception as e:  # noqa: BLE001 — surfaced to the agent, never raised
+        return json.dumps({"error": f"{type(e).__name__}: {e}"})
+    # slices_read is awrecurse's anti-silent-truncation contract: a big file is
+    # mostly NOT read, and the caller is told exactly which ranges were.
+    return json.dumps({
+        "answer": result.get("final_answer", ""),
+        "success": bool(result.get("success")),
+        "error": result.get("error", ""),
+        "iterations": result.get("iterations", 0),
+        "chunks_read": len(result.get("slices_read") or []),
+        "chars_total": len(text),
+    })
+
+
+def _run_py_capture(code: str, timeout_s: float) -> tuple:
+    """Run `python -c code` in a subprocess; (exit_code, stdout, stderr). Blocking."""
+    import subprocess as _sp
+    import sys as _sys
+
+    try:
+        p = _sp.run([_sys.executable, "-c", code], capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=timeout_s)
+        return p.returncode, p.stdout, p.stderr
+    except _sp.TimeoutExpired:
+        return -1, "", f"timed out after {timeout_s:.0f}s"
+    except OSError as e:
+        return -2, "", str(e)
+
+
+async def predict_engines() -> str:
+    """List the world-model engines usable on THIS machine (awpredict).
+
+    Each row says whether the engine is constructible and usable here; engine
+    availability differs per box (GPU/torch), so run it before promising a
+    prediction workflow.
+    """
+    code = ("from awpredict.cli import main; import sys; "
+            "raise SystemExit(main(['--json', 'engines']))")
+    rc, out, err = await asyncio.to_thread(_run_py_capture, code, 120.0)
+    if rc == -1:
+        return json.dumps({"error": err, "fix": "engine probes can load torch; raise the timeout"})
+    if rc == -2:
+        return json.dumps({"error": err})
+    if not (out or "").strip():
+        return json.dumps({"error": "awpredict is not installed or printed nothing",
+                           "fix": "pip install awpredict", "stderr": (err or "")[:300]})
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return json.dumps({"raw": out[:2000], "stderr": (err or "")[:300]})
+    # `awpredict engines` exits 0 when ANY engine is usable; a FAIL row is
+    # normal (lewm is default-off). Read the rows, not the exit code.
+    return json.dumps({"engines": data, "exit_code": rc})
+
+
+async def predict_conforms(module: str, name: str, protocol: str = "WorldModel") -> str:
+    """Check that a class satisfies awpredict's WorldModel/EnvironmentAdapter protocol.
+
+    Args:
+        module: Importable module path, e.g. "my_pkg.models".
+        name: Class name inside it.
+        protocol: "WorldModel" (default) or "EnvironmentAdapter".
+    """
+
+    def _check() -> str:
+        import importlib
+
+        try:
+            from awpredict.contracts import EnvironmentAdapter, WorldModel, conforms
+        except ImportError:
+            return json.dumps({"error": "awpredict not available", "fix": "pip install awpredict"})
+        proto = {"WorldModel": WorldModel, "EnvironmentAdapter": EnvironmentAdapter}.get(protocol)
+        if proto is None:
+            return json.dumps({"error": f"unknown protocol {protocol!r}"})
+        try:
+            mod = importlib.import_module(module)
+        except ImportError as e:
+            return json.dumps({"error": f"cannot import {module}: {e}"})
+        cls = getattr(mod, name, None)
+        if cls is None:
+            return json.dumps({"error": f"{module}.{name} not found"})
+        try:
+            obj = cls()  # instance-level: the class object false-negatives (ok is set in __init__)
+        except Exception as e:  # noqa: BLE001 — construction needs args is a FINDING, not a crash
+            missing = list(conforms(cls, proto) or [])
+            return json.dumps({
+                "note": f"could not construct ({type(e).__name__}); checked the class object",
+                "conforms": not missing, "missing": missing, "checked": "class",
+            })
+        missing = list(conforms(obj, proto) or [])
+        return json.dumps({"conforms": not missing, "missing": missing, "checked": "instance"})
+
+    return await asyncio.to_thread(_check)
+
+
+#: One worker per session id, held for the daemon's lifetime (there is no
+#: module-level pool in awrepl; building one per CALL would drop the namespace,
+#: which is the whole point of a REPL).
+_REPL_POOL = None
+_REPL_SESSION_ID = "adk-agent"
+_REPL_MAX_OUTPUT = 4000
+
+
+def _repl_session():
+    """(session, error_json) — the shared persistent worker, or an honest error."""
+    global _REPL_POOL
+    try:
+        from awrepl import SessionPool  # type: ignore[import-not-found]
+    except ImportError:
+        return None, json.dumps({"error": "awrepl not available", "fix": "pip install awrepl"})
+    try:
+        if _REPL_POOL is None:
+            _REPL_POOL = SessionPool()
+        if _REPL_SESSION_ID not in _REPL_POOL.list_sessions():
+            _REPL_POOL.create_session(_REPL_SESSION_ID)
+        return _REPL_POOL.get_session(_REPL_SESSION_ID), None
+    except Exception as e:  # noqa: BLE001 — surfaced to the agent
+        return None, json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+
+async def repl_run(code: str, timeout_ms: int = 30000) -> str:
+    """Run Python in a PERSISTENT session — variables survive between calls.
+
+    Args:
+        code: Python source. The last expression's value is returned.
+        timeout_ms: Kill-and-respawn budget (awrepl enforces it parent-side,
+            about 2 s over). On timeout the worker respawns with an EMPTY
+            namespace — the result says so instead of pretending continuity.
+    """
+
+    def _run() -> str:
+        session, err = _repl_session()
+        if err:
+            return err
+        if not (code or "").strip():
+            return json.dumps({"error": "code is empty"})
+        before = getattr(session, "restarts", 0)
+        try:
+            r = session.execute(code, timeout_ms=int(timeout_ms or 30000))
+        except RuntimeError as e:
+            # execute() refuses a dead worker and does NOT respawn — say the fix.
+            return json.dumps({"error": str(e), "hint": "call repl_reset to respawn the worker"})
+        restarted = getattr(session, "restarts", 0) > before
+        return json.dumps({
+            "value": r.value,
+            "stdout": (r.stdout or "")[:_REPL_MAX_OUTPUT],
+            "stderr": (r.stderr or "")[:2000],
+            "exception": r.exception,
+            "duration_ms": r.duration_ms,
+            "truncated": bool(r.truncated),
+            "namespace_cleared_by_timeout": restarted,
+        })
+
+    return await asyncio.to_thread(_run)
+
+
+async def repl_reset() -> str:
+    """Discard the persistent repl session (fresh worker, empty namespace)."""
+
+    def _reset() -> str:
+        global _REPL_POOL
+        try:
+            from awrepl import SessionPool  # type: ignore[import-not-found]
+        except ImportError:
+            return json.dumps({"error": "awrepl not available", "fix": "pip install awrepl"})
+        if _REPL_POOL is None:
+            return json.dumps({"ok": True, "note": "no session existed"})
+        try:
+            if _REPL_SESSION_ID in _REPL_POOL.list_sessions():
+                _REPL_POOL.delete_session(_REPL_SESSION_ID)
+        except OSError as e:
+            # Measured on Windows: closing an already-dead worker raises
+            # [Errno 22]; the pool entry is still gone after, so report it as
+            # the respawn-with-a-note case rather than an error.
+            _REPL_POOL = SessionPool()
+            return json.dumps({"ok": True, "note": f"old worker was dead ({e}); pool rebuilt"})
+        return json.dumps({"ok": True})
+
+    return await asyncio.to_thread(_reset)
+
+
+_INSTRUMENTS_TOOLS = [recurse_file, predict_engines, predict_conforms, repl_run, repl_reset]
+
+
+def _init_instruments_tools():
+    """Lazily populate the instruments category."""
+    if not TOOL_CATEGORIES.get("instruments"):
+        TOOL_CATEGORIES["instruments"] = _INSTRUMENTS_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Workspace Intelligence tools — people analytics, meetings, email, collab
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -3000,6 +3260,7 @@ TOOL_CATEGORIES: dict = {
     "nest": [],  # populated lazily by _init_nest_tools()
     "browse": [],  # populated lazily by _init_browse_tools()
     "find": [],  # populated lazily by _init_find_tools()
+    "instruments": [],  # populated lazily by _init_instruments_tools()
 }
 
 # Default categories for common identity profiles
@@ -3040,7 +3301,7 @@ def categories_from_env(value: str) -> list[str] | None:
 IDENTITY_DEFAULTS = {
     "adk-daemon": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
-        "workspace", "notebooks", "models", "safety", "self", "decisions"
+        "workspace", "notebooks", "models", "safety", "self", "decisions", "instruments"
     ],
     "demiurge": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
@@ -3054,7 +3315,8 @@ IDENTITY_DEFAULTS = {
         "file_io", "web", "secrets", "code", "graph", "workspace", "notebooks", "safety",
         "self", "decisions"
     ],
-    "aither": ["file_io", "shell", "web", "creative", "models", "self", "decisions"],
+    "aither": ["file_io", "shell", "web", "creative", "models", "self", "decisions",
+               "instruments"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self", "decisions"],
     "hydra": [
         "file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety",
@@ -3224,6 +3486,7 @@ def register_builtin_tools(
     _init_nest_tools()  # lazily populate nest category
     _init_browse_tools()  # lazily populate browse category (awbrowse)
     _init_find_tools()  # lazily populate find category (awfind)
+    _init_instruments_tools()  # lazily populate instruments (awrecurse/awpredict/awrepl)
 
     if categories is None:
         # SCHEMA TAX. Measured 2026-09-21 with tiktoken: the daemon identity's 14
