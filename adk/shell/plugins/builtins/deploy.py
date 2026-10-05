@@ -111,10 +111,11 @@ class DeployPlugin(SlashCommand):
                 print(f"  Detected {gpu_name} ({vram_gb:.0f}GB) -> using vLLM (best performance)")
             elif gpu_name and vram_gb >= 6:
                 profile_name = "personal-ollama"
-                print(f"  Detected {gpu_name} ({vram_gb:.0f}GB) -> using Ollama GPU")
+                print(f"  Detected {gpu_name} ({vram_gb:.0f}GB) -> under 8GB: no compose "
+                      "orchestrator for this card (llama.cpp path)")
             else:
                 profile_name = "personal-cpu"
-                print("  No compatible GPU detected -> using CPU inference (32GB+ RAM required)")
+                print("  No compatible GPU detected -> no compose orchestrator (llama.cpp path)")
 
         deployer = Deployer(
             version=version,

@@ -33,6 +33,19 @@ DEPLOY_DIR = AITHER_DIR / "deployment"
 STATE_FILE = DEPLOY_DIR / "state.json"
 GHCR_TOKEN_FILE = AITHER_DIR / "ghcr-token.json"
 
+# ─── Removed orchestrator backends ────────────────────────────────────────────
+
+#: Profiles whose only orchestrator backend was an Ollama pull of an upstream Q4
+#: tag. Ollama is no longer an orchestrator backend: the default local orchestrator
+#: is the v18 Q8_0 GGUF, served by llama.cpp. These profiles fail loudly instead of
+#: booting a stack whose model pull silently failed.
+REMOVED_OLLAMA_PROFILES = ("personal-ollama", "personal-cpu")
+LLAMACPP_ORCHESTRATOR_HINT = (
+    "Ollama is no longer an orchestrator backend. Install the local orchestrator "
+    "(v18 Q8_0 GGUF via llama.cpp) with `adk quickstart-local --backend llamacpp` "
+    "or `python -m adk.llamacpp_setup install`."
+)
+
 # ─── Data Loading ─────────────────────────────────────────────────────────────
 
 
@@ -522,34 +535,6 @@ class Deployer:
 
         return results
 
-    # ─── Phase 6b: Ollama Model Pull ─────────────────────────────────────
-
-    async def pull_ollama_model(
-        self, profile: DeployProfile, progress_callback=None
-    ) -> bool:
-        """Pull Ollama model after boot (for personal-ollama/personal-cpu profiles)."""
-        if profile.name not in ("personal-ollama", "personal-cpu"):
-            return True  # Not applicable
-
-        container = "aither-ollama-personal"
-        if profile.name == "personal-cpu":
-            container = "aither-ollama-personal-cpu"
-        model = "nemotron-orchestrator:8b-q4_K_M"
-
-        if progress_callback:
-            progress_callback("model_pull", f"Pulling {model} into {container}...")
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "exec", container, "ollama", "pull", model,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
-            return proc.returncode == 0
-        except (asyncio.TimeoutError, FileNotFoundError):
-            return False
-
     # ─── Phase 7: Stop ────────────────────────────────────────────────────
 
     async def stop(self) -> bool:
@@ -598,6 +583,10 @@ class Deployer:
             return result
 
         result["profile"] = profile.name
+        if profile.name in REMOVED_OLLAMA_PROFILES:
+            result["status"] = "failed"
+            result["errors"].append(f"Profile '{profile.name}': {LLAMACPP_ORCHESTRATOR_HINT}")
+            return result
         _progress("profile", f"{profile.name}: {profile.description}")
 
         # 2. Prerequisites
@@ -652,13 +641,6 @@ class Deployer:
             result["status"] = "failed"
             result["errors"].append("docker compose up failed")
             return result
-
-        # 6b. Ollama model pull (personal profiles)
-        if profile.name in ("personal-ollama", "personal-cpu"):
-            _progress("model_pull", "Downloading Nemotron-Orchestrator-8B model...")
-            model_ok = await self.pull_ollama_model(profile, progress_callback=_progress)
-            if not model_ok:
-                result["warnings"].append("Model pull failed — will download on first use")
 
         # 7. Verify
         _progress("verify", "Waiting for services to become healthy...")

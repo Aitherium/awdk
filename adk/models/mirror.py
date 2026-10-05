@@ -58,6 +58,19 @@ CATALOG: Dict[str, WeightCatalogEntry] = {
         approx_size_bytes=8_709_518_176,
         min_vram_gb=12,
     ),
+    # The v18 build at Q4_K_M: what the llama.cpp installer serves on a device that
+    # cannot fit Q8_0 (same lineage as the default, unlike the pre-v18 Q4 below).
+    # No sha256: the artifact manifest publishes sizes only, never invent a pin.
+    "aither-orchestrator-v18-Q4_K_M.gguf": WeightCatalogEntry(
+        filename="aither-orchestrator-v18-Q4_K_M.gguf",
+        human_name="AitherOrchestrator v18 (4-bit quantized, small devices)",
+        family="AitherOrchestrator",
+        quantization="Q4_K_M",
+        # Measured 2026-10-04 via Range GET on the mirror: 5,027,783,520 bytes,
+        # equal to awrtifact.yaml's orchestrator-v18-q4 total.
+        approx_size_bytes=5_027_783_520,
+        min_vram_gb=8,
+    ),
     # Small-device option only. NOT the v18 build (v18-Q4_K_M is 5,027,783,520 B).
     "aither-orchestrator-Q4_K_M.gguf": WeightCatalogEntry(
         filename="aither-orchestrator-Q4_K_M.gguf",
@@ -131,6 +144,13 @@ MIRROR_BASE_URL = "https://weights.aitherium.com"
 DEFAULT_ORCHESTRATOR_FILE = "aither-orchestrator-v18-Q8_0.gguf"
 #: Still selectable by name for devices that cannot fit Q8_0; never the default.
 SMALL_DEVICE_ORCHESTRATOR_FILE = "aither-orchestrator-Q4_K_M.gguf"
+#: The v18 Q4_K_M: the llama.cpp installer's pick when Q8_0 does not fit the device.
+V18_SMALL_DEVICE_ORCHESTRATOR_FILE = "aither-orchestrator-v18-Q4_K_M.gguf"
+#: quant -> v18 file. The installer maps its fit-based quant choice onto this table.
+V18_ORCHESTRATOR_FILES: Dict[str, str] = {
+    "Q8_0": DEFAULT_ORCHESTRATOR_FILE,
+    "Q4_K_M": V18_SMALL_DEVICE_ORCHESTRATOR_FILE,
+}
 
 
 class MirrorError(Exception):

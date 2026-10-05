@@ -105,7 +105,7 @@ profiles:
     compose_profiles: [personal-gpu]
 
   personal-ollama:
-    description: "Personal Agent — Nemotron 8B GGUF on GPU (Ollama)"
+    description: "REMOVED — Ollama orchestrator; use `adk quickstart-local --backend llamacpp`"
     layers: [core]
     specialized: [genesis, veil, microscheduler]
     infrastructure:
@@ -131,7 +131,7 @@ profiles:
     compose_profiles: [creative-image]
 
   personal-cpu:
-    description: "Personal Agent — Nemotron 8B GGUF on CPU (no GPU needed)"
+    description: "REMOVED — Ollama orchestrator; use `adk quickstart-local --backend llamacpp`"
     layers: [core]
     specialized: [genesis, veil, microscheduler]
     infrastructure:

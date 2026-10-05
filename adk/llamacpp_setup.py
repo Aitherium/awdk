@@ -1,11 +1,13 @@
 """
-AitherADK Local Orchestrator Setup (llama.cpp + Nemotron-Orchestrator-8B)
-==========================================================================
+AitherADK Local Orchestrator Setup (llama.cpp + AitherOrchestrator v18)
+========================================================================
 
 Cross-platform provisioner that:
   1. Detects GPU/accelerator (CUDA / Vulkan / Metal / CPU)
   2. Downloads matching llama.cpp prebuilt binary from GitHub releases
-  3. Downloads quantized Nemotron-Orchestrator-8B GGUF from HuggingFace
+  3. Downloads the AitherOrchestrator v18 GGUF from the Aitherium weights mirror
+     (Q8_0 where it fits, v18 Q4_K_M on small devices); `--model-repo` opts into an
+     upstream Nemotron-Orchestrator-8B conversion from HuggingFace instead
   4. Installs llama-server as a background service (systemd / launchd / Task Scheduler)
   5. Registers OpenAI-compatible endpoint in ~/.aither/config.json
 
@@ -21,8 +23,9 @@ PowerShell wrappers via subprocess.
 Public API:
     detect_accel() -> AccelInfo
     pick_quant(vram_gb, ram_gb) -> str  ("Q3_K_M" / "Q4_K_M" / "Q5_K_M" / "Q6_K" / "Q8_0")
-    install(quant=None, port=8200, model_repo=DEFAULT_MODEL_REPO,
+    install(quant=None, port=8200, model_repo=None,
             service=True, dry_run=False) -> InstallResult
+        model_repo=None (the default) installs the v18 artifact from the mirror.
     status(port=8200) -> StatusResult
     uninstall(port=8200, purge=False) -> bool
 
@@ -51,6 +54,9 @@ from typing import Optional
 # Constants
 # ---------------------------------------------------------------------------
 
+# The upstream HuggingFace repo, used ONLY when the caller passes `model_repo`
+# (CLI `--model-repo`). The default install is the v18 artifact from the weights
+# mirror -- see install_v18_model().
 # NOT bartowski. That repo never existed -- HF answers 401 (not 404) for a
 # nonexistent repo, which made this read as an auth failure. Measured
 # 2026-08-22: the API confirms no such repo, while MaziyarPanahi's (92k
@@ -81,7 +87,7 @@ DEFAULT_CTX = 8192
 LLAMACPP_RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
 HF_RESOLVE_BASE = "https://huggingface.co/{repo}/resolve/main/{filename}"
 
-# Quant catalog with approximate sizes (Nemotron-Orchestrator-8B specific)
+# Quant catalog with approximate sizes (orchestrator 8B; v18 publishes Q8_0 + Q4_K_M)
 #
 # Q8_0 IS THE DEFAULT wherever it fits (owner decision 2026-10-05): pick_quant() walks
 # largest-first, so it lands on Q8_0 whenever the memory pool allows and only drops to a
@@ -572,6 +578,63 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
 # GGUF model download
 # ---------------------------------------------------------------------------
 
+def v18_file_for_quant(quant: str) -> tuple:
+    """Map a fit-based quant choice onto the v18 artifact that serves it.
+
+    Returns (filename, actual_quant). The v18 build is published at Q8_0 and
+    Q4_K_M only, so every quant below Q8_0 resolves to the v18 Q4_K_M -- the
+    small-device option. The caller announces a substitution.
+    """
+    from adk.models import mirror
+
+    filename = mirror.V18_ORCHESTRATOR_FILES.get(quant)
+    if filename:
+        return filename, quant
+    return mirror.V18_SMALL_DEVICE_ORCHESTRATOR_FILE, "Q4_K_M"
+
+
+def install_v18_model(quant: str, dry_run: bool = False) -> tuple:
+    """Download the v18 orchestrator GGUF for `quant` from the weights mirror.
+
+    Reuses adk.models.mirror's resumable download and its catalogue size/sha256
+    verification -- there is no second downloader here.
+
+    Args:
+        quant: The fit-based pick from pick_quant() (or --quant).
+        dry_run: Report the file that would be fetched; download nothing.
+
+    Returns:
+        (path, actual_quant); path is None when the download or verification failed.
+    """
+    from adk.models import mirror
+
+    filename, actual = v18_file_for_quant(quant)
+    if actual != quant:
+        print(f"  NOTE: the v18 orchestrator ships Q8_0 and Q4_K_M only; "
+              f"{quant} -> {actual}")
+    entry = mirror.CATALOG[filename]
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = MODELS_DIR / filename
+    if dest.exists() and dest.stat().st_size == entry.approx_size_bytes:
+        print(f"  Found existing model: {dest} ({dest.stat().st_size / 1e9:.2f} GB)")
+        return dest, actual
+    url = f"{mirror.MIRROR_BASE_URL}/{filename}"
+    if dry_run:
+        print(f"  [DRY] Would download {url}")
+        return dest, actual
+    print(f"  Downloading {filename} ({entry.approx_size_bytes / 1e9:.2f} GB): {url}")
+    # Unlimited rate: the mirror client's 256 KB/s default is for background
+    # prefetch; at that pace the 8.7 GB Q8_0 would take ~9.5 hours to install.
+    try:
+        mirror.MirrorClient(rate_limit_bytes_per_sec=0).download(filename, str(dest))
+    except mirror.MirrorError as e:
+        print(f"  ERROR: v18 orchestrator download failed: {e}", file=sys.stderr)
+        print("  Re-run to resume, or pass --model-repo "
+              f"{DEFAULT_MODEL_REPO} for the upstream conversion.", file=sys.stderr)
+        return None, actual
+    return dest, actual
+
+
 def catalog_sha256_for(filename: str) -> str:
     """Look up the vendored ODS catalog's sha256 pin for a GGUF filename.
 
@@ -830,7 +893,7 @@ def _install_systemd_user(cmd: list[str], dry_run: bool) -> bool:
     unit_path = unit_dir / "aither-orchestrator.service"
     exec_start = " ".join(f'"{c}"' if " " in c else c for c in cmd)
     unit = f"""[Unit]
-Description=AitherOS Local Orchestrator (llama.cpp + Nemotron-Orchestrator-8B)
+Description=AitherOS Local Orchestrator (llama.cpp + AitherOrchestrator)
 After=network.target
 
 [Service]
@@ -1129,14 +1192,18 @@ class InstallResult:
 def install(
     quant: Optional[str] = None,
     port: int = DEFAULT_PORT,
-    model_repo: str = DEFAULT_MODEL_REPO,
+    model_repo: Optional[str] = None,
     service: bool = True,
     dry_run: bool = False,
 ) -> InstallResult:
-    """Install local orchestrator end-to-end. Returns InstallResult."""
+    """Install local orchestrator end-to-end. Returns InstallResult.
+
+    model_repo=None (the default) installs the AitherOrchestrator v18 artifact from
+    the weights mirror. A HuggingFace repo id opts into that upstream GGUF instead.
+    """
     print()
     print("=" * 60)
-    print("  AitherOS Local Orchestrator — llama.cpp + Nemotron-8B")
+    print("  AitherOS Local Orchestrator — llama.cpp + AitherOrchestrator v18")
     print("=" * 60)
 
     # 1. Detect accelerator
@@ -1164,7 +1231,12 @@ def install(
 
     # 4. Download model
     print(f"  [4/5] Model:")
-    model = install_model(model_repo, quant, dry_run=dry_run)
+    if model_repo is None:
+        # No fallback to an upstream conversion: v18 is a different model, and a
+        # silent swap would read as the default while serving something else.
+        model, quant = install_v18_model(quant, dry_run=dry_run)
+    else:
+        model = install_model(model_repo, quant, dry_run=dry_run)
     # Fallback repos apply ONLY when the caller is on the default. A user who
     # pinned --model-repo asked for THAT model; silently handing them a
     # Nemotron conversion from someone else would be worse than failing.
@@ -1215,7 +1287,7 @@ def install(
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(
         prog="aither-local-orchestrator",
-        description="Install + run a local Nemotron-Orchestrator-8B via llama.cpp.",
+        description="Install + run the local AitherOrchestrator v18 via llama.cpp.",
     )
     sub = p.add_subparsers(dest="command")
 
@@ -1223,7 +1295,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     pi.add_argument("--quant", choices=list(QUANTS.keys()),
                     help="GGUF quant (auto-picked from hardware if omitted)")
     pi.add_argument("--port", type=int, default=DEFAULT_PORT)
-    pi.add_argument("--model-repo", default=DEFAULT_MODEL_REPO)
+    pi.add_argument("--model-repo", default=None,
+                    help="HuggingFace GGUF repo to install instead of the v18 artifact "
+                         f"(e.g. {DEFAULT_MODEL_REPO})")
     pi.add_argument("--no-service", action="store_true",
                     help="Skip auto-start service install — print run command instead")
     pi.add_argument("--dry-run", action="store_true")
@@ -1242,7 +1316,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         r = install(
             quant=getattr(args, "quant", None),
             port=getattr(args, "port", DEFAULT_PORT),
-            model_repo=getattr(args, "model_repo", DEFAULT_MODEL_REPO),
+            model_repo=getattr(args, "model_repo", None),
             service=not getattr(args, "no_service", False),
             dry_run=getattr(args, "dry_run", False),
         )
