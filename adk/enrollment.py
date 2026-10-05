@@ -375,11 +375,13 @@ def build_registration(
         py_version = sysinfo.python_version or platform.python_version()
     except Exception as e:  # hardware probe is best-effort
         log.debug("Hardware probe failed, using minimal info: %s", e)
+        sysinfo = None
         ram_mb = cpu_count = gpu_vram_mb = 0
         gpu_name = ""
         py_version = platform.python_version()
 
     probe = probe_inference(inference_url)
+    lending = _lending_fields(sysinfo, probe)
 
     return {
         "node_id": node_id,
@@ -392,7 +394,10 @@ def build_registration(
         "cpu_count": cpu_count,
         "ram_mb": ram_mb,
         "available_models": probe.models,
-        "capabilities": ["code_search", "memory", "file_tools"],
+        # What this node LENDS (probed AND opted in; empty by default -- lending is
+        # opt-in) plus every kind's probe verdict. See adk.node_capabilities.
+        "capabilities": lending["capabilities"],
+        "capability_detail": lending["capability_detail"],
         # Legacy booleans the older identity model still reads.
         "ollama_available": probe.inference_kind == "ollama",
         "vllm_available": probe.inference_kind == "vllm",
@@ -406,6 +411,16 @@ def build_registration(
         # what it signs while it stays enrolled. Absent without awseal.
         **_identity_fields(),
     }
+
+
+def _lending_fields(sysinfo: Any, probe: InferenceProbe) -> Dict[str, Any]:
+    try:
+        from adk.node_capabilities import advertise_this_node
+        return advertise_this_node(sysinfo=sysinfo, inference_kind=probe.inference_kind,
+                                   inference_ready=probe.ready)
+    except Exception as e:  # noqa: BLE001 -- a failed probe lends nothing, never blocks enrollment
+        log.warning("capability probe failed, advertising no lending: %s", e)
+        return {"capabilities": [], "capability_detail": {}}
 
 
 def _identity_fields() -> dict:
@@ -832,6 +847,10 @@ async def _heartbeat_beats(
                 "gpu_vram_mb": reg["gpu_vram_mb"],
                 "inference_url": reg["inference_url"],
                 "inference_kind": reg["inference_kind"],
+                # Re-probed every beat: a `lend:` / AITHER_LEND change reaches
+                # Identity on the next beat, not only on re-enrollment.
+                "capabilities": reg.get("capabilities") or [],
+                "capability_detail": reg.get("capability_detail") or {},
             }
             if reach_provider is not None:
                 try:

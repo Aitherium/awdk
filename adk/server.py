@@ -5786,7 +5786,7 @@ def create_app(
                 gateway_url=config.gateway_url or "",
                 node_name=os.getenv("AITHER_NODE_NAME", ""),
                 agents=agent_names,
-                capabilities=_detect_node_capabilities(),
+                capabilities=await asyncio.to_thread(_detect_node_capabilities),
                 port=config.server_port,
             )
             result = await relay.register()
@@ -5840,22 +5840,17 @@ def create_app(
             logger.debug("Identity enrollment failed (non-fatal): %s", exc)
 
     def _detect_node_capabilities() -> list[str]:
-        """Detect what this node can do."""
-        caps = ["chat", "tools", "mcp", "a2a", "irc", "smtp"]
+        """What this node LENDS: probed AND opted in (adk.node_capabilities), the
+        same list enrollment registers and beats, so this relay registration and
+        its heartbeat never overwrite the stored lend kinds with hardcoded tags.
+        Blocking (nvidia-smi, disk/rglob probes): call it off the event loop."""
         try:
-            import subprocess
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                caps.append("inference")
-                caps.append("gpu")
-        except (FileNotFoundError, OSError):
-            pass
-        if is_fleet:
-            caps.append("fleet")
-        return caps
+            from adk.node_capabilities import advertise_this_node
+
+            return list(advertise_this_node().get("capabilities") or [])
+        except Exception as exc:  # noqa: BLE001 -- the advertisement never breaks a join
+            logger.debug("node capability probe failed: %s", exc)
+            return []
 
     # ─── Elysium reconnect + mesh hosting ───
 
@@ -5922,7 +5917,7 @@ def create_app(
             # Create relay pointed at desktop (not cloud gateway)
             relay_kwargs = {
                 "node_name": os.getenv("AITHER_NODE_NAME", ""),
-                "capabilities": _detect_node_capabilities(),
+                "capabilities": await asyncio.to_thread(_detect_node_capabilities),
                 "port": config.server_port,
             }
             if base_host:
