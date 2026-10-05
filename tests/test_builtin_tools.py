@@ -3,7 +3,6 @@
 import sys
 import importlib.util
 import json
-import os
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -284,6 +283,43 @@ class TestShellExec:
         data = json.loads(result)
         assert len(data["stdout"]) <= 50_000
         assert len(data["stderr"]) <= 10_000
+
+
+class TestShellExecWindowsPowerShell:
+    """On Windows the command runs in PowerShell, never cmd.exe, when one exists (2026-10-05)."""
+
+    @patch("adk.builtin_tools.subprocess.run")
+    def test_windows_runs_powershell(self, mock_run, monkeypatch):
+        import shutil
+        monkeypatch.setattr(bt.sys, "platform", "win32")
+        pwsh = r"C:\pwsh.exe"
+        monkeypatch.setattr(shutil, "which", lambda name: pwsh if name == "pwsh" else None)
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        bt.shell_exec("Get-PSDrive -Name C")
+        args, kwargs = mock_run.call_args
+        assert args[0][1:] == ["-NoProfile", "-NonInteractive", "-Command", "Get-PSDrive -Name C"]
+        assert kwargs["shell"] is False
+        assert kwargs["env"]["NO_COLOR"] == "1", "plain text, no ANSI table headers"
+
+    @patch("adk.builtin_tools.subprocess.run")
+    def test_windows_without_powershell_falls_back_to_cmd(self, mock_run, monkeypatch):
+        import shutil
+        monkeypatch.setattr(bt.sys, "platform", "win32")
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        bt.shell_exec("dir")
+        args, kwargs = mock_run.call_args
+        assert args[0] == "dir"
+        assert kwargs["shell"] is True
+
+    @patch("adk.builtin_tools.subprocess.run")
+    def test_posix_unchanged(self, mock_run, monkeypatch):
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        bt.shell_exec("echo hi")
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["echo", "hi"]
+        assert kwargs["shell"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -922,3 +958,16 @@ class TestQueueTools:
         assert bumped["priority"] == 10
         cancelled = json.loads(bt.queue_cancel(submitted["id"]))
         assert cancelled["status"] == "cancelled"
+
+
+def test_desktop_default_roots_include_home(monkeypatch):
+    """Windows/macOS: the user's home is a default root; Linux keeps the cwd only (2026-10-05)."""
+    import importlib
+    import os
+    import sys
+    for platform, want_home in (("win32", True), ("darwin", True), ("linux", False)):
+        monkeypatch.setattr(sys, "platform", platform)
+        mod = importlib.reload(bt)
+        assert (os.path.expanduser("~") in mod._DEFAULT_ALLOWED_ROOTS) is want_home, platform
+    monkeypatch.undo()
+    importlib.reload(bt)

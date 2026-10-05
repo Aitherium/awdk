@@ -375,6 +375,8 @@ class OpenAIProvider(LLMProvider):
                 try:
                     args = json.loads(args)
                 except json.JSONDecodeError:
+                    logger.warning("tool %s: arguments are not JSON: %r",
+                                   fn.get("name", ""), args[:400])
                     args = {}
             tool_calls.append(ToolCall(
                 id=tc.get("id", ""),

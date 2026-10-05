@@ -27,7 +27,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -38,8 +37,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("adk.builtin_tools")
 
-# Safety: directories agents can access (expandable via AITHER_ALLOWED_ROOTS)
-_DEFAULT_ALLOWED_ROOTS = [os.getcwd()]
+# Safety: directories agents can access (expandable via AITHER_ALLOWED_ROOTS).
+# On a DESKTOP (Windows / macOS) the agent is the signed-in user's own assistant, so their
+# home folder is in scope too: measured 2026-10-05, "what are the 3 biggest files in my
+# Downloads folder?" answered "Path outside allowed roots" while shell_exec, in the same
+# agent, could already read the whole disk. Linux (servers, containers) keeps the cwd only.
+_DEFAULT_ALLOWED_ROOTS = [os.getcwd()] + (
+    [os.path.expanduser("~")] if sys.platform in ("win32", "darwin") else []
+)
 _ALLOWED_ROOTS: list[str] | None = None
 
 
@@ -417,10 +422,30 @@ def file_search(path: str = ".", pattern: str = "", content_pattern: str = "",
 # Shell & Python Execution
 # ─────────────────────────────────────────────────────────────────────────────
 
-def shell_exec(command: str, timeout: int = 30) -> str:
-    """Execute a shell command and return stdout + stderr.
+def _windows_shell_argv(command: str) -> list[str] | None:
+    """PowerShell argv for ``command`` on Windows, or None when no PowerShell exists.
 
-    command: Shell command to run
+    Measured 2026-10-05 on the owner's desk: the model (told it is on Windows /
+    PowerShell) wrote ``Get-PSDrive -Name C``; shell_exec ran it through cmd.exe
+    (shell=True), which answered "'Get-PSDrive' is not recognized", and the agent
+    gave up on "how much free space is on my C drive". PowerShell also runs the
+    cmd-style commands models reach for (dir, echo, type -- all aliases), so it is
+    the right default; pwsh (7) first, Windows PowerShell 5.1 second.
+    """
+    import shutil
+
+    exe = shutil.which("pwsh") or shutil.which("powershell")
+    if not exe:
+        return None
+    return [exe, "-NoProfile", "-NonInteractive", "-Command", command]
+
+
+def shell_exec(command: str, timeout: int = 30) -> str:
+    """Execute a shell command and return stdout + stderr. On Windows the command runs in
+    PowerShell (pwsh, else Windows PowerShell; cmd.exe only when neither exists); elsewhere
+    it is split and run directly, no shell.
+
+    command: Shell command to run (PowerShell syntax on Windows)
     timeout: Maximum execution time in seconds (default 30)
     """
     import shlex
@@ -436,10 +461,11 @@ def shell_exec(command: str, timeout: int = 30) -> str:
             return json.dumps({"error": f"Blocked: dangerous pattern '{pat}'"})
 
     try:
-        # On Unix, avoid shell=True to prevent injection.
-        # On Windows, shell=True is needed for built-in commands.
-        use_shell = sys.platform == "win32"
-        cmd_arg = command if use_shell else shlex.split(command)
+        # On Unix, avoid shell=True to prevent injection. On Windows, PowerShell
+        # (see _windows_shell_argv); cmd.exe via shell=True only without one.
+        ps_argv = _windows_shell_argv(command) if sys.platform == "win32" else None
+        use_shell = sys.platform == "win32" and ps_argv is None
+        cmd_arg = ps_argv or (command if use_shell else shlex.split(command))
         result = subprocess.run(
             cmd_arg,
             shell=use_shell,
@@ -448,6 +474,9 @@ def shell_exec(command: str, timeout: int = 30) -> str:
             timeout=timeout,
             cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
+            # PowerShell 7 colours table headers with ANSI escapes the model then has to
+            # read around; NO_COLOR makes it render plain text (measured 2026-10-05).
+            env={**os.environ, "NO_COLOR": "1"} if ps_argv else None,
         )
         output = {
             "exit_code": result.returncode,
@@ -2664,7 +2693,7 @@ async def check_safety_gate(
         tool_name: Name of the tool to check
         args: JSON string of tool arguments
     """
-    from adk.safety import ActionGate, GateDecision
+    from adk.safety import ActionGate
     gate = ActionGate()
     action_type = gate.classify_tool(tool_name)
     try:

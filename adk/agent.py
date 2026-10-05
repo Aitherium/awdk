@@ -94,6 +94,57 @@ _TOOL_STEERING_MSG = (
     "Re-read the user's message and select the right tool."
 )
 
+# A reply that ANNOUNCES the next attempt instead of making it ("Let me try again",
+# "I'll try a different command"). Measured 2026-10-05 on the owner's desk: after one
+# failed shell_exec the model wrote "Let me try again to get the accurate information"
+# and the loop took that as the finished answer -- the owner got a promise, not a
+# result. Only the text's ENDING counts: a finished answer that mentions trying is not
+# an announcement.
+_ANNOUNCED_RETRY = re.compile(
+    r"(?is)\b(?:let me|i(?:'ll| will)|i am going to|i'm going to)\s+"
+    r"(?:(?:now|first|then|just|quickly)\s+)?"
+    r"(?:try|retry|run|check|use|attempt|look|get|fetch|search|"
+    r"list|find|open|read|start|scan|query|call)\b"
+    r"[^.!?\n]{0,160}[.!?:]?\s*$"
+)
+_RETRY_NUDGE_MSG = (
+    "You said what you would do next but did not do it. Do it now: call the tool "
+    "(corrected arguments if the last call failed). If no tool can answer, say so plainly "
+    "instead of promising another step."
+)
+_MAX_RETRY_NUDGES = 2
+
+
+def parse_react_input(text: str) -> dict | None:
+    """The JSON object after ``INPUT:`` in a text-ReAct reply, or None when unreadable.
+
+    The old non-greedy ``INPUT: {.*?}`` regex stopped at the FIRST ``}``, so any argument
+    holding a brace -- every PowerShell script block, ``ForEach-Object { $_.Name }`` --
+    was cut short, failed to parse and became ``{}``: the tool then ran with no
+    arguments (measured 2026-10-05: ``shell_exec {}`` three times in one turn).
+    ``raw_decode`` reads exactly one complete JSON value, braces inside strings included.
+    """
+    import json as _json_mod
+
+    i = (text or "").upper().find("INPUT:")
+    if i == -1:
+        return None
+    j = text.find("{", i)
+    if j == -1:
+        return None
+    try:
+        obj, _end = _json_mod.JSONDecoder().raw_decode(text, j)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def announces_retry(text: str) -> bool:
+    """True when ``text`` ends by announcing another attempt rather than answering."""
+    tail = (text or "").strip()[-240:]
+    return bool(tail) and bool(_ANNOUNCED_RETRY.search(tail))
+
+
 # Patterns that indicate the user wants an action (not just conversation)
 _ACTION_PATTERNS = re.compile(
     r'(?i)(?:read|write|edit|create|delete|search|find|list|run|execute|check|fix|'
@@ -1708,6 +1759,7 @@ class AitherAgent:
             effort_level=_effort_int,
         )
         _steered_once = False  # Track turn-1 tool-call steering
+        _retry_nudges = 0  # announced-but-not-made retries pushed back (announces_retry)
         _token_counts_per_iter: list[int] = []  # Gap H: diminishing returns tracking
         _max_output_escalated = False  # Gap 3: track if we already escalated
         _exhausted_loops = False  # True when we fall out still wanting tools
@@ -2068,6 +2120,21 @@ class AitherAgent:
                     logger.debug(
                         "[REACT] Turn budget says stop: %s", _turn_budget.stopped_for,
                     )
+
+                # An announced retry is not an answer: hand the turn back, at most
+                # _MAX_RETRY_NUDGES times, and only once tools have been used.
+                if (tool_calls_made and _retry_nudges < _MAX_RETRY_NUDGES
+                        and _loop_idx < _loop_ceiling - 1
+                        and announces_retry(strip_internal_tags(resp.content or ""))):
+                    _retry_nudges += 1
+                    logger.info("[REACT] Reply announced a retry without making it - "
+                                "nudging (%d)", _retry_nudges)
+                    messages.append(
+                        Message(role="assistant", content=resp.content or "",
+                                 reasoning=(getattr(resp, "reasoning", "") or None))
+                    )
+                    messages.append(Message(role="user", content=_RETRY_NUDGE_MSG))
+                    continue
 
                 # No tool calls — we have the final answer
                 content = strip_internal_tags(resp.content)
@@ -2824,6 +2891,7 @@ class AitherAgent:
 
         answer = ""
         tools_made: list[str] = []
+        _react_retry_nudges = 0  # see announces_retry
 
         # Knowledge graph tracking — tools, memory, sources touched in this turn
         _kg_tools = set()  # tool names called
@@ -2917,17 +2985,33 @@ class AitherAgent:
             m = _ACT.search(full)
             if not m:
                 answer = _THINK.sub("", full).strip()
+                # Before the first tool too: "I'll now list the files" with no ACTION is
+                # a plan, not an answer (measured 2026-10-05, 8B orchestrator).
+                if (_react_retry_nudges < _MAX_RETRY_NUDGES
+                        and _step < max_steps - 1 and announces_retry(answer)):
+                    _react_retry_nudges += 1
+                    logger.info("[REACT-STREAM] Reply announced a step without making it "
+                                "- nudging (%d)",
+                                _react_retry_nudges)
+                    # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
+                    msgs.append(Message(role="assistant", content=full))
+                    msgs.append(Message(role="user", content=_RETRY_NUDGE_MSG))
+                    continue
                 if answer:
                     await _emit({"type": "token", "text": answer})
                 break
             name = m.group(1)
-            args: dict = {}
-            im = _INP.search(full)
-            if im:
-                try:
-                    args = _json.loads(im.group(1))
-                except Exception:
-                    args = {}
+            _parsed = parse_react_input(_THINK.sub("", full))
+            if _parsed is None and _INP.search(full):
+                # Unreadable arguments: say so to the model instead of running the tool
+                # with none (it then retries with a valid line).
+                # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
+                msgs.append(Message(role="assistant", content=full))
+                msgs.append(Message(role="user", content=(
+                    "OBSERVATION: your INPUT was not one valid JSON object, so the tool did "
+                    "not run. Reply again with INPUT: on ONE line of valid JSON.")))
+                continue
+            args: dict = _parsed or {}
             await _emit({"type": "tool", "name": name, "args": args})
             # Knowledge graph tracking
             _kg_tools.add(str(name).lower())
