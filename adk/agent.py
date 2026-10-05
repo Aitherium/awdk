@@ -202,9 +202,16 @@ def register_crystal_memory_tools(agent, crystal) -> int:
             return json.dumps({"error": "awm_unbound", "degraded": list(
                 crystal.telemetry.get("degraded", []))[:3]})
         try:
-            key, subject = store.put_fact(
+            # put_fact returns (ROUTE, degraded_reason) — "reconciled:<action>" or
+            # "legacy" — not a key: labeling it "key" made the tool report
+            # {"key": "legacy"} on a live turn and the model read that as an
+            # identifier.
+            route, degraded_reason = store.put_fact(
                 fact, {"src": "agent-tool", "ts": round(time.time(), 1)})
-            return json.dumps({"ok": True, "key": key, "subject": subject or ""})
+            out = {"ok": True, "route": route}
+            if degraded_reason:
+                out["degraded_reason"] = degraded_reason
+            return json.dumps(out)
         except Exception as exc:  # noqa: BLE001 — a memory fault is reported, not raised
             return json.dumps({"error": type(exc).__name__, "message": str(exc)[:200]})
 

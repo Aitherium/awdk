@@ -31,7 +31,7 @@ class FakeStore:
         if self.boom:
             raise RuntimeError("store on fire")
         self.written.append((fact, dict(meta)))
-        return ("f:abc", "slot.x")
+        return ("legacy", None)
 
 
 class FakeCrystal:
@@ -62,7 +62,7 @@ def test_registers_both_tools_with_intent_tags():
 async def test_remember_writes_through_the_store():
     agent, crystal, _ = _wire()
     out = json.loads(await agent.tools_by_name()["remember_fact"].fn("the sky is blue"))
-    assert out["ok"] is True and out["key"] == "f:abc"
+    assert out["ok"] is True and out["route"] == "legacy"
     fact, meta = crystal.store.written[0]
     assert fact == "the sky is blue"
     assert meta["src"] == "agent-tool"
