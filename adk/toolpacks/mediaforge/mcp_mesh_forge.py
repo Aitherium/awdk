@@ -127,7 +127,7 @@ _QUALITY = ("fast", "balanced", "high")
 #: when the local card is committed", which was written from its spec (large unified
 #: memory) and not from a probe. Measured 2026-08-24 the DGX had **1 GB available of
 #: 121 GB** -- fully committed to the serving stack -- and its own
-#: `aither-comfyui-3d-dgx` container sits at **Exit (137)**, i.e. it has ALREADY been
+#: 3D-generation container sits at **Exit (137)**, i.e. it has ALREADY been
 #: OOM-killed there once. Sending someone to that box would have reproduced the exact
 #: incident this tool refuses to cause on the 5090.
 #:
@@ -141,7 +141,7 @@ _PLACEMENT_LANES = [
     "shape-only floor, so this lane does not fit today.",
     "aitheros-hunyuan3d (:8290) — standalone Tencent image→3D, profiles "
     "`creative-full` / `dgx-hybrid`. Same card, same arithmetic as above.",
-    "DGX Spark (`dgx-hybrid`, aither-comfyui-3d-dgx) — the image is BUILT and the "
+    "DGX Spark (`dgx-hybrid` 3D-generation container) — the image is BUILT and the "
     "container already exists, so placing it is a `docker start`, not a deploy. "
     "MEASURED 2026-08-24: 1 GB available of 121 GB unified, and that container is at "
     "Exit (137) from a previous OOM — starting it now would evict live inference.",
