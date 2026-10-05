@@ -39,7 +39,9 @@ would place one and what each one measured — never retried into existence, and
 disguised as a slow render.
 """
 
+import json
 import os
+import re
 
 import requests
 
@@ -125,7 +127,7 @@ _QUALITY = ("fast", "balanced", "high")
 #: when the local card is committed", which was written from its spec (large unified
 #: memory) and not from a probe. Measured 2026-08-24 the DGX had **1 GB available of
 #: 121 GB** -- fully committed to the serving stack -- and its own
-#: 3D ComfyUI container sits at **Exit (137)**, i.e. it has ALREADY been
+#: `aither-comfyui-3d-dgx` container sits at **Exit (137)**, i.e. it has ALREADY been
 #: OOM-killed there once. Sending someone to that box would have reproduced the exact
 #: incident this tool refuses to cause on the 5090.
 #:
@@ -360,6 +362,69 @@ def mediaforge_3d_backends() -> dict:
         return _annotate_backend(_err(f"{type(e).__name__}: {e}", engine=_BASE))
 
 
+_AVATAR_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+
+
+def mediaforge_avatar_bases() -> dict:
+    """VRM bases a character can be customized from: roster models whose own VRM licence
+    allows modification, redistribution and corporate use (read from each file)."""
+    refused = _owner_api_refusal("mediaforge_avatar_bases")
+    if refused is not None:
+        return refused
+    try:
+        r = requests.get(f"{_BASE}/api/studio/avatar_bases", timeout=_T_POLL)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        return _err(f"{type(e).__name__}: {e}", engine=_BASE)
+
+
+def mediaforge_customize_avatar(
+    base: str = "",
+    profile: dict | str | None = None,
+    name: str = "Avatar",
+    install_as: str = "",
+    timeout: int = 900,
+) -> dict:
+    """Build a customized VRM avatar: a licensed VRoid base + a character profile.
+
+    `base` is a roster id from `mediaforge_avatar_bases` (e.g. "helen"). `profile` (dict or
+    JSON) is the avatar customizer's: body {height, legs, torso, bust, neck, shoulders, chest,
+    waist, hips, butt, upper_arms, forearms, thighs, calves (multipliers, 1.0 = base), fat,
+    muscle (-1..1)}, hair {remove_long, flare}, physics {Bust|Hair|TopsUpperArm: "off" or
+    {stiffness, drag}}, palette {hair, iris, mask, vest, ... : [r,g,b] 0-1 or null}, badge.
+
+    The aither-rigify service refuses a base whose licence forbids it and a result that fails
+    the deformation/animation probes, so a finished job is a shippable VRM in the gallery.
+    `install_as` also installs it as that desk character. Returns a JOB; poll
+    `mediaforge_3d_status(job_id)`. A build is ~90 s.
+    """
+    refused = _owner_api_refusal("mediaforge_customize_avatar")
+    if refused is not None:
+        return refused
+    if isinstance(profile, str):
+        try:
+            profile = json.loads(profile)
+        except ValueError as e:
+            return _err(f"profile is not JSON: {e}")
+    if not isinstance(profile, dict) or not isinstance(profile.get("body"), dict):
+        return _err("profile must be an object with a 'body' section")
+    if not _AVATAR_ID.fullmatch(base or ""):
+        return _err(f"base {base!r} is not a roster id; see mediaforge_avatar_bases")
+    if install_as and not _AVATAR_ID.fullmatch(install_as):
+        return _err(f"install_as {install_as!r} is not a roster id")
+    body = {"base": base, "profile": profile, "name": (name or "Avatar")[:64],
+            "timeout": int(timeout)}
+    if install_as:
+        body["install_as"] = install_as
+    res = _post("/api/studio/customize_avatar_async", body)
+    if "error" not in res:
+        res.setdefault("job_id", res.get("jid"))
+        res.setdefault("poll_with", "mediaforge_3d_status")
+        res.setdefault("model_format", "vrm")
+    return res
+
+
 def self_test() -> int:
     """Prove the refusals fire, and that they do not fire on valid input.
 
@@ -368,6 +433,22 @@ def self_test() -> int:
     only surfaces 30s into a render on the far side is the expensive kind.
     """
     fails = []
+
+    # customize_avatar refuses bad input BEFORE any request (owner gate open for these).
+    global _caller_may_reach_owner_api
+    _gate = _caller_may_reach_owner_api
+    try:
+        _caller_may_reach_owner_api = lambda: True       # noqa: E731
+        if "error" not in mediaforge_customize_avatar("helen", {"hair": {}}):
+            fails.append("customize_avatar accepted a profile with no body section")
+        if "error" not in mediaforge_customize_avatar("../x", {"body": {}}):
+            fails.append("customize_avatar accepted a path-like base id")
+        if "error" not in mediaforge_customize_avatar("helen", "{not json"):
+            fails.append("customize_avatar accepted a non-JSON profile string")
+        if "error" not in mediaforge_customize_avatar("helen", {"body": {}}, install_as="a b"):
+            fails.append("customize_avatar accepted a bad install_as id")
+    finally:
+        _caller_may_reach_owner_api = _gate
 
     if _validate("a goblin", 7, "balanced") is None:
         fails.append("accepted BOTH media_id and prompt")
@@ -460,7 +541,6 @@ def self_test() -> int:
                            "ids": [], "images": []},
             }]}
 
-    global _caller_may_reach_owner_api
     _real_get, _real_gate = requests.get, _caller_may_reach_owner_api
     try:
         requests.get = lambda *a, **k: _StubResp()      # noqa: E731
