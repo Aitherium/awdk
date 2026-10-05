@@ -4,6 +4,7 @@ allowed-tools: Read, Grep
 description: Compare two versions of a file, commit, or release and report structural and behavioral diffs
 argument-hint: <version1> <version2>
 ---
+<!-- Generated from the awskills pack (skills/compare-versions.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Version 1: First version identifier

@@ -3,6 +3,7 @@ name: awconnect
 description: >-
   Wire your machine, agent, and browser into AitherOS. Awconnect is the onboarding layer: it connects a box you own to AitherOS — detecting local LLMs, setting up the gateway, joining the desktop/agent mesh, and (optionally) linking your browser — so a node you stood up locally becomes reachable and usable from the rest of the fleet and the portal.
 ---
+<!-- Generated from the awskills pack (skills/awconnect.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # awconnect — wire your machine, agent, and browser into AitherOS
 
@@ -32,13 +33,13 @@ The mesh overlay (Conductor-assigned `10.77.0.0/16`) is how nodes reach each oth
 
 ```bash
 adk mesh onboard --role worker  # join this node into the AitherMesh WireGuard overlay
-adk mesh join --headscale       # NAT/CGNAT/firewall-friendly transport when raw WireGuard UDP is blocked
+adk mesh onboard --headscale    # NAT/CGNAT/firewall-friendly transport when raw WireGuard UDP is blocked
 adk mesh ls                     # list the peers your agents can now reach
 ```
 
 `--headscale` routes the tunnel through a Headscale control plane when raw WireGuard `UDP:51820`
 isn't viable; the overlay IP is still Conductor-assigned, and it falls back to raw WireGuard
-automatically if Headscale setup fails. See `adk mesh join --help` for the transport and
+automatically if Headscale setup fails. See `adk mesh onboard --help` for the transport and
 control-plane options.
 
 ## Connect your browser

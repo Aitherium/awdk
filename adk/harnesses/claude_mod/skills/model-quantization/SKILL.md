@@ -5,6 +5,7 @@ description: Quantize an LLM to 4-bit with AutoRound — RTN runs free on local 
 argument-hint: <model-id-or-path> [-o OUTDIR] [--iters N] [--keep-fp REGEX ...] [--dry-run]
 
 ---
+<!-- Generated from the awskills pack (skills/model-quantization.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - GPU present: !`nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "no NVIDIA GPU detected (RTN still works, slower on CPU)"`

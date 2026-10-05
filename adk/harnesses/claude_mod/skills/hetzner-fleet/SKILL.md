@@ -3,12 +3,16 @@ name: hetzner-fleet
 description: >-
   Provision bare metal and VPS directly into your mesh from Hetzner Cloud. Hetzner Cloud is a European VPS provider with a flat, pleasant API: one bearer token, no IAM, no service accounts. This skill wires it in as a provisioning target so a single deploy call spins up a server, attaches your SSH key, and registers it with your fleet.
 ---
+<!-- Generated from the awskills pack (skills/hetzner-fleet.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # hetzner-fleet — provision bare metal and VPS directly into your mesh from Hetzner Cloud
 
 Hetzner Cloud is a European VPS provider with a flat, pleasant API: one bearer token, no
 IAM, no service accounts. This skill wires it in as a provisioning target so a single
 deploy call spins up a server, attaches your SSH key, and registers it with your fleet.
+
+**Requires:** an AitherOS deployment with its AitherComet mesh-deployment service and a
+secrets vault holding the Hetzner API token.
 
 > **Live-measured against the Hetzner API v1 on 2026-07-27.** Every number below was read
 > from the API, not from marketing pages. Two findings worth knowing before you start:
@@ -46,7 +50,7 @@ same layer. Three moving parts are needed:
 │    "target": "cloud-gpu",               │  ← still called "cloud-gpu" even for VPS
 │    "gpu_provider": "hetzner",           │  ← dispatch to Hetzner instead of Vast
 │    "server_type": "cax11",              │  ← Hetzner's server type codes
-│    "location": "fsn1-dc14",             │  ← datacenter location (or "nbg1", "ash")
+│    "location": "nbg1-dc3",              │  ← datacenter location (or "hel1", "ash")
 │    "onstart": "#!/bin/bash\n...",       │  ← cloud-init script (optional)
 │    "budget_usd": 50.00                  │  ← fail-closed cost guard
 │  }                                      │
@@ -174,7 +178,10 @@ curl -X GET http://127.0.0.1:8111/secrets/HETZNER_API_KEY \
 > HTTPS probes showed up in its own log as `Invalid HTTP request received`. Pinning
 > either spelling is a latent outage: the wrong one returns `000`, which reads as
 > "the service is down" while it is `Up (healthy)` and serving. Probe `http://` and
-> `https://` (with `-k`) and take whichever answers.
+> `https://` and take whichever answers. For `https://`, pass the issuing CA with
+> `--cacert <your-ca-bundle.pem>` rather than `-k`: `-k` turns off certificate checking
+> entirely, which is tolerable for a bare reachability probe but never for a call that
+> carries a token.
 >
 > If `/deploy` does not respond at all, check whether the unit is **masked** before
 > concluding the service is retired: a masked quadlet leaves no container, running or
@@ -183,24 +190,35 @@ curl -X GET http://127.0.0.1:8111/secrets/HETZNER_API_KEY \
 Use AitherComet's `/deploy` endpoint:
 
 ```bash
-curl -X POST http://127.0.0.1:8126/deploy \
+# The body carries a token, so build it in a private file from the environment
+# (never paste the token into the command line, where `ps` and shell history see it)
+# and send it only over https with the CA verified.
+umask 077
+cat > deploy-body.json <<EOF
+{
+  "deployment_id": "model-inference-run-abc123",
+  "service_name": "inference-node",
+  "target": "cloud-gpu",
+  "gpu_provider": "hetzner",
+  "server_type": "cax11",
+  "location": "nbg1-dc3",
+  "budget_usd": 50.00,
+  "env_vars": {
+    "NODE_NAME": "inference-1",
+    "HF_TOKEN": "${HF_TOKEN}",
+    "MODEL": "meta-llama/Llama-2-7b"
+  },
+  "onstart": "#!/bin/bash\necho 'Server starting'\n"
+}
+EOF
+curl -X POST https://127.0.0.1:8126/deploy --cacert <your-ca-bundle.pem> \
   -H "Content-Type: application/json" \
-  -d '{
-    "deployment_id": "model-inference-run-abc123",
-    "service_name": "inference-node",
-    "target": "cloud-gpu",
-    "gpu_provider": "hetzner",
-    "server_type": "cax11",
-    "location": "fsn1-dc14",
-    "budget_usd": 50.00,
-    "env_vars": {
-      "NODE_NAME": "inference-1",
-      "HF_TOKEN": "hf_...",
-      "MODEL": "meta-llama/Llama-2-7b"
-    },
-    "onstart": "#!/bin/bash\necho ''Server starting''\n"
-  }'
+  --data @deploy-body.json
+rm -f deploy-body.json
 ```
+
+If the service is currently answering only plain `http://` (see the note above), do not
+send a body that contains a token: fix TLS first, or leave `HF_TOKEN` out.
 
 **Expected response (202 Accepted):**
 
@@ -328,7 +346,8 @@ curl -X GET http://127.0.0.1:8126/deployments/model-inference-run-abc123
 
 # Stop (suspend without destroying) — keeps the instance and its data
 curl -X POST http://127.0.0.1:8126/deployments/model-inference-run-abc123/stop
-# Hetzner respects the stopped state; you''re charged ~10% of running cost while stopped
+# Hetzner bills a powered-off server at the FULL hourly rate until it is deleted.
+# Stopping saves nothing; only teardown (or snapshot, then delete) stops the charge.
 
 # Start (resume from stopped state)
 curl -X POST http://127.0.0.1:8126/deployments/model-inference-run-abc123/start

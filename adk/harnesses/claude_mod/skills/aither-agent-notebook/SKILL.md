@@ -3,6 +3,7 @@ name: aither-agent-notebook
 description: >-
   Turn 'build X' into a reviewable, re-runnable plan. A one-shot agent dispatch is a black box: it runs, it either worked or it didn't, and you can't see *why*, replay it with one input changed, or hand it to a human before it touches anything. An Agent Notebook (.anb) fixes that. It's AitherOS's executable, reviewable unit of agent work — an ordered list of typed cells that runs on the platform, records a cost-tracked run every time it executes, and can be replayed, diffed, reviewed, gated, and exported to a Jupyter .ipynb.
 ---
+<!-- Generated from the awskills pack (skills/aither-agent-notebook.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aither-agent-notebook — turn "build X" into a reviewable, re-runnable plan
 
@@ -83,14 +84,14 @@ a clear `"Genesis unavailable after N attempts"` rather than a raw gateway error
 ## What this is (and isn't)
 
 - **Agent Notebooks (`.anb`)** — *this skill*: structured, executable plans with runs, gates,
-  replay/diff, `.ipynb` export. Lives in `lib/orchestration/NotebookEngine.py` + the
-  `/notebooks` Genesis router.
+  replay/diff, `.ipynb` export. Served by Genesis's
+  `/notebooks` router.
 - **Research Notebooks** — the *other* thing: a NotebookLM-style "chat with your sources /
-  make a podcast" surface (`lib/notebooks/`, `/research-notebooks`). Not this.
+  make a podcast" surface (`/research-notebooks`). Not this.
 
 ## Config & auth
 
-Point the tools at your Genesis with `AITHER_GENESIS_URL` (default `http://a local Genesis endpoint`).
+Point the tools at your Genesis with `AITHER_GENESIS_URL` (default `http://localhost:8001`).
 LLM/embeddings route through the governed gateway; the tools trust the internal CA — set
 `AITHER_TLS_VERIFY=false` only if you deliberately need to skip verification (never the
 default).

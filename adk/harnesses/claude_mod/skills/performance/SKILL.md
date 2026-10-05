@@ -5,6 +5,7 @@ description: Analyze and optimize application performance, identify bottlenecks
 argument-hint: [<target>|--profile|--benchmark|--optimize]
 
 ---
+<!-- Generated from the awskills pack (skills/performance.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Working directory: !`pwd`
@@ -234,8 +235,6 @@ node --prof-process isolate-*.log > profile.txt
 # Chrome DevTools profiling
 # Open chrome://inspect for Node.js debugging
 
-# v8 profiler
-npm install v8
 ```
 
 ## Examples

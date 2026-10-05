@@ -4,6 +4,7 @@ allowed-tools: Bash, Read, Glob, WebSearch
 description: Manage project dependencies, check for updates, and scan for vulnerabilities
 argument-hint: [--update|--audit|--clean|--tree]
 ---
+<!-- Generated from the awskills pack (skills/dependencies.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Working directory: !`pwd`

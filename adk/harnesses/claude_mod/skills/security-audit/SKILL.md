@@ -5,6 +5,7 @@ description: Perform comprehensive security audits on code, dependencies, and co
 argument-hint: [<target>|--full|--dependencies|--owasp]
 
 ---
+<!-- Generated from the awskills pack (skills/security-audit.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Working directory: !`pwd`
@@ -57,17 +58,17 @@ You are a security audit specialist focusing on:
 ```
 /security-audit --owasp
 
-Checking for OWASP Top 10 vulnerabilities...
-1. Injection (SQL, Command, LDAP)
-2. Broken Authentication
-3. Sensitive Data Exposure
-4. XML External Entities (XXE)
-5. Broken Access Control
-6. Security Misconfiguration
-7. Cross-Site Scripting (XSS)
-8. Insecure Deserialization
-9. Using Components with Known Vulnerabilities
-10. Insufficient Logging & Monitoring
+Checking for OWASP Top 10 (2021) vulnerabilities...
+A01. Broken Access Control
+A02. Cryptographic Failures
+A03. Injection (SQL, Command, LDAP, XSS)
+A04. Insecure Design
+A05. Security Misconfiguration (incl. XXE)
+A06. Vulnerable and Outdated Components
+A07. Identification and Authentication Failures
+A08. Software and Data Integrity Failures (incl. insecure deserialization)
+A09. Security Logging and Monitoring Failures
+A10. Server-Side Request Forgery (SSRF)
 ```
 
 ### Pattern 2: Dependency Scanning
@@ -179,11 +180,10 @@ pyyaml          5.3      6.0      Critical
 3. This Sprint: Update all dependencies
 4. Next Quarter: Implement security headers
 
-📝 Compliance Status
--------------------
-✅ PCI DSS: Compliant with observations
-⚠️ OWASP: 3 of 10 categories need attention
-✅ SOC2: Technical controls in place
+📝 OWASP Top 10 (2021) Coverage
+------------------------------
+⚠️ 3 of 10 categories need attention
+(A code scan cannot attest PCI DSS or SOC 2 compliance; those need an audit.)
 ```
 
 ## Execution Steps

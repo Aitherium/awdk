@@ -3,6 +3,7 @@ name: aither-prospector
 description: >-
   A semantic file-explorer that tells agents WHERE to look. Before an agent greps a 4,000-directory monorepo, it should know the three dirs worth grepping. Prospector (Phase 1, the 'landmark map') clusters a codebase into semantic regions — auth, api, data, ui, service — and answers *'where is rate limiting enforced?'* with the directories to search first. It's the cheap scout that makes [CodeGraph](aither-codegraph.md)/grep pay off instead of scanning everything.
 ---
+<!-- Generated from the awskills pack (skills/aither-prospector.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aither-prospector — a semantic file-explorer that tells agents WHERE to look
 
@@ -11,6 +12,9 @@ grepping. **Prospector** (Phase 1, the "landmark map") clusters a codebase into 
 regions — auth, api, data, ui, service — and answers *"where is rate limiting enforced?"*
 with the directories to search **first**. It's the cheap scout that makes
 [CodeGraph](aither-codegraph.md)/grep pay off instead of scanning everything.
+
+**Requires:** an AitherOS deployment that serves the `prospector` tool pack (the MCP
+`apply_pack_self` tool and the `map_*` tools come from that gateway).
 
 > This is the capability that feeds CodeGraph: localize → then search inside the hits.
 

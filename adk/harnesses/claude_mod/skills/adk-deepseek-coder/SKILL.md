@@ -3,6 +3,7 @@ name: adk-deepseek-coder
 description: >-
   Fill-in-the-middle, repo packing, and a reward that can fail. DeepSeek-Coder is two useful things at once, and most people only take the first.
 ---
+<!-- Generated from the awskills pack (skills/adk-deepseek-coder.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # adk-deepseek-coder — fill-in-the-middle, repo packing, and a reward that can fail
 

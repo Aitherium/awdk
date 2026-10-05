@@ -5,6 +5,7 @@ description: Deploy a website as code — GitHub Pages frontend + Cloudflare Tun
 argument-hint: "[domain] [--backend-port 8000] [--no-worker]"
 
 ---
+<!-- Generated from the awskills pack (skills/website-as-code.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Target domain: $ARGUMENTS

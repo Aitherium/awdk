@@ -3,6 +3,7 @@ name: aither-discord-agent
 description: >-
   Deploy your awdk agent as a Discord bot (automated onboarding). Your awdk agent already has an identity, tools, memory, and inference on your own machine. This skill turns it into a Discord bot with one automated onboarding command — adk onboard --discord — which installs your agent pack, validates your bot token live against Discord's API, prints the invite link, verifies your identity + tools, and can launch the bot. Every DM or @mention then runs your agent's own loop: its tools, its memory, its personality.
 ---
+<!-- Generated from the awskills pack (skills/aither-discord-agent.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aither-discord-agent — deploy your awdk agent as a Discord bot (automated onboarding)
 

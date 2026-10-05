@@ -3,6 +3,7 @@ name: docker-wsl2-disk-reclaim
 description: >-
   Your drive is full and `docker system df` is lying to you. Docker Desktop on WSL2 stores everything in a dynamically-expanding VHDX that never shrinks. You delete 200GB of images, docker system df drops, and your drive stays exactly as full as before. People then go looking for the space in the wrong place — or buy a disk.
 ---
+<!-- Generated from the awskills pack (skills/docker-wsl2-disk-reclaim.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # docker-wsl2-disk-reclaim — your drive is full and `docker system df` is lying to you
 
@@ -54,15 +55,19 @@ docker-wsl2-reclaim.sh --trim     # prune + fstrim — no downtime, no admin
 docker-wsl2-reclaim.sh --plan     # prints the admin compaction recipe for YOUR path
 ```
 
-**1. Prune** — shrinks LAYER 3. Dangling images and build cache are zero-risk:
+**1. Prune** — shrinks LAYER 3 (and LAYER 2 by the same amount; it does not touch the 2→3
+gap). Dangling images and build cache are safe to drop:
 ```bash
 docker image prune -f && docker builder prune -af
 ```
 🪤 Do **not** hand-roll an "unused images" list by diffing `docker images` against
 `docker ps -a --format '{{.Image}}'`. Running containers report their image as a **short
 SHA**, not the tag, so a tag-based grep marks in-use images as orphaned. That mistake was
-one command away from deleting the images out from under ~15 live services. Use
-`docker image prune -a` and let Docker compute the reference set.
+one command away from deleting the images out from under ~15 live services. Stick to the
+dangling-only prune above. `docker image prune -a` lets Docker compute the reference set,
+but it deletes **every image no container references** — including the image of any service
+that is currently down or removed — so only run it once you know each of those can be pulled
+or rebuilt.
 
 **2. `fstrim`** — the step everyone skips. Turns ext4's free blocks into holes the VHDX can
 see. Without it, compaction reclaims almost nothing:
@@ -117,5 +122,7 @@ day-distribution check that tells hardware failure apart from load-induced colla
 
 - `du -h` on the VHDX actually dropped (not just `docker system df`)
 - the fleet came back: `docker ps -q | wc -l` at the expected count, `--filter health=unhealthy` empty
-- you know which of the two gaps you closed — trim closes 1→2, prune closes 2→3, and if the
-  drive is still full you closed the wrong one
+- you know which number you moved — prune shrinks LAYER 3 (and LAYER 2 with it), `fstrim` +
+  compaction close the 1→2 gap, and the 2→3 gap is live data Docker under-reports that only
+  hunting in `/mnt/docker-desktop-disk/data` finds. If the drive is still full, you worked the
+  wrong layer

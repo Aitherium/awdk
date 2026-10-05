@@ -3,6 +3,7 @@ name: acp-drive
 description: >-
   Drive any external ACP agent from your agent. The Agent Client Protocol lets one agent drive another. When your task needs a different model, a different tool surface, or a sandbox your loop doesn't have, you can hand a sub-problem to an external ACP agent — Claude Code (claude-agent-acp), Codex (codex-acp), Gemini CLI (gemini-cli), or any binary that speaks ACP on stdio — and read back its answer. Your memory, faculties and approval gate stay in charge; the external agent runs its own loop underneath.
 ---
+<!-- Generated from the awskills pack (skills/acp-drive.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # acp-drive — drive any external ACP agent from your agent
 
@@ -17,14 +18,15 @@ loop underneath.
 ## Register one as your model backend
 
 ```bash
-adk backend add acp --command claude            # claude-agent-acp
-adk backend add acp --command codex             # codex-acp
-adk backend set acp                             # make it the default
+adk backend add acp --command claude-agent-acp  # or: --command codex-acp
 adk backend use acp                             # switch a running agent live
 ```
 
-For headless runs the saved command can be overridden via the environment
-(see `adk backend add acp` for the exact variable names). The external agent
+`--command` is executed as-is (no shell), so it must be the binary that speaks
+ACP on stdio; pass its arguments with repeated `--arg`. `add` stores ONE ACP
+backend (a second `add` replaces the first) and already makes it the default.
+For headless runs, `AITHER_ACP_COMMAND` and `AITHER_ACP_ARGS` override the
+saved command. The external agent
 becomes a normal LLM provider: `AitherAgent`'s memory + faculties ride on top
 of the external agent's loop, and the external agent owns its own tool
 execution.
@@ -45,10 +47,12 @@ it does not hang.
 ## CLI one-shot
 
 ```bash
-adk acp connect --command claude
-adk acp prompt --command claude "summarize the git log"
-adk acp list-sessions --command claude
+adk acp connect --command claude-agent-acp
+adk acp prompt --command claude-agent-acp "summarize the git log"
+adk acp list-sessions --command claude-agent-acp
 ```
+
+Each one-shot spawns a fresh agent process; arguments go in `--arg`.
 
 ## When to use it
 
@@ -60,7 +64,7 @@ adk acp list-sessions --command claude
 
 ## Fail-loud contract
 
-A missing command fails at registration, never at first use. A crashed agent
-surfaces its error instead of hanging. If a prompt hangs, the agent binary
-was probably not installed — `adk backend add acp` prints install hints from
-the bundled manifests.
+An empty command fails when the backend is built, never as an inert provider.
+`adk backend add acp` does NOT check that the binary exists, so prove it before
+registering: `adk acp connect --command <binary>` must print the agent's name
+and a session id. A crashed agent surfaces its error instead of hanging.

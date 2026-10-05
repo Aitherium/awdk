@@ -5,6 +5,7 @@ description: Render data charts (line/scatter/bar/heatmap/pie/histogram/density)
 argument-hint: [what to chart, or a path to the data]
 
 ---
+<!-- Generated from the awskills pack (skills/xy-charts.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # XY Charts — data → picture
 

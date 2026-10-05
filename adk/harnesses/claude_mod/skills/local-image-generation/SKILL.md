@@ -2,6 +2,7 @@
 name: local-image-generation
 description: Give an agent the ability to draw — generating images on the machine it is already running on, via ComfyUI, Sana, SD.Next/A1111 or an in-browser model. No hosted API, no key, no prompt leaving the box. Use when an agent needs a picture, when "add image generation" comes up, or when a local image backend is running and nothing is using it.
 ---
+<!-- Generated from the awskills pack (skills/local-image-generation.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # local-image-generation — the agent draws on your own hardware
 

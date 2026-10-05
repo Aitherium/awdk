@@ -2,6 +2,7 @@
 name: floci-local-cloud
 description: Exercise cloud automation (AWS/Azure/GCP/OCI) against local MIT-licensed emulators instead of real accounts — no credentials, no credit burn, no live instance at risk. Load before writing or testing anything that calls a cloud SDK: rental/provisioning code, S3 artifact sync, IAM or secrets paths, or any agent tool that touches a cloud API. Also load when a cloud probe "returns nothing" and you need to know whether that means empty or unreachable.
 ---
+<!-- Generated from the awskills pack (skills/floci-local-cloud.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Floci — any cloud, locally
 
@@ -66,16 +67,14 @@ curl http://127.0.0.1:4566/     from Windows  ->  hangs
 curl http://127.0.0.1:4566/     inside the container ->  200
 ```
 
-This is [[drive-letter-paths-strand-files]]'s networking cousin, and the same
-shape as the Proton Bridge problem in reverse (there, a Windows-loopback service
-was unreachable from the fleet; here, a fleet service is unreachable from
-Windows). So:
+A service published from inside the VM is not automatically reachable from the
+host's loopback (and a host-loopback service is not reachable from inside the VM
+either). So:
 
 - **Reach Floci from inside the fleet** — a container on the same network, or
   the distro itself. That is also where the code under test usually runs.
-- From Windows, forward it the way the mail hop does
-  (`bridge_smtp_forwarder.py` is the worked example), or run the test in the
-  distro.
+- From Windows, forward the port with a small TCP forwarder (or your VM's
+  port-forwarding setting), or run the test in the distro.
 - A hang here is a ROUTING fact, not an emulator fault. Do not conclude Floci
   is broken from a Windows curl.
 

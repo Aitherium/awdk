@@ -5,6 +5,7 @@ description: Turn "I found this GitHub repo — integrate/adapt/adopt it" into a
 argument-hint: [<repo-url> | <path-to-zip> | <checked-out-dir>]
 
 ---
+<!-- Generated from the awskills pack (skills/repo-intake.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Repo intake — from "found a repo" to a decided outcome
 
@@ -30,23 +31,25 @@ If you can't name both, it's REFERENCE. Write it down and move on.
 
 ## Phase 0 — Acquire into quarantine (never into the worktree)
 
-Unpack/clone **outside** `the working tree`. This repo runs with hundreds of
-uncommitted files, concurrent sessions committing every 2–5 min, and a failing D: drive
-— dropping a `node_modules`-bearing tree in the worktree is actively destructive.
+Unpack/clone **outside** the working tree. A busy shared repo has uncommitted files and
+concurrent sessions committing every few minutes — dropping a `node_modules`-bearing tree
+in the worktree is actively destructive.
 
 ```powershell
-$Q = "$env:TEMP\claude\repo-intake"
-python tools/repo_census.py <url|zip|dir> `
-  --quarantine $Q --markdown --out "$Q/<repo>-census.json"
+$Q = "$env:TEMP\repo-intake"
+git clone --depth 1 <url> "$Q\<repo>"     # or: Expand-Archive <zip> -DestinationPath $Q
 ```
 
 **Never run the target's `npm install` / `pip install` / build / tests before Phase 2.**
 An unread repo is untrusted input; its install scripts execute arbitrary code. Read
 first, run later (and when you do run it, run it in a container).
 
-`repo_census.py` gives you, without executing anything: size, LOC by directory, license
-+ whether it is vendorable, dependencies, docs, git staleness, and a ranked list of
+Then take a census without executing anything: size, LOC by directory, license
++ whether it is vendorable, dependencies, docs, git staleness, and a short list of
 **seam files** — the interfaces/registries/guards/policies that carry the design.
+(The census script this skill was written around, `repo_census.py`, is internal and not
+shipped in this pack; `git log -1`, a line counter such as `cloc`, and reading `LICENSE`
+and the dependency manifests cover the same ground by hand.)
 
 ## Phase 1 — Read the seams, not the repo
 
@@ -64,13 +67,13 @@ Skip: UI, tests, generated code, vendored deps, config plumbing.
 ## Phase 2 — Map every idea against what we ALREADY have
 
 This is the step that decides the intake, and the one that gets skipped. For each idea,
-fill one row. **"Ours today" must cite a real file** — `mcp_governed_build.py`,
-`_mcp_scoping.py` — not a vibe. Use `codegraph_search` / `repowise_search` (MCP) to find
-our equivalent before claiming we lack one; this repo is ~1500 tools deep and "we don't
+fill one row. **"Ours today" must cite a real file** in your codebase — not a vibe. Use
+your code search (scoped `rg`, or a code-graph tool if you run one) to find
+our equivalent before claiming we lack one; in a large codebase "we don't
 have that" is usually wrong.
 
-> **A search that times out is not evidence of absence.** D: is a failing drive and
-> full-tree `rg` regularly dies at 20s. The open-polsia intake filed a whole ADAPT item on
+> **A search that times out is not evidence of absence.** On a large tree or a slow disk
+> a full-tree `rg` can die at a tool timeout. The open-polsia intake filed a whole ADAPT item on
 > "we don't scope tools per agent role" after a timed-out grep — then a scoped search found
 > `filter_tools_for_agent()`, `enforce_tool_scope()`, and 26 passing tests. **A claimed gap
 > is not a finding until a search that COMPLETED failed to find our version.** If a search
@@ -164,7 +167,7 @@ made an upstream hardware-safety substitution structurally unreachable).
 
 ## Phase 4 — Land it
 
-1. **Write the dossier** — copy `templates/DOSSIER.md`, fill it, save to
+1. **Write the dossier** — the Phase 2 table plus the verdicts (no template ships with this pack), saved to
    `research/intake/<repo>/DOSSIER.md`. Commit that path *only* (pathspec commit — see
    the `concurrent-safe-git` skill; other sessions are committing right now).
 2. **ADAPT/ADOPT items become real work** — Spec Ledger (`spec_ingest`) or GitHub issues
@@ -174,12 +177,11 @@ made an upstream hardware-safety substitution structurally unreachable).
 4. **Memory** — if the intake changed a program direction, write it to memory. That is
    what makes the *next* intake cheaper.
 
-### Landing-place trap: `.WORKFORCE` is a submodule
+### Landing-place trap: a submodule is a different repo
 
-`.WORKFORCE` is `github.com/Aitherium/workforce.git` mounted as a submodule. Editing
-inside it is a **commit to a different repo** plus a pointer bump here. Agent/company-brain
-ideas belong there; platform primitives belong in `AitherOS/`. Decide which in the
-dossier and say so explicitly — do not let the split happen by accident.
+If the landing place is a git submodule, editing inside it is a **commit to a different
+repo** plus a pointer bump here. Decide which repo each idea lands in, in the
+dossier, and say so explicitly — do not let the split happen by accident.
 
 ## Scope control
 

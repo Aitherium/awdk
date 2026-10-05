@@ -2,6 +2,7 @@
 name: aither-powered-coding
 description: Set up any coding agent (Claude Code, Cursor, Aider, Cline) to use AitherOS as its brain — with automatic model switching, 1272 MCP tools, managed agent dispatch, and transparent failover between DeepSeek/Kimi/local models/Anthropic. Supplements awknowledge with the AitherOS-specific infrastructure. Use when someone says "connect my agent to aither", "use aither as my backend", or "set up adk with claude code".
 ---
+<!-- Generated from the awskills pack (skills/aither-powered-coding.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aither-powered-coding — make any coding agent use AitherOS as its brain
 
@@ -10,6 +11,9 @@ AitherOS: 1272 MCP tools, managed agent fleet, automatic model routing, transpar
 failover, and your own local GPU inference.
 
 This skill supplements [awknowledge](awknowledge.md) with AitherOS-specific setup.
+
+Requires: an AitherOS deployment (MCP gateway, model router, AitherClaudeBridge);
+`adk claude-model` also needs that deployment's profile tool and `claude_profiles.yaml`.
 
 ---
 
@@ -46,8 +50,7 @@ adk claude-model list              # see all profiles
 adk claude-model use deepseek-flash   # DeepSeek Flash, 1M, native
 adk claude-model use deepseek-pro     # DeepSeek Pro, 1M, reasoning
 adk claude-model use kimi-k3          # Kimi K3, 1M, native
-adk claude-model use aither-best      # local qwen3.6-27b (needs bridge)
-adk claude-model use mixed            # multi-tier: /model switches Pro/Flash/local
+adk claude-model use aither-orchestrator   # local orchestrator model (needs bridge)
 adk claude-model use anthropic        # restore stock Claude
 adk claude-model status               # what's active
 adk claude-model check                # prove it works (real API call)
@@ -88,7 +91,7 @@ Once connected (`/mcp` in Claude Code, or `.mcp.json` config), you get:
   "mcpServers": {
     "aitheros": {
       "type": "streamable-http",
-      "url": "http://localhost:8182/mcp",
+      "url": "http://127.0.0.1:8182/mcp",
       "headers": {
         "Authorization": "Bearer <your-token>"
       }
@@ -97,8 +100,9 @@ Once connected (`/mcp` in Claude Code, or `.mcp.json` config), you get:
 }
 ```
 
-For VS Code Copilot, same config goes in `.vscode/mcp.json`. Use `localhost`
-not `127.0.0.1` (Node.js fetch on Windows has issues with the IP).
+For VS Code Copilot, same config goes in `.vscode/mcp.json`. Use `127.0.0.1`,
+not `localhost`: `localhost` can resolve to `::1` first, where the gateway is not
+listening, and the connection fails after a delay.
 
 **Remote access via tunnel:**
 
@@ -149,7 +153,7 @@ AitherOS exposes OpenAI-compatible endpoints that any agent can use:
 ```bash
 # For Aider, Cursor, Cline, Roo Code, Continue.dev:
 export OPENAI_BASE_URL=https://127.0.0.1:8150/v1
-export OPENAI_API_KEY=<internal-secret>
+export OPENAI_API_KEY=<a key minted for this client>   # never a shared/internal secret
 ```
 
 ### External Gateway (gateway.aitherium.com) — public API
@@ -224,9 +228,10 @@ router.set_failover_chain([
 ])
 ```
 
-For Claude Code, use the watchdog:
+For Claude Code there is no background watchdog (`adk claude-model watch` is not
+implemented); run the one-shot check instead:
 ```bash
-adk claude-model watch --daemon    # monitors for rate limits, auto-switches
+adk claude-model failover          # test the current profile; if broken, switch to the next working one
 ```
 
 ---

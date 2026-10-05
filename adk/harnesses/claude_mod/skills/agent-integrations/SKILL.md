@@ -2,8 +2,13 @@
 name: agent-integrations
 description: Integrate awdk and AitherOS with mainstream coding agent harnesses (Claude Code, Cursor, Aider, Cline, Codex, Hermes, Roo Code) — both as a CLIENT of cloud providers (OpenRouter, DeepSeek, Anthropic, Moonshot) and as a BACKEND that other agents can use. Two-way integration.
 ---
+<!-- Generated from the awskills pack (skills/agent-integrations.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # agent-integrations — aither talks to everything, everything talks to aither
+
+Requires: an AitherOS deployment — `adk claude-model` reads its profile tool and
+`claude_profiles.yaml`, and the router (:8150) and AitherClaudeBridge (:8151) are AitherOS
+services. With awdk alone, only `adk keys` and `adk backend` work.
 
 AitherOS integrates with coding agents in TWO directions:
 
@@ -43,10 +48,10 @@ adk claude-model use kimi-k3           # Kimi K3, 1M context
 adk claude-model use anthropic         # Stock Claude
 
 # Bridge providers (needs AitherClaudeBridge running):
-adk claude-model use openrouter-auto   # OpenRouter, auto-routing
-adk claude-model use aither-best       # Local qwen3.6-27b
-adk claude-model use aither-routed     # router auto-routing
+adk claude-model use aither-orchestrator   # local orchestrator model via the bridge
 ```
+
+`adk claude-model list` prints the profiles your deployment actually defines; use those names.
 
 ---
 
@@ -59,7 +64,7 @@ AitherOS exposes **three OpenAI-compatible endpoints** that any coding agent can
 ```bash
 # Any agent that accepts OPENAI_BASE_URL:
 export OPENAI_BASE_URL=https://127.0.0.1:8150/v1
-export OPENAI_API_KEY=<your-internal-secret>
+export OPENAI_API_KEY=<a key minted for this client>   # never a shared/internal secret
 ```
 
 Works with: **Aider**, **Cursor**, **Cline**, **Roo Code**, **Kilo Code**, **Continue.dev**
@@ -156,9 +161,10 @@ OpenRouter provides a unified gateway with automatic fallback routing:
 # Store your key
 adk keys set openrouter
 
-# Use via bridge
-adk claude-model use openrouter-auto
+# Use via bridge: no OpenRouter profile ships by default. Add one as in
+# "Bridge (OpenAI protocol)" above, then:
 adk claude-model bridge start  # if not already running
+adk claude-model use <your-openrouter-profile>
 ```
 
 OpenRouter model slugs for coding:

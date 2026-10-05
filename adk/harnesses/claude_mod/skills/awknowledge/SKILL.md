@@ -4,6 +4,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, PowerShell
 description: Install a measured operating doctrine for running an agentic coding tool at program scale — prompt shape, live-proof gates, plan documents, persistent memory, delegation, compaction and model routing. Mined from 27,939 prompts over 210 days plus a 34-day re-measurement, not invented.
 argument-hint: [install | explain | analyze]
 ---
+<!-- Generated from the awskills pack (skills/awknowledge.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Aither World Knowledge — an operating doctrine you can install
 

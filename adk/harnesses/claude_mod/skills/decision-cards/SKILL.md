@@ -3,6 +3,7 @@ name: decision-cards
 description: >-
   Decision Cards — structured asks that actually reach the owner. Decision cards surface a decision, blocker, or critical fact as a window the owner can click, type into, and answer — without burying it in terminal prose that stays unread.
 ---
+<!-- Generated from the awskills pack (skills/decision-cards.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Decision Cards — structured asks that actually reach the owner
 

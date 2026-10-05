@@ -1,7 +1,8 @@
 ---
 name: deer-flow
-description: Run ByteDance's DeerFlow — a LangGraph-based super-agent harness for autonomous research, coding and content creation with sub-agents, persistent memory and sandboxed execution. Covers Docker and local setup, pointing it at your own OpenAI-compatible endpoint via config.yaml, its MCP server support, and driving it from the AitherOS toolkit as a managed agent rather than a separate silo.
+description: Run ByteDance's DeerFlow — a LangGraph-based super-agent harness for autonomous research, coding and content creation with sub-agents, persistent memory and sandboxed execution. Covers Docker and local setup, pointing it at your own OpenAI-compatible endpoint via config.yaml, its MCP server support (extensions_config.json), and driving it from the AitherOS toolkit as a managed agent rather than a separate silo.
 ---
+<!-- Generated from the awskills pack (skills/deer-flow.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # deer-flow — a long-running research/coding harness you host yourself
 
@@ -69,8 +70,11 @@ should hit *your* endpoint, not a hosted provider.
 
 ## MCP servers
 
-DeerFlow supports MCP servers in **HTTP/SSE and stdio** modes, configured in `config.yaml`,
-with per-tool-call timeouts via `tool_call_timeout`. That matters for long runs: a sub-agent
+DeerFlow supports MCP servers in **HTTP/SSE and stdio** modes. They are configured in
+**`extensions_config.json`** in the project root (copy `extensions_config.example.json`), not in
+`config.yaml`; restart DeerFlow after editing it. Each server takes `session_init_timeout` and
+`tool_call_timeout` (seconds; the call timeout bounds stdio tool calls, while ordinary HTTP/SSE
+tools use transport timeouts). That matters for long runs: a sub-agent
 blocked on a slow tool with no timeout stalls the whole graph, and the symptom is a run that
 looks alive but never advances. **Set `tool_call_timeout` before your first long task**, not
 after one hangs.

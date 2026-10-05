@@ -3,12 +3,16 @@ name: character-forge
 description: >-
   Character Forge — consistent characters, animation, talking avatars. The definitive procedure for making a character that stays the same character. Every trap below was paid for in real GPU hours and real off-model garbage. Read the Core Law first; it is the whole skill.
 ---
+<!-- Generated from the awskills pack (skills/character-forge.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Character Forge — consistent characters, animation, talking avatars
 
 The definitive procedure for making a character that **stays the same character**. Every trap
 below was paid for in real GPU hours and real off-model garbage. Read the Core Law first; it
 is the whole skill.
+
+**Requires:** an AitherOS deployment with its media-generation service (i2v, first-last-frame,
+inpaint and LoRA-training endpoints). The operation chain below names those calls; it does not ship them.
 
 **For color truth on anything produced here** (ACES grading, LUTs, sRGB/HDR mastering) see related
 media processing guides.
@@ -70,7 +74,7 @@ the identity; a design prompt would fight it.
 Media generation endpoints are called via standard APIs:
 
 ```bash
-# FACIAL motion — i2v from ONE still. Head must stay put (see trap #16).
+# FACIAL motion — i2v from ONE still. Head must stay put (see trap #15).
 # Animate a single image with facial motion.
 # Parameters: image, prompt (motion description), motion intensity, duration
 
@@ -109,37 +113,34 @@ Media generation endpoints are called via standard APIs:
 3. **GPU busy is a normal 200 response, not an exception.** Retry with backoff (20–60s).
    The GPU is shared with other workloads.
 
-4. **Safety filters hard-block certain literal terms** (child-safety guards).
-   ✅ **Use age-neutral alternatives** ("little" / "tiny" / "young").
-
-5. **LoRA training must use RAW frames (background intact), NOT transparent cut-outs.** Trainers
+4. **LoRA training must use RAW frames (background intact), NOT transparent cut-outs.** Trainers
    flatten alpha unpredictably — transparent → dark background → poisons the LoRA. Cut the
    background only for *display* assets.
 
-6. **Aggressive motions drift off-model.** Gentle motions (idle, blink, talk, subtle expressions)
+5. **Aggressive motions drift off-model.** Gentle motions (idle, blink, talk, subtle expressions)
    stay rock-solid. Strong ones (`jump`, `dance`, `turn`, `stretch`) give the pose variety the
    LoRA needs *and* are the most likely to warp the body. **Always curate — cull mutant frames
    before training.** 150 frames with 40 mutants is worse than 110 clean ones.
 
-7. **Scene-heavy prompts REPLACE the character.** Mood prompts like `"storm cloud above"` or
+6. **Scene-heavy prompts REPLACE the character.** Mood prompts like `"storm cloud above"` or
    `"confetti, arms up"` made a faceless character render as a *scene*. For expression
    work use **face-only** language, and pin the pose ("same character, exact same sitting pose,
    plain white background, no props, no text").
 
-8. **Avoid framing clichés.** Some phrasing draws software UIs, toolbars, or hallucinated text.
+7. **Avoid framing clichés.** Some phrasing draws software UIs, toolbars, or hallucinated text.
    Test framing language separately.
 
-9. **Media is served by content hash, not numeric id.** Path refs are for download; numeric ids are
+8. **Media is served by content hash, not numeric id.** Path refs are for download; numeric ids are
    for operation parameters. Know which you need.
 
-10. **API parameter names matter.** Passing the wrong field name → server replies with a missing-field
+9. **API parameter names matter.** Passing the wrong field name → server replies with a missing-field
     error and the caller silently falls back to defaults. ✅ **When unsure: check the API docs
     for exact param names.**
 
-11. **Download by the returned path reference, not by constructing from numeric id.** Ops return
+10. **Download by the returned path reference, not by constructing from numeric id.** Ops return
     content-addressed paths; numeric-id URLs 404.
 
-12. **i2v DAMPS dramatic emotion — write PHYSICAL motion, and label by the RESULT.** The prompt
+11. **i2v DAMPS dramatic emotion — write PHYSICAL motion, and label by the RESULT.** The prompt
     *"ears droop, looks down sadly, quivering frown, teary eyes"* produced **no tears and no
     drooping ears** — it produced a half-lidded expression that reads as *"really…?"*. That is an
     excellent asset; it just isn't "sad".
@@ -164,12 +165,12 @@ Media generation endpoints are called via standard APIs:
     *"really…?"* expression → keep it, relabel it `unimpressed`. A mislabeled-but-good clip is still good;
     mislabeling poisons emotion classification.
 
-13. **NEVER kill a render mid-run — it ORPHANS the job.** Orphaned jobs pile up in the render queue
+12. **NEVER kill a render mid-run — it ORPHANS the job.** Orphaned jobs pile up in the render queue
     and starve every later render. **Never run two copies of the generator** that both write state:
     each holds state in memory and they race their saves, silently clobbering each other's work.
     Verify exactly ONE process before walking away.
 
-14. **The GPU compute context can DIE — and it looks like "slow", not "broken".**
+13. **The GPU compute context can DIE — and it looks like "slow", not "broken".**
     Signature: **GPU at 0% utilization but memory nearly full**, queue shows `running: 0,
     pending: N` (jobs never picked up), and logs show CUDA errors. Renders then time out forever
     with no output ever produced.
@@ -180,13 +181,13 @@ Media generation endpoints are called via standard APIs:
     - Watch for creeping slowdown (28min → 70min/clip) — that is this wedge tightening. Check
       **GPU util at 0% + full memory = wedge, not load.**
 
-15. **There is a HARD server ceiling on animated renders (minutes), and you CANNOT raise it.**
+14. **There is a HARD server ceiling on animated renders (minutes), and you CANNOT raise it.**
     The system enforces a maximum duration, so renders exceeding it die with a timeout.
     - **8-frame clips take ~18–25 min** on a shared GPU → comfortable headroom.
     - This is the same class as trap #1 (timeout forwarding): the real fix is a properly-wired
       timeout parameter; until then, size the clip to fit.
 
-16. **⚠️ THE BIG ONE: i2v holds the character ONLY while the head keeps its shape and scale.**
+15. **⚠️ THE BIG ONE: i2v holds the character ONLY while the head keeps its shape and scale.**
     i2v sees **exactly ONE frame**. The moment the head rotates — or balloons, or tips back — the
     model must invent the character from a view it has NEVER seen, and it substitutes a **generic
     animal**. Measured on a distinctive character with unique ears:

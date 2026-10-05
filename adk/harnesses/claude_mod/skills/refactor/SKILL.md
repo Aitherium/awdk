@@ -5,6 +5,7 @@ description: Refactor code to improve structure, readability, and maintainabilit
 argument-hint: [<file_path>|<pattern>|--extract|--rename|--optimize]
 
 ---
+<!-- Generated from the awskills pack (skills/refactor.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Working directory: !`pwd`

@@ -3,6 +3,7 @@ name: aither-codegraph
 description: >-
   A call-graph-aware code index your agents can query. Grep finds strings; CodeGraph finds *structure*. It parses a codebase into chunks (functions, classes, routes) with a real call graph — who calls what, who's affected by a change — and lets an agent ask 'where is auth enforced?' and get the symbol, its signature, its callers, and its callees. It's the difference between an agent that greps and one that understands the code.
 ---
+<!-- Generated from the awskills pack (skills/aither-codegraph.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aither-codegraph — a call-graph-aware code index your agents can query
 
@@ -87,7 +88,7 @@ results — which is why `awgraph stats` always prints coverage.
 pip install awdk
 cd /path/to/your/python/project
 adk run            # detects Python → "Indexing N files... M chunks in Xs" → tools attached
-adk chat           # now ask: "where is rate limiting enforced?"
+adk chat <agent>   # name from `adk agents ls`; ask: "where is rate limiting enforced?"
 ```
 
 Your agent gains:

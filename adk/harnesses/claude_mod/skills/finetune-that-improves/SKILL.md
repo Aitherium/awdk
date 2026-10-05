@@ -3,6 +3,7 @@ name: finetune-that-improves
 description: >-
   Train your own model without making it worse. Most fine-tunes lose to the model they started from, and you cannot tell from the score. This is what we learned doing it wrong seven times in a row.
 ---
+<!-- Generated from the awskills pack (skills/finetune-that-improves.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # finetune-that-improves — train your own model without making it worse
 

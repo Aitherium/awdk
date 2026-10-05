@@ -2,11 +2,16 @@
 name: claude-model-switcher
 description: Switch Claude Code between DeepSeek (native 1M context), Kimi, local AitherOS models, and stock Anthropic — one command, no manual config. Use when you hit Claude rate limits, want cheaper/faster models, or need to keep coding on alternative backends.
 ---
+<!-- Generated from the awskills pack (skills/claude-model-switcher.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # claude-model-switcher — keep coding when Claude hits limits
 
 Switch Claude Code CLI to **DeepSeek V4 Flash** (1M context), **DeepSeek V4 Pro** (1M, reasoning),
 **Kimi K3** (1M), **local open-weight models** (free), or back to **stock Anthropic** — one command.
+
+**Requires:** awdk (`adk`) installed; your own DeepSeek/Kimi API key for those profiles; the
+local `aither-*` profiles additionally need an AitherOS deployment running the Claude bridge and
+model router.
 
 ```bash
 adk claude-model use deepseek-flash   # 1M context, fast, native Anthropic API

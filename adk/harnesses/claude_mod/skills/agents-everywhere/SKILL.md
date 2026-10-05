@@ -2,6 +2,7 @@
 name: agents-everywhere
 description: Turn an agent idea into a verified, shareable Aitherium tool across awdk, awsh, MCP, WebMCP, PWA, Codex, Claude Code, and other agent CLIs. Use when bootstrapping local inference, connecting existing agents, or packaging a reusable agent tool.
 ---
+<!-- Generated from the awskills pack (skills/agents-everywhere.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # agents-everywhere — idea to a tool another agent can actually use
 
@@ -143,17 +144,18 @@ tool call rather than treating “not configured” as allowed.
 For a local stdio MCP server, generate a config from the actual Python environment and
 project path. Do not paste a guessed path into a shared recipe.
 
-Claude Code project scope:
+Claude Code project scope (`<your-mcp-server-command>` is the command that starts YOUR
+stdio MCP server; this pack does not ship one):
 
 ```bash
-claude mcp add forgepilot --scope project -- python -m aitherium_pack mcp
+claude mcp add forgepilot --scope project -- <your-mcp-server-command>
 claude mcp get forgepilot
 ```
 
 Codex CLI:
 
 ```bash
-codex mcp add forgepilot -- python -m aitherium_pack mcp
+codex mcp add forgepilot -- <your-mcp-server-command>
 codex mcp list
 ```
 

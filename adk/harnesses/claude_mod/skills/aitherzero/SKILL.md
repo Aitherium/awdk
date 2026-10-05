@@ -2,6 +2,7 @@
 name: aitherzero
 description: Provision any machine from one config file and a library of numbered PowerShell automation-scripts. Clone the public AitherZero repo, build the module, and run scripts or playbooks on Windows, Linux, or macOS under PowerShell 7. Covers the layered config model, the real command surface, and which pieces are public versus internal.
 ---
+<!-- Generated from the awskills pack (skills/aitherzero.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aitherzero — provision any machine from one config file
 
@@ -22,8 +23,9 @@ Import-Module ./AitherZero.psd1 -Force
 > **`./build.ps1` is not optional and is easy to miss.** The repo does **not** ship a committed
 > `AitherZero.psd1` — `build.ps1` generates it at the repo root and in `bin/`. Skip it and
 > `Import-Module ./AitherZero.psd1` fails with "file not found", which reads like a bad clone.
-> (The repo's own README also references a `bootstrap.ps1` that is not currently in the public
-> tree — use the module commands below instead.)
+> (For a blank machine, the repo's `bootstrap.ps1` / `bootstrap.sh` does the fetch, build,
+> import and a default playbook in one step: run `./bootstrap.ps1 -Playbook none` to only
+> install and import the framework, or `-DryRun` to see the playbook plan first.)
 
 **Check — this must list scripts, not error:**
 
@@ -124,7 +126,6 @@ public one, verified against this repository.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Import-Module ./AitherZero.psd1` — file not found | skipped the build | run `./build.ps1` first |
-| `bootstrap.ps1` not found | not in the public tree | use `Invoke-AitherPlaybook` / `Invoke-AitherScript` |
 | A dot-prefixed `PRODUCTS`-style path does nothing | private-monorepo path from an older write-up | use the public paths in this skill |
 | Config Builder shows no parameters | `config-schema.json` not loaded, or stale | re-run the exporter, then load the file in the page |
 | Script number not found | inventory differs from internal docs | `Get-AitherScript` lists what you actually have |

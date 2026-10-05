@@ -115,8 +115,9 @@ def test_generator_is_idempotent_and_owns_the_tree(tmp_path):
     assert set(first) == {
         "README.md", "alpha/SKILL.md", "awfoo/SKILL.md", "awfoo/ref/notes.md", "decoy/SKILL.md",
     }
-    assert first["alpha/SKILL.md"] == b"---\nname: alpha\n---\nA\n"
+    assert first["alpha/SKILL.md"] == b"---\nname: alpha\n---\n" + gen.marker("alpha") + b"A\n"
     assert b"brick" in first["awfoo/SKILL.md"]
+    assert gen.marker("awfoo") not in first["awfoo/SKILL.md"]  # a brick's own skill
     (dest / "alpha" / "SKILL.md").write_text("hand edit\n")
     assert gen.main(["--root", str(root), "--check"]) == 1
 
@@ -124,6 +125,24 @@ def test_generator_is_idempotent_and_owns_the_tree(tmp_path):
 def test_generator_cannot_run_without_sources(tmp_path):
     gen = _load(GEN, "sync_claude_mod")
     assert gen.main(["--root", str(tmp_path), "--check"]) == 2
+
+
+def test_generator_honours_the_public_pack_excludes(tmp_path):
+    """A skill the public awskills mirror holds back must not ship in awdk either."""
+    gen = _load(GEN, "sync_claude_mod")
+    root = _fake_repo(tmp_path)
+    wf = root / gen.SYNC_SKILLS_WF
+    wf.parent.mkdir(parents=True)
+    wf.write_text('env:\n  SYNC_EXCLUDES: "--exclude=alpha.md"\n')
+    assert gen.main(["--root", str(root)]) == 0
+    assert not (root / gen.PLUGIN_REL / "skills" / "alpha").exists()
+    wf.write_text("env:\n  RENAMED: x\n")
+    assert gen.main(["--root", str(root), "--check"]) == 2
+
+
+def test_generator_self_test_passes():
+    gen = _load(GEN, "sync_claude_mod")
+    assert gen.main(["--self-test"]) == 0
 
 
 @pytest.mark.skipif(

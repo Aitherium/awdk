@@ -5,6 +5,7 @@ description: Use GitHub as the control plane for autonomous agents — issues as
 argument-hint: [wire an agent loop | public/private split | dispatch a job | audit a run]
 
 ---
+<!-- Generated from the awskills pack (skills/github-agentic-c2.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # GitHub as an agentic control plane
 

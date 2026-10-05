@@ -3,6 +3,7 @@ name: docker-wsl2-build-safety
 description: >-
   Stop bulk builds from killing Docker Desktop (and don't blame the disk). Docker Desktop on Windows runs its engine inside a WSL2 VM with a fixed memory ceiling. Build a lot of images while a lot of containers are resident and the VM's storage layer can collapse — taking every container down with it. The failure does not look like 'you ran out of memory'. It looks like your disk is dying.
 ---
+<!-- Generated from the awskills pack (skills/docker-wsl2-build-safety.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # docker-wsl2-build-safety — stop bulk builds from killing Docker Desktop (and don't blame the disk)
 
@@ -56,7 +57,7 @@ the VM is fully shut down (`wsl --shutdown`) and brought back.
 
 ## The guard
 
-Two rules, both mechanical:
+Three rules, all mechanical:
 
 **1. Never `docker compose build` a large set with the fleet resident.** Build on a
 memory-capped `docker-container` builder so a runaway build is OOM-killed *inside* the
@@ -125,6 +126,9 @@ wsl --shutdown
 Start-Sleep 15
 Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
 ```
+
+`wsl --shutdown` stops **every** WSL distro on the machine, not only Docker's — stop or save
+work in any other distro first.
 
 Then wait — the engine can take several minutes to remount its data disk. If it still won't
 start, check `%LOCALAPPDATA%\Docker\log\vm\init.log` for the `Device offlined` line before

@@ -5,6 +5,7 @@ description: The verification standard — green tests, a 200, and "deployed" ar
 argument-hint: [check | install-hook | explain]
 
 ---
+<!-- Generated from the awskills pack (skills/prove-it-live.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Prove It Live
 
@@ -103,7 +104,7 @@ per-platform notes in [`hooks/README.md`](../hooks/README.md).
 ```bash
 mkdir -p .claude/hooks
 cp hooks/hook_common.py hooks/stop_live_proof.py .claude/hooks/
-python3 hooks/test_hooks.py     # 21 cases, mutation-verified
+python3 hooks/test_hooks.py     # 35 cases, mutation-verified
 ```
 
 Then add the `Stop` entry from `hooks/README.md` to `.claude/settings.json` and restart

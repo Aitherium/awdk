@@ -3,6 +3,7 @@ name: adk-harnesses
 description: >-
   One shell that drives every coding shell. Your agent can hand a task to another coding agent's real product — Claude Code, Codex, Gemini CLI, Aider, OpenCode — and read back one answer.
 ---
+<!-- Generated from the awskills pack (skills/adk-harnesses.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # adk-harnesses — one shell that drives every coding shell
 
@@ -116,9 +117,10 @@ path** — so on a shared or multi-user host, treat a prompt sent through those 
 as visible. That is a property of those tools, not a bug you can configure away.
 
 **2. Each run needs its own account state.** Concurrent subagents sharing one config
-directory will corrupt each other's session. The Claude runner sets a per-run
-`CLAUDE_CONFIG_DIR`; if you drive a CLI yourself, do the equivalent or run them
-strictly one at a time.
+directory will corrupt each other's session. The Claude runner gives a run its own
+`CLAUDE_CONFIG_DIR` only when the run names an account profile (`account_profile`);
+without one, runs share your config home. If you drive a CLI yourself, do the
+equivalent or run them strictly one at a time.
 
 **3. Teardown is the whole process tree, not the process.** A coding agent spawns
 children — language servers, test runners, watchers. Killing the parent leaves them

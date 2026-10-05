@@ -2,6 +2,7 @@
 name: ship-an-app-free
 description: Take an idea to a working app at a public URL using only free tiers — GitHub Pages for the site, GitHub Actions for the build, and a free serverless backend when the app needs one. Written for someone who has never deployed anything: what to choose, the exact commands, the settings that silently break a deploy, and how to verify the live URL actually serves your app.
 ---
+<!-- Generated from the awskills pack (skills/ship-an-app-free.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # ship-an-app-free — idea → public URL, $0, no server to rent
 

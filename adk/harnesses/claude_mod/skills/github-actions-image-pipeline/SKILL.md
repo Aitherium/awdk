@@ -5,6 +5,7 @@ description: Run GitHub Actions image pipelines without rebuilding the same imag
 argument-hint: [audit | build-once | cache | disk | never-run]
 
 ---
+<!-- Generated from the awskills pack (skills/github-actions-image-pipeline.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # GitHub Actions image pipeline
 
@@ -59,21 +60,26 @@ polls the Actions API:
       const sha = context.sha
       let run = null
       for (let i = 0; i < 6 && !run; i++) {
-        const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+        // listWorkflowRuns is scoped to ONE workflow; listWorkflowRunsForRepo ignores
+        // workflow_id and would hand back whichever workflow ran last on this sha.
+        const { data } = await github.rest.actions.listWorkflowRuns({
           owner, repo, workflow_id: 'docker.yml', head_sha: sha, per_page: 1,
         })
         run = data.workflow_runs?.[0] ?? null
         if (!run) await new Promise(r => setTimeout(r, 10000))
       }
-      if (!run) { core.warning(`no docker.yml run for ${sha} — will pull last :latest`); return }
+      if (!run) { core.setFailed(`no docker.yml run for ${sha}`); return }
       const deadline = Date.now() + 40 * 60 * 1000
-      let status = run.status
-      while (Date.now() < deadline && status !== 'completed') {
+      while (Date.now() < deadline && run.status !== 'completed') {
         await new Promise(r => setTimeout(r, 30000))
-        const { data } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: run.id })
-        status = data.status
+        run = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: run.id })).data
       }
+      if (run.status !== 'completed') { core.setFailed(`docker.yml still ${run.status} at the deadline`); return }
+      if (run.conclusion !== 'success') { core.setFailed(`docker.yml concluded ${run.conclusion}: ${run.html_url}`); return }
 ```
+
+Fail the job on every non-success path. A step that warns and carries on retags whatever
+`:latest` happens to be, which is exactly the stale-image deploy this gate exists to stop.
 
 This step needs **`actions: read`** in the job's `permissions` block — without it the
 script dies with `Resource not accessible by integration`, which reads like an auth
@@ -139,7 +145,8 @@ bug**.
 The real chain, each measured:
 
 1. **Workflow won't load** → `secrets.CHROME_EXTENSION_ID` in a step-level `if:` — the
-   `secrets` context is invalid in step `if:` (only `env`, `with`, job-level `if`).
+   `secrets` context is not available in **any** `if:`, step or job level. Map the secret
+   into `env:` and test that instead (`if: env.CHROME_EXTENSION_ID != ''` on the step).
    Also: a duplicate `env:` key in one step, and a `${{ }}` expression split across a JS
    string concat. GitHub fails the file at parse, before any job.
 2. **Shallow checkout** → a step running `git rev-parse HEAD~1` on a default depth-1
@@ -172,7 +179,7 @@ measurement behind it:
 - [ ] Does more than one workflow build the same image? Find one builder, everyone else pulls.
 - [ ] Any `cache-from: type=gha` on a big image? Switch to `type=registry,ref=...:buildcache`.
 - [ ] Any job that pushes images inheriting `packages: read`? Add job-level `packages: write`.
-- [ ] Any step-level `if:` referencing `secrets.`? Move the secret to `env` / job `if`.
+- [ ] Any `if:` (step or job) referencing `secrets.`? Map the secret into `env:` and test `env.X` in a step `if:`.
 - [ ] Any `git rev-parse HEAD~1` (or other history walk) on a job whose checkout lacks `fetch-depth: 0`?
 - [ ] Any Dockerfile `FROM` or build-arg with an unqualified image name?
 - [ ] Any `target:` in a build-push-action matching a stage the Dockerfile actually defines?

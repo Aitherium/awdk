@@ -3,6 +3,7 @@ name: awdk
 description: >-
   Run your own AI agent, on your machine, in three commands. [awdk](https://github.com/Aitherium/awdk) is the agent toolkit: an agent runtime, a local shell, inference setup, and control-plane enrollment in one package. You run the model, the agent loop, the memory, and your data on your own box — Aitherium hosts only the control plane, and you manage everything from api.aitherium.com. Nothing about your inference or data leaves your machine.
 ---
+<!-- Generated from the awskills pack (skills/awdk.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # awdk — run your own AI agent, on your machine, in three commands
 
@@ -38,7 +39,7 @@ adk doctor                      # confirms toolkit, packs, and inference are rea
 model? Skip local inference and set a key instead:
 
 ```bash
-adk keys set anthropic <your-api-key>   # or openai / deepseek / openrouter / groq / together / google
+adk keys set anthropic   # prompts for the key (never put it in argv); or openai / deepseek / openrouter / groq / together / google
 ```
 
 ## Use it
@@ -46,7 +47,7 @@ adk keys set anthropic <your-api-key>   # or openai / deepseek / openrouter / gr
 ```bash
 adk up                          # one command: stand up a persistent agent (hosted-brain default)
 adk run --agents openclaw       # run a specific bundled pack (openclaw / hermes / claude-code)
-adk chat                        # talk to your agent from the terminal
+adk chat <agent>                # talk to an agent by name (names: adk agents ls)
 adk install pack:openclaw       # add an agent pack
 adk pack customize openclaw --system-prompt "You are my focused research assistant."
 adk doctor                      # check inference, packs, enrollment, and mesh health

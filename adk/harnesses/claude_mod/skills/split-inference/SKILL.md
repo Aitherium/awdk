@@ -5,12 +5,13 @@ description: Shard ONE model across MULTIPLE machines' GPUs with llama.cpp RPC â
 argument-hint: "[--recipe bonsai-27b-5090-dgx-rpc|multi-node-rpc-generic|single-node-cuda] [--stage build|main] [--dry-run]"
 
 ---
+<!-- Generated from the awskills pack (skills/split-inference.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Tools: `split_*` from the `split_inference` toolpack (`adk/toolpacks/split_inference`).
 - CLI: `python -m adk.toolpacks.split_inference {topology|resolve|plan|apply|verify}`.
-- Reference topology: main node = local RTX 5090 (a llama.cpp Bonsai container, llama.cpp
-  source at `/work`, model `/work/bonsai.gguf`); RPC backend = `spark.local` (DGX Spark).
+- Reference topology: main node = a local RTX 5090 running llama.cpp (source checkout and
+  model path come from the recipe); RPC backend = a DGX Spark on the same private LAN.
 - Request: `$ARGUMENTS`
 
 ## THE CORE LAW
@@ -56,7 +57,7 @@ The ground-truth signal is `llama-server --list-devices`:
 ```
 Available devices:
   CUDA0: NVIDIA GeForce RTX 5090 (32606 MiB, 30927 MiB free)     <- before
-  RPC0[spark.local:50052]: RPC (... MiB free)                     <- after
+  RPC0[<backend-host>:50052]: RPC (... MiB free)                  <- after
 ```
 
 ### 2. Resolve
@@ -81,8 +82,9 @@ cmake --build build-rpc --config Release -j
 ```
 
 Builds into `build-rpc/` **beside** the existing `build/` so the working non-RPC
-binary is never clobbered. Produces `rpc-server` and an `--rpc`-capable
-`llama-server`. Budget ~25min for a CUDA build.
+binary is never clobbered. Produces the RPC backend binary and an `--rpc`-capable
+`llama-server`. Current upstream llama.cpp names the backend `ggml-rpc-server`; older
+builds (and this pack's recipes) call it `rpc-server`. Use whichever `build-rpc/bin/` holds. Budget ~25min for a CUDA build.
 
 ### 4. Start the backend(s) â€” on the backend host
 
@@ -90,7 +92,7 @@ binary is never clobbered. Produces `rpc-server` and an `--rpc`-capable
 to run on each backend host:
 
 ```bash
-/work/build-rpc/bin/rpc-server --host <PRIVATE_ADDR> --port 50052
+<llama.cpp>/build-rpc/bin/ggml-rpc-server --host <PRIVATE_ADDR> --port 50052   # rpc-server on older builds
 ```
 
 ### 5. Start main + verify

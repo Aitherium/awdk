@@ -4,6 +4,7 @@ allowed-tools: Read, Grep, Glob, Bash
 description: The standing instructions, tool order and hook wiring one team runs its coding agents under -- no false blockers, a 150-word report cap, search-then-graph, awgit in a shared worktree, and the PreToolUse/Stop gates that make each rule real. Rendered from the team's own AGENTS.md and settings.json by a generator; every number was measured on that fleet.
 argument-hint: [read | adopt]
 ---
+<!-- Generated from the awskills pack (skills/agent-operating-doctrine.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Agent operating doctrine
 

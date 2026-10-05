@@ -5,6 +5,7 @@ description: Open-core release hygiene — verify a build doesn't leak private c
 argument-hint: "[check|find|purge] [--repo OWNER/NAME] [--project NAME] [--forbid-path GLOB ...] [--keep-from X.Y.Z]"
 
 ---
+<!-- Generated from the awskills pack (skills/moat-guard.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - git remote: !`git remote get-url origin 2>&1 | head -1`

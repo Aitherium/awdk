@@ -3,6 +3,7 @@ name: pooled-inference
 description: >-
   Run a model no single box can hold, across every tier you own. A 284B sparse MoE at Q4 is ~155 GB. No consumer box holds that. But a desktop with 128 GB DDR5 + a 32 GB GPU, plus a 128 GB unified-memory box, holds it three times over — if you can spread it. llama.cpp's RPC backend does exactly that, and it works.
 ---
+<!-- Generated from the awskills pack (skills/pooled-inference.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # pooled-inference — run a model no single box can hold, across every tier you own
 
@@ -79,7 +80,7 @@ remote backend is the **full endpoint**, not the device name:
 Available buffer types:            Available devices:
   CPU                                CUDA0: RTX 5090
   CUDA0                              RPC0:  <spark-ip>:50053
-  RPC0[<spark-ip>:50053]        <-- what -ot needs
+  RPC0[<spark-ip>:50053]           <-- what -ot needs
 ```
 
 Devices enumerate `RPC0`, `RPC1`, … but **buffer types are ALL `RPC0[endpoint]`**,
@@ -89,8 +90,8 @@ disambiguated only by the bracketed address. Writing the natural `RPC1[...]` fai
 Placement by layer range, not by expert index — expert-name regexes match nothing:
 
 ```bash
--ot 'blk\.(3[7-9]|4[0-2])\.ffn_(gate|up|down)_exps\.=RPC0[10.0.0.2:50054]'  # -> GPU tier
--ot 'blk\.(1[3-9]|2[0-6])\.ffn_(gate|up|down)_exps\.=RPC0[10.0.0.2:50055]'  # -> RAM tier
+-ot 'blk\.(3[7-9]|4[0-2])\.ffn_(gate|up|down)_exps\.=RPC0[192.0.2.10:50054]'  # -> GPU tier
+-ot 'blk\.(1[3-9]|2[0-6])\.ffn_(gate|up|down)_exps\.=RPC0[192.0.2.10:50055]'  # -> RAM tier
 -ot '\.ffn_(gate|up|down)_exps\.=CPU'                                        # remainder
 ```
 
@@ -99,7 +100,8 @@ wrong count silently produces rules that match nothing, and llama.cpp does not w
 
 ## Traps that each cost a run
 
-- **The target is `ggml-rpc-server`**, not `rpc-server`.
+- **The target is `ggml-rpc-server`** in current llama.cpp; builds before the rename produce
+  `rpc-server`. Build the target your checkout defines, and use the same name on every host.
 - **Use `-c`** (local tensor cache) on every backend or each coordinator restart re-ships
   tens of GB. The cache survives a container restart; it does not survive `docker rm`.
 - **A CPU-only backend still needs `--gpus all`** — the binary links CUDA regardless of

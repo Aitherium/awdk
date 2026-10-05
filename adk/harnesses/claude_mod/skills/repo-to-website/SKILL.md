@@ -5,6 +5,7 @@ description: Turn any GitHub repo into a real website on GitHub Pages — a prop
 argument-hint: "[owner/repo] [--docs | --spa <build-dir> | --plain] [--domain example.com]"
 
 ---
+<!-- Generated from the awskills pack (skills/repo-to-website.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 ## Context
 - Target repo: $ARGUMENTS (default: the repo in the current directory)

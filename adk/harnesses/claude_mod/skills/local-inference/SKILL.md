@@ -2,6 +2,7 @@
 name: local-inference
 description: Run a language model on your own hardware for free — pick the right backend (Ollama, llama.cpp, or vLLM) for the machine you actually have, download and quantize a model that fits in memory, serve it on an OpenAI-compatible endpoint, and prove it works with a real round-trip. Covers tool-calling/function-calling setup and the failure modes that look like success.
 ---
+<!-- Generated from the awskills pack (skills/local-inference.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # local-inference — a model on your box, for $0
 
@@ -107,8 +108,12 @@ Serve it OpenAI-compatible on port 8080:
 
 ```bash
 ./build/bin/llama-server -m ./models/Qwen3-8B-Q4_K_M.gguf \
-  -c 8192 --host 0.0.0.0 --port 8080
+  -c 8192 --host 127.0.0.1 --port 8080
 ```
+
+`--host 127.0.0.1` keeps this unauthenticated server on loopback. To serve other machines,
+bind the LAN address, add `--api-key <key>` (llama-server then requires a Bearer token), and
+firewall the port to the hosts that need it; never expose it to the internet.
 
 `-c` is the context window. **Raising it costs RAM** — it is the most common cause of an
 out-of-memory kill that "worked yesterday".

@@ -5,6 +5,7 @@ description: Stand up, verify and repair a fleet of self-hosted GitHub Actions r
 argument-hint: [add N runners | diagnose stuck queue | migrate off a drive]
 
 ---
+<!-- Generated from the awskills pack (skills/github-runner-fleet.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 
 # GitHub runner fleet — one host, many runners
@@ -32,9 +33,17 @@ Get-Service -Name "actions.runner.*" | Select-Object Name, Status
 Get-ChildItem C:\,D:\,E:\ -Directory -EA SilentlyContinue | Where-Object Name -like 'actions-runner*'
 ```
 
-**The tell that a registration is a ghost:** jobs sit `queued` while a runner
-reports `busy=false`. A live idle runner takes the next job within seconds. If it
-does not, it is not there.
+**The tell that a registration may be a ghost:** jobs sit `queued` while a runner
+reports `busy=false`. A live idle runner takes the next job within seconds. But a
+**live runner whose labels do not match the job's `runs-on`** shows exactly the same
+symptom, so check labels before you delete anything:
+
+```powershell
+gh api repos/<OWNER>/<REPO>/actions/runners --jq '.runners[] | "\(.name) \(.status) [\([.labels[].name] | join(","))]"'
+```
+
+Every label in the queued job's `runs-on` must appear on the runner. Only a registration
+with matching labels, no service and no install directory on any host is a ghost.
 
 Delete ghosts — they make the fleet look larger than it is:
 
@@ -51,7 +60,7 @@ Runners do **not** share a directory. Each instance needs its own tree, its own
 ```powershell
 # 1. copy the package (NOT the state — see the two traps below)
 New-Item -ItemType Directory E:\actions-runner-2 -Force
-Copy-Item a runner directory\* E:\actions-runner-2 -Recurse -Force
+Copy-Item <existing-runner-dir>\* E:\actions-runner-2 -Recurse -Force
 
 # 2. STRIP the inherited identity, or config.cmd refuses
 Get-ChildItem E:\actions-runner-2 -Force |
@@ -95,8 +104,12 @@ Registration works unelevated. Installing the **service** does not. Split them:
 # unelevated: registers, and `run.cmd` works until the shell/host restarts
 Start-Process .\run.cmd -WorkingDirectory E:\actions-runner-2 -WindowStyle Hidden
 
-# ELEVATED: makes it survive reboot
-cd E:\actions-runner-2 ; .\svc.cmd install ; .\svc.cmd start
+# ELEVATED: register as a Windows service so it survives reboot (there is no svc.cmd on
+# Windows; that is svc.sh on Linux/macOS). Use a fresh token and --replace the registration.
+cd E:\actions-runner-2
+.\config.cmd --unattended --url https://github.com/<OWNER>/<REPO> --token $tok `
+  --name ci-runner-2 --labels "self-hosted,Windows,X64,local" --work "_work" `
+  --replace --runasservice
 ```
 
 A runner started with `run.cmd` is real capacity **today** and gone after reboot.
@@ -118,7 +131,9 @@ a single point of failure for **all** CI on a disk being decommissioned, and it 
 the likeliest reason the three ghost registrations died in the first place.
 
 New runners go on the runtime drive. Migrating an existing one is
-`svc.cmd uninstall` → move → re-register.
+`.\config.cmd remove --token <removal-token>` (elevated; it also removes the service) → move →
+re-register with `--runasservice`. Mint the removal token with
+`gh api -X POST repos/<OWNER>/<REPO>/actions/runners/remove-token --jq .token`.
 
 ## Verify — the fleet, not the file
 

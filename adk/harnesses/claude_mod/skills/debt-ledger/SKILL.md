@@ -4,6 +4,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, PowerShell
 description: Keep one master tech-debt ledger that actually gets written to — severity tables, collision-free ids via the bundled next_debt_id.py, and the discipline that debt found is debt recorded in the same turn. Includes the stop-hook that blocks finishing a code change without a debt check.
 argument-hint: [add | audit | next-id | install-hook]
 ---
+<!-- Generated from the awskills pack (skills/debt-ledger.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Debt Ledger
 
@@ -113,7 +114,7 @@ per-platform notes in [`hooks/README.md`](../hooks/README.md).
 ```bash
 mkdir -p .claude/hooks
 cp hooks/hook_common.py hooks/stop_debt_ledger.py .claude/hooks/
-python3 hooks/test_hooks.py     # 21 cases, mutation-verified
+python3 hooks/test_hooks.py     # 35 cases, mutation-verified
 ```
 
 Then add the `Stop` entry from `hooks/README.md` to `.claude/settings.json` and restart

@@ -3,6 +3,7 @@ name: aithermesh
 description: >-
   Stand up a private mesh and onboard nodes + agents to it. AitherMesh is a private overlay network (WireGuard, 10.77.0.0/16) that lets machines you own — anywhere, behind any NAT or firewall — reach each other as if they were on one LAN, and lets your agents run *across* them. This skill uses [AitherZero](aitherzero.md)'s automation-scripts to do the whole thing: create the control plane, join nodes to the overlay, and deploy mesh-native agents onto them — idempotent, one playbook, or step by step.
 ---
+<!-- Generated from the awskills pack (skills/aithermesh.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aithermesh — stand up a private mesh and onboard nodes + agents to it
 
@@ -11,6 +12,10 @@ anywhere, behind any NAT or firewall — reach each other as if they were on one
 agents run *across* them. This skill uses [AitherZero](aitherzero.md)'s automation-scripts to do the
 whole thing: create the control plane, join nodes to the overlay, and deploy mesh-native agents onto
 them — idempotent, one playbook, or step by step.
+
+**Requires:** an AitherZero install that carries the mesh automation scripts and the
+`deploy-mesh-agent` playbook. The public AitherZero repository does not ship them (of the
+scripts below, only `3214` is public), so this runbook needs the full AitherOS distribution.
 
 ## Set up the mesh (one command)
 

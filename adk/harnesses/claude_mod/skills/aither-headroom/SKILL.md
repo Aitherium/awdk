@@ -1,17 +1,21 @@
 ---
 name: aither-headroom
 description: >-
-  Cut agent token cost with reversible context compression. Agents burn most of their tokens re-sending bulky context every turn: verbose JSON tool output, retrieved documents, file dumps. [headroom](https://github.com/wizzense/headroom) (headroom-ai) crushes that content with a SmartCrusher pipeline — measured ~46% token savings on an 87 KB lint blob — while *protecting* conversation and user text so answers don't degrade. AitherOS wires it in two ways: an automatic pre-send hook at the single LLM chokepoint, and agent-callable tools you invoke mid-loop.
+  Cut agent token cost with reversible context compression. Agents burn most of their tokens re-sending bulky context every turn: verbose JSON tool output, retrieved documents, file dumps. [headroom](https://github.com/headroomlabs-ai/headroom) (headroom-ai) crushes that content with a SmartCrusher pipeline — measured ~46% token savings on an 87 KB lint blob — while *protecting* conversation and user text so answers don't degrade. AitherOS wires it in two ways: an automatic pre-send hook at the single LLM chokepoint, and agent-callable tools you invoke mid-loop.
 ---
+<!-- Generated from the awskills pack (skills/aither-headroom.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aither-headroom — cut agent token cost with reversible context compression
 
 Agents burn most of their tokens re-sending bulky context every turn: verbose JSON tool
-output, retrieved documents, file dumps. [**headroom**](https://github.com/wizzense/headroom)
+output, retrieved documents, file dumps. [**headroom**](https://github.com/headroomlabs-ai/headroom)
 (`headroom-ai`) crushes that content with a SmartCrusher pipeline — **measured ~46% token
 savings on an 87 KB lint blob** — while *protecting* conversation and user text so answers
 don't degrade. AitherOS wires it in two ways: an **automatic** pre-send hook at the single
 LLM chokepoint, and **agent-callable** tools you invoke mid-loop.
+
+**Requires:** an AitherOS deployment with the `aither-headroom` sidecar and the LLM gateway
+(the agent-callable pack also works on a standalone adk agent that can reach a headroom sidecar).
 
 > Live-proven (headroom 0.25.0, 2026-07-19): a 26,853-token tool payload compressed to
 > 14,471 tokens (`saved 12,382`, `router:smart_crusher:0.48`) with `router:protected:user_message`
@@ -115,11 +119,7 @@ high-ratio compression without a needle check.
 # 1) Sidecar healthy?
 curl http://127.0.0.1:8788/health          # → {"ok": true, "headroom": "0.25.0"}
 
-# 2) Prove savings on real context (installs headroom-ai in an isolated venv, drives a
-#    realistic coding-agent payload, reports token savings + transforms):
-# measure it on a realistic payload before trusting the ratio
-
-# 3) After enabling, watch LLMTraceStore for compression_ratio / tokens_saved per call.
+# 2) After enabling, watch LLMTraceStore for compression_ratio / tokens_saved per call.
 ```
 
 ## Part of one substrate

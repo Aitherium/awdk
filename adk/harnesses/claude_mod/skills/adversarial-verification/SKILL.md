@@ -3,6 +3,7 @@ name: adversarial-verification
 description: >-
   Stop grading your own homework. There is one failure that costs more agent-hours than any bug: the agent reads its own diff, decides it is correct, and reports success. Every expensive incident has that shape. A green healthcheck. An HTTP 200. A passing import. A test that goes green. All true, all at the same time as the feature being completely inert.
 ---
+<!-- Generated from the awskills pack (skills/adversarial-verification.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # adversarial-verification — stop grading your own homework
 

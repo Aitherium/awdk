@@ -2,6 +2,7 @@
 name: model-fitness-benchmark
 description: Decide whether a candidate model is fit to run an agent stack, using hard oracles instead of vibes or vendor tables. Use when choosing between models for an orchestrator/router role, when a vendor benchmark says a model is good and you need to verify it on your own criteria, when a fine-tune needs a before/after that can actually move, or when a benchmark keeps returning the same score for every candidate.
 ---
+<!-- Generated from the awskills pack (skills/model-fitness-benchmark.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Model fitness — benchmarking a model for agent work
 

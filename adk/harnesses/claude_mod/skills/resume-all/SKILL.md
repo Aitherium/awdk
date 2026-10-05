@@ -5,6 +5,7 @@ argument-hint: "[snapshot | restore | all | 1,3,5 | <filter text>]  (empty = pic
 allowed-tools: Bash(pwsh:*)
 
 ---
+<!-- Generated from the awskills pack (skills/resume-all.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 You are helping the user resume their previously-killed Claude Code sessions.
 

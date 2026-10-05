@@ -3,6 +3,7 @@ name: graph-rag-agent
 description: >-
   Build a knowledge graph and an agent that owns it. Point [awdk](awdk.md) at a folder of documents (or a codebase) and it builds a knowledge graph — chunked, embedded, and linked — then give a dedicated agent that graph as its memory so it answers from *your* material instead of guessing. This is graph RAG without standing up a vector database yourself: ingestion, storage, retrieval, and the agent are one toolkit.
 ---
+<!-- Generated from the awskills pack (skills/graph-rag-agent.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # graph-rag-agent — build a knowledge graph and an agent that owns it
 

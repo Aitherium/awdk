@@ -3,6 +3,7 @@ name: nvidia-cuda-mcp
 description: >-
   Give your agent current CUDA knowledge. CUDA is the worst possible subject to answer from a language model's memory. The API surface is large, version-skewed, and full of names that are *almost* right: cudaMallocAsync vs cudaMalloc, __grid_constant__ (12.x only), Nsight Compute metric names that changed between releases, occupancy rules that differ per compute capability.
 ---
+<!-- Generated from the awskills pack (skills/nvidia-cuda-mcp.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # nvidia-cuda-mcp — give your agent current CUDA knowledge
 

@@ -2,6 +2,7 @@
 name: bonsai2-27b
 description: "Serve PrismML's Bonsai 2 27B (Ternary-Bonsai-2-27B, PTQ1_0 5.9 GB or PQ2_0 7.2 GB) as an OpenAI-compatible endpoint with the PrismML llama.cpp fork. Use on 'run Bonsai 2 locally', 'self-host a 27B on a GPU or CPU box', 'why does Bonsai 2 output gibberish'. Stock llama.cpp cannot serve it."
 ---
+<!-- Generated from the awskills pack (skills/bonsai2-27b.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # bonsai2-27b — a 27B reasoning model in 6–7 GB, on your GPU or your CPU
 
@@ -41,7 +42,8 @@ ASSET=llama-$RELEASE-bin-linux-cuda-12.4-x64.tar.gz     # NVIDIA, 10 GB+ VRAM ->
 # ASSET=llama-$RELEASE-bin-ubuntu-vulkan-x64.tar.gz     # any GPU via Vulkan -> PTQ1_0
 # ASSET=llama-$RELEASE-bin-ubuntu-x64.tar.gz            # CPU only          -> PTQ1_0
 # ASSET=llama-$RELEASE-bin-macos-arm64.tar.gz           # Apple silicon     -> PQ2_0 at 16 GB+
-mkdir -p ~/bonsai2/bin && curl -fL "$BASE/$ASSET" | tar -xz -C ~/bonsai2/bin
+# the tarball nests everything under llama-$RELEASE/; strip it so the binary is ~/bonsai2/bin/llama-server
+mkdir -p ~/bonsai2/bin && curl -fL "$BASE/$ASSET" | tar -xz --strip-components=1 -C ~/bonsai2/bin
 LLAMA=$(find ~/bonsai2/bin -name llama-server -type f | head -1)
 "$LLAMA" --version    # must run before you download 6 GB of weights
 
@@ -110,6 +112,9 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 ```
+
+`ExecStart` assumes the prebuilt release extracted as above; if you built from source, use
+`%h/llama.cpp/build/bin/llama-server` instead. Match the `.gguf` name to the quant you downloaded.
 
 ```bash
 systemctl --user daemon-reload && systemctl --user enable --now bonsai2-llama

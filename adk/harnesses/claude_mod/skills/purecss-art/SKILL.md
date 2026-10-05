@@ -5,6 +5,7 @@ description: Generate realistic illustrations hand-coded entirely in HTML + CSS 
 argument-hint: "[what to draw] [optional style hint]"
 
 ---
+<!-- Generated from the awskills pack (skills/purecss-art.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # PureCSS art → live HTML/CSS + PNG preview
 

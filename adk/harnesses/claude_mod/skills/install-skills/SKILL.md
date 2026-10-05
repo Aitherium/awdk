@@ -2,6 +2,7 @@
 name: install-skills
 description: Install this skill pack into whatever agent you already use — Claude Code, OpenClaw, Hermes, Cursor, Goose, Codex, Gemini CLI, or any Agent-Skills-compatible client. Explains the two file layouts (flat slash-commands vs the SKILL.md folder standard), which agent wants which, and how to verify the agent can actually see them.
 ---
+<!-- Generated from the awskills pack (skills/install-skills.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # install-skills — put these skills inside your agent
 

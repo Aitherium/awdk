@@ -2,10 +2,11 @@
 name: tau
 description: Install and run Tau, a minimalist terminal coding agent in Python — point it at your own local model via ~/.tau/catalog.toml instead of a paid API, install this skill pack into its skills directory, and use the /skill: invocation. Covers the folder-only skill layout tau enforces and the fact that tau has no MCP support, so tools come from extensions rather than an MCP server.
 ---
+<!-- Generated from the awskills pack (skills/tau.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # tau — a minimalist terminal coding agent you can actually read
 
-[Tau](https://github.com/wizzense/tau) (MIT, Python 3.12+) is a terminal coding agent: it
+[Tau](https://github.com/huggingface/tau) (MIT, Python 3.12+) is a terminal coding agent: it
 reads files, edits code, runs commands, and keeps session history. It's a Python port of Pi's
 minimalist agent — small enough that you can read the whole thing, which makes it a good
 choice when you want to *understand* your agent rather than just use it.

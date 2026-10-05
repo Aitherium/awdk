@@ -2,6 +2,7 @@
 name: ods
 description: Stand up ODS (Osmantic Deployment System) — one installer that turns a PC, Mac, or Linux box into a private AI server with local LLM inference, a chat UI, voice, agents, workflow automation, RAG and image generation, all in Docker with no cloud dependency. Use when someone wants the whole local AI stack rather than wiring individual services by hand.
 ---
+<!-- Generated from the awskills pack (skills/ods.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # ods — turn a box you already own into a private AI server
 
@@ -99,9 +100,9 @@ macOS/Windows. **Getting the port wrong per-platform is the most common wiring m
 
 ## Upstream vs fork
 
-`Osmantic/ODS` is upstream and canonical for install instructions;
-[`wizzense/ODS`](https://github.com/wizzense/ODS) is a fork. Install from whichever you intend
-to track, but **don't mix** — a fork's `install.sh` and upstream's `model-library.json` can
+[`Osmantic/ODS`](https://github.com/Osmantic/ODS) is upstream and canonical for install
+instructions. If you install from a fork instead, track that fork consistently and **don't
+mix** — a fork's `install.sh` and upstream's `model-library.json` can
 drift, and the failure shows up as a service that won't start rather than as a clear version
 error.
 

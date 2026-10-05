@@ -2,6 +2,7 @@
 name: aither-start
 description: Zero-to-working-agent on your own machine, for someone who has never written code. Detects the hardware, installs the agent toolkit, downloads a model that actually fits, wires it into whatever agent you already use, and proves it works with a real round-trip. The front door to every other skill in this pack.
 ---
+<!-- Generated from the awskills pack (skills/aither-start.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # aither-start — you have a computer and an AI agent; let's make it yours
 
@@ -59,8 +60,10 @@ pip install awdk
 adk onboard --quick
 ```
 
-`--quick` detects your hardware, stands up inference, installs an agent pack, and enrolls the
-machine. It asks before anything irreversible.
+`--quick` detects your hardware, stands up inference (skipped if a cloud key is already set),
+installs an agent pack, and enrolls the machine. It does not stop to ask: run `adk onboard
+--quick` only on a machine where that is what you want. A failed pack install or enrollment
+prints the retry command and the chain continues.
 
 **Check — this must print a version, not an error:**
 

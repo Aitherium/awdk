@@ -3,6 +3,7 @@ name: bonsai-27b
 description: >-
   Run a 27B model in ~3.8 GB on a plain CPU box. [Bonsai-27B](https://huggingface.co/prism-ml/Bonsai-27B-gguf) (by PrismML) is a 27-billion- parameter model quantized to 1 bit per weight (Q1_0, ~1.1 bit/weight) — the whole thing is a 3.8 GB GGUF that runs on an ordinary CPU with 8 GB of RAM. No GPU, no cloud. This skill takes a spare machine from nothing installed to a live OpenAI-compatible endpoint serving Bonsai.
 ---
+<!-- Generated from the awskills pack (skills/bonsai-27b.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 # bonsai-27b — run a 27B model in ~3.8 GB on a plain CPU box
 
 [Bonsai-27B](https://huggingface.co/prism-ml/Bonsai-27B-gguf) (by **PrismML**) is a 27-billion-
@@ -39,8 +40,12 @@ wget https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-mmp
 ~/llama.cpp/build/bin/llama-server \
   -m ~/models/bonsai/Bonsai-27B-Q1_0.gguf \
   --mmproj ~/models/bonsai/Bonsai-27B-mmproj-Q8_0.gguf \
-  --host 0.0.0.0 --port 8090 -t 12 -c 4096 --no-warmup
+  --host 127.0.0.1 --port 8090 -t 12 -c 4096 --no-warmup
 ```
+
+`--host 127.0.0.1` keeps this unauthenticated server on loopback. To serve other machines,
+bind the LAN address, add `--api-key <key>` (llama-server then requires a Bearer token), and
+firewall the port to the hosts that need it; never expose it to the internet.
 
 ## Use it
 
@@ -55,7 +60,8 @@ curl -s http://localhost:8090/v1/chat/completions -H 'Content-Type: application/
 }'
 ```
 
-Any OpenAI-compatible client works — point its base URL at `http://<host>:8090/v1`.
+Any OpenAI-compatible client works — point its base URL at `http://127.0.0.1:8090/v1` (or at
+the LAN address and key, if you exposed it as described above).
 
 ## Keep it running (durable service)
 
@@ -66,7 +72,7 @@ To survive reboots, wrap `llama-server` in a systemd unit (`Restart=always`):
 [Unit]
 Description=Bonsai 27B Q1_0 (1-bit) llama-server
 [Service]
-ExecStart=%h/llama.cpp/build/bin/llama-server -m %h/models/bonsai/Bonsai-27B-Q1_0.gguf --mmproj %h/models/bonsai/Bonsai-27B-mmproj-Q8_0.gguf --host 0.0.0.0 --port 8090 -t 12 -c 4096 --no-warmup
+ExecStart=%h/llama.cpp/build/bin/llama-server -m %h/models/bonsai/Bonsai-27B-Q1_0.gguf --mmproj %h/models/bonsai/Bonsai-27B-mmproj-Q8_0.gguf --host 127.0.0.1 --port 8090 -t 12 -c 4096 --no-warmup
 Restart=always
 [Install]
 WantedBy=default.target

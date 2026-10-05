@@ -2,6 +2,7 @@
 name: hermes-agent
 description: Install Nous Research's Hermes agent and run it on your own model — a self-improving agent with persistent memory, autonomous skill creation, cron automation and multi-platform messaging. Covers pointing it at a local OpenAI-compatible endpoint, adding the AitherOS toolset over MCP, and the exact config shapes that silently fail if you get them wrong.
 ---
+<!-- Generated from the awskills pack (skills/hermes-agent.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # hermes-agent — Nous Research's self-improving agent, on your hardware
 
@@ -33,7 +34,7 @@ hermes model     # interactive picker
 ```
 
 Choose **custom** and give it the endpoint from [`local-inference`](local-inference.md). To do
-it in the config file instead, edit `~/.hermes/cli-config.yaml`:
+it in the config file instead, edit `~/.hermes/config.yaml` (or use `hermes config set <section.key> <value>`):
 
 ```yaml
 model:

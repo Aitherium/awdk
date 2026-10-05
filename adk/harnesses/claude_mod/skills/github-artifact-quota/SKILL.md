@@ -3,6 +3,7 @@ name: github-artifact-quota
 description: >-
   The storage limit that silently freezes your deploys. Your site stops updating. Not breaking — updating. Every page returns 200, every workflow reports green on the commits you looked at, and the content is days old.
 ---
+<!-- Generated from the awskills pack (skills/github-artifact-quota.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # github-artifact-quota — the storage limit that silently freezes your deploys
 

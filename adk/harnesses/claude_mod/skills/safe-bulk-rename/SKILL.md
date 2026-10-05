@@ -2,6 +2,7 @@
 name: safe-bulk-rename
 description: Rename a token across hundreds or thousands of files in this shared worktree — a package, a directory, a product name — without corrupting load-bearing strings, without committing a peer's in-flight work, and without leaving dangling references. Load BEFORE the first sed of any rename touching more than ~20 files, before renaming a published package, and whenever a rename has to move a directory that other files reference by path. Do NOT load for a rename inside one file, or a symbol rename an LSP can do.
 ---
+<!-- Generated from the awskills pack (skills/safe-bulk-rename.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Safe bulk rename
 
@@ -143,8 +144,9 @@ forever. So:
 - Ship a **permanent redirect package** under the old name — no code, no console
   scripts, just a dependency on the new one. It is not a transitional artifact.
 - Check the registry before choosing a version: the tree is often BEHIND what is
-  published, and publishing that is a regression. `check_package_version_ahead_of_registry.py`
-  asserts this.
+  published, and publishing that is a regression. Compare the version in the tree with
+  the registry's latest (for example `pip index versions <name>` or `npm view <name> version`)
+  before you publish. (The checker that asserts this internally is not shipped in this pack.)
 - Make transitional globs match **both** names (`old-*.whl` *and* `new-*.whl`) —
   a committed artifact predates the rename while the next build produces the new
   name, and pinning either alone breaks one side.
@@ -159,8 +161,9 @@ A large uncommitted rename is the most fragile state this worktree supports. On
 and once *after* the commit, leaving HEAD correct and the working tree reverted.
 
 - Commit the whole rename at once. A half-renamed tree is worse than either end.
-- Afterwards run `check_no_peer_revert.py`, and re-check that the working tree
-  still matches HEAD for your paths.
+- Afterwards re-check that the working tree still matches HEAD for your paths
+  (`git diff --stat HEAD -- <paths>` should be empty). (The internal peer-revert
+  checker this step used is not shipped in this pack.)
 - Restore a reverted file with `git checkout HEAD -- <path>` — pathspec-scoped,
   never `git checkout .`.
 - Release your leases when done; holding a few thousand blocks every peer.

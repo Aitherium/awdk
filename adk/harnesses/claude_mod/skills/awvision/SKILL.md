@@ -15,8 +15,13 @@ awvision --self-test
 ```
 
 Endpoint/model: `--endpoint` / `--model` (top-level, before the verb) or
-`AWVISION_URL` / `AWVISION_MODEL`. The built-in default is a fleet tailnet address —
-set `AWVISION_URL` on any other machine.
+`AWVISION_URL` / `AWVISION_MODEL`. With neither set it resolves itself (0.3.2+): the
+local MicroScheduler `https://127.0.0.1:8150` if it answers `/v1/models`, else the Spark
+mesh address; model = the first of `gemma4-12b`, `bonsai2-27b` the endpoint reports
+available. Thinking is off and `max_tokens` 512 by default (`AWVISION_THINKING=1`,
+`AWVISION_MAX_TOKENS`, `AWVISION_TIMEOUT`).
+**Trap:** "Cannot reach ... 100.64.0.38:8124" with no env set means the scheduler probe
+timed out (it stalls TLS handshakes under load) — retry, or pin `AWVISION_URL`.
 
 **Exit codes:** 0 answered · non-zero on endpoint/image error.
 

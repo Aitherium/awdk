@@ -3,6 +3,7 @@ name: adk-unsloth
 description: >-
   Local training and serving, wired to your agent. [Unsloth](https://github.com/unslothai/unsloth) trains LoRA/QLoRA 2x faster with ~70% less VRAM and serves GGUF locally. Pairing it with the ADK gives you a loop that runs entirely on your own hardware: your agent serves from a local model, you fine-tune on what it produced, you swap the adapter, you measure again.
 ---
+<!-- Generated from the awskills pack (skills/adk-unsloth.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # adk-unsloth — local training and serving, wired to your agent
 
@@ -48,7 +49,7 @@ unsloth studio -p 8888
 ```bash
 adk backend list                  # what the ADK already detects
 adk backend guide                 # step-by-step for a specific backend
-adk backend switch                # change the live backend, no restart
+adk backend set vllm --base-url <Unsloth's OpenAI-compatible /v1 URL>   # point the ADK at it
 adk backend test                  # prove it actually answers
 adk backend status                # current config + connectivity
 ```

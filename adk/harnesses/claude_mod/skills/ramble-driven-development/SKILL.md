@@ -5,6 +5,7 @@ description: Stop writing careful prompts. Ramble to load intent, poke to steer,
 argument-hint: [analyze | install | explain]
 
 ---
+<!-- Generated from the awskills pack (skills/ramble-driven-development.md, github.com/Aitherium/awskills). Edit the pack, never this copy. -->
 
 # Ramble-Driven Development
 
