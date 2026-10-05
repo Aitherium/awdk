@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**132 commands.**
+**133 commands.**
 
 | command | what it does |
 |---|---|
@@ -130,6 +130,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk solve`](#adk-solve) | Run the reasoning loop on an environment (toy or ARC-AGI-3) with a model backend |
 | [`adk soul`](#adk-soul) | Import/export SOUL.md identity files |
 | [`adk spec`](#adk-spec) | Spec-driven change workflow: proposal -> delta specs -> tasks -> archive |
+| [`adk spend`](#adk-spend) | Cloud LLM spend: totals, per provider/model, top callers, DeepSeek balance |
 | [`adk ssh`](#adk-ssh) | Open a remote terminal into a prod/dev environment via the tunnel |
 | [`adk ssh-cert`](#adk-ssh-cert) | Fetch a short-lived SSH certificate from the AitherCert SSH CA (GitHub org SSH) |
 | [`adk stack`](#adk-stack) | Start the consumer stack (Room + Ollama) as native processes |
@@ -759,6 +760,7 @@ Agent Home: host your own agent, pick its model and harness, and let it join gam
 - `adk home init` — Create your agent's home folder
 - `adk home persona` — Show or edit the persona files
 - `adk home model` — Choose the model: local or bring-your-own-key
+- `adk home voice` — The Aither voice on this machine: install it (--local aither) or speak with it (--say TEXT)
 - `adk home harness` — Choose who runs the agent loop
 - `adk home status` — Setup, model, harness and license at a glance
 - `adk home signin` — Sign in with Aitherium -- what you bought unlocks here (device code, no license to paste)
@@ -1482,6 +1484,16 @@ Spec-driven change workflow: proposal -> delta specs -> tasks -> archive
 - `adk spec tasks` — List a change's tasks; --done N.M ticks one
 - `adk spec archive` — Validate, merge deltas into living specs, move to archive/
 - `adk spec export` — Write <change>/export.md (proposal + deltas + tasks)
+
+## `adk spend`
+
+Cloud LLM spend: totals, per provider/model, top callers, DeepSeek balance
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--hours` | int |  | `24` | Window in hours (default 24; 168 = 7d, 720 = 30d) |
+| `--json` | str |  | `false` | Print the raw spend report JSON |
+| `--gateway` | str |  |  | Gateway MCP URL (default $AITHER_SPEND_MCP_URL or the local :8182) |
 
 ## `adk ssh`
 

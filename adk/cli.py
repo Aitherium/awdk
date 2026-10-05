@@ -15908,6 +15908,10 @@ def _register_commands(sub):
     from adk.commands.solve import register_parser as _register_solve
     _register_solve(sub)
 
+    # adk spend — cloud LLM spend + DeepSeek balance (adk/commands/spend.py)
+    from adk.commands.spend import register_parser as _register_spend
+    _register_spend(sub)
+
     # adk fleet-host — the awnix fleet host (adk/commands/fleet_host.py)
     from adk.commands.fleet_host import register_parser as _register_fleet_host
     _register_fleet_host(sub)
@@ -17155,6 +17159,9 @@ def main():
     elif args.command == "solve":
         from adk.commands.solve import cmd_solve
         sys.exit(cmd_solve(args))
+    elif args.command == "spend":
+        from adk.commands.spend import cmd_spend
+        sys.exit(cmd_spend(args))
     elif args.command == "fleet-host":
         from adk.commands.fleet_host import cmd_fleet_host
         sys.exit(cmd_fleet_host(args))
