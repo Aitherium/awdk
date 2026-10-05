@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed hermes -&gt; ~\.aither\packs\hermes</span>
 <span class="o">verified: adk discovers &#x27;hermes&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.60</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>d6fd7b7ebdf38568…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.60</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>fb2c522b3e5b70e9…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,12 +314,12 @@ and strategic code modernization.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>d6fd7b7ebdf38568d5e297a8cfe1d14cfb0c570bc26474dc9307a1b5cf753bee</code></p>
+    <p class="sub">sha256 <code>fb2c522b3e5b70e94a3a45faf2fb334beef118d0aca4e0cac0d78714c3b409ad</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c hermes-3.8.60.sha256
 <span class="o">hermes-3.8.60.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;D6FD7B7EBDF38568D5E297A8CFE1D14CFB0C570BC26474DC9307A1B5CF753BEE&#x27;
+<span class="p">$</span> $want = &#x27;FB2C522B3E5B70E94A3A45FAF2FB334BEEF118D0ACA4E0CAC0D78714C3B409AD&#x27;
 <span class="p">$</span> (Get-FileHash hermes-3.8.60.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>

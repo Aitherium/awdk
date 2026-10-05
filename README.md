@@ -1025,6 +1025,12 @@ aither-bug "description of the issue"      # file a report from the CLI
 aither-bug --dry-run                       # preview what would be sent
 ```
 
+## Community
+
+Questions, ideas and show-and-tell go on the project boards at
+https://app.aitherium.com/forum (the `awdk` board is this project's; reading needs no account).
+Bugs go to [GitHub issues](https://github.com/Aitherium/awdk/issues).
+
 ## License
 
 **Business Source License 1.1** — free for individuals, internal use, building your own products, research, and education. A commercial license is required only to offer a competing hosted AI-agent platform. Converts to **AGPL-3.0** on 2030-03-13. See [LICENSE](LICENSE); commercial licensing: hello@aitherium.com.
