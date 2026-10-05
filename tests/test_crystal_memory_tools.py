@@ -113,3 +113,19 @@ def test_scrub_orphan_think_removes_bare_tags():
         "\n\nThe code graph indicates X"
     assert scrub_orphan_think("<think>") == ""
     assert scrub_orphan_think("plain answer") == "plain answer"
+
+
+def test_missing_required_args_detects_incomplete_input():
+    # Measured 2026-10-05: "remember ... " produced "INPUT: {}" 2/2 turns, three
+    # attempts each; the loop now answers with the exact template instead of
+    # executing the call with no arguments.
+    from types import SimpleNamespace
+
+    from adk.agent import missing_required_args
+
+    td = SimpleNamespace(parameters={"required": ["fact"]})
+    assert missing_required_args(td, {}) == ["fact"]
+    assert missing_required_args(td, None) == ["fact"]
+    assert missing_required_args(td, {"fact": "x"}) == []
+    assert missing_required_args(SimpleNamespace(parameters={}), {}) == []
+    assert missing_required_args(None, {}) == []

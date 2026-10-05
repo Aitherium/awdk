@@ -181,6 +181,20 @@ def scrub_orphan_think(text: str) -> str:
     return (text or "").replace("</think>", "").replace("<think>", "")
 
 
+def missing_required_args(tool_def, parsed) -> list:
+    """Required parameter names the parsed INPUT does not carry (empty = complete).
+
+    Measured 2026-10-05: the 8B orchestrator reasoned the JSON inside <think> and
+    emitted "INPUT: {}" outside it — 2/2 turns, three attempts each — and running
+    the tool with no args produced a TypeError it could not recover from, even
+    with ask_reasoner spelling the call out. The loop answers with the exact
+    template instead; a concrete line is what the 8B can copy.
+    """
+    required = list(((getattr(tool_def, "parameters", None) or {}).get("required") or []))
+    have = parsed if isinstance(parsed, dict) else {}
+    return [r for r in required if r not in have]
+
+
 def register_crystal_memory_tools(agent, crystal) -> int:
     """Give a crystal-bound agent model-callable memory: remember_fact + recall_facts.
 
@@ -3250,14 +3264,28 @@ class AitherAgent:
                 break
             name = m.group(1)
             _parsed = parse_react_input(_THINK.sub("", full))
-            if _parsed is None and _INP.search(full):
-                # Unreadable arguments: say so to the model instead of running the tool
-                # with none (it then retries with a valid line).
+            _missing: list = []
+            if name != LOAD_TOOLS_NAME and isinstance(_parsed, dict):
+                _missing = missing_required_args(self._tools.get(name), _parsed)
+            if (_parsed is None and _INP.search(full)) or _missing:
+                # Unreadable or incomplete arguments: say so instead of running the
+                # tool with none. The missing-args arm hands back the EXACT line to
+                # copy — measured 2026-10-05: "INPUT: {}" for remember_fact survived
+                # three attempts and an ask_reasoner consult; a concrete template is
+                # what the 8B can repeat.
                 # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
                 msgs.append(Message(role="assistant", content=full))
-                msgs.append(Message(role="user", content=(
-                    "OBSERVATION: your INPUT was not one valid JSON object, so the tool did "
-                    "not run. Reply again with INPUT: on ONE line of valid JSON.")))
+                if _missing:
+                    _tmpl = ", ".join(f'"{r}": "<value>"' for r in _missing)
+                    msgs.append(Message(role="user", content=(
+                        f"OBSERVATION: {name} did NOT run — its INPUT was missing "
+                        f"required argument(s): {', '.join(_missing)}. Reply again, "
+                        "on one line, exactly:\n"
+                        f"ACTION: {name}\nINPUT: {{{_tmpl}}}")))
+                else:
+                    msgs.append(Message(role="user", content=(
+                        "OBSERVATION: your INPUT was not one valid JSON object, so the tool did "
+                        "not run. Reply again with INPUT: on ONE line of valid JSON.")))
                 continue
             args: dict = _parsed or {}
             await _emit({"type": "tool", "name": name, "args": args})
