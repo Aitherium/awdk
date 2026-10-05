@@ -169,6 +169,18 @@ _PLATFORM_REACH_LINE = (
 )
 
 
+def scrub_orphan_think(text: str) -> str:
+    """Remove a think tag the model emitted WITHOUT its pair.
+
+    Measured 2026-10-05: aither-orchestrator opened its reply with a bare
+    "</think>" (no "<think>"), so the paired-regex strip in stream_react never
+    matched and the tag leaked into the answer text and the streamed tokens
+    ("</think>" then "The code graph indicates..."). Orphans-only; the paired
+    form is stripped by the regex before this runs.
+    """
+    return (text or "").replace("</think>", "").replace("<think>", "")
+
+
 def register_crystal_memory_tools(agent, crystal) -> int:
     """Give a crystal-bound agent model-callable memory: remember_fact + recall_facts.
 
@@ -3204,15 +3216,16 @@ class AitherAgent:
             if phase == "thinking" and buf:
                 await _emit({"type": "thinking", "text": buf.replace("</think>", "")})
             elif phase == "answer" and buf:
-                await _emit({"type": "token", "text": buf})
+                await _emit({"type": "token", "text": scrub_orphan_think(buf)})
 
             if phase == "answer":
                 cleaned = _THINK.sub("", full)
                 answer = cleaned.split("FINAL:", 1)[-1].strip() if "FINAL:" in cleaned else cleaned.strip()
+                answer = scrub_orphan_think(answer).strip()
                 break
             m = _ACT.search(full)
             if not m:
-                answer = _THINK.sub("", full).strip()
+                answer = scrub_orphan_think(_THINK.sub("", full)).strip()
                 # Before the first tool too: "I'll now list the files" with no ACTION is
                 # a plan, not an answer (measured 2026-10-05, 8B orchestrator).
                 if (_react_retry_nudges < _MAX_RETRY_NUDGES

@@ -94,3 +94,22 @@ async def test_recall_returns_facts_and_degraded_planes():
     out = json.loads(await agent.tools_by_name()["recall_facts"].fn("fleet"))
     assert any("fleet" in f for f in out["facts"])
     assert out["degraded"] == ["awgraph:unbound"]
+
+
+def test_memory_tools_are_in_the_core_menu():
+    # Measured 2026-10-05: outside the core set, "call remember_fact with the fact:
+    # ..." wrote a FILE named after the fact — the 8B reaches for what it can see.
+    from adk.tool_selection import CORE_TOOL_NAMES
+
+    assert {"remember_fact", "recall_facts"} <= CORE_TOOL_NAMES
+
+
+def test_scrub_orphan_think_removes_bare_tags():
+    # Measured 2026-10-05: aither-orchestrator opened with a bare "</think>" and it
+    # leaked into the answer text and the streamed tokens.
+    from adk.agent import scrub_orphan_think
+
+    assert scrub_orphan_think("</think>\n\nThe code graph indicates X") == \
+        "\n\nThe code graph indicates X"
+    assert scrub_orphan_think("<think>") == ""
+    assert scrub_orphan_think("plain answer") == "plain answer"

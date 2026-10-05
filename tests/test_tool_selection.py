@@ -116,8 +116,14 @@ def test_opt_out_restores_every_schema(monkeypatch):
 
 
 def test_core_set_is_small():
-    """The core must stay a core: every name added costs every turn."""
-    assert len(CORE_TOOL_NAMES) <= 10
+    """The core must stay a core: every name added costs every turn.
+
+    Pin raised 10 -> 11 on 2026-10-05 for remember_fact + recall_facts: outside the
+    core, "call remember_fact with the fact: ..." wrote a FILE named after the fact
+    (measured live) — the invisible-capability defect this module already records
+    for web_search. Two tiny schemas (~15% more core tokens) against that miss.
+    """
+    assert len(CORE_TOOL_NAMES) <= 11
 
 
 def _agent_with(llm, reg) -> AitherAgent:

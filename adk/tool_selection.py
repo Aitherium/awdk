@@ -39,6 +39,13 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # Gateway meta-tools (registered by adk.server when the MCP gateway attaches):
     # together they reach the whole ~1,200-tool platform catalogue on demand.
     "search_tools", "call_tool",
+    # Memory (registered when a crystal is bound — adk.agent's
+    # register_crystal_memory_tools). Cross-cutting like the file and web surface:
+    # "remember this" / "what do you remember" arrive with EVERY intent, and
+    # measured 2026-10-05: without them in the core menu, "call remember_fact with
+    # the fact: ..." wrote a FILE named after the fact instead — the 8B reaches
+    # for the capability it can see, and these two cost ~15% of the core's tokens.
+    "remember_fact", "recall_facts",
 })
 
 #: Intents that mean "the classifier could not tell". Only these get the core set;
