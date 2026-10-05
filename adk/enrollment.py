@@ -981,6 +981,7 @@ async def rich_enroll(
     reach_provider: Optional[Callable[[], str]] = None,
     harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
     token_provider: Optional[Callable[[], str]] = None,
+    contribute_storage: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Register this device with the rich endpoint spine.
 
@@ -992,6 +993,10 @@ async def rich_enroll(
         inference_url: Explicit inference base URL, or ``None``/``"auto"`` to probe.
         node_class: One of :data:`NODE_CLASSES`.
         token_provider: Passed to the heartbeat (see :func:`heartbeat_loop`).
+        contribute_storage: Join = contribute. ``None`` follows the policy in
+            :mod:`adk.storage_contribution` (``AITHER_CONTRIBUTE_STORAGE``, else on
+            for server/workstation classes and off for laptop/phone); ``True`` /
+            ``False`` force it. The outcome is reported under ``"storage"``.
 
     Returns:
         ``{"enrolled": bool, "node_id": str, "workspace": dict, "registration": dict,
@@ -1055,6 +1060,9 @@ async def rich_enroll(
         log.info("Enrolled endpoint %s (tenant=%s, cert_enrolled=%s, inference=%s %s)",
                  node_id, tenant_id, cert_enrolled, reg["inference_kind"],
                  reg["inference_url"] or "-")
+        storage = await _contribute_storage(
+            node_id, node_class, data.get("bearer_token") or token, data, contribute_storage
+        )
         return {
             "enrolled": True,
             "node_id": node_id,
@@ -1069,7 +1077,38 @@ async def rich_enroll(
             # now mints one) — lets this node self-service its OWN gateway API key
             # afterward instead of reusing the enrolling user's own access token.
             "bearer_token": data.get("bearer_token", ""),
+            "storage": storage,
         }
     except Exception as e:
         log.warning("Rich enrollment failed: %s", e)
         return {"enrolled": False, "error": str(e)}
+
+
+async def _contribute_storage(
+    node_id: str,
+    node_class: str,
+    token: str,
+    register_response: Dict[str, Any],
+    enabled: Optional[bool],
+) -> Dict[str, Any]:
+    """Join = contribute: lend bounded disk to the mesh storage pool. Never raises.
+
+    Uses the node's own capability token from the register response when there is
+    one (it carries the mesh scope), else the enrolling token.
+    """
+    try:
+        from adk.storage_contribution import contribute_after_enroll
+
+        result = await contribute_after_enroll(
+            node_id, node_class, token, enroll_response=register_response, enabled=enabled
+        )
+    except Exception as e:  # noqa: BLE001 -- storage must never fail enrollment
+        log.debug("storage contribution unavailable: %s", e)
+        return {"registered": False, "error": str(e)}
+    if result.get("registered"):
+        log.info("Contributing %d bytes of storage as peer %s",
+                 result["decision"]["contributed_bytes"], result.get("peer_id", ""))
+    else:
+        log.info("Not contributing storage: %s",
+                 result.get("skipped") or result.get("error") or result.get("http_status"))
+    return result
