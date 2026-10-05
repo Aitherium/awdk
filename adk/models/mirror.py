@@ -5,9 +5,11 @@ The mirror serves GGUF format model files and supports resumable downloads via H
 headers. Downloads are rate-limited by default to avoid saturating home connections.
 """
 
+import http.client
 import urllib.request
 import urllib.error
 import hashlib
+import re
 import time
 from pathlib import Path
 from dataclasses import dataclass
@@ -57,6 +59,8 @@ CATALOG: Dict[str, WeightCatalogEntry] = {
         # equal to awrtifact.yaml's orchestrator-v18-q8 total.
         approx_size_bytes=8_709_518_176,
         min_vram_gb=12,
+        # sha256 of the full file, measured 2026-10-05 (resumed download, exact size).
+        sha256="c4197b0e4e514d66cedc5671939c0e938740fe17982ae1082d56a484bba188ef",
     ),
     # The v18 build at Q4_K_M: what the llama.cpp installer serves on a device that
     # cannot fit Q8_0 (same lineage as the default, unlike the pre-v18 Q4 below).
@@ -70,6 +74,8 @@ CATALOG: Dict[str, WeightCatalogEntry] = {
         # equal to awrtifact.yaml's orchestrator-v18-q4 total.
         approx_size_bytes=5_027_783_520,
         min_vram_gb=8,
+        # sha256 of the full file, measured 2026-10-05 (resumed download, exact size).
+        sha256="8a99577cd97222294d88e5957c4151adc114f59937b84866a6f4e1e2ac0a2d52",
     ),
     # Small-device option only. NOT the v18 build (v18-Q4_K_M is 5,027,783,520 B).
     "aither-orchestrator-Q4_K_M.gguf": WeightCatalogEntry(
@@ -267,12 +273,35 @@ class MirrorClient:
         if partial_path.exists():
             start_byte = partial_path.stat().st_size
 
-        try:
-            self._download_with_resume(url, entry, partial_path, start_byte)
-        except MirrorError:
-            raise
-        except Exception as e:
-            raise MirrorNetworkError(f"Download failed: {e}") from e
+        # Resume in-process until the server's own byte total is on disk. A stream that
+        # drops mid-file used to end the install with a short .partial (and, inside the
+        # 1% size tolerance, a truncated GGUF passed _verify). Give up only after
+        # MAX_STALLS attempts in a row that add no bytes.
+        total: Optional[int] = None
+        stalls = 0
+        while True:
+            try:
+                total = self._download_with_resume(url, entry, partial_path, start_byte) or total
+            except MirrorError:
+                raise
+            except Exception as e:
+                raise MirrorNetworkError(f"Download failed: {e}") from e
+            have = partial_path.stat().st_size if partial_path.exists() else 0
+            if total is None or have >= total:
+                break
+            stalls = 0 if have > start_byte else stalls + 1
+            if stalls >= self.MAX_STALLS:
+                raise MirrorNetworkError(
+                    f"Download stalled at {have:,} of {total:,} bytes after "
+                    f"{self.MAX_STALLS} attempts with no progress (resume by re-running)"
+                )
+            start_byte = have
+            time.sleep(min(2 + stalls * 5, 30))
+        if total is not None and partial_path.stat().st_size != total:
+            raise MirrorVerificationError(
+                f"Size mismatch: server total {total:,} bytes, "
+                f"got {partial_path.stat().st_size:,}"
+            )
 
         # Verify
         if verify:
@@ -284,14 +313,29 @@ class MirrorClient:
         partial_path.rename(dest_path)
         return str(dest_path)
 
+    MAX_STALLS = 8
+
+    @staticmethod
+    def _total_bytes(resp, start_byte: int) -> Optional[int]:
+        """The file's full size from Content-Range, else start + Content-Length."""
+        m = re.search(r"/(\d+)\s*$", resp.headers.get("Content-Range") or "")
+        if m:
+            return int(m.group(1))
+        length = resp.headers.get("Content-Length")
+        return start_byte + int(length) if length and length.isdigit() else None
+
     def _download_with_resume(
         self,
         url: str,
         entry: WeightCatalogEntry,
         dest_path: Path,
         start_byte: int,
-    ) -> None:
-        """Download with HTTP Range support for resumability."""
+    ) -> Optional[int]:
+        """Download with HTTP Range support for resumability.
+
+        Returns the server-reported total size (None if it sent none). A connection
+        that drops mid-body leaves the bytes received so far for the caller to resume.
+        """
         headers = {
             # User-Agent needed to bypass Cloudflare bot challenge (CF returns 403 to Python-urllib)
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -303,9 +347,16 @@ class MirrorClient:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
                 # Stream download with rate limiting
+                total = self._total_bytes(resp, start_byte)
+                if start_byte > 0 and resp.status != 206:
+                    start_byte, total = 0, self._total_bytes(resp, 0)  # Range ignored
                 mode = "ab" if start_byte > 0 else "wb"
                 with open(dest_path, mode) as f:
-                    self._stream_download(resp, f)
+                    try:
+                        self._stream_download(resp, f)
+                    except (http.client.IncompleteRead, ConnectionError, TimeoutError):
+                        pass  # keep what arrived; download() resumes from here
+                return total
 
         except urllib.error.HTTPError as e:
             if e.code == 404:
