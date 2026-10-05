@@ -207,6 +207,16 @@ public class MainActivity extends Activity {
         super.onResume();
         if (freshIfAsked()) web.loadUrl(HOME);
         ticks.postDelayed(poll, 5000);
+        // Family Shield: Android's one-time VPN prompt, once the guardian turned it on
+        ShieldVpnService.askConsent(this, SHIELD_CONSENT);
+    }
+
+    static final int SHIELD_CONSENT = 0x5e1d;
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == SHIELD_CONSENT && result == RESULT_OK) ShieldVpnService.sync(this);
     }
 
     /**

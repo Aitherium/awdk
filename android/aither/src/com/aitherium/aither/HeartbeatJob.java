@@ -94,6 +94,8 @@ public class HeartbeatJob extends JobService {
                 last = "removed from the household";
                 cfg.set("profile_kind", "");
                 cfg.set("family_device", "");
+                cfg.set("shield_mode", "off");
+                ShieldVpnService.sync(ctx);
                 return true;
             }
             if (code == 401) {
@@ -114,6 +116,9 @@ public class HeartbeatJob extends JobService {
             String kind = j.optString("profile_kind", "");
             if (!kind.isEmpty()) cfg.set("profile_kind", kind);
             cfg.set("family_kv_lend", j.optBoolean("kv_lend", false));
+            // Family Shield: the guardian's mode for this phone starts or stops the filter
+            cfg.set("shield_mode", j.optString("internet_mode", "off"));
+            ShieldVpnService.sync(ctx);
             JSONObject lim = j.optJSONObject("share_limits");
             boolean was = cfg.shareFamily();
             cfg.shareFromHousehold(j.optBoolean("compute_share", false),

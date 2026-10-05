@@ -88,6 +88,10 @@ final class Config {
     /** "owner" | "child" | "" (not known yet), from the family registry's heartbeat. */
     String profileKind() { return p.getString("profile_kind", ""); }
     String familyDevice() { return p.getString("family_device", ""); }
+    /** Family Shield: "off" | "filtered" | "allowlist", as the household last said. */
+    String shieldMode() { return p.getString("shield_mode", "off"); }
+    /** The ETag of the last household policy this phone read. */
+    String shieldEtag() { return p.getString("shield_etag", ""); }
     /** Has this app asked Android to stop battery-optimizing it (once, for a household phone)? */
     boolean batteryAsked() { return p.getBoolean("battery_asked", false); }
 

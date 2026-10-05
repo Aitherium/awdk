@@ -124,6 +124,24 @@
                 android:value="Runs the owner's small AI model on this phone for the AitherOS app (local only)" />
         </service>
 
+        <!-- Family Shield: a DNS-only VPN (one fake resolver address is routed, nothing else)
+             that sends a child's lookups to the household filter. Only the system binds it. -->
+        <service
+            android:name=".ShieldVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Family internet filter set by the household's guardian: resolves this phone's DNS lookups through the family's filter" />
+        </service>
+
         <service
             android:name=".HeartbeatJob"
             android:exported="true"
