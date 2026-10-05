@@ -2939,6 +2939,20 @@ class AitherAgent:
             # turn and must not sit in front of it. See adk.situation.
             + self._situation_suffix(system_additions)
         )
+        # The platform reach, named the way look_at is named below. An 8B does not
+        # connect "is the fleet healthy?" to a tool called search_tools: measured
+        # 2026-10-05, with the meta-tools registered AND on the menu it answered
+        # "I don't have real-time access" with zero tool calls (1.2s), and used them
+        # in 9.3s once named. Registered is enough for execute(); it is not enough
+        # for the model to know the capability exists.
+        if self._tools.get("search_tools") is not None:
+            sys_prompt += (
+                "\n\nThe AitherOS platform (fleet and service health, deployments, mail, "
+                "memory) is reachable through search_tools: call it with a query, then "
+                "call_tool with the best match. When the question is about platform state "
+                "and no direct tool fits, call search_tools FIRST — never answer that you "
+                "cannot access platform data before trying it."
+            )
         # The user named an image: say which tool SEES it (image_* tools make images).
         _img = image_reference(message)
         # Registered is enough: the intent filter may leave look_at off the menu, and the

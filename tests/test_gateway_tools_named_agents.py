@@ -112,6 +112,12 @@ def test_intent_tags_survive_registration():
     assert "question" in tools["search_tools"].intent_categories
     assert "command" in tools["call_tool"].intent_categories
     assert "research" in tools["web_news"].intent_categories
+    # The description is the one line an 8B reads in the menu: it must name the
+    # platform payoff, not the protocol. Measured 2026-10-05: a schema-worded
+    # description left the model answering "I don't have real-time access" with
+    # the tool registered and on the menu.
+    desc = tools["search_tools"].description.lower()
+    assert "platform" in desc and "first" in desc
 
 
 def test_prioritise_keeps_preferred_prefixes_first():

@@ -728,8 +728,14 @@ input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.
 _MCP_INTENT_PREFIXES = (
     (("codegraph_", "repowise_", "git_", "graph_code", "scope_", "acc_"), ["code", "analysis"]),
     (("fs_", "file_"), ["code", "file"]),
-    (("web_", "search_", "research_", "fetch_", "context7_"), ["research", "web_research", "question"]),
-    (("recall", "remember", "memory", "knowledge_", "graph_", "rag_", "query_"), ["analysis", "question"]),
+    (
+        ("web_", "search_", "research_", "fetch_", "context7_"),
+        ["research", "web_research", "question"],
+    ),
+    (
+        ("recall", "remember", "memory", "knowledge_", "graph_", "rag_", "query_"),
+        ["analysis", "question"],
+    ),
     (("http_", "cf_", "cloudflare_", "docker", "k3s_", "hetzner_", "ring_"), ["command"]),
 )
 
@@ -812,9 +818,9 @@ def register_gateway_tools_on(
             search_tools,
             name="search_tools",
             description=(
-                "Search for MCP tools by query. Returns name, description "
-                "of up to 8 matching tools. Essential for finding tools not "
-                "in the eager-loaded core."
+                "Search the AitherOS platform tool catalogue (fleet and service health, "
+                "deployments, mail, memory, code) by query. Call this FIRST when the user "
+                "asks about platform state — before answering that you cannot access it."
             ),
             intent_categories=["analysis", "code", "research", "question"],
         )

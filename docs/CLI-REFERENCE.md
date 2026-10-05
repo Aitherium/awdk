@@ -1184,7 +1184,7 @@ Manage ToolPack extensions (list, search, install, remove, info)
 
 - `adk pack list` — List available and installed packs
 - `adk pack search` — Search packs by name, description, or tags
-- `adk pack install` — Install a tool pack
+- `adk pack install` — Install a tool pack (or a bought listing: community:<listing-id>)
 - `adk pack sync` — Install every entitled pack not already present (license-driven)
 - `adk pack buy` — Autonomously buy a pack with Aitherium credits (no Stripe)
 - `adk pack negotiate` — Haggle with the seller Broker for a better price
@@ -1198,6 +1198,7 @@ Manage ToolPack extensions (list, search, install, remove, info)
 - `adk pack validate` — Static checks on a pack folder -- imports nothing
 - `adk pack dev` — Load a pack through the real loader and list its tools
 - `adk pack build` — Reproducible .tar.gz + .sha256 ready to publish
+- `adk pack publish` — Build, submit and upload a pack to the community marketplace
 
 ## `adk packs`
 
@@ -1251,6 +1252,8 @@ Publish agent to the Aitherium marketplace
 | `--tier` | str |  | `agent` | Agent tier: reflex, agent, reasoning, orchestrator |
 | `--category` | str |  | `general` | Category: general, engineering, content, research, security |
 | `--dry-run` | str |  | `false` | Validate without publishing |
+| `--one-time-cents` | int |  | `0` | One-time price in cents (default 0 = free) |
+| `--subscription-cents` | int |  | `0` | Monthly price in cents (default 0) |
 
 ## `adk publish-preflight`
 
