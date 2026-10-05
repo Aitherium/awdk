@@ -37,8 +37,11 @@ GRANT_FIELDS = ("kind", "node_id", "tenant_id", "user_id", "origin", "nonce", "s
 NONCE_TTL_S = 180
 TOKEN_TTL_S = 8 * 3600
 FIRST_PARTY_ORIGIN = re.compile(r"^https://([a-z0-9-]+\.)*aitherium\.(com|org)$")
-#: The only scope a grant can carry, and the paths it opens.
-SCOPE_PATHS = {"kvholder": ("/kvholder/",)}
+#: The scopes a grant can carry, and the paths each opens.
+#: ``node``: the owner's page lists this machine's models and runs PLAIN completions on
+#: them. Plain only -- server.py forces ``plain`` for a browser-token request, so a page
+#: token never reaches the agent loop or its tools.
+SCOPE_PATHS = {"kvholder": ("/kvholder/",), "node": ("/v1/models", "/v1/chat/completions")}
 
 _lock = threading.Lock()
 _nonces: Dict[str, float] = {}
@@ -101,8 +104,19 @@ def issue_token(origin: str, scope: str, now: Optional[float] = None) -> Tuple[s
     token = "abt_" + secrets.token_urlsafe(32)
     with _lock:
         _prune(t)
+        # Bounded like _nonces: a page that re-pairs in a loop cannot grow this.
+        while len(_tokens) >= 64:
+            _tokens.pop(next(iter(_tokens)), None)
         _tokens[token] = (origin, scope, t + TOKEN_TTL_S)
     return token, TOKEN_TTL_S
+
+
+def token_scope(token: str, now: Optional[float] = None) -> Optional[str]:
+    """The scope of a live browser token, else None."""
+    t = time.time() if now is None else now
+    with _lock:
+        rec = _tokens.get(token)
+    return rec[1] if rec and rec[2] > t else None
 
 
 def token_allows(token: str, origin: Optional[str], path: str,

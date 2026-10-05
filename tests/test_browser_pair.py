@@ -151,3 +151,44 @@ def test_the_paired_owner_reads_and_toggles_the_workspace_swarm(daemon, monkeypa
     assert json.loads(grants.read_text())["devices"]["kvh-fold"]["lend"] is False
     assert daemon.post("/kvholder/workspace/grant", json={"device_id": "../x", "lend": True},
                        headers=h).status_code == 400
+
+
+# ── scope `node`: the owner's page uses this machine's models, plain completions only ──
+
+def test_a_node_grant_lists_models_and_runs_plain_completions_only(daemon, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from adk.llm.base import LLMResponse
+    agent = MagicMock(spec=AitherAgent)
+    agent.name = "test-agent"
+    agent.llm = MagicMock()
+    agent.llm.provider_name = "mock"
+    agent.llm.chat = AsyncMock(return_value=LLMResponse(
+        content="hi", model="m", finish_reason="stop", prompt_tokens=1, completion_tokens=1))
+    agent.chat = AsyncMock(side_effect=AssertionError("a page token reached the agent loop"))
+    c = TestClient(create_app(agent=agent), client=LOOPBACK, raise_server_exceptions=False)
+    tok = _pair(c, _grant(_nonce(c), scope="node")).json()["token"]
+    h = {"Origin": OWNER, "Authorization": f"Bearer {tok}"}
+    assert c.get("/v1/models", headers=h).status_code != 401
+    r = c.post("/v1/chat/completions", headers=h,
+               json={"messages": [{"role": "user", "content": "hello"}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == "chatcmpl-plain"  # never the agent loop, even when not asked
+    agent.llm.chat.assert_awaited_once()
+    agent.chat.assert_not_called()
+
+
+def test_a_node_token_opens_nothing_else(daemon):
+    tok = _pair(daemon, _grant(_nonce(daemon), scope="node")).json()["token"]
+    h = {"Origin": OWNER, "Authorization": f"Bearer {tok}"}
+    assert daemon.get("/kvholder/status", headers=h).status_code == 401
+    assert daemon.post("/chat", json={"message": "x"}, headers=h).status_code == 401
+    assert daemon.post("/cli/execute", json={"command": "status"}, headers=h).status_code == 401
+
+
+def test_a_lend_token_does_not_open_the_models(daemon):
+    tok = _pair(daemon, _grant(_nonce(daemon))).json()["token"]
+    h = {"Origin": OWNER, "Authorization": f"Bearer {tok}"}
+    assert daemon.get("/v1/models", headers=h).status_code == 401
+    assert daemon.post("/v1/chat/completions", headers=h,
+                       json={"messages": [{"role": "user", "content": "x"}]}).status_code == 401

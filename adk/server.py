@@ -1144,7 +1144,14 @@ def create_app(
         origin = request.headers.get("origin")
         if origin is None:
             return await call_next(request)
-        if not _csrf_origin_ok(origin):
+        # The browser-pair door and the paths a browser token opens admit the first-party
+        # page OFFLINE too (see _grant_door_cors): the auth gate, not the Origin, decides
+        # there -- a grant or an origin-bound token, never ambient trust.
+        grant_door = (_browser_grant.FIRST_PARTY_ORIGIN.match(origin) is not None and (
+            request.url.path in _browser_pair_paths
+            or request.url.path.startswith(
+                tuple(p for ps in _browser_grant.SCOPE_PATHS.values() for p in ps))))
+        if not grant_door and not _csrf_origin_ok(origin):
             return JSONResponse(status_code=403, content={"error": "cross-origin request refused"})
         if _csrf_json_only.match(request.url.path):
             ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -1239,6 +1246,8 @@ def create_app(
                 return await call_next(request)
             if tok and _browser_grant.token_allows(
                     tok, request.headers.get("origin"), request.url.path):
+                # Routes read this to keep a page token out of the agent loop.
+                request.state.browser_scope = _browser_grant.token_scope(tok)
                 return await call_next(request)
             return JSONResponse(status_code=401, content={
                 "error": "local credential required: send X-Aither-Local-Token with the "
@@ -1363,6 +1372,44 @@ def create_app(
             return built
 
         return agent
+
+    # ─── The browser-pair door answers first-party pages even OFFLINE ───
+    #
+    # Offline narrows CORS to loopback (above), and offline is exactly where
+    # AITHER_LOCAL_AUTH defaults to `required` -- the one mode the browser grant exists
+    # for. So the pairing never worked in its own default case. Measured 2026-10-04 on
+    # an offline daemon: GET /local/browser-pair/challenge from Origin
+    # https://app.aitherium.com answered 200 with NO Access-Control-Allow-Origin, so
+    # the browser discarded the nonce.
+    #
+    # Scoped to the pair door and the paths a browser token can open (SCOPE_PATHS),
+    # first-party https origins only. CORS is not the guard here -- the auth gate is,
+    # and it is untouched: without a grant every one of these paths still answers 401,
+    # now readably. An explicit AITHER_CORS_ORIGINS still wins (an operator's list).
+    _grant_door_prefixes = tuple(p for ps in _browser_grant.SCOPE_PATHS.values() for p in ps)
+
+    def _grant_door(path: str) -> bool:
+        return path in _browser_pair_paths or path.startswith(_grant_door_prefixes)
+
+    @app.middleware("http")
+    async def _grant_door_cors(request: Request, call_next):
+        origin = request.headers.get("origin") or ""
+        if (not _offline_origins or _cors_origins or not _grant_door(request.url.path)
+                or not _browser_grant.FIRST_PARTY_ORIGIN.match(origin)):
+            return await call_next(request)
+        cors = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
+        if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
+            cors.update({
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Max-Age": "600",
+            })
+            if request.headers.get("access-control-request-private-network") == "true":
+                cors["Access-Control-Allow-Private-Network"] = "true"
+            return Response(status_code=204, headers=cors)
+        response = await call_next(request)
+        response.headers.update(cors)
+        return response
 
     # ─── Metrics (Prometheus) ───
 
@@ -4272,6 +4319,10 @@ def create_app(
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
         body = await request.json()
+        if getattr(request.state, "browser_scope", None):
+            # A browser token (scope `node`) gets inference, never the agent loop: the
+            # loop runs tools on this machine, and a page token is not that trust.
+            body["plain"] = True
         messages_raw = body.get("messages", [])
         model = body.get("model")
         temperature = body.get("temperature", 0.7)

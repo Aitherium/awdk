@@ -16,6 +16,21 @@ All notable changes to aither-adk will be documented in this file.
   for the same workspace; hand-installed packs are never touched, and an entitlement
   outage never reads as "you own nothing".
 
+### Fixed
+
+- **The browser-pair door works on an offline daemon.** Offline narrowed CORS to
+  loopback, and offline is where `AITHER_LOCAL_AUTH` defaults to `required` -- so a
+  signed-in owner's page never received its pairing nonce. The pair door and the paths
+  a browser token opens now answer first-party https origins (preflight and Private
+  Network Access included). The auth gate is unchanged: without a grant they still
+  answer 401. An explicit `AITHER_CORS_ORIGINS` still wins.
+- **The owner's page can use this machine's models (browser grant scope `node`).** A
+  signed-in owner's first-party page pairs for `node` and may then list `/v1/models` and
+  run `/v1/chat/completions` -- always as a PLAIN completion: any browser-token request is
+  forced to `plain`, so a page token never reaches the agent loop or its tools. The pair
+  POST and the scoped routes pass the CSRF origin rule offline as well (the auth gate
+  decides), and live browser tokens are capped at 64.
+
 ## [3.8.60] - 2026-10-04
 
 ### Fixed
