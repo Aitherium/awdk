@@ -5721,92 +5721,70 @@ def cmd_publish(args):
         print("  PUBLISHING")
         print("  ──────────")
 
+        one_time = int(getattr(args, "one_time_cents", 0) or 0)
+        monthly = int(getattr(args, "subscription_cents", 0) or 0)
+        if (args.pricing or "free") != "free" and not (one_time or monthly):
+            print("  [!!] --pricing is not 'free' but no price was given.")
+            print("       Pass --one-time-cents N and/or --subscription-cents N.")
+            return 1
+
+        from adk.community_publish import CommunityError, publish_bundle
+
         try:
             import httpx
             import tempfile
             import zipfile
 
-            gateway = args.gateway or "https://gateway.aitherium.com"
+            genesis_url = (args.gateway or _get_genesis_url()).rstrip("/")
 
             # Package
             print("  Packaging project...")
-            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                tmp_path = tmp.name
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir) / f"{agent_name}-{args.version or '0.1.0'}.zip"
+                with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in project_dir.rglob("*"):
+                        if f.is_file() and not any(
+                            part.startswith(".") or part == "__pycache__"
+                            for part in f.relative_to(project_dir).parts
+                        ):
+                            zf.write(f, f.relative_to(project_dir))
+                print(f"  Package size: {tmp_path.stat().st_size / 1024:.1f} KB")
 
-            with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in project_dir.rglob("*"):
-                    if f.is_file() and not any(
-                        part.startswith(".") or part == "__pycache__"
-                        for part in f.relative_to(project_dir).parts
-                    ):
-                        zf.write(f, f.relative_to(project_dir))
-
-            zip_size = os.path.getsize(tmp_path)
-            print(f"  Package size: {zip_size / 1024:.1f} KB")
-
-            # Register
-            print("  Registering with gateway...")
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{gateway}/v1/agents/register",
-                    json={
-                        "agent_name": agent_name,
-                        "description": args.description or f"ADK agent: {agent_name}",
-                        "capabilities": (
-                            args.capabilities.split(",") if args.capabilities else ["chat"]
-                        ),
-                        "version": args.version or "0.1.0",
-                    },
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-
-                if resp.status_code not in (200, 201):
-                    print(f"  [!!] Registration failed: {resp.text[:200]}")
-                    return 1
-
-                data = resp.json()
-                agent_id = data.get("agent_id", "")
-                print(f"  Registered: {agent_id}")
-
-                # Submit listing
-                print("  Submitting marketplace listing...")
-                resp = await client.post(
-                    f"{gateway}/v1/marketplace/listings",
-                    json={
-                        "agent_id": agent_id,
-                        "name": agent_name,
-                        "description": args.description or f"ADK agent: {agent_name}",
-                        "version": args.version or "0.1.0",
-                        "pricing": args.pricing or "free",
-                        "tier": args.tier or "agent",
-                        "category": args.category or "general",
-                    },
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-
-                if resp.status_code in (200, 201):
-                    listing = resp.json()
-                    print(f"  Listing created: {listing.get('listing_id', '')}")
-                elif resp.status_code == 404:
-                    print("  [??] Marketplace endpoint not yet available")
-                    print("       Agent registered but listing pending.")
-
-            os.unlink(tmp_path)
-
-        except ImportError:
-            print("  [!!] httpx not installed. Run: pip install httpx")
+                # Submit to the community marketplace, then upload the bundle.
+                print(f"  Submitting to {genesis_url} ...")
+                tags = [args.category or "general", args.tier or "agent"]
+                if args.capabilities:
+                    tags += [c.strip() for c in args.capabilities.split(",") if c.strip()]
+                with httpx.Client(timeout=120.0) as client:
+                    res = publish_bundle(
+                        client, genesis_url, {"Authorization": f"Bearer {api_key}"},
+                        bundle=tmp_path, kind="agent", name=agent_name,
+                        summary=args.description or f"ADK agent: {agent_name}",
+                        description=args.description or "",
+                        version=args.version or "0.1.0",
+                        one_time_cents=one_time, subscription_cents=monthly, tags=tags,
+                    )
+        except ImportError as e:
+            print(f"  [!!] missing dependency: {e}. Run: pip install httpx")
+            return 1
+        except CommunityError as e:
+            print(f"  [!!] NOT published: {e.message}")
+            if e.status == 403:
+                print("       Publishing needs an approved publisher account:")
+                print("       POST /v1/marketplace/community/publisher/apply, "
+                      "then wait for review.")
             return 1
         except Exception as e:
-            print(f"  [!!] Error: {e}")
+            print(f"  [!!] NOT published: {e}")
             return 1
 
         print()
         print("  " + "=" * 50)
-        print(f"  PUBLISHED: {agent_name}")
-        print(f"  Marketplace: https://aitherium.com/marketplace/{agent_name}")
-        print("  Status: pending_review")
+        print(f"  SUBMITTED: {agent_name}  (listing {res.listing_id})")
+        print(f"  Bundle sha256: {res.sha256}  signed: {'yes' if res.signed else 'no'}")
+        print(f"  Status: {res.status} (scan: {res.scan_decision})")
         print()
-        print("  Your agent will be reviewed and listed within 24 hours.")
+        print("  A moderator reviews the listing before it is visible to buyers.")
         print()
 
         return 0
@@ -12227,6 +12205,9 @@ def _cmd_pack(args) -> int:
         return _pack_author_cli(sub, args)
     genesis_url = _get_genesis_url()
 
+    if sub == "publish":
+        return _cmd_pack_publish(args, genesis_url)
+
     if sub == "list" or sub is None:
         # Fetch catalog: Genesis API → bundled offline catalog fallback
         catalog = _load_pack_catalog(genesis_url)
@@ -12403,6 +12384,9 @@ def _cmd_pack(args) -> int:
 
     if sub == "install":
         pack_id = args.pack_id
+
+        if pack_id.startswith("community:"):
+            return _cmd_pack_install_community(pack_id[len("community:"):], genesis_url)
 
         # Deploy-based packs (grid, sovereign) — redirect to deploy command
         deploy_packs = {
@@ -13059,6 +13043,97 @@ def _cmd_soul(args) -> int:
 # ---------------------------------------------------------------------------
 # adk train — training pipeline management
 # ---------------------------------------------------------------------------
+
+def _community_headers() -> dict:
+    """Auth for the community plane: the account's own key, nothing else."""
+    cfg = load_saved_config()
+    api_key = cfg.get("api_key") or os.environ.get("AITHER_API_KEY", "")
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def _cmd_pack_publish(args, genesis_url: str) -> int:
+    """`adk pack publish <dir>`: build -> community submit -> bundle upload.
+
+    Exit 0 only when the listing exists AND its bundle uploaded; any non-2xx is 1.
+    """
+    from adk import pack_author
+    from adk.community_publish import CommunityError, publish_bundle
+
+    headers = _community_headers()
+    if not headers and not getattr(args, "dry_run", False):
+        print("Not signed in: run `adk register` / set AITHER_API_KEY first.")
+        return 1
+    try:
+        built = pack_author.build(args.pack_dir, getattr(args, "output", None))
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
+    rep = pack_author.validate(args.pack_dir)
+    manifest = rep.manifest or {}
+    pid = str(manifest.get("id") or Path(args.pack_dir).name)
+    name = str(manifest.get("name") or pid)
+    summary = (getattr(args, "summary", None) or str(manifest.get("description") or "")
+               or f"Tool pack {pid}").strip()[:300]
+    print(f"built {built.tarball} ({built.files} files, sha256 {built.sha256})")
+    if getattr(args, "dry_run", False):
+        print("dry run: nothing submitted")
+        return 0
+    try:
+        import httpx
+
+        with httpx.Client(timeout=120.0) as client:
+            res = publish_bundle(
+                client, genesis_url, headers,
+                bundle=built.tarball, kind=getattr(args, "kind", None) or "tool",
+                name=name, summary=summary,
+                description=str(manifest.get("description") or ""),
+                version=str(manifest.get("version") or "0.1.0"),
+                one_time_cents=int(getattr(args, "one_time_cents", 0) or 0),
+                subscription_cents=int(getattr(args, "subscription_cents", 0) or 0),
+                tags=list(manifest.get("tags") or []),
+            )
+    except CommunityError as exc:
+        print(f"NOT published: {exc.message}")
+        if exc.status == 403:
+            print("Publishing needs an approved publisher account "
+                  "(POST /v1/marketplace/community/publisher/apply).")
+        return 1
+    except Exception as exc:  # noqa: BLE001 -- network, TLS, missing httpx
+        print(f"NOT published: {exc}")
+        return 1
+    print(f"submitted listing {res.listing_id} (status {res.status}, scan {res.scan_decision}, "
+          f"signed {'yes' if res.signed else 'no'})")
+    print("A moderator reviews it before buyers can see it.")
+    print(f"Buyers install it with: adk pack install community:{res.listing_id}")
+    return 0
+
+
+def _cmd_pack_install_community(listing_id: str, genesis_url: str) -> int:
+    """`adk pack install community:<id>`: download (purchase-gated), verify, extract."""
+    from adk.community_publish import CommunityError, download_listing, install_bundle
+
+    if not listing_id:
+        print("Usage: adk pack install community:<listing-id>")
+        return 1
+    try:
+        import httpx
+
+        with httpx.Client(timeout=120.0) as client:
+            dl = download_listing(client, genesis_url, _community_headers(), listing_id)
+        target = install_bundle(dl, listing_id, Path.home() / ".aitheros" / "packs")
+    except CommunityError as exc:
+        print(exc.message)
+        if exc.status == 401:
+            print("Sign in first: `adk register` or set AITHER_API_KEY.")
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"install failed: {exc}")
+        return 1
+    print(f"installed {listing_id} v{dl.version or '?'} to {target} "
+          f"(sha256 {dl.sha256[:16]}..., signature {'verified' if dl.signature else 'absent'})")
+    print("Restart `adk mcp serve` to load new tools.")
+    return 0
+
 
 def _get_genesis_url() -> str:
     """Resolve the training API URL — Genesis, ADK server, or Aitherium cloud.
@@ -14577,6 +14652,10 @@ def _register_commands(sub):
                            help="Category: general, engineering, content, research, security")
     publish_p.add_argument("--dry-run", action="store_true",
                            help="Validate without publishing")
+    publish_p.add_argument("--one-time-cents", type=int, default=0,
+                           help="One-time price in cents (default 0 = free)")
+    publish_p.add_argument("--subscription-cents", type=int, default=0,
+                           help="Monthly price in cents (default 0)")
 
     # adk admin — administration commands
     admin_p = sub.add_parser("admin", help="Administration commands")
@@ -15376,8 +15455,9 @@ def _register_commands(sub):
     pack_search_p = pack_sub.add_parser("search", help="Search packs by name, description, or tags")
     pack_search_p.add_argument("query", help="Search query")
     pack_search_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
-    pack_install_p = pack_sub.add_parser("install", help="Install a tool pack")
-    pack_install_p.add_argument("pack_id", help="Pack ID to install")
+    pack_install_p = pack_sub.add_parser(
+        "install", help="Install a tool pack (or a bought listing: community:<listing-id>)")
+    pack_install_p.add_argument("pack_id", help="Pack ID, or community:<listing-id>")
     pack_sync_p = pack_sub.add_parser(
         "sync", help="Install every entitled pack not already present (license-driven)")
     pack_sync_p.add_argument("--dry-run", "-n", action="store_true",
@@ -15431,6 +15511,19 @@ def _register_commands(sub):
     pack_build_p.add_argument("pack_dir", help="Pack directory")
     pack_build_p.add_argument("-o", "--output", default=None,
                               help="Output directory (default: <pack>/dist)")
+    pack_pub_p = pack_sub.add_parser(
+        "publish", help="Build, submit and upload a pack to the community marketplace")
+    pack_pub_p.add_argument("pack_dir", help="Pack directory")
+    pack_pub_p.add_argument("--kind", default="tool",
+                            help="Listing kind: tool, skill, mcp, agent, plugin, ... "
+                                 "(default tool)")
+    pack_pub_p.add_argument("--summary", default=None, help="One-line summary (default: manifest)")
+    pack_pub_p.add_argument("--one-time-cents", type=int, default=0,
+                            help="One-time price in cents (default 0 = free)")
+    pack_pub_p.add_argument("--subscription-cents", type=int, default=0,
+                            help="Monthly price in cents (default 0)")
+    pack_pub_p.add_argument("-o", "--output", default=None, help="Build output directory")
+    pack_pub_p.add_argument("--dry-run", action="store_true", help="Build only; submit nothing")
 
     # adk fleet — create & manage agents across runtimes (local | managed | hosted | cloud-run)
     fleet_p = sub.add_parser("fleet", help="Create & manage a fleet of agents (local | managed | hosted | cloud-run)")

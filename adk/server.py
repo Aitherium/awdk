@@ -721,6 +721,154 @@ input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.
 </script></body></html>'''
 
 
+# Prefix -> intent categories, using the SAME vocabulary the built-in tools use
+# (builtin_tools.py TOOL_INTENT_CATEGORIES): code, file, analysis, command, research,
+# web_research, question. Tagging is what lets _filter_tools_by_intent actually exclude
+# a tool — an untagged tool matches every intent and defeats the filter.
+_MCP_INTENT_PREFIXES = (
+    (("codegraph_", "repowise_", "git_", "graph_code", "scope_", "acc_"), ["code", "analysis"]),
+    (("fs_", "file_"), ["code", "file"]),
+    (("web_", "search_", "research_", "fetch_", "context7_"), ["research", "web_research", "question"]),
+    (("recall", "remember", "memory", "knowledge_", "graph_", "rag_", "query_"), ["analysis", "question"]),
+    (("http_", "cf_", "cloudflare_", "docker", "k3s_", "hetzner_", "ring_"), ["command"]),
+)
+
+
+def _mcp_intent_categories(name: str) -> list:
+    """Best-effort intent tags for a gateway tool, by name prefix."""
+    lowered = name.lower()
+    for prefixes, cats in _MCP_INTENT_PREFIXES:
+        if lowered.startswith(prefixes):
+            return list(cats)
+    return ["analysis"]  # a real tag beats none: an untagged tool bypasses filtering
+
+
+def _prioritise_mcp_specs(specs: list) -> list:
+    """Order gateway tools so the eager cap keeps the broadly-useful ones.
+
+    This is a deliberate stopgap, not the end state: the right answer is runtime
+    selection (tool search over the tool graph / MCTS planning / intent), so the agent
+    retrieves from all ~1200 on demand instead of pre-loading any fixed slice.
+    """
+    preferred = (
+        "codegraph_", "repowise_", "fs_", "git_", "web_", "search_", "recall",
+        "remember", "query_", "knowledge_", "graph_", "http_",
+    )
+    head = [s for s in specs if str(s.get("name", "")).lower().startswith(preferred)]
+    tail = [s for s in specs if s not in head]
+    return head + tail
+
+
+def register_gateway_tools_on(
+    agent,
+    *,
+    catalogue_getter,
+    client_getter,
+    max_tools: int | None = None,
+) -> int:
+    """Register the platform reach on ONE agent: search_tools + call_tool + an eager core.
+
+    This is PER-AGENT wiring, and it has to be. The daemon keeps one agent per name
+    (``_state["agents_by_name"]``), and until 2026-10-05 the startup attach registered
+    the platform tools on the DEFAULT agent only. The shell CLI asks for ``aither`` by
+    default, so every owner turn ran on a differently-named agent whose menu had
+    built-ins and no platform reach — the model answered "I don't have real-time
+    access", which was TRUE of the menu it was shown. Measured in the daemon log:
+    13:35 attach logs "18 REGISTERED" on one identity; 13:44 the CLI's identity is
+    built from scratch with 22 built-ins + 47 tool-pack tools and zero gateway tools.
+    A capability missing from the menu is indistinguishable from one that does not
+    exist, so registration rides on the agent, not on the process.
+
+    The meta-tools and the eager closures resolve the live client and catalogue
+    through the getters, so a gateway flap that swaps the client re-points every
+    agent registered here — the closures never hold a dead handle. Registration is
+    replace-by-name in the tool registry, so calling this again (per reconnect, per
+    agent) is idempotent, not additive.
+
+    Returns the number of tools registered (2 meta-tools + eager-core successes).
+    """
+    if agent is None:
+        return 0
+    if max_tools is None:
+        max_tools = int(os.getenv("ADK_MCP_MAX_TOOLS", "16"))
+
+    from adk.tools_meta import call_tool as call_tool_impl
+    from adk.tools_meta import search_tools_ranked
+
+    registered = 0
+
+    async def search_tools(query: str = "", limit: int = 8) -> str:
+        return await search_tools_ranked(
+            query, catalogue_getter() or [], limit, client_getter()
+        )
+
+    search_tools.__doc__ = (
+        "Search available tools by name and description. Returns "
+        "top matches with name and description. Use this to discover "
+        "specialized tools for your task."
+    )
+    try:
+        agent._tools.register(
+            search_tools,
+            name="search_tools",
+            description=(
+                "Search for MCP tools by query. Returns name, description "
+                "of up to 8 matching tools. Essential for finding tools not "
+                "in the eager-loaded core."
+            ),
+            intent_categories=["analysis", "code", "research", "question"],
+        )
+        registered += 1
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to register search_tools: %s", e)
+
+    async def call_tool(name: str, arguments: dict | None = None) -> str:
+        return await call_tool_impl(name, arguments or {}, client_getter())
+
+    call_tool.__doc__ = (
+        "Call a tool by name with arguments. Use search_tools first to "
+        "find the tool name and signature."
+    )
+    try:
+        agent._tools.register(
+            call_tool,
+            name="call_tool",
+            description=(
+                "Call any MCP tool by name without pre-registration. "
+                "Pair with search_tools to find and invoke tools on demand."
+            ),
+            intent_categories=["analysis", "code", "research", "question", "command"],
+        )
+        registered += 1
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to register call_tool: %s", e)
+
+    for tool_spec in _prioritise_mcp_specs(catalogue_getter() or [])[:max_tools]:
+        tool_name = str(tool_spec.get("name") or "").strip()
+        if not tool_name:
+            continue
+
+        async def _gateway_tool_call(tn=tool_name, **kwargs) -> str:
+            result = await client_getter().call_tool(tn, kwargs)
+            if result.get("success"):
+                return result.get("text", "")
+            return f"Error: {result.get('message', 'unknown')}"
+
+        _gateway_tool_call.__name__ = tool_name
+        _gateway_tool_call.__doc__ = tool_spec.get("description", "")
+        try:
+            agent._tools.register(
+                _gateway_tool_call,
+                name=tool_name,
+                description=tool_spec.get("description", ""),
+                intent_categories=_mcp_intent_categories(tool_name),
+            )
+            registered += 1
+        except Exception:  # noqa: BLE001 — one bad spec must not drop the rest
+            continue
+    return registered
+
+
 def create_app(
     agent: AitherAgent | None = None,
     identity: str = "aither",
@@ -1346,6 +1494,7 @@ def create_app(
             cache: dict[str, AitherAgent] = _state["agents_by_name"]
             cached = cache.get(name)
             if cached is not None:
+                _ensure_platform_tools_on(cached)
                 return cached
 
             # Load agent spec for the requested agent
@@ -1369,9 +1518,52 @@ def create_app(
 
             built = AitherAgent(**kwargs)
             cache[name] = built
+            # Platform tools are PER-AGENT: a freshly built agent starts from its
+            # built-ins, and the startup attach registered on the default agent only.
+            # Wire the gateway reach in now when the daemon is attached; when it is
+            # not, the ensure-check on later cache hits and the attach sweep pick it
+            # up on recovery.
+            _ensure_platform_tools_on(built)
             return built
 
         return agent
+
+    def _ensure_platform_tools_on(a) -> int:
+        """Give this agent the platform reach if the daemon is attached and it lacks it.
+
+        Bound to this daemon's live client and catalogue, so the registered closures
+        always follow a reconnect. Cheap on the common path: one registry membership
+        check. Never registers meta-tools that would search an empty catalogue — the
+        exact "attached to nothing" failure the attach path refuses when the gateway
+        lists 0 tools. Called on build, on every cache hit, and by the attach sweep,
+        so a registration that failed mid-flap is retried on the next turn instead of
+        leaving a built-in-only menu cached for the process lifetime.
+        """
+        if a is None or not _state.get("gateway_mcp_client"):
+            return 0
+        if not (_state.get("all_mcp_tools") or []):
+            return 0
+        try:
+            names = {t.name for t in a._tools.list_tools()}
+        except Exception:  # noqa: BLE001 — an agent without a registry cannot hold tools
+            return 0
+        if "search_tools" in names and "call_tool" in names:
+            return 0
+        try:
+            n = register_gateway_tools_on(
+                a,
+                catalogue_getter=lambda: _state.get("all_mcp_tools", []),
+                client_getter=lambda: _state.get("gateway_mcp_client"),
+            )
+            if n:
+                logger.info(
+                    "Platform tools registered on agent '%s' (%d tools)",
+                    getattr(a, "name", "?"), n,
+                )
+            return n
+        except Exception as exc:  # noqa: BLE001 — built-ins still serve the turn
+            logger.warning("Platform tool registration failed: %s", exc)
+            return 0
 
     # ─── The browser-pair door answers first-party pages even OFFLINE ───
     #
@@ -5223,41 +5415,6 @@ def create_app(
         except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("Secrets sync failed (non-fatal): %s", exc)
 
-    # Prefix -> intent categories, using the SAME vocabulary the built-in tools use
-    # (builtin_tools.py TOOL_INTENT_CATEGORIES): code, file, analysis, command, research,
-    # web_research, question. Tagging is what lets _filter_tools_by_intent actually exclude
-    # a tool — an untagged tool matches every intent and defeats the filter.
-    _MCP_INTENT_PREFIXES = (
-        (("codegraph_", "repowise_", "git_", "graph_code", "scope_", "acc_"), ["code", "analysis"]),
-        (("fs_", "file_"), ["code", "file"]),
-        (("web_", "search_", "research_", "fetch_", "context7_"), ["research", "web_research", "question"]),
-        (("recall", "remember", "memory", "knowledge_", "graph_", "rag_", "query_"), ["analysis", "question"]),
-        (("http_", "cf_", "cloudflare_", "docker", "k3s_", "hetzner_", "ring_"), ["command"]),
-    )
-
-    def _mcp_intent_categories(name: str) -> list:
-        """Best-effort intent tags for a gateway tool, by name prefix."""
-        lowered = name.lower()
-        for prefixes, cats in _MCP_INTENT_PREFIXES:
-            if lowered.startswith(prefixes):
-                return list(cats)
-        return ["analysis"]  # a real tag beats none: an untagged tool bypasses filtering
-
-    def _prioritise_mcp_tools(specs: list) -> list:
-        """Order gateway tools so the eager cap keeps the broadly-useful ones.
-
-        This is a deliberate stopgap, not the end state: the right answer is runtime
-        selection (tool search over the tool graph / MCTS planning / intent), so the agent
-        retrieves from all ~1200 on demand instead of pre-loading any fixed slice.
-        """
-        preferred = (
-            "codegraph_", "repowise_", "fs_", "git_", "web_", "search_", "recall",
-            "remember", "query_", "knowledge_", "graph_", "http_",
-        )
-        head = [s for s in specs if str(s.get("name", "")).lower().startswith(preferred)]
-        tail = [s for s in specs if s not in head]
-        return head + tail
-
     def _nudge_mcp_attach() -> None:
         """A turn is starting while we have no platform tools — retry NOW, don't block.
 
@@ -5393,89 +5550,19 @@ def create_app(
             # 64 eager tools = 29.9s, 1227 eager = 230s timeout).
             registered = 0
             a = await get_agent()
-            if a:
-                # Register search_tools: find tools by query
-                from adk.tools_meta import search_tools_ranked
-
-                async def search_tools(query: str = "", limit: int = 8) -> str:
-                    return await search_tools_ranked(
-                        query, _state.get("all_mcp_tools", []), limit,
-                        _state.get("gateway_mcp_client"),
-                    )
-
-                search_tools.__doc__ = (
-                    "Search available tools by name and description. Returns "
-                    "top matches with name and description. Use this to discover "
-                    "specialized tools for your task."
-                )
-                try:
-                    a._tools.register(
-                        search_tools,
-                        name="search_tools",
-                        description=(
-                            "Search for MCP tools by query. Returns name, description "
-                            "of up to 8 matching tools. Essential for finding tools not "
-                            "in the eager-loaded core."
-                        ),
-                        intent_categories=["analysis", "code", "research", "question"],
-                    )
-                    registered += 1
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("Failed to register search_tools: %s", e)
-
-                # Register call_tool: invoke any tool by name
-                from adk.tools_meta import call_tool as call_tool_impl
-
-                async def call_tool(name: str, arguments: dict | None = None) -> str:
-                    return await call_tool_impl(
-                        name, arguments or {}, _state.get("gateway_mcp_client")
-                    )
-
-                call_tool.__doc__ = (
-                    "Call a tool by name with arguments. Use search_tools first to "
-                    "find the tool name and signature."
-                )
-                try:
-                    a._tools.register(
-                        call_tool,
-                        name="call_tool",
-                        description=(
-                            "Call any MCP tool by name without pre-registration. "
-                            "Pair with search_tools to find and invoke tools on demand."
-                        ),
-                        intent_categories=["analysis", "code", "research", "question", "command"],
-                    )
-                    registered += 1
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("Failed to register call_tool: %s", e)
-
-            # Register eager-loaded core tools (reduced from 64 to 16 based on
-            # latency measurements: knee point is ~16 tools before curve flattens).
             max_tools = int(os.getenv("ADK_MCP_MAX_TOOLS", "16"))
             if a:
-                for tool_spec in _prioritise_mcp_tools(tools)[:max_tools]:
-                    tool_name = tool_spec.get("name") or ""
-                    if not tool_name:
-                        continue
-
-                    async def _local_tool_call(tn=tool_name, **kwargs) -> str:
-                        result = await mcp_client.call_tool(tn, kwargs)
-                        if result.get("success"):
-                            return result.get("text", "")
-                        return f"Error: {result.get('message', 'unknown')}"
-
-                    _local_tool_call.__name__ = tool_name
-                    _local_tool_call.__doc__ = tool_spec.get("description", "")
-                    try:
-                        a._tools.register(
-                            _local_tool_call,
-                            name=tool_name,
-                            description=tool_spec.get("description", ""),
-                            intent_categories=_mcp_intent_categories(tool_name),
-                        )
-                        registered += 1
-                    except Exception:  # noqa: BLE001 — one bad spec must not drop the rest
-                        continue
+                # PER-AGENT wiring: lands on the default agent AND every named agent
+                # already built (the get_agent() build path registers new ones).
+                # Registering on the default alone left the CLI's `aither` turns with
+                # built-ins only — "I don't have real-time access" was true of the
+                # menu. See register_gateway_tools_on().
+                registered = register_gateway_tools_on(
+                    a,
+                    catalogue_getter=lambda: _state.get("all_mcp_tools", []),
+                    client_getter=lambda: _state.get("gateway_mcp_client"),
+                    max_tools=max_tools,
+                )
             logger.info(
                 "Sovereign mode: local MCP gateway %s connected — %d tools listed, "
                 "%d REGISTERED (%d eager + 2 meta-tools for runtime retrieval)",
@@ -5490,6 +5577,17 @@ def create_app(
                 return False
             _state["gateway_mcp_connected"] = True
             _state["mcp_last_error"] = ""
+            # An agent built WHILE detached (or before this attach) holds no platform
+            # tools: the build hook registers on first build only when a client already
+            # exists. Attach them now so a named agent cached during a flap converges
+            # the moment the gateway is back, instead of keeping a built-in-only menu
+            # for its remaining lifetime. Agents registered earlier need nothing here:
+            # their closures read the live client through the getters, so the swapped
+            # handle is picked up without re-registration.
+            for _extra in list(_state.get("agents_by_name", {}).values()):
+                if _extra is a:
+                    continue  # the default agent was just registered above
+                _ensure_platform_tools_on(_extra)
             return True
         except Exception as exc:  # noqa: BLE001 — tools are optional, serving is not
             logger.info("Sovereign mode: local MCP gateway unreachable (%s) — built-in tools only", exc)
@@ -5623,93 +5721,25 @@ def create_app(
                 logger.info("Gateway MCP client connected: %s", gateway_url)
 
                 # Register gateway tools in agent (best-effort, async)
-                # Use the same meta-tools + eager-core strategy as sovereign mode
+                # Use the same meta-tools + eager-core strategy as sovereign mode,
+                # on the default AND every named agent — see register_gateway_tools_on().
                 try:
                     a = await get_agent()
                     if a:
                         tools = await mcp_client.list_tools()
                         # Cache the full tool catalogue for runtime retrieval
                         _state["all_mcp_tools"] = tools
-
-                        # Register meta-tools (search_tools, call_tool)
-                        from adk.tools_meta import search_tools_ranked
-
-                        async def search_tools(query: str = "", limit: int = 8) -> str:
-                            return await search_tools_ranked(
-                                query, _state.get("all_mcp_tools", []), limit, mcp_client
-                            )
-
-                        search_tools.__doc__ = (
-                            "Search available tools by name and description. Returns "
-                            "top matches. Essential for finding tools not in the eager core."
-                        )
-                        try:
-                            a._tools.register(
-                                search_tools,
-                                name="search_tools",
-                                description=(
-                                    "Search for MCP tools by query. Returns name, "
-                                    "description of up to 8 matches."
-                                ),
-                                intent_categories=[
-                                    "analysis", "code", "research", "question"
-                                ],
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            logger.debug("Failed to register search_tools: %s", e)
-
-                        from adk.tools_meta import call_tool as call_tool_impl
-
-                        async def call_tool(
-                            name: str, arguments: dict | None = None
-                        ) -> str:
-                            return await call_tool_impl(name, arguments or {}, mcp_client)
-
-                        call_tool.__doc__ = (
-                            "Call a tool by name. Pair with search_tools to find tools."
-                        )
-                        try:
-                            a._tools.register(
-                                call_tool,
-                                name="call_tool",
-                                description=(
-                                    "Call any MCP tool by name without pre-registration."
-                                ),
-                                intent_categories=[
-                                    "analysis", "code", "research", "question", "command"
-                                ],
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            logger.debug("Failed to register call_tool: %s", e)
-
-                        # Register eager-loaded core (reduced to 16)
                         max_tools = int(os.getenv("ADK_MCP_MAX_TOOLS", "16"))
-                        registered = 2  # search_tools + call_tool
-                        for tool_spec in tools[:max_tools]:
-                            tool_name = tool_spec.get("name", "").strip()
-                            if not tool_name:
-                                continue
-
-                            async def _gateway_tool_call(
-                                tn=tool_name, **kwargs
-                            ) -> str:
-                                result = await mcp_client.call_tool(tn, kwargs)
-                                if result.get("success"):
-                                    return result.get("text", "")
-                                return f"Error: {result.get('message', 'unknown')}"
-
-                            _gateway_tool_call.__name__ = tool_name
-                            _gateway_tool_call.__doc__ = tool_spec.get("description", "")
-                            try:
-                                a._tools.register(
-                                    _gateway_tool_call,
-                                    name=tool_name,
-                                    description=tool_spec.get("description", ""),
-                                    intent_categories=_mcp_intent_categories(tool_name),
-                                )
-                                registered += 1
-                            except Exception:  # noqa: BLE001
-                                continue
+                        registered = register_gateway_tools_on(
+                            a,
+                            catalogue_getter=lambda: _state.get("all_mcp_tools", []),
+                            client_getter=lambda: _state.get("gateway_mcp_client"),
+                            max_tools=max_tools,
+                        )
+                        for _extra in list(_state.get("agents_by_name", {}).values()):
+                            if _extra is a:
+                                continue  # the default agent was just registered
+                            _ensure_platform_tools_on(_extra)
 
                         logger.info(
                             "Registered %d gateway tools with agent %s "

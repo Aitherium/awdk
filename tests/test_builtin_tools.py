@@ -568,8 +568,10 @@ class TestRegistration:
         mock_agent._tools = MagicMock()
 
         count = bt.register_builtin_tools(mock_agent, categories=["shell"])
-        assert count == 1
-        mock_agent._tools.register.assert_called_once_with(
+        assert count == 2  # shell_exec + disk_usage
+        registered = [c.args[0] for c in mock_agent._tools.register.call_args_list]
+        assert registered == [bt.shell_exec, bt.disk_usage]
+        mock_agent._tools.register.assert_any_call(
             bt.shell_exec,
             intent_categories=bt.TOOL_INTENT_CATEGORIES.get(bt.shell_exec, []),
         )
@@ -971,3 +973,22 @@ def test_desktop_default_roots_include_home(monkeypatch):
         assert (os.path.expanduser("~") in mod._DEFAULT_ALLOWED_ROOTS) is want_home, platform
     monkeypatch.undo()
     importlib.reload(bt)
+
+
+
+def test_disk_usage_reports_real_numbers(tmp_path):
+    """A direct disk tool (2026-10-05: the 8B guessed Get-PSDrive's 'FreeSpace' and failed)."""
+    data = json.loads(bt.disk_usage(str(tmp_path)))
+    d = data["drives"][0]
+    assert d["total_bytes"] > 0 and d["free_bytes"] >= 0
+    assert d["used_bytes"] + d["free_bytes"] <= d["total_bytes"] * 1.01
+    assert d["free_gb"] == round(d["free_bytes"] / 1024 ** 3, 1)
+
+
+def test_disk_usage_all_drives_and_bad_path():
+    assert json.loads(bt.disk_usage())["drives"], "at least one drive"
+    assert "error" in json.loads(bt.disk_usage("/no/such/path/at/all"))
+
+
+def test_disk_usage_is_in_the_shell_category():
+    assert bt.disk_usage in bt.TOOL_CATEGORIES["shell"]

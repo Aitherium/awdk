@@ -440,10 +440,40 @@ def _windows_shell_argv(command: str) -> list[str] | None:
     return [exe, "-NoProfile", "-NonInteractive", "-Command", command]
 
 
+def disk_usage(path: str = "") -> str:
+    """Total, used and free space of the drive holding ``path`` (default: every local drive
+    on Windows, ``/`` elsewhere), in bytes and GB.
+
+    path: A drive or folder, e.g. "C:" or "/home". Empty = all drives (Windows) or "/".
+    """
+    import shutil
+    import string
+
+    def one(p: str) -> dict:
+        u = shutil.disk_usage(p)
+        gb = 1024 ** 3
+        return {"path": p, "total_bytes": u.total, "used_bytes": u.used, "free_bytes": u.free,
+                "total_gb": round(u.total / gb, 1), "used_gb": round(u.used / gb, 1),
+                "free_gb": round(u.free / gb, 1)}
+
+    target = (path or "").strip()
+    try:
+        if target:
+            if sys.platform == "win32" and len(target) == 2 and target[1] == ":":
+                target += "\\"
+            return json.dumps({"drives": [one(target)]})
+        if sys.platform == "win32":
+            found = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
+            return json.dumps({"drives": [one(d) for d in found]})
+        return json.dumps({"drives": [one("/")]})
+    except OSError as e:
+        return json.dumps({"error": f"{type(e).__name__}: {e}", "path": target})
+
+
 def shell_exec(command: str, timeout: int = 30) -> str:
     """Execute a shell command and return stdout + stderr. On Windows the command runs in
     PowerShell (pwsh, else Windows PowerShell; cmd.exe only when neither exists); elsewhere
-    it is split and run directly, no shell.
+    it is split and run directly, no shell. For free/used disk space call disk_usage instead.
 
     command: Shell command to run (PowerShell syntax on Windows)
     timeout: Maximum execution time in seconds (default 30)
@@ -2878,6 +2908,9 @@ def _genesis_url() -> str:
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Stronger models as tools of the orchestrator (adk/model_tools.py): reasoning + vision.
+from adk.model_tools import ask_reasoner, look_at  # noqa: E402 -- after the tool defs it joins
+
 # Intent-aware tool categorization (for filtering by intent type)
 # Maps tool functions to the intent types they're available for.
 # Empty list = available for all intents (fail-open).
@@ -2890,6 +2923,11 @@ TOOL_INTENT_CATEGORIES = {
     file_search: ["code", "file", "analysis"],
     # Shell execution → code, command intents
     shell_exec: ["code", "command"],
+    # Disk space: a direct answer, so a model never has to guess shell properties for it
+    disk_usage: ["command", "question", "analysis"],
+    # The bigger models, as tools: hard reasoning / exact syntax, and eyes on an image
+    ask_reasoner: ["code", "command", "analysis", "question", "research"],
+    look_at: ["analysis", "question", "creative"],
     # Python execution → code, analysis intents
     python_exec: ["code", "analysis"],
     # Web tools → research, web_research, question intents
@@ -2934,7 +2972,8 @@ from adk.graph_rag.page_index import doc_tree_search  # noqa: E402
 # Tool category definitions
 TOOL_CATEGORIES: dict = {
     "file_io": [file_read, file_write, file_edit, file_list, file_search],
-    "shell": [shell_exec],
+    "shell": [shell_exec, disk_usage],
+    "models": [ask_reasoner, look_at],
     "python": [python_exec],
     "web": [web_search, web_fetch],
     "documents": [doc_tree_search],
@@ -3001,7 +3040,7 @@ def categories_from_env(value: str) -> list[str] | None:
 IDENTITY_DEFAULTS = {
     "adk-daemon": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
-        "workspace", "notebooks", "safety", "self", "decisions"
+        "workspace", "notebooks", "models", "safety", "self", "decisions"
     ],
     "demiurge": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
@@ -3015,7 +3054,7 @@ IDENTITY_DEFAULTS = {
         "file_io", "web", "secrets", "code", "graph", "workspace", "notebooks", "safety",
         "self", "decisions"
     ],
-    "aither": ["file_io", "shell", "web", "creative", "self", "decisions"],
+    "aither": ["file_io", "shell", "web", "creative", "models", "self", "decisions"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self", "decisions"],
     "hydra": [
         "file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety",

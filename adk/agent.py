@@ -139,6 +139,53 @@ def parse_react_input(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+_IMAGE_REF = re.compile(
+    r"(?i)(?:https?://\S+?|[a-z]:[\\/][^\s\"'<>|]+?|[.~/][^\s\"'<>|]*?)"
+    r"\.(?:png|jpe?g|webp|gif|bmp|tiff?)\b"
+)
+
+
+def image_reference(text: str) -> str:
+    """The first image file path or URL in ``text``, or "".
+
+    Used to steer the turn to ``look_at``: measured 2026-10-05, "what is in the image
+    D:\\...\\x.png ?" made the 8B call image_refine (a GENERATION tool) and then ask_human.
+    """
+    m = _IMAGE_REF.search(text or "")
+    return m.group(0) if m else ""
+
+
+def tool_result_failed(obs: str) -> bool:
+    """True when a tool observation is a failure OR answered nothing.
+
+    Failure: an ``error`` key, a non-zero ``exit_code``, a "(tool error: ...)" line.
+    Nothing: a shell result whose stdout is empty or only a table header -- measured
+    2026-10-05, ``Get-PSDrive C | Select-Object FreeSpace`` returned exit 0 with the
+    header ``FreeSpace / ---------`` and no value (no such property), and the agent read
+    that as success-shaped noise five times running.
+    """
+    text = (obs or "").strip()
+    if not text or text.startswith("(tool error:"):
+        return True
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("error"):
+        return True
+    if "exit_code" in data:
+        if data.get("exit_code") not in (0, None):
+            return True
+        lines = [ln.strip() for ln in str(data.get("stdout", "")).splitlines() if ln.strip()]
+        if not lines:
+            return True
+        if len(lines) <= 2 and set(lines[-1]) <= set("- "):
+            return True  # a header row and its underline, no values
+    return False
+
+
 def announces_retry(text: str) -> bool:
     """True when ``text`` ends by announcing another attempt rather than answering."""
     tail = (text or "").strip()[-240:]
@@ -1673,6 +1720,20 @@ class AitherAgent:
             mode=getattr(self, "tool_selection", None))
         tools_schema = _tool_sel.schemas(self._tools.to_openai_format)
         tool_calls_made = []
+        # The user named an image: LOOK at it before the model's first call (same rule as
+        # stream_react). Measured 2026-10-05 on this native loop: the 8B called
+        # image_smart (a generator) and web-searched its error instead of seeing the file.
+        _img = image_reference(message)
+        if _img and self._tools.get("look_at") is not None:
+            try:
+                _seen = str(await self._tools.execute(
+                    "look_at", {"image": _img, "question": message[:1000]}))
+            except Exception as exc:  # noqa: BLE001 -- the turn continues without it
+                _seen = f"(tool error: {type(exc).__name__}: {exc})"
+            tool_calls_made.append("look_at")
+            messages.append(Message(role="user", content=(
+                f"OBSERVATION (look_at, the vision model, already called on {_img}): "
+                f"{_seen[:3000]}\nAnswer the user from this.")))
         # Human-in-the-loop approval state. ``_pending_approvals`` collects gated tool
         # calls awaiting a customer decision; ``_paused`` short-circuits the turn so the
         # caller can surface Allow/Deny cards (resume via agent.resume()).
@@ -2878,6 +2939,14 @@ class AitherAgent:
             # turn and must not sit in front of it. See adk.situation.
             + self._situation_suffix(system_additions)
         )
+        # The user named an image: say which tool SEES it (image_* tools make images).
+        _img = image_reference(message)
+        # Registered is enough: the intent filter may leave look_at off the menu, and the
+        # line below is what names it to the model (execute() runs any registered tool).
+        if _img and self._tools.get("look_at") is not None:
+            sys_prompt += (f"\n\nThe user's message refers to the image {_img}. To see it, "
+                           f"call look_at with image={_json.dumps(_img)}; the image_* tools "
+                           "only CREATE images.")
 
         msgs = [Message(role="system", content=sys_prompt)]
         for h in (history or [])[-8:]:
@@ -2892,6 +2961,25 @@ class AitherAgent:
         answer = ""
         tools_made: list[str] = []
         _react_retry_nudges = 0  # see announces_retry
+        _failed_in_a_row = 0  # tool_result_failed streak; 2 -> consult ask_reasoner
+        _consulted = False
+
+        # The user named an image: LOOK at it first, then let the model answer from
+        # what was seen. The 8B ignored the "call look_at" line above 3/3 (2026-10-05)
+        # and told the owner it cannot view images; the vision model is a tool of the
+        # orchestrator, so the loop calls it the way it would call any tool.
+        if _img and self._tools.get("look_at") is not None:
+            _look = {"image": _img, "question": message[:1000]}
+            await _emit({"type": "tool", "name": "look_at", "args": _look})
+            try:
+                _seen = str(await self._tools.execute("look_at", _look))
+            except Exception as exc:  # noqa: BLE001 -- the turn continues without it
+                _seen = f"(tool error: {type(exc).__name__}: {exc})"
+            tools_made.append("look_at")
+            await _emit({"type": "tool_result", "name": "look_at", "result": _seen[:1500]})
+            msgs.append(Message(role="user", content=(
+                f"OBSERVATION (look_at, the vision model, already called on {_img}): "
+                f"{_seen[:3000]}\nAnswer the user from this.")))
 
         # Knowledge graph tracking — tools, memory, sources touched in this turn
         _kg_tools = set()  # tool names called
@@ -3030,6 +3118,36 @@ class AitherAgent:
             await _emit({"type": "tool_result", "name": name, "result": obs[:1500]})
             # Track tool result for knowledge graph
             _kg_tools.add(str(name).lower())
+            # Two failed / empty results in a row: the orchestrator consults the bigger
+            # reasoning model AS A TOOL (adk.model_tools.ask_reasoner) and hands its
+            # answer back as an observation -- once per turn. Owner, 2026-10-05: "the
+            # agent/orchestrator should call the deepseek/gemma models as
+            # vision/reasoning as TOOLS". The small model drives; the big one unblocks.
+            _failed_in_a_row = _failed_in_a_row + 1 if tool_result_failed(obs) else 0
+            if (_failed_in_a_row >= 2 and not _consulted and name != "ask_reasoner"
+                    and self._tools.get("ask_reasoner") is not None):
+                _consulted = True
+                # The tool menu goes along: the fix is often a DIFFERENT tool, not better
+                # arguments for the wrong one (measured: it repaired ask_human's urgency
+                # field when look_at was the answer).
+                _menu = ", ".join(sorted(t.name for t in _tool_sel.offered))[:1500]
+                _ask = {
+                    "question": (f"The user asked: {message[:1500]}\nMy last call was {name} "
+                                 f"with {_json.dumps(args)[:600]} and it failed or returned "
+                                 "nothing. Which ONE tool from my list, with what exact "
+                                 "arguments, answers the question?"),
+                    "context": (f"My tools: {_menu}\nLast result: {obs[:1500]}\n"
+                                f"{self._situation_suffix(None)[:1200]}"),
+                }
+                await _emit({"type": "tool", "name": "ask_reasoner", "args": _ask})
+                try:
+                    _advice = str(await self._tools.execute("ask_reasoner", _ask))
+                except Exception as exc:  # noqa: BLE001 -- advice is optional
+                    _advice = f"(tool error: {type(exc).__name__}: {exc})"
+                tools_made.append("ask_reasoner")
+                await _emit({"type": "tool_result", "name": "ask_reasoner",
+                             "result": _advice[:1500]})
+                obs = f"{obs[:2000]}\n\nREASONER (a bigger model you consulted): {_advice[:2000]}"
             # reasoning-n/a: streamed text, no response object -- the stream loop has
             # no reasoning to carry; thinking-mode backends run the non-stream loop
             msgs.append(Message(role="assistant", content=full))
@@ -3094,7 +3212,16 @@ class AitherAgent:
             tool_hint = ", ".join(td.name for td in self._tools.list_tools())[:600]
         except Exception:  # noqa: BLE001
             pass
-        return await _classify(message, llm_complete=_complete, tool_hint=tool_hint, history=history)
+        decision = await _classify(message, llm_complete=_complete, tool_hint=tool_hint,
+                                   history=history)
+        # A named image file can only be answered by LOOKING at it: measured 2026-10-05,
+        # the 8B router called "what is in the image D:\...\x.png ?" plain chat and the
+        # turn answered "I can't view images" without ever reaching look_at.
+        if image_reference(message) and self._tools.get("look_at") is not None:
+            decision.agentic = True
+            decision.requires_grounding = True
+            decision.grounding_label = decision.grounding_label or "the image"
+        return decision
 
     async def stream_respond(
         self,
