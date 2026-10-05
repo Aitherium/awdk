@@ -138,7 +138,17 @@ CATALOG: list[CatalogEntry] = [
     CatalogEntry(
         filename="aither-orchestrator-Q4_K_M.gguf", label="Orchestrator 8B (Q4_K_M)",
         params_b=8.0, size_bytes=5027783808, min_ram_gb=10.0, family="llama",
-        note="Higher-fidelity quant. Tool-calling and routing.",
+        note="Small-device orchestrator. Q8_0 is the default where it fits.",
+    ),
+    CatalogEntry(
+        # The default orchestrator (owner decision 2026-10-05). Experiment
+        # run_e18eab0164e74e0b, v18 on llama.cpp vs the f16 reference: Q8_0 PASS
+        # top-1 0.9976 / exact 0.9375 at 54 tok/s; Q4_K_M FAIL top-1 0.9598 /
+        # exact 0.8125 at 83 tok/s; f16 32.5 tok/s. size_bytes from a HEAD on the
+        # mirror 2026-10-04; min_ram_gb keeps gemma4-12b's ~1.83x file-size ratio.
+        filename="aither-orchestrator-v18-Q8_0.gguf", label="Orchestrator 8B v18 (Q8_0)",
+        params_b=8.0, size_bytes=8709518176, min_ram_gb=16.0, family="llama",
+        note="The default orchestrator: near-f16 fidelity. Tool-calling and routing.",
     ),
     CatalogEntry(
         filename="gemma4-12b-Q4_K_M.gguf", label="Gemma 4 12B (Q4_K_M)",

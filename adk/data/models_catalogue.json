@@ -285,6 +285,35 @@
     "orchestrator": {
       "id": "orchestrator",
       "role": "chat",
+      "file": "aither-orchestrator-v18-Q8_0.gguf",
+      "size_mb": 8302,
+      "parts": 5,
+      "join": true,
+      "urls": [
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-v18-q8/aither-orchestrator-v18-Q8_0.gguf.part0",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-v18-q8/aither-orchestrator-v18-Q8_0.gguf.part1",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-v18-q8/aither-orchestrator-v18-Q8_0.gguf.part2",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-v18-q8/aither-orchestrator-v18-Q8_0.gguf.part3",
+        "https://github.com/Aitherium/aitherkvcache/releases/download/fleet-orchestrator-v18-q8/aither-orchestrator-v18-Q8_0.gguf.part4"
+      ],
+      "opt_in": true,
+      "on_ladder": false,
+      "quant": "Q8_0",
+      "purpose": "The fleet's general executor (tool routing).",
+      "runtime": "llama.cpp",
+      "licence_id": "aither-orchestrator",
+      "licence": {
+        "record": "aither-orchestrator",
+        "name": "Aitherium (owner determination 2026-10-02)",
+        "url": "",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      }
+    },
+    "orchestrator-q4": {
+      "id": "orchestrator-q4",
+      "role": "chat",
       "file": "aither-orchestrator-Q4_K_M.gguf",
       "size_mb": 4792,
       "parts": 3,
@@ -297,7 +326,7 @@
       "opt_in": true,
       "on_ladder": false,
       "quant": "Q4_K_M",
-      "purpose": "The fleet's general executor (tool routing).",
+      "purpose": "The fleet's general executor at Q4_K_M, for devices that cannot fit Q8_0.",
       "runtime": "llama.cpp",
       "licence_id": "aither-orchestrator",
       "licence": {

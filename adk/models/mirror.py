@@ -47,14 +47,28 @@ CATALOG: Dict[str, WeightCatalogEntry] = {
         approx_size_bytes=3_803_452_480,
         min_vram_gb=8,
     ),
+    # The DEFAULT orchestrator (see DEFAULT_ORCHESTRATOR_FILE below for why Q8_0).
+    "aither-orchestrator-v18-Q8_0.gguf": WeightCatalogEntry(
+        filename="aither-orchestrator-v18-Q8_0.gguf",
+        human_name="AitherOrchestrator v18 (8-bit quantized, default)",
+        family="AitherOrchestrator",
+        quantization="Q8_0",
+        # Measured 2026-10-04 via HEAD on the mirror: 8,709,518,176 bytes (8.11 GiB),
+        # equal to awrtifact.yaml's orchestrator-v18-q8 total.
+        approx_size_bytes=8_709_518_176,
+        min_vram_gb=12,
+    ),
+    # Small-device option only. NOT the v18 build (v18-Q4_K_M is 5,027,783,520 B).
     "aither-orchestrator-Q4_K_M.gguf": WeightCatalogEntry(
         filename="aither-orchestrator-Q4_K_M.gguf",
-        human_name="AitherOrchestrator (4-bit quantized)",
+        human_name="AitherOrchestrator (4-bit quantized, small devices)",
         family="AitherOrchestrator",
         quantization="Q4_K_M",
         # Measured 2026-08-16 via Content-Range header: 5,027,783,808 bytes (4.68 GB).
         approx_size_bytes=5_027_783_808,
-        min_vram_gb=12,
+        # 4.7 GiB of weights plus KV cache fits an 8 GB card; at 12 (the old value,
+        # shared with Q8_0) it could never fit a box the Q8_0 default does not.
+        min_vram_gb=8,
     ),
     "gemma4-12b-Q4_K_M.gguf": WeightCatalogEntry(
         filename="gemma4-12b-Q4_K_M.gguf",
@@ -108,6 +122,15 @@ CATALOG: Dict[str, WeightCatalogEntry] = {
 }
 
 MIRROR_BASE_URL = "https://weights.aitherium.com"
+
+#: The orchestrator the adk installs and serves by default: the v18 build at Q8_0.
+#: Owner decision 2026-10-05, from experiment run_e18eab0164e74e0b (v18 orchestrator on
+#: llama.cpp vs the f16 reference): Q8_0 PASS, top-1 agreement 0.9976, exact 0.9375,
+#: 54 tok/s; Q4_K_M FAIL, top-1 0.9598, exact 0.8125, 83 tok/s; f16 32.5 tok/s.
+#: Q8_0 is ~8.7 GB on disk vs ~5.0 GB for Q4_K_M.
+DEFAULT_ORCHESTRATOR_FILE = "aither-orchestrator-v18-Q8_0.gguf"
+#: Still selectable by name for devices that cannot fit Q8_0; never the default.
+SMALL_DEVICE_ORCHESTRATOR_FILE = "aither-orchestrator-Q4_K_M.gguf"
 
 
 class MirrorError(Exception):

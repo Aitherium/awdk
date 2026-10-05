@@ -82,12 +82,20 @@ LLAMACPP_RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/release
 HF_RESOLVE_BASE = "https://huggingface.co/{repo}/resolve/main/{filename}"
 
 # Quant catalog with approximate sizes (Nemotron-Orchestrator-8B specific)
+#
+# Q8_0 IS THE DEFAULT wherever it fits (owner decision 2026-10-05): pick_quant() walks
+# largest-first, so it lands on Q8_0 whenever the memory pool allows and only drops to a
+# smaller quant on a device that cannot fit it. Evidence, experiment
+# run_e18eab0164e74e0b (v18 orchestrator on llama.cpp vs the f16 reference): Q8_0 PASS
+# top-1 agreement 0.9976, exact 0.9375, 54 tok/s; Q4_K_M FAIL top-1 0.9598, exact
+# 0.8125, 83 tok/s; f16 32.5 tok/s. `--quant Q4_K_M` stays available for small devices.
+# Q8_0 size: the v18 artifact measures 8,709,518,176 B (~8.7 GB); Q4_K_M ~5.0 GB.
 QUANTS = {
     "Q3_K_M": {"size_gb": 4.0, "ram_gb": 5.0, "quality": "OK for orchestrator-only"},
-    "Q4_K_M": {"size_gb": 4.9, "ram_gb": 6.0, "quality": "Recommended — sweet spot"},
+    "Q4_K_M": {"size_gb": 5.0, "ram_gb": 6.0, "quality": "Small devices (failed f16 parity)"},
     "Q5_K_M": {"size_gb": 5.7, "ram_gb": 7.0, "quality": "Higher fidelity"},
     "Q6_K":   {"size_gb": 6.6, "ram_gb": 8.0, "quality": "Near-lossless"},
-    "Q8_0":   {"size_gb": 8.5, "ram_gb": 10.0, "quality": "Effectively lossless"},
+    "Q8_0":   {"size_gb": 8.7, "ram_gb": 10.0, "quality": "Default — passed f16 parity"},
 }
 
 AITHER_HOME = Path.home() / ".aither"

@@ -955,7 +955,9 @@ def main() -> int:
         "--orchestrator-quant",
         type=str,
         default=None,
-        help="GGUF quant for local orchestrator (Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0)",
+        help="GGUF quant for local orchestrator (Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0). "
+             "Default: Q8_0 (~8.7 GB) when it fits, else the largest that does; "
+             "pass Q4_K_M (~5.0 GB) for a small device",
     )
     parser.add_argument(
         "--orchestrator-port",
