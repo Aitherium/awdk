@@ -85,6 +85,55 @@ async def test_repl_truncation_flag_reflects_our_cut():
     assert out["truncated"] is True
 
 
+@pytest.mark.skipif(not _HAS_AWREPL, reason="awrepl not installed on this box")
+async def test_repl_sessions_are_scoped_per_conversation_context():
+    # Review finding: one process-wide namespace shared by every conversation.
+    # With TOOL_SESSION_CTX set (stream_react does it per turn), each context
+    # gets its own worker.
+    from adk.agent import TOOL_SESSION_CTX
+    from adk.builtin_tools import repl_run
+
+    token_a = TOOL_SESSION_CTX.set("conv-aaa")
+    try:
+        await repl_run("scoped_x = 7")
+    finally:
+        TOOL_SESSION_CTX.reset(token_a)
+
+    token_b = TOOL_SESSION_CTX.set("conv-bbb")
+    try:
+        out_b = json.loads(await repl_run("scoped_x + 1"))
+    finally:
+        TOOL_SESSION_CTX.reset(token_b)
+    # Different conversation: the variable must NOT exist there.
+    assert out_b.get("exception") or "NameError" in (out_b.get("stderr") or ""), out_b
+
+    token_a2 = TOOL_SESSION_CTX.set("conv-aaa")
+    try:
+        out_a = json.loads(await repl_run("scoped_x + 1"))
+    finally:
+        TOOL_SESSION_CTX.reset(token_a2)
+    assert "8" in str(out_a.get("value")), out_a
+
+    # Don't leak workers across the suite: drop both scoped sessions.
+    from adk.builtin_tools import repl_reset
+
+    for conv in ("conv-aaa", "conv-bbb"):
+        token = TOOL_SESSION_CTX.set(conv)
+        try:
+            await repl_reset()
+        finally:
+            TOOL_SESSION_CTX.reset(token)
+
+
+def test_keyword_ranker_prefers_query_matching_chunks():
+    from adk.builtin_tools import _KeywordRanker
+
+    chunks = [(0, "alpha beta gamma"), (10, "nothing relevant"), (20, "the target lives here")]
+    ranked = _KeywordRanker().rank("where is the target", chunks)
+    assert ranked[0][0] == 20
+    assert _KeywordRanker().rank("", chunks) == chunks  # no terms -> untouched order
+
+
 @pytest.mark.skipif(not _HAS_AWPREDICT, reason="awpredict not installed on this box")
 async def test_predict_engines_reports_real_rows():
     from adk.builtin_tools import predict_engines

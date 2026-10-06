@@ -765,17 +765,27 @@ def _prioritise_mcp_specs(specs: list) -> list:
     return head + tail
 
 
-def gateway_tool_denied(name: str) -> bool:
-    """True when a gateway tool name matches the process deny list.
+def gateway_tool_denied(name: str, agent=None) -> bool:
+    """True when a gateway tool name matches the host or the AGENT's deny list.
 
-    ADK_GATEWAY_TOOL_DENY is a comma-separated list of exact names or lowercase
-    ``prefix*`` patterns — the smallest real per-host tool grant until packs carry
-    per-agent scopes. Empty (the default) denies nothing: today's behavior.
+    Two planes, unioned: ADK_GATEWAY_TOOL_DENY (host env, comma-separated names or
+    lowercase ``prefix*`` patterns) and the agent's own ``tool_grants`` dict —
+    ``{"gateway_deny": [...]}``, loaded from its agent.yaml via get_agent() — so
+    one managed agent can hold a narrower reach than the host allows. Empty (both)
+    denies nothing: today's behavior.
     """
     n = str(name or "").strip().lower()
     if not n:
         return True  # an empty name reaches nothing
-    for pat in (os.environ.get("ADK_GATEWAY_TOOL_DENY", "") or "").split(","):
+    patterns = list((os.environ.get("ADK_GATEWAY_TOOL_DENY", "") or "").split(","))
+    grants = getattr(agent, "tool_grants", None)
+    if isinstance(grants, dict):
+        extra = grants.get("gateway_deny") or []
+        if isinstance(extra, str):
+            extra = extra.split(",")
+        if isinstance(extra, (list, tuple)):
+            patterns.extend(str(p) for p in extra)
+    for pat in patterns:
         p = pat.strip().lower()
         if not p:
             continue
@@ -787,7 +797,7 @@ def gateway_tool_denied(name: str) -> bool:
     return False
 
 
-def _filter_search_json(out: str) -> str:
+def _filter_search_json(out: str, agent=None) -> str:
     """Drop denied tools from a search_tools JSON answer. Non-JSON passes through
     (the gateway's own ranking format may change; call_tool still refuses)."""
     try:
@@ -798,7 +808,7 @@ def _filter_search_json(out: str) -> str:
     if not isinstance(rows, list):
         return out
     kept = [r for r in rows
-            if not gateway_tool_denied(str((r or {}).get("name") or ""))]
+            if not gateway_tool_denied(str((r or {}).get("name") or ""), agent)]
     data["results"] = kept
     data["count"] = len(kept)
     return json.dumps(data)
@@ -846,7 +856,7 @@ def register_gateway_tools_on(
         out = await search_tools_ranked(
             query, catalogue_getter() or [], limit, client_getter()
         )
-        return _filter_search_json(out)
+        return _filter_search_json(out, agent)
 
     search_tools.__doc__ = (
         "Search available tools by name and description. Returns "
@@ -871,7 +881,7 @@ def register_gateway_tools_on(
     async def call_tool(name: str, arguments: dict | None = None) -> str:
         # A grant that only filters discovery is not a grant: call_tool reaches
         # anything in the catalogue BY NAME, so the refusal lives here too.
-        if gateway_tool_denied(name):
+        if gateway_tool_denied(name, agent):
             return json.dumps({
                 "error": "denied_by_grant",
                 "tool": str(name)[:120],
@@ -902,7 +912,7 @@ def register_gateway_tools_on(
     # Grants shape the EAGER set too: a denied tool must not sit in the menu even
     # when it would have won the priority ordering.
     _catalogue = [s for s in (catalogue_getter() or [])
-                  if not gateway_tool_denied(str((s or {}).get("name") or ""))]
+                  if not gateway_tool_denied(str((s or {}).get("name") or ""), agent)]
     for tool_spec in _prioritise_mcp_specs(_catalogue)[:max_tools]:
         tool_name = str(tool_spec.get("name") or "").strip()
         if not tool_name:
@@ -1541,6 +1551,8 @@ def create_app(
             }
             if agent_spec.get("system_prompt"):
                 kwargs["system_prompt"] = agent_spec["system_prompt"]
+            if agent_spec.get("tool_grants"):
+                kwargs["tool_grants"] = agent_spec["tool_grants"]
 
             _state["agent"] = AitherAgent(**kwargs)
         agent = _state["agent"]
@@ -1575,6 +1587,8 @@ def create_app(
             }
             if agent_spec.get("system_prompt"):
                 kwargs["system_prompt"] = agent_spec["system_prompt"]
+            if agent_spec.get("tool_grants"):
+                kwargs["tool_grants"] = agent_spec["tool_grants"]
 
             built = AitherAgent(**kwargs)
             cache[name] = built

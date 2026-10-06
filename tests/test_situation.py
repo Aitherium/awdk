@@ -128,6 +128,10 @@ async def test_aitheros_stream_relays_live_and_forwards_additions():
     llm = AsyncMock()
     llm.chat_stream = _stream
     llm.provider_name = "test"
+    # session_start serializes agent.llm.model; an AsyncMock fabricates any
+    # attribute as another AsyncMock, which json.dumps then refuses — the fake
+    # must carry a REAL model string.
+    llm.model = "t"
     agent = AitherAgent(name="t", llm=llm, builtin_tools=False, system_prompt="IDENTITY")
 
     @agent.tool

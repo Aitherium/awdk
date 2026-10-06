@@ -2359,6 +2359,36 @@ def _init_find_tools():
 _RECURSE_READ_CAP = 10 * 1024 * 1024  # file_read refuses >10 MB; here we truncate and SAY SO
 
 
+class _KeywordRanker:
+    """Picks which awrecurse chunks are worth reading: query-term overlap first.
+
+    awrecurse's default reads chunks in DOCUMENT ORDER — the head of the file.
+    Measured 2026-10-05: a 35 KB file answered from chunk 1 of 18 while the
+    question's subject sat in a later chunk. Deterministic, no extra model calls.
+    The engine only accepts ``ranker=`` on awrecurse >= 0.2.0; the caller falls
+    back to document order on TypeError (0.1.0) and reports which ran.
+    """
+
+    def rank(self, query, chunks):
+        terms = [t for t in re.findall(r"[a-z0-9_]{3,}", (query or "").lower())]
+        if not terms:
+            return chunks
+
+        def score(item):
+            text = ""
+            if isinstance(item, tuple) and len(item) > 1:
+                text = str(item[1])
+            else:
+                text = str(item)
+            text = text.lower()
+            return sum(text.count(t) for t in terms)
+
+        return sorted(chunks, key=score, reverse=True)
+
+    def outcome(self, start, answered):
+        return None  # ranking is stateless; present for the engine's protocol
+
+
 async def recurse_file(path: str = "", query: str = "", context: str = "",
                        chunk_size: int = 2000, max_iterations: int = 10) -> str:
     """Answer a question from a file too large to read whole (awrecurse).
@@ -2380,7 +2410,7 @@ async def recurse_file(path: str = "", query: str = "", context: str = "",
     "the file lacks the answer".
     """
     try:
-        from awrecurse import RecurseClient  # type: ignore[import-not-found]
+        from awrecurse import RecursionEngine  # type: ignore[import-not-found]
     except ImportError:
         return json.dumps({"error": "awrecurse not available", "fix": "pip install awrecurse"})
 
@@ -2441,9 +2471,24 @@ async def recurse_file(path: str = "", query: str = "", context: str = "",
                 read_truncated = True
         if not text_local.strip():
             raise ValueError("no context: pass a readable path or context text")
-        client = RecurseClient(complete_fn=_complete)
-        result = client.recurse(text_local, query, chunk_size=int(chunk_size or 2000),
-                                max_iterations=int(max_iterations or 10))
+        # Engine-direct so the RANKER can be passed. Document order reads the HEAD
+        # of a file; a log's cause usually sits near the tail, so a 35 KB file was
+        # answered from its first chunks while the relevant part was never
+        # examined. Keyword ranking costs no extra model calls; awrecurse < 0.2.0
+        # (in-fleet containers run 0.1.0) has no ranker kwarg — TypeError falls
+        # back to document order and the result says which ran.
+        try:
+            engine = RecursionEngine(complete_fn=_complete, ranker=_KeywordRanker(),
+                                     chunk_size=int(chunk_size or 2000),
+                                     max_iterations=int(max_iterations or 10))
+            result = engine.recurse(text_local, query).to_dict()
+            result["_ranker"] = "keyword"
+        except TypeError:
+            engine = RecursionEngine(complete_fn=_complete,
+                                     chunk_size=int(chunk_size or 2000),
+                                     max_iterations=int(max_iterations or 10))
+            result = engine.recurse(text_local, query).to_dict()
+            result["_ranker"] = "document-order"
         result["_read_truncated"] = read_truncated
         result["_chars_total"] = len(text_local)
         return result
@@ -2483,6 +2528,7 @@ async def recurse_file(path: str = "", query: str = "", context: str = "",
         "chunks_examined": result.get("iterations", 0),
         "chars_total": result.get("_chars_total", 0),
         "completion_failures": len(failures),
+        "ranker": result.get("_ranker", "document-order"),
     }
     if result.get("_read_truncated"):
         out["read_truncated"] = True
@@ -2576,35 +2622,67 @@ async def predict_conforms(module: str, name: str, protocol: str = "WorldModel")
 #: conversation and agent served by this daemon shares it — the docstring says
 #: so, because a shared namespace presented as per-conversation would be a lie.
 _REPL_POOL = None
-_REPL_SESSION_ID = "adk-agent"
+_REPL_SESSION_ID = "adk-agent"        # fallback when no turn context is set (CLI/tests)
 _REPL_MAX_OUTPUT = 4000
 _REPL_MAX_TIMEOUT_MS = 120_000  # a model-supplied timeout must not pin the session lock forever
+_REPL_MAX_SESSIONS = 16        # safety valve; one worker per active conversation
 _REPL_POOL_LOCK = threading.Lock()
+_REPL_LAST_USED: dict = {}     # session id -> monotonic ts, touched under the pool lock
+
+
+def _repl_session_id() -> str:
+    """This CONVERSATION's worker id, from the turn context (fallback: shared).
+
+    stream_react/chat set ``TOOL_SESSION_CTX`` per turn; asyncio.to_thread copies
+    the context into the worker, so the read below sees the caller's conversation.
+    Without a context (direct calls, tests) the single shared session is used.
+    """
+    try:
+        from adk.agent import TOOL_SESSION_CTX
+        sid = (TOOL_SESSION_CTX.get() or "").strip()
+    except Exception:  # noqa: BLE001 — a scope-lookup failure must not kill the tool
+        sid = ""
+    return f"adk-{sid[:24]}" if sid else _REPL_SESSION_ID
+
+
+def _repl_reap(pool) -> None:
+    """Evict least-recently-used sessions past the cap. Caller holds the pool lock."""
+    present = pool.list_sessions()
+    over = len(present) - _REPL_MAX_SESSIONS
+    if over <= 0:
+        return
+    oldest = sorted((s for s in present if s in _REPL_LAST_USED),
+                    key=lambda k: _REPL_LAST_USED.get(k, 0.0))[:over]
+    for sid in oldest:
+        with contextlib.suppress(Exception):
+            pool.delete_session(sid)
+        _REPL_LAST_USED.pop(sid, None)
 
 
 def _repl_session():
-    """(session, error_json) — the shared persistent worker, or an honest error.
+    """(session, error_json) — this conversation's persistent worker, or an honest error.
 
     Locked get-or-create: the unlocked check-then-act let two concurrent turns
     both pass the membership check, and the loser's create_session raised
-    ValueError('Session adk-agent already exists') — surfaced as a tool error
-    even though the session was healthy and in use by the other turn.
+    ValueError('Session ... already exists') — surfaced as a tool error even
+    though the session was healthy and in use by the other turn.
     """
     global _REPL_POOL
     try:
         from awrepl import SessionPool  # type: ignore[import-not-found]
     except ImportError:
         return None, json.dumps({"error": "awrepl not available", "fix": "pip install awrepl"})
+    sid = _repl_session_id()
     try:
         with _REPL_POOL_LOCK:
             if _REPL_POOL is None:
                 _REPL_POOL = SessionPool()
-            if _REPL_SESSION_ID not in _REPL_POOL.list_sessions():
-                # Another thread may create it between list and create; a race
-                # loser's ValueError means the session exists — take it below.
+            if sid not in _REPL_POOL.list_sessions():
+                _repl_reap(_REPL_POOL)  # make room first; eviction frees the oldest
                 with contextlib.suppress(ValueError):
-                    _REPL_POOL.create_session(_REPL_SESSION_ID)
-            return _REPL_POOL.get_session(_REPL_SESSION_ID), None
+                    _REPL_POOL.create_session(sid)  # a race loser's ValueError = exists
+            _REPL_LAST_USED[sid] = time.monotonic()
+            return _REPL_POOL.get_session(sid), None
     except Exception as e:  # noqa: BLE001 — surfaced to the agent
         return None, json.dumps({"error": f"{type(e).__name__}: {e}"})
 
@@ -2612,8 +2690,9 @@ def _repl_session():
 async def repl_run(code: str, timeout_ms: int = 30000) -> str:
     """Run Python in a PERSISTENT session — variables survive between calls.
 
-    The namespace is PROCESS-WIDE: every conversation and agent on this daemon
-    shares one worker, so do not put secrets in it and expect isolation.
+    The namespace is scoped to THIS conversation (one worker per session id per
+    daemon; up to 16 workers, least-recently-used evicted). Still do not put
+    credentials in it: the code and any output pass through the model's context.
 
     Args:
         code: Python source. The last expression's value is returned.
@@ -2661,12 +2740,14 @@ async def repl_run(code: str, timeout_ms: int = 30000) -> str:
 
 
 async def repl_reset() -> str:
-    """Discard the persistent repl session (fresh worker, empty namespace).
+    """Discard THIS conversation's repl session (fresh worker, empty namespace).
 
-    Call it when no repl_run is in flight: delete_session holds the pool lock
-    across the worker's close, and a running execute holds the session lock for
-    up to its timeout (measured: a concurrent list_sessions stalled behind a
-    3 s execute). The timeout clamp in repl_run bounds that window.
+    Safe to call while a repl_run is in flight: awrepl 0.1.0's delete_session
+    detaches under the pool lock and closes outside it, and a racing
+    execute() gets the dead-session error instead of corrupting state. With
+    an older awrepl the close ran under the pool lock for up to the execute
+    timeout (measured: a concurrent list_sessions stalled behind a 3 s
+    execute); the timeout clamp in repl_run bounds that window.
     """
 
     def _reset() -> str:
@@ -2675,17 +2756,21 @@ async def repl_reset() -> str:
             from awrepl import SessionPool  # type: ignore[import-not-found]
         except ImportError:
             return json.dumps({"error": "awrepl not available", "fix": "pip install awrepl"})
+        sid = _repl_session_id()
         with _REPL_POOL_LOCK:
             if _REPL_POOL is None:
                 return json.dumps({"ok": True, "note": "no session existed"})
             try:
-                if _REPL_SESSION_ID in _REPL_POOL.list_sessions():
-                    _REPL_POOL.delete_session(_REPL_SESSION_ID)
+                if sid in _REPL_POOL.list_sessions():
+                    _REPL_POOL.delete_session(sid)
+                _REPL_LAST_USED.pop(sid, None)
             except OSError as e:
-                # Measured on Windows: closing an already-dead worker raises
-                # [Errno 22]; the pool entry is still gone after, so report it
-                # as the respawn-with-a-note case rather than an error.
+                # Pre-0.1.0 awrepl only: closing an already-dead worker raised
+                # [Errno 22] on Windows. awrepl 0.1.0's close() suppresses
+                # that internally, so this branch is compatibility, not a
+                # live path. The rebuild drops ALL sessions, not just this one.
                 _REPL_POOL = SessionPool()
+                _REPL_LAST_USED.clear()
                 return json.dumps({"ok": True, "note": f"old worker was dead ({e}); pool rebuilt"})
             return json.dumps({"ok": True})
 

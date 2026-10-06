@@ -26,7 +26,10 @@ def test_mirror_catalogue_carries_both_v18_quants():
     q4 = mirror.CATALOG[V18_Q4]
     assert q4.approx_size_bytes == V18_Q4_BYTES
     assert q4.quantization == "Q4_K_M"
-    assert q4.sha256 is None, "no published sha256 for v18 -- never invent one"
+    # The sha256 is the PUBLISHED artifact's value (landed with the mirror
+    # resume/size work via the derived-artifact regen, #11875). Pin it exactly:
+    # any change here must follow a re-published artifact, never invention.
+    assert q4.sha256 == "8a99577cd97222294d88e5957c4151adc114f59937b84866a6f4e1e2ac0a2d52"
     assert q4.min_vram_gb < mirror.CATALOG[V18_Q8].min_vram_gb
 
 

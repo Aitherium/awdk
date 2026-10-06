@@ -70,9 +70,40 @@ async def test_call_tool_refuses_a_denied_name(monkeypatch):
     tools = agent.tools_by_name()
     out = json.loads(await tools["call_tool"].fn("danger_tool", {}))
     assert out["error"] == "denied_by_grant"
+    # The refusal carries a message and a next step (review finding).
+    assert "grant" in out["message"] and out["fix"]
     # A granted name still goes through to the gateway client.
     out2 = await tools["call_tool"].fn("safe_tool", {})
     assert "denied" not in str(out2)
+
+
+def test_agent_grants_union_with_the_host_list(monkeypatch):
+    # Per-agent plane: agent.tool_grants = {"gateway_deny": [...]} (from its
+    # agent.yaml) narrows ONE agent without touching the host list.
+    monkeypatch.delenv("ADK_GATEWAY_TOOL_DENY", raising=False)
+    agent = FakeAgent()
+    agent.tool_grants = {"gateway_deny": ["agent_secret*", "exact_name"]}
+    assert gateway_tool_denied("agent_secret_x", agent)
+    assert gateway_tool_denied("exact_name", agent)
+    assert not gateway_tool_denied("open_y", agent)
+    # Union: the host list still applies to a granted agent.
+    monkeypatch.setenv("ADK_GATEWAY_TOOL_DENY", "host_tool")
+    assert gateway_tool_denied("host_tool", agent)
+
+
+def test_agent_grants_exclude_from_eager_and_search(monkeypatch):
+    monkeypatch.delenv("ADK_GATEWAY_TOOL_DENY", raising=False)
+    agent = FakeAgent()
+    agent.tool_grants = {"gateway_deny": ["git_status"]}
+    catalogue = [{"name": "git_status", "description": "x"}, {"name": "web_x", "description": "y"}]
+    register_gateway_tools_on(
+        agent,
+        catalogue_getter=lambda: catalogue,
+        client_getter=lambda: FakeMCP(),
+        max_tools=5,
+    )
+    names = {t.name for t in agent._tools.list_tools()}
+    assert "git_status" not in names and "web_x" in names
 
 
 async def test_search_results_are_filtered(monkeypatch):

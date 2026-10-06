@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -43,6 +44,12 @@ from adk.tools import ToolDef, ToolRegistry
 from adk.trace import get_trace_id
 
 logger = logging.getLogger("adk.agent")
+
+#: The session id of the turn currently executing. Tools that need conversation
+#: scope (the repl pool) read it; stream_react/chat set it before their tool
+#: loops. asyncio.to_thread COPIES the context, so worker-thread tools see it.
+TOOL_SESSION_CTX: contextvars.ContextVar = contextvars.ContextVar(
+    "adk_tool_session", default="")
 
 # Baseline tool-loop ceiling. Kept as a module constant because LoopGuard and the
 # tests reference it, but the LIVE ceiling is effort-scaled - see _max_tool_loops().
@@ -563,6 +570,7 @@ class AitherAgent:
         routines: bool = False,
         loop_policy: "LoopPolicy | None" = None,
         crystal: "Crystal | None" = None,
+        tool_grants: "dict | None" = None,
     ):
         self.config = config or Config.from_env()
         # Opt-in loop policy (adk.loop_policy.LoopPolicy): the four measured nudges
@@ -573,6 +581,9 @@ class AitherAgent:
         # is memory, not a window. Compaction WRITES its facts to awm; every turn
         # starts by RECALLING them (+ code-graph symbols). None = off.
         self.crystal = crystal
+        # Per-agent tool grants (agent.yaml: tool_grants: {gateway_deny: [...]}) —
+        # the agent-level plane of the host deny list; the server unions both.
+        self.tool_grants = dict(tool_grants or {})
 
         # Identity
         if isinstance(identity, Identity):
@@ -1573,6 +1584,7 @@ class AitherAgent:
     ) -> AgentResponse:
         """Send a message and get a response. Uses tools if available."""
         sid = session_id or self._session_id
+        TOOL_SESSION_CTX.set(sid or "")  # conversation scope for stateful tools (repl)
         _chat_start = time.perf_counter()
 
         # Opt-in routines heartbeat: start the scheduler lazily on the first
@@ -1750,6 +1762,12 @@ class AitherAgent:
         if self._tools.get("search_tools") is not None:
             messages.insert(1, Message(role="system",
                                        content=_PLATFORM_REACH_LINE.strip()))
+        if self._tools.get("repl_run") is not None:
+            messages.insert(1, Message(role="system", content=(
+                "Installed instruments, callable by name: repl_run (persistent Python), "
+                "recurse_file (huge files), predict_engines / predict_conforms "
+                "(world-model engines). Reach for one when the task fits."
+            )))
 
         # Inject typed-memory: active decisions/corrections + authority-ranked
         # recall (non-fatal). Constraints go last so they sit closest to the user
@@ -2812,6 +2830,7 @@ class AitherAgent:
         the stream is killed and trimmed to the last clean sentence.
         """
         sid = session_id or self._session_id
+        TOOL_SESSION_CTX.set(sid or "")  # conversation scope for stateful tools (repl)
         # See chat(): popped so it never reaches the provider as a kwarg;
         # forwarded explicitly on the tool-loop fallback below.
         _sys_additions = kwargs.pop("system_additions", None)
@@ -3020,6 +3039,7 @@ class AitherAgent:
         import json as _json
         import re as _re
         sid = session_id or self._session_id
+        TOOL_SESSION_CTX.set(sid or "")  # conversation scope for stateful tools (repl)
         _t0 = time.perf_counter()
 
         async def _emit(evt: dict) -> None:
@@ -3079,6 +3099,15 @@ class AitherAgent:
         # for the model to know the capability exists.
         if self._tools.get("search_tools") is not None:
             sys_prompt += _PLATFORM_REACH_LINE
+        # The instruments, NAMED like the platform reach: measured 2026-10-05, a
+        # capability absent from the prompt menu is absent to the 8B.
+        if self._tools.get("repl_run") is not None:
+            sys_prompt += (
+                "\n\nInstalled instruments, callable by name: repl_run (a persistent "
+                "Python session; variables survive between calls), recurse_file (answer "
+                "a question from a very large file), predict_engines / predict_conforms "
+                "(world-model engines on this machine). Reach for one when the task fits."
+            )
         # The user named an image: say which tool SEES it (image_* tools make images).
         _img = image_reference(message)
         # Registered is enough: the intent filter may leave look_at off the menu, and the
@@ -3438,6 +3467,7 @@ class AitherAgent:
         from adk import responder as _responder
 
         sid = session_id or self._session_id
+        TOOL_SESSION_CTX.set(sid or "")  # conversation scope for stateful tools (repl)
         decision = await self.classify_intent(message, history=history)
 
         async def _first_pass():
