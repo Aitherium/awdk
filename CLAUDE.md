@@ -1,3 +1,2 @@
-@AGENTS.md
-
-<!-- Claude Code: the guidance lives in AGENTS.md so every agent tool reads the same file. Keep this to the import. -->
+See [llms.txt](llms.txt) for what this repo is, how to install it, and how it shows up in Claude Code.
+Full ecosystem: https://aitherium.com/llms.txt
