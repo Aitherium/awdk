@@ -98,6 +98,12 @@ def test_credential_prompt_is_held(tmp_path, monkeypatch):
                                      credential_format="api_key",
                                      credential_description="the deploy lane needs it"))
     monkeypatch.setenv("AITHER_QUIET", "1")
+    # launch_gui_prompt refuses FIRST under pytest (that guard exists because a
+    # pytest run once spawned six of these windows on the owner's desktop,
+    # 2026-09-19). Clear the markers so THIS test exercises the quiet refusal
+    # deliberately — it stays deterministic because AITHER_QUIET is set above.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("AITHER_NO_GUI_PROMPT", raising=False)
     launched, why = secure_prompt.launch_gui_prompt(card)
     assert launched is False and why.startswith("held while quiet: ")
     assert f"adk decide answer {card.id}" in why

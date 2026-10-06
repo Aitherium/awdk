@@ -190,6 +190,37 @@ def test_release_without_checksum_is_not_a_candidate(tmp_path):
     assert aw.latest_release(_fake_release("3.9.0", blob, None)) is None
 
 
+def test_variant_preference_prefers_unpacked_over_public():
+    """Measured 2026-10-06: staging the PUBLIC (keyless) zip gave the browser a
+    path-derived extension id and sign-in answered "Invalid redirect_uri"; the
+    unpacked build carries the manifest key and keeps the pinned id. The
+    default chain must therefore be variant -> unpacked -> public."""
+    version = "9.9.9"
+    blob = _zip_bytes(version)
+    sha = hashlib.sha256(blob).hexdigest()
+    names = [f"aither-connect-{v}-v{version}.zip" for v in ("unpacked", "public")]
+    assets = []
+    for n in names:
+        assets.append({"name": n, "browser_download_url": f"https://example.test/{n}"})
+        assets.append(
+            {"name": f"{n}.sha256", "browser_download_url": f"https://example.test/{n}.sha256"}
+        )
+    api = json.dumps([{"tag_name": f"connect-v{version}", "assets": assets}]).encode()
+    files = {aw.DEFAULT_RELEASES_API: api}
+    for n in names:
+        files[f"https://example.test/{n}"] = blob
+        files[f"https://example.test/{n}.sha256"] = f"{sha}  {n}\n".encode()
+
+    def fetch(url: str) -> bytes:
+        return files[url]
+
+    rel = aw.latest_release(fetch)
+    assert rel is not None and rel.location.endswith("-unpacked-v9.9.9.zip")
+    # An explicit --variant public still stages exactly the public zip.
+    explicit = aw.latest_release(fetch, variant="public")
+    assert explicit is not None and explicit.location.endswith("-public-v9.9.9.zip")
+
+
 def test_unreadable_release_api_is_no_source():
     def fetch(url):
         raise OSError("HTTP 404 (private repo)")

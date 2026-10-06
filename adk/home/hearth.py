@@ -161,7 +161,12 @@ WEB_READ_TOOLS = frozenset({"web_fetch", "web_search"})
 #: Classroom readers (adk.home.teacher_tools) return text students and parents wrote
 #: (answers, notes): untrusted, and student records must never ride a web_fetch out.
 STUDENT_DATA_TOOLS = frozenset({"class_brief", "struggle_report", "grade_assist",
-                                "parent_note_draft"})
+                                "parent_note_draft",
+                                # Family-tutor readers (adk.home.family_tutor) return
+                                # the same kind of child records — names, levels,
+                                # weekly reports — so they taint too: a report read
+                                # can never ride a later web_fetch out without a card.
+                                "tutor_report", "tutor_learners"})
 TAINT_SOURCES = PRIVATE_READ_TOOLS | WEB_READ_TOOLS | STUDENT_DATA_TOOLS
 #: Tools that send data out or act on the owner's accounts: their card shows the
 #: argument VALUES (who it goes to and what it says), never just the names --

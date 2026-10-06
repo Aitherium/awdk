@@ -179,6 +179,14 @@ def test_every_writer_asks_and_every_reader_is_read_only(genesis):
     assert TEACHER_READERS <= hearth.TAINT_SOURCES
 
 
+def test_family_tutor_readers_taint_like_classroom_readers():
+    # Family-tutor readers return the same child records (names, levels, weekly
+    # reports). This failed before the 2026-10-06 audit: they were absent from
+    # TAINT_SOURCES, so a tutor_report read left the session untainted and a
+    # later web_fetch could leave without an approval card.
+    assert {"tutor_report", "tutor_learners"} <= hearth.TAINT_SOURCES
+
+
 def test_bearer_is_the_only_identity(genesis):
     _run(_tools(genesis)["class_brief"], "Room 4")
     assert genesis.calls

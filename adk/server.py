@@ -41,6 +41,7 @@ from fastapi.responses import (
 
 from adk import __version__
 from adk import browser_grant as _browser_grant
+from adk import extension_pair as _extension_pair
 from adk import local_auth as _local_auth
 from adk import node_commands
 from adk._tls import tls_verify
@@ -1292,6 +1293,13 @@ def create_app(
         _local_token = None
 
     _browser_pair_paths = frozenset({"/local/browser-pair/challenge", "/local/browser-pair"})
+    # The extension-pair door (adk/extension_pair.py). start/poll carry no credential
+    # by design -- the Origin + loopback Host gate and the OWNER's approval out of
+    # band are the credentials -- so they pass the middleware and guard themselves.
+    # approve/pending/revoke stay OUT of this set: they demand the owner's local
+    # token at the route, in EVERY mode.
+    _extension_pair_paths = frozenset({
+        "/local/extension-pair/start", "/local/extension-pair/poll"})
 
     def _local_token_ok(request: Request) -> bool:
         return _local_auth.matches(_local_auth.presented(request.headers), _local_token)
@@ -1466,6 +1474,18 @@ def create_app(
                     tok, request.headers.get("origin"), request.url.path):
                 # Routes read this to keep a page token out of the agent loop.
                 request.state.browser_scope = _browser_grant.token_scope(tok)
+                return await call_next(request)
+            # A paired Awconnect extension (adk/extension_pair.py): a NARROW, expiring
+            # token the OWNER approved at a terminal, opening only SCOPE_PATHS and
+            # refused when the request carries any non-extension Origin. The flag lets
+            # the few doors with a second lock (the MCP endpoint's key, the handoff and
+            # whoami guards) honour the SAME decision instead of re-deriving it.
+            if request.url.path in _extension_pair_paths:
+                return await call_next(request)
+            if tok and _extension_pair.token_allows(
+                    tok, request.url.path, request.method,
+                    origin=request.headers.get("origin")):
+                request.state.extension_paired = True
                 return await call_next(request)
             return JSONResponse(status_code=401, content={
                 "error": "local credential required: send X-Aither-Local-Token with the "
@@ -1935,9 +1955,14 @@ def create_app(
         flow (Veil local-identity-handoff.ts, awkit auth/local-device.tsx) runs in a
         browser that cannot read the file, and keeps the previous gate: loopback peer,
         allowlisted first-party Origin (the ticket's audience) and the CSRF middleware.
-        Offline, or in required mode, the token is demanded like everywhere else.
+        Offline, or in required mode, the token is demanded like everywhere else --
+        except from a PAIRED extension (adk.extension_pair): the owner already
+        approved THAT browser, and its ticket is stamped with its own extension
+        audience, which Identity only redeems for that extension.
         """
         audience = _handoff_guard(request)
+        if getattr(request.state, "extension_paired", False):
+            return audience
         if not always and not _local_auth_required and not _local_auth.is_offline():
             return audience
         if not _local_token_ok(request):
@@ -2038,7 +2063,11 @@ def create_app(
         Only this read-only route (it returns a NAME, never a credential) accepts
         an extension origin; ticket minting stays first-party only. The extension
         id must be on the allowlist (adk.extension_id), so no other installed
-        extension can read who is signed in."""
+        extension can read who is signed in. A PAIRED extension (adk.extension_pair)
+        is the owner's own software answering its own gate: it is admitted with no
+        Origin at all, the shape a Chrome extension's GET arrives in."""
+        if getattr(request.state, "extension_paired", False):
+            return
         origin = request.headers.get("origin", "")
         if origin.startswith("chrome-extension://"):
             from adk.extension_id import allowed_extension_origins
@@ -2440,6 +2469,102 @@ def create_app(
         except Exception as exc:  # noqa: BLE001 -- no key means no grant
             logger.warning("command key fetch failed: %s", exc)
             return ""
+
+    # ── Extension pairing: the owner approves, the extension earns a scoped token ──
+    # adk/extension_pair.py holds the why and the threat model. start/poll answer
+    # ONLY an allowlisted chrome-extension:// Origin on a loopback Host and grant
+    # nothing until the OWNER approves the 6-digit code with
+    # `adk awconnect pair approve <code>` -- a call that must present the local
+    # daemon-token, i.e. the owner's own user. approve/pending/revoke require that
+    # token at the ROUTE, in every mode, like /mesh/join.
+    _extension_pair_book = _extension_pair.PairingBook()
+
+    def _extension_pair_gate(request: Request) -> str:
+        """Refuse anything but an allowlisted extension Origin on a loopback Host;
+        return the origin. Chrome sets the Origin itself for an extension's fetch,
+        so a web page cannot present one; a non-browser process CAN, which is why
+        this gate only starts a pairing -- the approval is the credential."""
+        from adk.extension_id import allowed_extension_origins
+
+        origin = request.headers.get("origin", "")
+        if origin not in allowed_extension_origins():
+            raise HTTPException(status_code=403, detail="origin not allowed to pair")
+        if not _extension_pair.is_loopback_host(request.headers.get("host", "")):
+            raise HTTPException(status_code=403, detail="pairing is loopback-only")
+        return origin
+
+    def _extension_pair_owner_guard(request: Request) -> None:
+        if not _local_token_ok(request):
+            raise HTTPException(
+                status_code=401,
+                detail="the owner's local credential is required "
+                       "(X-Aither-Local-Token from ~/.aither/daemon-token)")
+
+    @app.post("/local/extension-pair/start")
+    async def extension_pair_start(request: Request):
+        """Open a pairing request; nothing is granted until the owner approves."""
+        origin = _extension_pair_gate(request)
+        try:
+            started = _extension_pair_book.start(origin)
+        except OverflowError:
+            raise HTTPException(
+                status_code=429, detail="too many pending pairings; approve or wait")
+        logger.info("extension pair: request from %s", origin)
+        return {**started, "command": f"adk awconnect pair approve {started['code']}"}
+
+    @app.post("/local/extension-pair/poll")
+    async def extension_pair_poll(request: Request):
+        """The token, ONCE, and only after the owner approved this pair_id."""
+        _extension_pair_gate(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        pair_id = str((body or {}).get("pair_id") or "")
+        entry = _extension_pair_book.peek(pair_id)
+        if not entry:
+            raise HTTPException(status_code=410, detail="pairing expired or unknown")
+        if entry["status"] == "denied":
+            raise HTTPException(status_code=403, detail="pairing was denied")
+        if entry["status"] != "approved":
+            return {"status": "pending"}
+        taken = _extension_pair_book.take(pair_id)
+        if taken is None:
+            raise HTTPException(status_code=410, detail="pairing expired or unknown")
+        token, ttl = _extension_pair.issue(origin=str(taken["origin"]))
+        logger.info("extension pair: %s paired for %ds", taken["origin"], ttl)
+        return {"status": "approved", "token": token, "expires_in": ttl,
+                "scope": _extension_pair.SCOPE}
+
+    @app.post("/local/extension-pair/approve")
+    async def extension_pair_approve(request: Request):
+        """The owner's approval, by code. Demands the local token in EVERY mode."""
+        _extension_pair_owner_guard(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        code = str((body or {}).get("code") or "").strip()
+        origin = _extension_pair_book.approve(code) if code else None
+        if origin is None:
+            raise HTTPException(status_code=404, detail="no pending pairing with that code")
+        logger.info("extension pair: approved for %s", origin)
+        return {"approved": True, "origin": origin}
+
+    @app.get("/local/extension-pair/pending")
+    async def extension_pair_pending(request: Request):
+        """Pending requests, for the owner. Codes included: this route is the
+        owner's own view (local token), never a browser's."""
+        _extension_pair_owner_guard(request)
+        return {"pending": _extension_pair_book.pending()}
+
+    @app.post("/local/extension-pair/revoke")
+    async def extension_pair_revoke(request: Request):
+        """Drop every paired extension token."""
+        _extension_pair_owner_guard(request)
+        count = _extension_pair.revoke_all()
+        logger.info("extension pair: revoked %d token(s)", count)
+        return {"revoked": count}
 
     # ── Lend context: the local KV-holder relay, driven from a first-party page ──
     # Same _handoff_guard as the identity, mesh and Space routes. The relay's master
@@ -4662,9 +4787,26 @@ def create_app(
                 media_type="text/event-stream",
             )
 
-        resp = await a.llm.chat(
-            messages, model=model, temperature=temperature, max_tokens=max_tokens
-        )
+        # Non-stream: a body carrying a USER turn runs the AGENT — the exact
+        # defect the pinned test (dev/tests/test_v1_runs_the_agent_not_the_bare_llm)
+        # records: an OpenAI client that does not stream once got no tools while
+        # stream=true on the SAME endpoint had them, and the response shapes are
+        # identical so the caller cannot tell. A user-less body (system-only)
+        # legitimately keeps the bare completion: the agent loop has nothing to
+        # act on. `x_tool_calls` is the envelope's only honest tell ("a fabricated
+        # URL and a fetched one are the same string shape").
+        last_user = ""
+        for m in messages_raw:
+            if m.get("role") == "user":
+                last_user = str(m.get("content") or "")
+        if last_user:
+            resp = await a.chat(last_user)
+            x_tool_calls = list(getattr(resp, "tool_calls_made", None) or [])
+        else:
+            resp = await a.llm.chat(
+                messages, model=model, temperature=temperature, max_tokens=max_tokens
+            )
+            x_tool_calls = []
 
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -4683,6 +4825,7 @@ def create_app(
                 "completion_tokens": resp.completion_tokens,
                 "total_tokens": resp.tokens_used,
             },
+            "x_tool_calls": x_tool_calls,
         }
 
     @app.get("/v1/models")

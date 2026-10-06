@@ -5,8 +5,9 @@ from the folder it was loaded from: the first 32 hex digits of SHA-256 over
 the absolute path, UTF-16LE on Windows, UTF-8 elsewhere, each digit mapped
 0-f -> a-p. So the installer that stages Awconnect can compute exactly which
 ``chrome-extension://<id>`` origin is ours and allow only that one; any other
-extension stays refused. A Chrome Web Store build has a fixed id, supplied via
-``AITHER_EXTENSION_IDS``.
+extension stays refused. A build whose manifest DOES carry a ``key`` -- and the
+Chrome Web Store one, which keeps the id of its first published package -- has
+a fixed id instead; both first-party ids are trusted by default.
 """
 
 from __future__ import annotations
@@ -20,11 +21,21 @@ from typing import FrozenSet, Optional
 
 _ID_RE = re.compile(r"^[a-p]{32}$")
 
-# The id every Awconnect install has: both manifests carry the same public "key",
-# so store and unpacked builds alike get this id. It is the default of
-# AITHER_TRUSTED_EXTENSION_IDS, the only extension origins that may take part in
-# sign-in handoff. Mirrors awconnect/shared/extension-id.js.
+# The id both manifests' public "key" produces for an unpacked build. Mirrors
+# awconnect/shared/extension-id.js. One of the two first-party ids; see
+# STORE_EXTENSION_ID for the other.
 PINNED_EXTENSION_ID = "hlmfknhcfhjjngckfpacgleffckpmphe"
+
+#: The Chrome Web Store build's id. A store item keeps the id of its first
+#: published package forever, so it is NOT the key's id the unpacked builds get
+#: (measured 2026-10-06: the store item refused sign-in until the hosted side
+#: listed this id too). Both ids are first-party and both are trusted by
+#: default, so a store install reaches the same local surfaces an unpacked one
+#: does.
+STORE_EXTENSION_ID = "peeojgjhjficedkncdejbfnacooodbak"
+
+#: The first-party Awconnect ids an install of our product can have.
+FIRST_PARTY_EXTENSION_IDS = (PINNED_EXTENSION_ID, STORE_EXTENSION_ID)
 
 
 def allowlist_path() -> Path:
@@ -59,10 +70,11 @@ def allow_extension_id(ext_id: str, path: Optional[Path] = None) -> Path:
 
 def trusted_extension_ids() -> FrozenSet[str]:
     """Ids allowed to mint a sign-in handoff: ``AITHER_TRUSTED_EXTENSION_IDS``
-    (comma-separated) when set, else the pinned Awconnect id. Exact ids only;
-    anything malformed is ignored, so a typo can never widen the set."""
+    (comma-separated) when set, else BOTH first-party ids (the pinned unpacked
+    one and the Chrome Web Store one). Exact ids only; anything malformed is
+    ignored, so a typo can never widen the set."""
     env = os.environ.get("AITHER_TRUSTED_EXTENSION_IDS")
-    raw = env.split(",") if env is not None else [PINNED_EXTENSION_ID]
+    raw = env.split(",") if env is not None else list(FIRST_PARTY_EXTENSION_IDS)
     return frozenset(i.strip() for i in raw if _ID_RE.match(i.strip()))
 
 

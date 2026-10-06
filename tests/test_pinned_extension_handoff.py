@@ -69,9 +69,14 @@ def _handoff(client, origin):
     return r, http
 
 
-def test_pinned_id_is_well_formed_and_default_trusted():
+def test_both_first_party_ids_are_well_formed_and_default_trusted(monkeypatch):
+    monkeypatch.delenv("AITHER_TRUSTED_EXTENSION_IDS", raising=False)
     assert ext._ID_RE.match(ext.PINNED_EXTENSION_ID)
-    assert ext.trusted_extension_origins() == frozenset({PINNED})
+    assert ext._ID_RE.match(ext.STORE_EXTENSION_ID)
+    # The unpacked build (the key's id) AND the Chrome Web Store build, since
+    # measured 2026-10-06 the store item keeps its own id for life.
+    assert ext.trusted_extension_origins() == frozenset({
+        PINNED, f"chrome-extension://{ext.STORE_EXTENSION_ID}"})
 
 
 def test_pinned_extension_reads_whoami(client):

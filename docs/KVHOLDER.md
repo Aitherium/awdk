@@ -138,7 +138,8 @@ A machine enrolled with `adk enroll` joins the same way, with its own device key
 
 **The Android app** is "Aither" (`awdk/android/aither`; `python awdk/android/aither/build_llama.py`
 once, then `python awdk/android/aither/build.py --install <serial>`). It is AitherOS itself
-(aitherium.com, full screen) plus this phone's extras: the model on the phone (llama.cpp
+in a native frame (bottom tabs by role, a Home grid of apps, Settings one tap away; layouts in
+[APP-SHELL.md](APP-SHELL.md)) plus this phone's extras: the model on the phone (llama.cpp
 `llama-server` with Bonsai 1.7B behind `127.0.0.1:8486`, token- and origin-locked, never on a
 child's phone), the household check-in in the background, and lending memory. Lending is a
 foreground service that runs `holder.js`, the same engine as the page, in a WebView it owns,

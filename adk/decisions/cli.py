@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
-from adk.decisions.notify import notify
+from adk.decisions.notify import desk_alive, notify
 from adk.decisions.render import (
     colour_enabled,
     print_card,
@@ -355,6 +355,17 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
         if args.no_prompt:
             prompt_line = (f"masked prompt not launched (--no-prompt); "
                            f"answer with: awask answer {card.id}")
+        elif desk_alive():
+            # The desk hosts the masked field ITSELF (its CredentialRow pipes the
+            # value through secret_prompt.py's stdin door into the same vault),
+            # so the standalone Tk dialog must NOT open beside it — two prompts
+            # for one secret is exactly the "separate dialogue" the owner vetoed
+            # (2026-10-05). The desk Inbox is the window. If it quits before the
+            # owner gets there, the heartbeat goes stale and the next raise
+            # opens the Tk prompt again; the terminal door (`awask answer`) and
+            # `--no-prompt` are untouched.
+            prompt_line = (f"awdesk is running — enter {card.secret_name or card.id} "
+                           f"in the desk Inbox (or: awask answer {card.id})")
         else:
             from adk.decisions.secure_prompt import launch_gui_prompt
 

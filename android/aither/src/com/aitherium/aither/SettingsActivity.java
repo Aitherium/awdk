@@ -10,7 +10,6 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
-import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -32,36 +31,88 @@ public class SettingsActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0) {
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
+        // A child's phone gets the lite screen: no lending, assistant, calendar or model switches.
+        boolean lite = cfg.childDevice();
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
-        col.setPadding(pad, pad * 2, pad, pad);
-        TextView title = new TextView(this);
-        title.setText("Aither on this phone");
-        title.setTextSize(22);
-        col.addView(title);
-        status = new TextView(this);
-        status.setTextSize(15);
-        status.setPadding(0, pad, 0, pad);
-        col.addView(status);
-        col.addView(toggle("Lend memory to my models", "enabled", cfg.enabled()));
-        col.addView(toggle("Only while charging", "only_charging", cfg.onlyCharging()));
-        col.addView(toggle("Only on Wi-Fi", "only_wifi", cfg.onlyWifi()));
-        Button battery = new Button(this);
-        battery.setText("Allow running with the screen off");
-        battery.setOnClickListener(v -> askBattery());
-        col.addView(battery);
+        int pad = Ui.dp(this, 16);
+        col.setPadding(pad, pad / 2, pad, pad * 2);
+        col.addView(Ui.note(this, lite
+                ? "This phone's part of Aither. Your apps are in the bar at the bottom."
+                : "This phone's part of Aither. Your apps and your account are in the bar at the bottom."));
+        status = dim(); // lending status, refreshed every second by tick
+        localStatus = dim(); // the model on this phone
+        nodeStatus = dim(); // version, workspace node, updates
 
-        TextView ai = new TextView(this);
-        ai.setText("AI on this phone");
-        ai.setTextSize(18);
-        ai.setPadding(0, pad * 2, 0, pad / 2);
-        col.addView(ai);
-        col.addView(toggleLlm());
-        Switch fam = new Switch(this);
+        // ---- Account & this phone
+        col.addView(Ui.section(this, "Account & this phone"));
+        LinearLayout acct = Ui.card(this);
+        if (!lite) {
+            row(acct, Ui.action(this, "My account", v -> startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse(AppTabs.ORIGIN + "/profile")).setClass(this, MainActivity.class))),
+                    "Your profile, sign-in and security, opened in Aither.");
+        }
+        row(acct, Ui.action(this, "Allow running with the screen off", v -> askBattery()),
+                "Lets Aither check in and finish work while the phone sleeps.");
+        if (!lite) {
+            row(acct, Ui.action(this, "Make Aither this phone's assistant", v -> askAssistantRole()),
+                    "Hold the home button (or your assistant gesture) to ask Aither anything.");
+            Switch cal = Ui.style(new Switch(this));
+            cal.setText("Agents may read my calendar");
+            cal.setChecked(cfg.toolCalendar());
+            cal.setOnCheckedChangeListener((v, checked) -> {
+                cfg.set("tool_calendar", checked);
+                if (checked && checkSelfPermission(Manifest.permission.READ_CALENDAR) != 0) {
+                    requestPermissions(new String[] {Manifest.permission.READ_CALENDAR}, 2);
+                }
+            });
+            row(acct, cal, "Only read when an agent needs it; Android asks you too.");
+        }
+        col.addView(acct);
+
+        // ---- Updates
+        col.addView(Ui.section(this, "Updates"));
+        LinearLayout upd = Ui.card(this);
+        if (!Flavor.STORE) { // the Play build is updated by Google Play
+            row(upd, Ui.action(this, "Check for an update", v -> new Thread(() -> {
+                Updater.Check c = new Updater(this).check(false);
+                if (c.apk != null) startActivity(new Intent(this, UpdateActivity.class));
+            }, "aither-update").start()), "Aither also checks by itself and tells you when one is ready.");
+        } else {
+            row(upd, Ui.text(this, "Google Play keeps Aither up to date", 16, Ui.INK), "Nothing to do here.");
+        }
+        col.addView(upd);
+
+        // ---- AI & voice on this phone
+        if (!lite) {
+            col.addView(Ui.section(this, "AI & voice on this phone"));
+            LinearLayout ai = Ui.card(this);
+            row(ai, toggleLlm(), "A small AI model runs right here, so Aither keeps working offline.");
+            row(ai, Ui.action(this, "Use it from AitherOS in the browser", v -> {
+                // a new token for the browser: the page stores it per origin, the old one stops working
+                String t = cfg.rotateLlmToken();
+                cfg.set("llm_paired", true);
+                Uri u = Uri.parse("https://app.aitherium.com/#local-pair=" + t + "&port=" + LocalProxy.PORT);
+                try { startActivity(new Intent(Intent.ACTION_VIEW, u).addCategory(Intent.CATEGORY_BROWSABLE)); }
+                catch (RuntimeException e) { /* no browser */ }
+            }), "Opens AitherOS in your browser, paired with this phone's model.");
+            ai.addView(localStatus);
+            row(ai, toggle("Lend memory to my models", "enabled", cfg.enabled()),
+                    "Your own models may keep part of their memory on this phone.");
+            row(ai, toggle("Only while charging", "only_charging", cfg.onlyCharging()),
+                    "Lend only while plugged in, so the battery never drains.");
+            row(ai, toggle("Only on Wi-Fi", "only_wifi", cfg.onlyWifi()),
+                    "Never use mobile data for lending.");
+            ai.addView(status);
+            col.addView(ai);
+        }
+
+        // ---- Family
+        col.addView(Ui.section(this, "Family"));
+        LinearLayout famCard = Ui.card(this);
+        Switch fam = Ui.style(new Switch(this));
         fam.setText("Share it with my family (only while charging)");
         fam.setChecked(cfg.shareFamily());
-        fam.setPadding(0, 12, 0, 12);
         if ("child".equals(cfg.profileKind())) {
             fam.setEnabled(false);
             fam.setText("Shared with the family when your guardian turns it on");
@@ -70,66 +121,34 @@ public class SettingsActivity extends Activity {
             cfg.setShareLocally(checked);
             if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
         });
-        col.addView(fam);
+        row(famCard, fam, lite ? "Your grown-up decides this."
+                : "Your family's devices may use this phone's AI while it charges.");
+        col.addView(famCard);
 
-        TextView ag = new TextView(this);
-        ag.setText("Assistant and agents");
-        ag.setTextSize(18);
-        ag.setPadding(0, pad * 2, 0, pad / 2);
-        col.addView(ag);
-        Button assistant = new Button(this);
-        assistant.setText("Make Aither this phone's assistant");
-        assistant.setOnClickListener(v -> askAssistantRole());
-        col.addView(assistant);
-        Switch cal = new Switch(this);
-        cal.setText("Agents may read my calendar");
-        cal.setChecked(cfg.toolCalendar());
-        cal.setPadding(0, 12, 0, 12);
-        cal.setOnCheckedChangeListener((v, checked) -> {
-            cfg.set("tool_calendar", checked);
-            if (checked && checkSelfPermission(Manifest.permission.READ_CALENDAR) != 0) {
-                requestPermissions(new String[] {Manifest.permission.READ_CALENDAR}, 2);
-            }
-        });
-        col.addView(cal);
-        Button pair = new Button(this);
-        pair.setText("Use it from AitherOS in the browser");
-        pair.setOnClickListener(v -> {
-            // a new token for the browser: the page stores it per origin, the old one stops working
-            String t = cfg.rotateLlmToken();
-            cfg.set("llm_paired", true);
-            Uri u = Uri.parse("https://app.aitherium.com/#local-pair=" + t + "&port=" + LocalProxy.PORT);
-            try { startActivity(new Intent(Intent.ACTION_VIEW, u).addCategory(Intent.CATEGORY_BROWSABLE)); }
-            catch (RuntimeException e) { /* no browser */ }
-        });
-        col.addView(pair);
-        localStatus = new TextView(this);
-        localStatus.setTextSize(14);
-        col.addView(localStatus);
+        // ---- About
+        col.addView(Ui.section(this, "About"));
+        LinearLayout about = Ui.card(this);
+        // flag AI content or anything else (Play AI policy)
+        row(about, Ui.action(this, "Report a problem or an AI answer", v -> Report.open(this, "", "Aither settings")),
+                "Tell us what went wrong; it goes straight to the team.");
+        about.addView(nodeStatus);
+        col.addView(about);
 
-        TextView ws = new TextView(this);
-        ws.setText("Workspace and updates");
-        ws.setTextSize(18);
-        ws.setPadding(0, pad * 2, 0, pad / 2);
-        col.addView(ws);
-        Button upd = new Button(this);
-        upd.setText("Check for an update");
-        upd.setOnClickListener(v -> new Thread(() -> {
-            Updater.Check c = new Updater(this).check(false);
-            if (c.apk != null) startActivity(new Intent(this, UpdateActivity.class));
-        }, "aither-update").start());
-        if (!Flavor.STORE) col.addView(upd); // the Play build is updated by Google Play
-        Button report = new Button(this); // flag AI content or anything else (Play AI policy)
-        report.setText("Report a problem or an AI answer");
-        report.setOnClickListener(v -> Report.open(this, "", "Aither settings"));
-        col.addView(report);
-        nodeStatus = new TextView(this);
-        nodeStatus.setTextSize(14);
-        col.addView(nodeStatus);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.addView(col);
-        setContentView(scroll);
-        Edge.fit(scroll);
+        LinearLayout screen = new LinearLayout(this);
+        screen.setOrientation(LinearLayout.VERTICAL);
+        screen.setBackgroundColor(Ui.BG);
+        LinearLayout bar = Ui.bar(this);
+        bar.addView(Ui.icon(this, R.drawable.ic_nav_back, "Back to Aither", v -> finish()));
+        TextView title = Ui.barTitle(this);
+        title.setText("Settings");
+        bar.addView(title);
+        screen.addView(bar);
+        screen.addView(Ui.rule(this));
+        screen.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        setContentView(screen);
+        Edge.fit(screen);
         // only a fresh launch carries a link to act on, never a task restored from history
         if (b == null && (getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
             handle(getIntent());
@@ -152,6 +171,19 @@ public class SettingsActivity extends Activity {
     protected void onPause() {
         h.removeCallbacks(tick);
         super.onPause();
+    }
+
+    /** A control and the one plain line under it that says what it does. */
+    private void row(LinearLayout card, View control, String explain) {
+        card.addView(control);
+        card.addView(Ui.note(this, explain));
+    }
+
+    /** A live status line (tick fills it). */
+    private TextView dim() {
+        TextView t = Ui.text(this, "", 12, Ui.FAINT);
+        t.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 10));
+        return t;
     }
 
     private void handle(Intent i) {
@@ -187,10 +219,9 @@ public class SettingsActivity extends Activity {
     }
 
     private View toggleLlm() {
-        Switch s = new Switch(this);
+        Switch s = Ui.style(new Switch(this));
         s.setText("Run Bonsai 1.7B here for AitherOS");
         s.setChecked(cfg.llmEnabled());
-        s.setPadding(0, 12, 0, 12);
         s.setOnCheckedChangeListener((v, checked) -> {
             cfg.set("llm_enabled", checked);
             Intent svc = new Intent(this, LlmService.class);
@@ -201,10 +232,9 @@ public class SettingsActivity extends Activity {
     }
 
     private View toggle(String label, String key, boolean on) {
-        Switch s = new Switch(this);
+        Switch s = Ui.style(new Switch(this));
         s.setText(label);
         s.setChecked(on);
-        s.setPadding(0, 12, 0, 12);
         s.setOnCheckedChangeListener((v, checked) -> {
             cfg.set(key, checked);
             Intent svc = new Intent(this, HolderService.class);

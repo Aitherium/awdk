@@ -361,7 +361,13 @@ def build(
             *srcs,
         ]
     )
-    classes = [str(p) for p in (out / "classes").rglob("*.class")]
+    # one jar, not every .class on the command line: d8 is a .bat on Windows and cmd.exe
+    # refuses a line over 8191 characters (hit at ~53 classes under a worktree path)
+    classes_jar = out / "classes.jar"
+    with zipfile.ZipFile(classes_jar, "w", zipfile.ZIP_STORED) as z:
+        for p in sorted((out / "classes").rglob("*.class")):
+            z.write(p, p.relative_to(out / "classes").as_posix())
+    classes = [str(classes_jar)]
     (out / "dex").mkdir()
     run(
         [

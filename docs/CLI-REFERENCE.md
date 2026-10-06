@@ -278,6 +278,7 @@ Install / check the Awconnect browser extension
 - `adk awconnect install` — Stage the extension, open the browser's extensions page, copy the folder path, and watch for the load
 - `adk awconnect status` — Is Awconnect loaded, enabled and current in any browser?
 - `adk awconnect path` — Print the folder to Load unpacked
+- `adk awconnect pair` — Pair the Awconnect extension with this machine's daemon: approve a code it shows, list pending requests, or revoke every paired token
 
 ## `adk backend`
 

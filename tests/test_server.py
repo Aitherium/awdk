@@ -64,6 +64,11 @@ class TestChatEndpoint:
 
 class TestOpenAICompatEndpoints:
     def test_chat_completions(self, client, mock_agent):
+        # A body carrying a USER turn runs the AGENT on the non-stream path too
+        # (the pinned spec lives in the monorepo's
+        # dev/tests/test_v1_runs_the_agent_not_the_bare_llm.py; restored by
+        # c402b46b573). This file's old expectation -- the bare llm's "Hello!" --
+        # was the stale half of that regression.
         resp = client.post("/v1/chat/completions", json={
             "model": "test-model",
             "messages": [{"role": "user", "content": "Hello"}],
@@ -71,8 +76,21 @@ class TestOpenAICompatEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["object"] == "chat.completion"
-        assert data["choices"][0]["message"]["content"] == "Hello!"
+        assert data["choices"][0]["message"]["content"] == "Agent response"
         assert data["usage"]["total_tokens"] == 10
+        # The envelope's only honest tell that tools were in play.
+        assert data["x_tool_calls"] == []
+        mock_agent.chat.assert_awaited_once()
+        mock_agent.llm.chat.assert_not_awaited()
+
+    def test_chat_completions_without_a_user_turn_keeps_the_bare_model(self, client, mock_agent):
+        resp = client.post("/v1/chat/completions", json={
+            "model": "test-model",
+            "messages": [{"role": "system", "content": "be brief"}],
+        })
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "Hello!"
+        mock_agent.llm.chat.assert_awaited_once()
 
     def test_list_models(self, client, mock_agent):
         resp = client.get("/v1/models")

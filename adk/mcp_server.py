@@ -311,7 +311,18 @@ class MCPServer:
     # ── FastAPI mount ─────────────────────────────────────────────────────
 
     def _check_auth(self, request) -> str | None:
-        """Check Bearer token auth. Returns None if OK, error message if denied."""
+        """Check Bearer token auth. Returns None if OK, error message if denied.
+
+        One exception, set by the daemon's auth middleware (never by a caller):
+        ``request.state.extension_paired`` marks a request already admitted by a
+        paired Awconnect extension's owner-approved token (adk.extension_pair).
+        That token is scoped TO /mcp and carries the same owner consent as the
+        MCP key, so re-demanding the key here would only make the tools panel
+        unusable in Local mode. A caller cannot set it: it exists on the request
+        scope the middleware built, not on anything a header can reach.
+        """
+        if getattr(getattr(request, "state", None), "extension_paired", False):
+            return None
         if not self._require_auth:
             return None
         auth_header = request.headers.get("authorization", "")

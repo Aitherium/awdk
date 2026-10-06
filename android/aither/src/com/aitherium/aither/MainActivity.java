@@ -12,7 +12,8 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 /**
- * Aither on Android: AitherOS itself (the aitherium.com app) full screen, plus this phone's
+ * Aither on Android: AitherOS itself (the aitherium.com app) inside a native frame (Shell:
+ * bottom tabs by role, a Home grid of apps, top bars, Settings one tap away), plus this phone's
  * extras running beside it: the model on this phone (LlmService, 127.0.0.1:8486), lending
  * memory (HolderService) and the household check-in (HeartbeatJob). One app, one icon.
  *
@@ -20,13 +21,14 @@ import android.webkit.WebViewClient;
  * local model is available, the page is handed its per-install token through the URL
  * fragment (#local-pair=, never sent to a server), exactly as a separate browser would get it.
  */
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements Shell.Host {
     static final String HOME = "https://app.aitherium.com/";
     /** The page hides its own install cards for this (localapp); one app, one icon. The Play
      *  build adds " Play": the page then offers no purchase (Play's payments policy). */
     static final String UA_TOKEN = " AitherAndroid/" + Config.VERSION + (Flavor.STORE ? " Play" : "");
 
-    private WebView web;
+    /** The native frame: bottom tabs (one WebView each), Home grid, top bars (Shell). */
+    private Shell shell;
     private Config cfg;
     private volatile boolean checking;
     private long lastCheck;
@@ -38,7 +40,30 @@ public class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0) {
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
-        web = new WebView(this);
+        shell = new Shell(this, cfg.childDevice(), this);
+        setContentView(shell.view());
+        Edge.fit(shell.view());
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            // Android 13+ with predictive back (default from target 36) never calls onBackPressed
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
+        }
+        HeartbeatJob.schedule(this);
+        Shortcuts.apply(this, cfg.childDevice());
+        if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
+        if (cfg.enabled()) startForegroundService(new Intent(this, HolderService.class));
+        freshIfAsked();
+        String pair = pairUrl();
+        if (pair != null) shell.background(pair);
+        Uri t = target(getIntent());
+        shell.open(t == null ? null : t.toString());
+    }
+
+    /** Every WebView in the app (each tab, a window, the pairing hand-off) is made here, so
+     *  all of them get the same settings, the AitherApp bridge and the same link rules. */
+    @Override
+    public WebView newWeb() {
+        WebView web = new WebView(this);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -75,25 +100,29 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void doUpdateVisitedHistory(WebView v, String url, boolean reload) {
+                shell.pageChanged(v); // a single-page app moves history without a page load
+            }
+
+            @Override
             public void onPageFinished(WebView v, String url) {
+                shell.pageChanged(v);
                 if (!ours(Uri.parse(url))) return;
                 CookieManager.getInstance().flush();
                 readHousehold(false);
             }
         });
-        setContentView(web);
-        Edge.fit(web);
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
-            // Android 13+ with predictive back (default from target 36) never calls onBackPressed
-            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
-        }
-        HeartbeatJob.schedule(this);
-        Shortcuts.apply(this, cfg.childDevice());
-        if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
-        if (cfg.enabled()) startForegroundService(new Intent(this, HolderService.class));
-        freshIfAsked();
-        web.loadUrl(startUrl(getIntent()));
+        return web;
+    }
+
+    @Override
+    public void openSettings() {
+        startActivity(new Intent(this, SettingsActivity.class));
+    }
+
+    @Override
+    public void exit() {
+        moveTaskToBack(true); // what Android does for a launcher activity's last back
     }
 
     /**
@@ -105,6 +134,11 @@ public class MainActivity extends Activity {
      * reloading.
      */
     private void readHousehold(boolean quiet) {
+        WebView web = shell.anyWeb();
+        if (web == null) { // the native Home, no page open yet: still check in on open
+            checkInOnOpen(false, quiet);
+            return;
+        }
         web.evaluateJavascript("(function(){try{return JSON.stringify({d:localStorage.getItem('aither.family.device')||'',"
                         + "p:localStorage.getItem('aither.family.device.pair')||'',"
                         + "k:localStorage.getItem('aither.device.child')==='1'})}catch(e){return '{}'}})()",
@@ -125,28 +159,34 @@ public class MainActivity extends Activity {
                         if (j.has("k") && child != cfg.childDevice()) {
                             cfg.set("child_device", child);
                             Shortcuts.apply(MainActivity.this, child);
+                            ticks.post(() -> shell.setChild(child)); // the tabs follow the role
                         }
                         if (!cfg.familyDevice().isEmpty()) askBatteryOnce();
                     } catch (Exception e) { /* nothing stored yet */ }
-                    // on every open (and at once when the page just handed over a device or
-                    // a pairing code): link this phone, collect what the owner sent it
-                    long since = System.currentTimeMillis() - lastCheck;
-                    if (!checking && (fresh || (!quiet && since > 60_000))) {
-                        checking = true;
-                        lastCheck = System.currentTimeMillis();
-                        new Thread(() -> {
-                            HeartbeatJob.checkIn(MainActivity.this);
-                            checking = false;
-                        }, "aither-open-checkin").start();
-                    }
+                    checkInOnOpen(fresh, quiet);
                 });
+    }
+
+    /** On every open (and at once when the page just handed over a device or a pairing
+     *  code): link this phone, collect what the owner sent it. */
+    private void checkInOnOpen(boolean fresh, boolean quiet) {
+        long since = System.currentTimeMillis() - lastCheck;
+        if (!checking && (fresh || (!quiet && since > 60_000))) {
+            checking = true;
+            lastCheck = System.currentTimeMillis();
+            new Thread(() -> {
+                HeartbeatJob.checkIn(MainActivity.this);
+                checking = false;
+            }, "aither-open-checkin").start();
+        }
     }
 
     private final android.os.Handler ticks = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable poll = new Runnable() {
         @Override
         public void run() {
-            if (ours(Uri.parse(String.valueOf(web.getUrl())))) readHousehold(true);
+            WebView web = shell.anyWeb();
+            if (web != null && ours(Uri.parse(String.valueOf(web.getUrl())))) readHousehold(true);
             ticks.postDelayed(this, 5000);
         }
     };
@@ -162,15 +202,14 @@ public class MainActivity extends Activity {
         return u != null && ours(u) ? u : null;
     }
 
-    /** The page to open: a pairing hand-off once, else AitherOS. */
-    private String startUrl(Intent i) {
-        if (target(i) != null) return target(i).toString();
+    /** The local model's pairing hand-off, once (the Shell loads it out of sight), or null. */
+    private String pairUrl() {
         if (cfg.llmEnabled() && !cfg.llmPaired() && cfg.localAiBlocked().isEmpty()) {
             String token = cfg.llmToken(); // first: making a token resets "paired"
             cfg.set("llm_paired", true);
             return HOME + "#local-pair=" + token + "&port=" + LocalProxy.PORT;
         }
-        return HOME;
+        return null;
     }
 
     static boolean ours(Uri u) {
@@ -182,7 +221,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
-        if (target(i) != null) web.loadUrl(target(i).toString());
+        if (target(i) != null) shell.open(target(i).toString()); // into the right tab
     }
 
     @Override
@@ -191,8 +230,7 @@ public class MainActivity extends Activity {
     }
 
     private void back() {
-        if (web.canGoBack()) web.goBack();
-        else moveTaskToBack(true); // what Android does for a launcher activity's last back
+        shell.back(); // window -> page history -> tab root -> Home -> exit (AppTabs.back)
     }
 
     @Override
@@ -205,7 +243,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (freshIfAsked()) web.loadUrl(HOME);
+        if (freshIfAsked()) shell.reloadAll();
+        readHousehold(false); // every open checks in, even on the native Home
         ticks.postDelayed(poll, 5000);
         // Family Shield: Android's one-time VPN prompt, once the guardian turned it on
         ShieldVpnService.askConsent(this, SHIELD_CONSENT);
@@ -247,6 +286,12 @@ public class MainActivity extends Activity {
         android.view.Menu m = mode.getMenu();
         if (m.findItem(REPORT_ID) != null) return;
         m.add(android.view.Menu.NONE, REPORT_ID, 200, "Report").setOnMenuItemClickListener(item -> {
+            WebView web = shell.current();
+            if (web == null) {
+                mode.finish();
+                Report.open(this, "", "Aither");
+                return true;
+            }
             web.evaluateJavascript("(function(){try{return String(window.getSelection())}catch(e){return ''}})()",
                     val -> {
                         String sel = "";
@@ -262,7 +307,10 @@ public class MainActivity extends Activity {
     /** The owner's refresh-app command: drop the cached AitherOS so it loads fresh. */
     private boolean freshIfAsked() {
         if (!cfg.refreshApp()) return false;
-        web.clearCache(true);
+        WebView open = shell.anyWeb();
+        WebView web = open != null ? open : new WebView(this);
+        web.clearCache(true); // the cache is per app: one WebView clears it for every tab
+        if (open == null) web.destroy();
         cfg.set("refresh_app", false);
         return true;
     }

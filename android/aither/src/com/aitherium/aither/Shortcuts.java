@@ -12,7 +12,8 @@ import java.util.List;
 
 /**
  * The launcher shortcuts (long-press the icon), by who uses this phone. One app, one icon:
- * every shortcut opens a page of AitherOS in MainActivity, or this phone's settings.
+ * every shortcut opens a page of AitherOS in MainActivity (which routes it to the right
+ * tab, AppTabs.route), or this phone's settings.
  *
  * The rows mirror the AitherOS page's own shortcut table; a test on that side reads this
  * file and fails when the two drift. A child gets
@@ -46,8 +47,9 @@ final class Shortcuts {
     private Shortcuts() {}
 
     /** The shortcut's own tile (res/mipmap-xxxhdpi/ic_shortcut_<id>.png, generated with the
-     *  app icon by apply_aither_icon.py). R, not a name lookup: a missing tile fails the build. */
-    private static int iconRes(String id) {
+     *  app icon by apply_aither_icon.py). R, not a name lookup: a missing tile fails the build.
+     *  The app shell's tabs and Home grid use the same tiles. */
+    static int iconRes(String id) {
         switch (id) {
             case "hearth": return R.mipmap.ic_shortcut_hearth;
             case "family": return R.mipmap.ic_shortcut_family;

@@ -27,6 +27,15 @@ and their clicks led nowhere — the launch URL had no registered handler
 (DTOAST001, measured 2026-08-30). The card WINDOW is the channel; the tray
 badge, the desk deck and the Discord fanout are the bells. DTOAST001 asserts
 both twin copies stay free of Windows toast code.
+
+And since 2026-10-05 the WINDOW itself yields to the desk. Owner, on the two
+parallel dialogues: the awask notifications and decisions "need to actually
+come up in awdesk ... not a separate thing". awdesk is always on screen and
+watches the card store directly, so while its liveness heartbeat is fresh
+(:func:`desk_alive`) a raise delivers to the DESK and does NOT spawn the
+standalone Tk window beside it — one ask, one surface. When the heartbeat is
+missing or stale (the desk is not running, or died without cleaning up) the
+Tk window is back on the very next raise.
 """
 
 from __future__ import annotations
@@ -48,6 +57,17 @@ from adk.decisions.triage import decisions_waiting
 #: Within this many seconds of the last raise, a new card is folded into a single
 #: summary rather than raising its own window.
 QUIET_WINDOW_SECONDS = float(os.getenv("AITHER_DECISIONS_QUIET_SECONDS", "45"))
+
+#: The desk's liveness heartbeat, inside the card store's own directory (respecting
+#: ``AITHER_DECISIONS_DIR``). awdesk rewrites it every 20 s while it is running with
+#: its card watcher up.
+DESK_ALIVE_FILENAME = ".desk-alive"
+
+#: A heartbeat older than this is a desk that died (or was killed) without clearing
+#: its file, NOT a desk that is about to show the card. The desk beats every 20 s, so
+#: this is more than four missed beats; the file must read as dead well before a
+#: raise is lost, because the cost of guessing wrong is a card nobody sees.
+DESK_ALIVE_STALE_SECONDS = 90.0
 
 
 @dataclass
@@ -206,6 +226,43 @@ def popup_enabled() -> bool:
     return True
 
 
+def desk_alive(store_dir: Optional[Path] = None) -> bool:
+    """Is awdesk running with its card watcher up, on THIS card store?
+
+    The desk writes ``<store>/.desk-alive`` every 20 s (``startHeartbeat`` in
+    awdesk's ``decision-cards.cjs``); the file's mtime is the
+    liveness signal, and its CONTENT (``{"pid":…,"at":…}``) is informational —
+    a killed app leaves the file behind, so existence alone proves nothing and a
+    heartbeat older than :data:`DESK_ALIVE_STALE_SECONDS` reads as dead.
+
+    Why this exists, in the owner's words (2026-10-05): the awask notifications
+    and decisions "need to actually come up in awdesk … not a separate thing".
+    The desk is always on screen and watches this directory, so while it is up a
+    raised card is ALREADY on the owner's surface — spawning the standalone Tk
+    window as well is the second, rival dialogue. This is deliberately checked
+    at RAISE time and not cached: the desk can start or die between two raises,
+    and every failure mode here must fall toward the window (an extra window
+    beats an invisible card), which is what a missing/unreadable/stale file
+    returning False gives.
+
+    Kills the window ONLY — every explicit door stays open: ``awask window``
+    (and the desk's own "Pop out") still spawns the Tk window unconditionally,
+    and the kill-switches (``AITHER_DECISIONS_POPUP``, the ``.popup-off``
+    kill-file, quiet) are what they were.
+    """
+    try:
+        beat = (Path(store_dir) if store_dir is not None else decisions_dir())
+        age = time.time() - (beat / DESK_ALIVE_FILENAME).stat().st_mtime
+    except OSError:
+        # Absent, unreadable, or an unreadable decisions dir: not alive. A
+        # heartbeat the desk never wrote is exactly the pre-2026-10-05 world,
+        # and the window must keep working there.
+        return False
+    # No lower bound on `age`: a heartbeat with an mtime slightly in the future
+    # (same-machine clock jitter) is a desk that JUST wrote it, not a dead one.
+    return age < DESK_ALIVE_STALE_SECONDS
+
+
 def open_card_window(card_id: str) -> Optional[str]:
     """Spawn the card window DETACHED. Returns an error string, or None.
 
@@ -314,11 +371,21 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     # The card WINDOW is the primary channel. It is the only one that shows the
     # facts and the options, and the only one where clicking answers anything.
     #
+    # UNLESS the desk is up. awdesk is the always-on surface and watches this
+    # store directory itself, so while its heartbeat is fresh the card is
+    # ALREADY in front of the owner — the desk Inbox, the tray badge and the
+    # spoken line. Spawning the standalone Tk window beside it is the "separate
+    # dialogue" the owner vetoed (2026-10-05): one ask, one surface. The desk
+    # branch runs FIRST, before popup_enabled(): quiet holds the Tk window, but
+    # it must not turn a desk delivery into a lie about what happened.
+    #
     # Inside the quiet window we do NOT spawn a second one: a window already open
     # walks the queue itself when it is answered, so a burst of eight cards
     # produces one window showing eight in turn, not eight stacked windows
     # fighting for the same corner of the screen.
-    if not popup_enabled():
+    if desk_alive():
+        delivered.append("awdesk")
+    elif not popup_enabled():
         held = quiet_reason()
         skipped.append(f"card window (held while quiet: {held})" if held
                        else "card window (disabled or no display)")

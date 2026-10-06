@@ -271,7 +271,14 @@ def latest_release(
             for a in rel.get("assets") or []
             if isinstance(a, dict)
         }
-        for var in (variant, "public") if variant != "public" else ("public",):
+        for var in ((variant,) if variant == "public" else (variant, "unpacked", "public")):
+            # "unpacked" before "public": the browser loads current/ as an
+            # unpacked extension, so its id must come from the manifest "key"
+            # (the pinned id both manifests share, already accepted by the
+            # identity service and the local daemon). The PUBLIC zip is built
+            # WITHOUT a key for the store to assign its own id -- staged here
+            # it would get a PATH-derived id (measured 2026-10-06: 4.1.x was
+            # staged keyless and sign-in answered "Invalid redirect_uri").
             # Matched by suffix, not a hardcoded stem: the build names the zip
             # after the product, and a rename must not silently drop the source.
             suffix = f"-{var}-v{version}.zip"
@@ -993,7 +1000,13 @@ def register_parser(sub: Any) -> None:
         "--from", dest="from_dir", default="", help="Install from this awconnect folder"
     )
     ins.add_argument("--ref", default="HEAD", help="Git ref for a checkout source (default HEAD)")
-    ins.add_argument("--variant", choices=["enterprise", "public"], default="enterprise")
+    ins.add_argument(
+        "--variant",
+        choices=["enterprise", "unpacked", "public"],
+        default="enterprise",
+        help="Release asset variant; the default falls back unpacked -> public "
+        "(public is keyless and would stage a path-derived extension id)",
+    )
     ins.add_argument("--browser", default="", help="chrome | edge | brave | chromium")
     ins.add_argument(
         "--wait",
@@ -1006,11 +1019,121 @@ def register_parser(sub: Any) -> None:
     st = asub.add_parser("status", help="Is Awconnect loaded, enabled and current in any browser?")
     st.add_argument("--json", action="store_true")
     asub.add_parser("path", help="Print the folder to Load unpacked")
+    pr = asub.add_parser(
+        "pair",
+        help="Pair the Awconnect extension with this machine's daemon: approve a "
+             "code it shows, list pending requests, or revoke every paired token",
+    )
+    pr.add_argument("pair_action", nargs="?", default="pending",
+                    choices=["pending", "approve", "revoke"],
+                    help="pending (default), approve <code>, revoke")
+    pr.add_argument("code", nargs="?", default="", help="the 6-digit code the extension shows")
+
+
+def _pair_daemon_request(path: str, method: str = "GET",
+                         body: Optional[Dict[str, Any]] = None) -> Tuple[int, Any]:
+    """Call the local daemon's extension-pair door AS THE OWNER.
+
+    The owner credential is ``~/.aither/daemon-token`` (adk.local_auth) -- mode
+    0600, readable only by the user the daemon runs as, which is exactly why the
+    browser cannot approve its own pairing and this CLI can. Returns
+    ``(status, payload)``; status 0 means the daemon was unreachable."""
+    import urllib.error
+    import urllib.request
+
+    from adk import local_auth
+    from adk.daemon_endpoint import resolve_daemon_url
+
+    url = resolve_daemon_url() + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, method=method, data=data)
+    token = local_auth.read_token()
+    if token:
+        req.add_header(local_auth.HEADER, token)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30.0) as resp:
+            return resp.status, json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        # A FastAPI refusal is {"detail": "..."}; anything else is shown as it came.
+        try:
+            parsed = json.loads(detail)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("detail"):
+            detail = str(parsed["detail"])
+        return exc.code, detail
+    except urllib.error.URLError as exc:
+        return 0, f"cannot reach the local daemon at {url}: {exc.reason}"
+
+
+def cmd_awconnect_pair(args: Any) -> int:
+    """`adk awconnect pair [pending|approve <code>|revoke]`."""
+    from adk.extension_pair import PAIR_TTL_S
+
+    action = getattr(args, "pair_action", "") or "pending"
+    if action == "approve":
+        code = (getattr(args, "code", "") or "").strip()
+        if not code:
+            print("usage: adk awconnect pair approve <code>", file=sys.stderr)
+            return 2
+        status, payload = _pair_daemon_request(
+            "/local/extension-pair/approve", "POST", {"code": code})
+        if status == 0:
+            print(payload, file=sys.stderr)
+            print("Start the daemon with:  adk serve", file=sys.stderr)
+            return 2
+        if status == 404:
+            print(f"{payload} (codes expire after {int(PAIR_TTL_S)} s)", file=sys.stderr)
+            return 1
+        if status != 200:
+            print(f"HTTP {status}: {payload}", file=sys.stderr)
+            return 1
+        print(f"approved the pairing requested by {payload.get('origin', '?')}")
+        print("the extension picks up its token on its next poll")
+        return 0
+    if action == "revoke":
+        status, payload = _pair_daemon_request("/local/extension-pair/revoke", "POST", {})
+        if status == 0:
+            print(payload, file=sys.stderr)
+            print("Start the daemon with:  adk serve", file=sys.stderr)
+            return 2
+        if status != 200:
+            print(f"HTTP {status}: {payload}", file=sys.stderr)
+            return 1
+        print(f"revoked {payload.get('revoked', 0)} paired extension token(s)")
+        return 0
+    status, payload = _pair_daemon_request("/local/extension-pair/pending")
+    if status == 0:
+        print(payload, file=sys.stderr)
+        print("Start the daemon with:  adk serve", file=sys.stderr)
+        return 2
+    if status != 200:
+        print(f"HTTP {status}: {payload}", file=sys.stderr)
+        return 1
+    pending = (payload or {}).get("pending") or []
+    if not pending:
+        print("no pending pairings")
+        return 0
+    for row in pending:
+        origin = str(row.get("origin") or "?")
+        if row.get("status") == "pending":
+            print(f"  {row.get('code', '?')}  {origin}  ({row.get('expires_in', 0)}s left)"
+                  "   approve: adk awconnect pair approve " + str(row.get("code", "")))
+        else:
+            print(f"  {row.get('code', '?')}  {origin}  ({row.get('status')})")
+    print("Approve a code ONLY if you started that pairing in your own browser. An "
+          "unexpected request may be another local user asking for your daemon.")
+    return 0
 
 
 def cmd_awconnect(args: Any) -> int:
     action = getattr(args, "awconnect_action", None) or "status"
     as_json = bool(getattr(args, "json", False))
+    if action == "pair":
+        return cmd_awconnect_pair(args)
     if action == "path":
         print(current_dir())
         return 0
@@ -1053,5 +1176,5 @@ def cmd_awconnect(args: Any) -> int:
         if as_json:
             print(json.dumps({"ok": True, **res, "log": logs}, indent=2, default=str))
         return 0
-    print("Usage: adk awconnect [install|status|path]")
+    print("Usage: adk awconnect [install|status|path|pair]")
     return 2

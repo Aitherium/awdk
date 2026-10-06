@@ -129,6 +129,19 @@ def launch_gui_prompt(card: DecisionCard) -> "tuple[bool, str]":
     """
     if (card.kind or "").strip().lower() != "credential":
         return False, f"{card.id} is not a credential ask — no prompt to open"
+    # 🚩 A TEST RUN MUST NEVER PUT THIS DIALOG ON A HUMAN'S SCREEN. Measured
+    # 2026-09-19: a pytest run of the credential-card suite spawned six "Store
+    # credentials in AitherSecrets" windows over the owner's desktop, each
+    # asking for a real key from a temp store that no longer existed. The
+    # refusal is keyed on the env marker pytest sets for every test, so a NEW
+    # test file is safe without remembering to stub anything; AITHER_NO_GUI_PROMPT
+    # is the manual switch for a run that is not pytest. It is checked FIRST,
+    # before quiet/display, so the refusal is deterministic rather than
+    # host-dependent — and the test that pins this clears the marker to prove
+    # the guard is the marker and not a dead path.
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AITHER_NO_GUI_PROMPT"):
+        return False, ("masked prompt suppressed under test — answer at a terminal "
+                       f"with: awask answer {card.id}")
     # Quiet (Do-not-disturb, or a full-screen game/app in front): the masked
     # dialog is topmost to win the raise, i.e. it lands over the game. Hold it.
     # The card is untouched -- still open, answerable from the terminal door.
