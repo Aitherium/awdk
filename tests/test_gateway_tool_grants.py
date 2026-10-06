@@ -101,3 +101,32 @@ async def test_search_results_are_filtered(monkeypatch):
 
 def test_non_json_search_output_passes_through():
     assert _filter_search_json("not json at all") == "not json at all"
+
+
+async def test_mcp_bridge_registration_respects_the_deny_list(monkeypatch):
+    # The FOURTH reach point: ServiceBridge/MCPBridge.register_tools flat-registered
+    # the whole catalogue with no deny check (found by adversarial review), so a
+    # denied name landed on the agent anyway.
+    monkeypatch.setenv("ADK_GATEWAY_TOOL_DENY", "secret_*")
+    from adk.mcp import MCPBridge
+
+    class FakeBridge(MCPBridge):
+        def __init__(self):
+            pass
+
+        async def list_tools(self):
+            class T:
+                def __init__(self, name):
+                    self.name = name
+                    self.description = "d"
+            return [T("secret_x"), T("open_y")]
+
+        async def call_tool(self, name, args):
+            return "ok"
+
+    agent = FakeAgent()
+    n = await FakeBridge().register_tools(agent)
+    names = {t.name for t in agent._tools.list_tools()}
+    assert "secret_x" not in names
+    assert "open_y" in names
+    assert n == 1

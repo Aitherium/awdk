@@ -872,7 +872,13 @@ def register_gateway_tools_on(
         # A grant that only filters discovery is not a grant: call_tool reaches
         # anything in the catalogue BY NAME, so the refusal lives here too.
         if gateway_tool_denied(name):
-            return json.dumps({"error": "denied_by_grant", "tool": str(name)[:120]})
+            return json.dumps({
+                "error": "denied_by_grant",
+                "tool": str(name)[:120],
+                "message": "this tool is denied by the host grant list (ADK_GATEWAY_TOOL_DENY)",
+                "fix": ("use search_tools to find an allowed alternative; if none fits, "
+                        "tell the user this host denies that tool"),
+            })
         return await call_tool_impl(name, arguments or {}, client_getter())
 
     call_tool.__doc__ = (

@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -27,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -2354,6 +2356,9 @@ def _init_find_tools():
 # blocking (subprocess, subprocess-backed session I/O, the sync awrecurse
 # engine) runs off the event loop.
 
+_RECURSE_READ_CAP = 10 * 1024 * 1024  # file_read refuses >10 MB; here we truncate and SAY SO
+
+
 async def recurse_file(path: str = "", query: str = "", context: str = "",
                        chunk_size: int = 2000, max_iterations: int = 10) -> str:
     """Answer a question from a file too large to read whole (awrecurse).
@@ -2363,34 +2368,40 @@ async def recurse_file(path: str = "", query: str = "", context: str = "",
     dumps or documents.
 
     Args:
-        path: File to read (any size; the point is you did not have to open it).
+        path: File to read (up to 10 MB; a larger file is cut at the cap and the
+            result says read_truncated).
         query: The question to answer from the file.
         context: Raw text to use instead of a file.
+
+    Result fields worth reading: chunks_read counts chunks that PRODUCED an
+    answer (a chunk the model read and found nothing in does not count), and
+    completion_failures counts model calls that failed — a run where the
+    reasoning model was unreachable reports error + success:false, never
+    "the file lacks the answer".
     """
     try:
         from awrecurse import RecurseClient  # type: ignore[import-not-found]
     except ImportError:
         return json.dumps({"error": "awrecurse not available", "fix": "pip install awrecurse"})
 
-    text = context or ""
-    if not text and path:
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
-        except OSError as e:
-            return json.dumps({"error": f"cannot read {path}: {e}"})
-    if not text.strip():
-        return json.dumps({"error": "no context: pass a readable path or context text"})
     if not (query or "").strip():
         return json.dumps({"error": "query is empty"})
+    if not (context or "").strip() and not path:
+        return json.dumps({"error": "no context: pass a readable path or context text"})
 
     loop = asyncio.get_running_loop()
+    completion_failures: list = []
 
     def _complete(prompt: str) -> str:
         # awrecurse is a SYNC library; its complete_fn runs in the worker thread
-        # below, so the async model call is handed back to the main loop. "" on
-        # failure follows the AitherRetrieval precedent: the chunk counts as not
-        # read and the result dict reports the rest honestly.
+        # below, so the async model call is handed back to the main loop. The
+        # bridge budget must EXCEED the inner model budget: `fut.result(timeout=)`
+        # does NOT cancel the scheduled coroutine (measured — a 120 s bridge vs a
+        # 180 s inner budget abandoned call after call while each kept running).
+        # On give-up we cancel and RECORD; "" still tells the engine "not read",
+        # but the result assembly below turns recorded failures into a named
+        # error, because "model unreachable" and "file lacks the answer" must not
+        # be the same bytes.
         async def _ask_once() -> str:
             from adk.llm.base import Message
             from adk.model_tools import _ask, _model
@@ -2400,32 +2411,82 @@ async def recurse_file(path: str = "", query: str = "", context: str = "",
                 _model("AITHER_REASONING_MODEL", "deepseek-v4-flash"), 1024)
 
         try:
+            from adk.model_tools import _TIMEOUT_S as _inner_budget
+        except Exception:  # noqa: BLE001 — a const import failure must not kill the tool
+            _inner_budget = 180.0
+        fut = None
+        try:
             fut = asyncio.run_coroutine_threadsafe(_ask_once(), loop)
-            return fut.result(timeout=120) or ""
-        except Exception:  # noqa: BLE001 — the engine handles "" as not-read
+            return fut.result(timeout=float(_inner_budget) + 15) or ""
+        except Exception as exc:  # noqa: BLE001 — recorded, engine treats "" as not-read
+            if fut is not None:
+                try:
+                    fut.cancel()
+                except Exception as _cexc:  # noqa: BLE001
+                    completion_failures.append(f"cancel: {_cexc}"[:80])
+            completion_failures.append(f"{type(exc).__name__}: {exc}"[:160])
             return ""
 
     def _run() -> dict:
+        # The file read lives HERE, off the event loop: an inline read blocked the
+        # daemon's single loop (all turns, heartbeats and /health) for the whole
+        # read of a multi-GB file.
+        text_local = (context or "").strip()
+        read_truncated = False
+        if not text_local and path:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text_local = fh.read(_RECURSE_READ_CAP + 1)
+            if len(text_local) > _RECURSE_READ_CAP:
+                text_local = text_local[:_RECURSE_READ_CAP]
+                read_truncated = True
+        if not text_local.strip():
+            raise ValueError("no context: pass a readable path or context text")
         client = RecurseClient(complete_fn=_complete)
-        return client.recurse(text, query, chunk_size=int(chunk_size or 2000),
-                              max_iterations=int(max_iterations or 10))
+        result = client.recurse(text_local, query, chunk_size=int(chunk_size or 2000),
+                                max_iterations=int(max_iterations or 10))
+        result["_read_truncated"] = read_truncated
+        result["_chars_total"] = len(text_local)
+        return result
 
     try:
         result = await asyncio.to_thread(_run)
-    except ValueError as e:  # recurse_body validation, before any model call
+    except FileNotFoundError as e:
+        return json.dumps({"error": f"cannot read {path}: {e}"})
+    except OSError as e:
+        return json.dumps({"error": f"cannot read {path}: {e}"})
+    except ValueError as e:  # no-context above, or recurse_body validation
         return json.dumps({"error": str(e)})
     except Exception as e:  # noqa: BLE001 — surfaced to the agent, never raised
         return json.dumps({"error": f"{type(e).__name__}: {e}"})
-    # slices_read is awrecurse's anti-silent-truncation contract: a big file is
-    # mostly NOT read, and the caller is told exactly which ranges were.
-    return json.dumps({
-        "answer": result.get("final_answer", ""),
-        "success": bool(result.get("success")),
-        "error": result.get("error", ""),
+
+    answer = result.get("final_answer", "") or ""
+    success = bool(result.get("success"))
+    error = result.get("error", "") or ""
+    failures = list(completion_failures)
+    if not answer and failures:
+        # The model route failed — a DIFFERENT fact from "the file lacks the
+        # answer", and measured byte-identical to it before this branch existed.
+        error = (f"reasoning model unreachable ({len(failures)} call(s) failed: "
+                 f"{failures[0]})")
+        success = False
+    elif success and not answer:
+        # awrecurse reports success=True unconditionally after a synthesis call;
+        # a failed synthesis returns "" with no error and no answer.
+        error = "synthesis call returned nothing; no final answer"
+        success = False
+    out = {
+        "answer": answer,
+        "success": success,
+        "error": error,
         "iterations": result.get("iterations", 0),
-        "chunks_read": len(result.get("slices_read") or []),
-        "chars_total": len(text),
-    })
+        "chunks_read": len(result.get("slices_read") or []),  # chunks that ANSWERED
+        "chunks_examined": result.get("iterations", 0),
+        "chars_total": result.get("_chars_total", 0),
+        "completion_failures": len(failures),
+    }
+    if result.get("_read_truncated"):
+        out["read_truncated"] = True
+    return json.dumps(out)
 
 
 def _run_py_capture(code: str, timeout_s: float) -> tuple:
@@ -2511,25 +2572,39 @@ async def predict_conforms(module: str, name: str, protocol: str = "WorldModel")
 
 #: One worker per session id, held for the daemon's lifetime (there is no
 #: module-level pool in awrepl; building one per CALL would drop the namespace,
-#: which is the whole point of a REPL).
+#: which is the whole point of a REPL). Scoped to the PROCESS: every
+#: conversation and agent served by this daemon shares it — the docstring says
+#: so, because a shared namespace presented as per-conversation would be a lie.
 _REPL_POOL = None
 _REPL_SESSION_ID = "adk-agent"
 _REPL_MAX_OUTPUT = 4000
+_REPL_MAX_TIMEOUT_MS = 120_000  # a model-supplied timeout must not pin the session lock forever
+_REPL_POOL_LOCK = threading.Lock()
 
 
 def _repl_session():
-    """(session, error_json) — the shared persistent worker, or an honest error."""
+    """(session, error_json) — the shared persistent worker, or an honest error.
+
+    Locked get-or-create: the unlocked check-then-act let two concurrent turns
+    both pass the membership check, and the loser's create_session raised
+    ValueError('Session adk-agent already exists') — surfaced as a tool error
+    even though the session was healthy and in use by the other turn.
+    """
     global _REPL_POOL
     try:
         from awrepl import SessionPool  # type: ignore[import-not-found]
     except ImportError:
         return None, json.dumps({"error": "awrepl not available", "fix": "pip install awrepl"})
     try:
-        if _REPL_POOL is None:
-            _REPL_POOL = SessionPool()
-        if _REPL_SESSION_ID not in _REPL_POOL.list_sessions():
-            _REPL_POOL.create_session(_REPL_SESSION_ID)
-        return _REPL_POOL.get_session(_REPL_SESSION_ID), None
+        with _REPL_POOL_LOCK:
+            if _REPL_POOL is None:
+                _REPL_POOL = SessionPool()
+            if _REPL_SESSION_ID not in _REPL_POOL.list_sessions():
+                # Another thread may create it between list and create; a race
+                # loser's ValueError means the session exists — take it below.
+                with contextlib.suppress(ValueError):
+                    _REPL_POOL.create_session(_REPL_SESSION_ID)
+            return _REPL_POOL.get_session(_REPL_SESSION_ID), None
     except Exception as e:  # noqa: BLE001 — surfaced to the agent
         return None, json.dumps({"error": f"{type(e).__name__}: {e}"})
 
@@ -2537,11 +2612,15 @@ def _repl_session():
 async def repl_run(code: str, timeout_ms: int = 30000) -> str:
     """Run Python in a PERSISTENT session — variables survive between calls.
 
+    The namespace is PROCESS-WIDE: every conversation and agent on this daemon
+    shares one worker, so do not put secrets in it and expect isolation.
+
     Args:
         code: Python source. The last expression's value is returned.
         timeout_ms: Kill-and-respawn budget (awrepl enforces it parent-side,
-            about 2 s over). On timeout the worker respawns with an EMPTY
-            namespace — the result says so instead of pretending continuity.
+            about 2 s over; clamped here to 120 s). On timeout the worker
+            respawns with an EMPTY namespace — the result says so instead of
+            pretending continuity.
     """
 
     def _run() -> str:
@@ -2552,18 +2631,29 @@ async def repl_run(code: str, timeout_ms: int = 30000) -> str:
             return json.dumps({"error": "code is empty"})
         before = getattr(session, "restarts", 0)
         try:
-            r = session.execute(code, timeout_ms=int(timeout_ms or 30000))
-        except RuntimeError as e:
-            # execute() refuses a dead worker and does NOT respawn — say the fix.
-            return json.dumps({"error": str(e), "hint": "call repl_reset to respawn the worker"})
+            budget = min(int(timeout_ms or 30000), _REPL_MAX_TIMEOUT_MS)
+            r = session.execute(code, timeout_ms=budget)
+        except (RuntimeError, AttributeError, OSError) as e:
+            # RuntimeError: execute() refuses a dead worker and does NOT respawn.
+            # AttributeError: measured — a concurrent repl_reset's close() can
+            # null the process between execute()'s liveness check and its lock.
+            return json.dumps({"error": f"{type(e).__name__}: {e}",
+                               "hint": "call repl_reset to respawn the worker"})
         restarted = getattr(session, "restarts", 0) > before
+        stdout = r.stdout or ""
+        stderr = r.stderr or ""
+        value = r.value
         return json.dumps({
-            "value": r.value,
-            "stdout": (r.stdout or "")[:_REPL_MAX_OUTPUT],
-            "stderr": (r.stderr or "")[:2000],
+            "value": value,
+            "value_length": len(value) if isinstance(value, str) else None,
+            "stdout": stdout[:_REPL_MAX_OUTPUT],
+            "stderr": stderr[:2000],
             "exception": r.exception,
             "duration_ms": r.duration_ms,
-            "truncated": bool(r.truncated),
+            # The worker flag only covers ITS 64 KiB cap; the cut above is OURS
+            # (measured: 5000 chars out -> 4000 kept with truncated:false).
+            "truncated": bool(r.truncated) or len(stdout) > _REPL_MAX_OUTPUT
+            or len(stderr) > 2000,
             "namespace_cleared_by_timeout": restarted,
         })
 
@@ -2571,7 +2661,13 @@ async def repl_run(code: str, timeout_ms: int = 30000) -> str:
 
 
 async def repl_reset() -> str:
-    """Discard the persistent repl session (fresh worker, empty namespace)."""
+    """Discard the persistent repl session (fresh worker, empty namespace).
+
+    Call it when no repl_run is in flight: delete_session holds the pool lock
+    across the worker's close, and a running execute holds the session lock for
+    up to its timeout (measured: a concurrent list_sessions stalled behind a
+    3 s execute). The timeout clamp in repl_run bounds that window.
+    """
 
     def _reset() -> str:
         global _REPL_POOL
@@ -2579,18 +2675,19 @@ async def repl_reset() -> str:
             from awrepl import SessionPool  # type: ignore[import-not-found]
         except ImportError:
             return json.dumps({"error": "awrepl not available", "fix": "pip install awrepl"})
-        if _REPL_POOL is None:
-            return json.dumps({"ok": True, "note": "no session existed"})
-        try:
-            if _REPL_SESSION_ID in _REPL_POOL.list_sessions():
-                _REPL_POOL.delete_session(_REPL_SESSION_ID)
-        except OSError as e:
-            # Measured on Windows: closing an already-dead worker raises
-            # [Errno 22]; the pool entry is still gone after, so report it as
-            # the respawn-with-a-note case rather than an error.
-            _REPL_POOL = SessionPool()
-            return json.dumps({"ok": True, "note": f"old worker was dead ({e}); pool rebuilt"})
-        return json.dumps({"ok": True})
+        with _REPL_POOL_LOCK:
+            if _REPL_POOL is None:
+                return json.dumps({"ok": True, "note": "no session existed"})
+            try:
+                if _REPL_SESSION_ID in _REPL_POOL.list_sessions():
+                    _REPL_POOL.delete_session(_REPL_SESSION_ID)
+            except OSError as e:
+                # Measured on Windows: closing an already-dead worker raises
+                # [Errno 22]; the pool entry is still gone after, so report it
+                # as the respawn-with-a-note case rather than an error.
+                _REPL_POOL = SessionPool()
+                return json.dumps({"ok": True, "note": f"old worker was dead ({e}); pool rebuilt"})
+            return json.dumps({"ok": True})
 
     return await asyncio.to_thread(_reset)
 

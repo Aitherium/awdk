@@ -75,16 +75,32 @@ async def test_repl_refuses_empty_code():
 
 
 @pytest.mark.skipif(not _HAS_AWPREDICT, reason="awpredict not installed on this box")
-async def test_predict_engines_reports_rows_or_an_honest_error():
+async def test_predict_engines_reports_real_rows():
     from adk.builtin_tools import predict_engines
 
     out = json.loads(await predict_engines())
-    # Either real rows, or the honest failure shape — never a silent empty.
-    assert "engines" in out or "error" in out
+    # On a box WITH awpredict the SUCCESS shape is required — an error here is a
+    # regression, not an acceptable alternative (the old or-assertion passed on
+    # every failure shape, including a broken probe invocation).
+    assert isinstance(out.get("engines"), list) and out["engines"], out
+    assert "exit_code" in out
 
 
-async def test_predict_conforms_honest_on_missing_module():
+async def test_predict_engines_timeout_is_an_honest_error(monkeypatch):
+    # The error branch gets its own deterministic test instead of hiding behind
+    # the success assertion's `or`.
+    import adk.builtin_tools as bt
+
+    monkeypatch.setattr(bt, "_run_py_capture", lambda code, t: (-1, "", "timed out after 5s"))
+    out = json.loads(await bt.predict_engines())
+    assert "timed out" in out["error"]
+
+
+@pytest.mark.skipif(not _HAS_AWPREDICT, reason="awpredict not installed on this box")
+async def test_predict_conforms_missing_module_names_the_cause():
     from adk.builtin_tools import predict_conforms
 
     out = json.loads(await predict_conforms("definitely_not_a_module_xyz", "Nope"))
-    assert "error" in out
+    # "cannot import" — NOT the awpredict-absent shape, which the old no-skipif
+    # test accepted by accident on boxes without the brick.
+    assert "cannot import" in out["error"]

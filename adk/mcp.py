@@ -637,14 +637,26 @@ class MCPBridge:
 
         Returns the number of tools registered.
         """
+        # The bridge is a FOURTH gateway reach point (beside the eager core,
+        # search_tools and call_tool): the host grant list must gate it too, or
+        # a denied name lands on the agent anyway via ServiceBridge registration.
+        # Function-local import: adk.server is the home of the policy and may
+        # import this module; at call time it is fully loaded.
+        from adk.server import gateway_tool_denied
+
         tools = await self.list_tools()
         count = 0
 
         for mcp_tool in tools:
-            # Create a closure for each tool
             tool_name = mcp_tool.name
+            if gateway_tool_denied(tool_name):
+                continue
 
+            # Create a closure for each tool
             async def _call(bridge=self, tn=tool_name, **kwargs) -> str:
+                if gateway_tool_denied(tn):
+                    return json.dumps({"error": "denied_by_grant", "tool": tn,
+                                       "message": "denied by the host grant list"})
                 return await bridge.call_tool(tn, kwargs)
 
             _call.__name__ = tool_name
