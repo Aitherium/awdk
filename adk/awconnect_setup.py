@@ -59,8 +59,11 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-#: Where release metadata is read. The monorepo is private today, so an
-#: unauthenticated request answers 404 and the release source is simply skipped.
+#: Where release metadata is read. The monorepo is private, so an unauthenticated
+#: request answers 404 and the release source is skipped -- the fetch below prefers
+#: the authenticated gh CLI when present (2026-10-05: without it the installer
+#: silently staged the legacy awconnect/ checkout while the product shipped as
+#: connect-v4.x releases), and degrades to urllib on public repos and in CI.
 DEFAULT_RELEASES_API = "https://api.github.com/repos/Aitherium/AitherOS/releases?per_page=50"
 RELEASE_TAG_PREFIX = "connect-v"
 #: Name markers that identify the extension in a manifest (display name varies:
@@ -177,7 +180,57 @@ class Candidate:
     meta: Dict[str, Any] = field(default_factory=dict)
 
 
+_ASSET_URL_RE = re.compile(
+    r"https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)$")
+
+
+def _gh_fetch(url: str) -> Optional[bytes]:
+    """Read a GitHub URL through the authenticated ``gh`` CLI, or None.
+
+    None means "no gh, not authenticated, or it failed" -- every caller falls
+    back to the anonymous urllib path, so public-repo and CI behaviour cannot
+    change. WHY (measured 2026-10-05): this repo is private, so the anonymous
+    releases probe answered 404, ``latest_release`` returned None (its designed
+    "no release source"), and ``adk awconnect install`` silently staged the
+    LEGACY ``awconnect/`` checkout while the product shipped as ``connect-v4.x``
+    release assets -- v4 could only be installed by hand. gh reads both the API
+    and the assets.
+    """
+    if not shutil.which("gh"):
+        return None
+    try:
+        if url.startswith("https://api.github.com/"):
+            out = subprocess.run(
+                ["gh", "api", url[len("https://api.github.com/"):]],
+                capture_output=True, timeout=60,
+            )
+            return out.stdout if out.returncode == 0 and out.stdout else None
+        match = _ASSET_URL_RE.match(url)
+        if match:
+            owner, repo, tag, name = match.groups()
+            jq = subprocess.run(
+                ["gh", "api", f"repos/{owner}/{repo}/releases/tags/{tag}",
+                 "--jq", f'.assets[] | select(.name == "{name}") | .id'],
+                capture_output=True, text=True, encoding="utf-8", timeout=60,
+            )
+            asset_id = (jq.stdout or "").strip().splitlines()[:1]
+            if jq.returncode != 0 or not asset_id:
+                return None
+            blob = subprocess.run(
+                ["gh", "api", f"repos/{owner}/{repo}/releases/assets/{asset_id[0]}",
+                 "-H", "Accept: application/octet-stream"],
+                capture_output=True, timeout=120,
+            )
+            return blob.stdout if blob.returncode == 0 and blob.stdout else None
+    except Exception:  # noqa: BLE001 -- any gh failure degrades to urllib
+        return None
+    return None
+
+
 def _default_fetch(url: str) -> bytes:
+    via_gh = _gh_fetch(url)
+    if via_gh is not None:
+        return via_gh
     import urllib.request
 
     req = urllib.request.Request(
