@@ -74,6 +74,17 @@ async def test_repl_refuses_empty_code():
     assert out["error"] == "code is empty"
 
 
+@pytest.mark.skipif(not _HAS_AWREPL, reason="awrepl not installed on this box")
+async def test_repl_truncation_flag_reflects_our_cut():
+    # Review finding: stdout was cut at 4000 while `truncated` reported the
+    # WORKER's 64 KiB flag — false — so 1000 chars vanished invisibly.
+    from adk.builtin_tools import repl_run
+
+    out = json.loads(await repl_run("print('x' * 5000)"))
+    assert len(out["stdout"]) == 4000
+    assert out["truncated"] is True
+
+
 @pytest.mark.skipif(not _HAS_AWPREDICT, reason="awpredict not installed on this box")
 async def test_predict_engines_reports_real_rows():
     from adk.builtin_tools import predict_engines
