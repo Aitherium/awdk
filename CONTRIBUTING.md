@@ -5,12 +5,12 @@
 **awdk** — the Python agent runtime the packs are built for — is one of several open repositories cut from the same
 system. They share one set of engineering rules, and those rules are published:
 
-### 📖 [The Developer Codex](https://aitherium.github.io/aither-skills/codex.html) — read this first
+### 📖 [The Developer Codex](https://aitherium.github.io/awskills/codex.html) — read this first
 
 Eighteen laws for building software that tells you when it is wrong, plus a
 four-chapter ramp if you have never worked with a coding agent before. Every law
 was a real failure first, and every number in it was counted rather than
-estimated. [Read the source](https://github.com/Aitherium/aither-skills/tree/main/codex).
+estimated. [Read the source](https://github.com/Aitherium/awskills/tree/main/codex).
 
 The parts, in the order they will bite you:
 
@@ -52,7 +52,7 @@ something breaks
 ### Where else to look
 
 - **[aitherium.com](https://aitherium.com)** — the system these repos are cut from
-- **[The Codex](https://aitherium.github.io/aither-skills/codex.html)** — the doctrine, in full
+- **[The Codex](https://aitherium.github.io/awskills/codex.html)** — the doctrine, in full
 - **[awskills](https://aitherium.github.io/awskills/)** — procedures
   an agent can load and run
 - **[awdk](https://aitherium.github.io/awdk/)** — the Python agent runtime
