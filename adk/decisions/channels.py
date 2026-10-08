@@ -50,10 +50,14 @@ from adk.decisions.store import (
     decisions_dir,
 )
 
-#: Platforms this bridge knows how to talk to. Each maps to an adapter that
-#: already exists in ``adk.channels``; nothing here is platform-specific except
-#: the message length limit, which that module already owns.
-SUPPORTED = ("discord", "telegram", "slack")
+#: Platforms whose owner replies this bridge authorizes. discord/telegram/slack map
+#: to adapters in ``adk.channels``. ``relay`` is answer-only: AitherRelay posts the
+#: card itself (awask relay_post) and its forwarder sends the owner's reply to
+#: /decisions/chat-reply with platform="relay". Without this entry every relay and
+#: company-room answer was refused, and a "relay" block made the whole file fail
+#: to load, Discord included (measured 2026-10-07). Lookups are by exact name; nothing
+#: iterates this tuple to deliver.
+SUPPORTED = ("discord", "telegram", "slack", "relay")
 
 #: A card id anywhere in the reply text.
 _CARD_RE = re.compile(r"\b(d-[23456789abcdefghjkmnpqrstuvwxyz]{4,12})\b", re.IGNORECASE)
