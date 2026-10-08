@@ -112,6 +112,7 @@ public class WearActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        work(api::renewIfDue); // keeps the 30-day sliding session alive (WearApi)
         scroll.requestFocus();
         if (talkOnStart && !api.token().isEmpty()) {
             talkOnStart = false;

@@ -109,4 +109,14 @@ final class WearRules {
         if (status == 0) return "No connection. Check the watch's Wi-Fi or LTE and try again.";
         return "Sign-in didn't finish (" + (error == null || error.isEmpty() ? String.valueOf(status) : error) + "). Try again.";
     }
+
+    /** Identity's refresh answer that means the session is gone (not "could not ask"). */
+    static boolean sessionRefused(int code) {
+        return code == 401 || code == 403;
+    }
+
+    /** Renew the sliding session now? (never renewed counts as due) */
+    static boolean renewDue(long renewedAt, long now, long every) {
+        return renewedAt <= 0 || now - renewedAt >= every || now < renewedAt;
+    }
 }

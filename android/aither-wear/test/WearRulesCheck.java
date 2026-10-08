@@ -95,6 +95,18 @@ public class WearRulesCheck {
         eq("widen cap", WearRules.nextInterval(60, 429, 0), 60);
         eq("expired words", WearRules.signInError(400, "expired_token"), "That code expired. Try again.");
 
+        // the session: only Identity refusing it signs the watch out; an outage keeps it
+        eq("refresh 401 refuses", WearRules.sessionRefused(401), true);
+        eq("refresh 403 refuses", WearRules.sessionRefused(403), true);
+        eq("identity down keeps", WearRules.sessionRefused(502), false);
+        eq("offline keeps", WearRules.sessionRefused(0), false);
+        eq("alive keeps", WearRules.sessionRefused(200), false);
+        long day = 24L * 3600_000L, every = 20L * 3600_000L;
+        eq("never renewed is due", WearRules.renewDue(0, 10 * day, every), true);
+        eq("fresh not due", WearRules.renewDue(10 * day, 10 * day + 3600_000L, every), false);
+        eq("old is due", WearRules.renewDue(10 * day, 11 * day, every), true);
+        eq("clock went back is due", WearRules.renewDue(10 * day, 9 * day, every), true);
+
         System.out.println(bad == 0 ? "OK" : bad + " FAILED");
         System.exit(bad == 0 ? 0 : 1);
     }

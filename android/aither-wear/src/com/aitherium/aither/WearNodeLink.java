@@ -181,7 +181,11 @@ final class WearNodeLink {
             Resp r = call("/v1/nodes/join/requests", bearer, new JSONObject()
                     .put("device_class", "watch").put("pubkey", pubHex())
                     .put("label", WearJoin.hostname(android.os.Build.MODEL)));
-            if (r.code == 401) { api.signOut(); return "Signed out. Sign in again."; }
+            if (r.code == 401) {
+                // Identity's refresh decides (WearApi.confirmSession), not this one answer
+                return WearRules.sessionRefused(api.confirmSession()) ? "Signed out. Sign in again."
+                        : "Couldn't reach your account just now. Try again in a minute.";
+            }
             if (r.code == 402) return "Your plan has no room for another device.";
             if (r.code == 429) return "Too many tries. Wait a few minutes.";
             String rid = r.json.optString("rid"), nonce = r.json.optString("nonce");

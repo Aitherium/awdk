@@ -184,9 +184,19 @@ final class NodeLink {
             StorageShare.addTo(ctx, beat);
             Resp r = call("POST", idp + "/v1/nodes/device/heartbeat", bearer(), null, beat.toString());
             if (r.code == 401 || r.code == 403) {
-                forget("unlinked: the device token was refused (" + r.code + ")");
-                return true;
+                // one refusal is not enough to unlink (an Identity restart has answered a
+                // good token with 401): forget only on a second refusal at the next check-in
+                long first = p.getLong("refused_at", 0), now = System.currentTimeMillis();
+                if (first > 0 && now - first > 60_000L) {
+                    p.edit().remove("refused_at").apply();
+                    forget("unlinked: the device token was refused (" + r.code + ")");
+                    return true;
+                }
+                if (first == 0) p.edit().putLong("refused_at", now).apply();
+                last = "check-in refused (" + r.code + "); asking again before unlinking";
+                return false;
             }
+            p.edit().remove("refused_at").apply();
             if (r.code != 200) {
                 last = "check-in answered " + r.code;
                 return false;

@@ -63,6 +63,7 @@ public class WearTile extends TileService {
         if (api.token().isEmpty()) return new int[] {0, 0, 0};
         int[] got = {p.getInt("tile_approvals", 0), p.getInt("tile_asks", 0), 1};
         Thread t = new Thread(() -> {
+            api.renewIfDue(); // the tile refreshes every 15 min: it keeps the session alive too
             int[] status = {0};
             Map<String, ApprovalCard> byId = api.inbox(status);
             if (byId != null) got[0] = WearRules.waiting(byId).size();

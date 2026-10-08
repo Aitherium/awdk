@@ -22,7 +22,16 @@ import java.util.Map;
  * mints a short code, the owner enters it on a signed-in phone at the page Identity names
  * (verification_uri, idp.aitherium.com/link; app.aitherium.com/auth/device takes it too), and /api/auth/device/token then hands this watch a bearer token for that
  * account (scope "session", decided at approval time by Identity). The token is kept in this
- * app's private storage and sent as Authorization; a 401 anywhere forgets it.
+ * app's private storage and sent as Authorization.
+ *
+ * Staying signed in: the session is a sliding 30-day one, renewed through POST
+ * /api/auth/refresh (Identity extends it; the token does not change) at most once every
+ * RENEW_EVERY_MS, from the app and the tile. A 401 from any other endpoint is NOT taken at
+ * its word: a Genesis that cannot reach Identity (a security-core restart, measured
+ * 2026-10-08 14:38) answers a valid bearer with 401, and forgetting the token on that
+ * signed the watch out silently. Only Identity's own refresh saying 401, twice and some
+ * seconds apart, forgets it; when Identity is unreachable the token is kept and the call
+ * reads as 503. Revoking the device on the account still ends it (refresh then fails).
  *
  * With it the watch reads the same inbox the phone's DutyService reads (/api/push/inbox),
  * answers with the same body (/api/push/decide via WearRules.answer), and asks the same
@@ -79,7 +88,67 @@ final class WearApi {
     }
 
     void signOut() {
-        p.edit().remove("token").remove("token_until").apply();
+        p.edit().remove("token").remove("token_until").remove("renewed_at").apply();
+    }
+
+    /** Renew the sliding session at most this often (Identity keeps 30 days from each renewal). */
+    static final long RENEW_EVERY_MS = 20L * 3600_000L;
+    /** Between the two refresh calls that must both say 401 before the token is forgotten. */
+    static final long CONFIRM_GAP_MS = 8000;
+    private static final Object SESSION = new Object();
+    private static volatile long sessionOkAt;
+
+    /** POST /api/auth/refresh with the bearer: Identity's own word on the session (and a renewal). */
+    private int refresh() {
+        String bearer = p.getString("token", "");
+        if (bearer.isEmpty()) return 401;
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(API + "/api/auth/refresh").openConnection();
+            c.setRequestMethod("POST");
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(20000);
+            c.setDoOutput(true);
+            c.setRequestProperty("Origin", "https://aitherium.com");
+            c.setRequestProperty("Authorization", "Bearer " + bearer);
+            c.setRequestProperty("Content-Type", "application/json");
+            try (OutputStream o = c.getOutputStream()) { o.write("{}".getBytes(StandardCharsets.UTF_8)); }
+            int code = c.getResponseCode();
+            c.disconnect();
+            if (code == 200) {
+                sessionOkAt = System.currentTimeMillis();
+                p.edit().putLong("renewed_at", sessionOkAt).apply();
+            }
+            return code;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Is the session really gone? 200: alive (renewed); 401: Identity refused it twice,
+     * CONFIRM_GAP_MS apart, and the token is forgotten; anything else: Identity could not
+     * be asked, the token is kept.
+     */
+    int confirmSession() {
+        synchronized (SESSION) {
+            if (System.currentTimeMillis() - sessionOkAt < 30_000) return 200;
+            int first = refresh();
+            if (!WearRules.sessionRefused(first)) return first;
+            try { Thread.sleep(CONFIRM_GAP_MS); } catch (InterruptedException e) { return 0; }
+            int second = refresh();
+            if (WearRules.sessionRefused(second)) {
+                android.util.Log.i("AitherWear", "session refused by Identity twice: signed out");
+                signOut();
+            }
+            return second;
+        }
+    }
+
+    /** Keep the sliding session alive: renew when the last renewal is older than RENEW_EVERY_MS. */
+    void renewIfDue() {
+        if (p.getString("token", "").isEmpty()) return;
+        if (!WearRules.renewDue(p.getLong("renewed_at", 0), System.currentTimeMillis(), RENEW_EVERY_MS)) return;
+        if (WearRules.sessionRefused(refresh())) confirmSession();
     }
 
     /** One answer: HTTP status (0 = unreachable), the JSON body when there is one, the text. */
@@ -106,6 +175,15 @@ final class WearApi {
     }
 
     private Resp call(String method, String path, JSONObject body, boolean auth, int readMs) {
+        Resp r = call1(method, path, body, auth, readMs);
+        if (!auth || r.code != 401) return r;
+        // a 401 from a service is checked with Identity before anything is forgotten
+        int s = confirmSession();
+        if (s == 200) return call1(method, path, body, auth, readMs);
+        return WearRules.sessionRefused(s) ? r : new Resp(503, null, "");
+    }
+
+    private Resp call1(String method, String path, JSONObject body, boolean auth, int readMs) {
         String bearer = auth ? token() : "";
         if (auth && bearer.isEmpty()) return new Resp(401, null, "");
         try {
@@ -133,7 +211,6 @@ final class WearApi {
                     }
                 }
             }
-            if (auth && code == 401) signOut();
             JSONObject j = null;
             try { j = new JSONObject(sb.toString()); } catch (Exception e) { /* not JSON (SSE) */ }
             return new Resp(code, j, sb.toString());
@@ -248,6 +325,14 @@ final class WearApi {
      * (0: unreachable). {@code alive} is polled between events: false hangs up.
      */
     int stream(String message, String agent, Stream to, java.util.function.BooleanSupplier alive) {
+        int code = stream1(message, agent, to, alive);
+        if (code != 401) return code;
+        int s = confirmSession(); // a 401 is checked with Identity before anything is forgotten
+        if (s == 200) return stream1(message, agent, to, alive);
+        return WearRules.sessionRefused(s) ? 401 : 503;
+    }
+
+    private int stream1(String message, String agent, Stream to, java.util.function.BooleanSupplier alive) {
         String bearer = token();
         if (bearer.isEmpty()) return 401;
         HttpURLConnection c = null;
@@ -268,7 +353,6 @@ final class WearApi {
                 o.write(body);
             }
             int code = c.getResponseCode();
-            if (code == 401) signOut();
             if (code != 200) return code;
             boolean answered = false;
             try (java.io.BufferedReader in = new java.io.BufferedReader(
