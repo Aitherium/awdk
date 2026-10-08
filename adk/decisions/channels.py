@@ -57,7 +57,9 @@ from adk.decisions.store import (
 #: company-room answer was refused, and a "relay" block made the whole file fail
 #: to load, Discord included (measured 2026-10-07). Lookups are by exact name; nothing
 #: iterates this tuple to deliver.
-SUPPORTED = ("discord", "telegram", "slack", "relay")
+# email is answer-only too: AitherMailIngest forwards a VERIFIED owner reply
+# (owner_sender_verified: owner address + receiver DKIM/DMARC pass).
+SUPPORTED = ("discord", "telegram", "slack", "relay", "email")
 
 #: A card id anywhere in the reply text.
 _CARD_RE = re.compile(r"\b(d-[23456789abcdefghjkmnpqrstuvwxyz]{4,12})\b", re.IGNORECASE)
