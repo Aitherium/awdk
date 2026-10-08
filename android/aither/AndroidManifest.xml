@@ -25,6 +25,17 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <!-- Ask Aither's Talk button: asked for on its first tap; heard by the on-device recognizer only -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Nearby devices (BlePair): Bluetooth only while that screen, or "Add this phone nearby",
+         is open; never in the background, never for location. Android 12+ asks at runtime.
+         Android 10/11 get the install-time pair for advertising only: scanning there would
+         need location, so those phones approve with a code instead (NearbyDevicesActivity). -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- Android 11+ hides other apps' services: the speech recognizer and the voice that reads answers -->
     <queries>
@@ -127,6 +138,19 @@
             </intent-filter>
         </activity>
 
+        <!-- Nearby devices: approve a watch or new phone in Bluetooth range (SAS checked by the
+             owner, code minted by Identity, which refuses a child), and this phone's own
+             "Add this phone nearby". Not exported: only Settings opens them. -->
+        <activity
+            android:name=".NearbyDevicesActivity"
+            android:label="Nearby devices"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="false" />
+        <activity
+            android:name=".BleJoinActivity"
+            android:label="Add this phone nearby"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="false" />
         <!-- "Ask Aither" from another app: Share (a Gemini answer, a page), the text-selection
              menu, and aither://ask?q=. The text becomes a draft in Ask Aither; nothing is asked
              until the person taps Send (ShareActivity). -->

@@ -13944,6 +13944,10 @@ def _register_commands(sub):
         help="No code: ask to join and approve on your phone by matching a six-digit "
              "number (not signed in here: shows a code/QR a member approves)")
 
+    # adk pair-mode — advertise on the LAN so a member's device can approve this one
+    from adk.lan_pair import add_parser as _add_pair_mode
+    _add_pair_mode(sub)
+
     # adk onboard-remote — add a computer this machine can SSH into (no typing on it)
     from adk.remote_onboard import add_parser as _add_onboard_remote
     _add_onboard_remote(sub)
@@ -17113,6 +17117,9 @@ def main():
     elif args.command == "pair":
         from adk.node_pairing import cmd_pair
         sys.exit(cmd_pair(args))
+    elif args.command == "pair-mode":
+        from adk.lan_pair import cmd_pair_mode
+        sys.exit(cmd_pair_mode(args))
     elif args.command == "onboard-remote":
         from adk.remote_onboard import cmd_onboard_remote
         sys.exit(cmd_onboard_remote(args))

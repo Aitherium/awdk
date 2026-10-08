@@ -429,7 +429,8 @@ def sign(bt: Path, base: Path, apk: Path, keystore: str, storepass_file: str) ->
 # (ApprovalCard.decideBody), one listening rule (Talk), one brand kit (Ui), and the
 # device-link code + its QR (DeviceLink, Qr), so the watch shows what the phone parses.
 WEAR = HERE.parent / "aither-wear"
-WEAR_SHARED = ("ApprovalCard.java", "Talk.java", "Speakable.java", "Ui.java", "DeviceLink.java", "Qr.java")
+WEAR_SHARED = ("ApprovalCard.java", "Talk.java", "Speakable.java", "Ui.java", "DeviceLink.java", "Qr.java",
+               "BlePair.java", "BleCandidate.java")
 
 
 def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:

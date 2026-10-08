@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**133 commands.**
+**134 commands.**
 
 | command | what it does |
 |---|---|
@@ -109,6 +109,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk pack`](#adk-pack) | Manage ToolPack extensions (list, search, install, remove, info) |
 | [`adk packs`](#adk-packs) | List available agent packs |
 | [`adk pair`](#adk-pair) | Pair this machine with the portal as an inference node (6-char code from the portal) |
+| [`adk pair-mode`](#adk-pair-mode) | Let a device that is already yours find this one on the Wi-Fi (5 minutes) |
 | [`adk patterns`](#adk-patterns) | Prompt patterns: list, show, run, import |
 | [`adk platform`](#adk-platform) | Internal platform toolkit (merged from aither-platform) |
 | [`adk publish`](#adk-publish) | Publish agent to the Aitherium marketplace |
@@ -1220,6 +1221,18 @@ Pair this machine with the portal as an inference node (6-char code from the por
 | `--portal` | str |  |  | Portal base URL (default: pair directly with Identity) |
 | `--node-class` | str |  |  | What this device is (default: detected from the hardware) |
 | `--no-autostart` | str |  | `false` | Do not install the per-user heartbeat autostart (python -m adk.node_beat) |
+| `--join` | str |  | `false` | No code: ask to join and approve on your phone by matching a six-digit number (not signed in here: shows a code/QR a member approves) |
+
+## `adk pair-mode`
+
+Let a device that is already yours find this one on the Wi-Fi (5 minutes)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--class` | str |  | `laptop` |  |
+| `--minutes` | int |  | `5` | How long to advertise (1-5, default 5) |
+| `--name` | str |  |  | Name shown to the approver (unverified) |
+| `--identity` | str |  |  | Identity base (default: as adk pair) |
 
 ## `adk patterns`
 

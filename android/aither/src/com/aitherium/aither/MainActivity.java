@@ -93,6 +93,8 @@ public class MainActivity extends Activity implements Shell.Host {
         web.addJavascriptInterface(new PageTools.Bridge(), "AitherMCP");
         // window.AitherVoice: push-to-talk with the on-device recognizer (a child's Sprite)
         web.addJavascriptInterface(new PageVoice.Bridge(this, web), "AitherVoice");
+        // window.AitherNearby: devices in pairing mode on this Wi-Fi (NearbyDevices, 5 minutes)
+        web.addJavascriptInterface(new NearbyDevices.Bridge(this, web), "AitherNearby");
         web.setWebChromeClient(new android.webkit.WebChromeClient() {
             @Override
             public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {

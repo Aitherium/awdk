@@ -144,6 +144,7 @@ public class WearActivity extends Activity {
         t.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         line("Sign in with your phone to talk to Aither and answer your home's requests.", 13, Ui.DIM);
         button("Sign in", true, v -> signIn());
+        button("Add to my devices", false, v -> startActivity(new Intent(this, WearBlePair.class)));
     }
 
     private void signIn() {
@@ -251,6 +252,9 @@ public class WearActivity extends Activity {
         out.setGravity(Gravity.CENTER);
         out.setPadding(0, Ui.dp(this, 16), 0, Ui.dp(this, 8));
         out.setOnClickListener(v -> { api.signOut(); render(); });
+        if (!WearBlePair.linked(this)) {
+            button("Add to my devices", false, v -> startActivity(new Intent(this, WearBlePair.class)));
+        }
         col.addView(out, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         work(() -> {

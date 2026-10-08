@@ -21,7 +21,7 @@ to be unlocked first (`setAuthenticationRequired`).
     python awdk/android/aither/build.py --wear --out D:\aither-build\wear
     python awdk/android/aither/build.py --wear --keystore <ks> --storepass-file <f>   # release cert
 
-Compiles `src/` plus the phone's `ApprovalCard`, `Talk`, `Ui`, `DeviceLink` and `Qr`, the phone's launcher icons,
+Compiles `src/` plus the phone's `ApprovalCard`, `Talk`, `Ui`, `DeviceLink`, `Qr`, `BlePair` and `BleCandidate`, the phone's launcher icons,
 and signs with the same key and certificate check as the phone app.
 
 ## Install on the watch
@@ -56,6 +56,32 @@ OS companion, and it would need nearby-device permissions and a pairing prompt o
 The path is **Play distribution + the Data Layer**: the phone mints a pre-approved, 3-minute,
 single-use grant (Identity `/auth/device/setup-code`) and sends it to the watch, which
 polls it once. Until then the QR is the one-step sign-in.
+
+## Add to my devices (Bluetooth LE)
+
+Signing in (above) gives the watch a session. **Add to my devices** makes it one of the
+owner's devices (an Identity node, like the phone), from a phone in Bluetooth range, with no
+Play services: plain BLE, the watch advertising and the phone connecting.
+
+1. Watch: **Add to my devices** > Start (`WearBlePair`). It advertises the Aither pairing
+   service for at most 3 minutes and only while that screen is open: ten bytes of service
+   data (version, "watch", a request id that is a hash of a fresh key, replaced every
+   minute). No name, no account, no code.
+2. Phone: Aither > Settings > **Nearby devices** (`NearbyDevicesActivity`, Android 12+,
+   `BLUETOOTH_SCAN` with `neverForLocation`, scanning only while the screen is open) lists
+   it, connects, and runs the commit/reveal key exchange (`BlePair`).
+3. Both screens show the same six digits. The phone's owner taps Approve: the phone asks
+   Identity for a single-use pairing code (`/api/me/machines` → `/v1/nodes/pairing/init`,
+   which refuses a child account) and writes it to the watch sealed with AES-GCM under the
+   exchanged key. The watch's owner taps Matches; only then does the watch confirm the code
+   with Identity itself (`/v1/nodes/pairing/confirm`, `node_class` "watch") and keep the
+   device token in its private storage.
+
+A phone joins the same way from Settings > **Add this phone nearby** (`BleJoinActivity`).
+When Bluetooth can't finish, the phone offers "Use a code instead" (the device-code
+approval in `LinkActivity`, or the internet join request once `NearbyDevicesActivity.fallback`
+is set). The rules are pure Java and run on a desktop JVM: `test/BlePairCheck.java` in the
+phone app, run by the platform's BLE pairing test.
 
 ## v2
 

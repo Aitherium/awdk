@@ -56,6 +56,10 @@ public class SettingsActivity extends Activity {
                     "Your profile, sign-in and security, opened in Aither.");
             row(acct, Ui.action(this, "Link a device", v -> startActivity(new Intent(this, LinkActivity.class))),
                     "Sign in your watch, TV or laptop: scan its code with your camera, or type it here.");
+            row(acct, Ui.action(this, "Nearby devices", v -> startActivity(new Intent(this, NearbyDevicesActivity.class))),
+                    "Add a watch or a new phone that is next to you, over Bluetooth.");
+            row(acct, Ui.action(this, "Add this phone nearby", v -> startActivity(new Intent(this, BleJoinActivity.class))),
+                    "Join your devices from a phone that is already yours, over Bluetooth.");
         }
         row(acct, Ui.action(this, "Allow running with the screen off", v -> askBattery()),
                 "Lets Aither check in and finish work while the phone sleeps.");
