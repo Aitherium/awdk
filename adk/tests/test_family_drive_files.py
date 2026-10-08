@@ -26,15 +26,29 @@ class Household:
         self.withheld = {}   # object_id -> polls left before a device "sends it back"
         self.race = None     # a function run once just before the next index move
         self.seen = []
+        self.params = []     # query params of each object put
+        self.ec_devices = True   # False: the family has too few devices for the shards
+        self.modes = {}
 
     def __call__(self, method, path, *, json_body=None, content=None, params=None):
         self.seen.append((method, path, content or b"", json.dumps(json_body or {})))
         if path == "/family/storage/objects" and method == "POST":
+            self.params.append(dict(params or {}))
+            ec = (params or {}).get("ec", "")
+            mode = "copies"
+            if ec and len(content) >= 64 * 1024:
+                if not self.ec_devices:
+                    raise cli.ApiError(409, "not enough lending devices to spread shards")
+                mode = "ec"
             oid = hashlib.sha256(content).hexdigest()
             self.objects[oid] = content
-            return 201, {"object_id": oid}
+            self.modes[oid] = mode
+            return 201, {"object_id": oid, "mode": mode}
         if path == "/family/storage/objects" and method == "GET":
-            return 200, {"objects": [{"object_id": o, "stored": 2} for o in self.objects]}
+            return 200, {"objects": [
+                {"object_id": o, "stored": 6, "replicas": 6, "mode": "ec", "k": 4, "m": 2,
+                 "recoverable": True} if self.modes.get(o) == "ec" else
+                {"object_id": o, "stored": 2, "mode": "copies"} for o in self.objects]}
         if path.startswith("/family/storage/objects/"):
             oid = path.rsplit("/", 1)[1]
             if method == "DELETE":
@@ -151,3 +165,48 @@ def test_rm_drops_chunks_and_the_old_index(house, tmp_path):
 def test_paths_cannot_climb_out(bad):
     with pytest.raises(fv.VaultError):
         files._clean_name(bad)
+
+
+# -- erasure coding -------------------------------------------------------------------
+
+def _chunk_puts(house):
+    return [p for p in house.params]
+
+
+def test_large_chunks_ask_for_4_plus_2_shards_by_default(house, tmp_path, capsys):
+    src = tmp_path / "video.bin"
+    src.write_bytes(b"v" * (200 * 1024))
+    assert cli.main(["put", str(src)]) == 0
+    assert _chunk_puts(house)[0]["ec"] == "4+2"
+    _oid, index = files.read_index(cli.family_key())
+    assert index["files"]["video.bin"]["redundancy"] == "ec 4+2"
+    assert "4+2 erasure-coded shards" in capsys.readouterr().out
+    assert cli.main(["ls", "--json"]) == 0
+    row = json.loads(capsys.readouterr().out)[0]
+    assert row["shards"] == 6 and row["shards_wanted"] == 6 and row["recoverable"] is True
+    out = tmp_path / "v.out"
+    assert cli.main(["get", "video.bin", "--out", str(out)]) == 0
+    assert out.read_bytes() == b"v" * (200 * 1024)
+
+
+def test_too_few_devices_falls_back_to_copies_but_an_explicit_spec_fails(house, tmp_path, capsys):
+    house.ec_devices = False
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"b" * (100 * 1024))
+    assert cli.main(["put", str(src)]) == 0
+    assert "keeping 2 whole copies" in capsys.readouterr().err
+    _oid, index = files.read_index(cli.family_key())
+    assert index["files"]["big.bin"]["redundancy"] == "copies"
+    assert cli.main(["put", str(src), "--name", "again.bin", "--ec", "3+3"]) != 0
+    _oid, index = files.read_index(cli.family_key())
+    assert "again.bin" not in index["files"]
+
+
+def test_copies_flag_and_bad_specs(house, tmp_path):
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"c" * (100 * 1024))
+    assert cli.main(["put", str(src), "--copies", "--replicas", "3"]) == 0
+    assert "ec" not in _chunk_puts(house)[0] and _chunk_puts(house)[0]["replicas"] == "3"
+    for bad in ("4", "1+1", "4+9", "x+y"):
+        with pytest.raises(SystemExit):
+            cli.main(["put", str(src), "--ec", bad])

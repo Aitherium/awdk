@@ -8,6 +8,13 @@ family computers adding files at once both land (the slower one re-reads and ret
 
 Reading a chunk the household no longer stages asks a device that keeps it to send it
 back; ``get`` waits for that (``--wait`` seconds, default 600).
+
+Redundancy: a chunk of 64 KiB or more is erasure-coded by default, ``--ec 4+2`` (4 data
++ 2 parity shards on different devices: any 2 can be lost, 1.5x the space instead of 2x
+for two copies). The household cuts the shards from the SEALED chunk, so they are
+ciphertext. Smaller chunks, and ``--copies``, keep ``--replicas`` whole copies. When the
+family has too few lending devices for the shards, the default falls back to copies and
+says so; an explicit ``--ec`` fails instead.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from adk import family_drive_cli as cli
 from adk import family_vault as fv
 
 CHUNK = 32 * 1024 * 1024
+DEFAULT_EC = "4+2"
 INDEX_SCHEMA = "aither-family-drive-index/1"
 _RETRIES = 5
 
@@ -47,10 +55,29 @@ def fetch_object(object_id: str, *, wait_s: float = 600, poll_s: float = 15) -> 
         _sleep(poll_s)
 
 
-def put_object(sealed: bytes, *, replicas: int, tier: str = "warm") -> str:
-    _s, body = cli.request("POST", "/family/storage/objects", content=sealed,
-                           params={"replicas": str(replicas), "tier": tier})
-    return str(body["object_id"])
+def put_object(sealed: bytes, *, replicas: int, tier: str = "warm", ec: str = "") -> str:
+    return str(put_object_ex(sealed, replicas=replicas, tier=tier, ec=ec)["object_id"])
+
+
+def put_object_ex(sealed: bytes, *, replicas: int, tier: str = "warm",
+                  ec: str = "") -> Dict[str, Any]:
+    """Store one sealed object; ``ec="k+m"`` asks for erasure-coded shards."""
+    params = {"replicas": str(replicas), "tier": tier}
+    if ec:
+        params["ec"] = ec
+    _s, body = cli.request("POST", "/family/storage/objects", content=sealed, params=params)
+    return dict(body)
+
+
+def _valid_ec(spec: str) -> str:
+    try:
+        k_s, m_s = spec.strip().split("+")
+        k, m = int(k_s), int(m_s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"--ec wants k+m, like 4+2 (got {spec!r})") from exc
+    if not (2 <= k <= 16 and 1 <= m <= 8):
+        raise argparse.ArgumentTypeError("--ec wants 2..16 data and 1..8 parity shards")
+    return f"{k}+{m}"
 
 
 def read_index(key: bytes, *, wait_s: float = 600) -> tuple:
@@ -102,7 +129,11 @@ def cmd_put(args: argparse.Namespace) -> int:
     if not src.is_file():
         raise fv.VaultError(f"no such file: {src}")
     name = _clean_name(args.name or src.name)
+    explicit = bool(getattr(args, "ec", None))
+    ec = "" if getattr(args, "copies", False) else (args.ec or DEFAULT_EC)
+    asked = ec
     chunks: List[str] = []
+    modes: List[str] = []
     size = 0
     with src.open("rb") as f:
         while True:
@@ -110,17 +141,31 @@ def cmd_put(args: argparse.Namespace) -> int:
             if not part and chunks:
                 break
             size += len(part)
-            chunks.append(put_object(fv.seal(key, part), replicas=args.replicas))
+            sealed = fv.seal(key, part)
+            try:
+                body = put_object_ex(sealed, replicas=args.replicas, ec=ec)
+            except cli.ApiError as exc:
+                if not (ec and not explicit and exc.status == 409):
+                    raise
+                print(f"Not enough lending devices for {ec} shards; keeping "
+                      f"{args.replicas} whole copies instead.", file=sys.stderr)
+                ec = ""
+                body = put_object_ex(sealed, replicas=args.replicas)
+            chunks.append(str(body["object_id"]))
+            modes.append(str(body.get("mode") or "copies"))
             if not part:
                 break
     entry = {"size": size, "mtime": int(src.stat().st_mtime), "chunks": chunks,
-             "added": int(time.time()), "replicas": args.replicas}
+             "added": int(time.time()), "replicas": args.replicas,
+             "redundancy": f"ec {asked}" if "ec" in modes else "copies"}
 
     def change(index: Dict[str, Any]) -> None:
         index["files"][name] = entry
 
     update_index(key, change, replicas=args.replicas)
-    print(f"Stored {name} ({size} bytes, {len(chunks)} chunk(s), {args.replicas} copies wanted).")
+    how = (f"{entry['redundancy'][3:]} erasure-coded shards" if entry["redundancy"] != "copies"
+           else f"{args.replicas} copies wanted")
+    print(f"Stored {name} ({size} bytes, {len(chunks)} chunk(s), {how}).")
     return 0
 
 
@@ -145,19 +190,36 @@ def cmd_ls(args: argparse.Namespace) -> int:
     key = cli.family_key()
     _oid, index = read_index(key, wait_s=args.wait)
     _s, objs = cli.request("GET", "/family/storage/objects")
-    stored = {o["object_id"]: int(o.get("stored") or 0) for o in objs.get("objects", [])}
+    listed = {o["object_id"]: o for o in objs.get("objects", [])}
     rows = []
     for name, e in sorted(index["files"].items()):
-        copies = min((stored.get(c, 0) for c in e["chunks"]), default=0)
-        rows.append({"name": name, "size": e["size"], "copies": copies,
-                     "wanted": e.get("replicas", 2), "added": e.get("added")})
+        chunk_rows = [listed.get(c, {}) for c in e["chunks"]]
+        ec_rows = [o for o in chunk_rows if o.get("mode") == "ec"]
+        copies = min((int(o.get("stored") or 0) for o in chunk_rows if o.get("mode") != "ec"),
+                     default=None)
+        shards = min((int(o.get("stored") or 0) for o in ec_rows), default=None)
+        row = {"name": name, "size": e["size"],
+               "copies": copies if copies is not None else (0 if not ec_rows else None),
+               "wanted": e.get("replicas", 2), "added": e.get("added"),
+               "redundancy": e.get("redundancy", "copies"),
+               "recoverable": all(bool(o.get("recoverable", int(o.get("stored") or 0) > 0))
+                                  for o in chunk_rows) if chunk_rows else True}
+        if ec_rows:
+            row["shards"] = shards
+            row["shards_wanted"] = max(int(o.get("replicas") or 0) for o in ec_rows)
+        rows.append(row)
     if getattr(args, "json", False):
         print(json.dumps(rows, indent=2))
     else:
         if not rows:
             print("The family drive is empty.")
         for r in rows:
-            print(f"{r['size']:>12}  {r['copies']}/{r['wanted']} copies  {r['name']}")
+            if "shards" in r:
+                health = f"{r['shards']}/{r['shards_wanted']} shards"
+            else:
+                health = f"{r['copies']}/{r['wanted']} copies"
+            warn = "" if r["recoverable"] else "  (needs a device back)"
+            print(f"{r['size']:>12}  {health}  {r['name']}{warn}")
     return 0
 
 
@@ -188,7 +250,13 @@ def add_parsers(sub: Any) -> None:
     put = sub.add_parser("put", help="Seal a file and store it on the family's devices")
     put.add_argument("file")
     put.add_argument("--name", default="", help="Path on the drive (default: the file name)")
-    put.add_argument("--replicas", type=int, default=2, choices=[1, 2, 3])
+    put.add_argument("--replicas", type=int, default=2, choices=[1, 2, 3],
+                     help="Whole copies for small chunks, --copies, or the fallback")
+    put.add_argument("--ec", type=_valid_ec, default=None,
+                     help=f"Erasure-code chunks of 64 KiB+ as k+m shards (default {DEFAULT_EC}; "
+                          "explicit: fail instead of falling back to copies)")
+    put.add_argument("--copies", action="store_true",
+                     help="Keep whole copies instead of erasure-coded shards")
     put.set_defaults(handler=cmd_put)
     get = sub.add_parser("get", help="Fetch a file back and open it here")
     get.add_argument("name")
