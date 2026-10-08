@@ -23,6 +23,10 @@ import java.security.MessageDigest;
  *   store  download the (already sealed) bytes into files/pool/, hash them, report the hash
  *   fetch  upload a kept copy so the owner can read it
  *   drop   delete a copy
+ *   prove  answer a custody challenge: sha256(nonce || a byte range of a kept copy)
+ *
+ * Every report is signed with this phone's receipt key (StorageProof; Android 13+), which it
+ * registers on its first poll; Genesis countersigns it into the family's receipt chain (B12).
  *
  * It runs only while StorageRules says this phone lends right now (household switch on, a
  * quota, on Wi-Fi while charging, battery saver off; a child's phone always keeps Wi-Fi and
@@ -50,6 +54,7 @@ final class StorageWorker {
         }
         String token = token(cfg);
         if (token.isEmpty()) return;
+        StorageProof.Signer signer = StorageProof.Signer.load(ctx.getFilesDir());
         long until = System.currentTimeMillis() + budgetMs;
         try {
             for (int n = 0; n < MAX_JOBS && System.currentTimeMillis() < until; n++) {
@@ -59,7 +64,8 @@ final class StorageWorker {
                         .put("free_bytes", StorageShare.freeBytes(ctx))
                         .put("paused", v.lent ? "" : (v.paused.isEmpty() ? v.reason : v.paused))
                         .put("device_class", tablet(ctx) ? "tablet" : "phone");
-                Resp r = call("POST", API + "/poll", token, poll.toString().getBytes(StandardCharsets.UTF_8));
+                if (signer != null) poll.put("receipt_key", signer.pubHex);
+                Resp r = call("POST", API + "/poll", token, poll.toString().getBytes(StandardCharsets.UTF_8), "");
                 if (!v.lent || r.code == 204) {
                     last = v.lent ? "nothing to do" : "resting: " + (v.paused.isEmpty() ? v.reason : v.paused);
                     return;
@@ -68,7 +74,7 @@ final class StorageWorker {
                     last = "the household answered " + r.code;
                     return;
                 }
-                run(ctx, token, new JSONObject(new String(r.body, StandardCharsets.UTF_8)), v);
+                run(ctx, token, new JSONObject(new String(r.body, StandardCharsets.UTF_8)), v, signer);
             }
         } catch (Exception e) {
             last = "error: " + e.getClass().getSimpleName();
@@ -76,7 +82,8 @@ final class StorageWorker {
         }
     }
 
-    private static void run(Context ctx, String token, JSONObject job, StorageRules.Verdict v) throws Exception {
+    private static void run(Context ctx, String token, JSONObject job, StorageRules.Verdict v,
+                            StorageProof.Signer signer) throws Exception {
         String id = job.optString("job_id", ""), oid = job.optString("object_id", "");
         String kind = job.optString("kind", "");
         if (!id.matches("sj_[A-Za-z0-9_-]{8,64}") || !oid.matches("[0-9a-f]{64}")) return;
@@ -85,18 +92,18 @@ final class StorageWorker {
         if ("store".equals(kind)) {
             long size = job.optLong("size", 0);
             if (StorageShare.usedBytes(ctx) + size > v.quotaBytes) { // never past the quota
-                done(token, id, false, "");
+                done(token, id, kind, oid, false, "", signer);
                 last = "skipped a copy: it would pass this phone's limit";
                 return;
             }
-            Resp r = call("GET", API + "/blob/" + id, token, null);
+            Resp r = call("GET", API + "/blob/" + id, token, null, "");
             if (r.code != 200) {
                 last = "could not download a copy (" + r.code + ")";
                 return;
             }
             String sha = sha256(r.body);
             if (!sha.equals(oid)) { // never keep bytes that are not the object
-                done(token, id, false, sha);
+                done(token, id, kind, oid, false, sha, signer);
                 return;
             }
             dir.mkdirs();
@@ -105,23 +112,35 @@ final class StorageWorker {
                 o.write(r.body);
             }
             if (!part.renameTo(kept)) throw new java.io.IOException("could not keep the copy");
-            done(token, id, true, sha);
+            done(token, id, kind, oid, true, sha, signer);
             last = "kept a copy";
         } else if ("fetch".equals(kind)) {
             if (!kept.isFile()) return; // nothing to send: the household notices and repairs
             byte[] data = read(kept);
-            Resp r = call("PUT", API + "/upload/" + id, token, data);
+            String sig = signer == null ? ""
+                    : signer.sign(StorageProof.statement(id, kind, oid, true, sha256(data)));
+            Resp r = call("PUT", API + "/upload/" + id, token, data, sig);
             last = r.code == 200 ? "sent a copy back" : "the household refused a copy (" + r.code + ")";
         } else if ("drop".equals(kind)) {
             if (kept.isFile() && !kept.delete()) return;
-            done(token, id, true, "");
+            done(token, id, kind, oid, true, "", signer);
             last = "removed a copy";
+        } else if ("prove".equals(kind)) {
+            JSONObject ch = job.optJSONObject("challenge");
+            String nonce = ch == null ? "" : ch.optString("nonce", "");
+            if (!nonce.matches("[0-9a-f]{32,64}")) return;
+            // only from the kept copy: a missing or short copy answers "no" and repair re-makes it
+            String ans = StorageProof.answer(nonce, kept, ch.optLong("offset", -1), ch.optInt("length", -1));
+            done(token, id, kind, oid, ans != null, ans == null ? "" : ans, signer);
+            last = ans != null ? "proved it still keeps a copy" : "could not prove a copy";
         }
     }
 
-    private static void done(String token, String id, boolean ok, String sha) throws Exception {
+    private static void done(String token, String id, String kind, String oid, boolean ok, String sha,
+                             StorageProof.Signer signer) throws Exception {
         JSONObject b = new JSONObject().put("token", token).put("ok", ok).put("sha256", sha);
-        call("POST", API + "/done/" + id, token, b.toString().getBytes(StandardCharsets.UTF_8));
+        if (signer != null) b.put("sig", signer.sign(StorageProof.statement(id, kind, oid, ok, sha)));
+        call("POST", API + "/done/" + id, token, b.toString().getBytes(StandardCharsets.UTF_8), "");
     }
 
     /** Delete every file in the pool folder; returns how many went. */
@@ -182,7 +201,8 @@ final class StorageWorker {
         }
     }
 
-    private static Resp call(String method, String url, String token, byte[] body) throws java.io.IOException {
+    private static Resp call(String method, String url, String token, byte[] body, String receiptSig)
+            throws java.io.IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setRequestMethod(method);
         c.setConnectTimeout(20000);
@@ -190,6 +210,7 @@ final class StorageWorker {
         c.setRequestProperty("Origin", "https://aitherium.com");
         c.setRequestProperty("User-Agent", NodeLink.UA);
         c.setRequestProperty("x-aither-device-token", token);
+        if (!receiptSig.isEmpty()) c.setRequestProperty("x-aither-receipt-sig", receiptSig);
         String cookie = CookieManager.getInstance().getCookie("https://api.aitherium.com");
         if (cookie != null) c.setRequestProperty("Cookie", cookie);
         if (body != null) {

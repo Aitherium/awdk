@@ -593,7 +593,7 @@ Register this workstation with the control plane
 | `--no-heartbeat` | str |  | `false` | Skip background heartbeat |
 | `--force` | str |  | `false` | Re-enroll even if already registered |
 | `--inference-url` | str |  | `auto` | Local inference base URL to advertise (e.g. http://127.0.0.1:8080). 'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), 11434 (Ollama), 8120 (vLLM) in that order |
-| `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
+| `--node-class` | str |  |  | What this device is (default: detected from the hardware) |
 | `--no-link` | str |  | `false` | Do not hold the outbound reverse link to the tunnel. WireGuard stays the default where `wg` exists; without either transport the device is enrolled but not reachable from your browser |
 
 ## `adk eval`
@@ -1218,7 +1218,7 @@ Pair this machine with the portal as an inference node (6-char code from the por
 | `<code>` | str |  |  | Pairing code shown in the signed-in portal tab ('-' reads it from stdin; omit it to read $AITHER_PAIR_CODE: argv is visible to every process) |
 | `--inference-url` | str |  |  | Advertise this OpenAI-compatible server (default: probe the usual ports) |
 | `--portal` | str |  |  | Portal base URL (default: pair directly with Identity) |
-| `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
+| `--node-class` | str |  |  | What this device is (default: detected from the hardware) |
 | `--no-autostart` | str |  | `false` | Do not install the per-user heartbeat autostart (python -m adk.node_beat) |
 
 ## `adk patterns`
@@ -1279,7 +1279,7 @@ Sign in, enrol this device and show it in your fleet (--cloud: BYOK provider key
 | `--api-key` | str |  |  | AITHER_API_KEY (headless sign-in) |
 | `--cloud` | str |  | `false` | Bring-your-own provider keys (OpenAI/Anthropic/DeepSeek) instead of enrolling; no device flow, no fleet registration |
 | `--inference-url` | str |  | `auto` | Passed to `adk enroll` (default: auto-probe the local inference ladder) |
-| `--node-class` | str |  | `laptop` | Passed to `adk enroll` (default: laptop) |
+| `--node-class` | str |  |  | Passed to `adk enroll` (default: laptop) |
 
 ## `adk quickstart-local`
 
@@ -1299,7 +1299,7 @@ Remote control: enrol this machine and hold the link so its sessions are reachab
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `--node-class` | str |  | `laptop` | What this device is (default: laptop) |
+| `--node-class` | str |  |  | What this device is (default: detected from the hardware) |
 | `--harness-url` | str |  |  | Local session daemon to advertise (default: http://127.0.0.1:8362) |
 | `--token-ttl-days` | int |  | `30` | Lifetime of the per-node scoped harness token (default: 30) |
 | `--api-key` | str |  |  | Sign in non-interactively before enrolling |
