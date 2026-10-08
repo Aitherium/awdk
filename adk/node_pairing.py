@@ -135,6 +135,15 @@ def cmd_pair(args: Any) -> int:
     # comes from AITHER_PAIR_CODE (the installers do this). A process list shows argv to
     # every user on the machine; popped so a child never inherits a spent credential.
     code = (getattr(args, "code", "") or "").strip()
+    if getattr(args, "join", False):
+        # No code to type: ask to join, the owner approves by number (adk/node_join.py).
+        from adk.devices import enroll_base
+        from adk.node_join import approved_code
+
+        portal_url, confirm_path = enroll_base(), IDENTITY_CONFIRM_PATH
+        code = approved_code(args, portal_url)
+        if not code:
+            return 1
     if code == "-":
         import sys
 

@@ -13939,6 +13939,10 @@ def _register_commands(sub):
     pair_p.add_argument(
         "--no-autostart", action="store_true",
         help="Do not install the per-user heartbeat autostart (python -m adk.node_beat)")
+    pair_p.add_argument(
+        "--join", action="store_true",
+        help="No code: ask to join and approve on your phone by matching a six-digit "
+             "number (not signed in here: shows a code/QR a member approves)")
 
     # adk onboard-remote — add a computer this machine can SSH into (no typing on it)
     from adk.remote_onboard import add_parser as _add_onboard_remote

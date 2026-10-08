@@ -239,6 +239,10 @@ public class WearActivity extends Activity {
     private void signedIn() {
         int at = clear(true);
         button("Talk to Aither", true, v -> talk());
+        // device join (WearNodeLink): the watch becomes a node on the owner's devices
+        WearNodeLink node = new WearNodeLink(this);
+        if (!node.linked()) button("Add this watch to my devices", false, v ->
+                node.show(this, col, api, clear(false), () -> screen, () -> button("Done", true, x -> render())));
         TextView count = line("Checking what's waiting…", 13, Ui.DIM);
         LinearLayout cards = new LinearLayout(this);
         cards.setOrientation(LinearLayout.VERTICAL);
