@@ -60,6 +60,8 @@ final class AppTabs {
         {"learn", "Learn", "Your quests and your class work", "/learn", "learn", "learn"},
         {"sprite", "My Sprite", "Your learning buddy", "/learn/sprite", "sprite", "sprite"},
         {"quests", "Quests", "Quests with your Sprite", "/learn/sprite#quests", "quests", "sprite"},
+        // the agents a grown-up turned on (or "Ask a grown-up"): lib/family/kid_grants.py
+        {"helpers", "My helpers", "Helpers your grown-up turned on", "/learn/agents", "agents", "learn"},
         {"room", "Room", "Your family room", "/hearth#room", "room", "room"},
         {"space", "My Space", "Your own space", "/hearth", "space", "space"},
         {SETTINGS, "Settings", "This phone", "", "gear", SETTINGS},

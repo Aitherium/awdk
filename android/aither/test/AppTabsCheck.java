@@ -69,6 +69,9 @@ public class AppTabsCheck {
         for (String id : new String[] {"agents", "packs", "mediaforge", "shop"}) {
             eq("child grid " + id, ids(AppTabs.apps(true, true, false)).contains(id), false);
         }
+        // a child's helpers: only the agents a grown-up granted (kid lanes), in the Learn tab
+        eq("child grid helpers", ids(AppTabs.apps(true, false, true)).contains("helpers"), true);
+        route(true, "/learn/agents", "tab learn " + AppTabs.ORIGIN + "/learn/agents");
         eq("platform owner", AppTabs.platformOwner(Arrays.asList("owner"), "platform"), true);
         eq("customer owner", AppTabs.platformOwner(Arrays.asList("owner", "admin"), "tnt_acme"), false);
         eq("super admin", AppTabs.platformOwner(Arrays.asList("Super_Admin"), "tnt_acme"), true);
