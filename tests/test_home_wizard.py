@@ -36,13 +36,15 @@ def _detect(gpu_vendor="nvidia", vram_gb=16, cpu_only=False, sdxl=False):
     "detect,expected_ids",
     [
         (_detect(gpu_vendor="nvidia", vram_gb=16),
-         {"comfyui", "sana", "bonsai", "bonsai-browser"}),
+         {"comfyui", "sana", "bonsai"}),
         (_detect(gpu_vendor="nvidia", vram_gb=6, sdxl=False),
-         {"comfyui", "bonsai-browser"}),  # below Sana/Bonsai 8GB floor
+         {"comfyui"}),  # below Sana/Bonsai 8GB floor
         (_detect(gpu_vendor="none", vram_gb=0, cpu_only=True),
-         {"comfyui", "bonsai-browser"}),  # CPU ComfyUI + browser
+         {"comfyui"}),  # CPU ComfyUI
         (_detect(gpu_vendor="apple", vram_gb=0),
-         {"comfyui", "bonsai-browser"}),  # Metal ComfyUI + browser
+         {"comfyui"}),  # Metal ComfyUI
+        (_detect(gpu_vendor="none", vram_gb=0, cpu_only=False),
+         set()),  # nothing runnable here: no option at all, never a phantom one
     ],
 )
 def test_engine_options_from_detect(monkeypatch, detect, expected_ids):
@@ -51,9 +53,21 @@ def test_engine_options_from_detect(monkeypatch, detect, expected_ids):
     opts = image_setup._engine_options_from_detect(detect)
     ids = {o["id"] for o in opts}
     assert ids == expected_ids
-    # The browser option must never require a download.
-    browser = next(o for o in opts if o["id"] == "bonsai-browser")
-    assert browser["requires_download_gb"] == 0.0
+    # Every offered option installs a real engine on this computer.
+    assert all(o["recipe_id"] for o in opts if o["id"] != "comfyui")
+
+
+def test_bonsai_browser_is_not_offered_and_says_why():
+    """No in-browser image engine exists, so the wizard must not offer one; an old saved
+    choice gets a sentence saying it is not available rather than a silent no-op."""
+    from adk.shell import image_setup
+
+    for detect in (_detect(), _detect(gpu_vendor="none", vram_gb=0, cpu_only=True)):
+        ids = {o["id"] for o in image_setup._engine_options_from_detect(detect)}
+        assert "bonsai-browser" not in ids
+    msg = image_setup.UNAVAILABLE_ENGINES["bonsai-browser"]
+    assert "not available" in msg
+    assert "credits" in msg
 
 
 def test_image_studio_status_shape(monkeypatch):
@@ -84,8 +98,6 @@ def test_gui_wizard_headless_run(monkeypatch):
             "engine_options": [
                 {"id": "comfyui", "name": "Full studio", "recipe_id": "cuda-comfyui-24gb",
                  "plain": "...", "requires_download_gb": 14.0},
-                {"id": "bonsai-browser", "name": "In your web browser", "recipe_id": "",
-                 "plain": "...", "requires_download_gb": 0.0},
             ],
             "plain_english": "ready", "errors": [],
         }

@@ -64,6 +64,12 @@ public class AppTabsCheck {
         // the Home grid per phone: Media Forge for the platform owner only, no Shop on Play
         eq("member grid", ids(AppTabs.apps(false, false, false)).contains("mediaforge"), false);
         eq("owner grid", ids(AppTabs.apps(false, true, false)).contains("mediaforge"), true);
+        // a customer makes images in Image Studio (credits), offered to members and the owner
+        eq("member image studio", ids(AppTabs.apps(false, false, false)).contains("image-studio"), true);
+        eq("owner image studio", ids(AppTabs.apps(false, true, false)).contains("image-studio"), true);
+        eq("play image studio", ids(AppTabs.apps(false, false, true)).contains("image-studio"), true);
+        eq("child image studio", ids(AppTabs.apps(true, true, false)).contains("image-studio"), false);
+        route(false, "/?app=image-studio", "window https://app.aitherium.com/?app=image-studio");
         eq("play grid", ids(AppTabs.apps(false, true, true)).contains("shop"), false);
         eq("direct grid", ids(AppTabs.apps(false, false, false)).contains("shop"), true);
         for (String id : new String[] {"agents", "packs", "mediaforge", "shop"}) {

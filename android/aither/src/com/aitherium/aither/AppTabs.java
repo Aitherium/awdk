@@ -49,6 +49,7 @@ final class AppTabs {
         {"avatar", "Avatar", "Your avatars, and the one your Sprite wears", "/?app=avatar", "avatar", ""},
         {"agents", "My agents", "Create, command and connect your agents", "/?app=agent-life", "agents", ""},
         {"packs", "Packs & skills", "Add abilities to your agents", "/workspace/agents?tab=packs", "packs", ""},
+        {"image-studio", "Image Studio", "Make and edit images with your credits", "/?app=image-studio", "mediaforge", ""},
         {"mediaforge", "Media Forge", "Make images, video and voice", "/?app=mediaforge", "mediaforge", ""},
         {"shop", "Shop", "Packs, plans and devices", "/shop", "shop", ""},
         {"desktop", "AitherOS", "The full desktop with every app", "/?shell=aither-desktop", "desktop", ""},
@@ -68,7 +69,8 @@ final class AppTabs {
     };
 
     /** Grown-up apps only the platform owner is offered (the web gate refuses everyone
-     *  else too: app-gating.ts rbac system:admin). */
+     *  else too: app-gating.ts rbac system:admin). A customer makes images in Image Studio
+     *  (paid with account credits), never Media Forge, which frames an owner-only host. */
     static final String[] OWNER_APPS = {"mediaforge"};
     /** Apps the Play build leaves out: Shop checks out through Stripe, which Play forbids
      *  for digital goods (Purchases). */

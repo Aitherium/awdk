@@ -47,8 +47,8 @@ def _engine():
 def _engine_options_from_detect(detect: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Translate the hardware detection into the image engines this computer can run.
 
-    Each option is {id, name, plain, recipe_id, requires_download_gb}. The
-    in-browser Bonsai option is always present — it needs nothing installed.
+    Each option is {id, name, plain, recipe_id, requires_download_gb}, and every option
+    installs something on THIS computer. The list may be empty.
     """
     sysinfo = detect.get("system_info", {})
     gpu_vendor = sysinfo.get("gpu_vendor", "none")
@@ -89,16 +89,21 @@ def _engine_options_from_detect(detect: Dict[str, Any]) -> List[Dict[str, Any]]:
             "requires_download_gb": 4.3,
         })
 
-    # Bonsai in the browser — nothing to install, works on any modern computer.
-    options.append({
-        "id": "bonsai-browser",
-        "name": "In your web browser",
-        "plain": "Make images right on aitherium.com — no download, works on most computers.",
-        "recipe_id": "",
-        "requires_download_gb": 0.0,
-    })
-
+    # No in-browser option: image generation in the browser is not built (the browser
+    # runtime has text kernels only), so offering it promised a picture nothing would make.
+    # Hosted images are the Image Studio app on app.aitherium.com, paid with account credits;
+    # that is not something this computer sets up, so it is not an engine option here.
     return options
+
+
+#: Engine ids that were once offered and are not available. A caller holding one of these
+#: (an old saved choice) gets this sentence instead of a silent no-op.
+UNAVAILABLE_ENGINES: Dict[str, str] = {
+    "bonsai-browser": (
+        "Making images inside your web browser is not available yet. Use Image Studio on "
+        "app.aitherium.com (paid with account credits) or set up an engine on this computer."
+    ),
+}
 
 
 def image_studio_status() -> Dict[str, Any]:

@@ -433,14 +433,12 @@ class _WizardApp:
         f = self.frames["image"]
         opts = self.state.hardware.get("engine_options", [])
         if not opts:
-            # Nothing runnable locally — the browser option is always the fallback.
-            opts = [{
-                "id": "bonsai-browser",
-                "name": "In your web browser",
-                "plain": "Make images right on aitherium.com — no download needed.",
-                "recipe_id": "",
-                "requires_download_gb": 0.0,
-            }]
+            # Nothing runnable locally. There is no in-browser engine to fall back to; say
+            # where images ARE made instead of offering a button that makes none.
+            self.img_status.config(
+                text="This computer can't run an image studio. You can make images in "
+                     "Image Studio on app.aitherium.com, paid with account credits.",
+            )
         for opt in opts:
             label = opt.get("name", opt.get("id", "?")).replace(" (Sana)", "")
             self._button(
@@ -452,14 +450,16 @@ class _WizardApp:
     def _image_pick(self, opt: Dict[str, Any]) -> None:
         oid = opt.get("id", "")
         recipe = opt.get("recipe_id", "")
-        if oid == "bonsai-browser" or not recipe:
-            # Zero-install path: nothing to run; carry a friendly note.
+        if not recipe:
+            # No recipe to install (including a retired engine id): nothing to run here.
+            from adk.shell.image_setup import UNAVAILABLE_ENGINES
             self.state.image = {
                 "status": "deferred",
-                "plain_english": "You chose in-browser Bonsai — nothing to install.",
-                "notes": ["On aitherium.com, Bonsai runs right in your browser."],
+                "plain_english": UNAVAILABLE_ENGINES.get(
+                    oid, "Nothing to install for that choice."),
+                "notes": [],
             }
-            self.state.steps.append("image_studio_browser")
+            self.state.steps.append("image_studio_deferred")
             self._go(5)
             return
         self.state.image_choice = oid
