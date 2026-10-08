@@ -34,7 +34,7 @@ Built from `v3.8.64` (adk 3.8.64).
 | **[Claude Code Studio](packs/claude-code.md)** | `3.8.64` | [claude-code-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/claude-code-3.8.64.tar.gz) | 5.0 KB | Claude Code — Software Development Agent Brain Pack |
 | **[DGG Research](packs/dgg_research.md)** | `3.8.64` | [dgg_research-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/dgg_research-3.8.64.tar.gz) | 7.2 KB | DGG Research — brain pack |
 | **[GobboPack](packs/gobbonet.md)** | `3.8.64` | [gobbonet-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/gobbonet-3.8.64.tar.gz) | 65.4 KB | GobboNet Companion — an agent harness for a local-first chat client |
-| **[Hermes Architecture Studio](packs/hermes.md)** | `3.8.64` | [hermes-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/hermes-3.8.64.tar.gz) | 4.9 KB | Hermes — Architecture & Reasoning Agent Brain Pack |
+| **[Hermes Architecture Studio](packs/hermes.md)** | `3.8.64` | [hermes-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/hermes-3.8.64.tar.gz) | 4.8 KB | Hermes — Architecture & Reasoning Agent Brain Pack |
 | **[Iris Visual Artisan](packs/iris.md)** | `3.8.64` | [iris-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/iris-3.8.64.tar.gz) | 8.2 KB | Iris — Visual Artisan Brain Pack |
 | **[OpenClaw Research Studio](packs/openclaw.md)** | `3.8.64` | [openclaw-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/openclaw-3.8.64.tar.gz) | 5.1 KB | OpenClaw — Web Research Agent Brain Pack |
 | **[Persona](packs/persona.md)** | `3.8.64` | [persona-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/persona-3.8.64.tar.gz) | 1.5 KB | Persona — an aither-adk agent pack for persona |
@@ -42,22 +42,22 @@ Built from `v3.8.64` (adk 3.8.64).
 ## Contents
 
 - **aither** `3.8.64` — skills  
-  `sha256:3be58f17fa7a44a9…`
+  `sha256:28ab01c11b682dba…`
 - **analyst** `3.8.64` — agent config, skills  
-  `sha256:2df466c548adede8…`
+  `sha256:d5f71e07a72fbc0d…`
 - **bead-space** `3.8.64` — brain pack only  
-  `sha256:50e2b51f83711ea6…`
+  `sha256:47ce62cbc48cd575…`
 - **claude-code** `3.8.64` — agent config, skills  
-  `sha256:e0f8529ad69d3e8c…`
+  `sha256:616a4440c8a0e508…`
 - **dgg_research** `3.8.64` — agent config, skills  
-  `sha256:0d55f14545132b6e…`
+  `sha256:bad859b11f8c8751…`
 - **gobbonet** `3.8.64` — agent config, Python  
-  `sha256:915b1ad773d6cd8e…`
+  `sha256:d42656a6b786444b…`
 - **hermes** `3.8.64` — agent config, skills  
-  `sha256:e9ef933300cb0aa0…`
+  `sha256:f80ed22721ed810a…`
 - **iris** `3.8.64` — skills  
-  `sha256:0aae7ee333868439…`
+  `sha256:67bc49d57157c723…`
 - **openclaw** `3.8.64` — agent config, skills  
-  `sha256:8827f0eb9e5cec75…`
+  `sha256:0786ce2bf7b4847c…`
 - **persona** `3.8.64` — brain pack only  
-  `sha256:26d8a76ad902990e…`
+  `sha256:e83b262a1f17254a…`
