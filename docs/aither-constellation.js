@@ -38,6 +38,7 @@
     { id: "awtoll", label: "awtoll", blurb: "What every tool call costs you in context,..." },
     { id: "awseal", label: "awseal", blurb: "Sign an artifact so a stranger can verify it" },
     { id: "awshare", label: "awshare", blurb: "Publish an artifact and fetch it back verified" },
+    { id: "awsuite", label: "awsuite", blurb: "Your Google Workspace as agent tools, and no..." },
     { id: "awdit", label: "awdit", blurb: "An append-only audit trail whose gaps are..." },
     { id: "awbac", label: "awbac", blurb: "Role-based access control that fails closed..." },
     { id: "awiam", label: "awiam", blurb: "Who is this caller? A directory and session..." },
