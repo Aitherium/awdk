@@ -222,8 +222,22 @@ final class Updater {
             sp.setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
         }
         // Become the update owner, so later updates can be silent even after an adb install.
-        if (android.os.Build.VERSION.SDK_INT >= 34) sp.setRequestUpdateOwnership(true);
-        int id = pi.createSession(sp);
+        // Asking needs ENFORCE_UPDATE_OWNERSHIP (a normal permission, declared in the
+        // manifest since 0.3.16). Without it createSession throws SecurityException, which
+        // broke BOTH the quiet and the tap install from 0.3.13 to 0.3.15 (measured on the
+        // kids' phones: "verified and ready to install", no installer session ever made).
+        // Ownership is a bonus, so a refusal falls back to a plain session.
+        boolean own = android.os.Build.VERSION.SDK_INT >= 34 && ctx.checkSelfPermission(
+                "android.permission.ENFORCE_UPDATE_OWNERSHIP") == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        if (own) sp.setRequestUpdateOwnership(true);
+        int id;
+        try {
+            id = pi.createSession(sp);
+        } catch (SecurityException e) {
+            if (!own) throw e;
+            sp.setRequestUpdateOwnership(false);
+            id = pi.createSession(sp);
+        }
         try (android.content.pm.PackageInstaller.Session s = pi.openSession(id);
              InputStream in = new FileInputStream(apk);
              java.io.OutputStream o = s.openWrite("aither.apk", 0, apk.length())) {

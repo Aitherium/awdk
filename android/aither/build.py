@@ -44,6 +44,7 @@ PAGE_ALIGN = 16384
 STORE_DROPS = (
     "android.permission.REQUEST_INSTALL_PACKAGES",
     "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION",
+    "android.permission.ENFORCE_UPDATE_OWNERSHIP",
     "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
 )
 
