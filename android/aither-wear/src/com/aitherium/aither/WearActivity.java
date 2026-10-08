@@ -588,7 +588,10 @@ public class WearActivity extends Activity {
     private void listenAither(int at, TextView heard) {
         heard.setText("Listening…");
         WearMic mic = new WearMic();
-        TextView done = button("Done", true, v -> mic.stop());
+        // Talk ends by itself on trailing quiet (WearMicRules); this is only a fallback
+        TextView done = button("Tap to send now", false, v -> mic.stop());
+        done.setTextSize(12);
+        done.setMinHeight(Ui.dp(this, 40));
         button("Type instead", false, v -> {
             mic.stop();
             int now = clear(false);
@@ -605,6 +608,12 @@ public class WearActivity extends Activity {
         lp.gravity = Gravity.CENTER_HORIZONTAL;
         lp.topMargin = Ui.dp(this, 6);
         col.addView(dot, 2, lp);
+        // touching the pulse and letting go sends at once (hold to talk)
+        dot.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() == android.view.MotionEvent.ACTION_UP) mic.stop();
+            return true;
+        });
+        dot.setContentDescription("Listening. Let go to send.");
         long[] endAt = {0};
         work(() -> {
             String[] err = {null};
@@ -620,6 +629,11 @@ public class WearActivity extends Activity {
             long now = SystemClock.elapsedRealtime();
             if (endAt[0] > 0) Log.i(LAT, "recognized ms=" + (now - endAt[0]) + " after end of speech (aither stt)");
             onUi(at, () -> {
+                if (q.isEmpty() && err[0] == null && !mic.heardSpeech) {
+                    Log.i(LAT, "no speech: closed quietly");
+                    render(); // nobody spoke: back home, no error
+                    return;
+                }
                 if (q.isEmpty()) {
                     heard.setText(err[0] == null ? "I didn't catch that. Tap Try again." : err[0]);
                     done.setVisibility(View.VISIBLE);

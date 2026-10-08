@@ -4,10 +4,10 @@ package com.aitherium.aither;
  * When the watch stops recording, and the WAV it sends: plain Java (test/WearMicCheck.java).
  */
 final class WearMicRules {
-    /** Quiet after speech that ends the question. */
-    static final int TRAILING_MS = 900;
+    /** Quiet after speech that ends the question (no Done tap: owner, 2026-10-08). */
+    static final int TRAILING_MS = 800;
     /** The longest question. */
-    static final int MAX_MS = 12000;
+    static final int MAX_MS = 30000;
     /** Giving up when nobody speaks. */
     static final int NO_SPEECH_MS = 5000;
     /** Under this, a recording is not worth sending. */
@@ -24,8 +24,11 @@ final class WearMicRules {
         /** One frame of {@code ms}; true when recording should stop. */
         boolean frame(float rms, int ms) {
             elapsed += ms;
-            if (floor < 0) floor = rms;
-            boolean loud = rms > Math.max(500f, floor * 3f);
+            // the floor is seeded low: someone who starts talking at once must not teach it
+            // their own voice as "quiet" (then nothing is ever loud and Talk never ends)
+            if (floor < 0) floor = Math.min(rms, 800f);
+            else if (elapsed <= 200) floor = Math.min(floor, rms);
+            boolean loud = rms > Math.max(450f, floor * 2.5f);
             if (!loud) floor = floor * 0.95f + rms * 0.05f;
             if (loud) {
                 voiced += ms;

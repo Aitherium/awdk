@@ -30,8 +30,12 @@ final class WearMic {
     }
 
     private volatile boolean stopped;
+    /** The last recording heard speech (false: nobody spoke, and the caller just closes). */
+    volatile boolean heardSpeech;
+    /** Stopped by a tap (send now) rather than by the endpoint. */
+    private volatile boolean tapped;
 
-    void stop() { stopped = true; }
+    void stop() { tapped = true; stopped = true; }
 
     /**
      * Record and transcribe (blocking; call off the UI thread). Returns the words, or "" with
@@ -39,8 +43,11 @@ final class WearMic {
      */
     String hear(WearApi api, Listener l, String[] err) {
         stopped = false;
+        tapped = false;
+        heardSpeech = false;
         byte[] pcm = record(l, err);
         if (pcm == null) return "";
+        if (!heardSpeech && !tapped) return ""; // nobody spoke within NO_SPEECH_MS: close quietly
         if (!WearMicRules.worthSending(pcm.length, RATE)) {
             err[0] = "I didn't hear anything. Tap Try again.";
             return "";
@@ -101,6 +108,7 @@ final class WearMic {
                 l.level(Math.min(1f, rms / 6000f));
                 if (ep.frame(rms, n * 1000 / RATE)) break;
             }
+            heardSpeech = ep.heardSpeech();
         } finally {
             try { rec.stop(); } catch (Exception e) { /* not started */ }
             rec.release();

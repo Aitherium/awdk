@@ -53,7 +53,15 @@ public class WearMicCheck {
         eq("click", click.heardSpeech(), false);
 
         // never longer than MAX_MS
-        eq("cap", run(new WearMicRules.Endpoint(), seq(100, 100, 4000, 20000)), WearMicRules.MAX_MS);
+        eq("cap", run(new WearMicRules.Endpoint(), seq(100, 100, 4000, 40000)), WearMicRules.MAX_MS);
+
+        // talking from the very first frame still ends by itself (the floor is not the voice)
+        t = run(new WearMicRules.Endpoint(), seq(3000, 1500, 150, 3000));
+        eq("talk at once ends", t, 1500 + WearMicRules.TRAILING_MS);
+
+        // a noisy room (floor ~900) still hears speech and its end
+        t = run(new WearMicRules.Endpoint(), seq(900, 400, 4000, 1200, 900, 3000));
+        eq("noisy room ends", t, 400 + 1200 + WearMicRules.TRAILING_MS);
 
         // the WAV header
         byte[] w = WearMicRules.wav(new byte[3200], 16000);
