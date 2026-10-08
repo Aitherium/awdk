@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Hand-written v1 index for Android 16's first AppSearch indexer (what the androidx
+     KSP processor writes as <name>-v1.xml). Ids match GeminiFunctions.ALL. -->
+<appfunctions>
+    <appfunction>
+        <function_id>com.aitherium.aither.AitherFunctions#askAither</function_id>
+        <enabled_by_default>true</enabled_by_default>
+    </appfunction>
+    <appfunction>
+        <function_id>com.aitherium.aither.AitherFunctions#openApp</function_id>
+        <enabled_by_default>true</enabled_by_default>
+    </appfunction>
+    <appfunction>
+        <function_id>com.aitherium.aither.AitherFunctions#pendingApprovals</function_id>
+        <enabled_by_default>true</enabled_by_default>
+    </appfunction>
+    <appfunction>
+        <function_id>com.aitherium.aither.AitherFunctions#askHearth</function_id>
+        <enabled_by_default>true</enabled_by_default>
+    </appfunction>
+</appfunctions>

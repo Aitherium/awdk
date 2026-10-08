@@ -10,9 +10,6 @@ import android.provider.Settings;
 import android.widget.Toast;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 
 /**
  * The one tap from the update notification: hands the verified APK to Android's installer,
@@ -64,19 +61,10 @@ public class UpdateActivity extends Activity {
             return;
         }
         try {
-            PackageInstaller pi = getPackageManager().getPackageInstaller();
-            PackageInstaller.SessionParams sp =
-                    new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
-            sp.setAppPackageName(getPackageName());
-            int id = pi.createSession(sp);
-            try (PackageInstaller.Session s = pi.openSession(id)) {
-                try (InputStream in = new FileInputStream(apk);
-                     OutputStream o = s.openWrite("aither.apk", 0, apk.length())) {
-                    byte[] buf = new byte[1 << 16];
-                    int n;
-                    while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
-                    s.fsync(o);
-                }
+            // Same session as the quiet path: this tap also makes Aither the update owner,
+            // so the next update can install without one.
+            int id = Updater.writeSession(this, apk, true);
+            try (PackageInstaller.Session s = getPackageManager().getPackageInstaller().openSession(id)) {
                 Intent back = new Intent(this, UpdateActivity.class).setAction(STATUS);
                 PendingIntent cb = PendingIntent.getActivity(this, id, back,
                         PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);

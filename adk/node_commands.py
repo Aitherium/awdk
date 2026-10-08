@@ -52,7 +52,15 @@ VERBS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     # Set (or, with '' / 'auto', clear) the inference URL this device advertises in
     # its heartbeat. AITHER_NODE_INFERENCE_URL on the host still wins.
     "advertise-inference": {},
+    # Install ONE exact release of ONE allow-listed companion package (COMPONENTS) into
+    # this interpreter -- the same fixed argv as `upgrade`, a different package name.
+    # Never restarts anything itself: the owner follows with `restart-lane` for the
+    # component's unit, so a bad release never takes the heartbeat down with it.
+    "upgrade-component": {},
 }
+#: Companion packages `upgrade-component` may install. Closed: a package not named
+#: here is refused here and in identity_node_commands.UPGRADE_COMPONENTS.
+COMPONENTS: Tuple[str, ...] = ("awnode",)
 #: verb -> {argument: check}. An argument whose allowed values live on this host.
 _HOST_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "restart-lane": {"unit": lambda v: v in _restartable()},
@@ -64,6 +72,8 @@ VERSION_RE = re.compile(r"\A[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}\Z")
 _FORM_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "upgrade": {"version": lambda v: bool(VERSION_RE.match(v))},
     "advertise-inference": {"url": lambda v: _valid_inference_arg(v)},
+    "upgrade-component": {"component": lambda v: v in COMPONENTS,
+                          "version": lambda v: bool(VERSION_RE.match(v))},
 }
 UPGRADE_TIMEOUT_S = 600
 #: Seconds between the upgrade result and the restart, so the result is reported first.
@@ -299,11 +309,11 @@ def _schedule_restart(unit: str) -> Dict[str, Any]:
             "in_s": RESTART_DELAY_S, "detail": (proc.stderr or "").strip()[-200:]}
 
 
-def _installed_awdk_version() -> str:
-    """The awdk version a FRESH interpreter sees (this one has the old code imported)."""
+def _installed_awdk_version(package: str = "awdk") -> str:
+    """The version of ``package`` a FRESH interpreter sees (this one has the old code imported)."""
     import subprocess
 
-    code = "import importlib.metadata as m; print(m.version('awdk'))"
+    code = f"import importlib.metadata as m; print(m.version({package!r}))"
     try:
         proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=60, check=False)
@@ -325,7 +335,7 @@ def _uv_binary() -> Optional[str]:
     return None
 
 
-def _installer_argv(version: str) -> Optional[List[str]]:
+def _installer_argv(version: str, package: str = "awdk") -> Optional[List[str]]:
     """The fixed argv that installs ``awdk==<version>`` into THIS interpreter.
 
     pip when this interpreter has it; otherwise ``uv pip install --python <this>``.
@@ -334,7 +344,7 @@ def _installer_argv(version: str) -> Optional[List[str]]:
     """
     import importlib.util
 
-    spec = f"awdk=={version}"
+    spec = f"{package}=={version}"
     if importlib.util.find_spec("pip") is not None:
         return [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q",
                 spec]
@@ -403,6 +413,39 @@ def _advertise_inference(args: Dict[str, str]) -> Dict[str, Any]:
                      if env else "advertised from the next heartbeat")}
 
 
+def _upgrade_component(args: Dict[str, str]) -> Dict[str, Any]:
+    """Install ``<component>==<version>`` (component from COMPONENTS) into THIS interpreter.
+
+    Same fixed argv as :func:`_upgrade`; both arguments are checked again here. It
+    restarts nothing: the component's own unit is restarted by a separate
+    ``restart-lane`` the owner sends after reading this result.
+    """
+    import subprocess
+
+    component = str(args.get("component") or "")
+    version = str(args.get("version") or "")
+    if component not in COMPONENTS:
+        return {"ok": False, "error": f"component must be one of {', '.join(COMPONENTS)}"}
+    if not VERSION_RE.match(version):
+        return {"ok": False, "error": "version must be an exact release like 1.2.3"}
+    before = _installed_awdk_version(component) or "absent"
+    argv = _installer_argv(version, component)
+    if argv is None:
+        return {"ok": False, "component": component, "from": before, "to": version,
+                "error": "no installer: this interpreter has no pip and no uv was found"}
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=UPGRADE_TIMEOUT_S, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "component": component, "from": before, "to": version,
+                "error": type(exc).__name__}
+    installed = _installed_awdk_version(component) if proc.returncode == 0 else ""
+    return {"ok": proc.returncode == 0 and installed == version, "component": component,
+            "from": before, "to": version, "installed": installed, "rc": proc.returncode,
+            "stderr": (proc.stderr or "")[-400:],
+            "restart": "send restart-lane for the component's unit to run the new code"}
+
+
 _HANDLERS: Dict[str, Callable[[Dict[str, str]], Any]] = {
     "collect-diagnostics": _diagnostics,
     "update": _update,
@@ -411,6 +454,7 @@ _HANDLERS: Dict[str, Callable[[Dict[str, str]], Any]] = {
     "restart-lane": _restart_lane,
     "upgrade": _upgrade,
     "advertise-inference": _advertise_inference,
+    "upgrade-component": _upgrade_component,
 }
 
 

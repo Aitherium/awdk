@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Aither on Wear OS: a standalone watch app (its own Wi-Fi/LTE, no phone, no Play Services).
+     Same package and release certificate as the phone app, the pairing Wear OS expects of a
+     phone/watch pair. Built by ../aither/build.py with the wear flag. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.aitherium.aither"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <!-- Wear OS 3 (API 30) and up; Pixel Watch 4 ships Wear OS 6 (API 36) -->
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36" />
+
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Talk to Aither: asked for on the first Talk; heard by the on-device recognizer only -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="Aither"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.DeviceDefault">
+
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
+
+        <activity
+            android:name=".WearActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

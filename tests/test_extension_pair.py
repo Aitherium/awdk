@@ -123,6 +123,28 @@ def test_the_token_opens_the_local_surface_and_nothing_else(daemon):
     assert daemon.post("/x-session/import", json={}, headers=auth).status_code == 401
 
 
+def test_the_c1_overlay_routes_open_for_a_paired_token(daemon):
+    """Contract C1: the overlay sends GET /v1/models, POST /v1/chat/completions
+    and POST /mcp to the adk base with the paired bearer. A 401 on any of them
+    reads as "try the next port", so each must clear the auth gate here or the
+    paired daemon is skipped for awnode without a word."""
+    from adk.mcp_server import MCPServer
+
+    MCPServer(server_name="c1-test").mount(daemon.app)
+    tok = _pair(daemon)
+    hdrs = {"Authorization": f"Bearer {tok}", "origin": PINNED}
+    assert daemon.get("/v1/models").status_code == 401           # no token, still shut
+    assert daemon.get("/v1/models", headers=hdrs).status_code == 200
+    # Past the gate the route answers its OWN validation (an empty body), not 401.
+    assert daemon.post("/v1/chat/completions", json={}, headers=hdrs).status_code != 401
+    rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    assert daemon.post("/mcp", json=rpc, headers=hdrs).status_code == 200
+    # /health is a skip-auth path; a route outside the scope stays refused.
+    assert daemon.get("/health", headers=hdrs).status_code == 200
+    assert daemon.post("/cli/execute", json={"command": "status"},
+                       headers=hdrs).status_code == 401
+
+
 def test_an_mcp_session_works_even_though_the_mcp_key_is_set(monkeypatch, tmp_path):
     from adk.mcp_server import MCPServer
 
@@ -241,6 +263,8 @@ def test_scope_matching_fails_closed():
     assert extension_pair.path_allowed("/agents", "GET")
     assert extension_pair.path_allowed("/agents/other/sessions", "GET")
     assert extension_pair.path_allowed("/mcp", "POST")
+    assert extension_pair.path_allowed("/v1/models", "GET")
+    assert not extension_pair.path_allowed("/v1/models", "POST")
     assert not extension_pair.path_allowed("/agents/x/chat", "POST")   # GET-only entry
     assert not extension_pair.path_allowed("/cli/execute", "POST")
     assert not extension_pair.path_allowed("/chat/stream", None)
@@ -261,7 +285,8 @@ def test_the_browser_and_extension_token_families_do_not_cross_scopes(daemon):
     # The extension token opens no browser surface, even from a first-party page origin.
     assert daemon.get("/kvholder/status",
                       headers={**ext, "Origin": "https://desktop.aitherium.com"}).status_code == 401
-    assert daemon.get("/v1/models", headers=ext).status_code == 401
+    # (/v1/models is open to BOTH families since contract C1: the browser
+    # ``node`` scope and the overlay's model probe read the same listing.)
     # A page token opens no extension surface -- not the agent loop, not the tools.
     page = browser_grant.issue_token("https://desktop.aitherium.com", "kvholder")[0]
     ph = {"Authorization": f"Bearer {page}", "Origin": "https://desktop.aitherium.com"}

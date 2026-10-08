@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Hand-written v2 index (the androidx KSP processor's output format, checked against its
+     golden test data, androidx-main 2026-10). Ids match GeminiFunctions.ALL; types: 8 = string. -->
+<appfunctions>
+    <appfunction>
+        <id>com.aitherium.aither.AitherFunctions#askAither</id>
+        <enabledByDefault>true</enabledByDefault>
+        <description>Open Ask Aither, the owner's on-device assistant, and ask it a question. It answers on the phone with the phone's own model.</description>
+        <parameters>
+            <dataTypeMetadata>
+                <id>unused</id>
+                <isNullable>false</isNullable>
+                <type>8</type>
+            </dataTypeMetadata>
+            <id>unused</id>
+            <isRequired>true</isRequired>
+            <name>prompt</name>
+            <description>The question to ask Aither.</description>
+        </parameters>
+        <response>
+            <id>unused</id>
+            <valueType>
+                <id>unused</id>
+                <isNullable>false</isNullable>
+                <type>8</type>
+            </valueType>
+            <description>What Aither did.</description>
+        </response>
+        <functionId>com.aitherium.aither.AitherFunctions#askAither</functionId>
+    </appfunction>
+    <appfunction>
+        <id>com.aitherium.aither.AitherFunctions#openApp</id>
+        <enabledByDefault>true</enabledByDefault>
+        <description>Open an Aither app on this phone: learn (Learn), family (Family) or hearth (Hearth, the home agent).</description>
+        <parameters>
+            <dataTypeMetadata>
+                <id>unused</id>
+                <isNullable>false</isNullable>
+                <type>8</type>
+            </dataTypeMetadata>
+            <id>unused</id>
+            <isRequired>true</isRequired>
+            <name>app</name>
+            <description>Which app: learn, family or hearth.</description>
+        </parameters>
+        <response>
+            <id>unused</id>
+            <valueType>
+                <id>unused</id>
+                <isNullable>false</isNullable>
+                <type>8</type>
+            </valueType>
+            <description>What Aither opened.</description>
+        </response>
+        <functionId>com.aitherium.aither.AitherFunctions#openApp</functionId>
+    </appfunction>
+    <appfunction>
+        <id>com.aitherium.aither.AitherFunctions#pendingApprovals</id>
+        <enabledByDefault>true</enabledByDefault>
+        <description>How many household requests are waiting for this account's approval, as of Aither's last check. Read-only.</description>
+        <response>
+            <id>unused</id>
+            <valueType>
+                <id>unused</id>
+                <isNullable>false</isNullable>
+                <type>8</type>
+            </valueType>
+            <description>How many approvals are waiting.</description>
+        </response>
+        <functionId>com.aitherium.aither.AitherFunctions#pendingApprovals</functionId>
+    </appfunction>
+    <appfunction>
+        <id>com.aitherium.aither.AitherFunctions#askHearth</id>
+        <enabledByDefault>true</enabledByDefault>
+        <description>Ask Hearth, the home agent, to do something: opens Hearth with the request written in its box for the owner to send. Anything that leaves the home waits for an approval.</description>
+        <parameters>
+            <dataTypeMetadata>
+                <id>unused</id>
+                <isNullable>false</isNullable>
+                <type>8</type>
+            </dataTypeMetadata>
+            <id>unused</id>
+            <isRequired>true</isRequired>
+            <name>request</name>
+            <description>What to ask Hearth to do, in the owner's words.</description>
+        </parameters>
+        <response>
+            <id>unused</id>
+            <valueType>
+                <id>unused</id>
+                <isNullable>false</isNullable>
+                <type>8</type>
+            </valueType>
+            <description>What Aither opened.</description>
+        </response>
+        <functionId>com.aitherium.aither.AitherFunctions#askHearth</functionId>
+    </appfunction>
+</appfunctions>

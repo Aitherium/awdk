@@ -98,6 +98,9 @@ def _isolate_env(monkeypatch, tmp_path):
     # app must never write ~/.aither/daemon-token into the developer's real home.
     monkeypatch.setenv("AITHER_LOCAL_TOKEN_FILE", str(tmp_path / ".aither" / "daemon-token"))
     monkeypatch.delenv("AITHER_LOCAL_AUTH", raising=False)
+    # Enrollment records the machine id and the heartbeat claims the device lease in
+    # ~/.aither/device.json (adk.device_identity); a test must not write the real one.
+    monkeypatch.setenv("AITHER_DEVICE_FILE", str(tmp_path / ".aither" / "device.json"))
 
     # Isolate the operator-blind companion vault: tests must NOT read the dev
     # machine's ~/.aither persona, which would swap every agent's identity into

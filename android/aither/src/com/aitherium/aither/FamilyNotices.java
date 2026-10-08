@@ -128,5 +128,41 @@ final class FamilyNotices {
                 }
             });
         }
+
+        /** True while this phone is on duty for approvals (DutyService). */
+        @JavascriptInterface
+        public boolean approvalsOnDuty() {
+            return new Config(act).approvalsOnDuty();
+        }
+
+        /** On duty: approval cards reach this phone in seconds (a quiet ongoing notification
+         *  shows it). Not offered on a child's phone. Returns the resulting state. */
+        @JavascriptInterface
+        public boolean setApprovalsOnDuty(boolean on) {
+            Config cfg = new Config(act);
+            if (on && "child".equals(cfg.profileKind())) return false;
+            cfg.set("approvals_duty", on);
+            act.runOnUiThread(() -> DutyService.sync(act));
+            return on;
+        }
+
+        /** Android's share sheet for a family invite (the WebView has no navigator.share).
+         *  Only an aitherium.com / app.aitherium.com https link is shared, as "<text> <url>"
+         *  built here (InviteShare); false when the link is refused. */
+        @JavascriptInterface
+        public boolean share(String title, String text, String url) {
+            String msg = InviteShare.message(text, url);
+            if (msg == null) return false;
+            String subject = InviteShare.clip(title, InviteShare.MAX_TITLE);
+            act.runOnUiThread(() -> {
+                Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT, msg);
+                if (!subject.isEmpty()) send.putExtra(Intent.EXTRA_SUBJECT, subject);
+                try {
+                    act.startActivity(Intent.createChooser(send, subject.isEmpty() ? "Share invite" : subject));
+                } catch (RuntimeException e) { /* no app can share text */ }
+            });
+            return true;
+        }
     }
 }

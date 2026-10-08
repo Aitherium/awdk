@@ -862,6 +862,11 @@ async def enroll_on_boot(
         }
 
     if rich.get("enrolled"):
+        # Identity may answer with the id another facet of this computer already
+        # registered (one device, many facets); that id is the device from here on.
+        node_id = str(rich.get("node_id") or node_id)
+        if link is not None and getattr(link, "node_id", node_id) != node_id:
+            link.node_id = node_id
         # Self-service a node-scoped gateway key using the capability token
         # /v1/nodes/register just minted, instead of persisting the enrolling
         # USER's own access token as this node's long-lived credential (the

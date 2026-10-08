@@ -509,6 +509,33 @@ def _record_beat(status: Optional[int], result: str, error: str = "") -> None:
             log.warning("Node heartbeat %s (status=%s): %s", result, status, error[:200])
 
 
+def _holds_lease(facet: str, interval: float) -> bool:
+    """One heartbeat per device: True when this process holds the device lease."""
+    try:
+        from adk.device_identity import claim_lease
+        return claim_lease(facet, interval)
+    except Exception as e:  # noqa: BLE001 -- no lease machinery: beat as before
+        log.debug("device lease unavailable: %s", e)
+        return True
+
+
+def _release_lease(facet: str) -> None:
+    try:
+        from adk.device_identity import release_lease
+        release_lease(facet)
+    except Exception as e:  # noqa: BLE001
+        log.debug("device lease release failed: %s", e)
+
+
+def _record_standby() -> None:
+    """Another program on this computer beats for the device: nothing was sent,
+    and that is not a failure."""
+    st = _heartbeat_state
+    st["last_attempt_at"] = time.time()
+    st["last_result"] = "standby"
+    st["last_error"] = ""
+
+
 def heartbeat_status() -> Dict[str, Any]:
     """The node heartbeat's state, shaped for ``/health``.
 
@@ -658,6 +685,7 @@ def resume_heartbeat(
         return _skip("not an identity registration")
     if not token:
         return _skip("no sign-in on this device")
+    fallback = (device_token if node_auth.get("enrolled_via") == "pairing-code" else "")
     started = start_heartbeat(
         str(node_auth.get("enroll_base") or default_base_url),
         token,
@@ -667,6 +695,7 @@ def resume_heartbeat(
         node_class=node_auth.get("node_class") or "laptop",
         token_provider=token_provider,
         beat_immediately=True,
+        **({"device_fallback_token": fallback} if fallback else {}),
     )
     if not started:
         return {"started": False, "reason": "no event loop", "node_id": node_id}
@@ -730,6 +759,8 @@ async def heartbeat_loop(
     token_provider: Optional[Callable[[], str]] = None,
     beat_immediately: bool = False,
     device: bool = False,
+    facet: str = "daemon",
+    device_fallback_token: str = "",
 ) -> None:
     """Background heartbeat — POST /v1/nodes/heartbeat every ``interval`` seconds.
 
@@ -758,6 +789,12 @@ async def heartbeat_loop(
         device: ``token`` is the DEVICE's capability token (a machine paired
             with a code, no person signed in): beat and report on
             ``/v1/nodes/device/*``, and never try to re-register with it.
+        facet: Which program on this computer is beating (``daemon`` for adk and
+            node_beat). Only the facet holding the device lease in
+            ``~/.aither/device.json`` sends anything; the others stand by.
+        device_fallback_token: The device's own capability token (a pairing-code
+            registration). When a person's sign-in beat answers 401, the loop
+            switches to beating as the device instead of failing forever.
     """
     import httpx
 
@@ -787,9 +824,11 @@ async def heartbeat_loop(
             inference_url=inference_url, node_class=node_class, max_beats=max_beats,
             reach_provider=reach_provider, harness_provider=harness_provider,
             token_provider=token_provider, beat_immediately=beat_immediately,
-            device=device, renew=_renew,
+            device=device, renew=_renew, facet=facet,
+            device_fallback_token=device_fallback_token,
         )
     finally:
+        _release_lease(facet)
         await holder["client"].aclose()
 
 
@@ -809,6 +848,8 @@ async def _heartbeat_beats(
     beat_immediately: bool = False,
     device: bool = False,
     renew: Optional[Callable[[], Awaitable[Any]]] = None,
+    facet: str = "daemon",
+    device_fallback_token: str = "",
 ) -> None:
     """The beat loop of :func:`heartbeat_loop`, on a caller-owned client. ``renew``
     swaps in a fresh client after a refused or failed beat."""
@@ -822,6 +863,9 @@ async def _heartbeat_beats(
                 log.info("Heartbeat loop cancelled")
                 break
         beats += 1
+        if not _holds_lease(facet, interval):
+            _record_standby()
+            continue
         try:
             if token_provider is not None:
                 try:
@@ -851,6 +895,8 @@ async def _heartbeat_beats(
                 # Identity on the next beat, not only on re-enrollment.
                 "capabilities": reg.get("capabilities") or [],
                 "capability_detail": reg.get("capability_detail") or {},
+                # The lease holder: Identity refreshes this facet's last_seen.
+                "facet": facet,
             }
             if reach_provider is not None:
                 try:
@@ -896,6 +942,16 @@ async def _heartbeat_beats(
                                                   device=device)
             else:
                 _record_beat(status, "refused", f"heartbeat answered HTTP {status}")
+                if status == 401 and not device and device_fallback_token:
+                    # A stale person sign-in on a code-paired machine (measured
+                    # 2026-10-07 on the optiplex: a July auth.json shadowed the
+                    # device token and every beat answered 401). The device can
+                    # always beat as itself; switch once and keep going.
+                    log.warning("Sign-in heartbeat refused (401); beating as the paired device")
+                    device = True
+                    beat_path = "/v1/nodes/device/heartbeat"
+                    token_provider = None
+                    headers = {**headers, "Authorization": f"Bearer {device_fallback_token}"}
                 if renew is not None:
                     client = await renew()
         except asyncio.CancelledError:
@@ -1049,6 +1105,16 @@ async def rich_enroll(
             }
 
         data = resp.json()
+        # One device, many facets: Identity answers with the id this MACHINE already
+        # has (another facet registered it first), which may not be the one we sent.
+        node_id = str(data.get("node_id") or node_id)
+        reg["node_id"] = node_id
+        try:
+            from adk.device_identity import record_facet
+            record_facet(str(reg.get("facet") or "daemon"), node_id,
+                         capabilities=reg.get("capabilities") or [])
+        except Exception as e:  # noqa: BLE001 -- the local record never fails enrollment
+            log.debug("device.json not updated: %s", e)
         workspace = data.get("workspace", {}) or {}
         _save_workspace(workspace)
 

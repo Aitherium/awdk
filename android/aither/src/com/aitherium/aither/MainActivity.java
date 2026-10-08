@@ -40,7 +40,8 @@ public class MainActivity extends Activity implements Shell.Host {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0) {
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
-        shell = new Shell(this, cfg.childDevice(), this);
+        shell = new Shell(this, cfg.childDevice(), cfg.platformOwner(), this);
+        PageTools.attach(shell);
         setContentView(shell.view());
         Edge.fit(shell.view());
         if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -50,13 +51,24 @@ public class MainActivity extends Activity implements Shell.Host {
         }
         HeartbeatJob.schedule(this);
         Shortcuts.apply(this, cfg.childDevice());
+        AitherFunctionService.sync(this, AitherFunctionService.child(cfg));
         if (cfg.llmEnabled()) startForegroundService(new Intent(this, LlmService.class));
         if (cfg.enabled()) startForegroundService(new Intent(this, HolderService.class));
         freshIfAsked();
         String pair = pairUrl();
         if (pair != null) shell.background(pair);
         Uri t = target(getIntent());
+        if (linkDevice(t)) t = null; // the approve sheet opens over the app's home
         shell.open(t == null ? null : t.toString());
+    }
+
+    /** A device-link QR (app.aitherium.com/auth/device?code=, idp.aitherium.com/link) goes
+     *  to the native approve sheet, not the web page. True when it was one. */
+    private boolean linkDevice(Uri u) {
+        String code = u == null ? null : DeviceLink.codeFrom(u.toString());
+        if (code == null) return false;
+        startActivity(new Intent(this, LinkActivity.class).putExtra(LinkActivity.EXTRA_CODE, code));
+        return true;
     }
 
     /** Every WebView in the app (each tab, a window, the pairing hand-off) is made here, so
@@ -77,6 +89,8 @@ public class MainActivity extends Activity implements Shell.Host {
         // window.AitherApp: the page reads and asks for the app's notification permission
         // (it has no web Notification API in here). Only aitherium.com pages load.
         web.addJavascriptInterface(new FamilyNotices.Bridge(this), "AitherApp");
+        // window.AitherMCP: the page's WebMCP tools answer the phone's agent (PageTools)
+        web.addJavascriptInterface(new PageTools.Bridge(), "AitherMCP");
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
@@ -102,14 +116,35 @@ public class MainActivity extends Activity implements Shell.Host {
             @Override
             public void doUpdateVisitedHistory(WebView v, String url, boolean reload) {
                 shell.pageChanged(v); // a single-page app moves history without a page load
+                pageMoved(url); // the sign-in page hands over to the page it came from this way
+            }
+
+            @Override
+            public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
+                PageTools.inject(v, url); // document.modelContext, on aitherium.com pages only
             }
 
             @Override
             public void onPageFinished(WebView v, String url) {
+                PageTools.inject(v, url); // again: onPageStarted can land before the new document
                 shell.pageChanged(v);
                 if (!ours(Uri.parse(url))) return;
                 CookieManager.getInstance().flush();
                 readHousehold(false);
+                pageMoved(url);
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail d) {
+                // Unhandled, Android kills the whole app with the renderer. A page that ran out
+                // of memory (a 3D avatar) gets a fresh WebView in its own tab instead.
+                if (!shell.renderGone(v)) {
+                    if (v.getParent() instanceof android.view.ViewGroup) {
+                        ((android.view.ViewGroup) v.getParent()).removeView(v);
+                    }
+                    v.destroy(); // the pairing hand-off, loaded out of sight
+                }
+                return true;
             }
         });
         return web;
@@ -159,6 +194,7 @@ public class MainActivity extends Activity implements Shell.Host {
                         if (j.has("k") && child != cfg.childDevice()) {
                             cfg.set("child_device", child);
                             Shortcuts.apply(MainActivity.this, child);
+                            AitherFunctionService.sync(MainActivity.this, AitherFunctionService.child(cfg));
                             ticks.post(() -> shell.setChild(child)); // the tabs follow the role
                         }
                         if (!cfg.familyDevice().isEmpty()) askBatteryOnce();
@@ -187,9 +223,64 @@ public class MainActivity extends Activity implements Shell.Host {
         public void run() {
             WebView web = shell.anyWeb();
             if (web != null && ours(Uri.parse(String.valueOf(web.getUrl())))) readHousehold(true);
+            checkSession(false);
             ticks.postDelayed(this, 5000);
         }
     };
+
+    // ---- the session (Session): one sign-in for every tab
+
+    private volatile boolean probing;
+    private long lastProbe;
+    private long lastSignedIn;
+
+    /** A page loaded or moved. While signed out, leaving the sign-in page is the moment a
+     *  sign-in finished: ask now. (With no session cookie a check costs no request.) */
+    private void pageMoved(String url) {
+        if (!ours(Uri.parse(String.valueOf(url)))) return;
+        checkSession(Session.last != Session.State.IN && !AppTabs.isSignIn(url));
+    }
+
+    /** Ask the server whether this phone is signed in: every 2 minutes while it is, every
+     *  15 seconds while it is not or did not answer, and at once when `now`. */
+    private void checkSession(boolean now) {
+        long since = System.currentTimeMillis() - lastProbe;
+        long every = Session.last == Session.State.IN ? 120_000 : 15_000;
+        if (probing || (!now && since < every)) return;
+        probing = true;
+        lastProbe = System.currentTimeMillis();
+        new Thread(() -> {
+            Session.State s = Session.check();
+            probing = false;
+            ticks.post(() -> applySession(s));
+        }, "aither-session").start();
+    }
+
+    /**
+     * What the frame shows for an answer. Signed out: the Sign in bar (Shell). Signed in
+     * after a sign-out or an outage, or with a tab left on the sign-in page: keep the
+     * cookie, close the sign-in window, reload every tab, check in. No answer: nothing
+     * changes; an outage never signs anyone out.
+     */
+    private void applySession(Session.State s) {
+        if (s == Session.State.OUT) shell.signedOut(true);
+        if (s != Session.State.IN) return;
+        shell.signedOut(false);
+        Boolean owner = Session.owner;
+        if (owner != null && owner != cfg.platformOwner()) {
+            cfg.set("platform_owner", owner.booleanValue());
+            shell.setOwner(owner);
+        }
+        long sinceReload = System.currentTimeMillis() - lastSignedIn;
+        // a page that stays on the sign-in page with a good session is reloaded once, not in a loop
+        if (Session.troubled || (shell.onSignIn() && sinceReload > 10 * 60_000)) {
+            Session.troubled = false;
+            lastSignedIn = System.currentTimeMillis();
+            CookieManager.getInstance().flush();
+            shell.signedIn();
+            checkInOnOpen(true, false);
+        }
+    }
 
     /** A link meant for this app: an aitherium.com page, or aither://open?url=<that page>. */
     static Uri target(Intent i) {
@@ -221,7 +312,8 @@ public class MainActivity extends Activity implements Shell.Host {
     @Override
     protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
-        if (target(i) != null) shell.open(target(i).toString()); // into the right tab
+        Uri t = target(i);
+        if (t != null && !linkDevice(t)) shell.open(t.toString()); // into the right tab
     }
 
     @Override
@@ -231,6 +323,18 @@ public class MainActivity extends Activity implements Shell.Host {
 
     private void back() {
         shell.back(); // window -> page history -> tab root -> Home -> exit (AppTabs.back)
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        PageTools.shown(true);
+    }
+
+    @Override
+    protected void onStop() {
+        PageTools.shown(false);
+        super.onStop();
     }
 
     @Override
@@ -245,6 +349,8 @@ public class MainActivity extends Activity implements Shell.Host {
         super.onResume();
         if (freshIfAsked()) shell.reloadAll();
         readHousehold(false); // every open checks in, even on the native Home
+        // after the pages restored their session into the cookie (a cold start writes it late)
+        ticks.postDelayed(() -> checkSession(true), 3000);
         ticks.postDelayed(poll, 5000);
         // Family Shield: Android's one-time VPN prompt, once the guardian turned it on
         ShieldVpnService.askConsent(this, SHIELD_CONSENT);

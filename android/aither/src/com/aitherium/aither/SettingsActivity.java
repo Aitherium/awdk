@@ -20,9 +20,11 @@ import org.json.JSONObject;
 public class SettingsActivity extends Activity {
     private Config cfg;
     private TextView status;
+    private TextView storageStatus;
     private TextView localStatus;
     private TextView nodeStatus;
     private final Handler h = new Handler(Looper.getMainLooper());
+    private int ticks;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -41,6 +43,7 @@ public class SettingsActivity extends Activity {
                 ? "This phone's part of Aither. Your apps are in the bar at the bottom."
                 : "This phone's part of Aither. Your apps and your account are in the bar at the bottom."));
         status = dim(); // lending status, refreshed every second by tick
+        storageStatus = dim(); // the family storage pool, refreshed by tick
         localStatus = dim(); // the model on this phone
         nodeStatus = dim(); // version, workspace node, updates
 
@@ -51,6 +54,8 @@ public class SettingsActivity extends Activity {
             row(acct, Ui.action(this, "My account", v -> startActivity(new Intent(Intent.ACTION_VIEW,
                     Uri.parse(AppTabs.ORIGIN + "/profile")).setClass(this, MainActivity.class))),
                     "Your profile, sign-in and security, opened in Aither.");
+            row(acct, Ui.action(this, "Link a device", v -> startActivity(new Intent(this, LinkActivity.class))),
+                    "Sign in your watch, TV or laptop: scan its code with your camera, or type it here.");
         }
         row(acct, Ui.action(this, "Allow running with the screen off", v -> askBattery()),
                 "Lets Aither check in and finish work while the phone sleeps.");
@@ -123,6 +128,25 @@ public class SettingsActivity extends Activity {
         });
         row(famCard, fam, lite ? "Your grown-up decides this."
                 : "Your family's devices may use this phone's AI while it charges.");
+        row(famCard, storageToggle(), "child".equals(cfg.profileKind())
+                ? "Your grown-up decides this, and how much space it may use."
+                : "Lends part of this phone's free space to your family's mesh, only on Wi-Fi "
+                        + "while charging, never more than the amount you choose.");
+        famCard.addView(storageStatus);
+        if (!"child".equals(cfg.profileKind())) {
+            Switch duty = Ui.style(new Switch(this));
+            duty.setText("On duty for approvals");
+            duty.setChecked(cfg.approvalsOnDuty());
+            duty.setOnCheckedChangeListener((v, checked) -> {
+                cfg.set("approvals_duty", checked);
+                DutyService.sync(this);
+                if (checked && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0) {
+                    requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 3);
+                }
+            });
+            row(famCard, duty, "Your home's approval requests reach this phone in seconds, "
+                    + "with Approve and Deny on the lock screen. Otherwise they arrive within 15 minutes.");
+        }
         col.addView(famCard);
 
         // ---- About
@@ -231,6 +255,57 @@ public class SettingsActivity extends Activity {
         return s;
     }
 
+    /** Quotas offered when the owner turns storage sharing on (GiB). */
+    static final int[] STORAGE_QUOTAS = {4, 8, 16, 32, 64};
+
+    /**
+     * "Share storage with my family's mesh": off by default. An adult picks how much
+     * (a quota is required) and the household is told; a child's phone shows the switch
+     * disabled, because only the guardian can turn it on (from Family in any browser).
+     */
+    private View storageToggle() {
+        Switch s = Ui.style(new Switch(this));
+        s.setText("Share storage with my family's mesh");
+        s.setChecked(cfg.storageShare() && cfg.storageQuotaGb() > 0);
+        if ("child".equals(cfg.profileKind())) {
+            s.setEnabled(false);
+            s.setText("Storage shared with the family when your guardian turns it on");
+            return s;
+        }
+        s.setOnCheckedChangeListener((v, checked) -> {
+            if (!checked) {
+                sendStorage(s, false, 0);
+                return;
+            }
+            String[] labels = new String[STORAGE_QUOTAS.length];
+            for (int i = 0; i < labels.length; i++) labels[i] = "Up to " + STORAGE_QUOTAS[i] + " GB";
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("How much space may your family use?")
+                    .setItems(labels, (d, which) -> sendStorage(s, true, STORAGE_QUOTAS[which]))
+                    .setOnCancelListener(d -> {
+                        s.setOnCheckedChangeListener(null);
+                        s.setChecked(false);
+                        recreate();
+                    })
+                    .show();
+        });
+        return s;
+    }
+
+    private void sendStorage(Switch s, boolean on, int quotaGb) {
+        new Thread(() -> {
+            String err = StorageShare.optIn(this, on, quotaGb);
+            runOnUiThread(() -> {
+                if (!err.isEmpty()) {
+                    android.widget.Toast.makeText(this, err, android.widget.Toast.LENGTH_LONG).show();
+                    s.setOnCheckedChangeListener(null);
+                    s.setChecked(!on);
+                    recreate();
+                }
+            });
+        }, "aither-storage-share").start();
+    }
+
     private View toggle(String label, String key, boolean on) {
         Switch s = Ui.style(new Switch(this));
         s.setText(label);
@@ -264,11 +339,14 @@ public class SettingsActivity extends Activity {
                 }
             } catch (Exception e) { /* nothing yet */ }
             status.setText(sb.toString());
+            if (ticks++ % 5 == 0) StorageShare.verdict(SettingsActivity.this); // disk + power, every 5 s
+            storageStatus.setText("Family storage: " + StorageShare.state);
             String blocked = cfg.localAiBlocked();
             localStatus.setText((blocked.isEmpty() ? LlmService.reason : "Off: " + blocked)
                     + "\nFamily sharing: " + FamilyShare.state
                     + "\nHousehold check-in: " + HeartbeatJob.last
-                    + (cfg.profileKind().isEmpty() ? "" : " (" + cfg.profileKind() + ")"));
+                    + (cfg.profileKind().isEmpty() ? "" : " (" + cfg.profileKind() + ")")
+                    + "\nApprovals: " + (cfg.approvalsOnDuty() ? DutyService.state : "each check-in · " + Notices.last));
             NodeLink n = new NodeLink(SettingsActivity.this);
             nodeStatus.setText("Version " + Config.VERSION
                     + "\nWorkspace node: " + (n.linked() ? n.nodeId() : "-") + " · " + NodeLink.last

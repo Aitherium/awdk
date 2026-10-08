@@ -1,0 +1,67 @@
+# Aither on Wear OS
+
+A standalone watch app (Wear OS 3+, API 30; Pixel Watch 4 runs Wear OS 6, API 36). It uses
+the watch's own Wi-Fi/LTE: no phone app, no Google Play Services, no Gradle, no AndroidX.
+
+- **Sign in**: the web's device grant. The watch shows a code; enter it on a signed-in
+  phone at the page shown (`idp.aitherium.com/link`). The watch keeps a bearer token.
+- **Talk to Aither**: the on-device recognizer when the watch has one (the phone's rule,
+  `Talk`), else a text box. Asks `/api/agent-chat` (agent `aeon`), as the web desktop does.
+- **Waiting for you**: `/api/push/inbox` (the phone's inbox), open approvals this account
+  can still answer, each with Approve / Deny → `/api/push/decide` with the phone's own body
+  (`ApprovalCard.decideBody`). Only an unlocked watch with a screen lock answers; the server
+  refuses children, stale digests and second votes.
+
+The phone's approval cards are also bridged to the watch (not local-only, dismissal id per
+notice). Tapping Approve on a bridged card runs the phone's action, so a locked phone asks
+to be unlocked first (`setAuthenticationRequired`).
+
+## Build
+
+    python awdk/android/aither/build.py --wear --out D:\aither-build\wear
+    python awdk/android/aither/build.py --wear --keystore <ks> --storepass-file <f>   # release cert
+
+Compiles `src/` plus the phone's `ApprovalCard`, `Talk`, `Ui`, `DeviceLink` and `Qr`, the phone's launcher icons,
+and signs with the same key and certificate check as the phone app.
+
+## Install on the watch
+
+1. Watch: Settings > System > About > Versions, tap **Build number** 7 times.
+2. Settings > Developer options: turn on **ADB debugging** and **Wireless debugging**
+   (Allow on this network). Watch and computer on the same Wi-Fi.
+3. Wireless debugging > **Pair new device**: `adb pair <ip>:<pairing-port>`, enter the code.
+4. Back on Wireless debugging, note the IP and port: `adb connect <ip>:<port>`.
+5. `adb -s <ip>:<port> install -r D:\aither-build\wear\aither-wear.apk`
+   (or `build.py --wear --install <ip>:<port>`).
+
+## Signing in (device link)
+
+The watch asks Identity for a device code and shows it as a QR of
+`https://app.aitherium.com/auth/device?code=ABCD-2345` with the code under it
+(`DeviceLink.linkUrl`, drawn by the dependency-free `Qr` encoder). On the phone:
+
+- **Camera:** point the phone's camera at the QR. `app.aitherium.com` is a verified App Link,
+  so it opens Aither, and MainActivity hands the code to **Link a device** (`LinkActivity`):
+  one question, Approve or Cancel, then `POST /api/auth/device-authorize` with the app's
+  session. Without the app the same link opens the web page with the code filled in.
+- **By hand:** Aither > Settings > **Link a device**, type the code.
+- A child's account is refused, in the app (`DeviceLink.childRefusal`) and by Identity (403).
+
+**Bluetooth one-tap ("Sign in your watch"), investigated 2026-10-07: not shipped.** A phone
+app and its watch app talk through the Wearable Data Layer (`MessageClient`), which is a
+Google Play services library and needs the Play-distributed app pair; this build carries no
+Play services by rule. Classic Bluetooth (an RFCOMM socket between the two apps) is not a
+documented path for third-party Wear OS apps: the watch's Bluetooth link belongs to the Wear
+OS companion, and it would need nearby-device permissions and a pairing prompt on both ends.
+The path is **Play distribution + the Data Layer**: the phone mints a pre-approved, 3-minute,
+single-use grant (Identity `/auth/device/setup-code`) and sends it to the watch, which
+polls it once. Until then the QR is the one-step sign-in.
+
+## v2
+
+- **Tile** ("Waiting for you" count + Talk): Tiles need `androidx.wear.tiles` and
+  `androidx.wear.protolayout` (and their protobuf runtime); vendoring those AARs into this
+  no-Gradle build is the v2 work. A complication needs `androidx.wear.watchface`.
+- On-wrist background alerts: a long-poll like the phone's DutyService costs battery on a
+  watch; the phone's bridged cards cover alerts in v1.
+- Spoken answers (TextToSpeech) and an "open on phone" hand-off.

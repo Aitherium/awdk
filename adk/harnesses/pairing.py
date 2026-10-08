@@ -26,8 +26,9 @@ import threading
 import time
 from typing import Any, FrozenSet, Optional
 
-#: The Awconnect id every install has (both manifests carry the same key).
-#: Mirrors awconnect/shared/extension-id.js and adk.extension_id.
+#: The Awconnect id every unpacked install has: derived from the manifest
+#: "key" in the extension's public/manifest.json. Mirrors
+#: adk.extension_id.PINNED_EXTENSION_ID (which also names the store id).
 PINNED_EXTENSION_ID = "hlmfknhcfhjjngckfpacgleffckpmphe"
 _ID_RE = re.compile(r"^[a-p]{32}$")
 

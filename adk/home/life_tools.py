@@ -369,4 +369,7 @@ ALWAYS_ASK = ("follow_up_recurring", "relay_send", "relay_reply_in_thread",
               "calendar_add", "mail_send", "todo_add", "tutor_assign", "tutor_set_focus",
               "lesson_draft", "differentiate", "parent_note_send",
               # adk.home.home_tools: changing or removing an event, ticking a to-do.
-              "calendar_move", "calendar_delete", "todo_done")
+              "calendar_move", "calendar_delete", "todo_done",
+              # adk.home.device_tools: a device action the policy did not let run at
+              # once (confirm / guarded) runs only through one of these cards.
+              "home_act_confirmed", "home_approve")

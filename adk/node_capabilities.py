@@ -259,15 +259,37 @@ def advertise(
     """
     verdicts = detect(facts)
     opted = set(lend_set(saved, env))
+    storage = _storage_view(saved, env)
+    if storage is not None and storage["opted_in"]:
+        # `adk storage on` opts storage in exactly like `lend: [storage]` does
+        opted.add("storage")
     lent = [k for k in KINDS if k in opted and verdicts[k]["available"]]
+    paused = bool(storage and storage["detail"].get("paused"))
+    if paused and "storage" in lent:
+        lent.remove("storage")  # resting (battery / metered): not in the pool right now
     detail: Dict[str, Dict[str, Any]] = {}
     for k in KINDS:
         v = dict(verdicts[k])
         v["lent"] = k in lent
-        if k in opted and k not in lent:
+        if k == "storage" and storage is not None and storage["opted_in"]:
+            v["detail"] = {**v.get("detail", {}), **storage["detail"]}
+            if paused:
+                v["reason"] = f"opted in, paused: {storage['detail']['paused']}"
+        if k in opted and k not in lent and "reason" not in v:
             v["reason"] = "opted in, probe says unavailable"
         detail[k] = v
     return {"capabilities": lent, "capability_detail": detail}
+
+
+def _storage_view(saved: Optional[Mapping[str, Any]],
+                  env: Optional[Mapping[str, str]]) -> Optional[Dict[str, Any]]:
+    """The storage contribution's own view (opt-in, quota, pause), or None if unavailable."""
+    try:
+        from adk.storage_contribution import storage_capability
+        return storage_capability(saved=dict(saved) if saved is not None else None, env=env)
+    except Exception as e:  # noqa: BLE001 -- the heartbeat never fails on this
+        log.debug("storage view unavailable: %s", e)
+        return None
 
 
 def advertise_this_node(**gather_kwargs: Any) -> Dict[str, Any]:

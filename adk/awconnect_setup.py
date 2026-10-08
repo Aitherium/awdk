@@ -1,9 +1,10 @@
 """``adk awconnect install|status|path`` -- put the Awconnect browser extension on
 this machine with one command, and say whether a browser actually loaded it.
 
-Awconnect is a Chrome MV3 extension. Until it is on the Chrome Web Store (the only
-true one-click install -- see ``awconnect/WEBSTORE_READINESS.md``) it is loaded
-UNPACKED, and three facts bound what any installer can do:
+Awconnect is a Chrome MV3 extension. Most owners should install it from the Chrome
+Web Store (``STORE_URL``; the only true one-click install, and it auto-updates).
+This command is for an UNPACKED load (a dev build, an enterprise variant, a
+browser without store access), and three facts bound what any installer can do:
 
 * stable Chrome ignores ``--load-extension`` (removed for branded builds in 137);
 * off-store force-install policy (``ExtensionInstallForcelist``) only works on a
@@ -30,12 +31,25 @@ Developer Mode, and a browser that loaded ``current`` keeps loading it after
 arrow and runs the new version.
 
 Sources, in order: the latest ``connect-v*`` GitHub release's ``*-<variant>-v<ver>.zip`` asset
-with its ``.sha256`` VERIFIED (a mismatch or a missing checksum is a refusal, never
-a warning), else a monorepo checkout's ``awconnect/`` exported the way
-``git archive`` would (tracked files at a ref, never the live shared tree), else an
-explicit ``--from DIR``. When the checkout is strictly newer than the newest
-release, the checkout wins -- installing an older release over a newer tree would
-be a downgrade the owner did not ask for.
+(default variant ``unpacked`` -- the one build-connect.yml publishes WITH the manifest
+key) with its ``.sha256`` VERIFIED (a mismatch or a missing checksum is a refusal,
+never a warning), else a monorepo checkout's 4.x source
+``AitherOS/apps/awconnect-next`` -- its built ``dist/`` when that matches the source
+version, else BUILT from tracked files at a ref (``git archive`` of the app and its
+``packages/awkit`` dependency into a temp dir, ``npm ci && npm run build`` there;
+never built in the live shared tree) when node is on PATH -- else an explicit
+``--from DIR``.
+When the checkout is strictly newer than the newest release, the checkout wins --
+installing an older release over a newer tree would be a downgrade the owner did
+not ask for. The legacy ``awconnect/`` tree is never a source: it is the 3.x
+extension, and staging it is how the 2026-10-05 installs silently ran a product
+a major version behind the store.
+
+The repo-root ``awconnect/`` folder is the RETIRED v3 tree (``awconnect/RETIRED.md``):
+it used to be this fallback, so anyone without an authenticated gh CLI (the release
+lookup reads a private repo) was handed v3. A checkout that cannot be staged (no
+npm and no usable dist, offline) is a refusal that points at the Chrome Web Store
+listing, not a silent v3 install.
 """
 
 from __future__ import annotations
@@ -66,6 +80,21 @@ logger = logging.getLogger(__name__)
 #: connect-v4.x releases), and degrades to urllib on public repos and in CI.
 DEFAULT_RELEASES_API = "https://api.github.com/repos/Aitherium/AitherOS/releases?per_page=50"
 RELEASE_TAG_PREFIX = "connect-v"
+#: The default release variant. build-connect.yml publishes exactly two zips per
+#: connect-v* tag, ``-public-`` (keyless, for the store) and ``-unpacked-`` (keeps
+#: the manifest key, so the pinned id). The old default ``enterprise`` was never
+#: built, so every default install fell through the chain -- name what exists.
+DEFAULT_VARIANT = "unpacked"
+VARIANTS = ("unpacked", "enterprise", "public")
+#: Where a human finds the releases and the store listing when no source works.
+RELEASES_PAGE = "https://github.com/Aitherium/AitherOS/releases?q=connect-v"
+WEBSTORE_URL = (
+    "https://chromewebstore.google.com/detail/awconnect/peeojgjhjficedkncdejbfnacooodbak"
+)
+#: The 4.x extension source inside a monorepo checkout.
+NEXT_REL = Path("AitherOS") / "apps" / "awconnect-next"
+#: npm ci + vite build of the 4.x tree on a cold cache takes minutes, not seconds.
+BUILD_TIMEOUT_S = 900
 #: Name markers that identify the extension in a manifest (display name varies:
 #: "awconnect — AI Chat & Knowledge Assistant", older "AitherConnect").
 NAME_MARKERS = ("awconnect", "aitherconnect", "aither connect")
@@ -85,6 +114,15 @@ EXCLUDE_NAMES = frozenset(
     }
 )
 EXCLUDE_SUFFIXES = (".zip", ".crx", ".pem")
+#: The 4.x extension inside a monorepo checkout, and the package it consumes from
+#: source (``file:../packages/awkit``) -- the two trees a checkout build needs.
+APP_REL = "AitherOS/apps/awconnect-next"
+AWKIT_REL = "AitherOS/apps/packages/awkit"
+#: The install path for anyone who does not need an unpacked build.
+STORE_URL = WEBSTORE_URL
+#: Never exported into the temp build tree: build outputs and installed deps of
+#: the shared checkout would mask what ``npm ci`` / the build produce.
+_BUILD_SKIP = frozenset({"node_modules", "dist", ".git"})
 DEFAULT_WAIT_S = 120
 POLL_EVERY_S = 3.0
 
@@ -245,7 +283,7 @@ def _default_fetch(url: str) -> bytes:
 
 
 def latest_release(
-    fetch: FetchBytes, api_url: str = DEFAULT_RELEASES_API, variant: str = "enterprise"
+    fetch: FetchBytes, api_url: str = DEFAULT_RELEASES_API, variant: str = DEFAULT_VARIANT
 ) -> Optional[Candidate]:
     """The newest ``connect-v*`` release that carries the zip AND its checksum.
 
@@ -271,7 +309,8 @@ def latest_release(
             for a in rel.get("assets") or []
             if isinstance(a, dict)
         }
-        for var in ((variant,) if variant == "public" else (variant, "unpacked", "public")):
+        chain = (variant,) if variant == "public" else (variant, "unpacked", "public")
+        for var in dict.fromkeys(chain):
             # "unpacked" before "public": the browser loads current/ as an
             # unpacked extension, so its id must come from the manifest "key"
             # (the pinned id both manifests share, already accepted by the
@@ -299,10 +338,35 @@ def latest_release(
     return best
 
 
+def no_source_hint() -> str:
+    """The two places a human can get the extension when this machine cannot stage it."""
+    return (
+        f"install it from the Chrome Web Store ({WEBSTORE_URL}) or download the "
+        f"*-unpacked-* zip of a connect-v* release ({RELEASES_PAGE}) and pass "
+        "--from <unzipped folder>"
+    )
+
+
+def _next_source(cand: Path) -> Optional[Path]:
+    """``cand``'s 4.x extension source dir, or None.
+
+    Accepts the monorepo root, its ``AitherOS/`` subdir, or the awconnect-next
+    dir itself (AITHER_AWCONNECT_REPO may name any of the three)."""
+    for d in (cand / NEXT_REL, cand / "apps" / "awconnect-next", cand):
+        if not (d / "package.json").is_file():
+            continue
+        name = str(manifest_of(d / "public").get("name") or "").lower()
+        if any(m in name for m in NAME_MARKERS):
+            return d
+    return None
+
+
 def find_checkout(
     env: Optional[Dict[str, str]] = None, start: Optional[Path] = None
 ) -> Optional[Path]:
-    """A monorepo root holding ``awconnect/manifest.json``, or None."""
+    """The 4.x source dir (``AitherOS/apps/awconnect-next``) of a checkout, or None.
+
+    Never the legacy ``awconnect/`` tree: that is the 3.x extension."""
     env = os.environ if env is None else env
     seeds: List[Path] = []
     for key in ("AITHER_AWCONNECT_REPO", "AITHEROS_ROOT", "AITHER_REPO"):
@@ -313,13 +377,15 @@ def find_checkout(
     seeds.append(Path(__file__).resolve().parent)
     for seed in seeds:
         for cand in [seed, *seed.parents]:
-            if (cand / "awconnect" / "manifest.json").is_file():
-                return cand
+            found = _next_source(cand)
+            if found is not None:
+                return found
     return None
 
 
 def checkout_candidate(root: Path, ref: str = "HEAD") -> Optional[Candidate]:
-    ver = str(manifest_of(root / "awconnect").get("version") or "")
+    """``root`` is the awconnect-next dir find_checkout returned."""
+    ver = str(manifest_of(root / "public").get("version") or "")
     if not ver:
         return None
     return Candidate("checkout", ver, str(root), ref=ref)
@@ -395,19 +461,23 @@ def stage_release(cand: Candidate, dest: Path, fetch: FetchBytes) -> Dict[str, A
     return {"sha256": digest}
 
 
-def stage_checkout(
-    cand: Candidate, dest: Path, run: Callable[..., Any] = subprocess.run
-) -> Dict[str, Any]:
-    """Export ``awconnect/`` at ``cand.ref`` like ``git archive`` -- tracked files only.
+def _tail(text: Any, lines: int = 8) -> str:
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    return "\n".join(str(text or "").strip().splitlines()[-lines:])
 
-    Falls back to a filtered copy of the folder when git is unavailable (a source
-    tarball has no .git); the fallback still drops tests/, node_modules/ and keys.
+
+def _export_build_tree(
+    root: Path, ref: str, work: Path, run: Callable[..., Any] = subprocess.run
+) -> str:
+    """Put APP_REL + AWKIT_REL at ``ref`` under ``work`` -- tracked files only.
+
+    Falls back to a copy of the working tree (minus node_modules/dist) when git is
+    unavailable, e.g. a source tarball with no .git. Returns the method used.
     """
-    root = Path(cand.location)
-    dest.mkdir(parents=True, exist_ok=True)
     try:
         proc = run(
-            ["git", "-C", str(root), "archive", "--format=tar", cand.ref, "awconnect"],
+            ["git", "-C", str(root), "archive", "--format=tar", ref, APP_REL, AWKIT_REL],
             capture_output=True,
             timeout=120,
             check=False,
@@ -418,28 +488,162 @@ def stage_checkout(
     if blob:
         with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
             for member in tf.getmembers():
-                if not member.isfile() or not member.name.startswith("awconnect/"):
+                if not member.isfile() or _BUILD_SKIP.intersection(member.name.split("/")):
                     continue
-                rel = member.name[len("awconnect/") :]
-                if _excluded(rel.split("/")):
-                    continue
-                target = _safe_target(dest, rel)
+                target = _safe_target(work, member.name)
                 src = tf.extractfile(member)
                 if target is None or src is None:
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with open(target, "wb") as out:
                     shutil.copyfileobj(src, out)
-        return {"ref": cand.ref, "method": "git-archive"}
-    src_root = root / "awconnect"
-    for path in src_root.rglob("*"):
-        rel_parts = path.relative_to(src_root).parts
+        return "git-archive"
+    for rel in (APP_REL, AWKIT_REL):
+        src_root = root / rel
+        for path in src_root.rglob("*"):
+            rel_parts = path.relative_to(src_root).parts
+            if path.is_dir() or _BUILD_SKIP.intersection(rel_parts):
+                continue
+            target = work.joinpath(*Path(rel).parts, *rel_parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+    return "copy"
+
+
+def _monorepo_root(src: Path) -> Optional[Path]:
+    """The monorepo root above an ``APP_REL`` dir, or None for a stand-alone tree."""
+    tail = Path(APP_REL).parts
+    if len(src.parts) > len(tail) and tuple(src.parts[-len(tail):]) == tail:
+        return src.parents[len(tail) - 1]
+    return None
+
+
+def _build_in_temp(
+    cand: Candidate, src: Path, dest: Path, npm: str, run: Callable[..., Any]
+) -> Dict[str, Any]:
+    """Export the app (+ awkit) at ``cand.ref`` to a temp dir, build, stage its dist/.
+
+    ``dist/manifest.json`` keeps the manifest ``key`` (vite copies public/ as is),
+    so the staged folder loads with the fixed first-party id, exactly like the
+    release's unpacked zip. Any failure is a refusal naming the store/releases."""
+    root = _monorepo_root(src)
+    with tempfile.TemporaryDirectory(prefix="awconnect-build-") as td:
+        work = Path(td)
+        if root is not None:
+            method = _export_build_tree(root, cand.ref, work, run)
+            app = work / APP_REL
+        else:
+            # A stand-alone awconnect-next dir (AITHER_AWCONNECT_REPO): copy it alone.
+            app = work / "awconnect-next"
+            for path in src.rglob("*"):
+                rel_parts = path.relative_to(src).parts
+                if path.is_dir() or _BUILD_SKIP.intersection(rel_parts):
+                    continue
+                target = app.joinpath(*rel_parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+            method = "copy"
+        if not (app / "package.json").is_file():
+            raise AwconnectError(
+                f"{APP_REL} has no package.json at {cand.ref} -- cannot build it; "
+                + no_source_hint()
+            )
+        for args in (["ci"], ["run", "build"]):
+            label = "npm " + " ".join(args)
+            try:
+                proc = run(
+                    [npm, *args],
+                    cwd=str(app),
+                    capture_output=True,
+                    timeout=BUILD_TIMEOUT_S,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise AwconnectError(
+                    f"`{label}` could not run in {src}: {exc} -- {no_source_hint()}"
+                ) from exc
+            code = getattr(proc, "returncode", 1)
+            if code != 0:
+                out = getattr(proc, "stderr", b"") or getattr(proc, "stdout", b"")
+                raise AwconnectError(
+                    f"`{label}` failed in {src} (exit {code}):\n{_tail(out)}\n"
+                    f"-- {no_source_hint()}"
+                )
+        dist = app / "dist"
+        built = str(manifest_of(dist).get("version") or "")
+        if not built:
+            raise AwconnectError(
+                f"`npm run build` succeeded but {dist} has no manifest.json -- "
+                + no_source_hint()
+            )
+        _copy_dist(dist, dest)
+    return {
+        "method": f"{method}+npm-build",
+        "source_version": cand.version,
+        "dist_version": built,
+        "ref": cand.ref,
+    }
+
+
+def _copy_dist(dist: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in dist.rglob("*"):
+        rel_parts = path.relative_to(dist).parts
         if path.is_dir() or _excluded(rel_parts):
             continue
         target = dest.joinpath(*rel_parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    return {"ref": "working-tree", "method": "copy"}
+
+
+def stage_checkout(
+    cand: Candidate,
+    dest: Path,
+    run: Callable[..., Any] = subprocess.run,
+    which: Optional[Callable[[str], Optional[str]]] = None,
+    min_version: str = "",
+) -> Dict[str, Any]:
+    """Stage the 4.x tree's built ``dist/`` -- building it first when needed.
+
+    The source tree is TypeScript + vite, so nothing in it is loadable until it is
+    built. A ``dist/`` whose manifest version matches the source is used as is;
+    otherwise, with node + npm on PATH, ``npm ci && npm run build`` produces it
+    (dist/ and node_modules/ are gitignored, so the tracked tree is untouched).
+    Without node a stale dist/ still beats nothing (stage() records the dist's own
+    manifest version, so nothing is mislabelled) -- UNLESS it is older than
+    ``min_version`` (the release install() would otherwise have used): choose_source
+    picked this checkout for its SOURCE version, and staging an older dist in its
+    place would be exactly the silent downgrade the release-first rule forbids, so
+    that is a refusal install() answers by staging the release. No dist/ at all is
+    a refusal naming where to get a built copy.
+    """
+    # Resolved per call, not bound at import, so install()'s callers (and tests)
+    # see the PATH as it is now.
+    which = which or shutil.which
+    src = Path(cand.location)
+    dist = src / "dist"
+    built = str(manifest_of(dist).get("version") or "")
+    method = "dist"
+    if built != cand.version:
+        npm = which("npm")
+        if npm and which("node"):
+            # Built in a temp tree from tracked files at cand.ref, never in the live
+            # shared checkout (its node_modules/dist belong to whoever works there).
+            return _build_in_temp(cand, src, dest, npm, run)
+        elif not built:
+            raise AwconnectError(
+                f"{src} has no built dist/ and node/npm is not on PATH to build it -- "
+                + no_source_hint()
+            )
+        elif min_version and version_tuple(built) < version_tuple(min_version):
+            raise AwconnectError(
+                f"{dist} is {built}, older than release {min_version}, and node/npm is "
+                "not on PATH to rebuild it -- refusing to stage a downgrade"
+            )
+        else:
+            method = "dist-stale"
+    _copy_dist(dist, dest)
+    return {"method": method, "source_version": cand.version, "dist_version": built}
 
 
 def _replace_contents(folder: Path, source: Path) -> None:
@@ -464,8 +668,11 @@ def stage(
     env: Optional[Dict[str, str]] = None,
     fetch: FetchBytes = _default_fetch,
     run: Callable[..., Any] = subprocess.run,
+    min_version: str = "",
 ) -> Dict[str, Any]:
-    """Materialize ``cand`` as ``<root>/<version>/`` and refresh ``current/`` in place."""
+    """Materialize ``cand`` as ``<root>/<version>/`` and refresh ``current/`` in place.
+
+    ``min_version`` floors a checkout's stale-dist fallback (see stage_checkout)."""
     root = install_root(env)
     root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=".staging-", dir=str(root)))
@@ -473,7 +680,7 @@ def stage(
         if cand.kind == "release":
             meta = stage_release(cand, tmp, fetch)
         elif cand.kind == "checkout":
-            meta = stage_checkout(cand, tmp, run)
+            meta = stage_checkout(cand, tmp, run, min_version=min_version)
         elif cand.kind == "dir":
             src = Path(cand.location)
             for path in src.rglob("*"):
@@ -502,10 +709,21 @@ def stage(
             shutil.rmtree(versioned)
         shutil.copytree(tmp, versioned)
         _replace_contents(root / "current", tmp)
-        # The browser loads current/ unpacked, so its extension id is fixed by that
-        # path; allow exactly that id on the local daemon's /identity/whoami.
-        from adk.extension_id import allow_extension_id, unpacked_extension_id
-        ext_id = unpacked_extension_id(root / "current")
+        # The browser loads current/ unpacked. A keyed manifest (the -unpacked-
+        # release zip, awconnect-next's dist/) pins the id to the key's -- the
+        # first-party id the daemon already trusts; a keyless one gets an id
+        # fixed by the path. Either way allow exactly that id on the local
+        # daemon's /identity/whoami, and report the id the browser will show.
+        from adk.extension_id import (
+            allow_extension_id,
+            key_extension_id,
+            unpacked_extension_id,
+        )
+        try:
+            ext_id = key_extension_id(man["key"]) if man.get("key") else ""
+        except ValueError:
+            ext_id = ""
+        ext_id = ext_id or unpacked_extension_id(root / "current")
         allow_extension_id(ext_id, aither_home(env) / "awconnect" / "allowed_extension_ids")
         return {
             "version": version,
@@ -895,7 +1113,7 @@ def install(
     prefer: str = "auto",
     from_dir: str = "",
     ref: str = "HEAD",
-    variant: str = "enterprise",
+    variant: str = DEFAULT_VARIANT,
     browser: str = "",
     wait: float = DEFAULT_WAIT_S,
     open_browser: bool = True,
@@ -909,6 +1127,7 @@ def install(
     update_only: bool = False,
 ) -> Dict[str, Any]:
     env = dict(os.environ) if env is None else env
+    rel: Optional[Candidate] = None
     if from_dir:
         src = Path(from_dir)
         man = manifest_of(src)
@@ -924,10 +1143,25 @@ def install(
     if cand is None:
         raise AwconnectError(
             "no Awconnect source: no readable connect-v* release (the repo may be private) "
-            "and no monorepo checkout found -- pass --from <awconnect folder> or set AITHEROS_ROOT"
+            "and no AitherOS/apps/awconnect-next checkout found (set AITHEROS_ROOT) -- "
+            + no_source_hint()
         )
     log(f"  source: {cand.kind} {cand.version} ({cand.location})")
-    staged = stage(cand, env, fetch=fetch, run=run)
+    if cand.kind == "checkout" and rel is not None:
+        # The checkout won on its SOURCE version (normal on develop right after a
+        # version bump), but turning source into a loadable dist/ can still fail:
+        # no node and an older dist, or a build that does not pass on a WIP tree.
+        # The release was a good answer all along, so a failed checkout falls back
+        # to it rather than leaving the user with nothing staged.
+        try:
+            staged = stage(cand, env, fetch=fetch, run=run, min_version=rel.version)
+        except AwconnectError as exc:
+            log(f"  checkout {cand.version} could not be staged ({exc});")
+            log(f"  falling back to release {rel.version} ({rel.location})")
+            cand = rel
+            staged = stage(cand, env, fetch=fetch, run=run)
+    else:
+        staged = stage(cand, env, fetch=fetch, run=run)
     log(
         f"  staged: {staged['path']}  (version {staged['version']}; "
         f"copy kept at {staged['versioned_path']})"
@@ -997,14 +1231,19 @@ def register_parser(sub: Any) -> None:
     )
     ins.add_argument("--source", choices=["auto", "release", "checkout"], default="auto")
     ins.add_argument(
-        "--from", dest="from_dir", default="", help="Install from this awconnect folder"
+        "--from", dest="from_dir", default="",
+        help="Install from this folder (an unzipped release, or awconnect-next/dist)"
     )
-    ins.add_argument("--ref", default="HEAD", help="Git ref for a checkout source (default HEAD)")
+    ins.add_argument(
+        "--ref", default="HEAD",
+        help="Git ref a checkout source is built from (tracked files, in a temp tree)",
+    )
     ins.add_argument(
         "--variant",
-        choices=["enterprise", "unpacked", "public"],
-        default="enterprise",
-        help="Release asset variant; the default falls back unpacked -> public "
+        choices=list(VARIANTS),
+        default=DEFAULT_VARIANT,
+        help="Release asset variant (default unpacked: keeps the manifest key, so the "
+        "pinned id); any choice falls back unpacked -> public "
         "(public is keyless and would stage a path-derived extension id)",
     )
     ins.add_argument("--browser", default="", help="chrome | edge | brave | chromium")

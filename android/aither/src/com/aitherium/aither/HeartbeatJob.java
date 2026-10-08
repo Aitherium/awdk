@@ -58,6 +58,9 @@ public class HeartbeatJob extends JobService {
     static boolean checkIn(Context ctx) {
         boolean family = beat(ctx);
         FamilyNotices.poll(ctx);
+        // approval cards: on duty, DutyService holds the inbox open; otherwise read it here
+        if (new Config(ctx).approvalsOnDuty()) DutyService.sync(ctx);
+        else Notices.poll(ctx, 0);
         NodeLink node = new NodeLink(ctx);
         node.ensureLinked();
         boolean commands = node.checkIn();
@@ -99,9 +102,16 @@ public class HeartbeatJob extends JobService {
                 return true;
             }
             if (code == 401) {
-                last = "signed out: open AitherOS to sign in again";
-                return true; // nothing to retry until AitherOS is opened again
+                // Identity's word on the session decides, not this route's: during an outage
+                // a 401 here once read as "signed out" while the session was fine.
+                if (Session.check() == Session.State.OUT) {
+                    last = "signed out: tap Sign in at the top of Aither";
+                    return true; // nothing to retry until someone signs in
+                }
+                last = "check-in refused (401) with a good session; retrying";
+                return false;
             }
+            if (code >= 500) Session.note(Session.State.UNKNOWN); // the tabs reload once it answers
             if (code != 200) {
                 last = "heartbeat answered " + code;
                 return false;
@@ -119,6 +129,12 @@ public class HeartbeatJob extends JobService {
             // Family Shield: the guardian's mode for this phone starts or stops the filter
             cfg.set("shield_mode", j.optString("internet_mode", "off"));
             ShieldVpnService.sync(ctx);
+            // the family storage pool: what the household lets this phone lend (StorageShare)
+            JSONObject slim = j.optJSONObject("storage_limits");
+            cfg.storageFromHousehold(j.optBoolean("storage_share", false),
+                    slim == null ? 0 : slim.optInt("quota_gb", 0),
+                    slim == null || slim.optBoolean("wifi_only", true),
+                    slim == null || slim.optBoolean("charging_only", true));
             JSONObject lim = j.optJSONObject("share_limits");
             boolean was = cfg.shareFamily();
             cfg.shareFromHousehold(j.optBoolean("compute_share", false),

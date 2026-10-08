@@ -20,8 +20,8 @@ final class AppTabs {
     static final String HOME = "home";
     static final String SETTINGS = "settings";
 
-    /** id, label, root path ("" = native), icon (Shortcuts tile id; "home"/"gear" =
-     *  vector, "mark" = the Aither mark, "aither" = the launcher icon). */
+    /** id, label, root path ("" = native), icon (Shell.iconRes: the app's glyph
+     *  res/drawable/ic_app_*, "gear" = settings, "mark" = the Aither mark). */
     static final String[][] ADULT_TABS = {
         {HOME, "Home", "", "home"},
         {"learn", "Learn", "/learn/parent/", "learn"},
@@ -46,10 +46,14 @@ final class AppTabs {
         {"sprite", "Sprite", "Hatch it. Teach it.", "/?app=sprite", "sprite", ""},
         {"academy", "Classroom", "Teach a class, or link a child to theirs", "/classroom/", "academy", ""},
         {"spaces", "Spaces", "Friends, agents and rooms", "/spaces/", "spaces", ""},
-        {"avatar", "Avatar", "Your avatars, and the one your Sprite wears", "/?app=avatar", "space", ""},
-        {"desktop", "AitherOS", "The full desktop with every app", "/?shell=aither-desktop", "aither", ""},
+        {"avatar", "Avatar", "Your avatars, and the one your Sprite wears", "/?app=avatar", "avatar", ""},
+        {"agents", "My agents", "Create, command and connect your agents", "/?app=agent-life", "agents", ""},
+        {"packs", "Packs & skills", "Add abilities to your agents", "/workspace/agents?tab=packs", "packs", ""},
+        {"mediaforge", "Media Forge", "Make images, video and voice", "/?app=mediaforge", "mediaforge", ""},
+        {"shop", "Shop", "Packs, plans and devices", "/shop", "shop", ""},
+        {"desktop", "AitherOS", "The full desktop with every app", "/?shell=aither-desktop", "desktop", ""},
         {"control", "Control", "Your devices, lending and models", "/?app=control", "phone", ""},
-        {"account", "My account", "Profile, sign-in and security", "/profile", "family", ""},
+        {"account", "My account", "Profile, sign-in and security", "/profile", "account", ""},
         {SETTINGS, "This phone", "Updates, AI on this phone, lending", "", "gear", SETTINGS},
     };
     static final String[][] CHILD_APPS = {
@@ -60,6 +64,13 @@ final class AppTabs {
         {"space", "My Space", "Your own space", "/hearth", "space", "space"},
         {SETTINGS, "Settings", "This phone", "", "gear", SETTINGS},
     };
+
+    /** Grown-up apps only the platform owner is offered (the web gate refuses everyone
+     *  else too: app-gating.ts rbac system:admin). */
+    static final String[] OWNER_APPS = {"mediaforge"};
+    /** Apps the Play build leaves out: Shop checks out through Stripe, which Play forbids
+     *  for digital goods (Purchases). */
+    static final String[] NOT_IN_STORE = {"shop"};
 
     /** aither-app-entries.ts CHILD_SHORTCUT_HOMES: where a child lands for `?app=<id>`. */
     static final String[][] CHILD_APP_HOMES = {
@@ -89,6 +100,40 @@ final class AppTabs {
     static String[][] tabs(boolean child) { return child ? CHILD_TABS : ADULT_TABS; }
 
     static String[][] apps(boolean child) { return child ? CHILD_APPS : ADULT_APPS; }
+
+    /** The Home grid for this phone: owner-only apps for the platform owner, no Shop in
+     *  the Play build. */
+    static String[][] apps(boolean child, boolean owner, boolean store) {
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        for (String[] app : apps(child)) {
+            if (!owner && has(OWNER_APPS, app[0])) continue;
+            if (store && has(NOT_IN_STORE, app[0])) continue;
+            out.add(app);
+        }
+        return out.toArray(new String[0][]);
+    }
+
+    private static boolean has(String[] ids, String id) {
+        for (String s : ids) if (s.equals(id)) return true;
+        return false;
+    }
+
+    /**
+     * Is this account the platform owner? lib/core/AitherTenant.py roles_grant_platform with
+     * the gateway's extras: super_admin/superadmin/platform/platform_admin anywhere; owner or
+     * admin only on the platform tenant (every self-service customer is owner of their own).
+     * From GET /api/profile's roles and tenant_id.
+     */
+    static boolean platformOwner(java.util.Collection<String> roles, String tenantId) {
+        boolean scoped = false;
+        for (String r : roles) {
+            String x = r == null ? "" : r.trim().toLowerCase(java.util.Locale.ROOT);
+            if (x.equals("super_admin") || x.equals("superadmin") || x.equals("platform")
+                    || x.equals("platform_admin")) return true;
+            if (x.equals("owner") || x.equals("admin")) scoped = true;
+        }
+        return scoped && "platform".equals(tenantId == null ? "" : tenantId.trim());
+    }
 
     /** Where the app opens and where back ends: the grid for a grown-up, Learn for a child. */
     static String homeTab(boolean child) { return child ? "learn" : HOME; }
@@ -208,6 +253,37 @@ final class AppTabs {
     private static String trim(String p) {
         if (p == null || p.isEmpty()) return "/";
         return p.length() > 1 && p.endsWith("/") ? p.substring(0, p.length() - 1) : p;
+    }
+
+    /**
+     * The one sign-in page, coming back to `returnUrl` (a page in this app) after it. A page
+     * that is itself the sign-in page, or not on the app origin, returns to the default.
+     */
+    static String signInUrl(String returnUrl) {
+        String back = "";
+        try {
+            URI u = new URI(returnUrl == null ? "" : returnUrl);
+            String path = u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath();
+            if (ORIGIN.equals(u.getScheme() + "://" + u.getRawAuthority()) && !under(path, "/login")) {
+                back = path + (u.getRawQuery() == null ? "" : "?" + u.getRawQuery());
+            }
+        } catch (Exception e) { /* no return page */ }
+        if (back.isEmpty() || "/".equals(back)) return ORIGIN + "/login";
+        try {
+            return ORIGIN + "/login?redirect=" + java.net.URLEncoder.encode(back, StandardCharsets.UTF_8.name());
+        } catch (Exception e) {
+            return ORIGIN + "/login";
+        }
+    }
+
+    /** Is this the sign-in page (where a tab lands when its page found no session)? */
+    static boolean isSignIn(String url) {
+        try {
+            URI u = new URI(url == null ? "" : url);
+            return u.getRawPath() != null && under(u.getRawPath(), "/login");
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** What Android back does, in order: the window's page, the window, the tab's page

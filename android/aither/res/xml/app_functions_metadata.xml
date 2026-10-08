@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What an agent reads about Aither as a whole (android.app.appfunctions.app_metadata). -->
+<AppFunctionAppMetadata xmlns:appfn="http://schemas.android.com/apk/androidx.appfunctions"
+    appfn:description="Aither is the family's AI app. Its functions only read or open pages of the app; none acts on its own.
+Operational patterns:
+  - askAither opens the on-device assistant with a question; it answers on the phone.
+  - askHearth only writes the request into Hearth's box; the owner sends it, and anything that leaves the home waits for an approval card.
+  - pendingApprovals is read-only and reflects the last check of the household inbox.
+Constraints:
+  - On a child's phone only openApp and pendingApprovals are available." />

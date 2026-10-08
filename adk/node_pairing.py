@@ -96,6 +96,12 @@ async def pair_with_code(code: str, portal_url: str,
             "inference_url": reg.get("inference_url", ""),
         })
         _save_node_auth(node_auth)
+        try:
+            from adk.device_identity import record_facet
+            record_facet("daemon", node_auth["node_id"],
+                         capabilities=reg.get("capabilities") or [])
+        except Exception:  # noqa: BLE001 -- the local record never fails pairing
+            pass
         if data.get("command_key"):
             from adk import node_commands
 

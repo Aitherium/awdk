@@ -48,7 +48,7 @@ final class Shortcuts {
 
     /** The shortcut's own tile (res/mipmap-xxxhdpi/ic_shortcut_<id>.png, generated with the
      *  app icon by apply_aither_icon.py). R, not a name lookup: a missing tile fails the build.
-     *  The app shell's tabs and Home grid use the same tiles. */
+     *  The app shell draws the same glyphs from vectors (Shell.iconRes), not these tiles. */
     static int iconRes(String id) {
         switch (id) {
             case "hearth": return R.mipmap.ic_shortcut_hearth;

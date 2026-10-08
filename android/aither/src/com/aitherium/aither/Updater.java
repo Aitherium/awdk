@@ -27,15 +27,17 @@ import java.security.MessageDigest;
  * Self-update from the app's GitHub releases (Aitherium/awdk, tags aither-android-v*).
  * A newer APK is downloaded into app-private storage and accepted only when its SHA-256
  * matches the release's SHA256SUMS AND it is signed with the release certificate, which
- * is also the certificate this installed app carries. Then a notification offers it;
- * Android's own installer asks the owner to confirm. Nothing is installed silently.
+ * is also the certificate this installed app carries. Then it installs without a prompt
+ * when Android allows that (this app is the installer of record or update owner and holds
+ * UPDATE_PACKAGES_WITHOUT_USER_ACTION); otherwise a notification offers it and Android's
+ * own installer asks to confirm. Nothing unverified is ever installed.
  */
 final class Updater {
     static final String RELEASES = "https://api.github.com/repos/Aitherium/awdk/releases?per_page=30";
     static final String TAG = "aither-android-v";
     /** SHA-256 of the release signing certificate (awdk/docs/KVHOLDER.md; build.py pins it too). */
     static final String RELEASE_CERT = "a55fdd95f14cfabe194caa78a298769561dc4ac5fe5e8dbb9e73472774e81d56";
-    static final long DAY_MS = 24L * 3600 * 1000;
+    static final long CHECK_EVERY_MS = 6L * 3600 * 1000;
     static volatile String last = "not checked yet";
 
     static final class Check {
@@ -53,9 +55,9 @@ final class Updater {
         p = ctx.getSharedPreferences("update", Context.MODE_PRIVATE);
     }
 
-    /** At most daily, and only on an unmetered network: the background check. */
+    /** Every 6 hours, and only on an unmetered network: the background check. */
     void maybeCheck() {
-        if (System.currentTimeMillis() - p.getLong("checked_at", 0) < DAY_MS) return;
+        if (System.currentTimeMillis() - p.getLong("checked_at", 0) < CHECK_EVERY_MS) return;
         ConnectivityManager cm = ctx.getSystemService(ConnectivityManager.class);
         if (cm == null || cm.isActiveNetworkMetered()) return;
         check(true);
@@ -127,7 +129,13 @@ final class Updater {
             c.apk = apk;
             c.state = best + " is verified and ready to install";
             p.edit().putString("ready", apk.getName()).putString("ready_sha", want).apply();
-            if (notify) offer(best);
+            if (notify) {
+                // Silent when Android allows it (we are the installer of record and hold
+                // UPDATE_PACKAGES_WITHOUT_USER_ACTION); otherwise UpdateResult falls back to the
+                // one-tap notification. The same verification gate applies either way.
+                if (!installQuietly(apk, best)) offer(best);
+                else c.state = best + " is verified and installing";
+            }
             return done(c, true);
         } catch (Exception e) {
             c.state = "update check failed: " + e.getClass().getSimpleName();
@@ -181,7 +189,53 @@ final class Updater {
         }
     }
 
-    private void offer(String version) {
+    /**
+     * Hand the verified APK to PackageInstaller asking for no user action. True when the
+     * session was committed; the outcome arrives at {@link UpdateResult}. False means the
+     * caller should offer the notification instead.
+     */
+    boolean installQuietly(File apk, String version) {
+        if (!ctx.getPackageManager().canRequestPackageInstalls()) return false;
+        try {
+            int id = writeSession(ctx, apk, true);
+            Intent back = new Intent(ctx, UpdateResult.class).putExtra("version", version);
+            PendingIntent cb = PendingIntent.getBroadcast(ctx, id, back,
+                    PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            try (android.content.pm.PackageInstaller.Session s =
+                         ctx.getPackageManager().getPackageInstaller().openSession(id)) {
+                s.commit(cb.getIntentSender());
+            }
+            return true;
+        } catch (Exception e) {
+            last = "quiet install failed: " + e.getClass().getSimpleName() + " · " + new java.util.Date();
+            return false;
+        }
+    }
+
+    /** A PackageInstaller session holding {@code apk}, not yet committed. */
+    static int writeSession(Context ctx, File apk, boolean quiet) throws java.io.IOException {
+        android.content.pm.PackageInstaller pi = ctx.getPackageManager().getPackageInstaller();
+        android.content.pm.PackageInstaller.SessionParams sp = new android.content.pm.PackageInstaller.SessionParams(
+                android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        sp.setAppPackageName(ctx.getPackageName());
+        if (quiet && android.os.Build.VERSION.SDK_INT >= 31) {
+            sp.setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+        }
+        // Become the update owner, so later updates can be silent even after an adb install.
+        if (android.os.Build.VERSION.SDK_INT >= 34) sp.setRequestUpdateOwnership(true);
+        int id = pi.createSession(sp);
+        try (android.content.pm.PackageInstaller.Session s = pi.openSession(id);
+             InputStream in = new FileInputStream(apk);
+             java.io.OutputStream o = s.openWrite("aither.apk", 0, apk.length())) {
+            byte[] buf = new byte[1 << 16];
+            int n;
+            while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
+            s.fsync(o);
+        }
+        return id;
+    }
+
+    void offer(String version) {
         NotificationManager nm = ctx.getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("update", "App updates",
                 NotificationManager.IMPORTANCE_DEFAULT));

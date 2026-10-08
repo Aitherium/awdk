@@ -152,6 +152,17 @@ public class HolderService extends Service {
             public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
                 return asset(r.getUrl().toString());
             }
+
+            @Override
+            public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail d) {
+                // the renderer is shared with the app's tabs (a 3D avatar can take it down):
+                // start this page again rather than let Android kill the app
+                if (v == web) {
+                    web.destroy();
+                    startPage();
+                }
+                return true;
+            }
         });
         web.resumeTimers();
         web.loadUrl(ORIGIN + "holder-app.html");

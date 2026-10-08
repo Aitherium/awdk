@@ -64,14 +64,15 @@ def resolve_bearer() -> str:
     return ""
 
 
-def _send(method: str, url: str, headers: Dict[str, str], timeout: float) -> Tuple[int, str]:
+def _send(method: str, url: str, headers: Dict[str, str], timeout: float,
+          body: Optional[Dict[str, Any]] = None) -> Tuple[int, str]:
     """One HTTP exchange → ``(status, body_text)``. Tests monkeypatch this."""
     import httpx
 
     from adk._tls import tls_verify
 
     with httpx.Client(timeout=timeout, verify=tls_verify()) as client:
-        resp = client.request(method, url, headers=headers)
+        resp = client.request(method, url, headers=headers, json=body)
     return resp.status_code, resp.text
 
 
@@ -82,6 +83,7 @@ def request_nodes(
     base: Optional[str] = None,
     token: Optional[str] = None,
     timeout: float = _DEFAULT_TIMEOUT,
+    body: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, str, Any, str]:
     """Call ``{base}/v1/nodes{path}``.
 
@@ -101,7 +103,8 @@ def request_nodes(
     url = f"{root}/v1/nodes{path}"
     headers = {"Authorization": f"Bearer {bearer}", "Accept": "application/json"}
     try:
-        status, text = _send(method, url, headers, timeout)
+        status, text = (_send(method, url, headers, timeout, body) if body is not None
+                        else _send(method, url, headers, timeout))
     except Exception as e:  # httpx transport errors have many types; name the url
         raise DevicesError(f"{method} {url} failed: {e}") from e
     try:
@@ -227,12 +230,81 @@ def _rm(args) -> int:
     return 0
 
 
+def _parse_kv(pairs: List[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for p in pairs or []:
+        k, sep, v = str(p).partition("=")
+        if not sep or not k:
+            raise DevicesError(f"--arg must be key=value, got {p!r}")
+        out[k] = v
+    return out
+
+
+def _command(args, *, sleep=None, clock=None) -> int:
+    """``adk devices command <node_id> <verb> [--arg k=v] [--wait]``.
+
+    Queues ONE allow-listed, signed, audited command through Identity (the same
+    channel Aither Control uses) and, with --wait, reads the device's signed result
+    back from the command history -- the audit trail is the proof, not this process.
+    The verb language is the server's: an unknown verb or argument is its 422.
+    """
+    import time as _time
+
+    sleep = sleep or _time.sleep
+    clock = clock or _time.monotonic
+    node_id = getattr(args, "node_id", "") or ""
+    verb = getattr(args, "verb", "") or ""
+    cmd_args = _parse_kv(getattr(args, "arg", None) or [])
+    status, text, parsed, url = request_nodes(
+        "POST", f"/{node_id}/commands", body={"verb": verb, "args": cmd_args})
+    if status != 200 or not isinstance(parsed, dict):
+        _print_refusal("POST", url, status, text)
+        return 1
+    rec = parsed.get("command") or {}
+    cmd_id = str(rec.get("id") or "")
+    if not getattr(args, "wait", False):
+        print(json.dumps(rec) if getattr(args, "json", False) else f"queued {cmd_id} ({verb})")
+        return 0
+    deadline = clock() + float(getattr(args, "timeout", 300) or 300)
+    while True:
+        status, text, parsed, url = request_nodes("GET", f"/{node_id}/commands")
+        if status == 200 and isinstance(parsed, dict):
+            for c in parsed.get("commands") or []:
+                if c.get("id") == cmd_id and c.get("status") in ("done", "failed"):
+                    if getattr(args, "json", False):
+                        print(json.dumps(c))
+                    else:
+                        print(f"{cmd_id} {verb}: {c.get('status')}")
+                        print(f"  output: {str(c.get('output') or '')[:600]}")
+                    return 0 if c.get("ok") else 1
+        if clock() >= deadline:
+            print(f"x {cmd_id} ({verb}) not reported within the timeout; it is still in "
+                  f"the device's history: adk devices command-log {node_id}")
+            return 3
+        sleep(10)
+
+
+def _command_log(args) -> int:
+    node_id = getattr(args, "node_id", "") or ""
+    status, text, parsed, url = request_nodes("GET", f"/{node_id}/commands")
+    if status != 200 or not isinstance(parsed, dict):
+        _print_refusal("GET", url, status, text)
+        return 1
+    if getattr(args, "json", False):
+        print(text)
+        return 0
+    for c in parsed.get("commands") or []:
+        print(f"{c.get('id')}  {c.get('verb'):<20} {c.get('status'):<9} by {c.get('issued_by')}")
+    return 0
+
+
 def cmd_devices(args) -> int:
-    """Dispatch ``adk devices <list|status|rm>``. Returns the process exit code."""
+    """Dispatch ``adk devices <list|status|rm|command|command-log>``. Returns the exit code."""
     sub = getattr(args, "devices_command", None)
-    handlers = {"list": _list, "status": _status, "rm": _rm}
+    handlers = {"list": _list, "status": _status, "rm": _rm, "command": _command,
+                "command-log": _command_log}
     if sub not in handlers:
-        print("usage: adk devices {list,status,rm} ...")
+        print("usage: adk devices {list,status,rm,command,command-log} ...")
         return 2
     try:
         return handlers[sub](args)

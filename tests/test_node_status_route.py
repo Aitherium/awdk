@@ -424,3 +424,30 @@ class TestResumeOnDaemonStart:
         res = asyncio.run(server.resume_node_harness_link())
         assert res["held"] is False and res["code"] == "not_signed_in"
         assert harness.minted == []
+
+
+class TestMeshOverlayRoute:
+    """GET /mesh/overlay: the Setup app's live "Join my mesh" state."""
+
+    def _get(self, origin=GOOD_ORIGIN, client=LOOPBACK):
+        headers = {"Origin": origin} if origin else {}
+        return TestClient(_app(), client=client).get("/mesh/overlay", headers=headers)
+
+    def test_reports_tailscale_missing(self, monkeypatch):
+        monkeypatch.setattr(mesh, "_tailscale", lambda: None)
+        r = self._get()
+        assert r.status_code == 200
+        body = r.json()
+        assert body["joined"] is False and body["code"] == "tailscale_missing"
+        assert body["registered"] is False
+
+    def test_reports_the_live_join(self, monkeypatch):
+        monkeypatch.setattr(mesh, "overlay_status", lambda *a, **k: {
+            "joined": True, "code": "ok", "detail": "", "tailnet_ip": "100.64.0.7",
+            "backend_state": "Running", "hostname": "h", "control_url": ""})
+        body = self._get().json()
+        assert body["joined"] is True and body["tailnet_ip"] == "100.64.0.7"
+
+    def test_refused_for_a_foreign_origin(self, monkeypatch):
+        monkeypatch.setattr(mesh, "_tailscale", lambda: None)
+        assert self._get(origin="https://evil.example").status_code == 403

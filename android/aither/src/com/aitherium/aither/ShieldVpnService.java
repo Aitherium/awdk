@@ -49,7 +49,8 @@ import java.util.concurrent.TimeUnit;
  *
  * Android asks once ("Aither wants to set up a VPN connection"); MainActivity shows that
  * prompt when the guardian turns the filter on. Making it stick (Always-on VPN) is a
- * Settings step on the phone; see the Family Shield doc.
+ * Settings step on the phone; see the Family Shield doc. When it does not stick (switched
+ * off, or another VPN took over), ShieldWatch tells the household and asks the child.
  */
 public class ShieldVpnService extends VpnService implements Runnable {
     static final String ACTION_STOP = "com.aitherium.aither.SHIELD_STOP";
@@ -84,16 +85,22 @@ public class ShieldVpnService extends VpnService implements Runnable {
         return !mode.isEmpty() && !"off".equals(mode) && !new Config(c).familyDevice().isEmpty();
     }
 
+    static boolean isRunning() {
+        return running != null;
+    }
+
     /** Start or stop the filter to match the household. Safe from any thread or context. */
     static void sync(Context c) {
         ShieldVpnService s = running;
         if (!wanted(c)) {
+            ShieldWatch.disarm(c);
             // Always-on VPN keeps the tunnel up as a plain resolver (mode off answers
             // everything): tearing it down would be the system's job, not ours.
             if (s != null && !s.isAlwaysOn()) s.shutdown();
             last = "off";
             return;
         }
+        ShieldWatch.arm(c);
         if (s != null) return;
         if (VpnService.prepare(c) != null) {
             last = "waiting for permission on this phone";
@@ -187,6 +194,8 @@ public class ShieldVpnService extends VpnService implements Runnable {
         reader.start();
         running = this;
         last = "on";
+        new Config(this).set("shield_revoked", false);
+        ShieldWatch.checkSoon(this); // an earlier "off" is cleared at the household
         return true;
     }
 
@@ -194,7 +203,10 @@ public class ShieldVpnService extends VpnService implements Runnable {
     @Override
     public void onRevoke() {
         last = "turned off on this phone";
+        new Config(this).set("shield_revoked", true);
         shutdown();
+        // tell the household, ask the child; after a breath, so the VPN still up is another's
+        if (wanted(this)) ShieldWatch.checkSoon(this, 2000);
     }
 
     @Override

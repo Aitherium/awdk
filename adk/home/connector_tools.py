@@ -56,8 +56,10 @@ logger = logging.getLogger("adk.home.connectors")
 #: connect guide, and the OAuth start in Veil's connectors-bff is admin-only), so
 #: every message that names this URL says an admin does it -- never "you connect".
 DEFAULT_CONNECT_URL = "https://api.aitherium.com/admin?tab=connections"
-#: The public resolve path: the portal BFF forwards the VERIFIED session tenant to
-#: Genesis (``POST {base}/connectors/resolve``). In-fleet homes set
+#: The public resolve path: the portal BFF forwards this home's own bearer to
+#: Genesis (``POST {base}/connectors/resolve``), which scopes to the signed-in
+#: user's tenant and roster and hands a named personal connector (mail,
+#: calendar, to-do) only to a real user of that tenant. In-fleet homes set
 #: ``AITHER_CONNECTORS_URL`` (or ``AITHER_GENESIS_URL``) to reach Genesis direct.
 DEFAULT_RESOLVE_BASE = "https://api.aitherium.com/api"
 #: How long a resolved access token is reused before it is resolved again (Genesis

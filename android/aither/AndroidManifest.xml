@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="11"
-    android:versionName="0.3.8">
+    android:versionCode="16"
+    android:versionName="0.3.13">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
 
@@ -15,10 +15,24 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- self-update: Android still asks the owner to confirm every install (the store build drops it) -->
+    <!-- self-update of the verified, release-signed APK: silent when Android allows it
+         (Updater.installQuietly), else the one-tap notification (the store build drops both) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <!-- the calendar_read agent tool: asked for only when the owner turns that tool on -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- Ask Aither's Talk button: asked for on its first tap; heard by the on-device recognizer only -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Android 11+ hides other apps' services: the speech recognizer and the voice that reads answers -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 
     <application
         android:label="Aither"
@@ -27,11 +41,14 @@
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
         android:extractNativeLibs="true"
+        android:largeHeap="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
-        <!-- AitherOS itself (the PWA), full screen -->
+        <!-- AitherOS itself (the PWA), full screen. NoActionBar: the shell draws its own top
+             bar; the system one stacked a second gray "Aither" bar above it (owner, 2026-10-07) -->
         <activity
             android:name=".MainActivity"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
@@ -69,6 +86,7 @@
         <activity
             android:name=".SettingsActivity"
             android:label="Aither on this phone"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:exported="true"
             android:launchMode="singleTask">
             <!-- the owner's pairing link: aitherkv://pair?r=<relay>&i=<identity>&c=<code>&d=<device>&mb=<MB> -->
@@ -77,6 +95,30 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="aitherkv" android:host="pair" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Link a device": sign a watch, TV or laptop in by its code. The watch's QR is an
+             app.aitherium.com App Link (MainActivity hands it here); aither://link?code= and the
+             IdP's /link page open here too. Nothing is approved without the owner's tap. -->
+        <activity
+            android:name=".LinkActivity"
+            android:label="Link a device"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="aither" android:host="link" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="idp.aitherium.com" android:path="/link" />
             </intent-filter>
         </activity>
 
@@ -142,10 +184,88 @@
                 android:value="Family internet filter set by the household's guardian: resolves this phone's DNS lookups through the family's filter" />
         </service>
 
+        <!-- on duty for approvals: one outbound long-poll on the household inbox while the
+             guardian leaves it on (no Google Play Services; nothing inbound) -->
+        <service
+            android:name=".DutyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Delivers the household's approval requests to the guardian in real time, without Google Play Services, while the guardian keeps it on" />
+        </service>
+
+        <!-- Approve / Deny on an approval notification: only this app's own PendingIntents -->
+        <receiver android:name=".NoticeActionReceiver" android:exported="false" />
+
+        <!-- The outcome of a quiet self-update; anything but success becomes the notification -->
+        <receiver android:name=".UpdateResult" android:exported="false" />
+
+        <!-- Family Shield's watch: tells the household when the filter is off, asks the child
+             to turn it back on. The job runs every 15 minutes; the receiver gets the
+             ConnectivityManager callback for VPN networks coming and going. -->
+        <service
+            android:name=".ShieldWatch"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <receiver android:name=".ShieldWatch$Changed" android:exported="false" />
+        <!-- App functions (Android 16+): what Gemini, or another agent Android lets run app
+             functions, may ask of Aither. Only the system binds it (BIND_APP_FUNCTION_SERVICE);
+             the policy is GeminiFunctions. The index files are hand-written in assets/ (what the
+             androidx KSP processor would generate), v1 for Android 16's first indexer, v2 and
+             its schema for the current one. -->
+        <service
+            android:name=".AitherFunctionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_APP_FUNCTION_SERVICE">
+            <property
+                android:name="android.app.appfunctions"
+                android:value="app_functions.xml" />
+            <property
+                android:name="android.app.appfunctions.schema"
+                android:value="app_functions_schema.xsd" />
+            <property
+                android:name="android.app.appfunctions.v2"
+                android:value="aither_functions.xml" />
+            <intent-filter>
+                <action android:name="android.app.appfunctions.AppFunctionService" />
+            </intent-filter>
+        </service>
+        <property
+            android:name="android.app.appfunctions.app_metadata"
+            android:resource="@xml/app_functions_metadata" />
+
         <service
             android:name=".HeartbeatJob"
             android:exported="true"
             android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- the "Aither" home-screen widget: Talk to Aither, Learn, Family. Not exported:
+             the system delivers APPWIDGET_UPDATE regardless, and no other app needs it -->
+        <receiver
+            android:name=".AitherWidget"
+            android:label="Aither"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_aither_info" />
+        </receiver>
+
+        <!-- the "Talk to Aither" Quick Settings tile. Exported only because System UI binds
+             it; the permission means only the system can -->
+        <service
+            android:name=".TalkTile"
+            android:label="Talk to Aither"
+            android:icon="@drawable/aither_mark"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

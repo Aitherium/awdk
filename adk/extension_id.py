@@ -21,9 +21,10 @@ from typing import FrozenSet, Optional
 
 _ID_RE = re.compile(r"^[a-p]{32}$")
 
-# The id both manifests' public "key" produces for an unpacked build. Mirrors
-# awconnect/shared/extension-id.js. One of the two first-party ids; see
-# STORE_EXTENSION_ID for the other.
+# The id the manifest's public "key" produces for an unpacked build. The key
+# lives in the extension's public/manifest.json (the 4.x source;
+# vite copies it into dist/, and build-connect.yml keeps it in the *-unpacked-*
+# zip). One of the two first-party ids; see STORE_EXTENSION_ID for the other.
 PINNED_EXTENSION_ID = "hlmfknhcfhjjngckfpacgleffckpmphe"
 
 #: The Chrome Web Store build's id. A store item keeps the id of its first
@@ -50,6 +51,23 @@ def unpacked_extension_id(folder: "str | os.PathLike[str]", *, windows: Optional
     path = str(folder) if windows is not None else os.path.abspath(str(folder))
     data = path.encode("utf-16-le" if win else "utf-8")
     return "".join(chr(ord("a") + int(c, 16)) for c in hashlib.sha256(data).hexdigest()[:32])
+
+
+def key_extension_id(key: str) -> str:
+    """The id Chrome assigns to a build whose manifest carries ``key``.
+
+    Same digest-to-letters mapping as the path form, over the DER public key the
+    base64 ``key`` decodes to. Raises ValueError on a key that is not base64."""
+    import base64
+    import binascii
+
+    try:
+        der = base64.b64decode("".join(str(key or "").split()), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"manifest key is not base64: {exc}") from exc
+    if not der:
+        raise ValueError("manifest key is empty")
+    return "".join(chr(ord("a") + int(c, 16)) for c in hashlib.sha256(der).hexdigest()[:32])
 
 
 def allow_extension_id(ext_id: str, path: Optional[Path] = None) -> Path:

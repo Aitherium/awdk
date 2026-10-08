@@ -3,6 +3,7 @@
     python awdk/android/aither/build_llama.py         # once: the on-phone model engine (NDK)
     python awdk/android/aither/build.py [--install SERIAL]
     python awdk/android/aither/build.py --store --aab     # the Google Play bundle
+    python awdk/android/aither/build.py --wear [--out DIR] [--install WATCH]  # the watch app
 
 Needs a JDK (javac, keytool, jarsigner) and an Android SDK with ``platforms;android-36`` and
 ``build-tools;36.0.0`` (``sdkmanager``); ``--aab`` fetches bundletool (pinned by SHA-256).
@@ -42,6 +43,7 @@ PAGE_ALIGN = 16384
 # permissions Google Play restricts and the store build does not need (see Flavor.java)
 STORE_DROPS = (
     "android.permission.REQUEST_INSTALL_PACKAGES",
+    "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION",
     "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
 )
 
@@ -395,9 +397,13 @@ def build(
                 "AI on this phone will say the engine is missing",
                 file=sys.stderr,
             )
-    aligned = out / "aligned.apk"
+    return sign(bt, base, out / "aither.apk", keystore, storepass_file)
+
+
+def sign(bt: Path, base: Path, apk: Path, keystore: str, storepass_file: str) -> Path:
+    """zipalign + apksigner; a release signature must carry RELEASE_CERT_SHA256."""
+    aligned = apk.parent / "aligned.apk"
     run([tool(bt, "zipalign"), "-f", "-p", "4", str(base), str(aligned)])
-    apk = out / "aither.apk"
     if keystore:  # the release key: the password is read from a file, never an argument
         signer = ["--ks", keystore, "--ks-pass", f"file:{storepass_file}"]
     else:
@@ -418,6 +424,89 @@ def build(
     return apk
 
 
+# The watch app (../aither-wear) compiles these phone sources too: one card binding
+# (ApprovalCard.decideBody), one listening rule (Talk), one brand kit (Ui), and the
+# device-link code + its QR (DeviceLink, Qr), so the watch shows what the phone parses.
+WEAR = HERE.parent / "aither-wear"
+WEAR_SHARED = ("ApprovalCard.java", "Talk.java", "Ui.java", "DeviceLink.java", "Qr.java")
+
+
+def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
+    """The Wear OS app: its own manifest and sources, the phone's launcher icons and the
+    WEAR_SHARED sources, signed exactly like the phone app (same key, same cert check)."""
+    root = sdk()
+    jar = root / "platforms" / f"android-{API}" / "android.jar"
+    bt = root / "build-tools" / TOOLS
+    if not jar.exists():
+        raise SystemExit(f"build: {jar} missing (sdkmanager 'platforms;android-{API}')")
+    shutil.rmtree(out, ignore_errors=True)
+    res = out / "res"
+    for d in (HERE / "res").glob("mipmap-*"):  # the launcher icon, not the phone's shortcuts
+        for f in d.iterdir():
+            if f.name.startswith("ic_launcher"):
+                (res / d.name).mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, res / d.name / f.name)
+    base = out / "base.apk"
+    flat = out / "res.zip"
+    run([tool(bt, "aapt2"), "compile", "--dir", str(res), "-o", str(flat)])
+    run(
+        [
+            tool(bt, "aapt2"),
+            "link",
+            str(flat),
+            "--manifest",
+            str(WEAR / "AndroidManifest.xml"),
+            "-I",
+            str(jar),
+            "--java",
+            str(out / "rgen"),
+            "-o",
+            str(base),
+        ]
+    )
+    src = HERE / "src" / "com" / "aitherium" / "aither"
+    srcs = [str(p) for p in (WEAR / "src").rglob("*.java")]
+    srcs += [str(src / name) for name in WEAR_SHARED]
+    srcs += [str(p) for p in (out / "rgen").rglob("*.java")]
+    run(
+        [
+            "javac",
+            "-source",
+            "11",
+            "-target",
+            "11",
+            "-Xlint:-options",
+            "-encoding",
+            "UTF-8",
+            "-classpath",
+            str(jar),
+            "-d",
+            str(out / "classes"),
+            *srcs,
+        ]
+    )
+    classes_jar = out / "classes.jar"
+    with zipfile.ZipFile(classes_jar, "w", zipfile.ZIP_STORED) as z:
+        for p in sorted((out / "classes").rglob("*.class")):
+            z.write(p, p.relative_to(out / "classes").as_posix())
+    (out / "dex").mkdir()
+    run(
+        [
+            tool(bt, "d8"),
+            "--lib",
+            str(jar),
+            "--min-api",
+            "30",
+            "--output",
+            str(out / "dex"),
+            str(classes_jar),
+        ]
+    )
+    with zipfile.ZipFile(base, "a", zipfile.ZIP_DEFLATED) as z:
+        z.write(out / "dex" / "classes.dex", "classes.dex")
+    return sign(bt, base, out / "aither-wear.apk", keystore, storepass_file)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=str(HERE / "out"))
@@ -436,12 +525,23 @@ def main(argv: list[str] | None = None) -> int:
         help="the Google Play build (Flavor.STORE, STORE_DROPS)",
     )
     ap.add_argument("--aab", action="store_true", help="write an App Bundle, not an APK")
+    ap.add_argument(
+        "--wear",
+        action="store_true",
+        help="the Wear OS app (../aither-wear), same signing; --install takes the watch's adb serial",
+    )
     a = ap.parse_args(argv)
     if bool(a.keystore) != bool(a.storepass_file):
         ap.error("--keystore and --storepass-file go together")
     if a.aab and a.install:
         ap.error("--install takes an APK; a bundle is uploaded to Google Play")
-    apk = build(Path(a.out), a.keystore, a.storepass_file, a.store, a.aab)
+    if a.wear:
+        if a.store or a.aab:
+            ap.error("--wear builds the sideload APK; --store/--aab are the phone's")
+        out = Path(a.out) if a.out != str(HERE / "out") else WEAR / "out"
+        apk = build_wear(out, a.keystore, a.storepass_file)
+    else:
+        apk = build(Path(a.out), a.keystore, a.storepass_file, a.store, a.aab)
     print(f"build: {apk} ({apk.stat().st_size // 1024} KB)")
     if a.install:
         run(["adb", "-s", a.install, "install", "-r", str(apk)])

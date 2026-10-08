@@ -282,23 +282,23 @@ a:focus-visible, .jump a:focus-visible {
     <p class="eyebrow">aither-adk agent pack</p>
     <h1>OpenClaw Research Studio</h1>
     <p class="lede">OpenClaw — Web Research Agent Brain Pack</p>
-    <nav class="jump"><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.61/openclaw-3.8.61.tar.gz">Download</a></nav>
+    <nav class="jump"><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.63/openclaw-3.8.63.tar.gz">Download</a></nav>
   </header>
 
   <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">openclaw — install</span></div><pre class="term-body"><span class="c"># one command each; nothing else to configure</span>
-<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.61/openclaw-3.8.61.tar.gz
-<span class="p">$</span> tar xzf openclaw-3.8.61.tar.gz
+<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.63/openclaw-3.8.63.tar.gz
+<span class="p">$</span> tar xzf openclaw-3.8.63.tar.gz
 <span class="p">$</span> python openclaw/install.py
 <span class="o">installed openclaw -&gt; ~/.aither/packs/openclaw</span>
 <span class="o">verified: adk discovers &#x27;openclaw&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">openclaw — install</span></div><pre class="term-body"><span class="c"># PowerShell. curl.exe and tar ship with Windows 10 1803+</span>
-<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.61/openclaw-3.8.61.tar.gz
-<span class="p">$</span> tar -xzf openclaw-3.8.61.tar.gz
+<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.63/openclaw-3.8.63.tar.gz
+<span class="p">$</span> tar -xzf openclaw-3.8.63.tar.gz
 <span class="p">$</span> python openclaw\install.py
 <span class="o">installed openclaw -&gt; ~\.aither\packs\openclaw</span>
 <span class="o">verified: adk discovers &#x27;openclaw&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.61</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>ccedafba203b1415…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.63</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>84be478b5e0c98d4…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -313,13 +313,13 @@ Sign-in-free; runs on the operator&#x27;s own LLM key.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>ccedafba203b141574e0b51b20e54939c98e3184acc7a85991ad457255b50608</code></p>
+    <p class="sub">sha256 <code>84be478b5e0c98d4a8bb72f57765d0b8ba6dcf0756add8d5fb863c8565d4e3cf</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
-<span class="p">$</span> sha256sum -c openclaw-3.8.61.sha256
-<span class="o">openclaw-3.8.61.tar.gz: OK</span>
+<span class="p">$</span> sha256sum -c openclaw-3.8.63.sha256
+<span class="o">openclaw-3.8.63.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;CCEDAFBA203B141574E0B51B20E54939C98E3184ACC7A85991AD457255B50608&#x27;
-<span class="p">$</span> (Get-FileHash openclaw-3.8.61.tar.gz -Algorithm SHA256).Hash -eq $want
+<span class="p">$</span> $want = &#x27;84BE478B5E0C98D4A8BB72F57765D0B8BA6DCF0756ADD8D5FB863C8565D4E3CF&#x27;
+<span class="p">$</span> (Get-FileHash openclaw-3.8.63.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
   </section>
@@ -327,10 +327,13 @@ Sign-in-free; runs on the operator&#x27;s own LLM key.</p></div></section>
   
 
   <footer>
-    Built from <code>v3.8.61</code> · adk 3.8.61 ·
+    Built from <code>v3.8.63</code> · adk 3.8.63 ·
     <a href="../packs.html">All packs</a> ·
     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a>
-  </footer>
+  <!-- aither-about:start GENERATED from the ecosystem registry built_on -->
+<p class="aither-built-on fk-built-on" style="font-size:.85rem;opacity:.75;margin:.75rem 0">Built on <a href="https://www.blender.org/" rel="noopener">Blender + Rigify</a> &middot; <a href="https://www.centos.org/centos-stream/" rel="noopener">CentOS Stream</a> &middot; <a href="https://www.chromium.org/" rel="noopener">Chromium</a> &middot; <a href="https://github.com/comfyanonymous/ComfyUI" rel="noopener">ComfyUI</a> &middot; <a href="https://github.com/moby/moby" rel="noopener">Docker</a> &middot; <a href="https://ffmpeg.org/" rel="noopener">FFmpeg</a> &middot; <a href="https://github.com/headroomlabs-ai/headroom" rel="noopener">headroom</a> &middot; <a href="https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1" rel="noopener">Hunyuan3D</a> &middot; <a href="https://github.com/lancedb/lancedb" rel="noopener">LanceDB</a> &middot; <a href="https://github.com/ggml-org/llama.cpp" rel="noopener">llama.cpp</a> &middot; <a href="https://github.com/vercel/next.js" rel="noopener">Next.js</a> &middot; <a href="https://github.com/microsoft/playwright" rel="noopener">Playwright</a> &middot; <a href="https://github.com/containers/podman" rel="noopener">Podman</a> &middot; <a href="https://github.com/facebook/react" rel="noopener">React</a> &middot; <a href="https://github.com/repowise-dev/repowise" rel="noopener">repowise</a> &middot; <a href="https://github.com/NVlabs/Sana" rel="noopener">SANA</a> &middot; <a href="https://github.com/vllm-project/vllm" rel="noopener">vLLM</a> &middot; <a href="https://www.wireguard.com/" rel="noopener">WireGuard</a></p>
+<!-- aither-about:end -->
+</footer>
 
 </main>
 </body>

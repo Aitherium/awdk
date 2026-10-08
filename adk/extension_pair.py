@@ -77,13 +77,16 @@ MAX_TOKENS = 64
 
 #: What a paired extension may reach. ``"METHOD /prefix"`` matches THAT method
 #: on the exact path or one under it (``/agents/<name>/...`` for a GET), so the
-#: chat lane, the agent list, the plain-completion fallback, the tools panel's
-#: MCP session and the identity hand-off are open -- and ``/cli/execute``,
+#: chat lane, the agent list, the plain-completion fallback, the model list the
+#: overlay probes before it (contract C1: a 401 there reads as "try the next
+#: port", so leaving it out silently routed every paired lookup to awnode), the
+#: tools panel's MCP session and the identity hand-off are open -- and ``/cli/execute``,
 #: ``/x-session/import``, ``/local/browser-pair``, ``/mesh`` and every other
 #: route are not. No method, no match: fail closed.
 SCOPE_PATHS: Tuple[str, ...] = (
     "GET /agents",
     "POST /chat/stream",
+    "GET /v1/models",
     "POST /v1/chat/completions",
     "POST /mcp",
     "GET /identity/whoami",

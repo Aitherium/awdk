@@ -541,6 +541,8 @@ List, inspect and remove the devices enrolled in your workspace
 - `adk devices list` — List enrolled devices
 - `adk devices status` — Show one device (default: this one)
 - `adk devices rm` — Remove a device from the workspace
+- `adk devices command` — Send a device one signed, audited command (the Control channel)
+- `adk devices command-log` — The commands sent to a device and what each reported
 
 ## `adk disconnect`
 
@@ -1069,7 +1071,9 @@ AitherMesh overlay operations (onboard, list peers)
 
 **Subcommands**
 
-- `adk mesh onboard` — Onboard this node into AitherMesh overlay (WireGuard)
+- `adk mesh join` — Join this signed-in device to your mesh (Headscale/Tailscale, NAT-friendly)
+- `adk mesh status` — Is this device on your mesh right now (reads tailscale itself)
+- `adk mesh onboard` — Onboard this node into AitherMesh overlay (operator path; a signed-in laptop uses 'adk mesh join')
 - `adk mesh ls` — List peer agents in the mesh and their A2A services
 - `adk mesh provide` — Become a community inference provider (advertise → consent → await operator trust)
 - `adk mesh serve` — Serve Kimi-K3 from this mesh (plan / rpc-backend / coordinator roles)

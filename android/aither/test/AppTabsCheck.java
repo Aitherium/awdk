@@ -61,6 +61,19 @@ public class AppTabsCheck {
             }
         }
 
+        // the Home grid per phone: Media Forge for the platform owner only, no Shop on Play
+        eq("member grid", ids(AppTabs.apps(false, false, false)).contains("mediaforge"), false);
+        eq("owner grid", ids(AppTabs.apps(false, true, false)).contains("mediaforge"), true);
+        eq("play grid", ids(AppTabs.apps(false, true, true)).contains("shop"), false);
+        eq("direct grid", ids(AppTabs.apps(false, false, false)).contains("shop"), true);
+        for (String id : new String[] {"agents", "packs", "mediaforge", "shop"}) {
+            eq("child grid " + id, ids(AppTabs.apps(true, true, false)).contains(id), false);
+        }
+        eq("platform owner", AppTabs.platformOwner(Arrays.asList("owner"), "platform"), true);
+        eq("customer owner", AppTabs.platformOwner(Arrays.asList("owner", "admin"), "tnt_acme"), false);
+        eq("super admin", AppTabs.platformOwner(Arrays.asList("Super_Admin"), "tnt_acme"), true);
+        eq("member", AppTabs.platformOwner(Arrays.asList("member"), "platform"), false);
+
         // links: grown-up
         route(false, "/", "tab home");
         route(false, "", "tab home");
@@ -123,6 +136,17 @@ public class AppTabsCheck {
         eq("back to home", AppTabs.back(false, false, false, true, false), AppTabs.Back.HOME);
         eq("back exits", AppTabs.back(false, false, false, true, true), AppTabs.Back.EXIT);
         eq("home with history", AppTabs.back(false, false, true, false, true), AppTabs.Back.WEB_BACK);
+
+        // the one sign-in page comes back to the page you were on, never to itself
+        eq("sign in from learn", AppTabs.signInUrl(AppTabs.ORIGIN + "/learn/parent/"),
+                AppTabs.ORIGIN + "/login?redirect=%2Flearn%2Fparent%2F");
+        eq("sign in keeps query", AppTabs.signInUrl(AppTabs.ORIGIN + "/?app=hearth"),
+                AppTabs.ORIGIN + "/login?redirect=%2F%3Fapp%3Dhearth");
+        eq("sign in from home", AppTabs.signInUrl(null), AppTabs.ORIGIN + "/login");
+        eq("sign in from sign in", AppTabs.signInUrl(AppTabs.ORIGIN + "/login?redirect=/chat"), AppTabs.ORIGIN + "/login");
+        eq("sign in elsewhere", AppTabs.signInUrl("https://evil.example/x"), AppTabs.ORIGIN + "/login");
+        eq("is sign in", AppTabs.isSignIn(AppTabs.ORIGIN + "/login?redirect=%2Fchat"), true);
+        eq("not sign in", AppTabs.isSignIn(AppTabs.ORIGIN + "/learn/parent/"), false);
 
         System.out.println(bad == 0 ? "OK" : bad + " FAILED");
         System.exit(bad == 0 ? 0 : 1);

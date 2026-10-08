@@ -7827,11 +7827,156 @@ _PROVIDER_ALIASES = {
 }
 
 
+#: How long `adk mesh join` waits for tailscale to report Running after `up`.
+_MESH_JOIN_SETTLE_S = 30
+
+
+def _mesh_join_fail(reason: str, retry: str = "adk mesh join", code: int = 2) -> int:
+    """One failure shape for `adk mesh join`: exactly why, and the one command to retry."""
+    print(f"  Not on the mesh: {reason}", file=sys.stderr)
+    print(f"  Retry: {retry}", file=sys.stderr)
+    return code
+
+
+def _mesh_join_signed_in(args) -> int:
+    """`adk mesh join` -- the signed-in self-service join, from a terminal or an installer.
+
+    The same chain as the daemon's POST /mesh/join (the desktop's "Join my mesh"):
+    Identity issues this account's Headscale key, the node registers on the identity
+    spine (which hands back the capability token the Conductor admits), then the
+    Conductor onboard + `tailscale up`. `adk mesh onboard` cannot do this on its own:
+    it has no tenant, no capability token and no key, so a laptop got a 422/401 or a
+    silent fall back to raw WireGuard it has no public UDP port for.
+
+    Exit 0 ONLY when tailscale itself says this device is Running on the mesh's
+    tailnet with a tailnet address (adk.mesh.overlay_status); the installers print
+    "Joined your mesh" off this exit code, so it is never a registration alone.
+    """
+    import asyncio
+    import platform as _platform
+    import time as _time
+
+    import httpx
+
+    from adk import enrollment
+    from adk import mesh as _mesh
+    from adk.fleet_enroll import _load_node_auth
+
+    hs_url = (getattr(args, "headscale_url", "") or os.getenv("AITHER_HEADSCALE_URL", "")
+              or _mesh.DEFAULT_HEADSCALE_URL)
+    node_class = getattr(args, "node_class", "") or "laptop"
+
+    def _joined(st: dict) -> int:
+        print(f"  Joined your mesh: {st.get('tailnet_ip')} (tailscale {st.get('backend_state')})")
+        return 0
+
+    st = _mesh.overlay_status(hs_url)
+    if st["joined"]:
+        return _joined(st)
+    if st["code"] == "tailscale_missing":
+        return _mesh_join_fail(
+            f"Tailscale is not installed ({_mesh.TAILSCALE_INSTALL_URL}).",
+            "install Tailscale, then: adk mesh join", code=3)
+    if st["code"] == "other_tailnet":
+        return _mesh_join_fail(st["detail"], "tailscale logout ; adk mesh join", code=4)
+
+    from adk.auth import AuthStore
+    prof = AuthStore().get_active_profile() or {}
+    token = str(prof.get("access_token") or "")
+    if not token or prof.get("token_type") == "local" or prof.get("endpoint") == "local":
+        return _mesh_join_fail("this device is not signed in to an Aitherium account.",
+                               "adk login ; adk mesh join", code=5)
+    from adk.server import (
+        _remember_node_registration, _update_node_record, identity_base_for_profile,
+    )
+    idp = identity_base_for_profile(prof)
+    # The node `adk pair`/`adk enroll` registered stays the node: one machine, one entry.
+    node_id = (str(_load_node_auth().get("node_id") or "")
+               or os.getenv("AITHER_NODE_NAME", "") or _platform.node())
+    conductor = (getattr(args, "conductor", "") or os.getenv("AITHER_CONDUCTOR_URL", "")
+                 or "https://conductor.aitherium.com").rstrip("/")
+
+    async def _run() -> tuple[int, str]:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(f"{idp}/v1/mesh-keys/issue",
+                                  headers={"Authorization": f"Bearer {token}"})
+        refusal = enrollment.classify_refusal(r.status_code, r.text)
+        if refusal:
+            return 7, f"the platform refused a mesh key ({refusal['code']}): {refusal.get('hint') or ''}"
+        if r.status_code == 401:
+            return 5, "this device's sign-in has expired (run: adk login)"
+        if r.status_code == 403:
+            return 7, "your account has no workspace yet -- create or join one first"
+        if r.status_code != 200:
+            return 2, f"mesh key issuance failed (HTTP {r.status_code})"
+        mesh_key = str((r.json() or {}).get("mesh_key") or "")
+        if not mesh_key:
+            return 2, "Identity returned no mesh key"
+        enroll = await enrollment.rich_enroll(idp, token, node_id, enable_heartbeat=False,
+                                              node_class=node_class)
+        if not enroll.get("enrolled"):
+            refusal = enrollment.classify_refusal(enroll.get("http_status"), enroll.get("body", ""))
+            why = (refusal or {}).get("code") or enroll.get("error") or "unknown"
+            return 7, f"registering this device failed: {why}"
+        _remember_node_registration(node_id, idp, enroll)
+        bearer = str(enroll.get("bearer_token") or "")
+        if not bearer:
+            return 2, "Identity returned no node capability token; the Conductor cannot admit this node"
+        result = await _mesh.join(
+            conductor, node_id, role="worker", headscale=True, headscale_auth_key=mesh_key,
+            psk=bearer, tenant_id=str(enroll.get("tenant_id") or ""), node_class=node_class,
+            headscale_url=hs_url, wireguard_fallback=False,
+        )
+        _update_node_record(overlay_ip=str(result.get("overlay_ip") or ""))
+        return 0, str(result.get("tailscale_output") or "")
+
+    try:
+        rc, why = asyncio.run(asyncio.wait_for(_run(), timeout=180))
+    except asyncio.TimeoutError:
+        return _mesh_join_fail("the join timed out after 180s.")
+    except (RuntimeError, OSError, ValueError, httpx.HTTPError) as exc:
+        return _mesh_join_fail(f"{exc.__class__.__name__}: {str(exc)[:300]}")
+    if rc:
+        return _mesh_join_fail(why, code=rc)
+    # `tailscale up` returning is not the join; the tailnet saying Running is.
+    deadline = _time.monotonic() + _MESH_JOIN_SETTLE_S
+    while True:
+        st = _mesh.overlay_status(hs_url)
+        if st["joined"] or _time.monotonic() > deadline:
+            break
+        _time.sleep(2)
+    if st["joined"]:
+        return _joined(st)
+    detail = st["detail"] + (f" (tailscale said: {why[:200]})" if why else "")
+    return _mesh_join_fail(detail, code=6)
+
+
+def _mesh_status(args) -> int:
+    """`adk mesh status` -- is this device on the mesh's tailnet right now."""
+    import json as _json
+
+    from adk import mesh as _mesh
+
+    st = _mesh.overlay_status(getattr(args, "headscale_url", "") or None)
+    if getattr(args, "json", False):
+        print(_json.dumps(st))
+    else:
+        mark = "joined" if st["joined"] else f"not joined ({st['code']})"
+        print(f"  Mesh: {mark}")
+        print(f"  {st['detail']}")
+    return 0 if st["joined"] else 1
+
+
 def cmd_mesh(args) -> int:
     """Manage AitherMesh overlay and A2A operations."""
     import asyncio
 
     sub = getattr(args, "mesh_command", None)
+
+    if sub == "join":
+        return _mesh_join_signed_in(args)
+    if sub == "status":
+        return _mesh_status(args)
 
     if sub == "onboard":
         async def _onboard():
@@ -8340,7 +8485,7 @@ def cmd_mesh(args) -> int:
         return asyncio.run(_link())
 
     else:
-        print("Usage: adk mesh [onboard|ls|provide|create|link]")
+        print("Usage: adk mesh [join|status|onboard|ls|provide|create|link]")
         return 1
 
 
@@ -14581,6 +14726,19 @@ def _register_commands(sub):
     devices_status_p.add_argument("--json", action="store_true", help="Print the raw response")
     devices_rm_p = devices_sub.add_parser("rm", help="Remove a device from the workspace")
     devices_rm_p.add_argument("node_id", help="Node id to remove")
+    devices_cmd_p = devices_sub.add_parser(
+        "command", help="Send a device one signed, audited command (the Control channel)")
+    devices_cmd_p.add_argument("node_id", help="Node id")
+    devices_cmd_p.add_argument("verb", help="e.g. collect-diagnostics, upgrade, restart-lane")
+    devices_cmd_p.add_argument("--arg", action="append", default=[], help="key=value, repeatable")
+    devices_cmd_p.add_argument("--wait", action="store_true",
+                               help="Wait for the device's signed result in the command log")
+    devices_cmd_p.add_argument("--timeout", type=float, default=300.0)
+    devices_cmd_p.add_argument("--json", action="store_true")
+    devices_log_p = devices_sub.add_parser(
+        "command-log", help="The commands sent to a device and what each reported")
+    devices_log_p.add_argument("node_id", help="Node id")
+    devices_log_p.add_argument("--json", action="store_true")
 
     # adk operator — your workspace's Aither Operator (same policy + audit as Aither Control)
     from adk.operator_cli import add_parser as _add_operator_parser
@@ -14913,10 +15071,32 @@ def _register_commands(sub):
     # adk mesh — AitherMesh overlay and A2A operations
     mesh_p = sub.add_parser("mesh", help="AitherMesh overlay operations (onboard, list peers)")
     mesh_sub = mesh_p.add_subparsers(dest="mesh_command")
-    mesh_onboard_p = mesh_sub.add_parser("onboard", help="Onboard this node into AitherMesh overlay (WireGuard)")
+    # adk mesh join -- the signed-in self-service join (what the installers run)
+    mesh_join_p = mesh_sub.add_parser(
+        "join", help="Join this signed-in device to your mesh (Headscale/Tailscale, NAT-friendly)")
+    mesh_join_p.add_argument(
+        "--node-class", default=os.getenv("AITHER_NODE_CLASS", "laptop"),
+        help="Node class to register as (default: laptop)")
+    mesh_join_p.add_argument(
+        "--conductor", default=os.getenv("AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com"),
+        help="Conductor URL (default: $AITHER_CONDUCTOR_URL or conductor.aitherium.com)")
+    mesh_join_p.add_argument(
+        "--headscale-url", default=os.getenv("AITHER_HEADSCALE_URL", "https://hs.aitherium.com"),
+        help="Headscale control server (default: https://hs.aitherium.com)")
+    mesh_status_p = mesh_sub.add_parser(
+        "status", help="Is this device on your mesh right now (reads tailscale itself)")
+    mesh_status_p.add_argument("--json", action="store_true", help="Print the state as JSON")
+    mesh_status_p.add_argument(
+        "--headscale-url", default=os.getenv("AITHER_HEADSCALE_URL", "https://hs.aitherium.com"),
+        help="Headscale control server the device should be on")
+    mesh_onboard_p = mesh_sub.add_parser(
+        "onboard", help="Onboard this node into AitherMesh overlay (operator path; a signed-in "
+                        "laptop uses 'adk mesh join')")
     mesh_onboard_p.add_argument(
         "--conductor",
-        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+        # conductor., not gateway.: gateway answers 404 for /v1/mesh/onboard
+        # (measured 2026-09-02, see server.py /mesh/join).
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com"),
         help="Conductor URL (default: $AITHER_CONDUCTOR_URL or internal address)")
     mesh_onboard_p.add_argument(
         "--node-id",

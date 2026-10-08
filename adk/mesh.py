@@ -40,6 +40,10 @@ logger = logging.getLogger("adk.mesh")
 MESH_CIDR = "10.77.0.0/16"
 DEFAULT_IFACE = "aithernet0"
 WG_PORT = 51820
+# The tailnet's address pool (Headscale's default prefix, the CGNAT range).
+TAILNET_CIDR = "100.64.0.0/10"
+DEFAULT_HEADSCALE_URL = "https://hs.aitherium.com"
+TAILSCALE_INSTALL_URL = "https://tailscale.com/download"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +174,7 @@ async def onboard(
     role: str = "worker", external_ip: str | None = None,
     external_port: int = WG_PORT, storage_tiers: list[str] | None = None,
     psk: str | None = None, tenant_id: str | None = None,
+    node_class: str | None = None,
 ) -> dict:
     """POST /v1/mesh/onboard to the Conductor. Returns the parsed response
     (carries ``overlay_ip`` / ``aithernet_ip`` + assigned node id)."""
@@ -203,6 +208,11 @@ async def onboard(
     # enforces that a tenant-scoped bearer may only name its own tenant.
     if tenant_id:
         payload["tenant_id"] = tenant_id
+    # A laptop/desktop sits behind someone's NAT: the conductor issues it a
+    # Headscale key instead of handing it raw WireGuard (which needs a public
+    # UDP:51820 it does not have). An older conductor ignores the field.
+    if node_class:
+        payload["node_class"] = node_class
 
     url = conductor_url.rstrip("/") + "/v1/mesh/onboard"
     async with httpx.AsyncClient(timeout=30.0, verify=_verify()) as c:
@@ -378,6 +388,80 @@ def _tailscale_up(
         raise RuntimeError(f"tailscale up failed: {_redact(str(exc))}") from None
 
 
+def _in_tailnet(ip: str) -> bool:
+    import ipaddress
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(TAILNET_CIDR)
+    except ValueError:
+        return False
+
+
+def overlay_status(headscale_url: str | None = None, timeout: float = 10.0) -> dict:
+    """Is this device on the mesh's tailnet RIGHT NOW? Read from tailscale itself.
+
+    ``tailscale up`` exiting is not a join: ``_tailscale_up`` returns output on a
+    non-zero exit, and a laptop already on a personal tailnet answers ``Running``
+    with a 100.x address that has nothing to do with AitherMesh. So "joined"
+    means all three: the backend is ``Running``, this node holds a tailnet
+    address, and (when tailscale says) its control server is the mesh's Headscale.
+
+    Returns ``{"joined", "code", "detail", "backend_state", "tailnet_ip",
+    "hostname", "control_url"}``; ``code`` is ``ok``, ``tailscale_missing``,
+    ``tailscale_unreachable``, ``not_running``, ``no_tailnet_ip`` or
+    ``other_tailnet``. Never raises.
+    """
+    out: dict[str, Any] = {
+        "joined": False, "code": "", "detail": "", "backend_state": "",
+        "tailnet_ip": "", "hostname": "", "control_url": "",
+    }
+    ts = _tailscale()
+    if not ts:
+        out.update(code="tailscale_missing", install_url=TAILSCALE_INSTALL_URL,
+                   detail="Tailscale is not installed, so this device cannot join "
+                          "the mesh network. Install it, then run: adk mesh join")
+        return out
+    try:
+        r = subprocess.run([ts, "status", "--json"], capture_output=True,
+                           text=True, timeout=timeout)
+        st = json.loads(r.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        out.update(code="tailscale_unreachable",
+                   detail=f"tailscale status did not answer ({exc.__class__.__name__}); "
+                          "is the Tailscale service running?")
+        return out
+    me = st.get("Self") or {}
+    out["backend_state"] = str(st.get("BackendState") or "")
+    out["hostname"] = str(me.get("HostName") or "")
+    out["tailnet_ip"] = next(
+        (str(ip) for ip in (me.get("TailscaleIPs") or []) if _in_tailnet(str(ip))), "")
+    # The control server is in the prefs, not the status. Best effort: a tailscale
+    # without `debug prefs` is judged on state + address alone.
+    try:
+        rp = subprocess.run([ts, "debug", "prefs"], capture_output=True,
+                            text=True, timeout=timeout)
+        prefs = json.loads(rp.stdout or "{}")
+        out["control_url"] = str((prefs if isinstance(prefs, dict) else {}).get("ControlURL") or "")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    want = urlparse(headscale_url or os.getenv("AITHER_HEADSCALE_URL", "")
+                    or DEFAULT_HEADSCALE_URL).hostname or ""
+    have = urlparse(out["control_url"]).hostname or ""
+    if out["backend_state"] != "Running":
+        out.update(code="not_running",
+                   detail=f"Tailscale is {out['backend_state'] or 'not started'}, "
+                          "not connected to the mesh")
+    elif not out["tailnet_ip"]:
+        out.update(code="no_tailnet_ip",
+                   detail="Tailscale is running but holds no tailnet address")
+    elif have and want and have != want:
+        out.update(code="other_tailnet",
+                   detail=f"Tailscale is connected to {have}, not the mesh ({want}). "
+                          "Sign it out of that tailnet first: tailscale logout")
+    else:
+        out.update(joined=True, code="ok", detail=f"on the mesh as {out['tailnet_ip']}")
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Orchestration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -388,6 +472,7 @@ async def join(
     external_ip: str | None = None, psk: str | None = None,
     headscale: bool = False, headscale_url: str | None = None,
     headscale_auth_key: str | None = None, tenant_id: str | None = None,
+    node_class: str | None = None, wireguard_fallback: bool = True,
 ) -> dict:
     """Run the full onboarding and return a report.
 
@@ -420,6 +505,10 @@ async def join(
     **Constraint**: The Conductor still assigns the overlay_ip (mesh address).
     Headscale provides only the tunnel transport layer; the node operates at
     the mesh CIDR (10.77.0.0/16) regardless of transport.
+
+    ``wireguard_fallback=False`` makes a failed Headscale join an error instead
+    of a silent switch to raw WireGuard -- a laptop behind NAT has no public
+    UDP:51820, so that fallback can only fail later and less clearly.
     """
     from adk.fleet_enroll import _generate_node_id
     node_id = node_id or _generate_node_id()
@@ -440,7 +529,8 @@ async def join(
     priv, pub = generate_keypair()
     logger.info("mesh: onboarding node %s (role=%s) via %s", node_id, role, conductor_url)
     resp = await onboard(conductor_url, node_id, pub, role=role,
-                         external_ip=external_ip, psk=psk, tenant_id=tenant_id)
+                         external_ip=external_ip, psk=psk, tenant_id=tenant_id,
+                         node_class=node_class)
     overlay_ip = (resp.get("overlay_ip") or resp.get("aithernet_ip")
                   or resp.get("address") or "")
     if not overlay_ip:
@@ -465,6 +555,9 @@ async def join(
             or resp_hs_url or "https://hs.aitherium.com"
         hs_key = headscale_auth_key or os.getenv("AITHER_HEADSCALE_AUTH_KEY", "") \
             or resp_hs_key
+        if not hs_key and not wireguard_fallback:
+            raise RuntimeError("Headscale transport requested but no auth key was "
+                               "issued or provided")
         if not hs_key:
             logger.warning(
                 "[join] Headscale transport requested but AITHER_HEADSCALE_AUTH_KEY "
@@ -487,6 +580,8 @@ async def join(
                     report["node_id"], overlay_ip)
                 return report
             except RuntimeError as exc:
+                if not wireguard_fallback:
+                    raise
                 logger.warning(
                     "[join] Headscale transport failed (%s); falling back to "
                     "raw WireGuard", exc)

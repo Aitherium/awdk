@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 try:  # single source of truth = the installed package metadata (pyproject version)
     __version__ = _pkg_version("awdk")
 except PackageNotFoundError:  # running from a source checkout without install
-    __version__ = "3.8.61"  # kept in sync by packaging/sync_versions.py
+    __version__ = "3.8.63"  # kept in sync by packaging/sync_versions.py
 
 # Air gap: when enforcement is configured (AITHER_AIR_GAP, or an
 # air_gap.yaml at $AITHER_AIR_GAP_CONFIG / ~/.aither / /etc/aither), patch every

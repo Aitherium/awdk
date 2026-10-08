@@ -139,7 +139,7 @@ def claims_repeat(content: str) -> bool:
 #: ones that act (calendar_add, mail_send, todo_add) are not, on purpose. So are the
 #: tutor readers (adk.home.tutor_tools): a test pins every tutor tool outside
 #: ALWAYS_ASK here, so "I've added short vowels" after only tutor_learners is caught.
-READ_ONLY_TOOLS = frozenset({"receipts", "list_followups", "list_my_cards",
+READ_ONLY_TOOLS = frozenset({"receipts", "list_followups", "list_my_cards", "home_status",
                              "check_human", "web_search", "web_fetch",
                              "calendar_agenda", "mail_unread", "todo_list",
                              "tutor_learners", "tutor_report",
@@ -167,7 +167,14 @@ STUDENT_DATA_TOOLS = frozenset({"class_brief", "struggle_report", "grade_assist"
                                 # weekly reports — so they taint too: a report read
                                 # can never ride a later web_fetch out without a card.
                                 "tutor_report", "tutor_learners"})
-TAINT_SOURCES = PRIVATE_READ_TOOLS | WEB_READ_TOOLS | STUDENT_DATA_TOOLS
+#: Home device reads (adk.home.device_tools): the household's own device state. Private,
+#: so after one a web lookup or a send asks first -- but written by the household, not
+#: strangers, so it does not by itself make device actions ask (device_tools reads the
+#: taint file and ignores these sources; the policy is adk.home.devices.policy).
+DEVICE_READ_TOOLS = frozenset({"home_status"})
+#: Device tools whose owner card runs an action (the direct-card "Done:" line names it).
+DEVICE_ACT_TOOLS = frozenset({"home_act_confirmed", "home_approve"})
+TAINT_SOURCES = PRIVATE_READ_TOOLS | WEB_READ_TOOLS | STUDENT_DATA_TOOLS | DEVICE_READ_TOOLS
 #: Tools that send data out or act on the owner's accounts: their card shows the
 #: argument VALUES (who it goes to and what it says), never just the names --
 #: an injected "mail_send(to=attacker, body=<your mail>)" must be visible to judge.
@@ -449,6 +456,17 @@ def _result_error(result: Any) -> str:
         if isinstance(data, dict):
             return str(data.get("error") or "")
     return ""
+
+
+def _result_summary(result: Any) -> str:
+    """A device tool result's ``summary`` (what ran), or ``""``."""
+    data = result
+    if isinstance(result, str) and result.lstrip().startswith("{"):
+        try:
+            data = json.loads(result)
+        except ValueError:
+            return ""
+    return str(data.get("summary") or "")[:200] if isinstance(data, dict) else ""
 
 
 def _result_suggest(result: Any) -> Optional[Dict[str, Any]]:
@@ -887,7 +905,9 @@ class HearthCore:
                       f"owner:{result}:{nonce}")
         if not allow:
             self._reset_turn_state()
-            await self._send_owner(channel, "OK -- nothing was scheduled.")
+            await self._send_owner(channel, "OK -- nothing was done." if
+                                   tool.lower() in DEVICE_ACT_TOOLS else
+                                   "OK -- nothing was scheduled.")
             return
         self._approved_args.setdefault(tool.lower(), set()).add(receipts.digest(args))
         out = await self.agent._tools.execute(tool, args)
@@ -895,6 +915,9 @@ class HearthCore:
         self._reset_turn_state()
         if err:
             await self._send_owner(channel, f"That did not work: {err[:160]}")
+            return
+        if tool.lower() in DEVICE_ACT_TOOLS:
+            await self._send_owner(channel, f"Done: {_result_summary(out) or tool}.")
             return
         every = args.get("recurring") or ""
         await self._send_owner(channel, f"Done: {every} reminder '{args.get('text')}' "

@@ -178,6 +178,8 @@ class CampaignMemory:
 
         def add(owner: str, items: List[Dict[str, Any]]) -> None:
             for it in items:
+                if it.get("kind") == "card-ref":
+                    continue      # a reference image id is bookkeeping, not a fact
                 dedup = (it["scope"], it["key"])
                 if dedup in seen_keys:
                     continue

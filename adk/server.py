@@ -344,6 +344,45 @@ def _mesh_admin_allowed(method: str, sub: str) -> bool:
     return False
 
 
+def identity_base_for_profile(prof: dict[str, Any]) -> str:
+    """The Identity base URL a signed-in profile's token belongs to.
+
+    Shared by the daemon's handoff/mesh routes and ``adk mesh join``.
+    """
+    # 🚩 "local" IS A SENTINEL, NOT A URL, AND IT IS TRUTHY.
+    # This guard listed two loopback PREFIXES, so the profile written by a local
+    # login -- endpoint "local" -- fell through every branch and the IdP fallback
+    # never fired. The daemon then POSTed to "local/auth/handoff/mint", which is
+    # not a URL at all: httpx raises, and the browser handoff answers 502.
+    # Measured 2026-09-20 on the owner's box, where auth.json's active profile is
+    # exactly {"endpoint": "local"} -- so the path that tells aitherium.com who
+    # you are has never worked here, and the page offered "Continue as root".
+    #
+    # Test for what a usable base IS (an absolute http(s) URL), not for the two
+    # unusable spellings someone happened to think of.
+    base = (prof.get("endpoint") or "").rstrip("/")
+    if (not base.startswith("http://") and not base.startswith("https://")) \
+            or base.startswith("http://127.0.0.1") or base.startswith("http://localhost"):
+        base = os.getenv(
+            "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
+        ).rstrip("/")
+    # 🚩 THE CONTROL-PLANE HOSTS ARE NOT IDENTITY. `aither login` from the shell
+    # writes endpoint https://api.aitherium.com, and api./gateway./mcp.
+    # route to Veil (Next.js) or the MCP gateway -- neither serves
+    # /auth/handoff/mint, so "Continue as David" answered "identity refused
+    # handoff (404)". Measured 2026-09-26 on the owner's box. The token those
+    # logins hold IS an Identity token, so send it to the IdP.
+    host = base.split("://", 1)[-1].split("/", 1)[0].lower()
+    if _is_public_non_idp_host(host.rsplit(":", 1)[0]):
+        base = os.getenv(
+            "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
+        ).rstrip("/")
+    # The IdP mounts Identity under /identity on the public host.
+    if "idp.aitherium.com" in base and not base.endswith("/identity"):
+        base += "/identity"
+    return base
+
+
 # ── This device on the owner's account: the node heartbeat ──────────────────
 #
 # Registering a device (`/mesh/join`, `adk enroll`) starts a heartbeat in the
@@ -2006,38 +2045,7 @@ def create_app(
             return None
 
     def _handoff_identity_base(prof: dict[str, Any]) -> str:
-        # 🚩 "local" IS A SENTINEL, NOT A URL, AND IT IS TRUTHY.
-        # This guard listed two loopback PREFIXES, so the profile written by a local
-        # login -- endpoint "local" -- fell through every branch and the IdP fallback
-        # never fired. The daemon then POSTed to "local/auth/handoff/mint", which is
-        # not a URL at all: httpx raises, and the browser handoff answers 502.
-        # Measured 2026-09-20 on the owner's box, where auth.json's active profile is
-        # exactly {"endpoint": "local"} -- so the path that tells aitherium.com who
-        # you are has never worked here, and the page offered "Continue as root".
-        #
-        # Test for what a usable base IS (an absolute http(s) URL), not for the two
-        # unusable spellings someone happened to think of.
-        base = (prof.get("endpoint") or "").rstrip("/")
-        if (not base.startswith("http://") and not base.startswith("https://")) \
-                or base.startswith("http://127.0.0.1") or base.startswith("http://localhost"):
-            base = os.getenv(
-                "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
-            ).rstrip("/")
-        # 🚩 THE CONTROL-PLANE HOSTS ARE NOT IDENTITY. `aither login` from the shell
-        # writes endpoint https://api.aitherium.com, and api./gateway./mcp.
-        # route to Veil (Next.js) or the MCP gateway -- neither serves
-        # /auth/handoff/mint, so "Continue as David" answered "identity refused
-        # handoff (404)". Measured 2026-09-26 on the owner's box. The token those
-        # logins hold IS an Identity token, so send it to the IdP.
-        host = base.split("://", 1)[-1].split("/", 1)[0].lower()
-        if _is_public_non_idp_host(host.rsplit(":", 1)[0]):
-            base = os.getenv(
-                "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
-            ).rstrip("/")
-        # The IdP mounts Identity under /identity on the public host.
-        if "idp.aitherium.com" in base and not base.endswith("/identity"):
-            base += "/identity"
-        return base
+        return identity_base_for_profile(prof)
 
     def _handoff_local_only(prof: dict[str, Any]) -> bool:
         """True when the active profile is the offline root login, not an Identity account.
@@ -2338,7 +2346,8 @@ def create_app(
                 _mesh.join(
                     conductor_url, node_id, role="worker",
                     headscale=True, headscale_auth_key=mesh_key, psk=node_bearer,
-                    tenant_id=tenant_id,
+                    tenant_id=tenant_id, wireguard_fallback=False,
+                    node_class=str((enroll.get("registration") or {}).get("node_class") or "laptop"),
                     # Explicit control-plane URL: the conductor's onboard response
                     # still advertises headscale.aitherium.com (its baked default),
                     # which is blocked by hostname on at least one ISP and answers
@@ -2372,6 +2381,20 @@ def create_app(
             "harness_link": harness_link,
             "steps": steps,
         }
+
+    @app.get("/mesh/overlay")
+    async def mesh_overlay(request: Request):
+        """Is this device on the mesh's tailnet right now — read from tailscale.
+
+        Read-only and credential-free, same guard as ``/identity/whoami``: the
+        Setup app shows "Join my mesh" with this state (joined / not joined /
+        Tailscale missing) on a machine that is already set up.
+        """
+        _whoami_guard(request)
+        from adk import mesh as _mesh
+        st = await asyncio.to_thread(_mesh.overlay_status)
+        rec = _stored_node_record()
+        return {**st, "registered": bool(rec), "node_id": str(rec.get("node_id") or "")}
 
     @app.get("/node/status")
     async def node_status(request: Request):

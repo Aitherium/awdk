@@ -8,14 +8,18 @@ import pytest
 from adk import storage_contribution as sc
 
 GIB = 1024 ** 3
+IDLE = {"on_battery": False, "metered": False}
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     for k in ("AITHER_CONTRIBUTE_STORAGE", "AITHER_STORAGE_CONTRIB_SHARE",
               "AITHER_STORAGE_RESERVE_GB", "AITHER_STRATA_URL", "AITHER_MESH_URL",
-              "AITHER_AITHERNET_URL", "AITHER_FAILURE_DOMAIN", "AITHER_STORAGE_PATH"):
+              "AITHER_AITHERNET_URL", "AITHER_FAILURE_DOMAIN", "AITHER_STORAGE_PATH",
+              "AITHER_LEND", "AITHER_ON_BATTERY", "AITHER_NETWORK_METERED"):
         monkeypatch.delenv(k, raising=False)
+    # Never the developer config: nothing is saved unless a test says so.
+    monkeypatch.setattr(sc, "_saved_config", lambda: {})
     yield
     sc.stop_storage_keepalive()
 
@@ -51,14 +55,14 @@ def test_share_is_clamped(monkeypatch):
     assert sc.plan_contribution(1000 * GIB) == 900 * GIB
 
 
-# --- opt-out policy ---------------------------------------------------------
+# --- opt-in policy (owner, 2026-10-07) ---------------------------------------
 
-@pytest.mark.parametrize("node_class,on", [
-    ("sovereign", True), ("spark", True), ("desktop", True),
-    ("laptop", False), ("deck", False), ("phone", False), ("mystery", False),
+@pytest.mark.parametrize("node_class", [
+    "sovereign", "spark", "desktop", "laptop", "deck", "phone", "mystery",
 ])
-def test_default_by_class(node_class, on):
-    assert sc.contribution_enabled(sc.device_class_for(node_class), env={})[0] is on
+def test_every_class_is_off_until_opted_in(node_class):
+    on, why = sc.contribution_enabled(sc.device_class_for(node_class), env={})
+    assert on is False and "opt-in" in why
 
 
 def test_env_opt_out_beats_server_default():
@@ -78,7 +82,7 @@ def test_explicit_argument_beats_env():
 
 def test_decide_server_contributes():
     d = sc.decide_contribution("sovereign", probe=sc.DiskProbe("/x", 2000 * GIB, 1000 * GIB),
-                               env={})
+                               env={"AITHER_CONTRIBUTE_STORAGE": "1"}, power=IDLE)
     assert d["contribute"] is True and d["contributed_bytes"] == 300 * GIB
     assert d["device_class"] == "server"
 
@@ -86,17 +90,18 @@ def test_decide_server_contributes():
 def test_decide_laptop_skips_without_measuring():
     with patch.object(sc, "measure_disk", side_effect=AssertionError("measured")):
         d = sc.decide_contribution("laptop", env={})
-    assert d["contribute"] is False and "default off" in d["reason"]
+    assert d["contribute"] is False and "opt-in" in d["reason"]
 
 
 def test_decide_full_disk_skips():
-    d = sc.decide_contribution("desktop", probe=sc.DiskProbe("/x", 500 * GIB, 10 * GIB), env={})
+    d = sc.decide_contribution("desktop", probe=sc.DiskProbe("/x", 500 * GIB, 10 * GIB),
+                               env={"AITHER_CONTRIBUTE_STORAGE": "1"}, power=IDLE)
     assert d["contribute"] is False and "reserve" in d["reason"]
 
 
 def test_decide_unmeasurable_disk_skips():
     with patch.object(sc, "measure_disk", side_effect=OSError("nope")):
-        d = sc.decide_contribution("desktop", env={})
+        d = sc.decide_contribution("desktop", env={"AITHER_CONTRIBUTE_STORAGE": "1"}, power=IDLE)
     assert d["contribute"] is False and "not measurable" in d["reason"]
 
 
@@ -149,6 +154,8 @@ def _client(status=200, body=None):
 @pytest.mark.asyncio
 async def test_after_enroll_registers_a_server(monkeypatch):
     monkeypatch.setenv("AITHER_STRATA_URL", "https://strata")
+    monkeypatch.setenv("AITHER_CONTRIBUTE_STORAGE", "1")
+    monkeypatch.setattr(sc, "power_state", lambda env=None: dict(IDLE))
     client = _client()
     with patch.object(sc, "measure_disk", return_value=sc.DiskProbe("/x", 9 * 10 ** 12,
                                                                     10 ** 12)):
@@ -169,11 +176,13 @@ async def test_after_enroll_laptop_makes_no_request(monkeypatch):
     monkeypatch.setenv("AITHER_STRATA_URL", "https://strata")
     with patch("httpx.AsyncClient", side_effect=AssertionError("network")):
         r = await sc.contribute_after_enroll("node-1", "laptop", "tok")
-    assert r["registered"] is False and "default off" in r["skipped"]
+    assert r["registered"] is False and "opt-in" in r["skipped"]
 
 
 @pytest.mark.asyncio
-async def test_after_enroll_without_endpoint_says_so():
+async def test_after_enroll_without_endpoint_says_so(monkeypatch):
+    monkeypatch.setenv("AITHER_CONTRIBUTE_STORAGE", "1")
+    monkeypatch.setattr(sc, "power_state", lambda env=None: dict(IDLE))
     with patch.object(sc, "measure_disk", return_value=sc.DiskProbe("/x", 10 ** 13, 10 ** 12)):
         r = await sc.contribute_after_enroll("node-1", "sovereign", "tok")
     assert r["registered"] is False and "no storage endpoint" in r["skipped"]
@@ -182,6 +191,8 @@ async def test_after_enroll_without_endpoint_says_so():
 @pytest.mark.asyncio
 async def test_after_enroll_reports_refusal(monkeypatch):
     monkeypatch.setenv("AITHER_STRATA_URL", "https://strata")
+    monkeypatch.setenv("AITHER_CONTRIBUTE_STORAGE", "1")
+    monkeypatch.setattr(sc, "power_state", lambda env=None: dict(IDLE))
     with patch.object(sc, "measure_disk", return_value=sc.DiskProbe("/x", 10 ** 13, 10 ** 12)):
         with patch("httpx.AsyncClient") as ac:
             ac.return_value.__aenter__.return_value = _client(status=401)
@@ -209,4 +220,4 @@ async def test_rich_enroll_reports_storage_and_stays_one_request_for_laptops():
     assert result["enrolled"] is True
     assert client.post.await_count == 1
     assert result["storage"]["registered"] is False
-    assert "default off" in result["storage"]["skipped"]
+    assert "opt-in" in result["storage"]["skipped"]

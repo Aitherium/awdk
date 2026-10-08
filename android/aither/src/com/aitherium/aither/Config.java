@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.3.8";
+    static final String VERSION = "0.3.13";
 
     private final SharedPreferences p;
 
@@ -31,6 +31,8 @@ final class Config {
     boolean refreshApp() { return p.getBoolean("refresh_app", false); }
     /** A child signed in on this phone (the page's aither.device.child): child shortcuts. */
     boolean childDevice() { return p.getBoolean("child_device", false); }
+    /** The signed-in account is the platform owner (Session.owner): owner-only Home apps. */
+    boolean platformOwner() { return p.getBoolean("platform_owner", false); }
     /**
      * Answer the household's Family AI Pool with this phone's model. The household's own
      * flag (compute_share on this device's row) is the switch: the owner or a guardian sets it
@@ -39,6 +41,8 @@ final class Config {
      * check-in that has not seen it yet.
      */
     boolean shareFamily() { return p.getBoolean("share_family", false); }
+    /** DutyService: hold the household inbox open so approval cards arrive in seconds. Off by default. */
+    boolean approvalsOnDuty() { return p.getBoolean("approvals_duty", false); }
     static final long LOCAL_WINS_MS = 10 * 60_000L;
 
     void setShareLocally(boolean on) {
@@ -58,6 +62,34 @@ final class Config {
     boolean shareAcOnly() { return p.getBoolean("share_ac_only", true); }
     boolean shareIdleOnly() { return p.getBoolean("share_idle_only", true); }
 
+    /**
+     * Lend disk to the family's mesh storage pool (StorageShare / StorageRules). Same shape
+     * as shareFamily: the household row's storage_share is the switch and the check-in
+     * carries it here; this phone's toggle writes the same flag (an adult's own phone only)
+     * and wins for a few minutes over a check-in that has not seen it yet. Off by default.
+     */
+    boolean storageShare() { return p.getBoolean("storage_share", false); }
+    int storageQuotaGb() { return p.getInt("storage_quota_gb", 0); }
+    boolean storageWifiOnly() { return p.getBoolean("storage_wifi_only", true); }
+    boolean storageChargingOnly() { return p.getBoolean("storage_charging_only", true); }
+
+    void setStorageLocally(boolean on, int quotaGb) {
+        SharedPreferences.Editor e = p.edit().putBoolean("storage_share", on)
+                .putLong("storage_share_at", System.currentTimeMillis());
+        if (quotaGb > 0) e.putInt("storage_quota_gb", quotaGb);
+        e.apply();
+    }
+
+    /** From the household check-in: storage_share and its storage_limits. */
+    void storageFromHousehold(boolean on, int quotaGb, boolean wifiOnly, boolean chargingOnly) {
+        SharedPreferences.Editor e = p.edit().putBoolean("storage_wifi_only", wifiOnly)
+                .putBoolean("storage_charging_only", chargingOnly);
+        if (System.currentTimeMillis() - p.getLong("storage_share_at", 0) > LOCAL_WINS_MS) {
+            e.putBoolean("storage_share", on).putInt("storage_quota_gb", Math.max(0, quotaGb));
+        }
+        e.apply();
+    }
+
     /** Why this phone may not answer the pool now, or "". A child's phone shares only what
      *  its guardian switched on, and never runs the model for the child's own use. */
     String poolBlocked() {
@@ -66,6 +98,12 @@ final class Config {
     }
     /** May agents on this phone read the calendar (the owner's switch; Android asks too)? */
     boolean toolCalendar() { return p.getBoolean("tool_calendar", false); }
+    /** Ask Aither: let Gemini Nano (AICore, on this phone) take short tool-free questions. */
+    boolean nanoPreferred() { return p.getBoolean("nano_preferred", true); }
+    /** The owner said no to downloading Gemini Nano: do not offer it again. */
+    boolean nanoDeclined() { return p.getBoolean("nano_declined", false); }
+    /** Does Ask Aither read its answers aloud (on-device voice only; its own switch)? */
+    boolean assistSpeak() { return p.getBoolean(Talk.PREF_SPEAK, true); }
 
     // ---- local AI (LlmService) and the household registry (HeartbeatJob)
     boolean llmEnabled() { return p.getBoolean("llm_enabled", true); }
@@ -92,6 +130,12 @@ final class Config {
     String shieldMode() { return p.getString("shield_mode", "off"); }
     /** The ETag of the last household policy this phone read. */
     String shieldEtag() { return p.getString("shield_etag", ""); }
+    /** Family Shield's watch (ShieldWatch): what the household last heard, "on" | "off:<why>" | "". */
+    String shieldReported() { return p.getString("shield_reported", ""); }
+    /** When this phone first saw its filter down (0 = it is not, as far as it knows). */
+    long shieldOffSince() { return p.getLong("shield_off_since", 0); }
+    /** onRevoke ran (Settings, or another VPN) since the filter last came up. */
+    boolean shieldRevoked() { return p.getBoolean("shield_revoked", false); }
     /** Has this app asked Android to stop battery-optimizing it (once, for a household phone)? */
     boolean batteryAsked() { return p.getBoolean("battery_asked", false); }
 
@@ -106,6 +150,7 @@ final class Config {
     void set(String k, boolean v) { p.edit().putBoolean(k, v).apply(); }
     void set(String k, String v) { p.edit().putString(k, v).apply(); }
     void set(String k, int v) { p.edit().putInt(k, v).apply(); }
+    void set(String k, long v) { p.edit().putLong(k, v).apply(); }
 
     /** A pairing link from the owner: store it; the service confirms the code with identity. */
     boolean acceptPairLink(Uri u) {

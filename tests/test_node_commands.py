@@ -586,3 +586,93 @@ def test_the_heartbeat_picks_up_a_changed_url_on_its_next_beat(monkeypatch, _hom
         inference_url="http://127.0.0.1:8114", node_class="spark", max_beats=2,
         reach_provider=None, harness_provider=None, beat_immediately=True, device=True))
     assert seen == ["http://127.0.0.1:8114", "http://10.0.0.5:8114"]
+
+
+# ── upgrade-component: closed package list, fixed argv, restarts nothing ────
+
+
+@pytest.mark.parametrize("args", [
+    {"component": "awdk", "version": "1.2.3"}, {"component": "awnode", "version": ">=1"},
+    {"component": "awnode"}, {"component": "awnode", "version": "1.2.3", "x": "y"},
+    {"component": "awnode; rm -rf /", "version": "1.2.3"},
+])
+def test_upgrade_component_refuses_off_list_args(args):
+    why = node_commands.verify(_cmd(verb="upgrade-component", args=args), KEY, NODE, seen=[])
+    assert why, args
+    assert node_commands._upgrade_component(args)["ok"] is False
+
+
+def test_upgrade_component_runs_the_fixed_argv_for_awnode_only(monkeypatch):
+    import subprocess
+    import sys
+
+    calls = []
+
+    class _P:
+        def __init__(self, rc, out=""):
+            self.returncode, self.stdout, self.stderr = rc, out, ""
+
+    def run(argv, **kw):
+        calls.append(list(argv))
+        return _P(0, "0.9.1\n") if argv[1] == "-c" else _P(0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert node_commands.verify(
+        _cmd(verb="upgrade-component", args={"component": "awnode", "version": "0.9.1"}),
+        KEY, NODE, seen=[]) == ""
+    out = node_commands._upgrade_component({"component": "awnode", "version": "0.9.1"})
+    assert out["ok"] is True and out["installed"] == "0.9.1"
+    pip = [c for c in calls if c[1:3] == ["-m", "pip"]]
+    assert pip == [[sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+                    "-q", "awnode==0.9.1"]]
+    assert not any("systemctl" in " ".join(c) or "systemd-run" in " ".join(c) for c in calls)
+
+
+# ── a stale person sign-in must not strand a code-paired device ─────────────
+
+
+def test_a_401_sign_in_beat_falls_back_to_the_paired_device_token(monkeypatch):
+    """Measured 2026-10-07 on the optiplex: a July auth.json (an expired person
+    sign-in) shadowed the pairing-code device token, and every beat answered 401
+    forever. With the device token as a fallback the second beat goes out as the
+    device, on the device route, and is accepted."""
+
+    class _Stale:
+        def __init__(self):
+            self.posts = []
+
+        async def post(self, url, json=None, headers=None):
+            self.posts.append((url, headers["Authorization"]))
+            if url.endswith("/v1/nodes/heartbeat"):
+                return _Resp(401, {"detail": "expired"})
+            return _Resp(200, {"status": "ok"})
+
+    monkeypatch.setattr(enrollment, "build_registration", lambda node_id, **kw: {
+        "node_id": node_id, "inference_ready": False, "available_models": [],
+        "gpu_vram_mb": 0, "inference_url": "", "inference_kind": "none"})
+    client = _Stale()
+    asyncio.run(enrollment._heartbeat_beats(
+        client, "https://idp.test", {"Authorization": "Bearer stale-user"}, NODE, interval=0,
+        inference_url=None, node_class="sovereign", max_beats=2, reach_provider=None,
+        harness_provider=None, beat_immediately=True, token_provider=lambda: "stale-user",
+        device_fallback_token="device-tok"))
+    assert client.posts == [
+        ("https://idp.test/v1/nodes/heartbeat", "Bearer stale-user"),
+        ("https://idp.test/v1/nodes/device/heartbeat", "Bearer device-tok"),
+    ]
+
+
+def test_resume_passes_the_device_token_as_fallback_only_for_a_paired_record(monkeypatch):
+    from adk import fleet_enroll
+    rec = {"node_id": NODE, "bearer_token": "device-tok", "enrolled_via": "pairing-code",
+           "mode": "rich", "node_class": "sovereign"}
+    monkeypatch.setattr(fleet_enroll, "_load_node_auth", lambda: rec)
+    monkeypatch.setattr(enrollment, "_heartbeat_task", None)
+    calls = []
+    monkeypatch.setattr(enrollment, "start_heartbeat",
+                        lambda base, tok, nid, **kw: calls.append((tok, kw)) or True)
+    enrollment.resume_heartbeat("user-tok", default_base_url="https://idp.test")
+    assert calls[-1][0] == "user-tok" and calls[-1][1]["device_fallback_token"] == "device-tok"
+    rec["enrolled_via"] = "device-flow"
+    enrollment.resume_heartbeat("user-tok", default_base_url="https://idp.test")
+    assert "device_fallback_token" not in calls[-1][1]

@@ -173,7 +173,9 @@ def build_research_tools(session: ResearchSession) -> list[Callable]:
             # (awdk[scrape] extra), with the SSRF guard in front of every engine.
             from adk.webfetch import fetch as _ladder_fetch
             result = await _ladder_fetch(url, max_chars=10_000_000)
-            if result.error and not result.text:
+            if result.error:
+                # A 403/404 still carries a body (Wikimedia's is its robot policy);
+                # returning it as page text got the error page cited as a source.
                 return json.dumps({"url": url, "error": result.error,
                                    "engine": result.engine})
             text = result.text

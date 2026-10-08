@@ -120,6 +120,12 @@ class AgenticEngineMixin:
                 # back into one. Same fail-soft contract as above.
                 from adk.packs.gobbonet.cards import register_card_tools
                 register_card_tools(self._agent, self._get_campaign_memory())
+                # The brush: illustrate a character or a remembered scene through the
+                # person's connected Media Forge (curated /op/{name} only), keeping the
+                # character's reference on their card. No consent record => the tool
+                # answers "not connected" and nothing leaves the machine.
+                from adk.packs.gobbonet.illustrate import register_illustrate_tools
+                register_illustrate_tools(self._agent, self._get_campaign_memory())
             return self._agent
 
     def stream_chat(self, messages: list[dict], **opts: Any) -> Iterator[str]:

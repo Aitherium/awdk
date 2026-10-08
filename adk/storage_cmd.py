@@ -29,6 +29,11 @@ def _version_tuple(v: str) -> tuple[int, ...]:
 
 
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["share"]:
+        # Lending disk to the family's mesh pool is adk's own (adk.storage_contribution),
+        # not the inventory brick's: handled here, before the pass-through.
+        from adk.storage_share_cli import main as _share_main
+        return int(_share_main(argv[1:]))
     try:
         from awstorage.cli import main as _awstorage_main
     except ImportError:

@@ -171,6 +171,17 @@ def card_to_memory(card: Dict[str, Any], memory: Any, *,
             {"field": field, "scope": res.get("scope")} if res.get("ok")
             else f"{field}: {res.get('error')}")
 
+    # The illustration reference (see `illustrate`): a gallery id the card carries so
+    # the same face comes back. Restored at the character's scope, never the world's.
+    ref = card.get("reference")
+    if isinstance(ref, dict) and ref.get("media_id") not in (None, ""):
+        from adk.packs.gobbonet.illustrate import set_reference
+        res = set_reference(memory, name, ref)
+        if res.get("ok"):
+            written.append({"field": "reference", "scope": res.get("scope")})
+        else:
+            dropped.append(f"reference: {res.get('error')}")
+
     lore_blocks = 0
     for block in _lore_blocks(card):
         res = memory.note(block, known_by="*", arc=arc)
@@ -183,7 +194,7 @@ def card_to_memory(card: Dict[str, Any], memory: Any, *,
         if card.get(field):
             dropped.append(f"{field} — {why}")
     known = set(ENGINE_CARD_FIELDS) | set(_CHARACTER_FIELDS) | set(_NOT_IMPORTED) | {
-        "character", "startingLore", "character_book", "lorebook"}
+        "character", "startingLore", "character_book", "lorebook", "reference"}
     for field in sorted(set(card) - known):
         dropped.append(f"{field} — outside the card contract this pack round-trips")
 
@@ -231,6 +242,17 @@ def memory_to_card(character: str, memory: Any, *, arc: str = "*",
     rest: List[str] = []
     for value in mine:
         matched = False
+        if value.startswith("card-ref: "):
+            # The stored illustration reference — handed back as a field, never as prose.
+            try:
+                ref = json.loads(value[len("card-ref: "):])
+            except ValueError:
+                ref = None
+            if isinstance(ref, dict) and ref.get("media_id") not in (None, ""):
+                card["reference"] = ref
+            else:
+                dropped.append("reference — unreadable, not restored")
+            continue
         if value.startswith(_META_PREFIX + ": "):
             # The identity fields, verbatim — this is what makes the round trip byte-stable.
             try:

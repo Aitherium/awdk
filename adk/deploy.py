@@ -2681,21 +2681,32 @@ def deploy_sovereign(
 # ===========================================================================
 
 def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> int:
-    """Download and extract the Awconnect browser extension.
+    """Install the Awconnect browser extension through ``adk awconnect install``.
 
-    The extension is downloaded from the latest GitHub release and extracted
-    to ~/.aither/awconnect/. Requires a valid Aitherium API key.
+    This used to fetch ``releases/latest/download/Awconnect.zip`` -- an asset no
+    release has ever carried (connect-v* tags publish
+    ``*-unpacked-v<ver>.zip`` + ``.sha256``), with no checksum, unpacked into
+    ``~/.aither/Awconnect/`` instead of the ``current/`` folder the rest of the
+    tooling reads. It now delegates to :mod:`adk.awconnect_setup`, so there is
+    ONE install path: newest connect-v* release, unpacked (keyed) zip, sha256
+    verified, ``~/.aither/awconnect/<version>/`` + ``current/``. The Chrome Web
+    Store listing stays the one-click route and is named first.
 
     Args:
-        dry_run: If True, show what would happen without executing.
+        dry_run: If True, show which source would be staged without staging it.
         api_key_arg: Explicit API key (falls back to env/config).
 
     Returns:
         Exit code (0 = success, 1 = failure).
     """
+    from adk import awconnect_setup as aw
+
     print()
     print(bold("  Awconnect Browser Extension"))
     print(dim("  Chrome extension for AitherOS integration"))
+    print()
+    print(f"  One-click install (Chrome Web Store): {cyan(aw.WEBSTORE_URL)}")
+    print(dim("  The steps below stage the developer (Load unpacked) build instead."))
     print()
 
     # Auth gate
@@ -2704,73 +2715,30 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
 
     if dry_run:
         print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
+        step(1, 1, "Resolving the Awconnect source")
+        api = os.environ.get("AITHER_AWCONNECT_RELEASES_API", aw.DEFAULT_RELEASES_API)
+        rel = aw.latest_release(aw._default_fetch, api)
+        checkout = aw.find_checkout()
+        chk = aw.checkout_candidate(checkout) if checkout else None
+        cand = aw.choose_source(rel, chk)
+        if cand is None:
+            warn("no connect-v* release is readable and no awconnect-next checkout was found")
+            info(aw.no_source_hint())
+            return 1
+        info(f"Would stage: {cand.kind} {cand.version} ({cand.location})")
+        info(f"Would install to: {aw.current_dir()}  (versioned copy beside it)")
+        return 0
 
-    total_steps = 3
-    connect_url = f"{GITHUB_RELEASES}/Awconnect.zip"
-    dest_dir = AITHER_DIR / "Awconnect"
-
-    # -- Step 1: Verify release asset exists ----------------------------------
-    step(1, total_steps, "Checking release asset")
-
-    if not dry_run and not _url_exists(connect_url):
-        err("Awconnect.zip not found in the latest GitHub release")
-        print()
-        print(f"  This usually means a release hasn't been cut yet.")
-        print(f"  Check releases: {cyan('https://github.com/Aitherium/AitherOS/releases')}")
+    step(1, 1, "Staging Awconnect (adk awconnect install)")
+    try:
+        res = aw.install(wait=0, log=print)
+    except aw.AwconnectError as exc:
+        err(str(exc))
         return 1
-    elif dry_run:
-        info(f"Would verify: {connect_url}")
-
-    # -- Step 2: Download + extract -------------------------------------------
-    step(2, total_steps, "Downloading Awconnect")
-
-    if dry_run:
-        info(f"Would download: {connect_url}")
-        info(f"Would extract to: {dest_dir}")
-    else:
-        data = _download_bytes(connect_url)
-        if data is None:
-            err("Failed to download Awconnect")
-            print()
-            print(f"  Check releases: {cyan('https://github.com/Aitherium/AitherOS/releases')}")
-            return 1
-
-        # Extract zip
-        info(f"Extracting to {dest_dir}...")
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            with zipfile.ZipFile(BytesIO(data)) as zf:
-                zf.extractall(dest_dir)
-            info(f"Extracted {len(list(dest_dir.rglob('*')))} files")
-        except zipfile.BadZipFile:
-            err("Downloaded file is not a valid zip archive")
-            return 1
-
-        # Validate the extension has a manifest
-        manifest = dest_dir / "manifest.json"
-        if not manifest.exists():
-            # Check one level deep (some zips wrap in a subdirectory)
-            nested = list(dest_dir.glob("*/manifest.json"))
-            if nested:
-                manifest = nested[0]
-            else:
-                warn("Extension manifest.json not found — extension may not load correctly")
-
-    # -- Step 3: Instructions -------------------------------------------------
-    step(3, total_steps, "Installation instructions")
-
+    staged = res.get("staged") or {}
     print()
-    print(f"  To install the extension in Chrome:")
-    print()
-    print(f"    1. Open {cyan('chrome://extensions')}")
-    print(f"    2. Enable {bold('Developer mode')} (toggle in top-right)")
-    print(f"    3. Click {bold('Load unpacked')}")
-    print(f"    4. Select: {cyan(str(dest_dir))}")
-    print()
-    print(f"  For Edge: use {cyan('edge://extensions')} (same steps)")
-    print()
-    if not dry_run:
-        info(f"{green(bold('Awconnect downloaded!'))}")
+    info(f"{green(bold('Awconnect staged:'))} {staged.get('path', aw.current_dir())}")
+    print(dim("  Check it loaded with:  adk awconnect status"))
     return 0
 
 

@@ -4059,6 +4059,11 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
         sys.stderr.write("uvicorn is required: pip install uvicorn fastapi\n")
         return 2
 
+    # Detached daemon + Windows Terminal as default terminal = every console
+    # child (git, nvidia-smi) opens a tab. Install before anything spawns.
+    from adk.harnesses._win_no_console import install as _hide_child_consoles
+
+    _hide_child_consoles()
     bind_host = host or DEFAULT_BIND_HOST
     bind_port = port or DEFAULT_PORT
     app = create_app(token=token)

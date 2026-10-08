@@ -46,6 +46,7 @@ final class Shell {
     private final Activity a;
     private final Host host;
     private boolean child;
+    private boolean owner;
     private String current = "";
 
     private final Map<String, WebView> webs = new HashMap<>();
@@ -58,6 +59,8 @@ final class Shell {
     private final TextView title;
     private final ImageView back;
     private final ImageView refresh;
+    private final View signInBar;
+    private boolean signingIn;
     private View home;
 
     private final LinearLayout windowBox;
@@ -66,10 +69,11 @@ final class Shell {
     private WebView window;
     private String windowLabel = "";
 
-    Shell(Activity a, boolean child, Host host) {
+    Shell(Activity a, boolean child, boolean owner, Host host) {
         this.a = a;
         this.host = host;
         this.child = child;
+        this.owner = owner;
         root = new FrameLayout(a);
         root.setBackgroundColor(Ui.BG);
 
@@ -89,6 +93,9 @@ final class Shell {
         bar.addView(gear);
         main.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(a, 56)));
         main.addView(Ui.rule(a));
+        signInBar = signInBar();
+        signInBar.setVisibility(View.GONE);
+        main.addView(signInBar);
         content = new FrameLayout(a);
         main.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         main.addView(Ui.rule(a));
@@ -144,6 +151,16 @@ final class Shell {
         show(r.tab, r.url);
     }
 
+    /** The account became, or stopped being, the platform owner: the Home grid follows. */
+    void setOwner(boolean o) {
+        if (o == owner) return;
+        owner = o;
+        if (home == null) return;
+        content.removeView(home);
+        home = null;
+        if (AppTabs.HOME.equals(current)) show(AppTabs.HOME, "");
+    }
+
     /** The phone's role changed (a child signed in, or an adult): new tabs, back to home. */
     void setChild(boolean c) {
         if (c == child) return;
@@ -181,6 +198,61 @@ final class Shell {
         if (window != null) window.reload();
     }
 
+    // ---- signing in: one place, every tab follows (Session)
+
+    /** The bar under the top bar while this phone has no session: one tap to sign in. */
+    private View signInBar() {
+        LinearLayout b = new LinearLayout(a);
+        b.setOrientation(LinearLayout.HORIZONTAL);
+        b.setGravity(Gravity.CENTER_VERTICAL);
+        b.setBackgroundColor(Ui.RAISED);
+        int p = Ui.dp(a, 16);
+        b.setPadding(p, Ui.dp(a, 6), Ui.dp(a, 8), Ui.dp(a, 6));
+        TextView line = Ui.text(a, "You're signed out. Sign in once and every tab follows.", 14, Ui.INK);
+        b.addView(line, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView go = Ui.action(a, "Sign in", v -> signIn());
+        go.setPadding(Ui.dp(a, 12), Ui.dp(a, 10), Ui.dp(a, 12), Ui.dp(a, 10));
+        b.addView(go);
+        b.setContentDescription("Signed out. Sign in");
+        return b;
+    }
+
+    void signedOut(boolean out) {
+        signInBar.setVisibility(out ? View.VISIBLE : View.GONE);
+    }
+
+    /** The sign-in page in a window over the tabs; it comes back to the page on screen. */
+    void signIn() {
+        WebView w = webs.get(current);
+        openWindow(AppTabs.signInUrl(w == null ? null : w.getUrl()), "Sign in");
+        signingIn = true;
+    }
+
+    /** A session arrived (signed in here, or the server answers again after an outage):
+     *  close the sign-in window and load every tab again, a tab left on the sign-in page
+     *  at its own root. */
+    void signedIn() {
+        signedOut(false);
+        if (signingIn) closeWindow();
+        for (Map.Entry<String, WebView> e : webs.entrySet()) {
+            WebView w = e.getValue();
+            if (AppTabs.isSignIn(w.getUrl())) {
+                clearOnLoad.add(w);
+                w.loadUrl(AppTabs.rootUrl(child, e.getKey()));
+            } else {
+                w.reload();
+            }
+        }
+        if (window != null) window.reload();
+    }
+
+    /** Is any page in the app on the sign-in page (where it lands with no session)? */
+    boolean onSignIn() {
+        if (window != null && AppTabs.isSignIn(window.getUrl())) return true;
+        for (WebView w : webs.values()) if (AppTabs.isSignIn(w.getUrl())) return true;
+        return false;
+    }
+
     /**
      * A page loaded or its history moved (MainActivity's WebViewClient tells us): forget the
      * history behind a tab that was sent to its root, and refresh the bars.
@@ -189,6 +261,36 @@ final class Shell {
         if (clearOnLoad.remove(v)) v.clearHistory();
         if (v == window && windowLabel.isEmpty()) windowTitle.setText(cleanTitle(v.getTitle()));
         updateBar();
+    }
+
+    /**
+     * A page's renderer died (out of memory: a 3D avatar on a small phone). The dead WebView
+     * cannot be reused, so its tab or the window gets a fresh one at the same page; the other
+     * tabs and the app carry on. Returns false only for a WebView this shell does not hold.
+     */
+    boolean renderGone(WebView dead) {
+        String url = String.valueOf(dead.getUrl());
+        if (dead == window) {
+            windowContent.removeView(dead);
+            dead.destroy();
+            window = host.newWeb();
+            windowContent.addView(window, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            if (url.startsWith("http")) window.loadUrl(url);
+            return true;
+        }
+        for (Map.Entry<String, WebView> e : webs.entrySet()) {
+            if (e.getValue() != dead) continue;
+            String id = e.getKey();
+            content.removeView(dead);
+            clearOnLoad.remove(dead);
+            dead.destroy();
+            webs.remove(id);
+            // only the tab on screen reloads now; a hidden one comes back at its root when picked
+            if (id.equals(current)) show(id, url.startsWith("http") ? url : "");
+            return true;
+        }
+        return false;
     }
 
     /** Load a page out of sight: the local-model pairing hand-off (#local-pair=) is taken by
@@ -263,19 +365,68 @@ final class Shell {
         TextView label = Ui.text(a, t[1], 12, Ui.FAINT);
         label.setTag("label");
         label.setPadding(0, Ui.dp(a, 3), 0, 0);
-        item.addView(label);
+        // centred under its icon: a vertical LinearLayout's default child is MATCH_PARENT
+        // wide, so the text sat flush left of its column ("Home" at the screen edge)
+        label.setGravity(Gravity.CENTER_HORIZONTAL);
+        label.setSingleLine(true);
+        item.addView(label, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
         item.setOnClickListener(v -> select(t[0]));
         paintNav(item, t[3], false);
         return item;
     }
 
-    private static boolean vector(String icon) { return "home".equals(icon) || "gear".equals(icon); }
+    /** Every icon but the Aither mark is a white glyph that takes a tint. */
+    private static boolean vector(String icon) { return !"mark".equals(icon); }
 
+    /** An app's glyph: res/drawable/ic_app_<id>.xml, generated with the launcher icon by
+     *  apply_aither_icon.py (one lucide glyph per app, the same ones the shortcut tiles
+     *  wear). R, not a name lookup: a missing glyph fails the build. */
     static int iconRes(String icon) {
-        if ("home".equals(icon)) return R.drawable.ic_nav_home;
-        if ("gear".equals(icon)) return R.drawable.ic_nav_gear;
-        if ("mark".equals(icon)) return R.drawable.aither_mark; // the Iris cut, glyph alone
-        return Shortcuts.iconRes(icon);
+        switch (icon) {
+            case "mark": return R.drawable.aither_mark; // the Iris cut, glyph alone
+            case "home": return R.drawable.ic_app_home;
+            case "gear": return R.drawable.ic_app_settings;
+            case "learn": return R.drawable.ic_app_learn;
+            case "family": return R.drawable.ic_app_family;
+            case "hearth": return R.drawable.ic_app_hearth;
+            case "sprite": return R.drawable.ic_app_sprite;
+            case "academy": return R.drawable.ic_app_academy;
+            case "spaces": return R.drawable.ic_app_spaces;
+            case "space": return R.drawable.ic_app_space;
+            case "avatar": return R.drawable.ic_app_avatar;
+            case "quests": return R.drawable.ic_app_quests;
+            case "room": return R.drawable.ic_app_room;
+            case "phone": return R.drawable.ic_app_control;
+            case "account": return R.drawable.ic_app_account;
+            case "desktop": return R.drawable.ic_app_desktop;
+            case "agents": return R.drawable.ic_app_agents;
+            case "packs": return R.drawable.ic_app_packs;
+            case "mediaforge": return R.drawable.ic_app_mediaforge;
+            case "shop": return R.drawable.ic_app_shop;
+            default: return R.drawable.aither_mark;
+        }
+    }
+
+    /** A Home tile's glyph colour: apply_aither_icon.py SHORTCUT_ACCENT (amber for the household's own
+     *  apps, cyan for the tools), so a tile matches its launcher shortcut. */
+    static int accent(String icon) {
+        switch (icon) {
+            case "learn": case "family": case "hearth": case "sprite": case "academy":
+            case "space": case "quests": case "room":
+                return 0xFFD4872B;
+            default:
+                return 0xFF5EC9CC;
+        }
+    }
+
+    /** The rounded brand-navy chip a Home tile's glyph sits on (the shortcut tiles' ground). */
+    private static android.graphics.drawable.Drawable chip(Context c) {
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                new int[] {0xFF10243B, 0xFF02060D});
+        g.setCornerRadius(Ui.dp(c, 12));
+        return g;
     }
 
     private void paintNav(View item, String icon, boolean on) {
@@ -372,6 +523,7 @@ final class Shell {
     }
 
     void closeWindow() {
+        signingIn = false;
         if (window == null) return;
         windowContent.removeView(window);
         window.destroy();
@@ -412,7 +564,7 @@ final class Shell {
         TextView sub = Ui.note(c, "Tap one to open it. The bar at the bottom takes you back.");
         sub.setPadding(0, Ui.dp(c, 8), 0, Ui.dp(c, 16));
         col.addView(sub);
-        String[][] apps = AppTabs.apps(child);
+        String[][] apps = AppTabs.apps(child, owner, Flavor.STORE);
         int perRow = c.getResources().getConfiguration().screenWidthDp >= 600 ? 4 : 3;
         LinearLayout row = null;
         for (int i = 0; i < apps.length; i++) {
@@ -452,7 +604,10 @@ final class Shell {
         t.setContentDescription(app[1] + ". " + app[2]);
         ImageView icon = new ImageView(c);
         icon.setImageResource(iconRes(app[4]));
-        if (vector(app[4])) icon.setImageTintList(android.content.res.ColorStateList.valueOf(Ui.ACCENT));
+        icon.setBackground(chip(c));
+        int inset = Ui.dp(c, vector(app[4]) ? 13 : 5);
+        icon.setPadding(inset, inset, inset, inset);
+        if (vector(app[4])) icon.setImageTintList(android.content.res.ColorStateList.valueOf(accent(app[4])));
         t.addView(icon, new LinearLayout.LayoutParams(Ui.dp(c, 52), Ui.dp(c, 52)));
         TextView name = Ui.text(c, app[1], 14, Ui.INK);
         name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));

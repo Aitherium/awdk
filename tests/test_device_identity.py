@@ -37,7 +37,8 @@ def test_the_key_is_created_once_and_its_public_half_is_stable(home):
 
 def test_registration_carries_the_public_key(home):
     fields = device_identity.registration_fields()
-    assert fields == {"seal_pubkey": device_identity.seal_public_key()}
+    assert fields["seal_pubkey"] == device_identity.seal_public_key()
+    assert fields["facet"] == "daemon" and len(fields["machine_id"]) == 64
 
 
 def test_enrollment_payload_includes_the_key(home):

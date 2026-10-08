@@ -283,6 +283,11 @@ def register_serve_tools(agent: Any, store: FollowupStore,
     with_accounts = home_signed_in() if connectors is None else connectors
     for fn in build_home_tools(Planner(planner_root), remote=bool(with_accounts)):
         agent._tools.register(fn)
+    from .device_tools import build_device_tools
+
+    # Home Assistant devices: only when AITHER_HA_URL is set; actions are policy-gated.
+    for fn in build_device_tools(receipts_file):
+        agent._tools.register(fn)
     if tutor is None:
         tutor = tutor_enabled() if connectors is None else connectors
     if tutor:
@@ -327,6 +332,10 @@ def build_serve_agent(cfg: HomeConfig, store: FollowupStore, root: Optional[Path
         with_teacher = False
     prompt = compose_system_prompt(root) + "\n\n" + SERVE_PROMPT
     prompt += "\n" + HOME_PROMPT
+    from .device_tools import DEVICE_PROMPT, ha_url
+
+    if ha_url():
+        prompt += "\n" + DEVICE_PROMPT
     if with_tutor:
         prompt += "\n" + TUTOR_PROMPT
     if with_teacher:

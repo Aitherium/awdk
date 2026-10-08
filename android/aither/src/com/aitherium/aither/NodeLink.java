@@ -180,6 +180,8 @@ final class NodeLink {
                             ? new JSONArray().put(LlmService.MODEL_ID) : new JSONArray())
                     .put("inference_kind", cfg.llmEnabled() ? "llama-server" : "none")
                     .put("reach_kind", "none");
+            // the family storage pool: what this phone lends (only once it was ever offered)
+            StorageShare.addTo(ctx, beat);
             Resp r = call("POST", idp + "/v1/nodes/device/heartbeat", bearer(), null, beat.toString());
             if (r.code == 401 || r.code == 403) {
                 forget("unlinked: the device token was refused (" + r.code + ")");
