@@ -29,6 +29,10 @@ def _version_tuple(v: str) -> tuple[int, ...]:
 
 
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["drive"]:
+        # The family drive: sealed with the family key, kept on the family's devices.
+        from adk.family_drive_cli import main as _drive_main
+        return int(_drive_main(argv[1:]))
     if argv[:1] == ["share"]:
         # Lending disk to the family's mesh pool is adk's own (adk.storage_contribution),
         # not the inventory brick's: handled here, before the pass-through.
