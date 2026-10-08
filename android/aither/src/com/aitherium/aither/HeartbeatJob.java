@@ -61,6 +61,9 @@ public class HeartbeatJob extends JobService {
         // approval cards: on duty, DutyService holds the inbox open; otherwise read it here
         if (new Config(ctx).approvalsOnDuty()) DutyService.sync(ctx);
         else Notices.poll(ctx, 0);
+        // the family storage pool: run this phone's jobs while it may lend (Wi-Fi, charging,
+        // within quota); before the Identity beat, so the beat reports what it holds now
+        StorageWorker.drain(ctx, 3 * 60_000L);
         NodeLink node = new NodeLink(ctx);
         node.ensureLinked();
         boolean commands = node.checkIn();

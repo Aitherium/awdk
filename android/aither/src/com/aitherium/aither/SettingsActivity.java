@@ -340,7 +340,7 @@ public class SettingsActivity extends Activity {
             } catch (Exception e) { /* nothing yet */ }
             status.setText(sb.toString());
             if (ticks++ % 5 == 0) StorageShare.verdict(SettingsActivity.this); // disk + power, every 5 s
-            storageStatus.setText("Family storage: " + StorageShare.state);
+            storageStatus.setText("Family storage: " + StorageShare.state + " · " + StorageWorker.last);
             String blocked = cfg.localAiBlocked();
             localStatus.setText((blocked.isEmpty() ? LlmService.reason : "Off: " + blocked)
                     + "\nFamily sharing: " + FamilyShare.state
