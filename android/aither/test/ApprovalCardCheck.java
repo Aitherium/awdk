@@ -71,6 +71,14 @@ public class ApprovalCardCheck {
         eq("distinct codes", card.requestCode(true) != card.requestCode(false), true);
         eq("stable id", card.notifyId(), new ApprovalCard(id, "approval", "x", "y", true, false, dig, "denied", 0, 1, "no").notifyId());
 
+        // tapping opens the notice's own same-origin link; never another origin
+        eq("decide link", ApprovalCard.openPath("/decide?id=d-1", id), "/decide?id=d-1");
+        eq("no link", ApprovalCard.openPath("", id), "/hearth/?notice=" + id);
+        eq("hearth link", ApprovalCard.openPath("/hearth/#family", id), "/hearth/?notice=" + id);
+        eq("other origin", ApprovalCard.openPath("//evil.example/", id), "/hearth/?notice=" + id);
+        eq("absolute url", ApprovalCard.openPath("https://evil.example/", id), "/hearth/?notice=" + id);
+        eq("space", ApprovalCard.openPath("/a b", id), "/hearth/?notice=" + id);
+
         // refusals in words
         eq("401", ApprovalCard.refusal(401, ""), "Sign in to Aither to answer. Tap to open it.");
         eq("changed", ApprovalCard.refusal(409, "card_changed"), "This card changed. Tap to see it in Aither.");

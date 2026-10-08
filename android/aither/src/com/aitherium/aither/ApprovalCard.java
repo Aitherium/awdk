@@ -52,7 +52,21 @@ final class ApprovalCard {
         this.ranAt = ranAt;
     }
 
+    /** The notice's own link (a same-origin path, e.g. /decide?id=...), "" when it has none. */
+    String link = "";
+
     static boolean validId(String id) { return id != null && id.matches("[0-9a-f]{16}"); }
+
+    /** Where tapping the notification opens: the notice's own same-origin link, so a
+     *  decision card opens straight on /decide; anything else (or a Hearth link) on the
+     *  Hearth page for this notice. Never another origin. */
+    static String openPath(String link, String noticeId) {
+        if (link != null && link.length() <= 200 && link.startsWith("/") && !link.startsWith("//")
+                && !link.contains("\\") && !link.startsWith("/hearth") && link.chars().allMatch(c -> c > 0x20 && c < 0x7f)) {
+            return link;
+        }
+        return "/hearth/?notice=" + noticeId;
+    }
 
     static boolean validDigest(String d) { return d != null && d.matches("[0-9a-f]{64}"); }
 

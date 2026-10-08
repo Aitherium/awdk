@@ -115,12 +115,14 @@ final class Notices {
     static ApprovalCard parse(JSONObject n) {
         if (n == null || !ApprovalCard.validId(n.optString("notice_id"))) return null;
         JSONObject a = n.optJSONObject("approval");
-        return new ApprovalCard(n.optString("notice_id"), n.optString("kind"), n.optString("title"),
+        ApprovalCard card = new ApprovalCard(n.optString("notice_id"), n.optString("kind"), n.optString("title"),
                 n.optString("body"), n.optBoolean("urgent"), n.optBoolean("quiet"),
                 a == null ? "" : a.optString("digest"), a == null ? "" : a.optString("state"),
                 a == null ? 0 : a.optInt("have"), a == null ? 0 : a.optInt("need", 1),
                 a == null ? "" : a.optString("mine"), a == null ? "" : a.optString("denied_by"),
                 a == null ? 0 : a.optDouble("ran_at", 0));
+        card.link = n.optString("url", "");
+        return card;
     }
 
     private static void channels(NotificationManager nm) {
@@ -140,7 +142,7 @@ final class Notices {
         if (nm == null) return;
         channels(nm);
         Intent open = new Intent(Intent.ACTION_VIEW,
-                Uri.parse(Shortcuts.ORIGIN + "/hearth/?notice=" + card.noticeId)).setClass(ctx, MainActivity.class);
+                Uri.parse(Shortcuts.ORIGIN + ApprovalCard.openPath(card.link, card.noticeId))).setClass(ctx, MainActivity.class);
         PendingIntent pi = PendingIntent.getActivity(ctx, card.notifyId(), open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         String status = line != null ? line : card.isApproval() ? card.statusLine() : "";
