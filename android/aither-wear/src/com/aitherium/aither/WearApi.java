@@ -33,7 +33,31 @@ final class WearApi {
     /** Where the owner enters the code when the answer names no verification_uri. */
     static final String VERIFY = "idp.aitherium.com/link";
     static final String CLIENT = "Aither on Wear OS";
-    static final String AGENT = "aeon";
+    /** Who answers unless the owner picks another (the web desktop's default). */
+    static final String AGENT = "aither";
+    /** The owner's agents the watch offers: id, name. */
+    static final String[][] AGENTS = {
+            {"aither", "Aither"}, {"iris", "Iris"}, {"saga", "Saga"}, {"lyra", "Lyra"},
+            {"atlas", "Atlas"}, {"demiurge", "Demi"}, {"hera", "Hera"}, {"vera", "Vera"},
+    };
+    /** One-tap asks on the home screen: label, what is asked, which agent ("" = the chosen one). */
+    static final String[][] QUICK = {
+            {"Fleet status", "In two short sentences: how is my fleet right now? Name anything down or degraded.", "aither"},
+            {"Home", "In two short sentences: what's happening at home right now, and is anything waiting for me?", "aither"},
+            {"My day", "In two short sentences: what's on my calendar and task list today?", "aither"},
+            {"What did I miss?", "In two short sentences: what changed in the last hour that I should know about?", "aither"},
+    };
+
+    /** A known agent id, else the default (a stale or tampered pref never reaches the API). */
+    static String agentId(String id) {
+        for (String[] a : AGENTS) if (a[0].equals(id)) return id;
+        return AGENT;
+    }
+
+    static String agentName(String id) {
+        for (String[] a : AGENTS) if (a[0].equals(id)) return a[1];
+        return "Aither";
+    }
 
     private final SharedPreferences p;
 
@@ -74,19 +98,29 @@ final class WearApi {
     }
 
     Resp post(String path, JSONObject body, boolean auth, int readMs) {
+        return call("POST", path, body, auth, readMs);
+    }
+
+    Resp get(String path, int readMs) {
+        return call("GET", path, null, true, readMs);
+    }
+
+    private Resp call(String method, String path, JSONObject body, boolean auth, int readMs) {
         String bearer = auth ? token() : "";
         if (auth && bearer.isEmpty()) return new Resp(401, null, "");
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(API + path).openConnection();
-            c.setRequestMethod("POST");
+            c.setRequestMethod(method);
             c.setConnectTimeout(20000);
             c.setReadTimeout(readMs);
-            c.setDoOutput(true);
-            c.setRequestProperty("Content-Type", "application/json");
             c.setRequestProperty("Origin", "https://aitherium.com");
             if (auth) c.setRequestProperty("Authorization", "Bearer " + bearer);
-            try (OutputStream o = c.getOutputStream()) {
-                o.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            if (body != null) {
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                try (OutputStream o = c.getOutputStream()) {
+                    o.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                }
             }
             int code = c.getResponseCode();
             StringBuilder sb = new StringBuilder();
@@ -103,6 +137,27 @@ final class WearApi {
             JSONObject j = null;
             try { j = new JSONObject(sb.toString()); } catch (Exception e) { /* not JSON (SSE) */ }
             return new Resp(code, j, sb.toString());
+        } catch (Exception e) {
+            return new Resp(0, null, "");
+        }
+    }
+
+    // ------------------------------------------------------------------ decisions
+
+    /** The owner's open decision cards (GET /api/decisions?status=open), or null (why in status[0]). */
+    List<WearDecision> decisions(int[] status) {
+        Resp r = get("/api/decisions?status=open", 20000);
+        status[0] = r.code;
+        if (r.code != 200 || r.json == null) return null;
+        return WearDecision.parseAll(r.json.optJSONArray("decisions"));
+    }
+
+    /** POST /api/decisions/{id}/answer. 403 means this answer needs a passkey (the phone). */
+    Resp answer(WearDecision d, String choice) {
+        if (!WearDecision.validId(d.id)) return new Resp(400, null, "");
+        try {
+            return post("/api/decisions/" + d.id + "/answer",
+                    new JSONObject().put("choice", choice).put("note", "answered on the watch"), true, 30000);
         } catch (Exception e) {
             return new Resp(0, null, "");
         }
@@ -177,29 +232,79 @@ final class WearApi {
 
     // ------------------------------------------------------------------ assistant
 
-    /** Ask the assistant; the answer text, or "" with why in err[0]. */
-    String ask(String message, String[] err) {
-        Resp r;
+    /** What a streamed answer reports, in order, on the reading thread. */
+    interface Stream {
+        void segment(String kind);
+        void token(String text);
+        void segmentEnd();
+        /** The terminal answer (may arrive long after the last token, or never). */
+        void answer(String text);
+        void error(String why);
+    }
+
+    /**
+     * Ask {@code agent} and hand each event over as it arrives (Genesis' eager protocol:
+     * answer_segment, token, segment_end, then answer/complete). Returns the HTTP status
+     * (0: unreachable). {@code alive} is polled between events: false hangs up.
+     */
+    int stream(String message, String agent, Stream to, java.util.function.BooleanSupplier alive) {
+        String bearer = token();
+        if (bearer.isEmpty()) return 401;
+        HttpURLConnection c = null;
         try {
-            r = post("/api/agent-chat", new JSONObject().put("message", message).put("agent", AGENT), true, 120000);
+            c = (HttpURLConnection) new URL(API + "/api/agent-chat").openConnection();
+            c.setRequestMethod("POST");
+            c.setConnectTimeout(20000);
+            c.setReadTimeout(120000);
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "application/json");
+            c.setRequestProperty("Accept", "text/event-stream");
+            c.setRequestProperty("Origin", "https://aitherium.com");
+            c.setRequestProperty("Authorization", "Bearer " + bearer);
+            byte[] body = new JSONObject().put("message", message).put("agent", agent)
+                    .put("client", CLIENT).toString().getBytes(StandardCharsets.UTF_8);
+            c.setFixedLengthStreamingMode(body.length);
+            try (OutputStream o = c.getOutputStream()) {
+                o.write(body);
+            }
+            int code = c.getResponseCode();
+            if (code == 401) signOut();
+            if (code != 200) return code;
+            boolean answered = false;
+            try (java.io.BufferedReader in = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = in.readLine()) != null) {
+                    if (!alive.getAsBoolean()) break;
+                    if (!line.startsWith("data:")) continue;
+                    JSONObject e;
+                    try { e = new JSONObject(line.substring(5).trim()); } catch (Exception x) { continue; }
+                    switch (e.optString("type")) {
+                        case "answer_segment": to.segment(e.optString("kind", "initial")); break;
+                        case "token": to.token(e.optString("t", "")); break;
+                        case "segment_end": to.segmentEnd(); break;
+                        case "answer":
+                        case "final_answer":
+                            if (!answered) {
+                                String a = e.optString("answer", e.optString("content", ""));
+                                if (!a.isEmpty()) { answered = true; to.answer(a); }
+                            }
+                            break;
+                        case "complete":
+                            if (!answered && !e.optString("content").isEmpty()) to.answer(e.optString("content"));
+                            return 200;
+                        case "error":
+                            if (!e.optString("error").isEmpty()) to.error(e.optString("error"));
+                            break;
+                        default: break;
+                    }
+                }
+            }
+            return 200;
         } catch (Exception e) {
-            r = new Resp(0, null, "");
+            return 0;
+        } finally {
+            if (c != null) c.disconnect();
         }
-        if (r.code == 401) { err[0] = "Signed out. Sign in again."; return ""; }
-        if (r.code != 200) { err[0] = r.code == 0 ? "No connection." : "Aither answered " + r.code + "."; return ""; }
-        String answer = "", complete = "";
-        for (String line : r.text.split("\n")) {
-            if (!line.startsWith("data: ")) continue;
-            try {
-                JSONObject e = new JSONObject(line.substring(6));
-                String type = e.optString("type");
-                if ("answer".equals(type) && !e.optString("answer").isEmpty()) answer = e.optString("answer");
-                else if ("complete".equals(type) && !e.optString("content").isEmpty()) complete = e.optString("content");
-                else if ("error".equals(type) && !e.optString("error").isEmpty()) err[0] = e.optString("error");
-            } catch (Exception ignored) { /* a heartbeat or a partial line */ }
-        }
-        String out = answer.isEmpty() ? complete : answer;
-        if (out.isEmpty() && err[0] == null) err[0] = "No answer came back.";
-        return out;
     }
 }

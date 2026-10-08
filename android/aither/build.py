@@ -434,6 +434,69 @@ WEAR_SHARED = ("ApprovalCard.java", "Talk.java", "Speakable.java", "Ui.java", "D
                "BlePair.java", "BleCandidate.java")
 
 
+# The watch's Tile (WearTile) needs the Jetpack Tiles library: the system binds a tile
+# provider over the androidx.wear.tiles AIDL and reads protolayout protos, which nothing in
+# the platform SDK speaks. Classes only (none of these carry resources), fetched from
+# Google's Maven (Guava's listenablefuture: Maven Central) once and pinned by SHA-256, so a
+# changed artifact fails the build.
+MAVEN = ("https://dl.google.com/android/maven2/", "https://repo1.maven.org/maven2/")
+WEAR_LIBS = (
+    ("androidx/wear/tiles/tiles/1.4.1/tiles-1.4.1.aar",
+     "c0e7d86f4227edab5ac69b09c48849325d6ea645a26d5d04a7f417383c80ff5c"),
+    ("androidx/wear/tiles/tiles-proto/1.4.1/tiles-proto-1.4.1.jar",
+     "f60550dfbfa86f8d7e81d45cc694bc3a073dd84f08fba3d7d5daa5011734c288"),
+    ("androidx/wear/protolayout/protolayout/1.2.1/protolayout-1.2.1.aar",
+     "2baca490363b891c16718fbbc7db9ea3cc648b51909c4ff2285d2525c30e537a"),
+    ("androidx/wear/protolayout/protolayout-expression/1.2.1/protolayout-expression-1.2.1.aar",
+     "bf152fbce301a66118405b41920c0733a3fa008bda1af46696c5d871020b95d3"),
+    ("androidx/wear/protolayout/protolayout-proto/1.2.1/protolayout-proto-1.2.1.jar",
+     "9b51b7738a9cc41deaf9a81dcbce7583f55a6abef7a4c1ad72b3852c839fd006"),
+    ("androidx/wear/protolayout/protolayout-external-protobuf/1.2.1/protolayout-external-protobuf-1.2.1.jar",
+     "3a06ed2dc85ed0edb06579c0fd7bc708717793946b8b810b8b1d062ecc14abf3"),
+    ("androidx/collection/collection/1.2.0/collection-1.2.0.jar",
+     "16d77e8c443fa55fe9a6074d00445d520ca5c9f913cefdbf4828356255214e42"),
+    ("androidx/concurrent/concurrent-futures/1.1.0/concurrent-futures-1.1.0.jar",
+     "0ce067c514a0d1049d1bebdf709e344ed3266fe9744275682937cdcb13334e9e"),
+    ("com/google/guava/listenablefuture/1.0/listenablefuture-1.0.jar",
+     "e4ad7607e5c0477c6f890ef26a49cb8d1bb4dffb650bab4502afee64644e3069"),
+    ("androidx/annotation/annotation/1.2.0/annotation-1.2.0.jar",
+     "9029262bddce116e6d02be499e4afdba21f24c239087b76b3b57d7e98b490a36"),
+)
+
+
+def wear_libs(out: Path) -> list[Path]:
+    """The pinned WEAR_LIBS as class jars (an AAR's classes.jar), cached between builds."""
+    import hashlib
+    import urllib.request
+
+    default = Path.home() / ".cache" / "aither-android" / "m2"
+    cache = Path(os.environ.get("AITHER_ANDROID_M2") or default)
+    cache.mkdir(parents=True, exist_ok=True)
+    jars = []
+    for rel, sha in WEAR_LIBS:
+        f = cache / Path(rel).name
+        if not f.exists() or hashlib.sha256(f.read_bytes()).hexdigest() != sha:
+            data = b""
+            for base in MAVEN:
+                try:
+                    with urllib.request.urlopen(base + rel, timeout=60) as r:
+                        data = r.read()
+                    break
+                except OSError:
+                    continue
+            if hashlib.sha256(data).hexdigest() != sha:
+                raise SystemExit(f"build: {rel} does not match its pinned SHA-256")
+            f.write_bytes(data)
+        if f.suffix == ".aar":
+            jar = out / "libs" / (f.stem + ".jar")
+            jar.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(f) as z:
+                jar.write_bytes(z.read("classes.jar"))
+            f = jar
+        jars.append(f)
+    return jars
+
+
 def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
     """The Wear OS app: its own manifest and sources, the phone's launcher icons and the
     WEAR_SHARED sources, signed exactly like the phone app (same key, same cert check)."""
@@ -471,6 +534,7 @@ def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
     srcs = [str(p) for p in (WEAR / "src").rglob("*.java")]
     srcs += [str(src / name) for name in WEAR_SHARED]
     srcs += [str(p) for p in (out / "rgen").rglob("*.java")]
+    libs = wear_libs(out)
     run(
         [
             "javac",
@@ -482,7 +546,7 @@ def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
             "-encoding",
             "UTF-8",
             "-classpath",
-            str(jar),
+            os.pathsep.join([str(jar), *map(str, libs)]),
             "-d",
             str(out / "classes"),
             *srcs,
@@ -503,10 +567,13 @@ def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
             "--output",
             str(out / "dex"),
             str(classes_jar),
+            *map(str, libs),
         ]
     )
     with zipfile.ZipFile(base, "a", zipfile.ZIP_DEFLATED) as z:
-        z.write(out / "dex" / "classes.dex", "classes.dex")
+        # the Tiles protos can need a second dex
+        for dex in sorted((out / "dex").glob("classes*.dex")):
+            z.write(dex, dex.name)
     return sign(bt, base, out / "aither-wear.apk", keystore, storepass_file)
 
 

@@ -83,11 +83,28 @@ approval in `LinkActivity`, or the internet join request once `NearbyDevicesActi
 is set). The rules are pure Java and run on a desktop JVM: `test/BlePairCheck.java` in the
 phone app, run by the platform's BLE pairing test.
 
-## v2
+## Talking, streamed
 
-- **Tile** ("Waiting for you" count + Talk): Tiles need `androidx.wear.tiles` and
-  `androidx.wear.protolayout` (and their protobuf runtime); vendoring those AARs into this
-  no-Gradle build is the v2 work. A complication needs `androidx.wear.watchface`.
-- On-wrist background alerts: a long-poll like the phone's DutyService costs battery on a
-  watch; the phone's bridged cards cover alerts in v1.
-- Spoken answers (TextToSpeech) and an "open on phone" hand-off.
+`/api/agent-chat` streams Genesis' eager protocol (`answer_segment`, `token`, `segment_end`,
+then `answer`/`complete`, which can come ~30 s after the last token). The watch never waits
+for the end: `WearFeed` shows tokens as they arrive and hands each finished sentence to
+`WearVoice`, which fetches that sentence in Aither's voice at once (the next one while the
+current plays) and lights the word being said. Measured on the Pixel Watch 4 (2026-10-08):
+first Aither-voice audio 1.2 s after the first sentence ends. Every turn logs `AitherWearLat`.
+
+The agent is picked on the watch (Aither by default); quick asks sit under the talk orb.
+The **Talk to Aither** launcher entry opens straight into listening: put it on the button
+(Settings > Gestures). The look follows the watch face: Aither, Hearth or Minimal, and its
+accents (`WearTheme`).
+
+## Tile
+
+`WearTile`: the wordmark, a Talk orb (opens Talk to Aither) and what waits for you
+(approvals and agent asks). It needs Jetpack Tiles, so `build.py --wear` fetches the pinned
+classes (`WEAR_LIBS`, SHA-256 checked, cached under `~/.cache/aither-android/m2`). Add it
+from the watch's tile list (long-press a tile > +).
+
+## Not yet
+
+- A complication ("N waiting" on the face) needs `androidx.wear.watchface` complications.
+- On-wrist background alerts: the phone's bridged cards cover alerts.

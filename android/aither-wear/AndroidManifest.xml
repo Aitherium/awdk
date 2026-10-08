@@ -4,7 +4,7 @@
      phone/watch pair. Built by ../aither/build.py with the wear flag. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="2"
+    android:versionCode="4"
     android:versionName="0.3.17">
 
     <!-- Wear OS 3 (API 30) and up; Pixel Watch 4 ships Wear OS 6 (API 36) -->
@@ -51,6 +51,36 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- "Talk to Aither": a second launcher entry that opens straight into listening
+             (WearActivity.TALK_ALIAS). It can be put on the watch's button:
+             Settings > Gestures > Press and hold button (or Quick launch). -->
+        <activity-alias
+            android:name=".TalkToAither"
+            android:label="Talk to Aither"
+            android:targetActivity=".WearActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- The Aither Tile (WearTile): Talk + what waits for you, a swipe from the face.
+             Bound only by the system's tile host (BIND_TILE_PROVIDER). -->
+        <service
+            android:name=".WearTile"
+            android:label="Aither"
+            android:icon="@mipmap/ic_launcher"
+            android:exported="true"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@mipmap/ic_launcher" />
+        </service>
 
         <activity
             android:name=".WearBlePair"
