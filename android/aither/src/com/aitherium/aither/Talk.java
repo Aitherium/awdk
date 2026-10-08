@@ -38,22 +38,22 @@ final class Talk {
     private static final Pattern FENCE = Pattern.compile("```.*?(```|$)", Pattern.DOTALL);
     private static final Pattern MD_LINK = Pattern.compile("\\[([^\\]]*)\\]\\([^)]*\\)");
     private static final Pattern URL = Pattern.compile("\\bhttps?://[^\\s)]*[^\\s.,;:!?)]");
-    private static final Pattern LINE_MARK = Pattern.compile("(?m)^[ \\t]*(#{1,6}|>|[-*+]|\\d+[.)])[ \\t]+");
-    /** Bold/italic/code/strike marks; a * or _ inside a word (2*3, snake_case) stays. */
-    private static final Pattern EMPHASIS = Pattern.compile("(?<!\\w)[*_]+|[*_]+(?!\\w)|`+|~~");
+    // Placeholders for what this class itself says, so Speakable's bracket rule leaves them
+    // (private-use marks: String.trim() would eat a control character at either end)
+    private static final String CODE = "CODE", LINK = "LINK";
 
     /**
-     * An answer as it should sound: code blocks and links are left on the screen, markdown
-     * marks are not read out, and a long answer stops at the last whole sentence that fits.
+     * An answer as it should sound: code blocks and links are left on the screen, stage
+     * directions, emoji and markdown marks are not read out (Speakable), and a long answer
+     * stops at the last whole sentence that fits.
      */
     static String spoken(String answer) {
         if (answer == null) return "";
-        String s = FENCE.matcher(answer).replaceAll(" (the code is on screen) ");
+        String s = FENCE.matcher(answer).replaceAll(" " + CODE + " ");
         s = MD_LINK.matcher(s).replaceAll("$1");
-        s = URL.matcher(s).replaceAll("a link");
-        s = LINE_MARK.matcher(s).replaceAll("");
-        s = EMPHASIS.matcher(s).replaceAll("");
-        s = s.replaceAll("\\s+", " ").trim();
+        s = URL.matcher(s).replaceAll(LINK);
+        s = Speakable.of(s);
+        s = s.replace(CODE, "(the code is on screen)").replace(LINK, "a link");
         if (s.length() <= MAX_SPOKEN) return s;
         String head = s.substring(0, MAX_SPOKEN);
         int cut = Math.max(head.lastIndexOf(". "), Math.max(head.lastIndexOf("! "), head.lastIndexOf("? ")));

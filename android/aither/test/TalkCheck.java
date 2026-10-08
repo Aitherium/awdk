@@ -45,6 +45,18 @@ public class TalkCheck {
         eq("open fence", Talk.spoken("Run:\n```\nls"), "Run: (the code is on screen)");
         eq("inline code", Talk.spoken("Use `adb devices`."), "Use adb devices.");
         eq("null answer", Talk.spoken(null), "");
+        // stage directions and emoji are never read aloud (Speakable; same vectors as the web
+        // and the voice plane)
+        eq("sprite gestures", Talk.spoken("*blinks* *bounces* 🐾 Hi Athena!"), "Hi Athena!");
+        eq("mid-line action", Talk.spoken("Hi! *waves* Want to learn?"), "Hi! Want to learn?");
+        eq("emphasis kept", Talk.spoken("That is *so* cool."), "That is so cool.");
+        eq("bracket action", Talk.spoken("(giggles) Let's count!"), "Let's count!");
+        eq("square action", Talk.spoken("[waves happily] Hello there."), "Hello there.");
+        eq("underscore action", Talk.spoken("_yawns_ Good morning."), "Good morning.");
+        eq("math stays", Talk.spoken("What is (5 + 5)?"), "What is (5 + 5)?");
+        eq("bold and emoji", Talk.spoken("**Great job!** You did it 🎉🎉"), "Great job! You did it");
+        eq("skin tone", Talk.spoken("👍🏽 nice"), "nice");
+        eq("only a gesture", Talk.spoken("*blinks*"), "");
 
         // a long answer stops at a whole sentence, under the TTS limit
         StringBuilder lng = new StringBuilder();

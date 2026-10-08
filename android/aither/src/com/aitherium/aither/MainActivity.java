@@ -91,6 +91,21 @@ public class MainActivity extends Activity implements Shell.Host {
         web.addJavascriptInterface(new FamilyNotices.Bridge(this), "AitherApp");
         // window.AitherMCP: the page's WebMCP tools answer the phone's agent (PageTools)
         web.addJavascriptInterface(new PageTools.Bridge(), "AitherMCP");
+        // window.AitherVoice: push-to-talk with the on-device recognizer (a child's Sprite)
+        web.addJavascriptInterface(new PageVoice.Bridge(this, web), "AitherVoice");
+        web.setWebChromeClient(new android.webkit.WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                // Only the voice's own line (awkit learnVoice): the exact text handed to
+                // text-to-speech, so "nothing like *blinks* is read aloud" can be checked on a
+                // phone. Every other console line stays in the page.
+                String msg = m.message();
+                if (msg != null && msg.startsWith("[aither-speak] ")) {
+                    android.util.Log.i("AitherSpeak", msg.substring(15));
+                }
+                return false;
+            }
+        });
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
@@ -338,7 +353,22 @@ public class MainActivity extends Activity implements Shell.Host {
     }
 
     @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == PageVoice.ASK_MIC) {
+            PageVoice.of(this).onPermission(results.length > 0 && results[0] == 0);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        PageVoice.of(this).destroy();
+        super.onDestroy();
+    }
+
+    @Override
     protected void onPause() {
+        PageVoice.of(this).stop();
         ticks.removeCallbacks(poll);
         CookieManager.getInstance().flush();
         super.onPause();
