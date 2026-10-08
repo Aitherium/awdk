@@ -144,7 +144,9 @@ public class WearActivity extends Activity {
         t.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         line("Sign in with your phone to talk to Aither and answer your home's requests.", 13, Ui.DIM);
         button("Sign in", true, v -> signIn());
-        button("Add to my devices", false, v -> startActivity(new Intent(this, WearBlePair.class)));
+        if (!WearBlePair.linked(this) && !new WearNodeLink(this).linked()) {
+            button("Add to my devices", false, v -> startActivity(new Intent(this, WearBlePair.class)));
+        }
     }
 
     private void signIn() {
@@ -252,7 +254,10 @@ public class WearActivity extends Activity {
         out.setGravity(Gravity.CENTER);
         out.setPadding(0, Ui.dp(this, 16), 0, Ui.dp(this, 8));
         out.setOnClickListener(v -> { api.signOut(); render(); });
-        if (!WearBlePair.linked(this)) {
+        // Joined by EITHER route counts: same-account/QR (WearNodeLink) or Bluetooth
+        // (WearBlePair). Checking only the BLE flag left "Add to my devices" on screen
+        // after a successful same-account join (owner, 2026-10-08).
+        if (!WearBlePair.linked(this) && !node.linked()) {
             button("Add to my devices", false, v -> startActivity(new Intent(this, WearBlePair.class)));
         }
         col.addView(out, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
