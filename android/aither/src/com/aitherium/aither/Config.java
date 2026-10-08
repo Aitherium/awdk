@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.3.16";
+    static final String VERSION = "0.3.17";
 
     private final SharedPreferences p;
 
