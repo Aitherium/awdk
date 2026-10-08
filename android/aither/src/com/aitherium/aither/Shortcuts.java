@@ -74,6 +74,16 @@ final class Shortcuts {
      *  reusing the bare id would make setDynamicShortcuts throw. */
     static String sid(String id) { return "s." + id; }
 
+    /** The App Actions capability declared in res/xml/shortcuts.xml. */
+    static final String OPEN_APP_FEATURE = "actions.intent.OPEN_APP_FEATURE";
+
+    /** Lets an assistant match "open <label> in Aither" to this shortcut (API 33+). */
+    private static void bindFeature(ShortcutInfo.Builder b, String label) {
+        if (android.os.Build.VERSION.SDK_INT < 33) return;
+        b.addCapabilityBinding(new android.content.pm.Capability.Builder(OPEN_APP_FEATURE).build(),
+                new android.content.pm.CapabilityParams.Builder("feature", label).build());
+    }
+
     /** Publish the set for this role; replaces whatever set was there. */
     static void apply(Context c, boolean child) {
         ShortcutManager sm = c.getSystemService(ShortcutManager.class);
@@ -89,8 +99,10 @@ final class Shortcuts {
         int rank = 0;
         for (String[] s : child ? CHILD : ADULT) {
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(ORIGIN + s[2])).setClass(c, MainActivity.class);
-            out.add(new ShortcutInfo.Builder(c, sid(s[0])).setShortLabel(s[1]).setIcon(icon(c, s[0]))
-                    .setIntent(i).setRank(rank++).build());
+            ShortcutInfo.Builder sb = new ShortcutInfo.Builder(c, sid(s[0])).setShortLabel(s[1])
+                    .setIcon(icon(c, s[0])).setIntent(i).setRank(rank++);
+            bindFeature(sb, s[1]);
+            out.add(sb.build());
         }
         if (!child) {
             Intent i = new Intent(Intent.ACTION_VIEW).setClass(c, SettingsActivity.class);

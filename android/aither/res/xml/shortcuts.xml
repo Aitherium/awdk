@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App Actions: "open Hearth in Aither" (actions.intent.OPEN_APP_FEATURE).
+     Only the capability lives here. The feature shortcuts stay dynamic (Shortcuts.apply binds
+     each one to this capability), because a manifest shortcut can never be withdrawn and a
+     child's phone must offer only the child's own set. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <capability android:name="actions.intent.OPEN_APP_FEATURE">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aitherium.aither"
+            android:targetClass="com.aitherium.aither.MainActivity">
+            <url-template android:value="https://app.aitherium.com/?app={feature}" />
+            <parameter android:name="feature" android:key="feature" />
+        </intent>
+    </capability>
+</shortcuts>

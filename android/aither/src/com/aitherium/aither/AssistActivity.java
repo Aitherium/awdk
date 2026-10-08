@@ -44,7 +44,17 @@ public class AssistActivity extends Activity {
     static synchronized void hand(String question) {
         handed = question;
         handedAt = System.currentTimeMillis();
+        handedDraft = false;
     }
+
+    /** Text shared from another app (ShareActivity): shown in the box, never asked on its own. */
+    static synchronized void handDraft(String text) {
+        handed = text;
+        handedAt = System.currentTimeMillis();
+        handedDraft = true;
+    }
+
+    private static boolean handedDraft;
 
     private static synchronized String takeHanded() {
         String q = System.currentTimeMillis() - handedAt < 30_000L ? handed : "";
@@ -156,9 +166,16 @@ public class AssistActivity extends Activity {
     }
 
     private void askHanded() {
+        boolean draft;
+        synchronized (AssistActivity.class) { draft = handedDraft; }
         String asked = takeHanded();
         if (asked.isEmpty() || busy) return;
         input.setText(asked);
+        if (draft) { // shared from another app: the person reads it and taps Send
+            input.setSelection(input.getText().length());
+            input.requestFocus();
+            return;
+        }
         main.post(this::ask); // after onResume, so the turn counts as on screen
     }
 

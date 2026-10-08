@@ -80,6 +80,9 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="aither" android:host="open" />
             </intent-filter>
+            <!-- App Actions: actions.intent.OPEN_APP_FEATURE ("open Hearth in Aither") and the
+                 static feature shortcuts. Assistant/Gemini read these once the app is on Play. -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- this phone's extras: lend memory, local AI, pairing links -->
@@ -119,6 +122,34 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="idp.aitherium.com" android:path="/link" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Ask Aither" from another app: Share (a Gemini answer, a page), the text-selection
+             menu, and aither://ask?q=. The text becomes a draft in Ask Aither; nothing is asked
+             until the person taps Send (ShareActivity). -->
+        <activity
+            android:name=".ShareActivity"
+            android:label="Ask Aither"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="aither" android:host="ask" />
             </intent-filter>
         </activity>
 
