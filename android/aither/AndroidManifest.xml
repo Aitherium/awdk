@@ -80,8 +80,8 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="aither" android:host="open" />
             </intent-filter>
-            <!-- App Actions: actions.intent.OPEN_APP_FEATURE ("open Hearth in Aither") and the
-                 static feature shortcuts. Assistant/Gemini read these once the app is on Play. -->
+            <!-- App Actions: actions.intent.OPEN_APP_FEATURE ("open Hearth in Aither") capability
+                 only; feature shortcuts stay dynamic (Shortcuts.apply). Assistant/Gemini read these once the app is on Play. -->
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
