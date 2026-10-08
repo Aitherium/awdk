@@ -484,12 +484,19 @@ def test_default_variant_is_the_one_build_connect_publishes():
         assert p.parse_args(["awconnect", "install", "--variant", v]).variant == v
 
 
+_REAL_APP = Path(__file__).resolve().parents[2] / "AitherOS" / "apps" / "awconnect-next"
+
+
+# The extension source lives only in the monorepo; the published payload ships
+# adk alone, so this test can only run where that tree exists.
+@pytest.mark.skipif(not (_REAL_APP / "public" / "manifest.json").is_file(),
+                    reason="needs the extension source tree (monorepo checkout only)")
 def test_stage_reports_the_key_pinned_id_for_a_keyed_manifest(tmp_path):
     """The real 4.x manifest key must produce the pinned first-party id, and a
     keyed staged copy must report THAT id, not a path-derived one."""
     from adk.extension_id import PINNED_EXTENSION_ID, key_extension_id
 
-    real = Path(__file__).resolve().parents[2] / "AitherOS" / "apps" / "awconnect-next"
+    real = _REAL_APP
     key = json.loads((real / "public" / "manifest.json").read_text(encoding="utf-8"))["key"]
     assert key_extension_id(key) == PINNED_EXTENSION_ID
     src = tmp_path / "src"
