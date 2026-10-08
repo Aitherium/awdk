@@ -1,12 +1,12 @@
 # Hermes Architecture Studio
 
-`hermes` · version `3.8.63` · 4.9 KB
+`hermes` · version `3.8.64` · 4.8 KB
 
-**[Download hermes-3.8.63.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.63/hermes-3.8.63.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.63/hermes-3.8.63.sha256)
+**[Download hermes-3.8.64.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/hermes-3.8.64.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/hermes-3.8.64.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.63/hermes-3.8.63.tar.gz
-tar xzf hermes-3.8.63.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.64/hermes-3.8.64.tar.gz
+tar xzf hermes-3.8.64.tar.gz
 python hermes/install.py
 ```
 
@@ -41,5 +41,5 @@ skills/trade-off-analysis.md
 
 ---
 
-sha256 `aa14ca3ca30f4a0c2fbb332e0306d6abb3feee5096191aee1a67e79cf236c274`  
-Built from `v3.8.63` (adk 3.8.63). [All packs](../packs.md)
+sha256 `974fcfc9a204f88a1fb33ddd17c34ff73b61483fe601aa7dfd837ddea97cc1ed`  
+Built from `v3.8.64` (adk 3.8.64). [All packs](../packs.md)
