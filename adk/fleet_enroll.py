@@ -30,6 +30,7 @@ __all__ = [
     "enroll_base_url",
     "active_node_link",
 ]
+from adk.device_class import resolve_stored  # noqa: E402
 
 import asyncio
 import json
@@ -709,7 +710,7 @@ async def enroll_on_boot(
     enable_heartbeat: bool = True,
     *,
     inference_url: Optional[str] = None,
-    node_class: str = "laptop",
+    node_class: str = "",
     start_link: bool = True,
     harness_url: str = "",
     harness_token: str = "",
@@ -794,7 +795,7 @@ async def enroll_on_boot(
                     api_key,
                     node_auth["node_id"],
                     inference_url=node_auth.get("inference_url") or None,
-                    node_class=node_auth.get("node_class") or "laptop",
+                    node_class=resolve_stored(node_auth.get("node_class"), node_auth.get("node_class_source")),
                     reach_provider=_link_reach_provider(_link),
                     harness_provider=(
                         (lambda: (harness_url, bool(harness_url))) if harness_url else None
@@ -813,7 +814,7 @@ async def enroll_on_boot(
             "already_registered": True,
             "inference_url": node_auth.get("inference_url", ""),
             "inference_kind": node_auth.get("inference_kind", "none"),
-            "node_class": node_auth.get("node_class", "laptop"),
+            "node_class": resolve_stored(node_auth.get("node_class"), node_auth.get("node_class_source")),
         }
 
     node_id = _generate_node_id()

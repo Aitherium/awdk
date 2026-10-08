@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Dict
+from adk.device_class import default_node_class  # noqa: E402
 
 log = logging.getLogger("adk.node_pairing")
 
@@ -36,7 +37,7 @@ IDENTITY_CONFIRM_PATH = "/v1/nodes/pairing/confirm"
 
 
 async def pair_with_code(code: str, portal_url: str,
-                         node_class: str = "laptop",
+                         node_class: str = "",
                          confirm_path: str = _CONFIRM_PATH,
                          inference_url: str = "") -> Dict[str, Any]:
     """Present a portal pairing code and register this machine as a node.
@@ -149,7 +150,7 @@ def cmd_pair(args: Any) -> int:
     if getattr(args, "inference_url", ""):
         extra["inference_url"] = args.inference_url
     result = asyncio.run(pair_with_code(
-        code, portal_url, node_class=getattr(args, "node_class", None) or "laptop",
+        code, portal_url, node_class=default_node_class(getattr(args, "node_class", None)),
         confirm_path=confirm_path, **extra))
 
     if not result.get("paired"):

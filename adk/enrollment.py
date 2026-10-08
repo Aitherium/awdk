@@ -46,6 +46,7 @@ __all__ = [
     "NODE_CLASSES",
     "INFERENCE_KINDS",
 ]
+from adk.device_class import default_node_class, resolve_stored  # noqa: E402
 
 import asyncio
 import json
@@ -345,7 +346,7 @@ def build_registration(
     node_id: str,
     *,
     inference_url: Optional[str] = None,
-    node_class: str = "laptop",
+    node_class: str = "",
 ) -> Dict[str, Any]:
     """Probe hardware + local inference and build the EndpointRegistration payload.
 
@@ -361,6 +362,7 @@ def build_registration(
         ValueError: ``node_class`` is not a known class (the CLI constrains it;
             a programmatic caller gets told instead of enrolling as garbage).
     """
+    node_class = node_class or default_node_class()
     if node_class not in NODE_CLASSES:
         raise ValueError(f"node_class must be one of {NODE_CLASSES}, got {node_class!r}")
 
@@ -527,6 +529,14 @@ def _release_lease(facet: str) -> None:
         log.debug("device lease release failed: %s", e)
 
 
+def _effective_facet(facet: str) -> str:
+    try:
+        from adk.device_identity import effective_facet
+        return effective_facet(facet)
+    except Exception:  # noqa: BLE001
+        return facet
+
+
 def _record_standby() -> None:
     """Another program on this computer beats for the device: nothing was sent,
     and that is not a failure."""
@@ -673,7 +683,7 @@ def resume_heartbeat(
         started = start_heartbeat(
             str(node_auth.get("enroll_base") or default_base_url), device_token, node_id,
             interval=interval, inference_url=node_auth.get("inference_url") or None,
-            node_class=node_auth.get("node_class") or "laptop", device=True,
+            node_class=resolve_stored(node_auth.get("node_class"), node_auth.get("node_class_source")), device=True,
             beat_immediately=True,
         )
         if not started:
@@ -692,7 +702,7 @@ def resume_heartbeat(
         node_id,
         interval=interval,
         inference_url=node_auth.get("inference_url") or None,
-        node_class=node_auth.get("node_class") or "laptop",
+        node_class=resolve_stored(node_auth.get("node_class"), node_auth.get("node_class_source")),
         token_provider=token_provider,
         beat_immediately=True,
         **({"device_fallback_token": fallback} if fallback else {}),
@@ -752,7 +762,7 @@ async def heartbeat_loop(
     *,
     interval: int = 60,
     inference_url: Optional[str] = None,
-    node_class: str = "laptop",
+    node_class: str = "",
     max_beats: Optional[int] = None,
     reach_provider: Optional[Callable[[], str]] = None,
     harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
@@ -817,6 +827,14 @@ async def heartbeat_loop(
         except Exception as e:  # noqa: BLE001 -- a client that will not close is dropped
             log.debug("old heartbeat client close failed: %s", e)
         return holder["client"]
+
+    if os.name == "nt":
+        # Let this PC's WSL distros find the host they run on (one device, not two).
+        try:
+            from adk.host_identity import write_host_identity
+            await asyncio.to_thread(write_host_identity)
+        except Exception as e:  # noqa: BLE001 -- the beat matters more than the file
+            log.debug("host identity not written: %s", e)
 
     try:
         await _heartbeat_beats(
@@ -895,8 +913,11 @@ async def _heartbeat_beats(
                 # Identity on the next beat, not only on re-enrollment.
                 "capabilities": reg.get("capabilities") or [],
                 "capability_detail": reg.get("capability_detail") or {},
-                # The lease holder: Identity refreshes this facet's last_seen.
-                "facet": facet,
+                # The lease holder: Identity refreshes this facet's last_seen (and,
+                # with two serving facets on one PC, keeps each one's endpoint).
+                "facet": _effective_facet(facet),
+                # Corrects records enrolled under the old hardcoded 'laptop' default.
+                "node_class": reg.get("node_class") or node_class,
             }
             if reach_provider is not None:
                 try:
@@ -1052,7 +1073,7 @@ async def rich_enroll(
     *,
     enable_heartbeat: bool = True,
     inference_url: Optional[str] = None,
-    node_class: str = "laptop",
+    node_class: str = "",
     reach_provider: Optional[Callable[[], str]] = None,
     harness_provider: Optional[Callable[[], Tuple[str, bool]]] = None,
     token_provider: Optional[Callable[[], str]] = None,

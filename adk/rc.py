@@ -35,6 +35,7 @@ __all__ = [
     "hold_harness_link",
     "probe_harness",
 ]
+from adk.device_class import default_node_class  # noqa: E402
 
 import asyncio
 import logging
@@ -261,7 +262,7 @@ def _paired() -> bool:
 
 def cmd_rc(args) -> int:
     """Enrol this machine and hold the link so its sessions are reachable."""
-    node_class = getattr(args, "node_class", None) or "laptop"
+    node_class = default_node_class(getattr(args, "node_class", None))
     harness_url = (getattr(args, "harness_url", None) or "").strip() or default_harness_url()
     ttl_days = int(getattr(args, "token_ttl_days", None) or 30)
     once = bool(getattr(args, "once", False))

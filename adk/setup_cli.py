@@ -98,9 +98,27 @@ def _run(cmd: list[str], timeout: int = 10) -> Optional[str]:
         return None
 
 
+#: Where nvidia-smi lives when it is not on PATH. A systemd unit inside WSL gets a
+#: PATH without /usr/lib/wsl/lib, so the heartbeat reported a 32 GB GPU as 0 MB.
+NVIDIA_SMI_FALLBACKS = (
+    "/usr/lib/wsl/lib/nvidia-smi",
+    "/usr/bin/nvidia-smi",
+    "/usr/local/nvidia/bin/nvidia-smi",
+    "/opt/nvidia/bin/nvidia-smi",
+    r"C:\Windows\System32\nvidia-smi.exe",
+)
+
+
+def _nvidia_smi_fallback(candidates=NVIDIA_SMI_FALLBACKS) -> Optional[str]:
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
 def detect_gpu() -> GPUInfo:
     """Detect GPU: NVIDIA > AMD > Apple Silicon > none."""
-    smi = shutil.which("nvidia-smi")
+    smi = shutil.which("nvidia-smi") or _nvidia_smi_fallback()
     if smi:
         out = _run([smi, "--query-gpu=name,memory.total,driver_version",
                     "--format=csv,noheader,nounits"])

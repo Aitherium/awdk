@@ -88,7 +88,7 @@ def registration_fields(facet: str = "daemon") -> dict:
     except Exception:  # noqa: BLE001 -- no machine id: registers as before (by node_id)
         mid = ""
     if mid:
-        out.update({"machine_id": mid, "facet": facet})
+        out.update({"machine_id": mid, "facet": effective_facet(facet)})
     return out
 
 
@@ -203,7 +203,11 @@ def machine_id(tenant_id: str = "", path: Optional[Path] = None) -> str:
     """
     data = load_device(path)
     raw = os_machine_id()
-    if raw:
+    host_key = _wsl_host_key()
+    if host_key:
+        # A WSL distro is a facet of the Windows PC it runs on, not a second device.
+        key, source = host_key, "wsl-host"
+    elif raw:
         key = machine_key(raw)
         source = "os"
     elif data.get("machine_id"):
@@ -215,6 +219,29 @@ def machine_id(tenant_id: str = "", path: Optional[Path] = None) -> str:
         data.update({"machine_id": key, "machine_id_source": source})
         save_device(data, path)
     return tenant_machine_id(tenant_id, key) if tenant_id else key
+
+
+def _wsl_host_key() -> str:
+    try:
+        from adk.host_identity import wsl_host_machine_key
+        return wsl_host_machine_key()
+    except Exception:  # noqa: BLE001 -- no host file: this distro registers on its own id
+        return ""
+
+
+def effective_facet(facet: str) -> str:
+    """The facet name Identity sees. Inside WSL every program is ``wsl-<distro>``,
+    so the distro reads as one facet of the Windows PC beside its ``daemon``."""
+    try:
+        from adk.device_class import is_wsl, wsl_distro
+        from adk.host_identity import _is_windows
+        if not _is_windows() and is_wsl() and _wsl_host_key():
+            import re
+            name = re.sub(r"[^a-z0-9_-]", "-", wsl_distro().lower())[:27] or "wsl"
+            return f"wsl-{name}"
+    except Exception:  # noqa: BLE001
+        pass
+    return facet
 
 
 def record_facet(facet: str, node_id: str, *, capabilities: Optional[list] = None,

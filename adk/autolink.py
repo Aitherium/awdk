@@ -173,7 +173,7 @@ async def _hold(harness_url: str) -> bool:
     token = mint_scoped_token(f"node:{os.environ.get('AITHER_NODE_ID') or 'this-device'}")
     os.environ.setdefault("AITHER_FLEET_ENROLL", "1")
     result = await enroll_on_boot(
-        enable_heartbeat=True, inference_url=None, node_class="laptop",
+        enable_heartbeat=True, inference_url=None, node_class="",
         start_link=True, harness_url=harness_url, harness_token=token,
     )
     if not result.get("enrolled"):

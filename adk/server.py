@@ -19,6 +19,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+from adk.device_class import resolve_stored  # noqa: E402
 
 import httpx
 from urllib.parse import quote
@@ -441,7 +442,7 @@ def _remember_node_registration(
             "mode": "rich",
             "inference_url": reg.get("inference_url", ""),
             "inference_kind": reg.get("inference_kind", "none"),
-            "node_class": reg.get("node_class", "laptop"),
+            "node_class": resolve_stored(reg.get("node_class"), reg.get("node_class_source")),
             "public_url": enroll.get("public_url", "") or existing.get("public_url", ""),
         })
         return True
@@ -496,7 +497,7 @@ async def hold_node_harness_link(
     base_url: str,
     *,
     inference_url: str = "",
-    node_class: str = "laptop",
+    node_class: str = "",
     registered: bool = False,
 ) -> dict[str, Any]:
     """Hold the session link for a registered node and advertise it on the heartbeat.
@@ -552,7 +553,7 @@ async def resume_node_harness_link(api_key: str = "") -> dict[str, Any]:
     return await hold_node_harness_link(
         str(rec["node_id"]), token, base,
         inference_url=str(rec.get("inference_url") or ""),
-        node_class=str(rec.get("node_class") or "laptop"),
+        node_class=resolve_stored(rec.get("node_class"), rec.get("node_class_source")),
     )
 
 
@@ -2291,7 +2292,7 @@ def create_app(
             harness_link = await hold_node_harness_link(
                 node_id, token, idp,
                 inference_url=str(_reg.get("inference_url") or ""),
-                node_class=str(_reg.get("node_class") or "laptop"),
+                node_class=resolve_stored(_reg.get("node_class"), _reg.get("node_class_source")),
                 registered=True,
             )
             _update_node_record(harness_link=harness_link["held"])
@@ -2347,7 +2348,7 @@ def create_app(
                     conductor_url, node_id, role="worker",
                     headscale=True, headscale_auth_key=mesh_key, psk=node_bearer,
                     tenant_id=tenant_id, wireguard_fallback=False,
-                    node_class=str((enroll.get("registration") or {}).get("node_class") or "laptop"),
+                    node_class=resolve_stored((enroll.get("registration") or {}).get("node_class")),
                     # Explicit control-plane URL: the conductor's onboard response
                     # still advertises headscale.aitherium.com (its baked default),
                     # which is blocked by hostname on at least one ISP and answers
@@ -2482,7 +2483,7 @@ def create_app(
                 return ""
             base = str(rec.get("enroll_base") or "https://idp.aitherium.com").rstrip("/")
             reg = build_registration(node_id, inference_url=rec.get("inference_url") or None,
-                                     node_class=rec.get("node_class") or "laptop")
+                                     node_class=resolve_stored(rec.get("node_class"), rec.get("node_class_source")))
             r = httpx.post(f"{base}/v1/nodes/register", json=reg, timeout=30.0,
                            headers={"Authorization": f"Bearer {token}"})
             key = str(r.json().get("command_key") or "") if r.status_code == 200 else ""

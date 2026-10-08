@@ -8,6 +8,7 @@ Usage:
 
 from __future__ import annotations
 from adk._tls import tls_verify
+from adk.device_class import default_node_class  # noqa: E402
 
 import argparse
 import json
@@ -4769,7 +4770,7 @@ def cmd_enroll(args) -> int:
         inference_url = (getattr(args, "inference_url", None) or "auto").strip()
         if inference_url.lower() == "auto":
             inference_url = None
-        node_class = getattr(args, "node_class", None) or "laptop"
+        node_class = default_node_class(getattr(args, "node_class", None))
 
         from adk.fleet_enroll import enroll_on_boot, _load_node_auth
 
@@ -7864,7 +7865,7 @@ def _mesh_join_signed_in(args) -> int:
 
     hs_url = (getattr(args, "headscale_url", "") or os.getenv("AITHER_HEADSCALE_URL", "")
               or _mesh.DEFAULT_HEADSCALE_URL)
-    node_class = getattr(args, "node_class", "") or "laptop"
+    node_class = default_node_class(getattr(args, "node_class", None))
 
     def _joined(st: dict) -> int:
         print(f"  Joined your mesh: {st.get('tailnet_ip')} (tailscale {st.get('backend_state')})")
@@ -10213,7 +10214,7 @@ def _quickstart_enroll(args) -> int:
         no_heartbeat = False
         force = False
         inference_url = getattr(args, "inference_url", None) or "auto"
-        node_class = getattr(args, "node_class", None) or "laptop"
+        node_class = default_node_class(getattr(args, "node_class", None))
     rc = cmd_enroll(EnrollArgs())
     if rc != 0:
         return rc
@@ -13934,7 +13935,7 @@ def _register_commands(sub):
                         help="Portal base URL (default: pair directly with Identity)")
     pair_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
-        default="laptop", help="What this device is (default: laptop)")
+        default=None, help="What this device is (default: detected from the hardware)")
     pair_p.add_argument(
         "--no-autostart", action="store_true",
         help="Do not install the per-user heartbeat autostart (python -m adk.node_beat)")
@@ -14684,8 +14685,8 @@ def _register_commands(sub):
              "11434 (Ollama), 8120 (vLLM) in that order")
     enroll_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
-        default="laptop",
-        help="What this device is (default: laptop)")
+        default=None,
+        help="What this device is (default: detected from the hardware)")
     enroll_p.add_argument(
         "--no-link", action="store_true",
         help="Do not hold the outbound reverse link to the tunnel. WireGuard "
@@ -14700,8 +14701,8 @@ def _register_commands(sub):
              "sessions are reachable from your phone")
     rc_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
-        default="laptop",
-        help="What this device is (default: laptop)")
+        default=None,
+        help="What this device is (default: detected from the hardware)")
     rc_p.add_argument(
         "--harness-url",
         help="Local session daemon to advertise (default: http://127.0.0.1:8362)")
@@ -15075,7 +15076,7 @@ def _register_commands(sub):
     mesh_join_p = mesh_sub.add_parser(
         "join", help="Join this signed-in device to your mesh (Headscale/Tailscale, NAT-friendly)")
     mesh_join_p.add_argument(
-        "--node-class", default=os.getenv("AITHER_NODE_CLASS", "laptop"),
+        "--node-class", default=None,
         help="Node class to register as (default: laptop)")
     mesh_join_p.add_argument(
         "--conductor", default=os.getenv("AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com"),
@@ -15444,7 +15445,7 @@ def _register_commands(sub):
         help="Passed to `adk enroll` (default: auto-probe the local inference ladder)")
     quickstart_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
-        default="laptop",
+        default=None,
         help="Passed to `adk enroll` (default: laptop)")
 
     # adk quickstart-local — local-only inference quickstart
