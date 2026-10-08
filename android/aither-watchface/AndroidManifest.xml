@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Aither watch face: Watch Face Format, resource-only (hasCode=false). Its own package,
+     signed with the Aither release certificate. Built by ../aither/build.py with the
+     watchface flag; the face itself is res/raw/watchface.xml. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.aitherium.aither.watchface"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <!-- WFF v2 needs Wear OS 5 (API 34); Pixel Watch 4 ships Wear OS 6 (API 36) -->
+    <uses-sdk android:minSdkVersion="34" android:targetSdkVersion="36" />
+
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <application
+        android:label="@string/app_name"
+        android:hasCode="false">
+        <property
+            android:name="com.google.wear.watchface.format.version"
+            android:value="2" />
+        <property
+            android:name="com.google.wear.watchface.format.publisher"
+            android:value="Aitherium" />
+    </application>
+</manifest>

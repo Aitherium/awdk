@@ -127,23 +127,19 @@ async def test_not_connected_says_where_to_connect(cloud):
 
 
 @pytest.mark.asyncio
-async def test_the_connect_url_is_admin_only_so_every_message_says_an_admin_connects(
-        cloud, monkeypatch):
-    """The only connect page is /admin (no member route hosts the OAuth start yet):
-    a buyer told "connect it at <admin url>" is bounced to ?denied=veil:admin."""
-    assert "/admin" in ct.DEFAULT_CONNECT_URL
+async def test_the_connect_url_is_the_customer_connections_window(cloud, monkeypatch):
+    """Every member connects their OWN accounts in the Connections window; the old
+    /admin tab bounced a member to ?denied=veil:admin (connector slice S5)."""
+    monkeypatch.delenv("AITHER_CONNECT_URL", raising=False)
+    assert ct.DEFAULT_CONNECT_URL == "https://aitherium.com/?app=connections"
+    assert "/admin" not in ct.connect_url()
     cloud.connected = set()
     out = json.loads(await _tools()["calendar_agenda"]("today"))
-    assert "workspace admin" in out["error"]
+    assert "workspace admin" not in out["error"] and ct.connect_url() in out["error"]
     cloud.status_override = {ct.GOOGLE_CAL: 401}
     cloud.connected = {"google_calendar"}
     out = json.loads(await _tools(ct.TokenResolver())["calendar_agenda"]("today"))
-    assert "workspace admin" in out["error"]
-    monkeypatch.setattr(ct, "_saved_bearer", lambda: "")
-    for name in ("AITHER_API_KEY", "AITHER_IDENTITY_BEARER", "AITHER_SESSION_BEARER"):
-        monkeypatch.delenv(name, raising=False)
-    out = json.loads(await _tools()["mail_unread"](3))
-    assert "workspace admin" in out["error"]
+    assert "reconnect it at" in out["error"] and ct.connect_url() in out["error"]
 
 
 @pytest.mark.asyncio
@@ -485,31 +481,35 @@ async def test_a_failed_private_read_does_not_close_egress(cloud, tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_a_rejected_env_token_falls_through_to_resolve(cloud, monkeypatch):
-    monkeypatch.setenv("CONNECTOR_GOOGLE_CALENDAR_TOKEN", "ya29.EXPIRED")
-    inner = cloud.handler
+async def test_an_env_token_is_never_used_every_call_resolves(cloud, monkeypatch):
+    """A stale CONNECTOR_*_TOKEN in the environment used to win over the resolve and
+    so bypassed the sign-in, the roster and every grant (connector slice S5)."""
+    monkeypatch.setenv("CONNECTOR_GOOGLE_CALENDAR_TOKEN", "ya29.STALE-IN-ENV")
+    monkeypatch.setenv("CONNECTOR_GMAIL_TOKEN", "ya29.STALE-IN-ENV")
     seen: list = []
+    inner = cloud.handler
 
     def handler(request: httpx.Request) -> httpx.Response:
-        auth = request.headers.get("authorization", "")
         if str(request.url).startswith(ct.GOOGLE_CAL):
-            seen.append(auth)
-            if auth == "Bearer ya29.EXPIRED":
-                return httpx.Response(401, json={"error": {"message": "expired"}})
+            seen.append(request.headers.get("authorization", ""))
         return inner(request)
 
     cloud.handler = handler
     resolver = ct.TokenResolver()
-    tools = _tools(resolver)
-    first = json.loads(await tools["calendar_agenda"]("today"))
-    assert "reconnect" in first["error"] and cloud.resolve_bodies == []
-    second = json.loads(await tools["calendar_agenda"]("tomorrow"))
-    assert "error" not in second and second["source"] == "google_calendar"
+    out = json.loads(await _tools(resolver)["calendar_agenda"]("today"))
+    assert "error" not in out and out["source"] == "google_calendar"
     assert cloud.resolve_bodies == [{"connectors": ["google_calendar", "microsoft_graph"]}]
-    assert seen == ["Bearer ya29.EXPIRED", f"Bearer {TOKEN}"]
-    # a NEW env token (the harness re-injected one) is tried again
-    monkeypatch.setenv("CONNECTOR_GOOGLE_CALENDAR_TOKEN", "ya29.FRESH")
-    assert resolver._env_token("google_calendar") == "ya29.FRESH"
+    assert seen == [f"Bearer {TOKEN}"]
+    assert not hasattr(resolver, "_env_token")
+
+
+@pytest.mark.asyncio
+async def test_not_connected_is_not_rescued_by_an_env_token(cloud, monkeypatch):
+    cloud.connected = set()
+    monkeypatch.setenv("CONNECTOR_GOOGLE_CALENDAR_TOKEN", "ya29.STALE-IN-ENV")
+    out = json.loads(await _tools()["calendar_agenda"]("today"))
+    assert "no calendar is connected" in out["error"]
+    assert not any(str(r.url).startswith(ct.GOOGLE_CAL) for r in cloud.requests)
 
 
 # ── resolve-all never carries a personal connector's token ────────────────────────
@@ -527,7 +527,8 @@ def test_resolve_all_strips_personal_tokens_named_resolve_keeps_them():
                           "CONNECTOR_MICROSOFT_GRAPH_TOKEN"}
 
 
-def test_sync_resolve_all_never_hands_a_child_mail_access(monkeypatch):
+def test_the_git_env_resolve_names_github_and_returns_only_its_token(monkeypatch):
+    """The sync resolve-all is gone; a harness child asks for GitHub by name only."""
     from adk import connectors as adk_connectors
 
     bodies: list = []
@@ -547,8 +548,10 @@ def test_sync_resolve_all_never_hands_a_child_mail_access(monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", _client)
     monkeypatch.setenv("AITHER_GENESIS_URL", RESOLVE_BASE)
-    assert adk_connectors.resolve_connector_env_sync() == {"CONNECTOR_GITHUB_TOKEN": "g"}
-    assert bodies == [{}]
+    monkeypatch.setenv("AITHER_API_KEY", BEARER)
+    assert not hasattr(adk_connectors, "resolve_connector_env_sync")
+    assert adk_connectors.resolve_git_env("demiurge") == {"CONNECTOR_GITHUB_TOKEN": "g"}
+    assert bodies == [{"connectors": ["github"], "purpose": "git", "agent_id": "demiurge"}]
 
 
 @pytest.mark.asyncio

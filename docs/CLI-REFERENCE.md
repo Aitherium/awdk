@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**134 commands.**
+**136 commands.**
 
 | command | what it does |
 |---|---|
@@ -47,10 +47,12 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk component`](#adk-component) |  |
 | [`adk components`](#adk-components) |  |
 | [`adk connect`](#adk-connect) | Connect to AitherOS — detect LLMs, set up gateway, or join desktop mesh |
+| [`adk connectors`](#adk-connectors) | Your connected accounts (GitHub, Google, Microsoft): list, connect, grant |
 | [`adk contribute`](#adk-contribute) | Teach Aither's ARC world model — enroll, then play & stream transitions (free) |
 | [`adk costs`](#adk-costs) | Show cloud inference costs, savings, and budget |
 | [`adk create-app`](#adk-create-app) | Scaffold a awkit workspace app |
 | [`adk cron`](#adk-cron) | Manage scheduled tasks |
+| [`adk crypto`](#adk-crypto) | Crypto payment settings (platform receiving wallet) |
 | [`adk decide`](#adk-decide) | Decision cards — raise a structured ask, list what is waiting, answer it |
 | [`adk deploy`](#adk-deploy) | Deploy AitherOS components or agents |
 | [`adk desk`](#adk-desk) | Interact with awdesk bridge: send commands, view history |
@@ -442,6 +444,17 @@ Connect to AitherOS — detect LLMs, set up gateway, or join desktop mesh
 | `--save` | str |  | `true` | Save config to ~/.aither/config.json (default: true) |
 | `--no-save` | str |  | `true` | Don't save config |
 
+## `adk connectors`
+
+Your connected accounts (GitHub, Google, Microsoft): list, connect, grant
+
+**Subcommands**
+
+- `adk connectors list` — Every connector and whether it is connected
+- `adk connectors status` — One connector (exit 1 when not connected)
+- `adk connectors connect` — Open the Connections window on a connector
+- `adk connectors grant` — Let an agent use a connector (read, write or git)
+
 ## `adk contribute`
 
 Teach Aither's ARC world model — enroll, then play & stream transitions (free)
@@ -494,6 +507,20 @@ Manage scheduled tasks
 - `adk cron list` — List scheduled jobs
 - `adk cron add` — Add a cron job
 - `adk cron remove` — Remove a cron job
+
+## `adk crypto`
+
+Crypto payment settings (platform receiving wallet)
+
+**Subcommands**
+
+- `adk crypto platform-get` — Show the receiving wallet, facilitator, network
+- `adk crypto platform-set` — Set them in the vault (platform admin)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--gateway` | str |  |  | MCP gateway URL |
+| `--json` | str |  | `false` | print the raw answer |
 
 ## `adk decide`
 

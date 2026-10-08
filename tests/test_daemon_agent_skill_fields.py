@@ -131,6 +131,28 @@ def test_roster_carries_saga_vera_iris(harness):
     assert resp.status_code == 200, resp.text
 
 
+# ── the connectors field (connector slice S5) ────────────────────────────────
+
+
+def test_connectors_opt_in_reaches_the_session_config(harness):
+    """Without the CreateSession field, model_dump() drops it and the child never
+    gets the GitHub it asked for -- silently, the way `agent` was dropped."""
+    client = harness["client"]
+    resp = client.post("/sessions", json={"harness": "claude", "cwd": "",
+                                          "connectors": ["github"]})
+    assert resp.status_code == 200, resp.text
+    assert _config(harness, resp.json()["id"]).connectors == ["github"]
+    default = client.post("/sessions", json={"harness": "claude", "cwd": ""})
+    assert _config(harness, default.json()["id"]).connectors == []
+
+
+def test_a_connector_that_is_never_env_injected_is_refused(harness):
+    resp = harness["client"].post("/sessions", json={"harness": "claude", "cwd": "",
+                                                     "connectors": ["gmail"]})
+    assert resp.status_code == 400
+    assert "gmail" in resp.json()["detail"] and "github" in resp.json()["detail"]
+
+
 # ── the skill field ──────────────────────────────────────────────────────────
 
 

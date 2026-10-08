@@ -74,9 +74,9 @@ Channel credentials come from the environment (`HEARTH_TELEGRAM_TOKEN`, `HEARTH_
 ...), never from a flag. The agent messages you first when a reminder is due, and anything that
 sends, books or adds (email, calendar event, to-do, a recurring follow-up) waits for your
 `yes <code>`. `adk home receipts --verify` checks the signed log of what it did (exit 0 intact,
-1 tampered, 2 cannot judge). A workspace admin can connect Google calendar and mail at
-`api.aitherium.com/admin?tab=connections` (admin-only) after `adk home signin`; Microsoft 365 is
-not available yet. On the same machine,
+1 tampered, 2 cannot judge). After `adk home signin`, connect your Google calendar and mail in
+the Connections window (`adk connectors connect gmail` opens it; `adk connectors status` shows
+what is connected); Microsoft 365 is not available yet. On the same machine,
 `adk home say "…"`, `adk home events` and `/hearth` in `adk-shell` talk to the running serve.
 The full guide is `docs/agent-home.md` in the awdk repository.
 

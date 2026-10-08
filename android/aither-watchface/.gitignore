@@ -1,0 +1,3 @@
+out/
+# the face's images are source, not build output (the root *.png rule would drop them)
+!res/**/*.png

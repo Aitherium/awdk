@@ -36,6 +36,7 @@ import time
 import uuid
 from typing import Any, Optional
 
+from adk.connectors import ConnectorEnvError
 from adk.harnesses.events import EventKind, HarnessEvent, error, notice
 from adk.harnesses.models import MANAGED_VARS
 from adk.harnesses.registry import resolve_binary
@@ -167,7 +168,13 @@ class PtyHarnessSession(HarnessSession):
         if argv is None:
             return
 
-        env = self._scrub_program_env(self._child_env())
+        try:
+            env = self._scrub_program_env(self._child_env())
+        except ConnectorEnvError as exc:
+            self.state = SessionState.FAILED
+            self._emit(error(f"terminal not started: {exc}", connector_env=True))
+            self._emit(HarnessEvent(kind=EventKind.SESSION_EXITED, data={"exit_code": None}))
+            return
         # A pty session IS a terminal; advertise one so curses apps behave.
         env.setdefault("TERM", "xterm-256color")
         env["COLUMNS"] = str(self.cols)

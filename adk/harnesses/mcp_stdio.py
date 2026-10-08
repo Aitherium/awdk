@@ -494,6 +494,9 @@ def _spawn(args: dict) -> dict:
     # handed one; absent means the daemon's own default (off).
     if args.get("allow_peer_input"):
         body["allow_peer_input"] = True
+    # Same rule: sent only when asked for (an older daemon does not know it).
+    if args.get("connectors"):
+        body["connectors"] = [str(c) for c in args["connectors"]]
     out = _req("POST", "/sessions", body, timeout=60.0)
     if "error" in out:
         return out
@@ -1039,7 +1042,13 @@ TOOLS: list = [
              "type": "boolean",
              "description": "opt this session in to PEER steers typed straight into "
                             "its pty (framed). Default false: peers queue in its "
-                            "mailbox; the owner lands either way."}}},
+                            "mailbox; the owner lands either way."},
+         "connectors": {
+             "type": "array", "items": {"type": "string", "enum": ["github"]},
+             "description": "opt in to the connected GitHub account for git/gh in "
+                            "this session (['github']). Default none: the session "
+                            "gets no connector token. Refused when not connected or "
+                            "not granted."}}},
      "fn": _spawn},
 
     {"name": "awsh_resumable",

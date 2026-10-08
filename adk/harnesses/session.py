@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from adk.connectors import ConnectorEnvError
 from adk.harnesses import focus as _focus
 from adk.harnesses.events import EventKind, HarnessEvent, error, notice
 from adk.harnesses.mod import apply_to_launch as apply_mod_to_launch
@@ -152,6 +153,16 @@ class SessionConfig:
     #: (tier 1)? Default off; the owner still lands immediately either way. A peer's
     #: text arrives framed with its provenance whichever tier carries it.
     allow_peer_input: bool = False
+    #: Opt-in connector env for this child. Only ``["github"]`` is accepted: the
+    #: connected GitHub account reaches git and gh (``adk.connectors.resolve_git_env``,
+    #: held server-side to the agent's ``git`` grant). Default empty: the child gets
+    #: NO connector token, and none inherited from the daemon either.
+    connectors: list[str] = field(default_factory=list)
+
+
+#: How long a resolved GitHub git env is reused across one session's spawns
+#: (a one-shot harness spawns per turn; a revoked grant shows within this).
+CONNECTOR_ENV_TTL_S = 300.0
 
 
 class HarnessSession:
@@ -198,6 +209,9 @@ class HarnessSession:
         self._focus_files: list[str] = []
         self._focus_turn_text: list[str] = []
         self._focus_report = ""
+
+        #: (resolved_at, env) for the opted-in connector env; see _connector_env.
+        self._connector_env_cache: Optional[tuple[float, dict[str, str]]] = None
 
     # ── event plumbing ──────────────────────────────────────────────────────
 
@@ -290,8 +304,43 @@ class HarnessSession:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
+    def _connector_env(self) -> dict[str, str]:
+        """The opted-in connector env (GitHub for git/gh), or ``{}`` when not opted in.
+
+        Raises :class:`adk.connectors.ConnectorEnvError` -- the spawn refuses -- on
+        any failure: a child that asked for GitHub must not start without it and
+        fail later at ``git push`` for a reason nobody can see.
+        """
+        wanted = [str(c).strip().lower() for c in (self.config.connectors or [])
+                  if str(c).strip()]
+        if not wanted:
+            return {}
+        from adk import connectors as adk_connectors
+
+        refused = sorted(set(wanted) - set(adk_connectors.ENV_INJECTABLE))
+        if refused:
+            raise ConnectorEnvError(
+                f"connectors {refused} are never env-injected into a harness child "
+                f"(only {list(adk_connectors.ENV_INJECTABLE)}); agents reach them "
+                "through server-side tools")
+        cached = self._connector_env_cache
+        if cached and time.time() - cached[0] < CONNECTOR_ENV_TTL_S:
+            return dict(cached[1])
+        env = adk_connectors.resolve_git_env(self.config.agent or self.config.owner,
+                                             bearer=adk_connectors.daemon_bearer())
+        self._connector_env_cache = (time.time(), dict(env))
+        return env
+
     def _child_env(self) -> dict[str, str]:
+        from adk.connectors import git_child_env, strip_inherited_connector_env
+
+        # Resolve FIRST: a refusal raises before any env is built.
+        granted = self._connector_env()
         env = dict(os.environ)
+        # No connector or GitHub token is inherited from the daemon's own
+        # environment: a stale CONNECTOR_GMAIL_TOKEN / GH_TOKEN there would otherwise
+        # reach every child whatever was granted. Only an opted-in resolve adds one.
+        strip_inherited_connector_env(env)
         if self.binding is not None:
             env = apply_binding(env, self.binding)
         # A child harness must never inherit our own stream-json wiring -- nor the
@@ -303,6 +352,9 @@ class HarnessSession:
         # owner's own setting and stays.
         scrub_nested_claude_markers(env)
         env["AITHER_HARNESS_SESSION"] = self.id
+        token = granted.get("CONNECTOR_GITHUB_TOKEN", "")
+        if token:
+            git_child_env(token, env)
         # After the scrub, which removes the very variable this sets.
         apply_mod_to_launch(self.spec.id, self.config.owner, env, [])
         return env
@@ -395,6 +447,11 @@ class HarnessSession:
                 bufsize=1,
                 creationflags=_NO_WINDOW,
             )
+        except ConnectorEnvError as exc:
+            self.state = SessionState.FAILED
+            self._emit(error(f"{self.spec.label} not started: {exc}", connector_env=True))
+            self._emit(HarnessEvent(kind=EventKind.SESSION_EXITED, data={"exit_code": None}))
+            return
         except (OSError, ValueError) as exc:
             self.state = SessionState.FAILED
             self._emit(error(f"failed to start {self.spec.label}: {exc}", argv=argv[:2]))
@@ -615,6 +672,10 @@ class HarnessSession:
                     bufsize=1,
                     creationflags=_NO_WINDOW,
                 )
+            except ConnectorEnvError as exc:
+                self._emit(error(f"turn not started: {exc}", connector_env=True))
+                self.state = SessionState.IDLE
+                return
             except (OSError, ValueError) as exc:
                 self._emit(error(f"failed to start {self.spec.label}: {exc}"))
                 self.state = SessionState.IDLE

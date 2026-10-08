@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Aither watch face: Watch Face Format v2, resource-only (no code). Built by
+     ../aither/build.py with the watchface flag; previews by tools/render_previews.py.
+     Three styles (Aither, Hearth, Minimal) x an accent color. Ambient keeps only the
+     time and a dim date so the OLED stays dark. Tapping the mark opens the Aither
+     watch app (com.aitherium.aither). -->
+<WatchFace width="450" height="450" clipShape="CIRCLE">
+  <Metadata key="CLOCK_TYPE" value="DIGITAL" />
+  <Metadata key="PREVIEW_TIME" value="10:08:32" />
+
+  <UserConfigurations>
+    <ListConfiguration id="style" displayName="@string/cfg_style" defaultValue="aither">
+      <ListOption id="aither" displayName="@string/style_aither" icon="style_aither" />
+      <ListOption id="hearth" displayName="@string/style_hearth" icon="style_hearth" />
+      <ListOption id="minimal" displayName="@string/style_minimal" icon="style_minimal" />
+    </ListConfiguration>
+    <ColorConfiguration id="accent" displayName="@string/cfg_accent" defaultValue="cyan">
+      <ColorOption id="cyan" displayName="@string/accent_cyan" colors="#FF2AD7D7" />
+      <ColorOption id="ember" displayName="@string/accent_ember" colors="#FFFF8950" />
+      <ColorOption id="violet" displayName="@string/accent_violet" colors="#FF907AE9" />
+      <ColorOption id="white" displayName="@string/accent_white" colors="#FFEEEEEE" />
+    </ColorConfiguration>
+  </UserConfigurations>
+
+  <Scene backgroundColor="#FF000103">
+    <ListConfiguration id="style">
+
+      <!-- Aither: the mark's orbit drawn around the time, an ember planet, a seconds ring -->
+      <ListOption id="aither">
+        <Group name="style_aither" x="0" y="0" width="450" height="450">
+          <Group name="aither_decor" x="0" y="0" width="450" height="450">
+            <Variant mode="AMBIENT" target="alpha" value="0" />
+            <PartDraw name="seconds_track" x="0" y="0" width="450" height="450">
+              <Arc centerX="225" centerY="225" width="432" height="432" startAngle="0" endAngle="360">
+                <Stroke color="#FF162330" thickness="5" />
+              </Arc>
+            </PartDraw>
+            <PartDraw name="seconds" x="0" y="0" width="450" height="450">
+              <Arc centerX="225" centerY="225" width="432" height="432" startAngle="0" endAngle="0">
+                <Transform target="endAngle" value="[SECOND] * 6" />
+                <Stroke color="[CONFIGURATION.accent.0]" thickness="5" cap="ROUND" />
+              </Arc>
+            </PartDraw>
+            <PartDraw name="orbit" x="0" y="0" width="450" height="450" angle="-14" alpha="96">
+              <Ellipse x="28" y="150" width="394" height="124">
+                <Stroke color="[CONFIGURATION.accent.0]" thickness="3" />
+              </Ellipse>
+            </PartDraw>
+            <PartDraw name="planet" x="0" y="0" width="450" height="450" angle="-14">
+              <Ellipse x="380" y="169" width="18" height="18">
+                <Fill color="#FFFF8950" />
+              </Ellipse>
+            </PartDraw>
+          </Group>
+          <PartImage name="mark" x="189" y="40" width="72" height="72">
+            <Launch target="com.aitherium.aither/com.aitherium.aither.WearActivity" />
+            <Variant mode="AMBIENT" target="alpha" value="0" />
+            <Image resource="aither_mark" />
+          </PartImage>
+          <DigitalClock x="25" y="138" width="400" height="128">
+            <TimeText format="hh:mm" hourFormat="SYNC_TO_DEVICE" align="CENTER" x="0" y="0" width="400" height="128">
+              <Font family="inter_light" size="118" color="#FFEEEEEE" />
+            </TimeText>
+          </DigitalClock>
+          <PartText name="date" x="75" y="266" width="300" height="34">
+            <Variant mode="AMBIENT" target="alpha" value="150" />
+            <Text align="CENTER">
+              <Font family="jbmono_medium" size="22" color="[CONFIGURATION.accent.0]" letterSpacing="0.12">
+                <Upper>
+                  <Template>%s  %d %s<Parameter expression="[DAY_OF_WEEK_S]" /><Parameter expression="[DAY]" /><Parameter expression="[MONTH_S]" /></Template>
+                </Upper>
+              </Font>
+            </Text>
+          </PartText>
+        </Group>
+      </ListOption>
+
+      <!-- Hearth: warm ember ring and orbit, the accent becomes the planet -->
+      <ListOption id="hearth">
+        <Group name="style_hearth" x="0" y="0" width="450" height="450">
+          <Group name="hearth_decor" x="0" y="0" width="450" height="450">
+            <Variant mode="AMBIENT" target="alpha" value="0" />
+            <PartDraw name="seconds_track" x="0" y="0" width="450" height="450">
+              <Arc centerX="225" centerY="225" width="432" height="432" startAngle="0" endAngle="360">
+                <Stroke color="#FF2A160C" thickness="7" />
+              </Arc>
+            </PartDraw>
+            <PartDraw name="seconds" x="0" y="0" width="450" height="450">
+              <Arc centerX="225" centerY="225" width="432" height="432" startAngle="0" endAngle="0">
+                <Transform target="endAngle" value="[SECOND] * 6" />
+                <Stroke color="#FFFF8950" thickness="7" cap="ROUND" />
+              </Arc>
+            </PartDraw>
+            <PartDraw name="orbit" x="0" y="0" width="450" height="450" angle="-14" alpha="150">
+              <Ellipse x="28" y="150" width="394" height="124">
+                <Stroke color="#FFE5622B" thickness="3" />
+              </Ellipse>
+            </PartDraw>
+            <PartDraw name="planet" x="0" y="0" width="450" height="450" angle="-14">
+              <Ellipse x="52" y="237" width="18" height="18">
+                <Fill color="[CONFIGURATION.accent.0]" />
+              </Ellipse>
+            </PartDraw>
+          </Group>
+          <PartImage name="mark" x="189" y="40" width="72" height="72">
+            <Launch target="com.aitherium.aither/com.aitherium.aither.WearActivity" />
+            <Variant mode="AMBIENT" target="alpha" value="0" />
+            <Image resource="aither_mark" />
+          </PartImage>
+          <DigitalClock x="25" y="138" width="400" height="128">
+            <TimeText format="hh:mm" hourFormat="SYNC_TO_DEVICE" align="CENTER" x="0" y="0" width="400" height="128">
+              <Font family="inter_light" size="118" color="#FFFFE9DA" />
+            </TimeText>
+          </DigitalClock>
+          <PartText name="date" x="75" y="266" width="300" height="34">
+            <Variant mode="AMBIENT" target="alpha" value="150" />
+            <Text align="CENTER">
+              <Font family="jbmono_medium" size="22" color="#FFFFC9A3" letterSpacing="0.12">
+                <Upper>
+                  <Template>%s  %d %s<Parameter expression="[DAY_OF_WEEK_S]" /><Parameter expression="[DAY]" /><Parameter expression="[MONTH_S]" /></Template>
+                </Upper>
+              </Font>
+            </Text>
+          </PartText>
+        </Group>
+      </ListOption>
+
+      <!-- Minimal: thin time, a hairline seconds ring, a small mark -->
+      <ListOption id="minimal">
+        <Group name="style_minimal" x="0" y="0" width="450" height="450">
+          <PartDraw name="seconds" x="0" y="0" width="450" height="450">
+            <Variant mode="AMBIENT" target="alpha" value="0" />
+            <Arc centerX="225" centerY="225" width="436" height="436" startAngle="0" endAngle="0">
+              <Transform target="endAngle" value="[SECOND] * 6" />
+              <Stroke color="[CONFIGURATION.accent.0]" thickness="2" cap="ROUND" />
+            </Arc>
+          </PartDraw>
+          <PartImage name="mark" x="205" y="60" width="40" height="40" alpha="200">
+            <Launch target="com.aitherium.aither/com.aitherium.aither.WearActivity" />
+            <Variant mode="AMBIENT" target="alpha" value="0" />
+            <Image resource="aither_mark" />
+          </PartImage>
+          <DigitalClock x="15" y="128" width="420" height="144">
+            <TimeText format="hh:mm" hourFormat="SYNC_TO_DEVICE" align="CENTER" x="0" y="0" width="420" height="144">
+              <Font family="inter_thin" size="136" color="#FFEEEEEE" />
+            </TimeText>
+          </DigitalClock>
+          <PartText name="date" x="75" y="270" width="300" height="30">
+            <Variant mode="AMBIENT" target="alpha" value="150" />
+            <Text align="CENTER">
+              <Font family="jbmono_medium" size="20" color="#FF9BA6B1" letterSpacing="0.12">
+                <Upper>
+                  <Template>%s  %d %s<Parameter expression="[DAY_OF_WEEK_S]" /><Parameter expression="[DAY]" /><Parameter expression="[MONTH_S]" /></Template>
+                </Upper>
+              </Font>
+            </Text>
+          </PartText>
+        </Group>
+      </ListOption>
+    </ListConfiguration>
+
+    <!-- Weather between the two small slots (WFF v2 weather source) -->
+    <Group name="weather" x="179" y="306" width="92" height="72">
+      <Variant mode="AMBIENT" target="alpha" value="0" />
+      <Condition>
+        <Expressions>
+          <Expression name="has_weather"><![CDATA[[WEATHER.IS_AVAILABLE] == 1]]></Expression>
+        </Expressions>
+        <Compare expression="has_weather">
+          <PartText name="weather_temp" x="0" y="4" width="92" height="36">
+            <Text align="CENTER">
+              <Font family="inter_medium" size="28" color="#FFEEEEEE">
+                <Template>%d°<Parameter expression="[WEATHER.TEMPERATURE]" /></Template>
+              </Font>
+            </Text>
+          </PartText>
+          <PartText name="weather_range" x="0" y="42" width="92" height="22">
+            <Text align="CENTER">
+              <Font family="jbmono_medium" size="14" color="#FF69737D">
+                <Template>%d/%d<Parameter expression="[WEATHER.TEMPERATURE_HIGH]" /><Parameter expression="[WEATHER.TEMPERATURE_LOW]" /></Template>
+              </Font>
+            </Text>
+          </PartText>
+        </Compare>
+        <Default>
+          <PartText name="weather_none" x="0" y="4" width="92" height="36">
+            <Text align="CENTER">
+              <Font family="inter_medium" size="28" color="#FF69737D">
+                --°
+              </Font>
+            </Text>
+          </PartText>
+        </Default>
+      </Condition>
+    </Group>
+
+    <!-- Slot 0 (left): steps by default -->
+    <ComplicationSlot slotId="0" name="left" displayName="@string/slot_left" x="83" y="306" width="92" height="72"
+        supportedTypes="SHORT_TEXT RANGED_VALUE" isCustomizable="TRUE">
+      <DefaultProviderPolicy defaultSystemProvider="STEP_COUNT" defaultSystemProviderType="SHORT_TEXT" />
+      <BoundingRoundBox x="0" y="0" width="92" height="72" cornerRadius="20" />
+      <Variant mode="AMBIENT" target="alpha" value="0" />
+      <Complication type="SHORT_TEXT">
+        <PartImage x="34" y="4" width="24" height="24" tintColor="[CONFIGURATION.accent.0]">
+          <Image resource="[COMPLICATION.MONOCHROMATIC_IMAGE]" />
+        </PartImage>
+        <PartText x="0" y="32" width="92" height="32">
+          <Text align="CENTER" ellipsis="TRUE">
+            <Font family="inter_medium" size="24" color="#FFEEEEEE">
+              <Template>%s<Parameter expression="[COMPLICATION.TEXT]" /></Template>
+            </Font>
+          </Text>
+        </PartText>
+      </Complication>
+      <Complication type="RANGED_VALUE">
+        <PartDraw x="0" y="0" width="92" height="72">
+          <Arc centerX="46" centerY="36" width="64" height="64" startAngle="-135" endAngle="135">
+            <Stroke color="#FF162330" thickness="4" cap="ROUND" />
+          </Arc>
+          <Arc centerX="46" centerY="36" width="64" height="64" startAngle="-135" endAngle="135">
+            <Transform target="endAngle" value="-135 + 270 * ([COMPLICATION.RANGED_VALUE_VALUE] - [COMPLICATION.RANGED_VALUE_MIN]) / ([COMPLICATION.RANGED_VALUE_MAX] - [COMPLICATION.RANGED_VALUE_MIN])" />
+            <Stroke color="[CONFIGURATION.accent.0]" thickness="4" cap="ROUND" />
+          </Arc>
+        </PartDraw>
+        <PartText x="6" y="22" width="80" height="28">
+          <Text align="CENTER" ellipsis="TRUE">
+            <Font family="inter_medium" size="20" color="#FFEEEEEE">
+              <Template>%s<Parameter expression="[COMPLICATION.TEXT]" /></Template>
+            </Font>
+          </Text>
+        </PartText>
+      </Complication>
+    </ComplicationSlot>
+
+    <!-- Slot 1 (right): watch battery by default -->
+    <ComplicationSlot slotId="1" name="right" displayName="@string/slot_right" x="275" y="306" width="92" height="72"
+        supportedTypes="SHORT_TEXT RANGED_VALUE" isCustomizable="TRUE">
+      <DefaultProviderPolicy defaultSystemProvider="WATCH_BATTERY" defaultSystemProviderType="RANGED_VALUE" />
+      <BoundingRoundBox x="0" y="0" width="92" height="72" cornerRadius="20" />
+      <Variant mode="AMBIENT" target="alpha" value="0" />
+      <Complication type="SHORT_TEXT">
+        <PartImage x="34" y="4" width="24" height="24" tintColor="[CONFIGURATION.accent.0]">
+          <Image resource="[COMPLICATION.MONOCHROMATIC_IMAGE]" />
+        </PartImage>
+        <PartText x="0" y="32" width="92" height="32">
+          <Text align="CENTER" ellipsis="TRUE">
+            <Font family="inter_medium" size="24" color="#FFEEEEEE">
+              <Template>%s<Parameter expression="[COMPLICATION.TEXT]" /></Template>
+            </Font>
+          </Text>
+        </PartText>
+      </Complication>
+      <Complication type="RANGED_VALUE">
+        <PartDraw x="0" y="0" width="92" height="72">
+          <Arc centerX="46" centerY="36" width="64" height="64" startAngle="-135" endAngle="135">
+            <Stroke color="#FF162330" thickness="4" cap="ROUND" />
+          </Arc>
+          <Arc centerX="46" centerY="36" width="64" height="64" startAngle="-135" endAngle="135">
+            <Transform target="endAngle" value="-135 + 270 * ([COMPLICATION.RANGED_VALUE_VALUE] - [COMPLICATION.RANGED_VALUE_MIN]) / ([COMPLICATION.RANGED_VALUE_MAX] - [COMPLICATION.RANGED_VALUE_MIN])" />
+            <Stroke color="[CONFIGURATION.accent.0]" thickness="4" cap="ROUND" />
+          </Arc>
+        </PartDraw>
+        <PartText x="6" y="22" width="80" height="28">
+          <Text align="CENTER" ellipsis="TRUE">
+            <Font family="inter_medium" size="20" color="#FFEEEEEE">
+              <Template>%s<Parameter expression="[COMPLICATION.TEXT]" /></Template>
+            </Font>
+          </Text>
+        </PartText>
+      </Complication>
+    </ComplicationSlot>
+
+    <!-- Slot 2 (bottom): next calendar event by default -->
+    <ComplicationSlot slotId="2" name="bottom" displayName="@string/slot_bottom" x="105" y="384" width="240" height="34"
+        supportedTypes="LONG_TEXT SHORT_TEXT" isCustomizable="TRUE">
+      <DefaultProviderPolicy defaultSystemProvider="NEXT_EVENT" defaultSystemProviderType="LONG_TEXT" />
+      <BoundingRoundBox x="0" y="0" width="240" height="34" cornerRadius="17" />
+      <Variant mode="AMBIENT" target="alpha" value="0" />
+      <Complication type="LONG_TEXT">
+        <PartText x="0" y="2" width="240" height="30">
+          <Text align="CENTER" ellipsis="TRUE" maxLines="1">
+            <Font family="jbmono_medium" size="16" color="#FF9BA6B1">
+              <Template>%s<Parameter expression="[COMPLICATION.TEXT]" /></Template>
+            </Font>
+          </Text>
+        </PartText>
+      </Complication>
+      <Complication type="SHORT_TEXT">
+        <PartText x="0" y="2" width="240" height="30">
+          <Text align="CENTER" ellipsis="TRUE" maxLines="1">
+            <Font family="jbmono_medium" size="16" color="#FF9BA6B1">
+              <Template>%s<Parameter expression="[COMPLICATION.TEXT]" /></Template>
+            </Font>
+          </Text>
+        </PartText>
+      </Complication>
+    </ComplicationSlot>
+  </Scene>
+</WatchFace>

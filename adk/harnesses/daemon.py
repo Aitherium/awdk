@@ -664,6 +664,10 @@ if BaseModel is not None:
         agent: str = ""
         participants: list[str] = Field(default_factory=list)
         base_url: str = ""
+        #: Opt-in connector env (``SessionConfig.connectors``): only ``["github"]``,
+        #: which hands the child git/gh access as the connected account. Anything
+        #: else is refused 400 at create; empty = no connector token at all.
+        connectors: list[str] = Field(default_factory=list)
         #: A skill or slash command from ``.claude/skills`` / ``.claude/commands``
         #: (cwd first, then ~), rendered into ``system_prompt_append``. Not a
         #: SessionConfig field: it is resolved here and never travels further.
@@ -1452,6 +1456,17 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     f"{body.harness!r} (requires entitlement {needed!r})"
                 ),
             )
+        if body.connectors:
+            from adk.connectors import ENV_INJECTABLE
+
+            refused = sorted({str(c).strip().lower() for c in body.connectors}
+                             - set(ENV_INJECTABLE))
+            if refused:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"connectors {refused} are never env-injected into a "
+                            f"harness child; only {list(ENV_INJECTABLE)} (git/gh)"),
+                )
         # A relay session that names an agent the roster does not know used to
         # start anyway and answer as aither. Refuse with the roster instead: a
         # wrong name is a typo the caller can fix, a silent fallback is not.

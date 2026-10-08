@@ -100,8 +100,13 @@ def _rpc_reply(ctype: str, body: str, want_id: int) -> Dict[str, Any]:
     raise SpendUnavailableError("gateway event stream carried no reply")
 
 
-def fetch_spend(hours: int, url: str, bearer: str, timeout: float = TIMEOUT_S) -> Dict[str, Any]:
-    """``initialize`` + ``tools/call cloud_spend`` over MCP StreamableHTTP."""
+def call_tool(name: str, arguments: Dict[str, Any], url: str, bearer: str,
+              timeout: float = TIMEOUT_S, client: str = "adk-spend") -> Any:
+    """``initialize`` + ``tools/call <name>`` over MCP StreamableHTTP; the tool payload.
+
+    Shared by ``adk spend`` and ``adk wallet``. Raises SpendUnavailableError with the
+    reason on any transport or protocol failure.
+    """
     if not bearer:
         raise SpendUnavailableError(
             "no gateway bearer (~/.aither/session-bearer); "
@@ -119,7 +124,7 @@ def fetch_spend(hours: int, url: str, bearer: str, timeout: float = TIMEOUT_S) -
             conn = http.client.HTTPConnection(parts.hostname, port, timeout=timeout)
         headers = {"Content-Type": "application/json",
                    "Accept": "application/json, text/event-stream",
-                   "Authorization": "Bearer " + bearer, "User-Agent": "adk-spend/1"}
+                   "Authorization": "Bearer " + bearer, "User-Agent": client + "/1"}
         if session:
             headers["Mcp-Session-Id"] = session
         try:
@@ -144,14 +149,19 @@ def fetch_spend(hours: int, url: str, bearer: str, timeout: float = TIMEOUT_S) -
 
     post({"jsonrpc": "2.0", "id": 1, "method": "initialize",
           "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                     "clientInfo": {"name": "adk-spend", "version": "1"}}})
+                     "clientInfo": {"name": client, "version": "1"}}})
     post({"jsonrpc": "2.0", "method": "notifications/initialized"})
     msg = post({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": {"name": "cloud_spend", "arguments": {"hours": int(hours)}}})
+                "params": {"name": name, "arguments": arguments}})
     if msg.get("error"):
         err = msg["error"]
         raise SpendUnavailableError(str(err.get("message") if isinstance(err, dict) else err))
-    payload = tool_payload(msg.get("result"))
+    return tool_payload(msg.get("result"))
+
+
+def fetch_spend(hours: int, url: str, bearer: str, timeout: float = TIMEOUT_S) -> Dict[str, Any]:
+    """``tools/call cloud_spend`` over MCP StreamableHTTP, validated."""
+    payload = call_tool("cloud_spend", {"hours": int(hours)}, url, bearer, timeout)
     data = validate(payload)
     if data is None:
         why = payload.get("error") if isinstance(payload, dict) else payload

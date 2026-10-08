@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aither</string>
+    <string name="cfg_style">Style</string>
+    <string name="style_aither">Aither</string>
+    <string name="style_hearth">Hearth</string>
+    <string name="style_minimal">Minimal</string>
+    <string name="cfg_accent">Accent</string>
+    <string name="accent_cyan">Cyan glow</string>
+    <string name="accent_ember">Ember</string>
+    <string name="accent_violet">Violet</string>
+    <string name="accent_white">White</string>
+    <string name="slot_left">Left</string>
+    <string name="slot_right">Right</string>
+    <string name="slot_bottom">Bottom</string>
+</resources>

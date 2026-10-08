@@ -537,6 +537,25 @@ def test_spawn_tool_schema_offers_allow_peer_input():
     assert spawn["schema"]["properties"]["allow_peer_input"]["type"] == "boolean"
 
 
+def test_spawn_forwards_the_github_opt_in_only_when_asked(monkeypatch, steer_root):
+    """Connector slice S5: dropping the field would spawn the session without the
+    GitHub it asked for -- and silently, since the session still starts."""
+    calls = []
+
+    def spawn_fake(method, path, body=None, timeout=20.0):
+        calls.append((method, path, body))
+        return {"id": "sess-new"}
+
+    monkeypatch.setattr(mcp_stdio, "_req", spawn_fake)
+    mcp_stdio._spawn({"harness": "claude", "connectors": ["github"]})
+    mcp_stdio._spawn({"harness": "claude"})
+    assert calls[0][:2] == ("POST", "/sessions")
+    assert calls[0][2]["connectors"] == ["github"]
+    assert "connectors" not in calls[1][2]
+    spawn = [t for t in mcp_stdio.TOOLS if t["name"] == "awsh_spawn"][0]
+    assert spawn["schema"]["properties"]["connectors"]["items"]["enum"] == ["github"]
+
+
 # ── awsh_send tier 3: a session with no mailbox HERE is still reachable ──
 
 

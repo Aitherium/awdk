@@ -2783,6 +2783,10 @@ def _save_account_license(result: dict) -> str:
                                 str(result.get("tier") or ""))
 
 
+#: The next step after a sign-in: connect accounts in the Connections window.
+LOGIN_CONNECT_HINT = "Next: connect your accounts → adk connectors connect github"
+
+
 def cmd_login(args) -> int:
     """Authenticate with Aitherium — device flow, email/password, or API key."""
 
@@ -2914,6 +2918,7 @@ def cmd_login(args) -> int:
         print(f"  Vault synced → {synced_count} secret(s) available locally")
     elif synced_count == -1:
         print("  (vault sync skipped — run `adk secret sync` to pull your keys)")
+    print(f"  {LOGIN_CONNECT_HINT}")
     print()
     return 0
 
@@ -13894,6 +13899,9 @@ def _register_commands(sub):
     _register_learn(sub)
     from adk.bonsai_phone import register_parser as _register_bonsai
     _register_bonsai(sub)
+    # adk connectors (list / status / connect / grant). httpx only.
+    from adk.connectors_cli import register_parser as _register_connectors
+    _register_connectors(sub)
 
     # adk login
     login_p = sub.add_parser("login", help="Authenticate with Aitherium (browser device flow)")
@@ -16194,6 +16202,10 @@ def _register_commands(sub):
     from adk.commands.spend import register_parser as _register_spend
     _register_spend(sub)
 
+    # adk crypto — self-service crypto payment settings (adk/commands/crypto.py)
+    from adk.commands.crypto import register_parser as _register_crypto
+    _register_crypto(sub)
+
     # adk fleet-host — the awnix fleet host (adk/commands/fleet_host.py)
     from adk.commands.fleet_host import register_parser as _register_fleet_host
     _register_fleet_host(sub)
@@ -17109,6 +17121,9 @@ def main():
     elif args.command == "learn":
         from adk.learn_cli import cmd_learn
         sys.exit(cmd_learn(args))
+    elif args.command == "connectors":
+        from adk.connectors_cli import cmd_connectors
+        sys.exit(cmd_connectors(args))
     elif args.command == "bonsai":
         from adk.bonsai_phone import cmd_bonsai
         sys.exit(cmd_bonsai(args))
@@ -17447,6 +17462,9 @@ def main():
     elif args.command == "spend":
         from adk.commands.spend import cmd_spend
         sys.exit(cmd_spend(args))
+    elif args.command == "crypto":
+        from adk.commands.crypto import cmd_crypto
+        sys.exit(cmd_crypto(args))
     elif args.command == "fleet-host":
         from adk.commands.fleet_host import cmd_fleet_host
         sys.exit(cmd_fleet_host(args))

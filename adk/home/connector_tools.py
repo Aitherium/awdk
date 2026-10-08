@@ -47,21 +47,25 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
+from adk.connectors import (
+    CONNECTIONS_URL,
+    DEFAULT_RESOLVE_BASE,  # noqa: F401 -- re-exported: tests and callers read it here
+    _env_bearer,
+)
+from adk.connectors import _saved_bearer as _cfg_bearer
+from adk.connectors import resolve_base as _resolve_base
+
 from .life_tools import parse_when
 
 logger = logging.getLogger("adk.home.connectors")
 
-#: Where an account is connected: the workspace ADMIN's connections tab. There is no
-#: member-facing connect page yet (/workspace/settings?tab=connections is the API
-#: connect guide, and the OAuth start in Veil's connectors-bff is admin-only), so
-#: every message that names this URL says an admin does it -- never "you connect".
-DEFAULT_CONNECT_URL = "https://api.aitherium.com/admin?tab=connections"
-#: The public resolve path: the portal BFF forwards this home's own bearer to
-#: Genesis (``POST {base}/connectors/resolve``), which scopes to the signed-in
-#: user's tenant and roster and hands a named personal connector (mail,
-#: calendar, to-do) only to a real user of that tenant. In-fleet homes set
-#: ``AITHER_CONNECTORS_URL`` (or ``AITHER_GENESIS_URL``) to reach Genesis direct.
-DEFAULT_RESOLVE_BASE = "https://api.aitherium.com/api"
+#: Where an account is connected: the customer Connections window. Every member
+#: connects their OWN accounts there (Genesis /connectors/mine/{c}/start); the old
+#: admin tab bounced a member to ?denied=veil:admin.
+DEFAULT_CONNECT_URL = CONNECTIONS_URL
+#: The public resolve path (one definition, in adk.connectors): the portal BFF
+#: forwards this home's own bearer to Genesis ``/connectors/resolve``. In-fleet
+#: homes set ``AITHER_CONNECTORS_URL`` (or ``AITHER_GENESIS_URL``).
 #: How long a resolved access token is reused before it is resolved again (Genesis
 #: refreshes a token that is within 5 minutes of expiry, so a minute is safe).
 TOKEN_TTL_S = 60.0
@@ -105,21 +109,12 @@ search the web with it.
 
 def _saved_bearer() -> str:
     """The home's sign-in token (``adk home signin`` saves it as ``api_key``)."""
-    try:
-        from adk.config import load_saved_config
-
-        cfg = load_saved_config() or {}
-    except (OSError, ValueError) as exc:
-        logger.warning("hearth connectors: saved sign-in unreadable: %s", type(exc).__name__)
-        return ""
-    return str(cfg.get("api_key") or cfg.get("access_token") or "").strip()
+    return _cfg_bearer()
 
 
 def owner_bearer() -> str:
     """The bearer a resolve carries: the saved sign-in, else the session env."""
-    from adk.connectors import _bearer
-
-    return _saved_bearer() or _bearer()
+    return _saved_bearer() or _env_bearer()
 
 
 def home_signed_in() -> bool:
@@ -132,11 +127,7 @@ def connect_url() -> str:
 
 
 def resolve_base() -> str:
-    for name in ("AITHER_CONNECTORS_URL", "AITHER_GENESIS_URL", "GENESIS_URL"):
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value.rstrip("/")
-    return DEFAULT_RESOLVE_BASE
+    return _resolve_base()
 
 
 def _env_name(connector: str) -> str:
@@ -157,11 +148,11 @@ class ConnectorError(Exception):
 class TokenResolver:
     """Resolve one provider's access token for a capability, cached briefly.
 
-    Order per call: a ``CONNECTOR_<ID>_TOKEN`` already in the environment (a
-    harness session injected it), then the cache, then one Genesis resolve for
-    all of the capability's candidates. The first candidate holding a token wins.
-    An env token the provider rejected (401) is skipped from then on -- it cannot
-    refresh itself, and a resolve can (Genesis refreshes a stale Google token).
+    Order per call: the cache, then one Genesis resolve for all of the
+    capability's candidates. The first candidate holding a token wins. A
+    ``CONNECTOR_<ID>_TOKEN`` in the environment is NEVER read: a stale one there
+    would bypass the sign-in, the roster and every grant Genesis checks on a
+    resolve (connector slice S5 removed that path).
     """
 
     def __init__(self, ttl_s: float = TOKEN_TTL_S,
@@ -169,21 +160,10 @@ class TokenResolver:
         self.ttl_s = ttl_s
         self._clock = clock
         self._cache: Dict[str, Tuple[str, float]] = {}
-        #: connector -> the env token value the provider rejected (skip it).
-        self._env_rejected: Dict[str, str] = {}
 
     def forget(self, connector: str, token: str = "") -> None:
-        """Drop a rejected token: the cached one, and an env one equal to ``token``."""
+        """Drop a rejected token from the cache (the next call resolves again)."""
         self._cache.pop(connector, None)
-        env_token = (os.environ.get(_env_name(connector)) or "").strip()
-        if token and env_token and env_token == token:
-            self._env_rejected[connector] = env_token
-
-    def _env_token(self, connector: str) -> str:
-        env_token = (os.environ.get(_env_name(connector)) or "").strip()
-        if env_token and self._env_rejected.get(connector) == env_token:
-            return ""
-        return env_token
 
     def _cached(self, connector: str) -> str:
         hit = self._cache.get(connector)
@@ -194,9 +174,6 @@ class TokenResolver:
     async def token_for(self, candidates: Sequence[str], what: str) -> Tuple[str, str]:
         """``(connector, token)`` or raise :class:`ConnectorError` naming the fix."""
         for connector in candidates:
-            env_token = self._env_token(connector)
-            if env_token:
-                return connector, env_token
             cached = self._cached(connector)
             if cached:
                 return connector, cached
@@ -204,8 +181,7 @@ class TokenResolver:
         if not bearer:
             raise ConnectorError(
                 f"no {what} is connected: this home is not signed in -- run `adk home "
-                f"signin`, then ask a workspace admin to connect {_names(candidates)} at "
-                f"{connect_url()}")
+                f"signin`, then connect {_names(candidates)} at {connect_url()}")
         from adk import connectors as adk_connectors
 
         result = await adk_connectors.resolve_connectors(
@@ -226,7 +202,7 @@ class TokenResolver:
             if token:
                 self._cache[connector] = (token, now)
                 return connector, token
-        raise ConnectorError(f"no {what} is connected -- ask a workspace admin to connect "
+        raise ConnectorError(f"no {what} is connected -- connect "
                              f"{_names(candidates)} at {connect_url()}")
 
 
@@ -251,8 +227,8 @@ async def _call(resolver: TokenResolver, connector: str, token: str, method: str
     if resp.status_code == 401:
         resolver.forget(connector, token)
         logger.warning("hearth connectors: %s rejected the token (401)", connector)
-        raise ConnectorError(f"{label} rejected the connection (401) -- ask a workspace "
-                             f"admin to reconnect it at {connect_url()}")
+        raise ConnectorError(f"{label} rejected the connection (401) -- reconnect it "
+                             f"at {connect_url()}")
     if resp.status_code >= 400:
         logger.warning("hearth connectors: %s %s answered HTTP %s", connector, method,
                        resp.status_code)

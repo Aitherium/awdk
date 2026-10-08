@@ -4,6 +4,7 @@
     python awdk/android/aither/build.py [--install SERIAL]
     python awdk/android/aither/build.py --store --aab     # the Google Play bundle
     python awdk/android/aither/build.py --wear [--out DIR] [--install WATCH]  # the watch app
+    python awdk/android/aither/build.py --watchface [--install WATCH]  # the watch face
 
 Needs a JDK (javac, keytool, jarsigner) and an Android SDK with ``platforms;android-36`` and
 ``build-tools;36.0.0`` (``sdkmanager``); ``--aab`` fetches bundletool (pinned by SHA-256).
@@ -509,6 +510,43 @@ def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
     return sign(bt, base, out / "aither-wear.apk", keystore, storepass_file)
 
 
+# The watch face (../aither-watchface): Watch Face Format, resources only. Wear OS draws
+# res/raw/watchface.xml itself, so there is no javac/d8 step and the APK has no dex.
+WATCHFACE = HERE.parent / "aither-watchface"
+
+
+def build_watchface(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
+    """The Aither watch face: aapt2 compile + link of its res, then the same signing (and
+    release-certificate check) as the phone and watch apps."""
+    root = sdk()
+    jar = root / "platforms" / f"android-{API}" / "android.jar"
+    bt = root / "build-tools" / TOOLS
+    if not jar.exists():
+        raise SystemExit(f"build: {jar} missing (sdkmanager 'platforms;android-{API}')")
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    base = out / "base.apk"
+    flat = out / "res.zip"
+    run([tool(bt, "aapt2"), "compile", "--dir", str(WATCHFACE / "res"), "-o", str(flat)])
+    run(
+        [
+            tool(bt, "aapt2"),
+            "link",
+            str(flat),
+            "--manifest",
+            str(WATCHFACE / "AndroidManifest.xml"),
+            "-I",
+            str(jar),
+            "-o",
+            str(base),
+        ]
+    )
+    with zipfile.ZipFile(base) as z:
+        if any(n.endswith(".dex") for n in z.namelist()):
+            raise SystemExit("build: a Watch Face Format APK must not carry code")
+    return sign(bt, base, out / "aither-watchface.apk", keystore, storepass_file)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=str(HERE / "out"))
@@ -532,12 +570,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="the Wear OS app (../aither-wear), same signing; --install takes the watch's adb serial",
     )
+    ap.add_argument(
+        "--watchface",
+        action="store_true",
+        help="the watch face (../aither-watchface), same signing; --install takes the watch's adb serial",
+    )
     a = ap.parse_args(argv)
     if bool(a.keystore) != bool(a.storepass_file):
         ap.error("--keystore and --storepass-file go together")
     if a.aab and a.install:
         ap.error("--install takes an APK; a bundle is uploaded to Google Play")
-    if a.wear:
+    if a.wear and a.watchface:
+        ap.error("--wear and --watchface are separate APKs; build one at a time")
+    if a.watchface:
+        if a.store or a.aab:
+            ap.error("--watchface builds the sideload APK; --store/--aab are the phone's")
+        out = Path(a.out) if a.out != str(HERE / "out") else WATCHFACE / "out"
+        apk = build_watchface(out, a.keystore, a.storepass_file)
+    elif a.wear:
         if a.store or a.aab:
             ap.error("--wear builds the sideload APK; --store/--aab are the phone's")
         out = Path(a.out) if a.out != str(HERE / "out") else WEAR / "out"
