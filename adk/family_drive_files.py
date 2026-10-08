@@ -15,6 +15,10 @@ for two copies). The household cuts the shards from the SEALED chunk, so they ar
 ciphertext. Smaller chunks, and ``--copies``, keep ``--replicas`` whole copies. When the
 family has too few lending devices for the shards, the default falls back to copies and
 says so; an explicit ``--ec`` fails instead.
+
+A file under a folder copy rule (:mod:`adk.family_drive_rules`) is kept the way the rule
+says (copies or k+m shards, on the kinds of device it allows), and the flags above are
+refused for it: change the rule instead.
 """
 
 from __future__ import annotations
@@ -65,6 +69,11 @@ def put_object_ex(sealed: bytes, *, replicas: int, tier: str = "warm",
     params = {"replicas": str(replicas), "tier": tier}
     if ec:
         params["ec"] = ec
+    return put_params(sealed, params)
+
+
+def put_params(sealed: bytes, params: Dict[str, str]) -> Dict[str, Any]:
+    """Store one sealed object with its placement params (never a name among them)."""
     _s, body = cli.request("POST", "/family/storage/objects", content=sealed, params=params)
     return dict(body)
 
@@ -124,11 +133,23 @@ def _clean_name(name: str) -> str:
 
 
 def cmd_put(args: argparse.Namespace) -> int:
+    from adk import family_drive_rules as rules
+
     key = cli.family_key()
     src = Path(args.file)
     if not src.is_file():
         raise fv.VaultError(f"no such file: {src}")
     name = _clean_name(args.name or src.name)
+    served = rules.server_rules()
+    _oid, current = read_index(key)
+    rules.adopt_server_changes(current, served)
+    rule, origin = rules.effective(current, name)
+    ruled = origin != "default"
+    if ruled and (getattr(args, "ec", None) or getattr(args, "copies", False)
+                  or args.replicas is not None):
+        raise fv.VaultError(f"{name} follows a copy rule ({rules.describe(rule)}); change it "
+                            "with `adk storage drive rule set`, not --ec / --copies / --replicas")
+    replicas = args.replicas or 2
     explicit = bool(getattr(args, "ec", None))
     ec = "" if getattr(args, "copies", False) else (args.ec or DEFAULT_EC)
     asked = ec
@@ -142,29 +163,54 @@ def cmd_put(args: argparse.Namespace) -> int:
                 break
             size += len(part)
             sealed = fv.seal(key, part)
-            try:
-                body = put_object_ex(sealed, replicas=args.replicas, ec=ec)
-            except cli.ApiError as exc:
-                if not (ec and not explicit and exc.status == 409):
-                    raise
-                print(f"Not enough lending devices for {ec} shards; keeping "
-                      f"{args.replicas} whole copies instead.", file=sys.stderr)
-                ec = ""
-                body = put_object_ex(sealed, replicas=args.replicas)
+            if ruled:
+                body = put_params(sealed, rules.placement_params(rule))
+            else:
+                try:
+                    body = put_object_ex(sealed, replicas=replicas, ec=ec)
+                except cli.ApiError as exc:
+                    if not (ec and not explicit and exc.status == 409):
+                        raise
+                    print(f"Not enough lending devices for {ec} shards; keeping "
+                          f"{replicas} whole copies instead.", file=sys.stderr)
+                    ec = ""
+                    body = put_object_ex(sealed, replicas=replicas)
             chunks.append(str(body["object_id"]))
             modes.append(str(body.get("mode") or "copies"))
             if not part:
                 break
+    if ruled:
+        redundancy = rules.redundancy_label(rule)
+        replicas = int((rule.get("redundancy") or {}).get("copies", 2))
+    else:
+        redundancy = f"ec {asked}" if "ec" in modes else "copies"
     entry = {"size": size, "mtime": int(src.stat().st_mtime), "chunks": chunks,
-             "added": int(time.time()), "replicas": args.replicas,
-             "redundancy": f"ec {asked}" if "ec" in modes else "copies"}
+             "added": int(time.time()), "replicas": replicas, "redundancy": redundancy,
+             "rule_id": rule.get("rule_id", "")}
+    replaced: List[str] = []
 
     def change(index: Dict[str, Any]) -> None:
-        index["files"][name] = entry
+        rules.adopt_server_changes(index, served)
+        old = index["files"].get(name)
+        mine = dict(entry)
+        replaced.clear()
+        if old is not None:
+            replaced.extend(o for o in old.get("chunks") or [] if o not in chunks)
+            if old.get("rule"):
+                mine["rule"] = old["rule"]  # a file's own rule outlives a new version of it
+        index["files"][name] = mine
 
-    update_index(key, change, replicas=args.replicas)
-    how = (f"{entry['redundancy'][3:]} erasure-coded shards" if entry["redundancy"] != "copies"
-           else f"{args.replicas} copies wanted")
+    update_index(key, change, replicas=replicas)
+    for oid in replaced:  # the previous version's chunks
+        try:
+            cli.request("DELETE", f"/family/storage/objects/{oid}")
+        except cli.ApiError:
+            pass
+    if ruled:
+        how = rules.describe(rule)
+    else:
+        how = (f"{entry['redundancy'][3:]} erasure-coded shards" if entry["redundancy"] != "copies"
+               else f"{replicas} copies wanted")
     print(f"Stored {name} ({size} bytes, {len(chunks)} chunk(s), {how}).")
     return 0
 
@@ -250,8 +296,8 @@ def add_parsers(sub: Any) -> None:
     put = sub.add_parser("put", help="Seal a file and store it on the family's devices")
     put.add_argument("file")
     put.add_argument("--name", default="", help="Path on the drive (default: the file name)")
-    put.add_argument("--replicas", type=int, default=2, choices=[1, 2, 3],
-                     help="Whole copies for small chunks, --copies, or the fallback")
+    put.add_argument("--replicas", type=int, default=None, choices=[1, 2, 3],
+                     help="Whole copies for small chunks, --copies, or the fallback (default 2)")
     put.add_argument("--ec", type=_valid_ec, default=None,
                      help=f"Erasure-code chunks of 64 KiB+ as k+m shards (default {DEFAULT_EC}; "
                           "explicit: fail instead of falling back to copies)")
@@ -270,3 +316,6 @@ def add_parsers(sub: Any) -> None:
     rm = sub.add_parser("rm", help="Remove a file from the family drive")
     rm.add_argument("name")
     rm.set_defaults(handler=cmd_rm)
+    from adk import family_drive_rules as rules
+
+    rules.add_parsers(sub)

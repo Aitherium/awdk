@@ -68,6 +68,8 @@ class Household:
                 raise cli.ApiError(409, "index_moved")
             self.index = json_body["object_id"]
             return 200, {}
+        if path == "/family/storage/drive/rules" and method == "GET":
+            return 200, {"rules": [], "devices": []}
         raise AssertionError(path)
 
 
