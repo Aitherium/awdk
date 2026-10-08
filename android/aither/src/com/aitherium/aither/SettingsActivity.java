@@ -93,6 +93,7 @@ public class SettingsActivity extends Activity {
             col.addView(Ui.section(this, "AI & voice on this phone"));
             LinearLayout ai = Ui.card(this);
             row(ai, toggleLlm(), "A small AI model runs right here, so Aither keeps working offline.");
+            row(ai, toggleNano(), NANO_DISCLOSURE);
             row(ai, Ui.action(this, "Use it from AitherOS in the browser", v -> {
                 // a new token for the browser: the page stores it per origin, the old one stops working
                 String t = cfg.rotateLlmToken();
@@ -252,6 +253,24 @@ public class SettingsActivity extends Activity {
             if (checked) startForegroundService(svc);
             else stopService(svc);
         });
+        return s;
+    }
+
+    /** What turning Gemini Nano on means, in plain words, shown under its switch. */
+    static final String NANO_DISCLOSURE =
+            "Off unless you turn it on. Gemini Nano is Google's model built into Android; your questions "
+            + "stay on this phone. Google's ML Kit, which Aither uses to reach it, sends Google usage "
+            + "diagnostics (device, app, how long answers took). Bonsai stays the default.";
+
+    /** "Use Gemini Nano on this phone": opt-in, never on a child's phone (NanoRoute's gate). */
+    private View toggleNano() {
+        Switch s = Ui.style(new Switch(this));
+        s.setText("Use Gemini Nano on this phone");
+        boolean built = GeminiNano.engine(this) != null;
+        s.setChecked(built && cfg.nanoPreferred());
+        s.setEnabled(built && cfg.localAiBlocked().isEmpty());
+        if (!built) s.setText("Use Gemini Nano on this phone (not in this version)");
+        s.setOnCheckedChangeListener((v, checked) -> cfg.set("nano_preferred", checked));
         return s;
     }
 

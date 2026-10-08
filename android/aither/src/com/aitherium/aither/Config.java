@@ -99,7 +99,7 @@ final class Config {
     /** May agents on this phone read the calendar (the owner's switch; Android asks too)? */
     boolean toolCalendar() { return p.getBoolean("tool_calendar", false); }
     /** Ask Aither: let Gemini Nano (AICore, on this phone) take short tool-free questions. */
-    boolean nanoPreferred() { return p.getBoolean("nano_preferred", true); }
+    boolean nanoPreferred() { return p.getBoolean("nano_preferred", false); } // opt-in (Settings)
     /** The owner said no to downloading Gemini Nano: do not offer it again. */
     boolean nanoDeclined() { return p.getBoolean("nano_declined", false); }
     /** Does Ask Aither read its answers aloud (on-device voice only; its own switch)? */

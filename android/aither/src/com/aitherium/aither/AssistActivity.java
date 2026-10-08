@@ -185,7 +185,8 @@ public class AssistActivity extends Activity {
      * owner's questions are never part of that.
      */
     private void offerNano(LinearLayout col) {
-        if (GeminiNano.engine(this) == null) return;
+        // Opt-in only: the owner turns it on in Settings (with the ML Kit disclosure) first.
+        if (GeminiNano.engine(this) == null || !cfg.nanoPreferred() || !cfg.localAiBlocked().isEmpty()) return;
         CheckBox use = new CheckBox(this);
         use.setText("Use Gemini Nano for short questions");
         use.setChecked(cfg.nanoPreferred());

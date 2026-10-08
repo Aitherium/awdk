@@ -32,3 +32,26 @@ It compiles against the real library (checked 2026-10-07):
    inference only while the app is the top foreground app (BACKGROUND_USE_BLOCKED);
    per-app quotas (BUSY, PER_APP_BATTERY_USE_QUOTA_EXCEEDED). NanoRoute handles each of
    those by falling back to Bonsai.
+
+## The opt-in is in place (2026-10-08)
+
+Settings > "AI & voice on this phone" > "Use Gemini Nano on this phone" is OFF by default
+(`Config.nanoPreferred()` defaults to false), with the ML Kit diagnostics disclosure under the
+switch. Ask Aither offers the Nano download only after that switch is on. A child's phone never
+gets it: `Config.localAiBlocked()` is NanoRoute's first gate, and the switch is disabled there
+(no guardian override exists yet). In a build without the engine the switch reads "(not in this
+version)" and stays disabled.
+
+## Smallest way to ship the engine: the options
+
+| Option | Works? | Cost |
+|---|---|---|
+| Companion APK (Gradle-built "Aither Nano" app, bound service) | **No**: AICore runs inference only for the TOP foreground app (BACKGROUND_USE_BLOCKED); the companion is never foreground while Ask Aither is | none, ruled out |
+| Vendor the AARs into build.py (dex classes.jar, aapt2-compile each AAR's res, `--extra-packages`, hand-merge manifests) | Yes | ~25 AARs, R classes for each package, manifest merging by hand; breaks on every ML Kit bump |
+| **Gradle side module** (`optional/gemini-nano/` builds MlKitNano + closure into one dex + a compiled-res zip + a manifest fragment; build.py merges them when `--nano` is passed) | Yes | one small Gradle project, CI needs the Android Gradle plugin; the default build stays Gradle-free |
+| Move the whole app to Gradle | Yes | biggest change; also unlocks Jetpack AppFunctions (KSP), Compose A2UI and Play App Bundles natively; do it with the Play launch |
+
+Recommended: the Gradle side module now (behind `--nano`, off in the default release until the
+owner accepts the diagnostics), and the full Gradle move together with the Play Store launch.
+The same closure also brings ML Kit's GenAI speech recognition, which could replace Android's
+SpeechRecognizer for Talk when the owner opts in; NanoRoute already falls back on every error.
