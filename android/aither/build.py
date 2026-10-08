@@ -431,7 +431,7 @@ def sign(bt: Path, base: Path, apk: Path, keystore: str, storepass_file: str) ->
 # device-link code + its QR (DeviceLink, Qr), so the watch shows what the phone parses.
 WEAR = HERE.parent / "aither-wear"
 WEAR_SHARED = ("ApprovalCard.java", "Talk.java", "Speakable.java", "Ui.java", "DeviceLink.java", "Qr.java",
-               "BlePair.java", "BleCandidate.java")
+               "BlePair.java", "BleCandidate.java", "Hear.java", "ServerEar.java")
 
 
 # The watch's Tile (WearTile) needs the Jetpack Tiles library: the system binds a tile

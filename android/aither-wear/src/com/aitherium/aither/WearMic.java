@@ -3,17 +3,15 @@ package com.aitherium.aither;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.util.Base64;
-
-import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 
 /**
  * Voice input on a watch without an on-device recognizer (the Pixel Watch has none): the
  * watch records one question and AitherOS's own speech-to-text hears it (POST
- * /api/voice/transcribe, AitherVoice, signed-in callers only). The audio goes to Aither and
- * nowhere else: Google's recognizer is never used (Talk's rule).
+ * /api/voice/hear: any signed-in caller, child accounts included; /api/voice/transcribe is
+ * developer-plan only and answered a kid's watch 403). The audio goes to Aither and nowhere
+ * else: Google's recognizer is never used (Talk's rule).
  *
  * Recording stops on its own after {@link WearMicRules#TRAILING_MS} of quiet once speech has
  * started, at {@link WearMicRules#MAX_MS}, or when {@link #stop} is called (the screen's
@@ -21,6 +19,7 @@ import java.io.ByteArrayOutputStream;
  */
 final class WearMic {
     static final int RATE = 16000;
+    static final String HEAR_PATH = "/api/voice/hear";
 
     interface Listener {
         /** 0..1 loudness of the last frame, for the listening ring. */
@@ -54,9 +53,8 @@ final class WearMic {
         }
         l.sending();
         try {
-            String b64 = Base64.encodeToString(WearMicRules.wav(pcm, RATE), Base64.NO_WRAP);
-            WearApi.Resp r = api.post("/api/voice/transcribe",
-                    new JSONObject().put("audio_base64", b64).put("filename", "watch.wav"), true, 60000);
+            WearApi.Resp r = api.postAudio(HEAR_PATH, WearMicRules.wav(pcm, RATE), "watch.wav",
+                    "audio/wav", 60000);
             String text = r.code == 200 ? r.str("text").trim() : "";
             if (text.isEmpty()) {
                 err[0] = r.code == 401 ? "Signed out. Sign in again."

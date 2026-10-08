@@ -71,6 +71,17 @@ public class WearMicCheck {
         eq("worth 100ms", WearMicRules.worthSending(3200, 16000), false);
         eq("worth 1s", WearMicRules.worthSending(32000, 16000), true);
 
+        // the clip rides as multipart field "audio" (POST /api/voice/hear), bytes untouched
+        byte[] clip = {0, 1, (byte) 0xff, 13, 10};
+        byte[] mp = WearMicRules.multipart("b0", "watch.wav", "audio/wav", clip);
+        String s = new String(mp, java.nio.charset.StandardCharsets.ISO_8859_1);
+        eq("multipart head", s.startsWith("--b0\r\nContent-Disposition: form-data; name=\"audio\"; "
+                + "filename=\"watch.wav\"\r\nContent-Type: audio/wav\r\n\r\n"), true);
+        eq("multipart tail", s.endsWith("\r\n--b0--\r\n"), true);
+        int at = s.indexOf("\r\n\r\n") + 4;
+        eq("multipart bytes", java.util.Arrays.equals(
+                java.util.Arrays.copyOfRange(mp, at, at + clip.length), clip), true);
+
         System.out.println(bad == 0 ? "OK" : bad + " failed");
         System.exit(bad == 0 ? 0 : 1);
     }

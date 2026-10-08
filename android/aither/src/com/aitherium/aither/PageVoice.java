@@ -21,7 +21,10 @@ import java.util.Locale;
 /**
  * window.AitherVoice: push-to-talk for pages (a child talking to their Sprite). The WebView
  * has no Web Speech recognition, so the page asks the app, which listens with Android's
- * ON-DEVICE recognizer only (Talk.canListen: the default recognizer may upload the audio).
+ * ON-DEVICE recognizer when the phone has one (Talk.canListen). Without one -- or when that
+ * ear fails (Hear.tryNextEar) -- it records a short clip and asks Aither's OWN recognizer
+ * (ServerEar), a child's phone included. Never Google's default recognizer: the clip goes to
+ * Aither alone (/api/voice/hear) and is deleted as soon as it is sent.
  * What was heard comes back to the page as a DOM event:
  *
  *   window.addEventListener('aither-voice', e => e.detail)  // {type, text}
@@ -46,6 +49,7 @@ final class PageVoice {
     private TextToSpeech voice;
     private boolean voiceReady;
     private String[] waiting; // {text, id} spoken once the engine is ready
+    private ServerEar server;
 
     private PageVoice(Activity a) { act = a; }
 
@@ -54,7 +58,32 @@ final class PageVoice {
         return current;
     }
 
+    /**
+     * Can this phone listen for a page? On the device when it has the engine, else with
+     * Aither's own recognizer -- a child's phone too (a kid talks to their Sprite). Never
+     * Google's default recognizer: the clip goes to Aither alone and is deleted once heard.
+     */
     boolean available() {
+        return onDevice() || serverAllowed();
+    }
+
+    /** Aither's recognizer (ServerEar): any phone with a microphone, children included. */
+    private boolean serverAllowed() {
+        return act.getPackageManager().hasSystemFeature(PackageManager.FEATURE_MICROPHONE);
+    }
+
+    /**
+     * May the WebView page at `origin` use the microphone itself (getUserMedia, for the page's
+     * own voice stack)? Only an https aitherium.com page, and only once this app holds the
+     * mic permission. The page's stack is on-device Whisper, then Aither's recognizer.
+     */
+    static boolean pageMayUseMic(Activity a, String origin) {
+        return Hear.pageMayHear(origin)
+                && a.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Android's on-device recognizer (12+ with the engine): the first ear, audio stays here. */
+    private boolean onDevice() {
         return Talk.canListen(Build.VERSION.SDK_INT,
                 Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(act));
     }
@@ -79,10 +108,12 @@ final class PageVoice {
     }
 
     void stop() {
+        if (server != null && server.active()) { server.finish(); return; } // sends what was said
         if (recognizer != null) recognizer.stopListening(); // what was said so far still counts
     }
 
     void destroy() {
+        if (server != null) server.cancel();
         if (recognizer != null) { recognizer.destroy(); recognizer = null; }
         if (voice != null) { voice.stop(); voice.shutdown(); voice = null; voiceReady = false; }
     }
@@ -121,6 +152,11 @@ final class PageVoice {
     }
 
     private void start() {
+        if (!onDevice()) {
+            if (serverAllowed()) serverStart();
+            else { send("error", Talk.errorText(12)); send("end", ""); }
+            return;
+        }
         if (recognizer == null) {
             recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(act);
             recognizer.setRecognitionListener(new Heard());
@@ -134,6 +170,29 @@ final class PageVoice {
         recognizer.startListening(i);
         android.util.Log.i("AitherVoice", "page listening (on-device recognizer)");
         send("listening", "");
+    }
+
+    /** The last ear: record, then Aither's recognizer with this app's session cookie. */
+    private void serverStart() {
+        if (server == null) server = new ServerEar(act);
+        java.util.Map<String, String> h = new java.util.HashMap<>();
+        String cookie = android.webkit.CookieManager.getInstance().getCookie(MainActivity.HOME);
+        if (cookie != null && !cookie.isEmpty()) h.put("Cookie", cookie);
+        String base = MainActivity.HOME.endsWith("/")
+                ? MainActivity.HOME.substring(0, MainActivity.HOME.length() - 1) : MainActivity.HOME;
+        server.start(base, h, new ServerEar.Listener() {
+            @Override public void listening() { send("listening", ""); }
+            @Override public void heard(String text) {
+                if (text.isEmpty()) send("error", Talk.errorText(SpeechRecognizer.ERROR_NO_MATCH));
+                else send("final", text);
+                send("end", "");
+            }
+            @Override public void silent() {
+                send("error", Talk.errorText(SpeechRecognizer.ERROR_SPEECH_TIMEOUT));
+                send("end", "");
+            }
+            @Override public void failed(String message) { send("error", message); send("end", ""); }
+        });
     }
 
     private void send(String type, String text) { send(type, text, null); }
@@ -165,6 +224,16 @@ final class PageVoice {
             if (!q.isEmpty()) send("partial", q);
         }
         @Override public void onError(int error) {
+            if (Hear.tryNextEar(error) && serverAllowed()) {
+                // This ear cannot hear here (network, language pack, busy engine): use Aither's.
+                if (error == Talk.ERROR_LANGUAGE_UNAVAILABLE && Build.VERSION.SDK_INT >= 33 && recognizer != null) {
+                    Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                    i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag());
+                    recognizer.triggerModelDownload(i); // fetch the pack for next time; sends nothing
+                }
+                serverStart();
+                return;
+            }
             if (error == Talk.ERROR_LANGUAGE_UNAVAILABLE && Build.VERSION.SDK_INT >= 33 && recognizer != null) {
                 Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
                 i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag());
@@ -188,7 +257,7 @@ final class PageVoice {
 
         Bridge(Activity a, WebView w) { act = a; web = w; }
 
-        /** True when this phone can listen on the device (Android 12+ with the on-device engine). */
+        /** True when this phone can listen: on the device, else with Aither's recognizer. */
         @JavascriptInterface
         public boolean canListen() {
             return PageVoice.of(act).available();

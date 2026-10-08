@@ -167,23 +167,31 @@ final class WearApi {
     }
 
     Resp post(String path, JSONObject body, boolean auth, int readMs) {
-        return call("POST", path, body, auth, readMs);
+        return call("POST", path, body == null ? null : body.toString().getBytes(StandardCharsets.UTF_8),
+                "application/json", auth, readMs);
+    }
+
+    /** POST one audio file as multipart field {@code audio} (POST /api/voice/hear). */
+    Resp postAudio(String path, byte[] audio, String filename, String mime, int readMs) {
+        String boundary = "aither" + java.util.UUID.randomUUID().toString().replace("-", "");
+        return call("POST", path, WearMicRules.multipart(boundary, filename, mime, audio),
+                "multipart/form-data; boundary=" + boundary, true, readMs);
     }
 
     Resp get(String path, int readMs) {
-        return call("GET", path, null, true, readMs);
+        return call("GET", path, null, null, true, readMs);
     }
 
-    private Resp call(String method, String path, JSONObject body, boolean auth, int readMs) {
-        Resp r = call1(method, path, body, auth, readMs);
+    private Resp call(String method, String path, byte[] body, String type, boolean auth, int readMs) {
+        Resp r = call1(method, path, body, type, auth, readMs);
         if (!auth || r.code != 401) return r;
         // a 401 from a service is checked with Identity before anything is forgotten
         int s = confirmSession();
-        if (s == 200) return call1(method, path, body, auth, readMs);
+        if (s == 200) return call1(method, path, body, type, auth, readMs);
         return WearRules.sessionRefused(s) ? r : new Resp(503, null, "");
     }
 
-    private Resp call1(String method, String path, JSONObject body, boolean auth, int readMs) {
+    private Resp call1(String method, String path, byte[] body, String type, boolean auth, int readMs) {
         String bearer = auth ? token() : "";
         if (auth && bearer.isEmpty()) return new Resp(401, null, "");
         try {
@@ -195,9 +203,10 @@ final class WearApi {
             if (auth) c.setRequestProperty("Authorization", "Bearer " + bearer);
             if (body != null) {
                 c.setDoOutput(true);
-                c.setRequestProperty("Content-Type", "application/json");
+                c.setRequestProperty("Content-Type", type);
+                c.setFixedLengthStreamingMode(body.length);
                 try (OutputStream o = c.getOutputStream()) {
-                    o.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                    o.write(body);
                 }
             }
             int code = c.getResponseCode();

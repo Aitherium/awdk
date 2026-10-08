@@ -76,6 +76,23 @@ final class WearMicRules {
         return out;
     }
 
+    /**
+     * One multipart/form-data body carrying {@code audio} as the field POST /api/voice/hear
+     * reads ({@code audio}, not {@code file}).
+     */
+    static byte[] multipart(String boundary, String filename, String mime, byte[] audio) {
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        byte[] head = ("--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"audio\"; filename=\"" + filename + "\"\r\n"
+                + "Content-Type: " + mime + "\r\n\r\n").getBytes(utf8);
+        byte[] tail = ("\r\n--" + boundary + "--\r\n").getBytes(utf8);
+        byte[] out = new byte[head.length + audio.length + tail.length];
+        System.arraycopy(head, 0, out, 0, head.length);
+        System.arraycopy(audio, 0, out, head.length, audio.length);
+        System.arraycopy(tail, 0, out, head.length + audio.length, tail.length);
+        return out;
+    }
+
     private static void put(byte[] b, int at, String s) {
         for (int i = 0; i < s.length(); i++) b[at + i] = (byte) s.charAt(i);
     }

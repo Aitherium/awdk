@@ -107,6 +107,23 @@ public class MainActivity extends Activity implements Shell.Host {
                 }
                 return false;
             }
+
+            /** The page's own voice stack (getUserMedia: on-device Whisper, then Aither's
+             *  recognizer) gets the mic ONLY on an https aitherium.com page, once the app holds
+             *  the mic permission (PageVoice.pageMayUseMic). */
+            @Override
+            public void onPermissionRequest(android.webkit.PermissionRequest req) {
+                String origin = req.getOrigin() == null ? "" : req.getOrigin().toString();
+                boolean wantsMic = false;
+                for (String r : req.getResources()) {
+                    if (android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsMic = true;
+                }
+                if (wantsMic && PageVoice.pageMayUseMic(MainActivity.this, origin)) {
+                    req.grant(new String[] {android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                } else {
+                    req.deny();
+                }
+            }
         });
         web.setWebViewClient(new WebViewClient() {
             @Override
