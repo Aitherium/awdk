@@ -44,11 +44,14 @@ public class WearActivity extends Activity {
     private volatile int screen;
     private boolean home = true;
     private SpeechRecognizer recognizer;
+    /** Reads answers aloud in Aither's own voice (WearVoice); the watch's voice as fallback. */
+    private WearVoice voice;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         api = new WearApi(this);
+        voice = new WearVoice(this, api);
         scroll = new ScrollView(this);
         scroll.setBackgroundColor(Ui.BG);
         scroll.setFillViewport(true);
@@ -73,6 +76,7 @@ public class WearActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (recognizer != null) recognizer.destroy();
+        if (voice != null) voice.shutdown();
         super.onDestroy();
     }
 
@@ -328,6 +332,7 @@ public class WearActivity extends Activity {
     // ------------------------------------------------------------------ talk
 
     private void talk() {
+        voice.stop(); // barge-in: taking the mic silences the last answer
         int at = clear(false);
         TextView heard = line("", 14, Ui.INK);
         if (onDeviceListening()) {
@@ -408,7 +413,7 @@ public class WearActivity extends Activity {
                 if (error == Talk.ERROR_LANGUAGE_UNAVAILABLE && Build.VERSION.SDK_INT >= 33) {
                     recognizer.triggerModelDownload(speechIntent()); // fetches the pack; sends nothing
                 }
-                heard.setText(Talk.errorText(error).replace("Tap Talk", "Tap Try again"));
+                heard.setText(Talk.errorText(error).replace("Tap the mic", "Tap Try again").replace("Tap Talk", "Tap Try again"));
                 stop.setText("Try again");
                 stop.setOnClickListener(v -> talk());
             }
@@ -445,9 +450,15 @@ public class WearActivity extends Activity {
                     if (api.token().isEmpty()) { button("Sign in", true, v -> render()); return; }
                 } else {
                     answer.setText(a);
+                    voice.speak(a);
                 }
                 button("Ask again", true, v -> talk());
-                button("Done", false, v -> render());
+                TextView mute = button(voice.on() ? "Voice off" : "Voice on", false, null);
+                mute.setOnClickListener(v -> {
+                    voice.setOn(!voice.on());
+                    mute.setText(voice.on() ? "Voice off" : "Voice on");
+                });
+                button("Done", false, v -> { voice.stop(); render(); });
             });
         });
     }

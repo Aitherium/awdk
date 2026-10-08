@@ -71,13 +71,14 @@ public class TalkCheck {
         eq("no sentence cut at a word", w.endsWith("word… the rest is on screen."), true);
 
         // recognizer errors read as words, never a bare code for the common ones
-        for (int code : new int[] {3, 6, 7, 8, 9, 12, Talk.ERROR_LANGUAGE_UNAVAILABLE}) {
+        for (int code : new int[] {3, 5, 6, 7, 8, 9, 11, 12, Talk.ERROR_LANGUAGE_UNAVAILABLE}) {
             if (Talk.errorText(code).contains("(" + code + ")")) {
                 System.out.println("FAIL error " + code + " has no words");
                 bad++;
             }
         }
-        eq("other error", Talk.errorText(5).contains("(5)"), true);
+        eq("silence (5) is friendly", Talk.errorText(5), Talk.NO_HEAR);
+        eq("no code ever", Talk.errorText(99).matches(".*[0-9].*"), false);
 
         System.out.println(bad == 0 ? "OK" : bad + " FAILED");
         System.exit(bad == 0 ? 0 : 1);

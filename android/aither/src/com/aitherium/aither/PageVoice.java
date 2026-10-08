@@ -9,6 +9,8 @@ import android.os.Bundle;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
@@ -27,6 +29,10 @@ import java.util.Locale;
  *
  * Nothing is recorded or kept; the words go only to the page that asked. Only aitherium.com
  * pages load in this app (MainActivity), so only they can ask.
+ *
+ * It also SPEAKS for pages (the WebView has no speechSynthesis): speak(text, id) reads the
+ * text with the phone's TextToSpeech and answers {type:"spoken"|"speak-error", id}. Pages
+ * try Aither's own server voice first (lib/tts.ts); this is the voice when that cannot play.
  */
 final class PageVoice {
     static final int ASK_MIC = 41;
@@ -37,6 +43,9 @@ final class PageVoice {
     private SpeechRecognizer recognizer;
     private WebView asker;
     private boolean pending; // listen() waiting for the microphone permission
+    private TextToSpeech voice;
+    private boolean voiceReady;
+    private String[] waiting; // {text, id} spoken once the engine is ready
 
     private PageVoice(Activity a) { act = a; }
 
@@ -75,6 +84,40 @@ final class PageVoice {
 
     void destroy() {
         if (recognizer != null) { recognizer.destroy(); recognizer = null; }
+        if (voice != null) { voice.stop(); voice.shutdown(); voice = null; voiceReady = false; }
+    }
+
+    /** Speak for a page with the phone's own voice; the page hears back by utterance id. */
+    void speak(WebView web, String text, String id) {
+        asker = web;
+        String said = Talk.spoken(text);
+        if (said.isEmpty()) { send("spoken", "", id); return; }
+        android.util.Log.i("AitherSpeak", said);
+        if (voice == null) {
+            waiting = new String[] {said, id};
+            voice = new TextToSpeech(act.getApplicationContext(), status -> act.runOnUiThread(() -> {
+                voiceReady = status == TextToSpeech.SUCCESS;
+                String[] w = waiting;
+                waiting = null;
+                if (!voiceReady) { if (w != null) send("speak-error", "This phone has no voice installed.", w[1]); return; }
+                voice.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override public void onStart(String u) {}
+                    @Override public void onDone(String u) { send("spoken", "", u); }
+                    @Override public void onStop(String u, boolean interrupted) { send("spoken", "", u); }
+                    @Override @SuppressWarnings("deprecation") public void onError(String u) { send("speak-error", "", u); }
+                    @Override public void onError(String u, int code) { send("speak-error", "", u); }
+                });
+                if (w != null) voice.speak(w[0], TextToSpeech.QUEUE_FLUSH, null, w[1]);
+            }));
+            return;
+        }
+        if (!voiceReady) { waiting = new String[] {said, id}; return; }
+        voice.speak(said, TextToSpeech.QUEUE_FLUSH, null, id);
+    }
+
+    void stopSpeaking() {
+        waiting = null;
+        if (voice != null && voiceReady) voice.stop();
     }
 
     private void start() {
@@ -93,12 +136,16 @@ final class PageVoice {
         send("listening", "");
     }
 
-    private void send(String type, String text) {
+    private void send(String type, String text) { send(type, text, null); }
+
+    private void send(String type, String text, String id) {
         WebView w = asker;
         if (w == null) return;
         String detail;
         try {
-            detail = new JSONObject().put("type", type).put("text", text == null ? "" : text).toString();
+            JSONObject d = new JSONObject().put("type", type).put("text", text == null ? "" : text);
+            if (id != null) d.put("id", id);
+            detail = d.toString();
         } catch (org.json.JSONException e) {
             return;
         }
@@ -157,6 +204,24 @@ final class PageVoice {
         @JavascriptInterface
         public void stop() {
             act.runOnUiThread(() -> PageVoice.of(act).stop());
+        }
+
+        /** True: this app speaks for pages with the phone's TextToSpeech (0.3.15+). */
+        @JavascriptInterface
+        public boolean canSpeak() { return true; }
+
+        /** Speak `text`; {type:"spoken"|"speak-error", id} comes back when it finishes. */
+        @JavascriptInterface
+        public void speak(String text, String id) {
+            String t = text == null ? "" : text;
+            String u = id == null ? "" : id;
+            act.runOnUiThread(() -> PageVoice.of(act).speak(web, t, u));
+        }
+
+        /** Stop speaking now (barge-in: the person tapped the mic). */
+        @JavascriptInterface
+        public void stopSpeaking() {
+            act.runOnUiThread(() -> PageVoice.of(act).stopSpeaking());
         }
     }
 }

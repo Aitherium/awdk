@@ -369,6 +369,7 @@ public class MainActivity extends Activity implements Shell.Host {
     @Override
     protected void onPause() {
         PageVoice.of(this).stop();
+        PageVoice.of(this).stopSpeaking(); // a reply never keeps talking after the app is left
         ticks.removeCallbacks(poll);
         CookieManager.getInstance().flush();
         super.onPause();

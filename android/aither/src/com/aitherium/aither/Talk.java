@@ -66,11 +66,15 @@ final class Talk {
     static final int ERROR_LANGUAGE_UNAVAILABLE = 13;
 
     /** A recognizer error (SpeechRecognizer.ERROR_* codes) in words for the person. */
+    /** What a person sees when nothing was heard (the same words as lib/native-voice.ts). */
+    static final String NO_HEAR = "I didn't hear anything. Tap the mic and try again.";
+
     static String errorText(int code) {
         switch (code) {
+            case 5: // ERROR_CLIENT: Google's on-device engine reports silence this way
             case 6: // ERROR_SPEECH_TIMEOUT
             case 7: // ERROR_NO_MATCH
-                return "I didn't catch that. Tap Talk and try again.";
+                return NO_HEAR;
             case 3: // ERROR_AUDIO
                 return "The microphone isn't working right now.";
             case 8: // ERROR_RECOGNIZER_BUSY
@@ -81,8 +85,9 @@ final class Talk {
                 return "This phone can't recognize your language on the device. Type instead.";
             case ERROR_LANGUAGE_UNAVAILABLE:
                 return "The phone is downloading its speech pack. Try again when it finishes.";
-            default: // network/server codes cannot happen on-device; anything else is the engine
-                return "Speech recognition stopped (" + code + "). Type instead.";
+            default: // network/server codes cannot happen on-device; anything else is the engine.
+                // Never a raw code: a person cannot act on "(11)".
+                return "Voice input stopped. Tap the mic and try again, or type instead.";
         }
     }
 }
