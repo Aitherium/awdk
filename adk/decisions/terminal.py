@@ -631,7 +631,10 @@ def live_tab_switch_probe() -> int:
     subprocess.Popen(  # noqa: S603 - fixed argv, no shell
         [wt, "-w", "0", "new-tab", "--title", scratch, "--suppressApplicationTitle",
          "cmd", "/c", "ping -n 20 127.0.0.1 >nul"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        # wt hosts the tab's cmd in its own pseudoconsole; this only stops the
+        # launcher itself from getting a flashing console of its own.
+        creationflags=_CREATE_NO_WINDOW)
     frame, index = _wait_for_tab(frames, scratch, 8.0)
     if not frame:
         print("live tab probe: no verdict — the scratch tab never appeared")
