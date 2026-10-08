@@ -47,6 +47,7 @@ final class Commands {
         VERBS.put("lend-on", via);
         VERBS.put("lend-off", none);
         VERBS.put("refresh-app", none);
+        VERBS.put("grants-refresh", none); // GrantsRefresh.java
         VERBS.put("update-model", none);
         VERBS.put("check-update", none);
         VERBS.put("update", none); // the adk name for the same thing: check, then prompt
@@ -165,6 +166,8 @@ final class Commands {
                 cfg.set("refresh_app", true);
                 out.put("state", "AitherOS reloads fresh the next time it is opened");
                 return true;
+            case "grants-refresh":
+                return GrantsRefresh.request(cfg, out);
             case "update-model":
                 return model(out);
             case "check-update":
