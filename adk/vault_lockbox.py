@@ -42,7 +42,9 @@ try:
     from adk._tls import tls_verify
 except Exception:  # pragma: no cover - standalone fallback
     def tls_verify():
-        return False
+        # Verify by default: a helper that failed to import is not a reason to trust
+        # any certificate the vault endpoint presents.
+        return True
 
 # Keychain service/account identifiers (namespaced so we never collide with
 # adk's own login token store).
@@ -135,6 +137,10 @@ def _paid_tier() -> bool:
 def remote_mode() -> tuple[bool, str]:
     """Return (use_live_vault, human_reason). Local-only unless operator or
     logged-in+subscribed."""
+    if (os.environ.get(AGENT_CREDENTIAL_ENV) or "").strip():
+        # An agent run reads the secrets its credential grants from the live vault;
+        # falling back to the local keyring would read the WRONG store in silence.
+        return True, "agent credential (scoped to its grants)"
     if _master_key():
         return True, "operator (vault master key on this machine)"
     if not _logged_in():
@@ -198,10 +204,22 @@ def _ensure_unlocked(now: float = 0.0) -> bool:
 
 # ── vault HTTP ───────────────────────────────────────────────────────────────
 
+#: A narrow, short-lived agent credential (POST /v1/agent-credentials). When set, it
+#: is the ONLY credential the vault client sends: an agent run never falls back to the
+#: master key or the owner's login, whatever else the environment holds.
+AGENT_CREDENTIAL_ENV = "AITHER_AGENT_CREDENTIAL"
+
+
 def _client():
     import httpx
-    key = _master_key()
     headers = {"Content-Type": "application/json"}
+    agent = (os.environ.get(AGENT_CREDENTIAL_ENV) or "").strip()
+    if agent:
+        headers["Authorization"] = f"Bearer {agent}"
+        return httpx.Client(
+            base_url=vault_url(), headers=headers, verify=tls_verify(), timeout=15,
+        )
+    key = _master_key()
     if key:
         # Operator path — the master key authorizes system-wide vault access.
         headers["X-API-Key"] = key
