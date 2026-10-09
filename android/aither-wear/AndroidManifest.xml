@@ -4,8 +4,8 @@
      phone/watch pair. Built by ../aither/build.py with the wear flag. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="7"
-    android:versionName="0.3.20">
+    android:versionCode="8"
+    android:versionName="0.3.21">
 
     <!-- Wear OS 3 (API 30) and up; Pixel Watch 4 ships Wear OS 6 (API 36) -->
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36" />
