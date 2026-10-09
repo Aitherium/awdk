@@ -1359,6 +1359,50 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 "scope": ["decisions:read", "decisions:write",
                           "sessions:read", "rooms:read"]}
 
+    # ── one-step pairing: the signed-in extension proves who it is ──────────────
+    # Same proof the awdk daemon takes (adk/browser_grant.verify_extension_grant):
+    # Identity signs {device, person, extension origin, nonce} with THIS device's
+    # command key, only for someone who may command it. No code and no card.
+    @app.get("/pair/challenge")
+    def pair_challenge(request: Request) -> dict[str, Any]:
+        _pair_gate(request)
+        from adk import browser_grant as _bg
+        from adk.fleet_enroll import _load_node_auth
+
+        node_id = str((_load_node_auth() or {}).get("node_id") or "")
+        if not node_id:
+            raise HTTPException(status_code=409, detail="this machine is not enrolled")
+        return {"nonce": _bg.new_nonce(), "node_id": node_id}
+
+    @app.post("/pair/grant")
+    async def pair_grant(request: Request) -> dict[str, Any]:
+        origin = _pair_gate(request)
+        from adk import browser_grant as _bg
+        from adk import node_commands as _nc
+        from adk.fleet_enroll import _load_node_auth
+
+        node_id = str((_load_node_auth() or {}).get("node_id") or "")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        grant = body.get("grant") if isinstance(body, dict) else None
+        key = _nc.load_key(node_id) if node_id else ""
+        why = _bg.verify_extension_grant(grant, origin=origin, node_id=node_id, key_hex=key)
+        if why:
+            raise HTTPException(status_code=401, detail=f"extension pairing refused: {why}")
+        ext_id = origin.rsplit("/", 1)[-1]
+        tok = mint_scoped_token(
+            f"awconnect:{ext_id}",
+            paths=_pairing.AWCONNECT_PATHS,
+            ttl_days=_pairing.AWCONNECT_TTL_DAYS,
+            plan="awconnect",
+            label=_pairing.LABEL,
+        )
+        return {"status": "approved", "token": tok,
+                "scope": ["decisions:read", "decisions:write",
+                          "sessions:read", "rooms:read"]}
+
     @app.post("/pair/approve")
     def pair_approve(body: PairApprove,
                      principal: Principal = Depends(_require_owner)) -> dict[str, Any]:

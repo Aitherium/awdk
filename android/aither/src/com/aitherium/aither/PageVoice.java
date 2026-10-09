@@ -9,8 +9,6 @@ import android.os.Bundle;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
-import android.speech.tts.TextToSpeech;
-import android.speech.tts.UtteranceProgressListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
@@ -33,9 +31,10 @@ import java.util.Locale;
  * Nothing is recorded or kept; the words go only to the page that asked. Only aitherium.com
  * pages load in this app (MainActivity), so only they can ask.
  *
- * It also SPEAKS for pages (the WebView has no speechSynthesis): speak(text, id) reads the
- * text with the phone's TextToSpeech and answers {type:"spoken"|"speak-error", id}. Pages
- * try Aither's own server voice first (lib/tts.ts); this is the voice when that cannot play.
+ * It does NOT speak for pages with the phone's TextToSpeech any more (owner, 2026-10-08: "NO
+ * FALLBACKS"): pages speak only in Aither's own server voice (lib/tts.ts plays it). canSpeak()
+ * is false and speak(text, id) answers {type:"speak-error", id} at once, so a page that
+ * still asks shows its text instead of hearing another voice.
  */
 final class PageVoice {
     static final int ASK_MIC = 41;
@@ -46,9 +45,6 @@ final class PageVoice {
     private SpeechRecognizer recognizer;
     private WebView asker;
     private boolean pending; // listen() waiting for the microphone permission
-    private TextToSpeech voice;
-    private boolean voiceReady;
-    private String[] waiting; // {text, id} spoken once the engine is ready
     private ServerEar server;
 
     private PageVoice(Activity a) { act = a; }
@@ -90,6 +86,11 @@ final class PageVoice {
 
     void listen(WebView web) {
         asker = web;
+        if (Calls.inCall(act)) { // never during a phone call (Calls)
+            send("error", "You're on a call. Aither listens again when it ends.");
+            send("end", "");
+            return;
+        }
         if (!available()) { send("error", Talk.errorText(12)); send("end", ""); return; }
         if (act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             pending = true;
@@ -115,41 +116,15 @@ final class PageVoice {
     void destroy() {
         if (server != null) server.cancel();
         if (recognizer != null) { recognizer.destroy(); recognizer = null; }
-        if (voice != null) { voice.stop(); voice.shutdown(); voice = null; voiceReady = false; }
     }
 
-    /** Speak for a page with the phone's own voice; the page hears back by utterance id. */
+    /** Never another voice: a page asking the phone to speak is told no (its text stays). */
     void speak(WebView web, String text, String id) {
         asker = web;
-        String said = Talk.spoken(text);
-        if (said.isEmpty()) { send("spoken", "", id); return; }
-        android.util.Log.i("AitherSpeak", said);
-        if (voice == null) {
-            waiting = new String[] {said, id};
-            voice = new TextToSpeech(act.getApplicationContext(), status -> act.runOnUiThread(() -> {
-                voiceReady = status == TextToSpeech.SUCCESS;
-                String[] w = waiting;
-                waiting = null;
-                if (!voiceReady) { if (w != null) send("speak-error", "This phone has no voice installed.", w[1]); return; }
-                voice.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                    @Override public void onStart(String u) {}
-                    @Override public void onDone(String u) { send("spoken", "", u); }
-                    @Override public void onStop(String u, boolean interrupted) { send("spoken", "", u); }
-                    @Override @SuppressWarnings("deprecation") public void onError(String u) { send("speak-error", "", u); }
-                    @Override public void onError(String u, int code) { send("speak-error", "", u); }
-                });
-                if (w != null) voice.speak(w[0], TextToSpeech.QUEUE_FLUSH, null, w[1]);
-            }));
-            return;
-        }
-        if (!voiceReady) { waiting = new String[] {said, id}; return; }
-        voice.speak(said, TextToSpeech.QUEUE_FLUSH, null, id);
+        send("speak-error", "Aither speaks only in its own voice.", id);
     }
 
-    void stopSpeaking() {
-        waiting = null;
-        if (voice != null && voiceReady) voice.stop();
-    }
+    void stopSpeaking() { /* nothing of ours is speaking */ }
 
     private void start() {
         if (!onDevice()) {
@@ -275,9 +250,9 @@ final class PageVoice {
             act.runOnUiThread(() -> PageVoice.of(act).stop());
         }
 
-        /** True: this app speaks for pages with the phone's TextToSpeech (0.3.15+). */
+        /** False: pages speak only in Aither's own voice (lib/tts.ts), never the phone's. */
         @JavascriptInterface
-        public boolean canSpeak() { return true; }
+        public boolean canSpeak() { return false; }
 
         /** Speak `text`; {type:"spoken"|"speak-error", id} comes back when it finishes. */
         @JavascriptInterface

@@ -40,6 +40,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from adk.config import load_saved_config, save_saved_config
+from adk.log_redact import redact_log_line
 
 # ── Provider-key store (replicated from cli.py to avoid importing the 9k-line
 #    CLI module into the server runtime — cli.py imports server.py, so importing
@@ -108,20 +109,9 @@ _CONFIG_ALLOWLIST = {
 # Keys whose VALUES must be masked when read back (never echo secrets).
 _SECRET_HINT = re.compile(r"(key|token|secret|password|bearer)", re.IGNORECASE)
 
-# Log-line scrubbing (Athena finding #4: log tail leaks the bearer).
-_LOG_REDACTIONS = [
-    (re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+"), "Bearer [REDACTED]"),
-    (re.compile(r"#k=[A-Za-z0-9._\-%]+"), "#k=[REDACTED]"),
-    (re.compile(r"\bsk-[A-Za-z0-9._\-]+"), "sk-[REDACTED]"),
-    (re.compile(r"\baither_sk_[A-Za-z0-9._\-]+"), "aither_sk_[REDACTED]"),
-    (re.compile(r"\b(?:ghp|ghs)_[A-Za-z0-9]+"), "[REDACTED]"),
-]
-
-
-def _redact_log_line(line: str) -> str:
-    for pat, repl in _LOG_REDACTIONS:
-        line = pat.sub(repl, line)
-    return line
+# Log-line scrubbing (the log tail must never leak the bearer). One shared set of
+# patterns with the device's appliance-log results: adk.log_redact.
+_redact_log_line = redact_log_line
 
 
 def _mask_config(cfg: dict) -> dict:

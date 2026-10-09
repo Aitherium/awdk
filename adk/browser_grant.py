@@ -29,8 +29,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from adk import node_commands
 
-__all__ = ["GRANT_FIELDS", "new_nonce", "verify_grant", "issue_token", "token_allows",
-           "TOKEN_TTL_S"]
+__all__ = ["GRANT_FIELDS", "new_nonce", "verify_grant", "verify_extension_grant",
+           "issue_token", "token_allows", "TOKEN_TTL_S", "EXTENSION_SCOPE"]
 
 GRANT_FIELDS = ("kind", "node_id", "tenant_id", "user_id", "origin", "nonce", "scope",
                 "issued_at", "expires_at")
@@ -69,6 +69,35 @@ def new_nonce(now: Optional[float] = None) -> str:
 def verify_grant(grant: Any, *, origin: str, node_id: str, key_hex: str,
                  now: Optional[float] = None) -> str:
     """'' when the grant is good (and its nonce is now spent); else the reason."""
+    return _verify(grant, origin=origin, node_id=node_id, key_hex=key_hex, now=now,
+                   origin_ok=bool(FIRST_PARTY_ORIGIN.match(origin or "")),
+                   scope_ok=lambda s: s in SCOPE_PATHS)
+
+
+#: The one scope an extension grant carries: the signed-in awconnect extension pairs
+#: with this machine's daemons in the same step as sign-in (the daemon then issues its
+#: own narrow extension token; this module never mints a browser token for it).
+EXTENSION_SCOPE = "extension"
+
+
+def verify_extension_grant(grant: Any, *, origin: str, node_id: str, key_hex: str,
+                           now: Optional[float] = None) -> str:
+    """'' when an Identity-signed grant proves the extension at ``origin`` is signed in
+    as someone who may command THIS device; else the reason. Only a first-party
+    awconnect origin (adk.extension_id) and only the ``extension`` scope qualify."""
+    try:
+        from adk.extension_id import allowed_extension_origins
+
+        allowed = set(allowed_extension_origins())
+    except Exception:  # noqa: BLE001 -- no allowlist, no extension grant
+        allowed = set()
+    return _verify(grant, origin=origin, node_id=node_id, key_hex=key_hex, now=now,
+                   origin_ok=origin in allowed,
+                   scope_ok=lambda s: s == EXTENSION_SCOPE)
+
+
+def _verify(grant: Any, *, origin: str, node_id: str, key_hex: str,
+            now: Optional[float], origin_ok: bool, scope_ok) -> str:
     if not isinstance(grant, dict):
         return "no grant"
     if not key_hex:
@@ -81,9 +110,9 @@ def verify_grant(grant: Any, *, origin: str, node_id: str, key_hex: str,
         return "not a browser grant"
     if grant.get("node_id") != node_id:
         return "grant is for another device"
-    if not FIRST_PARTY_ORIGIN.match(origin or "") or grant.get("origin") != origin:
+    if not origin_ok or grant.get("origin") != origin:
         return "origin does not match the grant"
-    if grant.get("scope") not in SCOPE_PATHS:
+    if not scope_ok(grant.get("scope")):
         return "unknown scope"
     t = time.time() if now is None else now
     try:

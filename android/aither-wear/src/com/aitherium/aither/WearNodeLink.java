@@ -58,6 +58,30 @@ final class WearNodeLink {
 
     boolean linked() { return !p.getString("node_id", "").isEmpty() && !p.getString("bearer", "").isEmpty(); }
 
+    static final long BEAT_EVERY_MS = 5 * 60 * 1000L;
+
+    /** Keep this watch visibly online in "my devices": Identity marks a node offline when it
+     *  stops checking in, and the watch used to check in only once, at join. Throttled to one
+     *  beat per BEAT_EVERY_MS; called from the app and the tile, off the main thread. */
+    void beatIfDue() {
+        if (!linked()) return;
+        long now = System.currentTimeMillis();
+        if (now - p.getLong("beat_at", 0) < BEAT_EVERY_MS) return;
+        p.edit().putLong("beat_at", now).apply();
+        new Thread(() -> {
+            try {
+                JSONObject beat = new JSONObject().put("node_id", p.getString("node_id", ""))
+                        .put("inference_ready", false).put("available_models", new org.json.JSONArray())
+                        .put("inference_kind", "none").put("reach_kind", "none");
+                Resp r = call("/v1/nodes/device/heartbeat", p.getString("bearer", ""), beat);
+                android.util.Log.i("AitherWearNode", "heartbeat " + r.code);
+                if (r.code != 200) p.edit().putLong("beat_at", 0).apply(); // try again next time
+            } catch (Exception e) {
+                p.edit().putLong("beat_at", 0).apply();
+            }
+        }, "wear-node-beat").start();
+    }
+
     /** This watch's node id: made once, kept (a re-join keeps the same device row). */
     String nodeId() {
         String id = p.getString("wanted_id", "");

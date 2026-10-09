@@ -19,6 +19,10 @@ final class AppTabs {
     static final String ORIGIN = "https://app.aitherium.com";
     static final String HOME = "home";
     static final String SETTINGS = "settings";
+    /** Home's two big buttons (Shell.entryButtons): the chat already listening, and the
+     *  live camera with voice (/talk; a child is never shown it without a guardian's switch). */
+    static final String TALK_PATH = "/chat?mode=talk";
+    static final String SHOW_ME_PATH = "/talk?mode=show";
 
     /** id, label, root path ("" = native), icon (Shell.iconRes: the app's glyph
      *  res/drawable/ic_app_*, "gear" = settings, "mark" = the Aither mark). */

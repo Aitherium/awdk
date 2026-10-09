@@ -29,7 +29,12 @@ public class MainActivity extends Activity implements Shell.Host {
 
     /** The native frame: bottom tabs (one WebView each), Home grid, top bars (Shell). */
     private Shell shell;
+    /** Every page WebView, so a call can tell each of them to stop listening (Calls). */
+    private final java.util.List<java.lang.ref.WeakReference<WebView>> webs = new java.util.ArrayList<>();
+    private Object callWatch;
     private Config cfg;
+    /** requestPermissions code for the live camera (the page retries after the answer). */
+    static final int ASK_CAMERA = 73;
     private volatile boolean checking;
     private long lastCheck;
 
@@ -76,6 +81,7 @@ public class MainActivity extends Activity implements Shell.Host {
     @Override
     public WebView newWeb() {
         WebView web = new WebView(this);
+        webs.add(new java.lang.ref.WeakReference<>(web));
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -109,20 +115,24 @@ public class MainActivity extends Activity implements Shell.Host {
             }
 
             /** The page's own voice stack (getUserMedia: on-device Whisper, then Aither's
-             *  recognizer) gets the mic ONLY on an https aitherium.com page, once the app holds
-             *  the mic permission (PageVoice.pageMayUseMic). */
+             *  recognizer) gets the mic, and the live camera gets the camera, ONLY on an https
+             *  aitherium.com page and only what the app itself holds (PageMedia). A camera
+             *  request before the app has CAMERA asks for it once; the page's next tap works. */
             @Override
             public void onPermissionRequest(android.webkit.PermissionRequest req) {
                 String origin = req.getOrigin() == null ? "" : req.getOrigin().toString();
-                boolean wantsMic = false;
-                for (String r : req.getResources()) {
-                    if (android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsMic = true;
+                boolean originOk = Hear.pageMayHear(origin);
+                // never during a phone call (Calls): a page loop must not hear the call
+                boolean mic = !Calls.inCall(MainActivity.this) && PageVoice.pageMayUseMic(MainActivity.this, origin);
+                boolean cam = checkSelfPermission(android.Manifest.permission.CAMERA)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                String[] wanted = req.getResources();
+                String[] grant = PageMedia.grants(wanted, originOk, mic, cam);
+                if (PageMedia.needsCameraPermission(wanted, originOk, cam)) {
+                    requestPermissions(new String[] {android.Manifest.permission.CAMERA}, ASK_CAMERA);
                 }
-                if (wantsMic && PageVoice.pageMayUseMic(MainActivity.this, origin)) {
-                    req.grant(new String[] {android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-                } else {
-                    req.deny();
-                }
+                if (grant.length > 0) req.grant(grant);
+                else req.deny();
             }
         });
         web.setWebViewClient(new WebViewClient() {
@@ -387,6 +397,8 @@ public class MainActivity extends Activity implements Shell.Host {
 
     @Override
     protected void onPause() {
+        Calls.unwatch(this, callWatch);
+        callWatch = null;
         PageVoice.of(this).stop();
         PageVoice.of(this).stopSpeaking(); // a reply never keeps talking after the app is left
         ticks.removeCallbacks(poll);
@@ -397,6 +409,7 @@ public class MainActivity extends Activity implements Shell.Host {
     @Override
     protected void onResume() {
         super.onResume();
+        if (callWatch == null) callWatch = Calls.watch(this, this::callChanged);
         if (freshIfAsked()) shell.reloadAll();
         readHousehold(false); // every open checks in, even on the native Home
         // after the pages restored their session into the cookie (a cold start writes it late)
@@ -404,6 +417,19 @@ public class MainActivity extends Activity implements Shell.Host {
         ticks.postDelayed(poll, 5000);
         // Family Shield: Android's one-time VPN prompt, once the guardian turned it on
         ShieldVpnService.askConsent(this, SHIELD_CONSENT);
+    }
+
+    /** A call started or ended: stop listening and speaking, and tell every page. */
+    private void callChanged(boolean active) {
+        if (active) {
+            PageVoice.of(this).stop();
+            PageVoice.of(this).stopSpeaking();
+        }
+        String js = "window.dispatchEvent(new CustomEvent('aither:call',{detail:{active:" + active + "}}))";
+        for (java.lang.ref.WeakReference<WebView> r : webs) {
+            WebView w = r.get();
+            if (w != null) try { w.evaluateJavascript(js, null); } catch (Exception e) { /* gone */ }
+        }
     }
 
     static final int SHIELD_CONSENT = 0x5e1d;

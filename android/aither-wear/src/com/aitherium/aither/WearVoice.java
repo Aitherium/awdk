@@ -4,8 +4,6 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
-import android.speech.tts.TextToSpeech;
-import android.speech.tts.UtteranceProgressListener;
 import android.util.Base64;
 
 import org.json.JSONObject;
@@ -29,24 +27,25 @@ import java.util.concurrent.TimeUnit;
  * the next one's while the current one plays, so speech follows the text by one synthesis
  * (about 1.5 s) instead of waiting for the whole answer. While a line plays, {@link Progress}
  * hears which character the voice has reached, so the screen lights the words as they are
- * said: by the audio clock for Aither's voice, by onRangeStart for the watch's own voice.
+ * said, by the audio clock.
  *
- * When Aither's voice cannot play a line (offline, refused, too slow), the watch's own
- * TextToSpeech reads that line and the rest of the answer. Talk.spoken rules (via WearFeed):
- * no "*actions*", emoji, code or links read out.
+ * ONLY Aither's voice, never another (owner, 2026-10-08: "NO FALLBACKS"). Lines are asked
+ * for as Ogg/Opus ({"format": "opus"}): the same voice in about a twelfth of the WAV's
+ * bytes, because a watch riding the phone's Bluetooth pulled 600 KB WAV lines slower than
+ * it could speak them, and 0.3.19-0.3.20 then handed the answer to Android's robotic
+ * voice. A line that cannot be fetched is tried once more; if it still fails the text
+ * stays on screen and Progress.unavailable() shows a small "voice unavailable" note.
+ * Talk.spoken rules (via WearFeed): no "*actions*", emoji, code or links read out.
  *
  * One switch, kept across launches: "voice" in the wear prefs (on unless turned off).
  *
- * Never silence (owner, 2026-10-08: "text pretty fast but then no audio at all"): every
- * failure is logged under AitherWearVoice with its cause (the /say status, a player
- * error, the watch's voice not ready); the watch's own voice is waited for (it can take
- * seconds to bind on a Pixel Watch) and re-created once if it never comes up; and audio
- * focus is asked for while an answer is spoken.
+ * Every failure is logged under AitherWearVoice with its cause (the /say status, a player
+ * error), and audio focus is asked for while an answer is spoken.
  */
 final class WearVoice {
     static final int LINE = 240; // Genesis PlatformSayRequest.text max_length
-    /** A line's audio that takes longer than this goes to the watch's own voice. */
-    static final long FETCH_WAIT_MS = 6000;
+    /** How long the player waits for a line's audio before asking for it once more. */
+    static final long FETCH_WAIT_MS = 12000;
     private static final String PREF = "voice";
     private static final String TAG = "AitherWearVoice";
 
@@ -58,6 +57,9 @@ final class WearVoice {
         void started();
         /** Everything queued has been said (or skipped). */
         void done();
+        /** A line could not be had in Aither's voice even on a second try: its text stays,
+         *  unspoken (never another voice). */
+        default void unavailable() {}
     }
 
     private static final class Line {
@@ -72,48 +74,15 @@ final class WearVoice {
     private final WearApi api;
     private final SharedPreferences p;
     private final ExecutorService fetcher = Executors.newFixedThreadPool(3);
-    private TextToSpeech tts;
-    private volatile boolean ttsReady;
     private volatile int gen;
     private volatile MediaPlayer playing;
     private volatile LinkedBlockingQueue<Line> queue;
-    private volatile boolean ownVoice; // Aither's voice failed this answer: the watch's reads the rest
 
     WearVoice(Context c, WearApi api) {
         ctx = c.getApplicationContext();
         this.api = api;
         p = ctx.getSharedPreferences("wear", Context.MODE_PRIVATE);
         migrate();
-        tts = newTts();
-    }
-
-    private TextToSpeech newTts() {
-        return new TextToSpeech(ctx, status -> {
-            ttsReady = status == TextToSpeech.SUCCESS;
-            if (!ttsReady) android.util.Log.w(TAG, "the watch's voice failed to start: " + status);
-        });
-    }
-
-    /** The watch's own voice, waiting up to {@code ms} for it to bind; re-created once. */
-    private TextToSpeech readyTts(long ms) {
-        long until = android.os.SystemClock.elapsedRealtime() + ms;
-        boolean remade = false;
-        while (!ttsReady) {
-            if (android.os.SystemClock.elapsedRealtime() > until) {
-                if (remade) {
-                    android.util.Log.w(TAG, "the watch's voice is not ready: nothing can be said");
-                    return null;
-                }
-                remade = true;
-                android.util.Log.w(TAG, "the watch's voice did not bind; starting it again");
-                TextToSpeech old = tts;
-                tts = newTts();
-                if (old != null) try { old.shutdown(); } catch (Exception e) { /* gone */ }
-                until = android.os.SystemClock.elapsedRealtime() + ms;
-            }
-            try { Thread.sleep(100); } catch (InterruptedException e) { return null; }
-        }
-        return tts;
     }
 
     private android.media.AudioFocusRequest focus;
@@ -170,7 +139,6 @@ final class WearVoice {
     void begin(Progress progress) {
         stop();
         int at = gen;
-        ownVoice = false;
         LinkedBlockingQueue<Line> q = new LinkedBlockingQueue<>();
         queue = q;
         new Thread(() -> run(at, q, progress), "wear-voice").start();
@@ -185,7 +153,7 @@ final class WearVoice {
             return;
         }
         int at = gen;
-        Future<byte[]> wav = ownVoice ? null : fetcher.submit(() -> at == gen ? fetch(s.say) : null);
+        Future<byte[]> wav = fetcher.submit(() -> at == gen ? fetch(s.say) : null);
         q.add(new Line(s, wav));
     }
 
@@ -207,13 +175,11 @@ final class WearVoice {
         MediaPlayer m = playing;
         playing = null;
         if (m != null) try { m.stop(); } catch (Exception e) { /* already done */ }
-        if (tts != null && ttsReady) tts.stop();
     }
 
     void shutdown() {
         stop();
         fetcher.shutdownNow();
-        if (tts != null) { tts.shutdown(); tts = null; }
     }
 
     private void run(int at, LinkedBlockingQueue<Line> q, Progress progress) {
@@ -225,8 +191,12 @@ final class WearVoice {
                 if (l == null || l == END || at != gen) break;
                 byte[] wav = null;
                 long waitFrom = android.os.SystemClock.elapsedRealtime();
-                if (l.wav != null && !ownVoice) {
+                if (l.wav != null) {
                     try { wav = l.wav.get(FETCH_WAIT_MS, TimeUnit.MILLISECONDS); } catch (Exception e) { wav = null; }
+                }
+                if (wav == null && at == gen) {
+                    android.util.Log.w(TAG, "a line's audio did not come; asking once more");
+                    wav = fetch(l.s.say);
                 }
                 if (at != gen) break;
                 if (first) { first = false; takeFocus(); progress.started(); }
@@ -238,9 +208,9 @@ final class WearVoice {
                         + " waited=" + waited + " played=" + (android.os.SystemClock.elapsedRealtime() - playFrom)
                         + " chars=" + l.s.say.length() + (q.isEmpty() ? " (caught up)" : ""));
                 if (!ok && at == gen) {
-                    if (!ownVoice) android.util.Log.i(TAG, "Aither's voice unavailable; the watch's own voice reads on");
-                    ownVoice = true;
-                    speakOwn(at, l.s, progress);
+                    android.util.Log.w(TAG, "Aither's voice unavailable for a line: its text stays, unspoken");
+                    progress.unavailable();
+                    progress.speaking(l.s, l.s.text.length());
                 }
             }
         } catch (InterruptedException e) {
@@ -254,7 +224,7 @@ final class WearVoice {
         try {
             String text = line.length() > LINE ? line.substring(0, LINE) : line;
             WearApi.Resp r = api.post("/api/genesis/voice-builds/platform-voice/say",
-                    new JSONObject().put("text", text), true, 15000);
+                    new JSONObject().put("text", text).put("format", "opus"), true, 15000);
             String b64 = r.code == 200 ? r.str("audio_base64") : "";
             if (b64.isEmpty()) {
                 android.util.Log.w(TAG, "Aither's voice refused a line: HTTP " + r.code + " "
@@ -270,7 +240,9 @@ final class WearVoice {
 
     /** Play one line to the end, lighting words by the audio clock. False when it could not play. */
     private boolean play(int at, byte[] wav, WearFeed.Sentence s, Progress progress) {
-        File f = new File(ctx.getCacheDir(), "aither-say.wav");
+        // Ogg/Opus starts "OggS", WAV "RIFF": name the file for what it is
+        boolean ogg = wav.length > 4 && wav[0] == 'O' && wav[1] == 'g' && wav[2] == 'g' && wav[3] == 'S';
+        File f = new File(ctx.getCacheDir(), ogg ? "aither-say.ogg" : "aither-say.wav");
         try (FileOutputStream o = new FileOutputStream(f)) {
             o.write(wav);
         } catch (Exception e) {
@@ -311,36 +283,5 @@ final class WearVoice {
             if (playing == m) playing = null;
             try { m.release(); } catch (Exception e) { /* released */ }
         }
-    }
-
-    /** The watch's own voice reads one line; onRangeStart lights the word being said. */
-    private void speakOwn(int at, WearFeed.Sentence s, Progress progress) {
-        TextToSpeech t = readyTts(5000);
-        if (t == null) return;
-        CountDownLatch done = new CountDownLatch(1);
-        String id = "wear-" + at + "-" + s.start;
-        t.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override public void onStart(String u) {}
-            @Override public void onDone(String u) { if (id.equals(u)) done.countDown(); }
-            @Override public void onError(String u) { if (id.equals(u)) done.countDown(); }
-            @Override public void onStop(String u, boolean interrupted) { if (id.equals(u)) done.countDown(); }
-            @Override public void onRangeStart(String u, int start, int end, int frame) {
-                // the range is in the SPOKEN text; map it onto the shown sentence by proportion
-                if (id.equals(u) && at == gen && !s.say.isEmpty()) {
-                    int shown = Math.round(s.text.length() * (end / (float) s.say.length()));
-                    progress.speaking(s, Math.min(s.text.length(), shown));
-                }
-            }
-        });
-        if (t.speak(s.say, TextToSpeech.QUEUE_ADD, null, id) != TextToSpeech.SUCCESS) {
-            android.util.Log.w(TAG, "the watch's voice refused a line");
-            return;
-        }
-        try {
-            done.await(Math.max(10, s.say.length() / 8), TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            return;
-        }
-        if (at == gen) progress.speaking(s, s.text.length());
     }
 }

@@ -161,3 +161,51 @@ def test_method_scoped_path_entries_fail_closed():
     assert not p.may_reach("/sessions/abc/input", "POST")
     assert not p.may_reach("/sessions", None)           # no method known -> refuse
     assert p.may_reach("/decisions/d-2345/answer", "POST")
+
+
+# --- one step: the signed-in extension pairs with an Identity grant -----------------
+
+KEY_HEX = "ab" * 32
+
+
+def _signed_grant(nonce, origin=PINNED, node="pc-1", scope="extension", key=KEY_HEX):
+    from adk import browser_grant, node_commands
+
+    t = int(time.time())
+    g = {"kind": "browser-grant/v1", "node_id": node, "tenant_id": "t", "user_id": "u",
+         "origin": origin, "nonce": nonce, "scope": scope, "issued_at": t,
+         "expires_at": t + 120}
+    g["sig"] = node_commands.sign(key, node_commands.canonical(g, browser_grant.GRANT_FIELDS))
+    return g
+
+
+@pytest.fixture
+def enrolled(env, monkeypatch):
+    import adk.fleet_enroll as fe
+    from adk import node_commands
+
+    monkeypatch.setattr(fe, "_load_node_auth", lambda: {"node_id": "pc-1"})
+    monkeypatch.setattr(node_commands, "load_key", lambda n: KEY_HEX if n == "pc-1" else "")
+    return env
+
+
+def test_a_signed_in_extension_pairs_with_the_harness_in_one_step(enrolled):
+    client, reg = enrolled
+    ch = client.get("/pair/challenge", headers={"origin": PINNED, **LOOP})
+    assert ch.status_code == 200, ch.text
+    r = client.post("/pair/grant", json={"grant": _signed_grant(ch.json()["nonce"])},
+                    headers={"origin": PINNED, **LOOP})
+    assert r.status_code == 200, r.text
+    tok = r.json()["token"]
+    # The scoped token reads decisions like a card-approved pairing would.
+    assert client.get("/decisions", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
+
+
+def test_the_harness_refuses_a_forged_or_foreign_grant(enrolled):
+    client, _ = enrolled
+    for kw in ({"key": "cd" * 32}, {"node": "other"}, {"scope": "node"}):
+        nonce = client.get("/pair/challenge", headers={"origin": PINNED, **LOOP}).json()["nonce"]
+        r = client.post("/pair/grant", json={"grant": _signed_grant(nonce, **kw)},
+                        headers={"origin": PINNED, **LOOP})
+        assert r.status_code == 401, kw
+    assert client.get("/pair/challenge", headers={"origin": OTHER, **LOOP}).status_code == 403

@@ -123,7 +123,7 @@ def test_wsl_reads_class_from_host_file(tmp_path, monkeypatch):
     f.write_text(json.dumps({"schema": 1, "host_machine_id": "ab" * 32, "node_class": "desktop"}))
     monkeypatch.setenv(hi.HOST_FILE_ENV, str(f))
     monkeypatch.setattr(dc, "is_wsl", lambda: True)
-    monkeypatch.setattr(dc.os, "name", "posix")
+    monkeypatch.setattr(dc, "os", _os_named("posix"))
     monkeypatch.setattr(dc.sys, "platform", "linux")
     assert dc.detect_node_class() == "desktop"
 
@@ -180,3 +180,20 @@ def test_nvidia_smi_fallback_finds_wsl_path(tmp_path):
     fake.chmod(0o755)
     assert setup_cli._nvidia_smi_fallback((str(tmp_path / "missing"), str(fake))) == str(fake)
     assert setup_cli._nvidia_smi_fallback((str(tmp_path / "missing"),)) is None
+
+
+def _os_named(name):
+    """A stand-in ``os`` that reports ``name``, for the module under test only.
+
+    Patching the real ``os.name`` changes it for the whole process: on 3.10 every
+    ``Path()`` built meanwhile -- pytest's own report formatting included -- picks the
+    wrong flavour and raises "cannot instantiate 'WindowsPath' on your system", which
+    crashed the ADK payload run with an INTERNALERROR (2026-10-08).
+    """
+    import os as _real_os
+    import types as _types
+
+    fake = _types.ModuleType("os")
+    fake.__dict__.update(_real_os.__dict__)
+    fake.name = name
+    return fake

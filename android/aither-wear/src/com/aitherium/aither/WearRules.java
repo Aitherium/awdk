@@ -136,6 +136,66 @@ final class WearRules {
         return !s.isEmpty() && BYE.matcher(s).matches();
     }
 
+    // ------------------------------------------------------------------ listening safety
+    // Owner, 2026-10-08: "what if alexander is talking on his phone". Same rules as Veil's
+    // lib/voice-loop.ts (addressedToAither, MAX_AUTO_RELISTENS) so the watch and the hub agree.
+
+    /** Re-opens of the mic without a tap before the conversation waits for one. */
+    static final int MAX_AUTO_RELISTENS = 3;
+
+    /** AudioManager modes that mean a call (ringing, cellular, VoIP, screening, redirect). */
+    static boolean inCallMode(int mode) {
+        return mode >= 1 && mode <= 6; // RINGTONE 1, IN_CALL 2, IN_COMMUNICATION 3, CALL_SCREENING 4, *_REDIRECT 5/6
+    }
+
+    /** May the mic re-open by itself? A child account only with the guardian's "handsfree" grant. */
+    static boolean mayLoop(boolean child, boolean handsFreeGranted) {
+        return !child || handsFreeGranted;
+    }
+
+    /** Is this profile a family child account (Identity metadata.account_type / guardian link)? */
+    static boolean isChildProfile(String accountType, String metaAccountType, String authMethod) {
+        return "child".equals(accountType) || "child".equals(metaAccountType) || "guardian_link".equals(authMethod);
+    }
+
+    private static final java.util.Set<String> REQUEST_START = new java.util.HashSet<>(java.util.Arrays.asList(
+            "what", "what's", "whats", "who", "who's", "whos", "how", "how's", "when", "where", "where's", "why",
+            "which", "is", "are", "am", "was", "can", "could", "would", "will", "should", "shall", "do", "does",
+            "did", "tell", "show", "play", "set", "remind", "open", "turn", "start", "give", "find", "search",
+            "look", "read", "help", "explain", "say", "make", "add", "call", "send", "check", "list", "repeat",
+            "again", "more", "next", "go", "translate", "spell", "define", "let", "let's", "lets", "i", "i'd",
+            "i'm", "my", "me", "please", "hey", "hi", "hello", "yes", "sure"));
+    private static final java.util.Set<String> LEAD_GLUE = new java.util.HashSet<>(java.util.Arrays.asList(
+            "and", "so", "also", "then", "ok", "okay", "um", "uh", "oh", "well", "but", "now", "alright"));
+    private static final java.util.Set<String> THIRD_PERSON = new java.util.HashSet<>(java.util.Arrays.asList(
+            "he", "he's", "hes", "she", "she's", "shes", "they", "they're", "theyre", "his", "her", "their",
+            "him", "them", "mom", "mum", "dad", "mommy", "daddy", "bro", "dude"));
+
+    /**
+     * On a mic the conversation re-opened BY ITSELF: does this turn speak TO Aither? A side
+     * conversation ("she said she's coming at five", "lol") is dropped and the loop ends. A turn
+     * the person started with a tap never goes through this.
+     */
+    static boolean addressedToAither(String heard) {
+        if (heard == null) return false;
+        String raw = heard.trim();
+        String[] w = raw.toLowerCase(java.util.Locale.ROOT).replace('’', '\'')
+                .replaceAll("[^a-z0-9' ]+", " ").trim().split("\\s+");
+        if (w.length == 0 || w[0].isEmpty()) return false;
+        for (String x : w) if (x.equals("aither") || x.equals("ether")) return true;
+        int i = 0;
+        while (i < w.length - 1 && LEAD_GLUE.contains(w[i])) i++;
+        String first = w[i];
+        if (THIRD_PERSON.contains(first)) return false;
+        boolean asksYou = false;
+        for (int k = 0; k < Math.min(6, w.length); k++) {
+            if (w[k].equals("you") || w[k].equals("your") || w[k].equals("you're") || w[k].equals("youre")) asksYou = true;
+        }
+        boolean question = raw.endsWith("?");
+        if (w.length - i < 2 && !question) return false;
+        return i > 0 || REQUEST_START.contains(first) || asksYou || question;
+    }
+
     /** "Let me check…": a first answer that promises more, so the turn is not over yet. */
     private static final java.util.regex.Pattern HOLDING = java.util.regex.Pattern.compile(
             "(?is)^ *(let me (check|look|see|think|find|pull)|one (moment|sec)|give me a (moment|sec)|hang on"
@@ -157,4 +217,19 @@ final class WearRules {
         if (closed) return true;
         return segmentsEnded > 0 && !segmentOpen && !holding(shown);
     }
+
+    /** The watch has no camera: a question that needs eyes ("what am I looking at", "read
+     *  this", "count these") goes to the owner's live phone camera when it is on. */
+    private static final java.util.regex.Pattern VISUAL = java.util.regex.Pattern.compile(
+            "\\b(look(ing)? at|see|seeing|in front of|read (this|that|it)|what('?s| is) (this|that)|"
+            + "count (these|those|them)|what colou?r|how many|which one|does this look)\\b",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    static boolean visualQuestion(String q) {
+        return q != null && VISUAL.matcher(q).find();
+    }
+
+    /** What the watch says when nothing can see for it. */
+    static final String NO_EYES = "I can't see from the watch. Turn on the live camera in Aither on "
+            + "your phone, then ask again.";
 }

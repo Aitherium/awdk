@@ -45,6 +45,14 @@ def _new_client(monkeypatch, tmp_path, **env):
     # The token file is HOME-based, not AITHER_HOME-based: pin it to the tmp dir
     # so a test can never read or rotate the real owner's credential.
     monkeypatch.setenv("AITHER_LOCAL_TOKEN_FILE", str(tmp_path / "daemon-token"))
+    # A pairing raises an owner card: keep it in a tmp store and never pop a window.
+    monkeypatch.setenv("AITHER_DECISIONS_DIR", str(tmp_path / "decisions"))
+    import adk.decisions.notify as notify_mod
+    import adk.decisions.store as store_mod
+
+    if hasattr(store_mod, "_STORE"):
+        monkeypatch.setattr(store_mod, "_STORE", None, raising=False)
+    monkeypatch.setattr(notify_mod, "notify", lambda *a, **k: None)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     agent = MagicMock(spec=AitherAgent)
@@ -294,3 +302,115 @@ def test_the_browser_and_extension_token_families_do_not_cross_scopes(daemon):
     assert daemon.get("/agents", headers=ph).status_code == 401
     assert daemon.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                        headers=ph).status_code == 401
+
+
+# --- the owner approves from a card (desk, phone, watch), not only a terminal --------
+
+def _card_for(started):
+    from adk.decisions.store import get_store
+
+    cards = [c for c in get_store().list() if started["code"] in (c.summary or "")]
+    assert len(cards) == 1, "a pairing raises exactly one owner card"
+    return cards[0]
+
+
+def test_a_pairing_raises_an_owner_card_with_the_code(daemon):
+    started = _start(daemon).json()
+    card = _card_for(started)
+    assert card.dedupe_key.startswith("awconnect-pair:"), "the harness owner-only guard keys on this"
+    assert card.default_key == "deny"
+    assert [o.key for o in card.options] == ["allow", "deny"]
+
+
+def test_allow_on_the_card_pairs_the_extension(daemon):
+    from adk.decisions.store import get_store
+
+    started = _start(daemon).json()
+    assert _poll(daemon, started["pair_id"]).json() == {"status": "pending"}
+    get_store().answer(_card_for(started).id, "allow", deliver=False)
+    done = _poll(daemon, started["pair_id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "approved" and done.json()["token"]
+
+
+def test_deny_on_the_card_refuses_the_extension(daemon):
+    from adk.decisions.store import get_store
+
+    started = _start(daemon).json()
+    get_store().answer(_card_for(started).id, "deny", deliver=False)
+    assert _poll(daemon, started["pair_id"]).status_code == 403
+
+
+# --- one step: the signed-in extension pairs with an Identity grant -----------------
+
+KEY_HEX = "ab" * 32
+
+
+def _signed_grant(nonce, origin=STORE, node="pc-1", scope="extension", key=KEY_HEX, ttl=120):
+    from adk import browser_grant, node_commands
+
+    t = int(time.time())
+    g = {"kind": "browser-grant/v1", "node_id": node, "tenant_id": "t", "user_id": "u",
+         "origin": origin, "nonce": nonce, "scope": scope,
+         "issued_at": t, "expires_at": t + ttl}
+    g["sig"] = node_commands.sign(key, node_commands.canonical(g, browser_grant.GRANT_FIELDS))
+    return g
+
+
+@pytest.fixture
+def enrolled(daemon, monkeypatch):
+    import adk.fleet_enroll as fe
+    from adk import node_commands
+
+    monkeypatch.setattr(fe, "_load_node_auth", lambda: {"node_id": "pc-1"})
+    monkeypatch.setattr(node_commands, "load_key", lambda node_id: KEY_HEX if node_id == "pc-1" else "")
+    return daemon
+
+
+def _challenge(c, origin=STORE):
+    return c.get("/local/extension-pair/challenge", headers={"origin": origin, **LOOP})
+
+
+def _grant(c, grant, origin=STORE):
+    return c.post("/local/extension-pair/grant", json={"grant": grant},
+                  headers={"origin": origin, **LOOP})
+
+
+def test_a_signed_in_extension_pairs_in_one_step(enrolled):
+    ch = _challenge(enrolled)
+    assert ch.status_code == 200, ch.text
+    assert ch.json()["node_id"] == "pc-1"
+    r = _grant(enrolled, _signed_grant(ch.json()["nonce"]))
+    assert r.status_code == 200, r.text
+    token = r.json()["token"]
+    # The same narrow token a card approval gives: it opens Local mode chat.
+    ok = enrolled.post("/chat/stream", json={"message": "hi"},
+                       headers={"Authorization": f"Bearer {token}", "origin": STORE, **LOOP})
+    assert ok.status_code != 401
+
+
+@pytest.mark.parametrize("why,grant_kw,origin", [
+    ("forged signature", {"key": "cd" * 32}, STORE),
+    ("another device", {"node": "someone-else"}, STORE),
+    ("a page scope", {"scope": "kvholder"}, STORE),
+    ("expired", {"ttl": -5}, STORE),
+    ("granted to the other extension id", {"origin": PINNED}, STORE),
+])
+def test_a_bad_grant_earns_nothing(enrolled, why, grant_kw, origin):
+    nonce = _challenge(enrolled, origin).json()["nonce"]
+    r = _grant(enrolled, _signed_grant(nonce, **grant_kw), origin=origin)
+    assert r.status_code == 401, why
+
+
+def test_a_grant_is_spent_once(enrolled):
+    nonce = _challenge(enrolled).json()["nonce"]
+    g = _signed_grant(nonce)
+    assert _grant(enrolled, g).status_code == 200
+    assert _grant(enrolled, g).status_code == 401
+
+
+def test_challenge_and_grant_answer_only_our_extension_on_loopback(enrolled):
+    assert _challenge(enrolled, OTHER).status_code == 403
+    assert enrolled.get("/local/extension-pair/challenge",
+                        headers={"origin": STORE, "host": "evil.example"}).status_code == 403
+    assert _grant(enrolled, {}, origin="https://app.aitherium.com").status_code == 403

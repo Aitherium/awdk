@@ -939,6 +939,14 @@ async def _heartbeat_beats(
                     hb["restartable_units"] = units
             except Exception as e:  # noqa: BLE001 -- the list never breaks a beat
                 log.debug("restartable_units failed: %s", e)
+            try:
+                from adk.node_commands import appliance_names
+
+                appliances = appliance_names()
+                if appliances:  # this host's registry; the server refuses a name off it
+                    hb["appliances"] = appliances
+            except Exception as e:  # noqa: BLE001 -- the registry never breaks a beat
+                log.debug("appliance_names failed: %s", e)
             resp = await client.post(f"{base}{beat_path}", json=hb, headers=headers)
             status = int(resp.status_code)
             if status == 200 and resp.json().get("status") == "unknown_node" and device:

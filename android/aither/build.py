@@ -305,6 +305,13 @@ def build(
     shutil.copy2(ENGINE, out / "assets" / "holder.js")
     manifest = store_manifest(out) if store else HERE / "AndroidManifest.xml"
     engine = HERE / "jniLibs" / "arm64-v8a" / "libllamaserver.so"
+    if keystore and not engine.exists():
+        # a RELEASE without the engine shipped 0.3.18-0.3.24 with no on-phone AI at all
+        # (measured 2026-10-08: "this build has no local model engine" on the tablet); the
+        # warning below was the only signal. No silent fallback: a release needs it.
+        raise SystemExit(
+            "build: release refused: no jniLibs/arm64-v8a/libllamaserver.so "
+            "(run build_llama.py first)")
     if engine.exists() and page_align(engine) < PAGE_ALIGN:
         raise SystemExit(
             f"build: {engine.name} LOAD segments are aligned to {page_align(engine)}, "

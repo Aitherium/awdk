@@ -105,6 +105,12 @@ final class FamilyNotices {
 
         Bridge(Activity a) { act = a; }
 
+        /** True while a phone call (ringing, cellular, VoIP) is going on: pages never listen then. */
+        @JavascriptInterface
+        public boolean inCall() {
+            return Calls.inCall(act);
+        }
+
         /** "granted", or "denied" when the app may not post notifications. */
         @JavascriptInterface
         public String notifications() {

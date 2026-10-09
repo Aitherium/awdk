@@ -11,8 +11,6 @@ import android.os.Looper;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
-import android.speech.tts.TextToSpeech;
-import android.speech.tts.Voice;
 import android.view.Gravity;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
@@ -23,7 +21,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.util.Locale;
-import java.util.Set;
 
 /**
  * Aither as the phone's assistant: what long-press power (or the assistant gesture) opens
@@ -78,9 +75,8 @@ public class AssistActivity extends Activity {
     private Config cfg;
     /** Made on the first Talk tap (after the microphone is granted), on-device only. */
     private SpeechRecognizer recognizer;
-    private TextToSpeech tts;
-    /** Set once TextToSpeech is up with a voice that needs no network. */
-    private boolean ttsReady;
+    /** Aither's own voice, never the phone's built-in TTS (owner: "NO FALLBACKS"). */
+    private AitherSay voice;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -129,7 +125,7 @@ public class AssistActivity extends Activity {
         speak.setChecked(cfg.assistSpeak());
         speak.setOnCheckedChangeListener((v, on) -> {
             cfg.set(Talk.PREF_SPEAK, on);
-            if (!on && tts != null) tts.stop();
+            if (!on && voice != null) voice.stop();
         });
         col.addView(speak);
         Button picture = new Button(this); // "what's in this picture?" (DescribeActivity)
@@ -156,8 +152,7 @@ public class AssistActivity extends Activity {
         } else {
             log.setText("Turn on \"Run Bonsai 1.7B here\" in Aither on this phone first.");
         }
-        tts = new TextToSpeech(this, status -> main.post(() ->
-                ttsReady = status == TextToSpeech.SUCCESS && localVoice()));
+        voice = new AitherSay(this);
         offerNano(col);
         askHanded();
     }
@@ -247,33 +242,16 @@ public class AssistActivity extends Activity {
                 Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this));
     }
 
-    /** Keep the answer on the phone: a voice that needs no network, or no speaking at all. */
-    private boolean localVoice() {
-        if (tts == null) return false;
-        Voice now = tts.getVoice();
-        if (now != null && !now.isNetworkConnectionRequired()) return true;
-        Locale want = now != null ? now.getLocale() : Locale.getDefault();
-        Set<Voice> all = tts.getVoices();
-        if (all == null) return false;
-        Voice pick = null;
-        for (Voice v : all) {
-            if (v.isNetworkConnectionRequired()
-                    || v.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
-                    || !v.getLocale().getLanguage().equals(want.getLanguage())) continue;
-            if (pick == null || v.getLocale().equals(want)) pick = v;
-        }
-        return pick != null && tts.setVoice(pick) == TextToSpeech.SUCCESS;
-    }
-
     private void say(String answer) {
-        if (tts == null || !ttsReady || !resumed || !speak.isChecked()) return;
+        if (voice == null || !resumed || !speak.isChecked()) return;
         String s = Talk.spoken(answer);
-        if (!s.isEmpty()) tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "aither-answer");
+        if (!s.isEmpty()) voice.speak(s, () -> main.post(() ->
+                log.append(" (Aither's voice is unavailable right now.)")));
     }
 
     /** The Talk button. The microphone is asked for here, on the first tap, never before. */
     private void talk() {
-        if (tts != null) tts.stop();
+        if (voice != null) voice.stop();
         if (!cfg.localAiBlocked().isEmpty()) { // became a child's phone while this stayed open
             mic.setVisibility(View.GONE);
             speak.setVisibility(View.GONE);
@@ -423,13 +401,13 @@ public class AssistActivity extends Activity {
             recognizer.cancel();
             doneListening();
         }
-        if (tts != null) tts.stop();
+        if (voice != null) voice.stop();
     }
 
     @Override
     protected void onDestroy() {
         if (recognizer != null) recognizer.destroy();
-        if (tts != null) tts.shutdown();
+        if (voice != null) voice.shutdown();
         super.onDestroy();
     }
 }

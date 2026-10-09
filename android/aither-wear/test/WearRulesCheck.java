@@ -125,6 +125,31 @@ public class WearRulesCheck {
         eq("promise waits", WearRules.turnOver(false, 1, false, "Let me check my memory…"), false);
         eq("nothing yet waits", WearRules.turnOver(false, 0, false, ""), false);
 
+        // listening safety: calls, side conversations, the re-open cap, child push-to-talk
+        for (int mode = 1; mode <= 6; mode++) eq("call mode " + mode, WearRules.inCallMode(mode), true);
+        eq("normal mode", WearRules.inCallMode(0), false);
+        for (String to : new String[] {"what time is it", "and the day", "can you set a timer", "Aither lights off",
+                "tell me a joke", "is it raining?"}) {
+            eq("addressed: " + to, WearRules.addressedToAither(to), true);
+        }
+        for (String side : new String[] {"lol", "yeah", "he's so annoying", "mom can I go out", "they left already",
+                "and then she said no", "wait", ""}) {
+            eq("side talk: " + side, WearRules.addressedToAither(side), false);
+        }
+        eq("cap", WearRules.MAX_AUTO_RELISTENS, 3);
+        eq("adult loops", WearRules.mayLoop(false, false), true);
+        eq("child push-to-talk", WearRules.mayLoop(true, false), false);
+        eq("child with grant", WearRules.mayLoop(true, true), true);
+        eq("child profile", WearRules.isChildProfile("", "child", ""), true);
+        eq("guardian link", WearRules.isChildProfile("", "", "guardian_link"), true);
+        eq("adult profile", WearRules.isChildProfile("", "", "password"), false);
+
+        for (String v : new String[] {"What am I looking at?", "read this for me", "count these", "what colour is it"}) {
+            eq("visual: " + v, WearRules.visualQuestion(v), true);
+        }
+        for (String v : new String[] {"what time is it", "fleet status", "", "tell me a story"}) {
+            eq("not visual: " + v, WearRules.visualQuestion(v), false);
+        }
         System.out.println(bad == 0 ? "OK" : bad + " FAILED");
         System.exit(bad == 0 ? 0 : 1);
     }

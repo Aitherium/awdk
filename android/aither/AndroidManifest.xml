@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="24"
-    android:versionName="0.3.21">
+    android:versionCode="28"
+    android:versionName="0.3.25">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
 
@@ -25,6 +25,11 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <!-- Ask Aither's Talk button: asked for on its first tap; heard by the on-device recognizer only -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Live camera: asked for on the first tap of the camera button in a chat; frames go only
+         to the signed-in owner's live-vision session, are never stored, and stop when the
+         screen does. A child's phone needs a guardian's allow (Genesis refuses otherwise). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- Nearby devices (BlePair): Bluetooth only while that screen, or "Add this phone nearby",
          is open; never in the background, never for location. Android 12+ asks at runtime.
          Android 10/11 get the install-time pair for advertising only: scanning there would

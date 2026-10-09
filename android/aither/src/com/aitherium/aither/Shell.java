@@ -564,6 +564,7 @@ final class Shell {
         TextView sub = Ui.note(c, "Tap one to open it. The bar at the bottom takes you back.");
         sub.setPadding(0, Ui.dp(c, 8), 0, Ui.dp(c, 16));
         col.addView(sub);
+        if (!child) col.addView(entryButtons(c)); // a child's apps open on Learn: no Home grid
         String[][] apps = AppTabs.apps(child, owner, Flavor.STORE);
         int perRow = c.getResources().getConfiguration().screenWidthDp >= 600 ? 4 : 3;
         LinearLayout row = null;
@@ -582,6 +583,36 @@ final class Shell {
         }
         scroll.addView(col);
         return scroll;
+    }
+
+    /** The two things people came for, as big named buttons above the grid: Talk (the voice
+     *  conversation in Aither's chat) and Show me (the live camera with voice). */
+    private View entryButtons(Context c) {
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, 0, 0, Ui.dp(c, 12));
+        row.addView(entry(c, "Talk", "Speak with Aither", AppTabs.TALK_PATH), tileParams(c));
+        row.addView(entry(c, "Show me", "Camera + voice", AppTabs.SHOW_ME_PATH), tileParams(c));
+        return row;
+    }
+
+    private View entry(Context c, String label, String line, String path) {
+        LinearLayout b = new LinearLayout(c);
+        b.setOrientation(LinearLayout.VERTICAL);
+        b.setGravity(Gravity.CENTER);
+        b.setMinimumHeight(Ui.dp(c, 96));
+        b.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Ui.PRESS), Ui.round(c, 0x1A2AD7D7, Ui.RADIUS, Ui.ACCENT), null));
+        b.setContentDescription(label + ". " + line);
+        TextView name = Ui.text(c, label, 20, Ui.INK);
+        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        name.setGravity(Gravity.CENTER);
+        b.addView(name);
+        TextView sub = Ui.text(c, line, 13, Ui.DIM);
+        sub.setGravity(Gravity.CENTER);
+        b.addView(sub);
+        b.setOnClickListener(v -> show("aither", AppTabs.ORIGIN + path));
+        return b;
     }
 
     private static LinearLayout.LayoutParams tileParams(Context c) {

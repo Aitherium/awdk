@@ -356,6 +356,10 @@ final class WearApi {
                         java.util.function.BooleanSupplier alive) {
         String bearer = token();
         if (bearer.isEmpty()) return 401;
+        if (WearRules.visualQuestion(message)) {
+            int v = askCamera(bearer, message, to, alive);
+            if (v != -1) return v;
+        }
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(API + "/api/agent-chat").openConnection();
@@ -409,6 +413,64 @@ final class WearApi {
             return 200;
         } catch (Exception e) {
             return 0;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    /**
+     * A question that needs eyes, from a watch with no camera: the owner's OWN live phone
+     * camera answers it (Genesis /api/v1/vision/live/ask, which serves only a camera whose
+     * frames are still arriving: phone unlocked, screen on, opted in). 409 (no live camera)
+     * says so plainly. Returns the status, or -1 to ask the agent as usual instead.
+     */
+    private int askCamera(String bearer, String question, Stream to, java.util.function.BooleanSupplier alive) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(API + "/api/vision/live/ask").openConnection();
+            c.setRequestMethod("POST");
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(60000);
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "application/json");
+            c.setRequestProperty("Accept", "text/event-stream");
+            c.setRequestProperty("Origin", "https://aitherium.com");
+            c.setRequestProperty("Authorization", "Bearer " + bearer);
+            byte[] body = new JSONObject().put("question", question).toString().getBytes(StandardCharsets.UTF_8);
+            c.setFixedLengthStreamingMode(body.length);
+            try (OutputStream o = c.getOutputStream()) {
+                o.write(body);
+            }
+            int code = c.getResponseCode();
+            if (code == 409) {
+                to.segment("initial");
+                to.answer(WearRules.NO_EYES);
+                to.segmentEnd();
+                return 200;
+            }
+            if (code != 200) return -1;
+            StringBuilder said = new StringBuilder();
+            to.segment("initial");
+            try (java.io.BufferedReader in = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = in.readLine()) != null) {
+                    if (!alive.getAsBoolean()) break;
+                    if (!line.startsWith("data:")) continue;
+                    JSONObject e;
+                    try { e = new JSONObject(line.substring(5).trim()); } catch (Exception x) { continue; }
+                    if ("token".equals(e.optString("type"))) {
+                        String t = e.optString("text", "");
+                        said.append(t);
+                        to.token(t);
+                    }
+                }
+            }
+            to.segmentEnd();
+            if (said.length() > 0) to.answer(said.toString());
+            return 200;
+        } catch (Exception e) {
+            return -1;
         } finally {
             if (c != null) c.disconnect();
         }

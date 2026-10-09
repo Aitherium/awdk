@@ -1338,8 +1338,12 @@ def create_app(
     # band are the credentials -- so they pass the middleware and guard themselves.
     # approve/pending/revoke stay OUT of this set: they demand the owner's local
     # token at the route, in EVERY mode.
+    # challenge/grant are the one-step door: the SIGNED-IN extension proves, with an
+    # Identity grant signed by this device's own command key, that its account may
+    # command this machine -- no code, no card. They guard themselves the same way.
     _extension_pair_paths = frozenset({
-        "/local/extension-pair/start", "/local/extension-pair/poll"})
+        "/local/extension-pair/start", "/local/extension-pair/poll",
+        "/local/extension-pair/challenge", "/local/extension-pair/grant"})
 
     def _local_token_ok(request: Request) -> bool:
         return _local_auth.matches(_local_auth.presented(request.headers), _local_token)
@@ -2534,7 +2538,70 @@ def create_app(
             raise HTTPException(
                 status_code=429, detail="too many pending pairings; approve or wait")
         logger.info("extension pair: request from %s", origin)
+        _raise_extension_pair_card(started)
         return {**started, "command": f"adk awconnect pair approve {started['code']}"}
+
+    def _raise_extension_pair_card(started: dict) -> None:
+        """Tell the owner on every surface that shows cards (desk, phone, watch).
+
+        Without it, approving meant typing ``adk awconnect pair approve <code>`` in a
+        terminal. The card carries the same ``awconnect-pair:`` dedupe prefix the
+        harness pairing uses, so the harness answer route lets ONLY the owner answer
+        it -- a paired extension can never approve another (or itself). Failing to
+        raise a card never fails the pairing: the CLI still approves by code.
+        """
+        try:
+            from adk.decisions.store import (
+                DecisionCard,
+                DecisionOption,
+                DecisionSource,
+                get_store,
+            )
+
+            card = get_store().create(DecisionCard(
+                id="",
+                title="Allow awconnect to use awdk?",
+                summary=(f"The awconnect browser extension asks to use the awdk daemon "
+                         f"on this computer (Local mode chat and tools). Code "
+                         f"{started['code']}. Allow only if the extension shows the "
+                         f"same code."),
+                kind="decision",
+                urgency="high",
+                options=[DecisionOption(key="allow", label=f"Allow ({started['code']})"),
+                         DecisionOption(key="deny", label="Deny")],
+                default_key="deny",
+                facts=[f"code: {started['code']}",
+                       f"scope: {', '.join(sorted(_extension_pair.SCOPE))}"],
+                source=DecisionSource(agent="awconnect-pairing"),
+                dedupe_key=f"awconnect-pair:local:{started['pair_id']}",
+            ))
+            _extension_pair_book.attach_card(started["pair_id"], str(card.id or ""))
+            try:
+                from adk.decisions.notify import notify
+
+                notify(card)
+            except Exception as exc:  # noqa: BLE001 - the card is stored; the inbox shows it
+                logger.info("extension pair: card stored, notify failed (%s)",
+                            type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 - never fail the pairing on a card
+            logger.info("extension pair: card not raised (%s)", type(exc).__name__)
+
+    def _apply_extension_pair_card(entry: dict, pair_id: str) -> dict:
+        """Fold the owner's answer on the pairing card into the pairing book."""
+        if entry.get("status") != "pending" or not entry.get("card_id"):
+            return entry
+        try:
+            from adk.decisions.store import get_store
+
+            card = get_store().get(entry["card_id"])
+        except Exception:  # noqa: BLE001 - an unreadable card is "not answered yet"
+            return entry
+        answer = getattr(card, "answer", None) if card is not None else None
+        if answer == "allow":
+            _extension_pair_book.approve(entry["code"])
+        elif answer:
+            _extension_pair_book.deny(pair_id)
+        return _extension_pair_book.peek(pair_id) or entry
 
     @app.post("/local/extension-pair/poll")
     async def extension_pair_poll(request: Request):
@@ -2548,6 +2615,7 @@ def create_app(
         entry = _extension_pair_book.peek(pair_id)
         if not entry:
             raise HTTPException(status_code=410, detail="pairing expired or unknown")
+        entry = _apply_extension_pair_card(entry, pair_id)
         if entry["status"] == "denied":
             raise HTTPException(status_code=403, detail="pairing was denied")
         if entry["status"] != "approved":
@@ -2557,6 +2625,44 @@ def create_app(
             raise HTTPException(status_code=410, detail="pairing expired or unknown")
         token, ttl = _extension_pair.issue(origin=str(taken["origin"]))
         logger.info("extension pair: %s paired for %ds", taken["origin"], ttl)
+        return {"status": "approved", "token": token, "expires_in": ttl,
+                "scope": _extension_pair.SCOPE}
+
+    @app.get("/local/extension-pair/challenge")
+    async def extension_pair_challenge(request: Request):
+        """A one-time nonce for the signed-in extension to take to Identity."""
+        _extension_pair_gate(request)
+        from adk.fleet_enroll import _load_node_auth
+
+        node_id = str((_load_node_auth() or {}).get("node_id") or "")
+        if not node_id:
+            raise HTTPException(status_code=409, detail="this machine is not enrolled")
+        return {"nonce": _browser_grant.new_nonce(), "node_id": node_id}
+
+    @app.post("/local/extension-pair/grant")
+    async def extension_pair_grant(request: Request):
+        """Pair in the same step as sign-in: an Identity-signed ``extension`` grant for
+        THIS device, THIS extension origin and a nonce this daemon issued earns the same
+        narrow token an owner's approval does. Anything else is 401, never a token."""
+        origin = _extension_pair_gate(request)
+        from adk.fleet_enroll import _load_node_auth
+
+        node_id = str((_load_node_auth() or {}).get("node_id") or "")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        grant = body.get("grant") if isinstance(body, dict) else None
+        key = node_commands.load_key(node_id) if node_id else ""
+        if node_id and not key:
+            key = await asyncio.to_thread(_browser_grant_fetch_key, node_id)
+        why = _browser_grant.verify_extension_grant(
+            grant, origin=origin, node_id=node_id, key_hex=key)
+        if why:
+            logger.warning("extension grant refused for %s: %s", origin, why)
+            raise HTTPException(status_code=401, detail=f"extension pairing refused: {why}")
+        token, ttl = _extension_pair.issue(origin=origin)
+        logger.info("extension pair: %s paired by sign-in for %ds", origin, ttl)
         return {"status": "approved", "token": token, "expires_in": ttl,
                 "scope": _extension_pair.SCOPE}
 

@@ -64,7 +64,7 @@ public class WearActivity extends Activity {
     private boolean home = true;
     private boolean talkOnStart;
     private SpeechRecognizer recognizer;
-    /** Reads answers aloud in Aither's own voice (WearVoice); the watch's voice as fallback. */
+    /** Reads answers aloud in Aither's own voice (WearVoice), never another voice. */
     private WearVoice voice;
     /** When the last words were heard (elapsed ms), for the turn's timings. */
     private long heardAt;
@@ -84,6 +84,15 @@ public class WearActivity extends Activity {
     private long lastAudioAt;
     /** The last answer, kept small above the next "Listening…". */
     private String lastAnswer = "";
+    /** The open mic was re-opened by the conversation itself (not a tap): turns must be TO Aither. */
+    private boolean autoOpen;
+    /** Re-opens since the last tap (WearRules.MAX_AUTO_RELISTENS). */
+    private int autoTurns;
+    /** May the mic re-open by itself here? null until the profile is read; a child only with the
+     *  guardian's "handsfree" grant. Unknown counts as no (push-to-talk). */
+    private volatile Boolean loopAllowed;
+    /** Ends the conversation the moment a call (ringing, cellular, VoIP) starts. */
+    private Object modeListener;
     private final android.content.BroadcastReceiver screenOff = new android.content.BroadcastReceiver() {
         @Override public void onReceive(android.content.Context c, Intent i) {
             endConversation("screen off");
@@ -134,8 +143,11 @@ public class WearActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        new WearNodeLink(this).beatIfDue();
         resumed = true;
         work(api::renewIfDue); // keeps the 30-day sliding session alive (WearApi)
+        if (loopAllowed == null && !api.token().isEmpty()) work(this::readLoopPolicy);
+        watchCalls(true);
         scroll.requestFocus();
         if (talkOnStart && !api.token().isEmpty()) {
             talkOnStart = false;
@@ -149,6 +161,7 @@ public class WearActivity extends Activity {
     protected void onPause() {
         super.onPause();
         resumed = false;
+        watchCalls(false);
         // wrist down, a swipe away, another app: never keep listening (or talking) unseen
         endConversation("left the screen");
     }
@@ -640,6 +653,59 @@ public class WearActivity extends Activity {
 
     // ------------------------------------------------------------------ talk
 
+    // ------------------------------------------------------------------ listening safety
+
+    /** A call (ringing, cellular, VoIP) is active on this watch. */
+    private boolean inCall() {
+        android.media.AudioManager am = getSystemService(android.media.AudioManager.class);
+        return am != null && WearRules.inCallMode(am.getMode());
+    }
+
+    /** End the conversation the moment a call starts; never open the mic during one. */
+    private void watchCalls(boolean on) {
+        if (Build.VERSION.SDK_INT < 31) return;
+        android.media.AudioManager am = getSystemService(android.media.AudioManager.class);
+        if (am == null) return;
+        if (on && modeListener == null) {
+            android.media.AudioManager.OnModeChangedListener l = mode -> {
+                if (WearRules.inCallMode(mode)) runOnUiThread(() -> {
+                    if (!convo.isEmpty()) {
+                        endConversation("call");
+                        render();
+                    }
+                });
+            };
+            am.addOnModeChangedListener(getMainExecutor(), l);
+            modeListener = l;
+        } else if (!on && modeListener != null) {
+            am.removeOnModeChangedListener((android.media.AudioManager.OnModeChangedListener) modeListener);
+            modeListener = null;
+        }
+    }
+
+    /** A child account loops only with the guardian's "handsfree" grant; any fault: push-to-talk. */
+    private void readLoopPolicy() {
+        WearApi.Resp me = api.get("/api/profile", 15000);
+        if (me.code != 200 || me.json == null) return; // unknown: stays push-to-talk, read again next time
+        org.json.JSONObject meta = me.json.optJSONObject("metadata");
+        org.json.JSONObject user = me.json.optJSONObject("user");
+        org.json.JSONObject u = user != null ? user : me.json;
+        if (meta == null) meta = u.optJSONObject("metadata");
+        boolean child = WearRules.isChildProfile(u.optString("account_type", ""),
+                meta == null ? "" : meta.optString("account_type", ""), u.optString("auth_method", ""));
+        boolean granted = false;
+        if (child) {
+            WearApi.Resp apps = api.get("/api/tutor/me/apps", 15000);
+            org.json.JSONArray rows = apps.json == null ? null : apps.json.optJSONArray("apps");
+            for (int i = 0; rows != null && i < rows.length(); i++) {
+                org.json.JSONObject r = rows.optJSONObject(i);
+                if (r != null && "handsfree".equals(r.optString("app")) && "open".equals(r.optString("state"))) granted = true;
+            }
+        }
+        loopAllowed = WearRules.mayLoop(child, granted);
+        Log.i(LAT, "conversation loop " + (loopAllowed ? "on" : "off (child, push-to-talk)"));
+    }
+
     /** Start talking: a new conversation (the orb, the Talk tile, the launcher shortcut). */
     private void talk() {
         if (convo.isEmpty()) {
@@ -654,6 +720,16 @@ public class WearActivity extends Activity {
     /** Listen for the next turn; {@code followUp}: the mic re-opened by itself after an answer. */
     private void talk(boolean followUp) {
         voice.stop(); // barge-in: taking the mic silences the last answer
+        boolean auto = autoOpen;
+        autoOpen = false;
+        if (!auto) autoTurns = 0; // a tap is a fresh start
+        if (inCall()) {
+            endConversation("call");
+            int at = clear(false);
+            line("You're on a call. Talk to Aither when it ends.", 14, th.ink);
+            typed(at);
+            return;
+        }
         if (convo.isEmpty()) {
             talk();
             return;
@@ -672,7 +748,8 @@ public class WearActivity extends Activity {
             typed(at);
             return;
         }
-        if (onDeviceListening()) listen(at, heard); else listenAither(at, heard, followUp);
+        boolean self = auto;
+        if (onDeviceListening()) listen(at, heard, self); else listenAither(at, heard, followUp, self);
     }
 
     /** End the conversation: the mic closes, the voice stops, the next Talk starts fresh. */
@@ -687,6 +764,8 @@ public class WearActivity extends Activity {
         convo = "";
         turn = 0;
         lastAudioAt = 0;
+        autoOpen = false;
+        autoTurns = 0;
     }
 
     /** After an answer: listen again, but only while the conversation is on and the screen is seen. */
@@ -697,6 +776,23 @@ public class WearActivity extends Activity {
             endConversation("screen not on");
             return;
         }
+        if (inCall()) {
+            endConversation("call");
+            render();
+            return;
+        }
+        if (!Boolean.TRUE.equals(loopAllowed)) {
+            endConversation("push-to-talk");
+            render();
+            return;
+        }
+        if (autoTurns >= WearRules.MAX_AUTO_RELISTENS) {
+            endConversation("waits for a tap after " + autoTurns + " re-opens");
+            render();
+            return;
+        }
+        autoTurns++;
+        autoOpen = true;
         talk(true);
     }
 
@@ -714,7 +810,7 @@ public class WearActivity extends Activity {
      * No on-device recognizer (the Pixel Watch has none): record here, Aither's own
      * speech-to-text hears it (WearMic). Never Google's recognizer.
      */
-    private void listenAither(int at, TextView heard, boolean followUp) {
+    private void listenAither(int at, TextView heard, boolean followUp, boolean self) {
         heard.setText("Listening…");
         WearMic mic = new WearMic(followUp ? WearMicRules.FOLLOW_UP_NO_SPEECH_MS : WearMicRules.NO_SPEECH_MS);
         this.mic = mic;
@@ -779,6 +875,12 @@ public class WearActivity extends Activity {
                     render();
                     return;
                 }
+                if (self && !q.isEmpty() && !WearRules.addressedToAither(q)) {
+                    Log.i(LAT, "not addressed to Aither: dropped, conversation ended");
+                    endConversation("side conversation");
+                    render();
+                    return;
+                }
                 if (q.isEmpty()) {
                     heard.setText(err[0] == null ? "I didn't catch that. Tap Try again." : err[0]);
                     done.setVisibility(View.VISIBLE);
@@ -826,7 +928,7 @@ public class WearActivity extends Activity {
         });
     }
 
-    private void listen(int at, TextView heard) {
+    private void listen(int at, TextView heard, boolean self) {
         if (recognizer == null) recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
         heard.setText("Listening…");
         long[] endAt = {0};
@@ -850,6 +952,12 @@ public class WearActivity extends Activity {
                 if (endAt[0] > 0) Log.i(LAT, "recognized ms=" + (heardAt - endAt[0]) + " after end of speech");
                 if (WearRules.endsConversation(q)) {
                     endConversation("goodbye");
+                    render();
+                    return;
+                }
+                if (self && !WearRules.addressedToAither(q)) {
+                    Log.i(LAT, "not addressed to Aither: dropped, conversation ended");
+                    endConversation("side conversation");
                     render();
                     return;
                 }
@@ -945,6 +1053,13 @@ public class WearActivity extends Activity {
                     paint.run();
                 });
             }
+            boolean noted;
+            @Override public void unavailable() {
+                if (noted) return;
+                noted = true;
+                Log.w(LAT, "voice_unavailable ms=" + (SystemClock.elapsedRealtime() - t0));
+                onUi(at, () -> col.addView(line("Voice unavailable right now", 12, th.accent)));
+            }
             @Override public void started() {
                 t[2] = SystemClock.elapsedRealtime();
                 Log.i(LAT, "first_audio ms=" + (t[2] - t0) + " (after first sentence " + (t[1] > 0 ? t[2] - t[1] : -1) + ")");
@@ -1025,6 +1140,30 @@ public class WearActivity extends Activity {
         if (after[0] != null || at != screen) return;
         after[0] = button(convo.isEmpty() ? "Ask again" : "Talk", true, v -> talk(true));
         button("Done", false, v -> { endConversation("Done"); render(); });
+        if (!convo.isEmpty()) {
+            // continue this conversation on the phone, tablet or desktop: a notice to the
+            // owner's own inbox; a tap there opens it (Veil AitherChat ?session=)
+            final String sid = convo;
+            final String last = lastAnswer;
+            TextView[] hand = new TextView[1];
+            hand[0] = button("Continue on phone", false, v -> {
+                hand[0].setText("Sending…");
+                new Thread(() -> {
+                    int code = 0;
+                    try {
+                        org.json.JSONObject b = new org.json.JSONObject()
+                                .put("kind", "notice").put("audience", "self")
+                                .put("title", "Continue from your watch")
+                                .put("body", ApprovalCard.clip(last.isEmpty() ? "Tap to pick up where you left off." : last, 200))
+                                .put("url", "/?app=aitherchat&session=" + java.net.URLEncoder.encode(sid, "UTF-8"));
+                        code = api.post("/api/push/notify", b, true, 15000).code;
+                    } catch (Exception e) { code = 0; }
+                    final int c = code;
+                    Log.i(LAT, "handoff code=" + c);
+                    runOnUiThread(() -> hand[0].setText(c == 201 || c == 200 ? "Sent to your phone" : "Could not send"));
+                }, "wear-handoff").start();
+            });
+        }
     }
 
     /**

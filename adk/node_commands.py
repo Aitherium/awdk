@@ -12,6 +12,9 @@ whatever the server sent:
   THIS device, it has not expired, and its id has not been run before.
 * Results are signed with the same key, so Identity can tell a result from this
   device apart from anything else holding the owner's session.
+* The ``appliance-*`` verbs reach a tenant appliance this host deployed from its own
+  repo, by NAME only: the engine, container, repo dir and deploy script come from the
+  host's ``~/.aither/appliances.json``, which the repo's deploy script writes.
 
 The canonical bytes MUST match ``services/security/identity_node_commands.py``.
 """
@@ -33,7 +36,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 log = logging.getLogger("adk.node_commands")
 
 __all__ = ["VERBS", "VERSION_RE", "SIGNED_FIELDS", "RESULT_FIELDS", "canonical", "sign", "verify",
-           "load_key", "save_key", "run_commands", "sign_result"]
+           "load_key", "save_key", "run_commands", "sign_result", "load_appliances",
+           "appliance_names"]
 
 #: verb -> {argument: allowed values}. Keep in step with identity_node_commands.VERBS;
 #: a verb the server adds is refused here until this copy learns it.
@@ -57,6 +61,13 @@ VERBS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     # Never restarts anything itself: the owner follows with `restart-lane` for the
     # component's unit, so a bad release never takes the heartbeat down with it.
     "upgrade-component": {},
+    # A tenant appliance this host deployed with its repo's deploy/deploy.{ps1,sh} (the
+    # script registers it in ~/.aither/appliances.json). The ONLY argument is the
+    # appliance's name, checked against that host registry; every argv is built from
+    # the registry entry (engine, container, repo dir, script), never from the server.
+    "appliance-status": {},
+    "appliance-logs": {},
+    "appliance-redeploy": {},
 }
 #: Companion packages `upgrade-component` may install. Closed: a package not named
 #: here is refused here and in identity_node_commands.UPGRADE_COMPONENTS.
@@ -64,6 +75,9 @@ COMPONENTS: Tuple[str, ...] = ("awnode",)
 #: verb -> {argument: check}. An argument whose allowed values live on this host.
 _HOST_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "restart-lane": {"unit": lambda v: v in _restartable()},
+    "appliance-status": {"name": lambda v: v in appliance_names()},
+    "appliance-logs": {"name": lambda v: v in appliance_names()},
+    "appliance-redeploy": {"name": lambda v: v in appliance_names()},
 }
 #: An exact release: three dot-separated integers, nothing else (no specifier, no
 #: extra pip argument). Same rule as identity_node_commands.UPGRADE_VERSION_RE.
@@ -446,6 +460,546 @@ def _upgrade_component(args: Dict[str, str]) -> Dict[str, Any]:
             "restart": "send restart-lane for the component's unit to run the new code"}
 
 
+# ── appliances: tenant stacks this host deployed from their own repo ─────────
+#
+# A tenant repo's deploy/deploy.ps1 or deploy/deploy.sh, after a successful
+# ``compose up``, upserts one entry into ``~/.aither/appliances.json``:
+#
+#     {"appliances": {"acmebot": {"name": "acmebot", "repo_dir": "C:/Users/j/acme",
+#                                 "script": "deploy.ps1", "engine": "docker",
+#                                 "container": "acmebot"}}}
+#
+# The owner then names the appliance and nothing else. Every value that reaches an
+# argv comes from that host file and is re-validated on every read (an entry that
+# fails any rule is dropped as if absent), so a command never carries a path, an
+# engine, a container or a script of its own.
+
+#: An appliance name: the product slug the tenant repo was generated for.
+APPLIANCE_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,63}\Z")
+#: A container name. The first character is alphanumeric, so it can never be an option.
+APPLIANCE_CONTAINER_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+APPLIANCE_ENGINES: Tuple[str, ...] = ("docker", "podman")
+APPLIANCE_SCRIPTS: Tuple[str, ...] = ("deploy.ps1", "deploy.sh")
+MAX_APPLIANCES = 16
+APPLIANCE_LOG_LINES = 200
+#: Raw log bytes kept before the result is fitted into the channel (MAX_OUTPUT_CHARS).
+APPLIANCE_LOG_MAX_BYTES = 32 * 1024
+APPLIANCE_INSPECT_TIMEOUT_S = 30
+APPLIANCE_PULL_TIMEOUT_S = 180
+#: The detached deploy script gets this long before it is killed.
+APPLIANCE_DEPLOY_TIMEOUT_S = 3600
+_SHA_RE = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+_REDEPLOY_WORKER = "appliance-redeploy-worker"
+
+
+def _appliances_path() -> Path:
+    return _aither_dir() / "appliances.json"
+
+
+def _appliance_state_dir() -> Path:
+    return _aither_dir() / "appliances"
+
+
+def _appliance_problem(name: Any, entry: Any) -> str:
+    """'' when ``entry`` is a usable registry entry for ``name``; otherwise why not."""
+    if not isinstance(name, str) or not APPLIANCE_NAME_RE.match(name):
+        return "bad name"
+    if not isinstance(entry, dict):
+        return "entry is not an object"
+    if entry.get("name", name) != name:
+        return "entry names another appliance"
+    repo = entry.get("repo_dir")
+    if not isinstance(repo, str) or not repo or "\x00" in repo or len(repo) > 1024:
+        return "repo_dir is not a path string"
+    if repo.startswith(("\\\\", "//")):
+        return "repo_dir is a network path"
+    if not os.path.isabs(repo):
+        return "repo_dir is not absolute"
+    if not Path(repo).is_dir():
+        return "repo_dir does not exist"
+    if entry.get("engine") not in APPLIANCE_ENGINES:
+        return "engine is not docker or podman"
+    if entry.get("script") not in APPLIANCE_SCRIPTS:
+        return "script is not deploy.ps1 or deploy.sh"
+    container = entry.get("container")
+    if not isinstance(container, str) or not APPLIANCE_CONTAINER_RE.match(container):
+        return "container is not a container name"
+    return ""
+
+
+def load_appliances() -> Dict[str, Dict[str, str]]:
+    """name -> validated registry entry. Never raises; a bad entry is left out."""
+    try:
+        # utf-8-sig: a registry Windows PowerShell wrote may start with a BOM.
+        data = json.loads(_appliances_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    raw = data.get("appliances") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for name, entry in raw.items():
+        why = _appliance_problem(name, entry)
+        if why:
+            log.warning("appliance %r ignored: %s", str(name)[:64], why)
+            continue
+        out[name] = {"name": name, "repo_dir": str(Path(entry["repo_dir"]).resolve()),
+                     "script": entry["script"], "engine": entry["engine"],
+                     "container": entry["container"]}
+        if len(out) >= MAX_APPLIANCES:
+            break
+    return out
+
+
+def appliance_names() -> List[str]:
+    """The appliance names this host's registry holds (what the heartbeat publishes)."""
+    return sorted(load_appliances())
+
+
+def _no_window() -> int:
+    """No console window for a child on Windows (a console child opens a terminal tab)."""
+    import subprocess
+
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
+def _run_fixed(argv: List[str], timeout: float, *, env: Optional[Dict[str, str]] = None,
+               merge: bool = False) -> Tuple[Optional[int], str, str]:
+    """(rc, stdout, stderr) of a fixed argv -- never a shell, never raises. rc is None
+    (and stderr names the error) when it could not start or timed out. ``merge``
+    interleaves stderr into stdout."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT if merge else subprocess.PIPE,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout, check=False, env=env,
+                              creationflags=_no_window())
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+        return None, "", type(exc).__name__
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _git_env() -> Dict[str, str]:
+    """git that never waits on a person: no terminal prompt, no credential window."""
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+            "GIT_SSH_COMMAND": "ssh -o BatchMode=yes"}
+
+
+def _head_sha(git: str, repo: str) -> str:
+    rc, out, _err = _run_fixed([git, "-C", repo, "rev-parse", "HEAD"], 30, env=_git_env())
+    sha = out.strip()
+    return sha if rc == 0 and _SHA_RE.match(sha) else ""
+
+
+def _is_git_repo(repo: str) -> bool:
+    return (Path(repo) / ".git").exists()  # a dir, or a file in a linked worktree
+
+
+def _script_path(entry: Dict[str, str]) -> Optional[Path]:
+    """The registered deploy script inside ``repo_dir/deploy``, or None."""
+    repo = Path(entry["repo_dir"]).resolve()
+    script = (repo / "deploy" / entry["script"]).resolve()
+    try:
+        script.relative_to(repo)
+    except ValueError:
+        return None  # a symlink out of the repo is not this repo's script
+    return script if script.is_file() else None
+
+
+def _state_path(name: str) -> Path:
+    return _appliance_state_dir() / f"{name}.redeploy.json"
+
+
+def _log_path(name: str) -> Path:
+    return _appliance_state_dir() / f"{name}.redeploy.log"
+
+
+def _read_state(name: str) -> Dict[str, Any]:
+    try:
+        data = json.loads(_state_path(name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _private_state_dir() -> Path:
+    """``~/.aither/appliances``, created owner-only (0o700)."""
+    d = _appliance_state_dir()
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(d, 0o700)
+    return d
+
+
+def _open_private(path: Path) -> int:
+    """An fd for writing ``path`` (truncated), created 0o600 -- never wider, even
+    for a moment, and tightened if an older copy was wider."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                 | getattr(os, "O_BINARY", 0), 0o600)
+    if os.name != "nt":
+        os.fchmod(fd, 0o600)
+    return fd
+
+
+def _write_state(name: str, state: Dict[str, Any]) -> bool:
+    """Write the redeploy state owner-only (tmp + replace). False when it failed."""
+    try:
+        d = _private_state_dir()
+        tmp = d / f".{name}.redeploy.json.tmp"
+        with os.fdopen(_open_private(tmp), "w", encoding="utf-8") as f:
+            f.write(json.dumps(state))
+        os.replace(tmp, _state_path(name))
+        return True
+    except OSError as exc:
+        log.warning("appliance %s redeploy state not written: %s", name, exc)
+        return False
+
+
+def _pid_alive(pid: Any) -> bool:
+    """Is process ``pid`` running? Never signals it (on Windows ``os.kill`` would
+    TERMINATE it), so Windows asks the kernel for its exit code instead."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return bool(ok) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+def _kill_tree(proc: Any) -> str:
+    """Kill ``proc`` AND everything it started: the deploy script's own children
+    (compose, a build) would otherwise outlive the timeout. Returns how."""
+    import subprocess
+
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(int(proc.pid))],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=60, check=False,
+                           creationflags=_no_window())
+            how = "taskkill /T"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            how = f"taskkill failed ({type(exc).__name__})"
+    else:
+        import signal
+
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # the child leads its own session
+            how = "killpg"
+        except OSError as exc:
+            how = f"killpg failed ({type(exc).__name__})"
+    try:
+        proc.kill()
+        proc.wait(timeout=30)
+    except Exception as exc:  # noqa: BLE001 - already dead is the expected case
+        log.debug("deploy process reap after kill: %s", exc)
+    return how
+
+
+def _tail_text(text: str, max_bytes: int) -> str:
+    """The last ``max_bytes`` (UTF-8) of ``text``."""
+    raw = text.encode("utf-8", errors="replace")
+    return raw[-max_bytes:].decode("utf-8", errors="replace") if len(raw) > max_bytes else text
+
+
+def _fit(out: Dict[str, Any], key: str, budget: int = MAX_OUTPUT_CHARS - 200) -> Dict[str, Any]:
+    """Trim ``out[key]`` from the FRONT until ``out`` serialises within the channel's
+    budget, so the newest lines survive and the reported JSON stays whole."""
+    text = str(out.get(key) or "")
+    size = len(json.dumps(out, default=str))
+    while text and size > budget:
+        # Escaping makes a JSON char worth less than a text char; keep the same SHARE.
+        keep = int(len(text) * budget / size * 0.95)
+        text = text[-keep:] if keep > 0 else ""
+        out[key] = "...[truncated]\n" + text
+        size = len(json.dumps(out, default=str))
+    return out
+
+
+def _container_state(engine_exe: str, container: str) -> Dict[str, Any]:
+    rc, out, err = _run_fixed([engine_exe, "inspect", "--type", "container", container],
+                              APPLIANCE_INSPECT_TIMEOUT_S)
+    if rc != 0:
+        return {"found": False, "rc": rc, "error": (err or out).strip()[-300:]}
+    try:
+        info = json.loads(out)
+        info = info[0] if isinstance(info, list) and info else info
+        state = info.get("State") or {}
+        health = state.get("Health") or state.get("Healthcheck") or {}
+        return {"found": True, "status": state.get("Status"), "running": state.get("Running"),
+                "health": health.get("Status") if isinstance(health, dict) else None,
+                "exit_code": state.get("ExitCode"), "started_at": state.get("StartedAt"),
+                "restart_count": info.get("RestartCount"),
+                "image": (info.get("Config") or {}).get("Image")}
+    except (ValueError, AttributeError, TypeError) as exc:
+        return {"found": True, "error": f"unreadable inspect output ({type(exc).__name__})"}
+
+
+def _appliance(args: Dict[str, str]) -> Tuple[Optional[Dict[str, str]], str]:
+    """The registry entry the command names (re-read: it may have changed since verify)."""
+    entry = load_appliances().get(str(args.get("name") or ""))
+    return (entry, "") if entry else (None, "not an appliance in this host's registry")
+
+
+def _appliance_status(args: Dict[str, str]) -> Dict[str, Any]:
+    """Container state/health (``<engine> inspect``), the repo's HEAD commit and the
+    last redeploy's outcome. Never raises."""
+    import shutil
+
+    try:
+        entry, why = _appliance(args)
+        if entry is None:
+            return {"ok": False, "error": why}
+        out: Dict[str, Any] = {"name": entry["name"], "engine": entry["engine"],
+                               "container": entry["container"], "script": entry["script"]}
+        engine = shutil.which(entry["engine"])
+        out["container_state"] = (_container_state(engine, entry["container"]) if engine else
+                                  {"found": False, "error": f"{entry['engine']} not on PATH"})
+        git = shutil.which("git")
+        out["commit"] = _head_sha(git, entry["repo_dir"]) if git else ""
+        last = _read_state(entry["name"])
+        if last:
+            out["last_redeploy"] = last
+        out["ok"] = bool(out["container_state"].get("found"))
+        return out
+    except Exception as exc:  # noqa: BLE001 - a status call never raises
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _appliance_logs(args: Dict[str, str]) -> Dict[str, Any]:
+    """The last APPLIANCE_LOG_LINES lines of the appliance container's log. Never raises."""
+    import shutil
+
+    try:
+        entry, why = _appliance(args)
+        if entry is None:
+            return {"ok": False, "error": why}
+        engine = shutil.which(entry["engine"])
+        if not engine:
+            return {"ok": False, "error": f"{entry['engine']} not on PATH"}
+        rc, text, err = _run_fixed([engine, "logs", "--tail", str(APPLIANCE_LOG_LINES),
+                                    entry["container"]], APPLIANCE_INSPECT_TIMEOUT_S,
+                                   merge=True)
+        out: Dict[str, Any] = {"ok": rc == 0, "name": entry["name"],
+                               "container": entry["container"], "rc": rc,
+                               "logs": _redact(_tail_text(text or err,
+                                                          APPLIANCE_LOG_MAX_BYTES))}
+        return _fit(out, "logs")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _deploy_argv(entry: Dict[str, str], script: Path) -> Optional[List[str]]:
+    """The fixed argv that runs the registered deploy script, or None (no interpreter)."""
+    import shutil
+
+    if entry["script"] == "deploy.ps1":
+        shell = shutil.which("pwsh") or (shutil.which("powershell") if os.name == "nt" else None)
+        if not shell:
+            return None
+        argv = [shell, "-NoProfile", "-NonInteractive"]
+        if os.name == "nt":
+            argv += ["-ExecutionPolicy", "Bypass"]
+        return argv + ["-File", str(script)]
+    bash = _bash()
+    return [bash, str(script)] if bash else None
+
+
+def _bash() -> Optional[str]:
+    """bash for deploy.sh. On Windows, never System32's bash.exe: that is the WSL
+    launcher, which cannot see a Windows path (measured: "No such file or directory")
+    -- Git for Windows' bash, found next to git, is the one deploy.ps1 itself uses."""
+    import shutil
+
+    found = shutil.which("bash")
+    if os.name != "nt":
+        return found
+    if found and "\\windows\\" not in found.lower().replace("/", "\\"):
+        return found
+    git = shutil.which("git")
+    if git:
+        for cand in (Path(git).parent.parent / "bin" / "bash.exe",
+                     Path(git).parent.parent / "usr" / "bin" / "bash.exe"):
+            if cand.is_file():
+                return str(cand)
+    return None
+
+
+def _redact(text: str) -> str:
+    """Log text with credentials scrubbed (adk.log_redact, the admin API's patterns)."""
+    from adk.log_redact import redact_text
+
+    return redact_text(text)
+
+
+def _redeploy_running(name: str, now: float) -> bool:
+    """Is a redeploy of ``name`` still in flight? Its worker writes its pid into the
+    state file; a live pid inside the timeout window is running, a dead one is not
+    (the worker crashed). Before the worker has written its pid, the window alone."""
+    st = _read_state(name)
+    if st.get("state") != "running":
+        return False
+    try:
+        started = float(st.get("started_at") or 0)
+    except (TypeError, ValueError):
+        started = 0.0
+    if now - started >= APPLIANCE_DEPLOY_TIMEOUT_S + 300:
+        return False  # a pid this old may already belong to something else
+    pid = st.get("pid")
+    return _pid_alive(pid) if pid else True
+
+
+def _appliance_redeploy(args: Dict[str, str]) -> Dict[str, Any]:
+    """``git -C <repo> pull --ff-only``, then the registered deploy script, DETACHED.
+
+    The pull runs here and its exit code is in this result. The deploy (an image build
+    and a health wait: many minutes) must not hold the heartbeat that runs this, so it
+    starts in its own process, which records the script's exit code and log tail;
+    ``appliance-status`` reports them as ``last_redeploy``. Never raises.
+    """
+    import shutil
+    import subprocess
+
+    try:
+        entry, why = _appliance(args)
+        if entry is None:
+            return {"ok": False, "error": why}
+        name, repo = entry["name"], entry["repo_dir"]
+        if not _is_git_repo(repo):
+            return {"ok": False, "name": name, "error": "repo_dir is not a git repository"}
+        script = _script_path(entry)
+        if script is None:
+            return {"ok": False, "name": name,
+                    "error": f"deploy/{entry['script']} is missing from repo_dir"}
+        git = shutil.which("git")
+        if not git:
+            return {"ok": False, "name": name, "error": "git not on PATH"}
+        if _deploy_argv(entry, script) is None:
+            return {"ok": False, "name": name,
+                    "error": f"no interpreter for {entry['script']} on PATH"}
+        now = time.time()
+        if _redeploy_running(name, now):
+            return {"ok": False, "name": name, "error": "a redeploy is already running",
+                    "last_redeploy": _read_state(name)}
+        before = _head_sha(git, repo)
+        rc, out, err = _run_fixed([git, "-C", repo, "pull", "--ff-only"],
+                                  APPLIANCE_PULL_TIMEOUT_S, env=_git_env())
+        pull = {"rc": rc, "before": before, "after": _head_sha(git, repo),
+                "tail": _redact((out + err).strip()[-600:])}
+        if rc != 0:
+            return {"ok": False, "name": name, "pull": pull,
+                    "error": "git pull --ff-only failed; the deploy did not run"}
+        _write_state(name, {"state": "running", "started_at": int(now),
+                            "commit": pull["after"]})
+        kw: Dict[str, Any] = {}
+        if os.name == "nt":
+            kw["creationflags"] = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                                   | _no_window())
+        else:
+            kw["start_new_session"] = True
+        try:
+            # cwd is the aither dir, never the repo: `-m` puts the cwd on sys.path, and a
+            # repo carrying its own `adk/` would otherwise be imported in its place.
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "adk.node_commands", _REDEPLOY_WORKER, name],
+                cwd=str(_aither_dir()), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, close_fds=True, **kw)
+        except OSError as exc:
+            _write_state(name, {"state": "failed", "started_at": int(now), "rc": None,
+                                "error": type(exc).__name__})
+            return {"ok": False, "name": name, "pull": pull,
+                    "error": f"deploy could not start ({type(exc).__name__})"}
+        return {"ok": True, "name": name, "pull": pull,
+                "deploy": {"started": True, "pid": proc.pid, "script": entry["script"],
+                           "timeout_s": APPLIANCE_DEPLOY_TIMEOUT_S},
+                "note": "the deploy runs detached; appliance-status reports its exit code"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _redeploy_worker(name: str) -> int:
+    """The detached half of appliance-redeploy: run the registered script, record rc.
+
+    Started only by :func:`_appliance_redeploy` with a name that already passed the
+    registry; everything is re-validated here because the registry may have changed.
+    """
+    import subprocess
+
+    if not APPLIANCE_NAME_RE.match(name or ""):
+        return 2
+    started = int(time.time())
+    entry = load_appliances().get(name)
+    script = _script_path(entry) if entry else None
+    argv = _deploy_argv(entry, script) if entry and script else None
+    if entry is None or argv is None:
+        _write_state(name, {"state": "failed", "started_at": started, "rc": None,
+                            "error": "the appliance, its script or an interpreter is gone"})
+        return 2
+    env = {**os.environ, "CONTAINER_ENGINE": entry["engine"]}
+    rc: Optional[int] = None
+    error = ""
+    # The script leads its own process group / session, so a timeout kills IT and
+    # everything it started, never this worker.
+    kw: Dict[str, Any] = (
+        {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | _no_window()}
+        if os.name == "nt" else {"start_new_session": True})
+    try:
+        _private_state_dir()
+        with os.fdopen(_open_private(_log_path(name)), "w", encoding="utf-8",
+                       errors="replace") as logf:
+            try:
+                proc = subprocess.Popen(argv, cwd=entry["repo_dir"], env=env,
+                                        stdin=subprocess.DEVNULL, stdout=logf,
+                                        stderr=subprocess.STDOUT, **kw)
+            except OSError as exc:
+                error = type(exc).__name__
+            else:
+                _write_state(name, {"state": "running", "started_at": started,
+                                    "pid": os.getpid(), "script_pid": proc.pid})
+                try:
+                    rc = proc.wait(timeout=APPLIANCE_DEPLOY_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    error = f"timed out after {APPLIANCE_DEPLOY_TIMEOUT_S}s; {_kill_tree(proc)}"
+    except OSError as exc:
+        error = f"log not writable ({type(exc).__name__})"
+    try:
+        tail = _redact(_tail_text(
+            _log_path(name).read_text(encoding="utf-8", errors="replace"), 1500))
+    except OSError:
+        tail = ""
+    state: Dict[str, Any] = {"state": "done" if rc == 0 else "failed", "rc": rc,
+                             "started_at": started, "finished_at": int(time.time()),
+                             "tail": tail}
+    if error:
+        state["error"] = error
+    _write_state(name, state)
+    return 0 if rc == 0 else 1
+
+
 _HANDLERS: Dict[str, Callable[[Dict[str, str]], Any]] = {
     "collect-diagnostics": _diagnostics,
     "update": _update,
@@ -455,6 +1009,9 @@ _HANDLERS: Dict[str, Callable[[Dict[str, str]], Any]] = {
     "upgrade": _upgrade,
     "advertise-inference": _advertise_inference,
     "upgrade-component": _upgrade_component,
+    "appliance-status": _appliance_status,
+    "appliance-logs": _appliance_logs,
+    "appliance-redeploy": _appliance_redeploy,
 }
 
 
@@ -487,3 +1044,9 @@ def run_commands(cmds: Any, node_id: str, key_hex: str,
         results.append(sign_result(key_hex, {"id": cmd["id"], "node_id": node_id,
                                              "ok": ok, "output": text[:MAX_OUTPUT_CHARS]}))
     return results
+
+
+if __name__ == "__main__":  # the detached appliance-redeploy worker, and nothing else
+    if len(sys.argv) == 3 and sys.argv[1] == _REDEPLOY_WORKER:
+        sys.exit(_redeploy_worker(sys.argv[2]))
+    sys.exit(2)

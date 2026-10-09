@@ -6,6 +6,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ### Added
 
+- **Appliance commands on the signed device channel** -- `appliance-status`, `appliance-logs`
+  and `appliance-redeploy` let the account owner check, read the (redacted) logs of, and
+  redeploy a tenant appliance this machine deployed from its own repo. The appliance is
+  named only; engine, container, repo and script come from `~/.aither/appliances.json`,
+  which the repo's deploy script writes. No shell, no paths from the server.
+
 - **`adk sync packs`** -- one client that converges this machine onto the packs the
   signed-in account's workspace holds (agent, skill and tool packs and apps). It reads
   the workspaces, the link bundle, the workspace-scoped entitlements and the catalog
