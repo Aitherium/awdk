@@ -499,3 +499,32 @@ class TestExport:
     def test_graph_memory_in_adk(self):
         import adk
         assert hasattr(adk, "GraphMemory")
+
+
+# ─── Mesh proxy credentials ─────────────────────────────────────────────────
+
+class TestQdrantProxyHeaders:
+    """Through the mesh proxy a node proves who it is with its node bearer; the
+    node-id header alone is refused there. A direct Qdrant never gets a bearer."""
+
+    def test_proxy_route_sends_the_node_bearer(self, graph, monkeypatch):
+        monkeypatch.setenv("AITHER_MESH_NODE_ID", "ci-runner")
+        monkeypatch.setenv("AITHER_MESH_NODE_BEARER", "node-bearer-value")
+        graph._qdrant_url = "https://mesh.example:8125/proxy/qdrant"
+        hdr = graph._qdrant_headers()
+        assert hdr["X-Aither-Node-ID"] == "ci-runner"
+        assert hdr["Authorization"] == "Bearer node-bearer-value"
+
+    def test_direct_qdrant_gets_no_bearer(self, graph, monkeypatch):
+        monkeypatch.setenv("AITHER_MESH_NODE_ID", "ci-runner")
+        monkeypatch.setenv("AITHER_MESH_NODE_BEARER", "node-bearer-value")
+        graph._qdrant_url = "https://qdrant.example:6333"
+        assert "Authorization" not in graph._qdrant_headers()
+
+    def test_bearer_falls_back_to_enrollment(self, graph, monkeypatch):
+        monkeypatch.setenv("AITHER_MESH_NODE_ID", "ci-runner")
+        monkeypatch.delenv("AITHER_MESH_NODE_BEARER", raising=False)
+        monkeypatch.setattr("adk.fleet_enroll._load_node_auth",
+                            lambda: {"bearer_token": "enrolled-bearer"})
+        graph._qdrant_url = "https://mesh.example:8125/proxy/qdrant"
+        assert graph._qdrant_headers()["Authorization"] == "Bearer enrolled-bearer"

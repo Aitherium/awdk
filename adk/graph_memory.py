@@ -836,11 +836,29 @@ class GraphMemory:
         hdr = {"api-key": key} if key else {}
         # Routed through mesh-core's /proxy/qdrant (e.g. a tailnet-joined CI
         # runner with no public Qdrant route): the proxy authorizes callers by
-        # their registered mesh node identity, not a Qdrant api-key.
+        # their PROVEN mesh node identity -- the node's Identity
+        # bearer. The X-Aither-Node-ID header alone proves nothing and is refused.
         node_id = os.environ.get("AITHER_MESH_NODE_ID", "").strip()
         if node_id:
             hdr["X-Aither-Node-ID"] = node_id
+            bearer = self._mesh_node_bearer() if "/proxy/" in (self._qdrant_url or "") else ""
+            if bearer:
+                hdr["Authorization"] = f"Bearer {bearer}"
         return hdr
+
+    @staticmethod
+    def _mesh_node_bearer() -> str:
+        """The node's Identity bearer (endpoint:mesh): ``AITHER_MESH_NODE_BEARER``,
+        else the ``bearer_token`` enrollment saved in node_auth.json. "" if neither."""
+        env = os.environ.get("AITHER_MESH_NODE_BEARER", "").strip()
+        if env:
+            return env
+        try:
+            from adk.fleet_enroll import _load_node_auth
+
+            return str(_load_node_auth().get("bearer_token") or "").strip()
+        except Exception:  # noqa: BLE001 - no enrollment = no bearer, never a crash
+            return ""
 
     @staticmethod
     def _qdrant_verify():

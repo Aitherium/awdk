@@ -35,5 +35,5 @@ brain_pack.yaml
 
 ---
 
-sha256 `9b80f6e3fad7764029fa5c9e558300dad416a23f953093578898dedb805bf8fa`  
+sha256 `3d4a413de7f33853fec5b1d68f8050aeb23e7a25ec10c64fced908cfd87f3be4`  
 Built from `v3.8.65` (adk 3.8.65). [All packs](../packs.md)
