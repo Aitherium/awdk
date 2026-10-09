@@ -26,6 +26,16 @@ adk quickstart                                    # auto-detect hardware, set up
 adk init my-agent && cd my-agent && python agent.py
 ```
 
+The package is `awdk`; the command is `adk` (`awdk` is the same command, and
+`python -m adk` always works). **Windows, "adk is not recognized"?** pip put the
+command in a `Scripts` folder that is not on PATH — its warning names the folder.
+Add it once, then open a new terminal:
+
+```powershell
+$s = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+[Environment]::SetEnvironmentVariable('Path', "$([Environment]::GetEnvironmentVariable('Path','User'));$s", 'User')
+```
+
 ---
 
 ## Get running in 60 seconds — pick your path
