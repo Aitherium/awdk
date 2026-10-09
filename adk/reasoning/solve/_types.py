@@ -17,6 +17,7 @@ Stdlib only: ``state`` is typed ``Any`` so importing this module never pulls num
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -28,6 +29,18 @@ from typing import (
     Tuple,
     runtime_checkable,
 )
+
+#: Env vars a fleet host sets so every ``solve()`` run captures its episodes and books its
+#: predictions without each caller passing paths (``LoopConfig.harvest`` / ``.ledger``).
+HARVEST_ENV = "AITHER_SOLVE_HARVEST"
+LEDGER_ENV = "AITHER_SOLVE_LEDGER"
+
+
+def _env_path(name: str) -> Optional[str]:
+    """The env var's value, stripped; ``None`` when unset or blank (capture stays off)."""
+    v = os.environ.get(name, "").strip()
+    return v or None
+
 
 #: ``(action_id, x, y)``; ``x = y = -1`` when the action takes no coordinates.
 Action = Tuple[int, int, int]
@@ -226,7 +239,8 @@ class LoopConfig:
     #: Calibrated prediction ledger (``_ledger.py``): an awdecide SQLite path. Every
     #: scored prediction and the identity baseline on the same transition are booked
     #: with a Brier score; ``stats["ledger"]`` says which sources beat "nothing changes".
-    ledger: Optional[str] = None
+    #: Default: ``$AITHER_SOLVE_LEDGER`` when set, else ``None``.
+    ledger: Optional[str] = field(default_factory=lambda: _env_path(LEDGER_ENV))
     #: Context permission (``context.py``, ``_context_gate.py``): ``"off"`` | ``"shadow"``
     #: (record what the context WOULD refuse) | ``"enforce"``. plan() needs a predict rule
     #: replay-verified on ``context_level_support`` of THIS level's transitions.
@@ -238,8 +252,9 @@ class LoopConfig:
     #: Episode capture (``harvest.py``): a JSONL path; each run appends one record of
     #: every model call (context + decision + served model), the outcome, the verified
     #: hypotheses and provenance. Every reply must be served by the requested model
-    #: (a mismatch is FATAL). ``None`` = off.
-    harvest: Optional[str] = None
+    #: (a mismatch is FATAL). ``None`` = off. Default: ``$AITHER_SOLVE_HARVEST`` when
+    #: set, else ``None``.
+    harvest: Optional[str] = field(default_factory=lambda: _env_path(HARVEST_ENV))
     #: Decision door on PRISM's strategy pick (``_door.py``): the door chooses among the
     #: strategies ``permits()`` allows and learns from each strategy window's outcome;
     #: the scorer answers when the door is down. Off by default until measured.

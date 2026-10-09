@@ -1,6 +1,6 @@
 # BeadSpace
 
-`bead-space` · version `3.8.65` · 1.6 KB
+`bead-space` · version `3.8.65` · 1.5 KB
 
 **[Download bead-space-3.8.65.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.65/bead-space-3.8.65.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.65/bead-space-3.8.65.sha256)
 
@@ -35,5 +35,5 @@ brain_pack.yaml
 
 ---
 
-sha256 `01d5cb23461c6df1b26ef78d493d61acb390f33f597bfd9d1f94149cffb6c682`  
+sha256 `85f3c045bc87ea228132f037d1d15bd0be6433435ddab63c0423f657b8570d2b`  
 Built from `v3.8.65` (adk 3.8.65). [All packs](../packs.md)
