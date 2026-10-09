@@ -102,6 +102,9 @@ final class Config {
     boolean nanoPreferred() { return p.getBoolean("nano_preferred", false); } // opt-in (Settings)
     /** The owner said no to downloading Gemini Nano: do not offer it again. */
     boolean nanoDeclined() { return p.getBoolean("nano_declined", false); }
+    /** The owner said "Not now" to the picture model download (Vision): do not offer it again
+     *  until they turn it on in Settings. */
+    boolean visionDeclined() { return p.getBoolean("vision_declined", false); }
     /** Does Ask Aither read its answers aloud (on-device voice only; its own switch)? */
     boolean assistSpeak() { return p.getBoolean(Talk.PREF_SPEAK, true); }
 

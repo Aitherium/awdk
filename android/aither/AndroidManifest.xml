@@ -192,6 +192,30 @@
             </intent-filter>
         </activity>
 
+        <!-- "What's in this picture?": take, pick or share a picture; the model on this phone
+             looks at it (Vision), or Aither online on the owner's tap. A share only fills the
+             picture in; nothing is sent until the owner taps Ask. -->
+        <activity
+            android:name=".DescribeActivity"
+            android:label="What's in this picture?"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- the one file the camera app writes for DescribeActivity (granted per capture) -->
+        <provider
+            android:name=".ShotProvider"
+            android:authorities="com.aitherium.aither.shot"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <!-- measures the on-device agent; only adb can start it (DUMP), tools run dry -->
         <activity
             android:name=".EvalActivity"

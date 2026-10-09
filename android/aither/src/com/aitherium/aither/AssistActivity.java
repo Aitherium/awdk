@@ -132,6 +132,10 @@ public class AssistActivity extends Activity {
             if (!on && tts != null) tts.stop();
         });
         col.addView(speak);
+        Button picture = new Button(this); // "what's in this picture?" (DescribeActivity)
+        picture.setText("Ask about a picture");
+        picture.setOnClickListener(v -> startActivity(new Intent(this, DescribeActivity.class)));
+        col.addView(picture);
         Button report = new Button(this); // flag an answer (Google Play's generative-AI policy)
         report.setText("Report an answer");
         report.setOnClickListener(v -> Report.open(this, lastAnswer, "Ask Aither"));

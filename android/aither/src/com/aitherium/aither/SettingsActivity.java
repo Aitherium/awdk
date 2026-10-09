@@ -107,6 +107,11 @@ public class SettingsActivity extends Activity {
                 catch (RuntimeException e) { /* no browser */ }
             }), "Opens AitherOS in your browser, paired with this phone's model.");
             ai.addView(localStatus);
+            row(ai, toggleVision(), "SmolVLM 500M (" + Vision.sizeMb() + ", Apache-2.0), downloaded"
+                    + " when you ask about a picture. Off deletes it; pictures then go to Aither online.");
+            row(ai, Ui.action(this, "Ask about a picture", v ->
+                    startActivity(new Intent(this, DescribeActivity.class))),
+                    "Take or choose a picture and ask what is in it.");
             row(ai, toggle("Lend memory to my models", "enabled", cfg.enabled()),
                     "Your own models may keep part of their memory on this phone.");
             row(ai, toggle("Only while charging", "only_charging", cfg.onlyCharging()),
@@ -256,6 +261,18 @@ public class SettingsActivity extends Activity {
             Intent svc = new Intent(this, LlmService.class);
             if (checked) startForegroundService(svc);
             else stopService(svc);
+        });
+        return s;
+    }
+
+    /** The picture model (Vision): on = may be offered and kept; off = deleted, not offered. */
+    private View toggleVision() {
+        Switch s = Ui.style(new Switch(this));
+        s.setText("Look at pictures on this phone");
+        s.setChecked(!cfg.visionDeclined());
+        s.setOnCheckedChangeListener((v, checked) -> {
+            cfg.set("vision_declined", !checked);
+            if (!checked) new Thread(() -> VisionEngine.remove(this), "aither-vision-remove").start();
         });
         return s;
     }
