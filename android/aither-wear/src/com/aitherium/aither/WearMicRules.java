@@ -10,6 +10,8 @@ final class WearMicRules {
     static final int MAX_MS = 30000;
     /** Giving up when nobody speaks. */
     static final int NO_SPEECH_MS = 5000;
+    /** In a conversation, the quiet after an answer that ends it (owner, 2026-10-08: ~8 s). */
+    static final int FOLLOW_UP_NO_SPEECH_MS = 8000;
     /** Under this, a recording is not worth sending. */
     static final int MIN_MS = 400;
 
@@ -20,6 +22,12 @@ final class WearMicRules {
         private float floor = -1;
         private boolean speech;
         private int elapsed, quiet, voiced;
+        private final int noSpeechMs;
+
+        Endpoint() { this(NO_SPEECH_MS); }
+
+        /** {@code noSpeechMs}: how long to wait for the first word before giving up. */
+        Endpoint(int noSpeechMs) { this.noSpeechMs = noSpeechMs; }
 
         /** One frame of {@code ms}; true when recording should stop. */
         boolean frame(float rms, int ms) {
@@ -39,7 +47,7 @@ final class WearMicRules {
                 if (!speech) voiced = 0;
             }
             if (elapsed >= MAX_MS) return true;
-            if (!speech) return elapsed >= NO_SPEECH_MS;
+            if (!speech) return elapsed >= noSpeechMs;
             return quiet >= TRAILING_MS;
         }
 

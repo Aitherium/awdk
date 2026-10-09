@@ -119,4 +119,42 @@ final class WearRules {
     static boolean renewDue(long renewedAt, long now, long every) {
         return renewedAt <= 0 || now - renewedAt >= every || now < renewedAt;
     }
+
+    // ------------------------------------------------------------------ conversation
+
+    /** Words that end a conversation when they are the whole turn ("thanks", "that's all"). */
+    private static final java.util.regex.Pattern BYE = java.util.regex.Pattern.compile(
+            "^(ok(ay)?[ ,]+)?(stop|stop listening|cancel|never ?mind|thanks?|thank you|thanks a lot|thank you so much"
+            + "|that'?s all|that is all|that'?s it|i'?m done|we'?re done|done|goodbye|good ?bye|bye|bye bye|no thanks?)"
+            + "( aither)?$");
+
+    /** Does this heard turn end the conversation (instead of being asked)? */
+    static boolean endsConversation(String heard) {
+        if (heard == null) return false;
+        String s = heard.toLowerCase(java.util.Locale.ROOT).replace('’', '\'')
+                .replaceAll("[.!?,]+$", "").replaceAll("[.!?]", "").trim();
+        return !s.isEmpty() && BYE.matcher(s).matches();
+    }
+
+    /** "Let me check…": a first answer that promises more, so the turn is not over yet. */
+    private static final java.util.regex.Pattern HOLDING = java.util.regex.Pattern.compile(
+            "(?is)^ *(let me (check|look|see|think|find|pull)|one (moment|sec)|give me a (moment|sec)|hang on"
+            + "|checking|looking (that|it) up|just a (moment|sec)).*");
+
+    static boolean holding(String answer) {
+        if (answer == null) return false;
+        String s = answer.trim();
+        if (s.isEmpty()) return true;
+        return HOLDING.matcher(s).matches() && s.length() < 120
+                || s.endsWith("…") || s.endsWith("...");
+    }
+
+    /**
+     * Is this answer's turn over, so the watch can listen again? Yes when the stream closed, or
+     * when a segment has ended, none is open, and what was said does not promise more.
+     */
+    static boolean turnOver(boolean closed, int segmentsEnded, boolean segmentOpen, String shown) {
+        if (closed) return true;
+        return segmentsEnded > 0 && !segmentOpen && !holding(shown);
+    }
 }

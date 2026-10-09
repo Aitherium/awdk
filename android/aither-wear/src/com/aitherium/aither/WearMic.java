@@ -26,6 +26,8 @@ final class WearMic {
         void level(float v);
         /** Speech has ended; the audio is on its way to be heard. */
         void sending();
+        /** The microphone is recording (the earcon/haptic and the "listening" moment). */
+        default void open() {}
     }
 
     private volatile boolean stopped;
@@ -34,7 +36,18 @@ final class WearMic {
     /** Stopped by a tap (send now) rather than by the endpoint. */
     private volatile boolean tapped;
 
+    /** How long to wait for the first word (a follow-up in a conversation waits longer). */
+    private final int noSpeechMs;
+    private volatile boolean cancelled;
+
+    WearMic() { this(WearMicRules.NO_SPEECH_MS); }
+
+    WearMic(int noSpeechMs) { this.noSpeechMs = noSpeechMs; }
+
     void stop() { tapped = true; stopped = true; }
+
+    /** Stop and send nothing: the conversation ended (screen off, Done, left the app). */
+    void cancel() { cancelled = true; stopped = true; }
 
     /**
      * Record and transcribe (blocking; call off the UI thread). Returns the words, or "" with
@@ -44,8 +57,9 @@ final class WearMic {
         stopped = false;
         tapped = false;
         heardSpeech = false;
+        cancelled = false;
         byte[] pcm = record(l, err);
-        if (pcm == null) return "";
+        if (pcm == null || cancelled) return "";
         if (!heardSpeech && !tapped) return ""; // nobody spoke within NO_SPEECH_MS: close quietly
         if (!WearMicRules.worthSending(pcm.length, RATE)) {
             err[0] = "I didn't hear anything. Tap Try again.";
@@ -91,9 +105,10 @@ final class WearMic {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         short[] frame = new short[RATE / 50]; // 20 ms
         byte[] bytes = new byte[frame.length * 2];
-        WearMicRules.Endpoint ep = new WearMicRules.Endpoint();
+        WearMicRules.Endpoint ep = new WearMicRules.Endpoint(noSpeechMs);
         try {
             rec.startRecording();
+            l.open();
             while (!stopped) {
                 int n = rec.read(frame, 0, frame.length);
                 if (n <= 0) break;

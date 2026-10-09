@@ -107,6 +107,24 @@ public class WearRulesCheck {
         eq("old is due", WearRules.renewDue(10 * day, 11 * day, every), true);
         eq("clock went back is due", WearRules.renewDue(10 * day, 9 * day, every), true);
 
+        // a conversation ends on a bare goodbye, never on a question that mentions one
+        for (String bye : new String[] {"Thanks.", "thank you", "That's all", "that’s all.", "Stop", "ok thanks",
+                "Never mind", "goodbye Aither", "No thanks", "I'm done"}) {
+            eq("ends: " + bye, WearRules.endsConversation(bye), true);
+        }
+        for (String ask : new String[] {"Thanks, and what's the weather?", "stop the music in the kitchen",
+                "how do I say thanks in French", "", "done yet?"}) {
+            eq("keeps: " + ask, WearRules.endsConversation(ask), false);
+        }
+        eq("holding", WearRules.holding("Let me check my memory…"), true);
+        eq("holding dots", WearRules.holding("Looking that up..."), true);
+        eq("not holding", WearRules.holding("Mount Everest is 8,849 m tall."), false);
+        eq("closed is over", WearRules.turnOver(true, 0, false, ""), true);
+        eq("answered is over", WearRules.turnOver(false, 1, false, "It is 3 pm."), true);
+        eq("open segment waits", WearRules.turnOver(false, 1, true, "It is 3 pm."), false);
+        eq("promise waits", WearRules.turnOver(false, 1, false, "Let me check my memory…"), false);
+        eq("nothing yet waits", WearRules.turnOver(false, 0, false, ""), false);
+
         System.out.println(bad == 0 ? "OK" : bad + " FAILED");
         System.exit(bad == 0 ? 0 : 1);
     }

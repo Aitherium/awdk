@@ -70,12 +70,34 @@ public class WearActivity extends Activity {
     private long heardAt;
     /** When home was last drawn: a wrist raise within a minute keeps its scroll position. */
     private long homeAt;
+    /**
+     * The conversation going on ("" = none). Every turn carries it as the chat's session id,
+     * so a follow-up has the context; after each answer the mic opens again by itself until
+     * a goodbye, ~8 s of quiet, Done/back, leaving the app or the screen going off.
+     */
+    private String convo = "";
+    private int turn;
+    /** The recording in progress (to cancel it when the conversation ends). */
+    private volatile WearMic mic;
+    private boolean resumed;
+    /** When the last answer's voice finished (elapsed ms; 0 = none), for the mic-open gap. */
+    private long lastAudioAt;
+    /** The last answer, kept small above the next "Listening…". */
+    private String lastAnswer = "";
+    private final android.content.BroadcastReceiver screenOff = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context c, Intent i) {
+            endConversation("screen off");
+        }
+    };
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         api = new WearApi(this);
         voice = new WearVoice(this, api);
+        android.content.IntentFilter off = new android.content.IntentFilter(Intent.ACTION_SCREEN_OFF);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenOff, off, RECEIVER_NOT_EXPORTED);
+        else registerReceiver(screenOff, off);
         prefs = getSharedPreferences("wear", MODE_PRIVATE);
         th = WearTheme.load(this);
         scroll = new ScrollView(this);
@@ -112,6 +134,7 @@ public class WearActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         work(api::renewIfDue); // keeps the 30-day sliding session alive (WearApi)
         scroll.requestFocus();
         if (talkOnStart && !api.token().isEmpty()) {
@@ -123,7 +146,16 @@ public class WearActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        resumed = false;
+        // wrist down, a swipe away, another app: never keep listening (or talking) unseen
+        endConversation("left the screen");
+    }
+
+    @Override
     protected void onDestroy() {
+        try { unregisterReceiver(screenOff); } catch (Exception e) { /* not registered */ }
         if (recognizer != null) recognizer.destroy();
         if (voice != null) voice.shutdown();
         super.onDestroy();
@@ -134,8 +166,7 @@ public class WearActivity extends Activity {
         if (home) {
             super.onBackPressed();
         } else {
-            voice.stop();
-            if (recognizer != null) recognizer.cancel();
+            endConversation("back");
             render();
         }
     }
@@ -344,10 +375,17 @@ public class WearActivity extends Activity {
         who.setOnClickListener(v -> agents());
         who.setMinHeight(Ui.dp(this, 40));
         who.setGravity(Gravity.CENTER);
+        voiceOffNote("home");
 
         label("Quick asks");
         for (String[] q : WearApi.QUICK) {
-            button(q[0], false, v -> ask(q[1], q[2].isEmpty() ? agent() : q[2]));
+            button(q[0], false, v -> {
+                if (convo.isEmpty()) {
+                    convo = "wear-" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+                    turn = 0;
+                }
+                ask(q[1], q[2].isEmpty() ? agent() : q[2]);
+            });
         }
 
         label("Waiting for you");
@@ -374,26 +412,11 @@ public class WearActivity extends Activity {
             button("Add nearby (Bluetooth)", false, v -> startActivity(new Intent(this, WearBlePair.class)));
         }
 
-        label("Look");
-        button("Style: " + WearTheme.name(WearTheme.STYLES, WearTheme.STYLE_NAMES, th.style), false, v -> {
-            WearTheme.save(this, WearTheme.next(WearTheme.STYLES, th.style), th.accentName);
-            restyle();
-        });
-        button("Accent: " + WearTheme.name(WearTheme.ACCENTS, WearTheme.ACCENT_NAMES, th.accentName), false, v -> {
-            WearTheme.save(this, th.style, WearTheme.next(WearTheme.ACCENTS, th.accentName));
-            restyle();
-        });
-        TextView spoken = button(voice.on() ? "Spoken answers: on" : "Spoken answers: off", false, null);
-        spoken.setOnClickListener(v -> {
-            voice.setOn(!voice.on());
-            spoken.setText(voice.on() ? "Spoken answers: on" : "Spoken answers: off");
-        });
-        TextView out = Ui.text(this, "Sign out", 13, th.faint);
-        out.setGravity(Gravity.CENTER);
-        out.setPadding(0, Ui.dp(this, 16), 0, Ui.dp(this, 8));
-        out.setOnClickListener(v -> { api.signOut(); render(); });
-        col.addView(out, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+        // Look, spoken answers and sign-out live one screen down, each change behind a
+        // confirm: on 0.3.19 stray taps on the round edge turned the voice off and signed
+        // the watch out (owner, 2026-10-08).
+        label("Settings");
+        button("Settings  ›", false, v -> settings());
         work(() -> {
             int[] status = {0};
             Map<String, ApprovalCard> byId = api.inbox(status);
@@ -428,7 +451,58 @@ public class WearActivity extends Activity {
     private void restyle() {
         th = WearTheme.load(this);
         paint();
-        render();
+        settings();
+    }
+
+    /** "Voice off · tap to turn on", wherever an answer would be spoken, while it is off. */
+    private void voiceOffNote(String where) {
+        if (voice.on()) return;
+        TextView note = line("Voice off · tap to turn on", 12, th.accent);
+        note.setMinHeight(Ui.dp(this, 40));
+        note.setGravity(Gravity.CENTER);
+        note.setOnClickListener(v -> {
+            voice.setOn(true, where + " banner");
+            note.setVisibility(View.GONE);
+        });
+    }
+
+    /** Look, spoken answers and sign-out: one screen down from home, changes confirmed. */
+    private void settings() {
+        clear(false);
+        label("Look");
+        button("Style: " + WearTheme.name(WearTheme.STYLES, WearTheme.STYLE_NAMES, th.style), false, v -> {
+            WearTheme.save(this, WearTheme.next(WearTheme.STYLES, th.style), th.accentName);
+            restyle();
+        });
+        button("Accent: " + WearTheme.name(WearTheme.ACCENTS, WearTheme.ACCENT_NAMES, th.accentName), false, v -> {
+            WearTheme.save(this, th.style, WearTheme.next(WearTheme.ACCENTS, th.accentName));
+            restyle();
+        });
+        label("Voice");
+        button(voice.on() ? "Spoken answers: on" : "Spoken answers: off", false, v -> {
+            if (!voice.on()) {
+                voice.setOn(true, "settings");
+                settings();
+                return;
+            }
+            confirm("Turn off spoken answers?", "Answers will only show on screen.", "Turn off",
+                    () -> { voice.setOn(false, "settings (confirmed)"); settings(); });
+        });
+        label("Account");
+        button("Sign out", false, v -> confirm("Sign out of Aither on this watch?",
+                "You'll need your phone to sign in again.", "Sign out",
+                () -> { endConversation("sign out"); api.signOut("Sign out in Settings (confirmed)"); render(); }));
+        button("Back", false, v -> render());
+    }
+
+    /** One question, the action and Cancel (Cancel first: it is what a stray tap hits). */
+    private void confirm(String question, String detail, String action, Runnable yes) {
+        clear(false);
+        TextView q = line(question, 15, th.ink);
+        q.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        line(detail, 12, th.dim);
+        button("Cancel", true, v -> settings());
+        button(action, false, v -> yes.run());
     }
 
     /** Pick who answers: Aither by default, or one of the owner's agents. */
@@ -566,9 +640,29 @@ public class WearActivity extends Activity {
 
     // ------------------------------------------------------------------ talk
 
+    /** Start talking: a new conversation (the orb, the Talk tile, the launcher shortcut). */
     private void talk() {
+        if (convo.isEmpty()) {
+            convo = "wear-" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+            turn = 0;
+            lastAnswer = "";
+            Log.i(LAT, "conversation started");
+        }
+        talk(false);
+    }
+
+    /** Listen for the next turn; {@code followUp}: the mic re-opened by itself after an answer. */
+    private void talk(boolean followUp) {
         voice.stop(); // barge-in: taking the mic silences the last answer
+        if (convo.isEmpty()) {
+            talk();
+            return;
+        }
         int at = clear(false);
+        if (followUp && !lastAnswer.isEmpty()) {
+            TextView prev = line(ApprovalCard.clip(lastAnswer, 90), 11, th.faint);
+            prev.setMaxLines(2);
+        }
         TextView who = line(WearApi.agentName(agent()), 11, th.accent);
         who.setTypeface(Typeface.create("monospace", Typeface.NORMAL));
         TextView heard = line("", 15, th.ink);
@@ -578,22 +672,58 @@ public class WearActivity extends Activity {
             typed(at);
             return;
         }
-        if (onDeviceListening()) listen(at, heard); else listenAither(at, heard);
+        if (onDeviceListening()) listen(at, heard); else listenAither(at, heard, followUp);
+    }
+
+    /** End the conversation: the mic closes, the voice stops, the next Talk starts fresh. */
+    private void endConversation(String why) {
+        WearMic m = mic;
+        mic = null;
+        if (m != null) m.cancel();
+        if (recognizer != null) try { recognizer.cancel(); } catch (Exception e) { /* idle */ }
+        voice.stop();
+        if (convo.isEmpty()) return;
+        Log.i(LAT, "conversation ended: " + why + " after " + turn + " turn" + (turn == 1 ? "" : "s"));
+        convo = "";
+        turn = 0;
+        lastAudioAt = 0;
+    }
+
+    /** After an answer: listen again, but only while the conversation is on and the screen is seen. */
+    private void nextTurn(int at) {
+        if (at != screen || convo.isEmpty()) return;
+        android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
+        if (!resumed || (pm != null && !pm.isInteractive())) {
+            endConversation("screen not on");
+            return;
+        }
+        talk(true);
+    }
+
+    /** The mic is open: a short tick on the wrist, the moment to speak. */
+    private void micOpenCue() {
+        try {
+            android.os.Vibrator v = getSystemService(android.os.Vibrator.class);
+            if (v != null && v.hasVibrator()) {
+                v.vibrate(android.os.VibrationEffect.createOneShot(25, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+            }
+        } catch (Exception e) { /* no haptics: the "Listening…" on screen is the cue */ }
     }
 
     /**
      * No on-device recognizer (the Pixel Watch has none): record here, Aither's own
      * speech-to-text hears it (WearMic). Never Google's recognizer.
      */
-    private void listenAither(int at, TextView heard) {
+    private void listenAither(int at, TextView heard, boolean followUp) {
         heard.setText("Listening…");
-        WearMic mic = new WearMic();
+        WearMic mic = new WearMic(followUp ? WearMicRules.FOLLOW_UP_NO_SPEECH_MS : WearMicRules.NO_SPEECH_MS);
+        this.mic = mic;
         // Talk ends by itself on trailing quiet (WearMicRules); this is only a fallback
         TextView done = button("Tap to send now", false, v -> mic.stop());
         done.setTextSize(12);
         done.setMinHeight(Ui.dp(this, 40));
         button("Type instead", false, v -> {
-            mic.stop();
+            mic.cancel();
             int now = clear(false);
             line("Ask " + WearApi.agentName(agent()), 14, th.ink);
             typed(now);
@@ -625,13 +755,28 @@ public class WearActivity extends Activity {
                     endAt[0] = SystemClock.elapsedRealtime();
                     onUi(at, () -> { heard.setText("Hearing you…"); heard.setTextColor(th.dim); done.setVisibility(View.GONE); });
                 }
+                @Override public void open() {
+                    long open = SystemClock.elapsedRealtime();
+                    if (followUp && lastAudioAt > 0) {
+                        Log.i(LAT, "mic_open ms=" + (open - lastAudioAt) + " after last_audio (turn " + (turn + 1) + ")");
+                    }
+                    onUi(at, WearActivity.this::micOpenCue);
+                }
             }, err);
+            if (WearActivity.this.mic == mic) WearActivity.this.mic = null;
             long now = SystemClock.elapsedRealtime();
             if (endAt[0] > 0) Log.i(LAT, "recognized ms=" + (now - endAt[0]) + " after end of speech (aither stt)");
             onUi(at, () -> {
                 if (q.isEmpty() && err[0] == null && !mic.heardSpeech) {
                     Log.i(LAT, "no speech: closed quietly");
+                    endConversation(followUp ? "quiet after the answer" : "nobody spoke");
                     render(); // nobody spoke: back home, no error
+                    return;
+                }
+                if (WearRules.endsConversation(q)) {
+                    Log.i(LAT, "heard a goodbye: \"" + q + "\"");
+                    endConversation("goodbye");
+                    render();
                     return;
                 }
                 if (q.isEmpty()) {
@@ -670,14 +815,14 @@ public class WearActivity extends Activity {
         input.setImeOptions(EditorInfo.IME_ACTION_SEND);
         input.setOnEditorActionListener((v, id, ev) -> {
             String q = input.getText().toString().trim();
-            if (!q.isEmpty() && at == screen) { heardAt = SystemClock.elapsedRealtime(); ask(q, agent()); }
+            if (!q.isEmpty() && at == screen) { heardAt = SystemClock.elapsedRealtime(); ask(q, agent(), false); }
             return true;
         });
         col.addView(input, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         button("Ask", true, v -> {
             String q = input.getText().toString().trim();
-            if (!q.isEmpty()) { heardAt = SystemClock.elapsedRealtime(); ask(q, agent()); }
+            if (!q.isEmpty()) { heardAt = SystemClock.elapsedRealtime(); ask(q, agent(), false); }
         });
     }
 
@@ -703,6 +848,11 @@ public class WearActivity extends Activity {
                 }
                 heardAt = SystemClock.elapsedRealtime();
                 if (endAt[0] > 0) Log.i(LAT, "recognized ms=" + (heardAt - endAt[0]) + " after end of speech");
+                if (WearRules.endsConversation(q)) {
+                    endConversation("goodbye");
+                    render();
+                    return;
+                }
                 ask(q, agent());
             }
             @Override public void onPartialResults(Bundle r) {
@@ -745,8 +895,18 @@ public class WearActivity extends Activity {
      * spoken at once with its words lit as the voice reaches them.
      */
     private void ask(String q, String agentId) {
+        ask(q, agentId, true);
+    }
+
+    /**
+     * {@code listenAfter}: in a conversation, open the mic again once this answer has been
+     * said (a typed question does not: the person chose not to speak).
+     */
+    private void ask(String q, String agentId, boolean listenAfter) {
         voice.stop();
         int at = clear(false);
+        turn++;
+        String session = convo;
         if (heardAt == 0) heardAt = SystemClock.elapsedRealtime();
         long t0 = heardAt;
         heardAt = 0;
@@ -755,7 +915,20 @@ public class WearActivity extends Activity {
         line(q, 13, th.dim);
         TextView answer = line("…", 15, th.ink);
         answer.setGravity(Gravity.START);
+        // barge-in: a tap on the answer stops the voice and listens (same conversation)
+        answer.setOnClickListener(v -> { if (!convo.isEmpty()) talk(true); });
+        voiceOffNote("answer screen");
         WearFeed feed = new WearFeed();
+        // the turn is over (and the voice may finish) at a closed stream or an ended segment
+        // that does not promise more (WearRules.turnOver)
+        boolean[] closed = {false}, segOpen = {false}, finished = {false};
+        int[] segEnded = {0};
+        Runnable maybeFinish = () -> {
+            if (!finished[0] && WearRules.turnOver(closed[0], segEnded[0], segOpen[0], feed.text())) {
+                finished[0] = true;
+                voice.finish();
+            }
+        };
         boolean speaking = voice.on();
         // where the voice is: absolute characters in feed.text(), for this display generation
         int[] spokenTo = {0}, spokenGen = {0}, curStart = {0};
@@ -779,16 +952,25 @@ public class WearActivity extends Activity {
             @Override public void done() {
                 t[4] = SystemClock.elapsedRealtime();
                 Log.i(LAT, "last_audio ms=" + (t[4] - t0) + " (after last token " + (t[3] > 0 ? t[4] - t[3] : -1) + ")");
-                onUi(at, () -> { spokenTo[0] = feed.text().length(); spokenGen[0] = feed.gen(); paint.run(); });
+                lastAudioAt = t[4];
+                onUi(at, () -> {
+                    spokenTo[0] = feed.text().length();
+                    spokenGen[0] = feed.gen();
+                    paint.run();
+                    lastAnswer = feed.text().trim();
+                    if (!listenAfter || lastAnswer.isEmpty()) return;
+                    nextTurn(at);
+                });
             }
         });
         TextView[] after = new TextView[1];
         work(() -> {
-            Log.i(LAT, "ask agent=" + agentId + " chars=" + q.length());
+            Log.i(LAT, "ask agent=" + agentId + " chars=" + q.length() + " turn=" + turn
+                    + (session.isEmpty() ? "" : " (conversation)"));
             String[] err = {null};
-            int code = api.stream(q, agentId, new WearApi.Stream() {
+            int code = api.stream(q, agentId, session, new WearApi.Stream() {
                 @Override public void segment(String kind) {
-                    onUi(at, () -> { voice.addAll(feed.segment(kind)); paint.run(); });
+                    onUi(at, () -> { segOpen[0] = true; voice.addAll(feed.segment(kind)); paint.run(); });
                 }
                 @Override public void token(String text) {
                     long now = SystemClock.elapsedRealtime();
@@ -810,6 +992,9 @@ public class WearActivity extends Activity {
                         if (!done.isEmpty() && t[1] == 0) t[1] = SystemClock.elapsedRealtime();
                         voice.addAll(done);
                         paint.run();
+                        segOpen[0] = false;
+                        segEnded[0]++;
+                        maybeFinish.run();
                         showAfter(at, after);
                     });
                 }
@@ -821,7 +1006,8 @@ public class WearActivity extends Activity {
             Log.i(LAT, "stream_closed ms=" + (SystemClock.elapsedRealtime() - t0) + " code=" + code);
             onUi(at, () -> {
                 voice.addAll(feed.flush());
-                voice.finish();
+                closed[0] = true;
+                maybeFinish.run();
                 if (feed.text().trim().isEmpty()) {
                     answer.setText(code == 401 ? "Signed out. Sign in again."
                             : code == 0 ? "No connection."
@@ -837,8 +1023,8 @@ public class WearActivity extends Activity {
     /** The buttons under an answer, once (at the first segment end, or when the stream closes). */
     private void showAfter(int at, TextView[] after) {
         if (after[0] != null || at != screen) return;
-        after[0] = button("Ask again", true, v -> talk());
-        button("Done", false, v -> { voice.stop(); render(); });
+        after[0] = button(convo.isEmpty() ? "Ask again" : "Talk", true, v -> talk(true));
+        button("Done", false, v -> { endConversation("Done"); render(); });
     }
 
     /**

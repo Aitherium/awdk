@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Talk to Aither: asked for on the first Talk; heard by the on-device recognizer only -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- a short tick on the wrist when the mic re-opens for the next turn of a conversation -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Add to my devices (WearBlePair): the watch advertises and answers one phone over
          Bluetooth LE only while that screen is open; it never scans. Wear OS 4+ (API 33+)
          asks at runtime; Wear OS 3 (API 30) takes the install-time pair. -->

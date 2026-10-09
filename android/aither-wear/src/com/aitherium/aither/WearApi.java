@@ -77,7 +77,7 @@ final class WearApi {
     /** The bearer, or "" (none, or past the expiry the grant gave). */
     String token() {
         long until = p.getLong("token_until", 0);
-        if (until > 0 && System.currentTimeMillis() > until) signOut();
+        if (until > 0 && System.currentTimeMillis() > until) signOut("the grant's expiry passed");
         return p.getString("token", "");
     }
 
@@ -87,7 +87,9 @@ final class WearApi {
                 .apply();
     }
 
-    void signOut() {
+    /** Forget the token. Every caller names why, so a sign-out is never a mystery in the log. */
+    void signOut(String why) {
+        android.util.Log.i("AitherWear", "signed out: " + why + " (had token: " + !p.getString("token", "").isEmpty() + ")");
         p.edit().remove("token").remove("token_until").remove("renewed_at").apply();
     }
 
@@ -138,7 +140,7 @@ final class WearApi {
             int second = refresh();
             if (WearRules.sessionRefused(second)) {
                 android.util.Log.i("AitherWear", "session refused by Identity twice: signed out");
-                signOut();
+                signOut("Identity refused the session twice");
             }
             return second;
         }
@@ -334,14 +336,24 @@ final class WearApi {
      * (0: unreachable). {@code alive} is polled between events: false hangs up.
      */
     int stream(String message, String agent, Stream to, java.util.function.BooleanSupplier alive) {
-        int code = stream1(message, agent, to, alive);
+        return stream(message, agent, "", to, alive);
+    }
+
+    /**
+     * {@code session}: the conversation's thread id ("" for a one-off ask). Every turn of one
+     * watch conversation carries the same id, so Genesis answers a follow-up with what was
+     * said before (verified live 2026-10-08: "what was my test word?" answered from turn 1).
+     */
+    int stream(String message, String agent, String session, Stream to, java.util.function.BooleanSupplier alive) {
+        int code = stream1(message, agent, session, to, alive);
         if (code != 401) return code;
         int s = confirmSession(); // a 401 is checked with Identity before anything is forgotten
-        if (s == 200) return stream1(message, agent, to, alive);
+        if (s == 200) return stream1(message, agent, session, to, alive);
         return WearRules.sessionRefused(s) ? 401 : 503;
     }
 
-    private int stream1(String message, String agent, Stream to, java.util.function.BooleanSupplier alive) {
+    private int stream1(String message, String agent, String session, Stream to,
+                        java.util.function.BooleanSupplier alive) {
         String bearer = token();
         if (bearer.isEmpty()) return 401;
         HttpURLConnection c = null;
@@ -355,8 +367,9 @@ final class WearApi {
             c.setRequestProperty("Accept", "text/event-stream");
             c.setRequestProperty("Origin", "https://aitherium.com");
             c.setRequestProperty("Authorization", "Bearer " + bearer);
-            byte[] body = new JSONObject().put("message", message).put("agent", agent)
-                    .put("client", CLIENT).toString().getBytes(StandardCharsets.UTF_8);
+            JSONObject req = new JSONObject().put("message", message).put("agent", agent).put("client", CLIENT);
+            if (session != null && !session.isEmpty()) req.put("session_id", session);
+            byte[] body = req.toString().getBytes(StandardCharsets.UTF_8);
             c.setFixedLengthStreamingMode(body.length);
             try (OutputStream o = c.getOutputStream()) {
                 o.write(body);

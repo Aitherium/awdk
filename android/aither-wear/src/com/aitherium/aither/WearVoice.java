@@ -83,6 +83,7 @@ final class WearVoice {
         ctx = c.getApplicationContext();
         this.api = api;
         p = ctx.getSharedPreferences("wear", Context.MODE_PRIVATE);
+        migrate();
         tts = newTts();
     }
 
@@ -143,7 +144,24 @@ final class WearVoice {
 
     boolean on() { return p.getBoolean(PREF, true); }
 
-    void setOn(boolean v) {
+    /**
+     * 0.3.20, once: spoken answers back ON. On 0.3.19 a stray tap on the round edge (the
+     * old one-tap toggle in the home list) turned them off and the owner heard nothing.
+     * From here the switch lives in Settings behind a confirm (WearActivity.settings).
+     */
+    static final String MIGRATED = "voice_v2";
+
+    void migrate() {
+        if (p.getBoolean(MIGRATED, false)) return;
+        boolean was = on();
+        p.edit().putBoolean(PREF, true).putBoolean(MIGRATED, true).apply();
+        android.util.Log.i(TAG, "voice pref migration: spoken answers on (was " + (was ? "on" : "off") + ")");
+    }
+
+    /** Every change is logged with who made it ({@code source}: "settings", "answer screen"…). */
+    void setOn(boolean v, String source) {
+        android.util.Log.i(TAG, "spoken answers " + (v ? "on" : "off") + " (from " + source + ", was "
+                + (on() ? "on" : "off") + ")");
         p.edit().putBoolean(PREF, v).apply();
         if (!v) stop();
     }
