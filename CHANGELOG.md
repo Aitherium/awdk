@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.68] - 2026-10-10
+
+### Fixed
+- `adk enroll --invite` now redeems the invite even when you are already a member of the organisation's mesh (a second PC with a fresh link); before, the device step refused it.
+
 ## [3.8.67] - 2026-10-10
 
 ### Added

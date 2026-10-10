@@ -84,12 +84,16 @@ def test_full_flow_peeks_accepts_and_enrolls_this_device(signed_in, tmp_path):
     assert saved[PEEK["invite_id"]]["device_id"] == "dev-1"
 
 
-def test_a_second_pc_of_a_member_skips_accept(signed_in, tmp_path):
+def test_a_member_still_redeems_before_the_device_step(signed_in, tmp_path):
+    # The device step admits only someone who redeemed THIS invite; an existing member
+    # (the issuer testing a link, an employee's second PC) must still call accept,
+    # which records the redemption without changing their role.
     c = _Client({"/invites/peek": _Resp(200, dict(PEEK, already_member=True)),
+                 "/invites/accept": _Resp(200, {"status": "already_member"}),
                  "/invites/device": _Resp(201, DEVICE)})
     rc, _ = _run(c, tmp_path)
     assert rc == ie.EXIT_OK
-    assert [p for p, _ in c.calls] == ["/invites/peek", "/invites/device"]
+    assert [p for p, _ in c.calls] == ["/invites/peek", "/invites/accept", "/invites/device"]
 
 
 def test_already_member_on_accept_still_enrolls_the_device(signed_in, tmp_path):

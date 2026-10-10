@@ -216,25 +216,27 @@ def run_invite_enroll(invite: str, *, label: str = "", client: Any = None,
             if answer not in ("y", "yes"):
                 out("Not enrolled.")
                 return EXIT_FAIL
-        if not view.get("already_member"):
-            attestation = ""
-            if view.get("requires_human"):
-                if not sys.stdin or not sys.stdin.isatty():
-                    out("x This invite needs a human check; run this in a terminal.")
-                    return EXIT_FAIL
-                got = _ask_human_check(post, secret, ask, out)
-                if got is None:
-                    return EXIT_FAIL
-                attestation = got
-            r = post("/invites/accept", {"invite": secret, "attestation": attestation})
-            detail = "" if r.status_code == 200 else _detail(r)
-            if r.status_code == 200 and r.json().get("status") == "pending_approval":
-                out(f"Waiting for an admin of {network} to approve you. Run the same "
-                    "command again once they have.")
-                return EXIT_PENDING
-            if r.status_code != 200 and detail != "already_member":
-                out(f"x {_words(detail)}")
+        # Always redeem, member or not: the server records an existing member's
+        # redemption without touching their role, and the device step admits only
+        # someone who redeemed this invite.
+        attestation = ""
+        if view.get("requires_human"):
+            if not sys.stdin or not sys.stdin.isatty():
+                out("x This invite needs a human check; run this in a terminal.")
                 return EXIT_FAIL
+            got = _ask_human_check(post, secret, ask, out)
+            if got is None:
+                return EXIT_FAIL
+            attestation = got
+        r = post("/invites/accept", {"invite": secret, "attestation": attestation})
+        detail = "" if r.status_code == 200 else _detail(r)
+        if r.status_code == 200 and r.json().get("status") == "pending_approval":
+            out(f"Waiting for an admin of {network} to approve you. Run the same "
+                "command again once they have.")
+            return EXIT_PENDING
+        if r.status_code != 200 and detail != "already_member":
+            out(f"x {_words(detail)}")
+            return EXIT_FAIL
         body = {"invite_id": str(view.get("invite_id") or ""), **_device_facts(label)}
         r = post("/invites/device", body)
         if r.status_code != 201:
