@@ -4,6 +4,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.66] - 2026-10-10
+
+- `adk devices add`: one-time code plus a QR code to add a phone, Steam Deck or laptop.
+- `adk rc` used by awsh `/rc`; shared terminal QR helper (`adk.term_qr`).
+
+
 ### Added
 
 - **Appliance commands on the signed device channel** -- `appliance-status`, `appliance-logs`

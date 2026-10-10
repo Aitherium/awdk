@@ -56,7 +56,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk decide`](#adk-decide) | Decision cards — raise a structured ask, list what is waiting, answer it |
 | [`adk deploy`](#adk-deploy) | Deploy AitherOS components or agents |
 | [`adk desk`](#adk-desk) | Interact with awdesk bridge: send commands, view history |
-| [`adk devices`](#adk-devices) | List, inspect and remove the devices enrolled in your workspace |
+| [`adk devices`](#adk-devices) | List, add, inspect and remove the devices enrolled in your workspace |
 | [`adk disconnect`](#adk-disconnect) | Disconnect from desktop AitherOS mesh |
 | [`adk doc`](#adk-doc) | Manage encrypted documents (upload, list, download, delete) |
 | [`adk doctor`](#adk-doctor) | Check system health (Python, GPU, LLM backends, API keys) |
@@ -562,11 +562,12 @@ Interact with awdesk bridge: send commands, view history
 
 ## `adk devices`
 
-List, inspect and remove the devices enrolled in your workspace
+List, add, inspect and remove the devices enrolled in your workspace
 
 **Subcommands**
 
 - `adk devices list` — List enrolled devices
+- `adk devices add` — Add a device: mint a pairing code, show it with a QR, wait for it
 - `adk devices status` — Show one device (default: this one)
 - `adk devices rm` — Remove a device from the workspace
 - `adk devices command` — Send a device one signed, audited command (the Control channel)
