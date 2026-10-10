@@ -622,6 +622,7 @@ Register this workstation with the control plane
 | `--no-heartbeat` | str |  | `false` | Skip background heartbeat |
 | `--force` | str |  | `false` | Re-enroll even if already registered |
 | `--invite` | str |  |  | Onboarding invite code (ABCDE-23456) or link token: join the organisation's device mesh with the invited role and enroll this device under it before registering the node |
+| `--yes` | str |  | `false` | With --invite: skip the confirmation that names the organisation (unattended runs) |
 | `--label` | str |  |  | Name for this device under --invite (default: hostname) |
 | `--inference-url` | str |  | `auto` | Local inference base URL to advertise (e.g. http://127.0.0.1:8080). 'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), 11434 (Ollama), 8120 (vLLM) in that order |
 | `--node-class` | str |  |  | What this device is (default: detected from the hardware) |

@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.67] - 2026-10-10
+
+### Added
+- `adk enroll --invite <code>`: join an organisation's device mesh from an onboarding link and enroll this device with the role the invite carries. It confirms the organisation named by the server before accepting; `--yes` for unattended runs.
+
 ## [3.8.66] - 2026-10-10
 
 - `adk devices add`: one-time code plus a QR code to add a phone, Steam Deck or laptop.
