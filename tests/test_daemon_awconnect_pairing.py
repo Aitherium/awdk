@@ -102,6 +102,10 @@ def test_scoped_token_cannot_drive_a_session(env):
     assert client.post("/pair/approve", json={"code": "000000"}, headers=auth).status_code == 403
     assert client.post("/pair/revoke", headers=auth).status_code == 403
     assert client.get("/fs/list", headers=auth).status_code == 403
+    write = client.post("/fs/write", json={"path": "x", "content": "x"}, headers=auth)
+    assert write.status_code == 403
+    assert client.get("/git/status", headers=auth).status_code == 403
+    assert client.get("/git/diff", params={"path": "x"}, headers=auth).status_code == 403
 
 
 def test_expired_code_cannot_be_approved_or_polled(env, monkeypatch):

@@ -25,12 +25,18 @@ started nothing can explore nothing.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 #: Largest file the browser will inline, in bytes.
 MAX_READ_BYTES = int(os.environ.get("AITHER_HARNESS_MAX_READ", str(512 * 1024)))
+
+#: Largest content the IDE may save, in bytes (UTF-8 encoded).
+MAX_WRITE_BYTES = int(os.environ.get("AITHER_HARNESS_MAX_WRITE", str(2 * 1024 * 1024)))
 
 #: Entries returned per directory listing. A directory with 200k files must not
 #: become a 200k-element JSON response.
@@ -45,6 +51,26 @@ HIDDEN_NAMES = frozenset(
 
 class FsDeniedError(PermissionError):
     """A path was refused. The message always says why."""
+
+
+class FsWriteError(Exception):
+    """A write that was understood and refused for a reason other than containment."""
+
+
+class FsConflictError(FsWriteError):
+    """The file changed on disk since the caller read it (HTTP 409)."""
+
+
+class FsNotFoundError(FsWriteError):
+    """The file does not exist and the caller did not ask to create it (HTTP 404)."""
+
+
+class FsTooLargeError(FsWriteError):
+    """The content is larger than MAX_WRITE_BYTES (HTTP 413)."""
+
+
+def sha256_hex(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _split_roots(raw: str) -> list[Path]:
@@ -176,7 +202,7 @@ def read_file(path: str, roots: list[Path]) -> dict[str, Any]:
     if size > MAX_READ_BYTES:
         return {
             "path": str(target), "size": size, "content": "", "binary": False,
-            "truncated": True,
+            "truncated": True, "sha256": "",
             "reason": f"file is {size} bytes; the browser inlines at most {MAX_READ_BYTES}",
         }
     try:
@@ -184,15 +210,89 @@ def read_file(path: str, roots: list[Path]) -> dict[str, Any]:
     except OSError as exc:
         raise FsDeniedError(f"cannot read {target}: {exc}") from exc
 
+    digest = sha256_hex(raw)
     # A NUL byte in the first block is the standard binary heuristic. Decoding
     # a binary with errors="replace" produces plausible-looking garbage that
     # reads as a corrupted source file.
     if b"\x00" in raw[:8192]:
         return {"path": str(target), "size": size, "content": "", "binary": True,
-                "truncated": False, "reason": "binary file"}
+                "truncated": False, "reason": "binary file", "sha256": digest}
     try:
         content = raw.decode("utf-8")
     except UnicodeDecodeError:
         content = raw.decode("utf-8", "replace")
     return {"path": str(target), "size": size, "content": content, "binary": False,
-            "truncated": False, "reason": ""}
+            "truncated": False, "reason": "", "sha256": digest}
+
+
+def _hidden_component(target: Path, roots: list[Path]) -> str:
+    """The first HIDDEN_NAMES component between the containing root and ``target``."""
+    for root in roots:
+        try:
+            rel = target.relative_to(root)
+        except ValueError:
+            continue
+        for part in rel.parts:
+            if part in HIDDEN_NAMES:
+                return part
+        return ""
+    return ""
+
+
+def write_file(path: str, content: str, roots: list[Path], expected_sha256: str = "",
+               create: bool = False) -> dict[str, Any]:
+    """Save ``content`` (UTF-8, bytes exactly as given) to ``path`` atomically.
+
+    Containment is proven FIRST, on the resolved path (a symlink out of a root is
+    refused like any other escape). ``expected_sha256`` is the hash the caller read;
+    a mismatch is a conflict, never a silent overwrite of someone else's edit.
+    """
+    if not path:
+        raise FsDeniedError("a path is required to write")
+    target = resolve_within(path, roots)
+    hidden = _hidden_component(target, roots)
+    if hidden:
+        raise FsDeniedError(f"{target} is inside {hidden!r}, which is never written")
+    if target.is_dir():
+        raise FsDeniedError(f"{target} is a directory")
+    parent = target.parent
+    if not _contained(parent, roots) or not parent.is_dir():
+        raise FsDeniedError(f"parent directory {parent} does not exist inside a browsable root")
+
+    data = content.encode("utf-8")
+    if len(data) > MAX_WRITE_BYTES:
+        raise FsTooLargeError(
+            f"content is {len(data)} bytes; the IDE saves at most {MAX_WRITE_BYTES}"
+        )
+
+    exists = target.exists()
+    if exists:
+        if not target.is_file():
+            raise FsDeniedError(f"{target} is not a regular file")
+        if expected_sha256:
+            try:
+                current = sha256_hex(target.read_bytes())
+            except OSError as exc:
+                raise FsDeniedError(f"cannot read {target}: {exc}") from exc
+            if current.lower() != expected_sha256.strip().lower():
+                raise FsConflictError(
+                    f"changed on disk since you opened it (current sha256 {current})"
+                )
+    elif not create:
+        raise FsNotFoundError(f"{target} does not exist (pass create=true to make it)")
+
+    fd, tmp = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".aither-tmp", dir=str(parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        # mkstemp makes the temp 0600; keep the original mode, and give a new
+        # file the ordinary 0644 rather than a private one nobody asked for.
+        os.chmod(tmp, (target.stat().st_mode & 0o7777) if exists else 0o644)
+        os.replace(tmp, target)
+    except OSError as exc:
+        with contextlib.suppress(OSError):  # best-effort cleanup; the raise below reports
+            os.unlink(tmp)
+        raise FsDeniedError(f"cannot write {target}: {exc}") from exc
+    return {"path": str(target), "size": len(data), "sha256": sha256_hex(data)}

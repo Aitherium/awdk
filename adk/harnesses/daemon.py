@@ -806,6 +806,14 @@ if BaseModel is not None:
         text: str
         via: str = "api"
 
+    class FsWrite(BaseModel):  # type: ignore[misc]
+        """Body for POST /fs/write -- the browser IDE saving a file."""
+
+        path: str
+        content: str
+        expected_sha256: str = ""
+        create: bool = False
+
     class ChatReply(BaseModel):  # type: ignore[misc]
         """Body for POST /decisions/chat-reply — a raw chat message from a DM bridge.
 
@@ -1975,6 +1983,50 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
         try:
             return read_file(path, _browse_roots())
+        except FsDeniedError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.post("/fs/write", dependencies=[Depends(auth)])
+    def fs_write(body: FsWrite) -> dict[str, Any]:
+        from adk.harnesses.fs import (
+            FsConflictError,
+            FsDeniedError,
+            FsNotFoundError,
+            FsTooLargeError,
+            write_file,
+        )
+
+        try:
+            return write_file(body.path, body.content, _browse_roots(),
+                              expected_sha256=body.expected_sha256, create=body.create)
+        except FsConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FsNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FsTooLargeError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except FsDeniedError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.get("/git/status", dependencies=[Depends(auth)])
+    def git_status_route(path: str = Query(default="")) -> dict[str, Any]:
+        from adk.harnesses.fs import FsDeniedError
+        from adk.harnesses.git_ops import git_status
+
+        try:
+            return git_status(path, _browse_roots())
+        except FsDeniedError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.get("/git/diff", dependencies=[Depends(auth)])
+    def git_diff_route(
+        path: str = Query(...), staged: int = Query(default=0, ge=0, le=1),
+    ) -> dict[str, Any]:
+        from adk.harnesses.fs import FsDeniedError
+        from adk.harnesses.git_ops import git_diff
+
+        try:
+            return git_diff(path, _browse_roots(), staged=bool(staged))
         except FsDeniedError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
