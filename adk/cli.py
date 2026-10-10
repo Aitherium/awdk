@@ -4796,6 +4796,19 @@ def cmd_enroll(args) -> int:
             print()
             return 1
 
+        # An onboarding invite: join the organisation's mesh and enroll THIS device
+        # under it first (peek -> human check -> accept -> device), then the ordinary
+        # node enrollment below. A refusal, or "waiting for approval", stops here.
+        invite = (getattr(args, "invite", None) or "").strip()
+        if invite:
+            from adk.invite_enroll import run_invite_enroll
+
+            rc = run_invite_enroll(invite, label=getattr(args, "label", None) or "",
+                                   assume_yes=bool(getattr(args, "yes", False)))
+            if rc != 0:
+                return rc
+            print()
+
         # Check if already enrolled
         existing = _load_node_auth()
         if existing.get("node_id") and not force:
@@ -14682,6 +14695,17 @@ def _register_commands(sub):
     enroll_p.add_argument("--genesis", help="Genesis URL (default: localhost:8001)")
     enroll_p.add_argument("--no-heartbeat", action="store_true", help="Skip background heartbeat")
     enroll_p.add_argument("--force", action="store_true", help="Re-enroll even if already registered")
+    enroll_p.add_argument(
+        "--invite", default=None, metavar="CODE",
+        help="Onboarding invite code (ABCDE-23456) or link token: join the "
+             "organisation's device mesh with the invited role and enroll this device "
+             "under it before registering the node")
+    enroll_p.add_argument(
+        "--yes", action="store_true",
+        help="With --invite: skip the confirmation that names the organisation "
+             "(unattended runs)")
+    enroll_p.add_argument("--label", default=None,
+                          help="Name for this device under --invite (default: hostname)")
     enroll_p.add_argument(
         "--inference-url", default="auto",
         help="Local inference base URL to advertise (e.g. http://127.0.0.1:8080). "
