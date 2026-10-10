@@ -9,7 +9,7 @@
     /finetune seal     <dir> [subject]
     /finetune publish  <dir> <out> [name]
 
-Aliases: /ft, /train
+Aliases: /ft  (/train is the training-pipeline command, train_pipeline.py)
 
 WHY THE ORDER OF THESE COMMANDS IS THE POINT
 
@@ -108,13 +108,13 @@ class FinetunePlugin(SlashCommand):
 
     name = "finetune"
     description = "Fine-tune a model safely: plan, gate, run, seal, publish"
-    aliases = ["ft", "train"]
+    aliases = ["ft"]
 
     def __init__(self) -> None:
         super().__init__(
             name="finetune",
             description="Fine-tune a model safely: plan, gate, run, seal, publish",
-            aliases=["ft", "train"],
+            aliases=["ft"],
         )
 
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
