@@ -866,24 +866,12 @@ def _render_phone_access(public_url: str, token: str) -> str:
         "     never sent in a header or logged; without it the URL is 401):",
         f"       {phone_url}",
     ]
-    try:
-        import io
+    from adk.term_qr import qr_lines
 
-        import qrcode  # optional dep; pure-python ASCII/Unicode QR
-
-        qr = qrcode.QRCode(border=1)
-        qr.add_data(phone_url)
-        qr.make(fit=True)
-        buf = io.StringIO()
-        qr.print_ascii(out=buf, invert=True)
-        block = buf.getvalue()
-        enc = (sys.stdout.encoding or "utf-8")
-        block.encode(enc)  # raises on a terminal that can't render the QR glyphs
+    block = qr_lines(phone_url)  # [] without qrcode or on a console that can't render it
+    if block:
         lines.append("")
-        lines.extend("       " + ln for ln in block.splitlines())
-    except Exception:  # noqa: BLE001 — QR is a convenience; the URL is the essential
-        # Missing qrcode dep, or a terminal that can't render the glyphs — skip it.
-        pass
+        lines.extend("       " + ln for ln in block)
     return "\n".join(lines)
 
 
@@ -14733,10 +14721,17 @@ def _register_commands(sub):
 
     # adk devices — the devices enrolled in your workspace (one registry)
     devices_p = sub.add_parser(
-        "devices", help="List, inspect and remove the devices enrolled in your workspace")
+        "devices",
+        help="List, add, inspect and remove the devices enrolled in your workspace")
     devices_sub = devices_p.add_subparsers(dest="devices_command")
     devices_list_p = devices_sub.add_parser("list", help="List enrolled devices")
     devices_list_p.add_argument("--json", action="store_true", help="Print the raw response")
+    devices_add_p = devices_sub.add_parser(
+        "add", help="Add a device: mint a pairing code, show it with a QR, wait for it")
+    devices_add_p.add_argument("--no-wait", action="store_true",
+                               help="Print the code and exit instead of waiting")
+    devices_add_p.add_argument("--timeout", type=float, default=None,
+                               help="Seconds to wait (default: the code's lifetime)")
     devices_status_p = devices_sub.add_parser(
         "status", help="Show one device (default: this one)")
     devices_status_p.add_argument("node_id", nargs="?", help="Node id (default: this device)")

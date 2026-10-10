@@ -17,7 +17,10 @@ Two rules, both about honesty:
 
 from __future__ import annotations
 
-__all__ = ["cmd_devices", "enroll_base", "resolve_bearer", "request_nodes", "DevicesError"]
+__all__ = [
+    "cmd_devices", "enroll_base", "resolve_bearer", "request_nodes", "setup_link",
+    "DevicesError",
+]
 
 import json
 import os
@@ -298,13 +301,89 @@ def _command_log(args) -> int:
     return 0
 
 
+#: Where a new device without adk gets its installer (the portal's Setup app).
+DEFAULT_PORTAL = "https://aitherium.com"
+_PAIR_POLL_S = 3.0
+
+
+def setup_link() -> str:
+    """The installer link the QR carries: the portal's Setup app (``$AITHER_PORTAL_URL``)."""
+    portal = (os.environ.get("AITHER_PORTAL_URL") or "").strip() or DEFAULT_PORTAL
+    return f"{portal.rstrip('/')}/?app=setup"
+
+
+def _add(args, *, sleep=None, clock=None) -> int:
+    """``adk devices add [--no-wait] [--timeout S]`` -- the CLI twin of the portal's
+    "Pair a machine with a code".
+
+    Mints a short-lived, single-use pairing code bound to the signed-in caller
+    (Identity ``/v1/nodes/pairing/init``: the subscription and device-cap gates run
+    there, while the person who can fix them is looking), prints it with the command
+    the new device runs and a QR of the installer link, then waits until that device
+    has confirmed (``/pairing/status/<code>``).
+
+    Returns:
+        0 paired (or ``--no-wait``), 1 refused, 3 the code expired unused.
+    """
+    import time as _time
+
+    from adk.term_qr import print_qr
+
+    sleep = sleep or _time.sleep
+    clock = clock or _time.monotonic
+    status, text, parsed, url = request_nodes("POST", "/pairing/init", timeout=30.0)
+    if status != 200 or not isinstance(parsed, dict):
+        _print_refusal("POST", url, status, text)
+        return 1
+    code = str(parsed.get("code") or "")
+    if not code:
+        print(f"x {url} answered without a pairing code")
+        return 1
+    ttl = int(parsed.get("expires_in") or 300)
+    link = setup_link()
+    print("Add a device")
+    print(f"  Code:     {code}   (single use, lives {max(1, ttl // 60)} min)")
+    print()
+    print("  On the new device (laptop, desktop, Steam Deck, phone with a terminal):")
+    print(f"    adk pair {code}")
+    print()
+    print("  No adk there yet? Scan this to open the installer, then run the line above:")
+    print(f"    {link}")
+    print_qr(link, print, indent="    ")
+    print()
+    print("  No code at all: run `adk pair --join` on the new device and scan ITS QR")
+    print("  with a phone signed in to this account.")
+    if getattr(args, "no_wait", False):
+        return 0
+    print()
+    print("Waiting for the device ... (Ctrl-C stops waiting; the code stays valid)")
+    deadline = clock() + float(getattr(args, "timeout", None) or ttl + 30)
+    try:
+        while clock() < deadline:
+            status, _text, parsed, _url = request_nodes("GET", f"/pairing/status/{code}")
+            if status == 200 and isinstance(parsed, dict) and parsed.get("confirmed"):
+                print(f"  paired: {parsed.get('node_id') or '(node id pending)'}")
+                print("  adk devices list   # it is in your workspace now")
+                return 0
+            sleep(_PAIR_POLL_S)
+    except KeyboardInterrupt:
+        print()
+        print("Stopped waiting. `adk devices list` shows it once it pairs.")
+        return 0
+    print("x Nobody used the code in time; run `adk devices add` again.")
+    return 3
+
+
 def cmd_devices(args) -> int:
-    """Dispatch ``adk devices <list|status|rm|command|command-log>``. Returns the exit code."""
-    sub = getattr(args, "devices_command", None)
-    handlers = {"list": _list, "status": _status, "rm": _rm, "command": _command,
-                "command-log": _command_log}
+    """Dispatch ``adk devices <list|add|status|rm|command|command-log>`` (bare = list).
+
+    Returns the exit code.
+    """
+    sub = getattr(args, "devices_command", None) or "list"
+    handlers = {"list": _list, "add": _add, "status": _status, "rm": _rm,
+                "command": _command, "command-log": _command_log}
     if sub not in handlers:
-        print("usage: adk devices {list,status,rm,command,command-log} ...")
+        print("usage: adk devices {list,add,status,rm,command,command-log} ...")
         return 2
     try:
         return handlers[sub](args)

@@ -73,17 +73,10 @@ def _signer() -> Optional[Callable[[bytes], bytes]]:
 
 
 def _print_qr(text: str, out: Callable[[str], None]) -> None:
-    try:
-        import io
+    """The QR for ``text`` (the shared terminal printer; nothing when it cannot render)."""
+    from adk.term_qr import print_qr
 
-        import qrcode  # type: ignore
-        qr = qrcode.QRCode(border=1)
-        qr.add_data(text)
-        buf = io.StringIO()
-        qr.print_ascii(out=buf, invert=True)
-        out(buf.getvalue())
-    except Exception as exc:  # noqa: BLE001 -- the code and link still work without it
-        log.debug("no terminal QR (%s)", type(exc).__name__)
+    print_qr(text, out)
 
 
 async def request_join(identity: str, *, node_class: str, bearer: str = "",

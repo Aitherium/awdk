@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed persona -&gt; ~\.aither\packs\persona</span>
 <span class="o">verified: adk discovers &#x27;persona&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.65</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>d0fd9694a8f10c68…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.65</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>81e516c8fcfc335d…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,12 +314,12 @@ not affiliated with or endorsed by them.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>d0fd9694a8f10c68dd4f22af043ff8309b8056c57d8648299114c49d0be14bef</code></p>
+    <p class="sub">sha256 <code>81e516c8fcfc335dfc8a54f8e2b22c87d883695db4b319cf48d7f5551ddf6c6e</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c persona-3.8.65.sha256
 <span class="o">persona-3.8.65.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;D0FD9694A8F10C68DD4F22AF043FF8309B8056C57D8648299114C49D0BE14BEF&#x27;
+<span class="p">$</span> $want = &#x27;81E516C8FCFC335DFC8A54F8E2B22C87D883695DB4B319CF48D7F5551DDF6C6E&#x27;
 <span class="p">$</span> (Get-FileHash persona-3.8.65.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>

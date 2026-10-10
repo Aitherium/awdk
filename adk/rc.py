@@ -48,6 +48,11 @@ log = logging.getLogger("adk.rc")
 #: THROUGH the link by a process on this machine, never by binding a public port.
 DEFAULT_HARNESS_PORT = 8362
 
+#: Where this account's sessions -- this machine's among them -- are reachable while
+#: the link is held. Printed (and shown as a QR) once the device is enrolled.
+SESSIONS_URL = "https://api.aitherium.com/code"
+DEVICES_URL = "https://api.aitherium.com/settings/connected-devices"
+
 
 def default_harness_url() -> str:
     """The local harness base URL this device advertises."""
@@ -355,7 +360,11 @@ def cmd_rc(args) -> int:
             return 1
         node_id = result.get("node_id", "?")
         print(f"  Device:   {node_id} ({node_class})")
-        print("  Portal:   https://api.aitherium.com/settings/connected-devices")
+        print(f"  Portal:   {DEVICES_URL}")
+        print(f"  Sessions: {SESSIONS_URL}   (scan to open on your phone)")
+        from adk.term_qr import print_qr
+
+        print_qr(SESSIONS_URL, print, indent="    ")
         print()
         if once:
             return 0
