@@ -447,7 +447,7 @@ def test_appliance_logs_are_redacted(home, repo, tools):
         "boot password=s3cret-pw passwd=pw2 secret=topsecret token=tok123",
         '{"client_secret": "cs-value", "ACCESS_TOKEN":"at-value"}',
         "aws AKI" "AIOSFODNN7EXAMPLE ok",
-        "clone https://user:ghtoken@github.com/o/r.git",
+        "clone https://user:" + "ghtoken" + "@github.com/o/r.git",
         "plain line stays",
     ]))
     out = nc._appliance_logs({"name": "acmebot"})
