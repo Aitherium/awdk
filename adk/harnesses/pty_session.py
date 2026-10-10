@@ -313,7 +313,9 @@ class PtyHarnessSession(HarnessSession):
                     break
                 time.sleep(0.02)
                 continue
-            self._emit(HarnessEvent(kind=EventKind.TEXT_DELTA, text=chunk))
+            chunk = self._answer_conpty_handshake(pty, chunk)
+            if chunk:
+                self._emit(HarnessEvent(kind=EventKind.TEXT_DELTA, text=chunk))
         code = pty.exitstatus
         self.exit_code = code
         self.state = SessionState.EXITED
@@ -323,6 +325,40 @@ class PtyHarnessSession(HarnessSession):
             )
         )
         self._closed.set()
+
+    #: ConPTY's startup Device Attributes query, and the VT100 reply it waits for.
+    _DA1_QUERY = "[c"
+    _DA1_REPLY = "[?1;0c"
+    #: Startup bytes within which the DA1 query is the handshake, not program output.
+    _HANDSHAKE_WINDOW = 4096
+
+    def _answer_conpty_handshake(self, pty: Any, chunk: str) -> str:
+        """Answer ConPTY's startup DA1 query here, and drop it from the stream.
+
+        WHY (measured 2026-10-10, pywinpty 3.0.5, Windows 11): ConPTY opens with
+        ``ESC[c`` and holds ALL further output until the terminal answers. Nothing
+        answered unless an xterm.js happened to be attached at that instant, so a
+        terminal opened from the OS IDE (or any headless client) printed
+        "PowerShell 7.6.6" and then nothing, ever. The daemon is the terminal's
+        owner, so it answers; the query is stripped so a renderer that attaches
+        later does not answer a second time into the shell's input.
+        """
+        if getattr(pty, "kind", "") != "winpty" or getattr(self, "_da1_done", False):
+            return chunk
+        seen = getattr(self, "_handshake_seen", 0)
+        if seen > self._HANDSHAKE_WINDOW:
+            self._da1_done = True
+            return chunk
+        self._handshake_seen = seen + len(chunk)
+        if self._DA1_QUERY not in chunk:
+            return chunk
+        self._da1_done = True
+        try:
+            pty.write(self._DA1_REPLY)
+        except (OSError, ValueError) as exc:
+            self._emit(notice(f"terminal handshake reply failed: {exc}"))
+            return chunk
+        return chunk.replace(self._DA1_QUERY, "", 1)
 
     def send(self, text: str) -> bool:
         """Write raw input to the terminal. No newline is added.

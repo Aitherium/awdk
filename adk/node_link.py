@@ -81,7 +81,11 @@ LINK_ACTOR_OWNER = "owner"
 #: What a harness-scoped request may reach on the daemon. The daemon ALSO gates
 #: this with a scoped token, so a bug here is not a bypass -- it is the first of
 #: two independent gates.
-HARNESS_ALLOWED_PREFIXES = ("sessions", "decisions", "desk/fleet/status")
+HARNESS_ALLOWED_PREFIXES = (
+    "sessions", "decisions", "desk/fleet/status",
+    # The OS IDE (2026-10-10); the daemon pins the method and requires the owner verdict.
+    "fs/list", "fs/read", "fs/write", "git/status", "git/diff",
+)
 
 #: Reconnect backoff. Capped, and jittered so a fleet that lost the tunnel does
 #: not return as a synchronised thundering herd.

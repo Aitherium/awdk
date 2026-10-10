@@ -95,12 +95,32 @@ def _unavailable(reason: str, **extra: Any) -> dict[str, Any]:
     return {"available": False, "reason": reason, "root": "", **extra}
 
 
-def git_status(path: str, roots: list[Path]) -> dict[str, Any]:
+def git_status(path: str, roots: list[Path], untracked: bool = False) -> dict[str, Any]:
+    """Status of the repository holding ``path``, SCOPED to ``path``.
+
+    Two choices keep this under a few seconds on a large monorepo (measured
+    2026-10-10 on the owner's 1.4k-change C: tree: 15 s+ with untracked files
+    walked, from a below-normal daemon):
+
+    * untracked files are NOT walked unless asked (``-uno``; ``untracked=True``
+      is the IDE's toggle) -- the walk is the expensive half of ``git status``;
+    * the pathspec is the opened folder, so opening ``repo/sub`` reports
+      ``repo/sub`` and never stats the rest of the parent repository.
+    """
     target = resolve_within(path, roots)
-    empty = {"branch": "", "ahead": 0, "behind": 0, "entries": [], "truncated": False}
+    empty = {"branch": "", "ahead": 0, "behind": 0, "entries": [], "truncated": False,
+             "untracked": untracked}
     try:
         top = _toplevel(target)
-        proc = _git(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=normal"], cwd=top)
+        directory = target if target.is_dir() else target.parent
+        try:
+            scope = directory.relative_to(top).as_posix() or "."
+        except ValueError:
+            scope = "."
+        args = ["status", "--porcelain=v1", "-b", "-z",
+                "--untracked-files=normal" if untracked else "--untracked-files=no",
+                "--", scope]
+        proc = _git(args, cwd=top)
     except GitUnavailableError as exc:
         return _unavailable(str(exc), **empty)
     if proc.returncode != 0:
@@ -141,7 +161,8 @@ def git_status(path: str, roots: list[Path]) -> dict[str, Any]:
             entry["orig_rel"] = orig
         entries.append(entry)
     return {"available": True, "reason": "", "root": str(top), "branch": branch,
-            "ahead": ahead, "behind": behind, "entries": entries, "truncated": truncated}
+            "ahead": ahead, "behind": behind, "entries": entries, "truncated": truncated,
+            "untracked": untracked}
 
 
 def _is_untracked(top: Path, rel: str) -> bool:

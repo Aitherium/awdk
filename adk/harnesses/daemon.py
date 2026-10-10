@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -314,7 +315,13 @@ OWNER_PRINCIPAL = Principal(id="owner", plan="owner", entitlements=frozenset({"*
 #: phone app needs the session list, one session's stream and input, the pending
 #: decision cards, and the fleet status tile. It must NEVER get the daemon's ROOT
 #: token, which can spawn a coding agent with filesystem access on this machine.
-SCOPED_LINK_PATHS = ("/sessions", "/decisions", "/desk/fleet/status")
+SCOPED_LINK_PATHS = (
+    "/sessions", "/decisions", "/desk/fleet/status",
+    # The OS IDE on an enrolled device (2026-10-10). Method-pinned, and the routes
+    # additionally require the tunnel's owner verdict (``fs_owner`` in create_app):
+    # the link may carry them only for the user who holds the link.
+    "GET /fs/list", "GET /fs/read", "POST /fs/write", "GET /git/status", "GET /git/diff",
+)
 
 #: Mirrors `adk.node_link.LINK_ACTOR_*` (pinned equal by a test; not imported, so
 #: the daemon does not pull the websocket client in).
@@ -1966,7 +1973,26 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
         return browse_roots([s.get("cwd", "") for s in mgr.list_sessions()])
 
-    @app.get("/fs/list", dependencies=[Depends(auth)])
+    def fs_owner(request: Request, principal: Principal = Depends(auth)) -> Principal:
+        """The filesystem and git verbs: the box's owner, or the owner over the link.
+
+        A link token reaches these only because SCOPED_LINK_PATHS lists them; the
+        tunnel's owner verdict (``LINK_ACTOR_HEADER``) is what says the caller is
+        the person who holds that link, exactly as for starting a session. Any
+        other scoped principal is refused even if its path list were widened.
+        """
+        if principal.plan == "owner":
+            return principal
+        if principal.plan == "link" and (
+            request.headers.get(LINK_ACTOR_HEADER, "") == LINK_ACTOR_OWNER
+        ):
+            return principal
+        raise HTTPException(
+            status_code=403,
+            detail=f"principal {principal.id!r} may not read or write files on this device",
+        )
+
+    @app.get("/fs/list", dependencies=[Depends(fs_owner)])
     def fs_list(path: str = Query(default="")) -> dict[str, Any]:
         from adk.harnesses.fs import FsDeniedError, list_dir
 
@@ -1977,7 +2003,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             # reads as "that folder is empty" and hides a containment refusal.
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    @app.get("/fs/read", dependencies=[Depends(auth)])
+    @app.get("/fs/read", dependencies=[Depends(fs_owner)])
     def fs_read(path: str = Query(...)) -> dict[str, Any]:
         from adk.harnesses.fs import FsDeniedError, read_file
 
@@ -1986,7 +2012,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         except FsDeniedError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    @app.post("/fs/write", dependencies=[Depends(auth)])
+    @app.post("/fs/write", dependencies=[Depends(fs_owner)])
     def fs_write(body: FsWrite) -> dict[str, Any]:
         from adk.harnesses.fs import (
             FsConflictError,
@@ -2008,17 +2034,19 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         except FsDeniedError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    @app.get("/git/status", dependencies=[Depends(auth)])
-    def git_status_route(path: str = Query(default="")) -> dict[str, Any]:
+    @app.get("/git/status", dependencies=[Depends(fs_owner)])
+    def git_status_route(
+        path: str = Query(default=""), untracked: int = Query(default=0, ge=0, le=1),
+    ) -> dict[str, Any]:
         from adk.harnesses.fs import FsDeniedError
         from adk.harnesses.git_ops import git_status
 
         try:
-            return git_status(path, _browse_roots())
+            return git_status(path, _browse_roots(), untracked=bool(untracked))
         except FsDeniedError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    @app.get("/git/diff", dependencies=[Depends(auth)])
+    @app.get("/git/diff", dependencies=[Depends(fs_owner)])
     def git_diff_route(
         path: str = Query(...), staged: int = Query(default=0, ge=0, le=1),
     ) -> dict[str, Any]:
@@ -4203,6 +4231,17 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     from adk.harnesses._win_accept import install as _keep_listening
 
     _keep_listening()
+    # A scheduled-task launch starts below-normal with LOW I/O and memory priority,
+    # and every terminal and git child inherits it (proc_priority.py, measured 15 s+
+    # for a 0.8 s git status). This daemon serves the person at the keyboard.
+    from adk.harnesses.proc_priority import normalize_process_priority
+
+    try:
+        logging.getLogger("adk.harnesses.daemon").info(
+            "process priority normalized: %s", normalize_process_priority())
+    except Exception as exc:  # noqa: BLE001 - best effort; never block startup
+        logging.getLogger("adk.harnesses.daemon").warning(
+            "could not normalize process priority: %s", exc)
     # Restart onto newly installed code when no daemon-owned session is live
     # (measured 2026-10-02: a day on a deleted snapshot, /agents 500 behind a green
     # /health). A session that is still open holds the restart; /health says so.

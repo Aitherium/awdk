@@ -195,8 +195,30 @@ def repo(env):
 
 
 @needs_git
-def test_git_status_reports_modified_untracked_and_renamed(env, repo):
+def test_git_status_skips_untracked_by_default(env, repo):
+    """The untracked walk is the slow half of status on a big repo: opt-in only."""
     body = env["client"].get("/git/status", params={"path": str(repo)}).json()
+    assert body["available"] is True and body["untracked"] is False
+    rels = {e["rel"] for e in body["entries"]}
+    assert "tracked.txt" in rels and "untracked.txt" not in rels
+
+
+@needs_git
+def test_git_status_is_scoped_to_the_opened_folder(env, repo):
+    """Opening repo/sub reports repo/sub, not the rest of the parent repository."""
+    sub = repo / "sub"
+    sub.mkdir()
+    (sub / "a.txt").write_bytes(b"a"+bytes([10]))
+    _git(repo, "add", "sub/a.txt")
+    _git(repo, "commit", "-q", "-m", "sub")
+    (sub / "a.txt").write_bytes(b"b"+bytes([10]))
+    body = env["client"].get("/git/status", params={"path": str(sub)}).json()
+    assert [e["rel"] for e in body["entries"]] == ["sub/a.txt"]
+
+
+@needs_git
+def test_git_status_reports_modified_untracked_and_renamed(env, repo):
+    body = env["client"].get("/git/status", params={"path": str(repo), "untracked": 1}).json()
     assert body["available"] is True, body
     assert Path(body["root"]) == repo
     assert body["branch"] == "main"
@@ -220,7 +242,7 @@ def test_git_status_filters_entries_outside_the_root(env, tmp_path, monkeypatch)
     (repo_top / "secret.txt").write_bytes(b"x")
     (sub / "mine.txt").write_bytes(b"y")
     monkeypatch.setenv("AITHER_HARNESS_BROWSE_ROOTS", str(sub))
-    body = env["client"].get("/git/status", params={"path": str(sub)}).json()
+    body = env["client"].get("/git/status", params={"path": str(sub), "untracked": 1}).json()
     assert body["available"] is True
     paths = [Path(e["path"]) for e in body["entries"]]
     assert paths and all(p.is_relative_to(sub.resolve()) for p in paths)
@@ -274,4 +296,4 @@ def test_git_missing_is_reported(env, monkeypatch):
     monkeypatch.setattr(git_ops.shutil, "which", lambda _name: None)
     body = env["client"].get("/git/status", params={"path": str(env["root"])}).json()
     assert body == {"available": False, "reason": "git not installed", "root": "", "branch": "",
-                    "ahead": 0, "behind": 0, "entries": [], "truncated": False}
+                    "ahead": 0, "behind": 0, "entries": [], "truncated": False, "untracked": False}

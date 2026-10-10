@@ -51,7 +51,7 @@ def test_scoped_token_reaches_its_own_surface(path):
 @pytest.mark.parametrize("path", [
     # The routes that make the root token dangerous.
     "/awrun/submit", "/awrun/status", "/rooms", "/profiles", "/harnesses",
-    "/agents", "/fs/read", "/auth/link/status/x",
+    "/agents", "/auth/link/status/x", "/fs", "/git", "/fs/delete", "/git/commit",
     # Sibling-prefix confusion: matching must be on whole SEGMENTS.
     "/sessions-admin", "/decisionsx", "/desk/fleet/statuses",
     # The parent of an allowed leaf is not implied by the leaf.
@@ -182,3 +182,32 @@ def test_owner_bearer_still_reaches_everything(scoped_client):
 def test_no_credential_is_still_401(scoped_client):
     client, _ = scoped_client
     assert client.get("/harnesses").status_code == 401
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# the IDE's fs/git verbs over the link (2026-10-10)
+# ══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("method,path,ok", [
+    ("GET", "/fs/list", True), ("GET", "/fs/read", True), ("POST", "/fs/write", True),
+    ("GET", "/git/status", True), ("GET", "/git/diff", True),
+    # Method-pinned: a write verb is not readable as GET and vice versa.
+    ("GET", "/fs/write", False), ("POST", "/fs/read", False), ("POST", "/git/status", False),
+    ("DELETE", "/fs/write", False),
+])
+def test_link_scope_pins_the_ide_verbs_to_their_methods(method, path, ok):
+    assert _scoped().may_reach(path, method) is ok
+
+
+def test_ide_verbs_need_the_owner_verdict_over_the_link(scoped_client, tmp_path, monkeypatch):
+    client, token = scoped_client
+    monkeypatch.setenv("AITHER_HARNESS_BROWSE_ROOTS", str(tmp_path))
+    auth = {"Authorization": f"Bearer {token}"}
+    r = client.get("/fs/list", params={"path": str(tmp_path)}, headers=auth)
+    assert r.status_code == 403 and "may not read or write files" in r.text
+    owner = {**auth, D.LINK_ACTOR_HEADER: D.LINK_ACTOR_OWNER}
+    r = client.get("/fs/list", params={"path": str(tmp_path)}, headers=owner)
+    assert r.status_code == 200, r.text
+    body = {"path": str(tmp_path / "n.txt"), "content": "x", "create": True}
+    r = client.post("/fs/write", json=body, headers=owner)
+    assert r.status_code == 200 and (tmp_path / "n.txt").read_text() == "x"
