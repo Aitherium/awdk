@@ -89,6 +89,11 @@ _FORM_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "upgrade-component": {"component": lambda v: v in COMPONENTS,
                           "version": lambda v: bool(VERSION_RE.match(v))},
 }
+#: verb -> {argument: check}. A form-checked argument the verb MAY carry. An older
+#: server never sends it, so the required set in _FORM_ARGS is unchanged.
+_OPTIONAL_FORM_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
+    "advertise-inference": {"probe_url": lambda v: _valid_inference_arg(v)},
+}
 UPGRADE_TIMEOUT_S = 600
 #: Seconds between the upgrade result and the restart, so the result is reported first.
 RESTART_DELAY_S = 30
@@ -199,9 +204,15 @@ def verify(cmd: Any, key_hex: str, node_id: str, *, now: Optional[float] = None,
         return ""
     form_args = _FORM_ARGS.get(verb)
     if form_args is not None:
-        if set(args) != set(form_args):
-            return f"{verb} takes exactly {', '.join(sorted(form_args))}"
-        for k, check in form_args.items():
+        optional = _OPTIONAL_FORM_ARGS.get(verb, {})
+        if not set(form_args) <= set(args) <= set(form_args) | set(optional):
+            takes = ", ".join(sorted(form_args))
+            if optional:
+                takes += f" (optionally {', '.join(sorted(optional))})"
+            return f"{verb} takes exactly {takes}"
+        for k, check in {**form_args, **optional}.items():
+            if k not in args:
+                continue
             if not isinstance(args[k], str) or not check(args[k]):
                 return f"{verb} {k} {str(args[k])[:60]!r} is not a valid {k}"
         return ""
@@ -413,18 +424,24 @@ def _upgrade(args: Dict[str, str]) -> Dict[str, Any]:
 
 
 def _advertise_inference(args: Dict[str, str]) -> Dict[str, Any]:
-    """Persist the inference URL the heartbeat advertises ('' / 'auto' clears it)."""
+    """Persist the inference URL the heartbeat advertises ('' / 'auto' clears it), and
+    optionally ``probe_url``: where this host itself reaches that server."""
     from adk import enrollment
 
     url = str(args.get("url") or "")
+    probe_url = str(args.get("probe_url") or "")
     try:
-        stored = enrollment.save_advertised_inference_url(url)
+        stored = enrollment.save_advertised_inference_url(url, probe_url=probe_url)
     except (ValueError, OSError) as exc:
         return {"ok": False, "error": str(exc)[:200]}
     env = (os.environ.get("AITHER_NODE_INFERENCE_URL") or "").strip()
-    return {"ok": True, "url": stored, "cleared": not stored,
-            "note": ("AITHER_NODE_INFERENCE_URL is set on this host and still wins"
-                     if env else "advertised from the next heartbeat")}
+    out: Dict[str, Any] = {
+        "ok": True, "url": stored, "cleared": not stored,
+        "note": ("AITHER_NODE_INFERENCE_URL is set on this host and still wins"
+                 if env else "advertised from the next heartbeat")}
+    if stored:
+        out["probe_url"] = enrollment.validate_advertised_inference_url(probe_url)
+    return out
 
 
 def _upgrade_component(args: Dict[str, str]) -> Dict[str, Any]:

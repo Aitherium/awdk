@@ -676,3 +676,39 @@ def test_resume_passes_the_device_token_as_fallback_only_for_a_paired_record(mon
     rec["enrolled_via"] = "device-flow"
     enrollment.resume_heartbeat("user-tok", default_base_url="https://idp.test")
     assert "device_fallback_token" not in calls[-1][1]
+
+
+# ── advertise-inference probe_url: where this host reaches the advertised server ──
+
+
+def test_advertise_inference_accepts_and_persists_a_probe_url(monkeypatch, _home):
+    monkeypatch.delenv("AITHER_NODE_INFERENCE_URL", raising=False)
+    monkeypatch.delenv("AITHER_NODE_INFERENCE_PROBE_URL", raising=False)
+    probed = []
+    monkeypatch.setattr(enrollment, "_openai_models",
+                        lambda base: probed.append(base) or (True, ["m"]))
+    monkeypatch.setattr(enrollment, "_fingerprint", lambda base: "llama-server")
+    args = {"url": "http://192.168.1.122:8091", "probe_url": "http://127.0.0.1:8091/v1"}
+    assert node_commands.verify(_cmd(verb="advertise-inference", args=args), KEY, NODE,
+                                seen=[]) == ""
+    out = node_commands._advertise_inference(args)
+    assert out["ok"] is True and out["probe_url"] == "http://127.0.0.1:8091"
+    stored = json.loads((_home / "node-inference.json").read_text())
+    assert stored == {"url": "http://192.168.1.122:8091",
+                      "probe_url": "http://127.0.0.1:8091", "set_at": stored["set_at"]}
+    probe = enrollment.probe_inference()
+    assert probe.inference_url == "http://192.168.1.122:8091" and probe.ready is True
+    assert probed == ["http://127.0.0.1:8091"]
+
+
+@pytest.mark.parametrize("args", [
+    {"url": "http://10.0.0.5:8114", "probe_url": "ftp://127.0.0.1:8091"},
+    {"url": "http://10.0.0.5:8114", "probe_url": "http://127.0.0.1"},
+    {"url": "http://10.0.0.5:8114", "probe_url": 8091},
+    {"url": "http://10.0.0.5:8114", "probe_url": "http://127.0.0.1:8091", "x": "y"},
+    {"probe_url": "http://127.0.0.1:8091"},
+])
+def test_advertise_inference_refuses_a_bad_probe_url(args):
+    why = node_commands.verify(_cmd(verb="advertise-inference", args=args), KEY, NODE,
+                               seen=[])
+    assert why, args

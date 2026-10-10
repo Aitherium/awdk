@@ -38,6 +38,7 @@ __all__ = [
     "classify_refusal",
     "probe_inference",
     "advertised_inference_url",
+    "inference_probe_url",
     "save_advertised_inference_url",
     "validate_advertised_inference_url",
     "default_candidates",
@@ -255,19 +256,29 @@ def validate_advertised_inference_url(url: str) -> str:
     return _normalize_base(raw)
 
 
-def save_advertised_inference_url(url: str) -> str:
+def save_advertised_inference_url(url: str, probe_url: Optional[str] = None) -> str:
     """Persist the URL the heartbeat advertises (the ``advertise-inference`` command);
     '' / ``auto`` removes the file. Returns what is now stored. Raises ValueError for a
-    URL outside :data:`ADVERTISE_URL_RE`, OSError when it cannot be written."""
+    URL (or ``probe_url``) outside :data:`ADVERTISE_URL_RE`, OSError when it cannot be
+    written.
+
+    ``probe_url`` is where THIS host reaches the same server when the advertised URL is
+    not reachable from here (a WSL2 model behind a Windows portproxy: peers use the LAN
+    URL, the box itself only reaches ``127.0.0.1``). Each call writes the whole record,
+    so omitting it clears a previously stored probe URL."""
     clean = validate_advertised_inference_url(url)
+    probe = validate_advertised_inference_url(probe_url or "")
     path = _advertise_path()
     if not clean:
         if path.exists():
             path.unlink()
         return ""
+    record: Dict[str, Any] = {"url": clean, "set_at": int(time.time())}
+    if probe:
+        record["probe_url"] = probe
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"url": clean, "set_at": int(time.time())}), encoding="utf-8")
+    tmp.write_text(json.dumps(record), encoding="utf-8")
     os.replace(tmp, path)
     return clean
 
@@ -282,6 +293,31 @@ def advertised_inference_url() -> str:
     try:
         data = json.loads(_advertise_path().read_text(encoding="utf-8"))
         return validate_advertised_inference_url(str(data.get("url") or ""))
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def inference_probe_url(advertised: str) -> str:
+    """Where to PROBE the server advertised at ``advertised``, or '' to probe it directly.
+
+    ``AITHER_NODE_INFERENCE_PROBE_URL`` wins; otherwise the ``probe_url`` stored next to
+    the owner's ``advertise-inference`` URL, used only while that stored URL is the one
+    being advertised (a probe URL never pairs with a different server). Both are checked
+    with :func:`validate_advertised_inference_url`; an invalid value is ignored (logged),
+    so the advertised URL is probed as before."""
+    env = (os.environ.get("AITHER_NODE_INFERENCE_PROBE_URL") or "").strip()
+    if env:
+        try:
+            return validate_advertised_inference_url(env)
+        except ValueError as exc:
+            log.warning("AITHER_NODE_INFERENCE_PROBE_URL ignored: %s", exc)
+            return ""
+    try:
+        data = json.loads(_advertise_path().read_text(encoding="utf-8"))
+        stored = validate_advertised_inference_url(str(data.get("url") or ""))
+        if not stored or stored != _normalize_base(advertised):
+            return ""
+        return validate_advertised_inference_url(str(data.get("probe_url") or ""))
     except (OSError, ValueError, AttributeError):
         return ""
 
@@ -316,11 +352,15 @@ def probe_inference(
         explicit_url = advertised_inference_url() or None
     if explicit_url and explicit_url.strip().lower() != "auto":
         base = _normalize_base(explicit_url)
-        ok, models = _openai_models(base)
+        # The ADVERTISED url is always ``base``; a probe url (env or advertise file)
+        # only changes where THIS host checks that the server answers.
+        target = inference_probe_url(base) or base
+        ok, models = _openai_models(target)
         if not ok:
-            log.info("Explicit inference url %s did not answer /v1/models", base)
+            log.info("Explicit inference url %s did not answer /v1/models%s", base,
+                     f" (probed at {target})" if target != base else "")
             return InferenceProbe([], base, "none", False)
-        kind = _fingerprint(base)
+        kind = _fingerprint(target)
         if kind is None:
             # It IS OpenAI-compatible (that is what /v1/models proved) but none of
             # the implementation fingerprints matched. llama-server is the closest
