@@ -539,6 +539,9 @@ class AgentResponse:
 
 
 
+_AGENT_CREDENTIAL_TTL_S = 900
+
+
 class AitherAgent:
     """An AI agent with identity, tools, memory, and LLM access.
 
@@ -571,6 +574,7 @@ class AitherAgent:
         loop_policy: "LoopPolicy | None" = None,
         crystal: "Crystal | None" = None,
         tool_grants: "dict | None" = None,
+        credential_grants: "list | None" = None,
     ):
         self.config = config or Config.from_env()
         # Opt-in loop policy (adk.loop_policy.LoopPolicy): the four measured nudges
@@ -584,6 +588,14 @@ class AitherAgent:
         # Per-agent tool grants (agent.yaml: tool_grants: {gateway_deny: [...]}) —
         # the agent-level plane of the host deny list; the server unions both.
         self.tool_grants = dict(tool_grants or {})
+        #: Secrets / Strata this agent may touch (``secret:<name>``, ``secret-rw:<name>``,
+        #: ``secret:ws/<workspace>/<key>``, ``strata:<path>/*``). When set, EVERY tool call
+        #: -- from chat, run, stream_react, stream_respond, swarm or a routine -- runs under
+        #: a credential naming exactly these (``_wrap_tools_with_agent_credential``), so the
+        #: vault client sends that and never the owner's login. Minting failure fails the
+        #: tool call. Other in-process code can still read the login store: this narrows
+        #: the vault/secret plane, it is not a process sandbox.
+        self.credential_grants = list(credential_grants or [])
 
         # Identity
         if isinstance(identity, Identity):
@@ -634,6 +646,8 @@ class AitherAgent:
 
         # Tools
         self._tools = ToolRegistry()
+        if self.credential_grants:
+            self._wrap_tools_with_agent_credential()
         if getattr(self, "crystal", None) is not None:
             # Model-callable memory exists only where a crystal (and thus a real
             # fact store) is bound; the tools report store faults instead of
@@ -1574,6 +1588,30 @@ class AitherAgent:
         except Exception as _e:
             logger.debug("[COHERENCE] adk grounding-repair skipped: %s", _e)
             return content
+
+    def _wrap_tools_with_agent_credential(self) -> None:
+        """Run every call on THIS agent's (per-agent) registry under its credential."""
+        from adk import vault_lockbox as _vl
+
+        raw = self._tools.execute
+        self._agent_cred = ("", 0.0)
+
+        async def _execute_as_agent(name, arguments, auth=None, **kw):
+            if _vl._RUN_CREDENTIAL.get():  # already inside a run credential
+                return await raw(name, arguments, auth=auth, **kw)
+            cred, expires = self._agent_cred
+            if not cred or expires - time.time() < 60:
+                cred = await asyncio.to_thread(
+                    _vl.mint_agent_credential, self.name, self.credential_grants,
+                    _AGENT_CREDENTIAL_TTL_S)
+                self._agent_cred = (cred, time.time() + _AGENT_CREDENTIAL_TTL_S)
+            token = _vl._RUN_CREDENTIAL.set(cred)
+            try:
+                return await raw(name, arguments, auth=auth, **kw)
+            finally:
+                _vl._RUN_CREDENTIAL.reset(token)
+
+        self._tools.execute = _execute_as_agent
 
     async def chat(
         self,

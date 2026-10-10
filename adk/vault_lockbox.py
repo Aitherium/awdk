@@ -35,6 +35,8 @@ import json
 import os
 import secrets as _secrets
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional
 
@@ -127,7 +129,7 @@ def _logged_in() -> bool:
 def _paid_tier() -> bool:
     """True when the resolved license is a paid tier (rank >= STARTER)."""
     try:
-        from adk.licensing import get_license_manager, _TIER_ORDER, Tier
+        from adk.licensing import _TIER_ORDER, Tier, get_license_manager
         tier = get_license_manager().license.tier
         return _TIER_ORDER.get(tier, 0) >= _TIER_ORDER.get(Tier.STARTER, 1)
     except Exception:
@@ -137,7 +139,7 @@ def _paid_tier() -> bool:
 def remote_mode() -> tuple[bool, str]:
     """Return (use_live_vault, human_reason). Local-only unless operator or
     logged-in+subscribed."""
-    if (os.environ.get(AGENT_CREDENTIAL_ENV) or "").strip():
+    if _agent_credential():
         # An agent run reads the secrets its credential grants from the live vault;
         # falling back to the local keyring would read the WRONG store in silence.
         return True, "agent credential (scoped to its grants)"
@@ -208,12 +210,55 @@ def _ensure_unlocked(now: float = 0.0) -> bool:
 #: is the ONLY credential the vault client sends: an agent run never falls back to the
 #: master key or the owner's login, whatever else the environment holds.
 AGENT_CREDENTIAL_ENV = "AITHER_AGENT_CREDENTIAL"
+#: The credential of the agent run on THIS task/thread (``agent_credential()``); it wins
+#: over the env var so two agents in one process never send each other's credential.
+_RUN_CREDENTIAL: ContextVar[str] = ContextVar("aither_agent_credential", default="")
+
+
+def _agent_credential() -> str:
+    return (_RUN_CREDENTIAL.get() or os.environ.get(AGENT_CREDENTIAL_ENV) or "").strip()
+
+
+def mint_agent_credential(agent_id: str, grants: list, ttl_seconds: int = 900) -> str:
+    """Ask Identity, as the SIGNED-IN owner, for a credential naming exactly ``grants``
+    (``secret:<name>``, ``secret-rw:<name>``, ``secret:ws/<workspace>/<key>``,
+    ``strata:<path>/*`` ...). The vault client then sends only this credential inside
+    the run; the login stays in the local login store, which this does not sandbox."""
+    import httpx
+
+    from adk.cli import _DEFAULT_IDENTITY_URL, _resolve_identity_url
+    from adk.shell.auth import AuthStore
+
+    tok = AuthStore.get_active_token()
+    if not tok:
+        raise RuntimeError("Sign in (adk login) to issue an agent credential.")
+    base = _resolve_identity_url(
+        os.environ.get("AITHER_IDENTITY_URL") or _DEFAULT_IDENTITY_URL).rstrip("/")
+    resp = httpx.post(
+        f"{base}/v1/agent-credentials",
+        json={"agent_id": agent_id, "grants": list(grants), "ttl_seconds": int(ttl_seconds)},
+        headers={"Authorization": f"Bearer {tok}"}, verify=tls_verify(), timeout=15,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"agent credential refused ({resp.status_code}): {resp.text[:200]}")
+    return str(resp.json()["credential"])
+
+
+@contextmanager
+def agent_credential(agent_id: str, grants: list, ttl_seconds: int = 900):
+    """Run a block as the agent: a fresh credential for ``grants`` is the ONLY thing the
+    vault client sends inside it (``_RUN_CREDENTIAL``), and it is dropped on exit."""
+    token = _RUN_CREDENTIAL.set(mint_agent_credential(agent_id, grants, ttl_seconds))
+    try:
+        yield
+    finally:
+        _RUN_CREDENTIAL.reset(token)
 
 
 def _client():
     import httpx
     headers = {"Content-Type": "application/json"}
-    agent = (os.environ.get(AGENT_CREDENTIAL_ENV) or "").strip()
+    agent = _agent_credential()
     if agent:
         headers["Authorization"] = f"Bearer {agent}"
         return httpx.Client(
@@ -678,8 +723,8 @@ def cmd_lock(args) -> int:
 
 
 def _console_up(port: int) -> bool:
-    import urllib.request
     import urllib.error
+    import urllib.request
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{port}/ui", timeout=2)
         return True
@@ -699,6 +744,7 @@ def cmd_gui(args) -> int:
     import sys
     import time
     import webbrowser
+
     from adk.config import load_saved_config, save_saved_config
 
     # Ensure the console shows the vault out of the box.
