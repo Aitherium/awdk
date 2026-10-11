@@ -1,6 +1,6 @@
 # Hermes Architecture Studio
 
-`hermes` · version `3.8.68` · 4.9 KB
+`hermes` · version `3.8.68` · 4.8 KB
 
 **[Download hermes-3.8.68.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/hermes-3.8.68.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/hermes-3.8.68.sha256)
 
@@ -41,5 +41,5 @@ skills/trade-off-analysis.md
 
 ---
 
-sha256 `ef7fad8dfa06aa0b3bc6adcb03a1839bf21530cd8d157e6364a9716d8c4b8237`  
+sha256 `86c7a9eb3b055ab726a08825ea53100b57cbee27bca8bb891176cc91d9444d39`  
 Built from `v3.8.68` (adk 3.8.68). [All packs](../packs.md)
