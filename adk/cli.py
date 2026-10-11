@@ -4246,42 +4246,27 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
         )
         invoke_url = os.environ.get("AITHER_INVOKE_URL", agent_url)
 
+        # The fleet receiver is Genesis /v1/agent/fleet/register behind the portal's
+        # allowlisted /api/genesis proxy (the same door `adk deploy` uses). The old path
+        # (FederationLite /v1/agents/upsert-batch, then /v1/agents/upsert) exists on no
+        # service, and the fallback printed "[OK]" without looking at the status code.
+        reg_url = f"{portal_url.rstrip('/')}/api/genesis/v1/agent/fleet/register"
+        body = {"name": agent_name, "invoke_url": invoke_url, "reach": "public",
+                "agent_type": "adk-agent", "instance_id": instance_id,
+                "tenant_id": ts, "status": "online"}
         try:
-            from adk.federation_lite import FederationLiteClient
-            fed = FederationLiteClient(
-                hub_url=portal_url,
-                api_key=api_key,
-                node_id=instance_id or agent_name,
-            )
-            result = await fed.upsert_agents([{
-                "name": agent_name,
-                "invoke_url": invoke_url,
-                "status": "online",
-                "tenant_id": ts,
-                "instance_id": instance_id,
-            }])
-            if result.get("error"):
-                print(f"  [!!] Portal registration failed: {result}")
-            else:
+            async with httpx.AsyncClient(timeout=15) as client:
+                rr = await client.post(
+                    reg_url, json=body,
+                    headers={"Authorization": f"Bearer {api_key}",
+                             "Content-Type": "application/json"})
+            if rr.status_code < 300:
                 print("  [OK] Registered with portal fleet")
-        except Exception:
-            # Fallback: direct HTTP
-            try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    await client.post(
-                        f"{portal_url}/v1/agents/upsert",
-                        json={
-                            "name": agent_name,
-                            "scope": {"visibility": "workspace", "tenant_id": ts},
-                            "invoke_url": invoke_url,
-                            "instance_id": instance_id,
-                            "status": "online",
-                        },
-                        headers={"Authorization": f"Bearer {api_key}"},
-                    )
-                print("  [OK] Registered with portal fleet (direct)")
-            except Exception as e2:
-                print(f"  [!!] Portal registration failed: {e2}")
+            else:
+                print(f"  [!!] Portal registration rejected: HTTP {rr.status_code} "
+                      f"{rr.text[:200]}")
+        except (httpx.HTTPError, OSError) as e2:
+            print(f"  [!!] Portal registration failed: {e2}")
 
         # 4. Print fleet URL
         print()
@@ -12566,7 +12551,11 @@ def _cmd_pack(args) -> int:
         target = packs_dir / pack_id
 
         try:
-            with httpx.Client(base_url=genesis_url, timeout=60) as c:
+            # Genesis checks the pack licence against the CALLER (_verify_pack_license),
+            # so an unauthenticated download fails for every licensed pack. Send the
+            # saved bearer the same way the training calls do.
+            with httpx.Client(base_url=genesis_url, timeout=60,
+                              headers=_train_headers()) as c:
                 resp = c.get(f"/v1/packs/{pack_id}/download")
 
             if resp.status_code == 402:
@@ -13332,10 +13321,13 @@ def _get_genesis_url() -> str:
     except (urllib.error.URLError, ConnectionError, OSError):
         pass
 
-    # Cloud gateway (for users without local Genesis)
+    # Cloud (no local Genesis): the portal's Genesis bridge. This used to return
+    # gateway.aitherium.com, which is the MCP gateway -- it has none of the
+    # training or pack routes, so every cloud `adk train` / `adk pack` call 404'd.
     api_key = cfg.get("api_key") or os.environ.get("AITHER_API_KEY", "")
     if api_key:
-        return "https://gateway.aitherium.com"
+        from adk.control_plane import genesis_data_base
+        return genesis_data_base()
 
     # Fallback — will produce a clear error when the call fails
     return "http://localhost:8001"

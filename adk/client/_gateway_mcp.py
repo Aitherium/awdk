@@ -85,7 +85,9 @@ class GatewayMCPClient:
             timeout: HTTP request timeout in seconds
         """
         self.gateway_url = (
-            gateway_url or os.getenv("AITHER_GATEWAY_URL", "https://mcp.aitherium.com")
+            gateway_url
+            or os.getenv("AITHER_MCP_GATEWAY_URL")
+            or os.getenv("AITHER_GATEWAY_URL", "https://mcp.aitherium.com")
         ).rstrip("/")
         self.api_key = api_key or _resolve_gateway_token()
         self._timeout = timeout
@@ -344,6 +346,9 @@ class GatewayMCPClient:
         """
         if not self.api_key:
             return {"error": "no_api_key", "message": "API key not configured"}
+        # Same StreamableHTTP rule as list_tools(): no session id -> "400 Missing session ID".
+        if not await self._ensure_session():
+            return {"error": "gateway_unreachable", "message": "MCP initialize failed"}
 
         try:
             async with httpx.AsyncClient(
@@ -438,6 +443,7 @@ async def create_gateway_mcp_client(
     # Resolve gateway URL
     url = (
         gateway_url
+        or os.getenv("AITHER_MCP_GATEWAY_URL", "")
         or os.getenv("AITHER_GATEWAY_URL", "")
         or "https://mcp.aitherium.com"
     )

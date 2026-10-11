@@ -11,8 +11,10 @@ Handles the full federation lifecycle:
 Two connection modes:
 
 **Gateway mode** (default for external agents):
-    All traffic goes through gateway.aitherium.com → AitherExternalGateway:8185
-    which handles auth, rate limiting, and proxies to internal services.
+    gateway.aitherium.com is the platform MCP gateway. Tools are MCP JSON-RPC at
+    ``/mcp`` (StreamableHTTP: initialize, then tools/list and tools/call), chat goes
+    through the ``ask_agent`` tool, and auth is ``/v1/auth/*``. Mesh membership is
+    WireGuard onboarding through the conductor (``adk mesh join``), not this client.
 
     fed = FederationClient("https://gateway.aitherium.com")
     await fed.register("my-agent", api_key="ak_xxx")
@@ -106,7 +108,7 @@ class FederationClient:
             "node": 8090,
             "genesis": 8001,
             "pulse": 8081,
-            "gateway": 8185,
+            "gateway": 8182,
         }
 
         # Auto-detect mode: if host looks like a gateway URL, use gateway mode
@@ -125,7 +127,7 @@ class FederationClient:
         """
         if self._mode == "gateway":
             # Everything routes through the gateway — paths are prefixed
-            # gateway.aitherium.com/v1/chat, /v1/mesh/join, etc.
+            # gateway.aitherium.com/health, /v1/auth/*, /mcp
             return f"{self.host}{path}"
         else:
             port = self._ports.get(service, 8001)
@@ -145,6 +147,17 @@ class FederationClient:
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=self._timeout, headers=self._headers())
+
+    def _gateway_mcp(self):
+        """The gateway's MCP endpoint, authenticated as this agent (lazy, reused)."""
+        from adk.client._gateway_mcp import GatewayMCPClient
+        token = self._creds.token or self._creds.api_key
+        gw = getattr(self, "_gw", None)
+        if gw is None or gw.api_key != token:
+            gw = GatewayMCPClient(gateway_url=self.host, api_key=token or None,
+                                  timeout=max(self._timeout, 60.0))
+            self._gw = gw
+        return gw
 
     # ─── AitherIdentity ───
 
@@ -281,28 +294,16 @@ class FederationClient:
     ) -> bool:
         """Join the AitherOS mesh network.
 
-        In gateway mode: POST gateway.aitherium.com/v1/mesh/join
+        In gateway mode: not available (run `adk mesh join`).
         In direct mode: POST mesh:8125/aithernet/nodes/join (then fallback /join)
         """
         import platform as plat
 
         if self._mode == "gateway":
-            try:
-                async with self._client() as client:
-                    resp = await client.post(
-                        self._url("gateway", "/v1/mesh/join"),
-                        json={
-                            "node_name": self._node_id,
-                            "capabilities": capabilities or [],
-                            "endpoint": "",
-                        },
-                    )
-                    if resp.status_code == 200:
-                        logger.info(f"Joined mesh via gateway: {self._node_id}")
-                        return True
-                    logger.warning(f"Gateway mesh join: {resp.status_code} {resp.text}")
-            except Exception as e:
-                logger.warning(f"Gateway mesh join error: {e}")
+            # The gateway has no mesh-join route. Joining the mesh is WireGuard onboarding
+            # through the conductor, which `adk mesh join` does end to end.
+            logger.warning("join_mesh is not available through the gateway; "
+                           "run `adk mesh join` to onboard this machine")
             return False
 
         # Direct mode: try AitherNet first (compound mount at /aithernet/)
@@ -351,10 +352,12 @@ class FederationClient:
 
     async def list_nodes(self) -> list[MeshNode]:
         """List nodes in the mesh."""
-        paths = (["/v1/mesh/nodes"] if self._mode == "gateway"
-                 else ["/aithernet/nodes", "/nodes"])
-        service = "gateway" if self._mode == "gateway" else "mesh"
-        for path in paths:
+        if self._mode == "gateway":
+            # No node directory behind the gateway; `adk mesh ls` reads the mesh itself.
+            logger.warning("list_nodes is not available through the gateway; use `adk mesh ls`")
+            return []
+        service = "mesh"
+        for path in ["/aithernet/nodes", "/nodes"]:
             try:
                 async with self._client() as client:
                     resp = await client.get(self._url(service, path))
@@ -396,14 +399,8 @@ class FederationClient:
         try:
             async with self._client() as client:
                 if self._mode == "gateway":
-                    resp = await client.post(
-                        self._url("gateway", "/v1/events/emit"),
-                        json={
-                            "event_type": event_type,
-                            "data": data,
-                            "source": self._node_id,
-                        },
-                    )
+                    logger.warning("emit_event is not available through the gateway")
+                    return False
                 else:
                     resp = await client.post(
                         self._url("flux", "/emit"),
@@ -548,18 +545,10 @@ class FederationClient:
     async def list_mcp_tools(self) -> list[dict]:
         """List available MCP tools from awnode."""
         if self._mode == "gateway":
-            try:
-                async with self._client() as client:
-                    resp = await client.get(self._url("gateway", "/v1/mcp/tools"))
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        tools = data.get("tools", [])
-                        if tools:
-                            logger.info(f"Discovered {len(tools)} MCP tools via gateway")
-                        return tools
-            except Exception as e:
-                logger.warning(f"Gateway MCP tools error: {e}")
-            return []
+            tools = await self._gateway_mcp().list_tools()
+            if tools:
+                logger.info(f"Discovered {len(tools)} MCP tools via gateway")
+            return tools
 
         data = await self._mcp_request("tools/list", timeout=15.0)
         tools = data.get("result", {}).get("tools", [])
@@ -572,23 +561,11 @@ class FederationClient:
     async def call_mcp_tool(self, name: str, arguments: dict | None = None) -> str:
         """Call an MCP tool on awnode."""
         if self._mode == "gateway":
-            try:
-                async with self._client() as client:
-                    resp = await client.post(
-                        self._url("gateway", "/v1/mcp/call"),
-                        json={"name": name, "arguments": arguments or {}},
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        parts = data.get("content", [])
-                        texts = []
-                        for p in parts:
-                            if isinstance(p, dict) and p.get("type") == "text":
-                                texts.append(p["text"])
-                        return "\n".join(texts) if texts else json.dumps(data)
-            except Exception as e:
-                logger.warning(f"Gateway MCP call error: {e}")
-            return ""
+            res = await self._gateway_mcp().call_tool(name, arguments or {})
+            if res.get("error"):
+                logger.warning(f"Gateway MCP call {name} failed: {res}")
+                return ""
+            return res.get("text") or json.dumps(res.get("raw") or {})
 
         data = await self._mcp_request(
             "tools/call",
@@ -614,40 +591,25 @@ class FederationClient:
     ) -> dict:
         """Send a chat message via AitherOS.
 
-        In gateway mode: POST gateway.aitherium.com/v1/chat
+        In gateway mode: the gateway's ask_agent MCP tool.
         In direct mode: Try Genesis:8001 first, then Node:8090.
 
         Returns {"response": "...", "source": "genesis|gateway|node", ...}
         """
         if self._mode == "gateway":
+            res = await self._gateway_mcp().call_tool(
+                "ask_agent", {"question": message, "agent": agent, "effort": effort})
+            if res.get("error"):
+                return {"response": "", "source": "gateway",
+                        "error": res.get("message") or res.get("error")}
+            text = res.get("text", "")
             try:
-                async with self._client() as client:
-                    resp = await client.post(
-                        self._url("gateway", "/v1/chat"),
-                        json={
-                            "message": message,
-                            "agent": agent,
-                            "session_id": f"fed-{self._node_id[:8]}",
-                        },
-                        timeout=60.0,
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        return {
-                            "response": data.get("response", data.get("content", "")),
-                            "source": "gateway",
-                            "model": data.get("model", ""),
-                            "agent": agent,
-                        }
-                    else:
-                        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-                        return {
-                            "response": "",
-                            "source": "gateway",
-                            "error": data.get("detail", f"HTTP {resp.status_code}"),
-                        }
-            except Exception as e:
-                return {"response": "", "source": "none", "error": str(e)}
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    text = parsed.get("answer") or parsed.get("response") or text
+            except (ValueError, TypeError):
+                logger.debug("ask_agent returned plain text, not JSON")
+            return {"response": text, "source": "gateway", "agent": agent}
 
         # Direct mode: try Genesis first
         try:
@@ -708,7 +670,7 @@ class FederationClient:
         try:
             async with self._client() as client:
                 if self._mode == "gateway":
-                    resp = await client.get(self._url("gateway", "/v1/status"))
+                    resp = await client.get(self._url("gateway", "/health"))
                 else:
                     resp = await client.get(self._url("pulse", "/health"))
                 if resp.status_code == 200:

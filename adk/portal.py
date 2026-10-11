@@ -13,7 +13,7 @@ the methods quietly no-op so offline use stays offline.
 Environment:
 
 - ``AITHERIUM_API_KEY``  — ACTA bearer or session token. Overrides the file.
-- ``AITHERIUM_BASE_URL`` — defaults to ``https://api.aitheros.ai``
+- ``AITHERIUM_BASE_URL`` — defaults to ``https://api.aitherium.com``
 """
 
 from __future__ import annotations
@@ -27,7 +27,20 @@ from adk.core.logging import get_logger
 
 _log = get_logger("aither_adk.portal")
 
-DEFAULT_BASE_URL = "https://api.aitheros.ai"
+# api.aitheros.ai never resolved (see adk.auth); api.aitherium.com is the portal.
+DEFAULT_BASE_URL = "https://api.aitherium.com"
+
+# Agent-run routes this client used to call that NO platform service serves.
+# They now say so once instead of sending a request that can only 404.
+_UNSERVED = ("/v1/agents/{name}/spec", "/v1/orchestrator/models", "/v1/telemetry/agent_run")
+_warned: set[str] = set()
+
+
+def _unserved(path: str) -> None:
+    if path not in _warned:
+        _warned.add(path)
+        _log.warning("portal.unserved",
+                     extra={"path": path, "reason": "no platform route; call skipped"})
 
 
 @dataclass(slots=True)
@@ -113,15 +126,21 @@ class PortalClient:
         return await self._request("GET", "/auth/me")
 
     async def get_agent_spec(self, name: str) -> dict[str, Any] | None:
-        """Pull a published agent card from the portal by name."""
-        return await self._request("GET", f"/v1/agents/{name}/spec")
+        """Published agent cards have no platform route yet; returns None."""
+        _unserved("/v1/agents/{name}/spec")
+        return None
 
     async def list_agents(self) -> list[dict[str, Any]] | None:
-        return await self._request("GET", "/v1/agents")
+        """The caller's registered fleet agents (Genesis via the portal proxy)."""
+        data = await self._request("GET", "/api/genesis/v1/agent/agent-endpoints")
+        if isinstance(data, dict):
+            return data.get("agents") or data.get("endpoints") or data.get("items") or []
+        return data
 
     async def list_orchestrator_models(self) -> list[dict[str, Any]] | None:
-        """List orchestrator models the portal offers (e.g. nemotron)."""
-        return await self._request("GET", "/v1/orchestrator/models")
+        """No platform route lists orchestrator models; returns None."""
+        _unserved("/v1/orchestrator/models")
+        return None
 
     # ---- write paths -----------------------------------------------------
 
@@ -144,7 +163,8 @@ class PortalClient:
             "finish_reason": finish_reason,
             "extra": extra or {},
         }
-        await self._request("POST", "/v1/telemetry/agent_run", json=payload)
+        del payload  # no platform telemetry receiver for agent runs yet
+        _unserved("/v1/telemetry/agent_run")
 
     async def register_local_agent(
         self, spec: dict[str, Any], *, endpoint: str | None = None
@@ -154,8 +174,16 @@ class PortalClient:
         Mirrors the auto-onboard flow described in ``AGENTS.md`` — gives
         the user a unified view of cloud + local agents in the portal UI.
         """
-        body = {"spec": spec, "endpoint": endpoint}
-        return await self._request("POST", "/v1/agents/register-local", json=body)
+        # Genesis /v1/agent/fleet/register behind the portal's /api/genesis proxy is
+        # the platform's fleet receiver (the route `adk deploy` uses).
+        body = {
+            "name": spec.get("name", ""),
+            "invoke_url": endpoint or "",
+            "agent_type": "adk-agent",
+            "reach": "public" if endpoint else "local",
+            "spec": spec,
+        }
+        return await self._request("POST", "/api/genesis/v1/agent/fleet/register", json=body)
 
     # ---- marketplace: browse / discover / apply --------------------------
     #

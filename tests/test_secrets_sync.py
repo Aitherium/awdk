@@ -139,3 +139,46 @@ class TestExtractSecretNames:
     def test_unknown_shape_is_empty_not_crash(self):
         assert _extract_secret_names(None) == []
         assert _extract_secret_names(42) == []
+
+
+class TestWorkspaceVaultFallback:
+    """Online fallback = Genesis /workspace-secrets behind the portal's /api/genesis
+    proxy. The old fallback hit /secrets and /secrets/batch on the portal or the MCP
+    gateway, which serve neither, so it always pulled 0 and pushed nothing."""
+
+    def _client_mock(self, get_responses, post_response=None):
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=get_responses)
+        mock_client.post = AsyncMock(return_value=post_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_pull_reads_keys_then_values_from_the_workspace_vault(self):
+        keys = MagicMock(status_code=200)
+        keys.json.return_value = {"secrets": [{"key": "OPENAI_KEY"}]}
+        val = MagicMock(status_code=200)
+        val.json.return_value = {"key": "OPENAI_KEY", "value": "sk-test"}
+        mc = self._client_mock([keys, val])
+        with patch("httpx.AsyncClient", return_value=mc), \
+             patch("adk.builtin_tools._load_secrets", return_value={}), \
+             patch("adk.builtin_tools._save_secrets"):
+            out = await SecretsSync(api_key="k", secrets_url="",
+                                    gateway_url="https://portal.test").pull()
+        assert out == {"OPENAI_KEY": "sk-test"}
+        urls = [c.args[0] for c in mc.get.await_args_list]
+        assert urls[0] == "https://portal.test/api/genesis/workspace-secrets/keys"
+        assert urls[1] == "https://portal.test/api/genesis/workspace-secrets/value"
+        assert not any(u.endswith("/secrets") for u in urls)
+
+    @pytest.mark.asyncio
+    async def test_push_writes_to_workspace_vault_set(self):
+        ok = MagicMock(status_code=200)
+        mc = self._client_mock([], post_response=ok)
+        with patch("httpx.AsyncClient", return_value=mc):
+            assert await SecretsSync(api_key="k", secrets_url="",
+                                     gateway_url="https://portal.test").push("A", "b")
+        url = mc.post.await_args.args[0]
+        assert url == "https://portal.test/api/genesis/workspace-secrets/set"
+        assert mc.post.await_args.kwargs["json"] == {"key": "A", "value": "b"}

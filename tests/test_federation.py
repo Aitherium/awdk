@@ -155,7 +155,7 @@ class TestRegistration:
 class TestMesh:
     @pytest.mark.asyncio
     async def test_join_mesh(self):
-        fed = FederationClient()
+        fed = FederationClient(mode="direct", host="http://fleet")
         with patch.object(fed, "_client") as mock_client_fn:
             client = AsyncMock()
             mock_client_fn.return_value.__aenter__ = AsyncMock(return_value=client)
@@ -176,7 +176,7 @@ class TestMesh:
 
     @pytest.mark.asyncio
     async def test_join_mesh_failure(self):
-        fed = FederationClient()
+        fed = FederationClient(mode="direct", host="http://fleet")
         with patch.object(fed, "_client") as mock_client_fn:
             client = AsyncMock()
             mock_client_fn.return_value.__aenter__ = AsyncMock(return_value=client)
@@ -189,7 +189,7 @@ class TestMesh:
 
     @pytest.mark.asyncio
     async def test_list_nodes(self):
-        fed = FederationClient()
+        fed = FederationClient(mode="direct", host="http://fleet")
         with patch.object(fed, "_client") as mock_client_fn:
             client = AsyncMock()
             mock_client_fn.return_value.__aenter__ = AsyncMock(return_value=client)
@@ -215,7 +215,7 @@ class TestMesh:
 class TestFluxEvents:
     @pytest.mark.asyncio
     async def test_emit_event(self):
-        fed = FederationClient()
+        fed = FederationClient(mode="direct", host="http://fleet")
         with patch.object(fed, "_client") as mock_client_fn:
             client = AsyncMock()
             mock_client_fn.return_value.__aenter__ = AsyncMock(return_value=client)
@@ -231,7 +231,7 @@ class TestFluxEvents:
 
     @pytest.mark.asyncio
     async def test_emit_event_failure(self):
-        fed = FederationClient()
+        fed = FederationClient(mode="direct", host="http://fleet")
         with patch.object(fed, "_client") as mock_client_fn:
             client = AsyncMock()
             mock_client_fn.return_value.__aenter__ = AsyncMock(return_value=client)
@@ -350,7 +350,7 @@ class TestChat:
 
     @pytest.mark.asyncio
     async def test_chat_all_fail(self):
-        fed = FederationClient()
+        fed = FederationClient(mode="direct", host="http://fleet")
         with patch.object(fed, "_client") as mock_client_fn:
             client = AsyncMock()
             mock_client_fn.return_value.__aenter__ = AsyncMock(return_value=client)
@@ -439,3 +439,62 @@ class TestLifecycle:
         fed = FederationClient()
         health = await fed.get_service_health("nonexistent")
         assert "error" in health
+
+
+# ---------------------------------------------------------------------------
+# Gateway mode = the platform MCP gateway (gateway.aitherium.com -> :8182).
+# It serves MCP JSON-RPC at /mcp, /v1/auth/* and /health. It has NO /v1/mcp/tools,
+# /v1/mcp/call, /v1/mesh/*, /v1/events/emit, /v1/chat or /v1/status routes; the old
+# client called those and every call 404'd.
+# ---------------------------------------------------------------------------
+
+class TestGatewayModeContract:
+    def _fed(self):
+        fed = FederationClient()  # default host + mode = gateway
+        fed._creds.token = "aither_sk_test"
+        return fed
+
+    @pytest.mark.asyncio
+    async def test_list_tools_uses_mcp_jsonrpc(self):
+        fed = self._fed()
+        gw = MagicMock()
+        gw.list_tools = AsyncMock(return_value=[{"name": "recall"}])
+        with patch.object(fed, "_gateway_mcp", return_value=gw), \
+             patch.object(fed, "_client") as http:
+            tools = await fed.list_mcp_tools()
+        assert tools == [{"name": "recall"}]
+        http.assert_not_called()  # no REST /v1/mcp/tools call
+
+    @pytest.mark.asyncio
+    async def test_call_tool_uses_mcp_jsonrpc(self):
+        fed = self._fed()
+        gw = MagicMock()
+        gw.call_tool = AsyncMock(return_value={"success": True, "text": "hi"})
+        with patch.object(fed, "_gateway_mcp", return_value=gw):
+            assert await fed.call_mcp_tool("recall", {"query": "x"}) == "hi"
+        gw.call_tool.assert_awaited_once_with("recall", {"query": "x"})
+
+    @pytest.mark.asyncio
+    async def test_chat_goes_through_ask_agent(self):
+        fed = self._fed()
+        gw = MagicMock()
+        gw.call_tool = AsyncMock(return_value={"success": True, "text": '{"answer": "42"}'})
+        with patch.object(fed, "_gateway_mcp", return_value=gw):
+            out = await fed.chat("q?", agent="atlas", effort=3)
+        assert out["response"] == "42" and out["source"] == "gateway"
+        name, args = gw.call_tool.await_args.args
+        assert name == "ask_agent" and args["agent"] == "atlas" and args["question"] == "q?"
+
+    @pytest.mark.asyncio
+    async def test_mesh_and_events_make_no_gateway_calls(self):
+        fed = self._fed()
+        with patch.object(fed, "_client") as http:
+            assert await fed.join_mesh(["x"]) is False
+            assert await fed.list_nodes() == []
+        http.assert_not_called()
+
+    def test_gateway_mcp_client_targets_the_gateway_host(self):
+        fed = self._fed()
+        gw = fed._gateway_mcp()
+        assert gw.gateway_url == "https://gateway.aitherium.com"
+        assert gw.api_key == "aither_sk_test"

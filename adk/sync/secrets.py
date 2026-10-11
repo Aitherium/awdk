@@ -50,8 +50,9 @@ def _extract_secret_names(payload: object) -> list[str]:
         for item in payload:
             if isinstance(item, str):
                 out.append(item)
-            elif isinstance(item, dict) and item.get("name"):
-                out.append(str(item["name"]))
+            elif isinstance(item, dict) and (item.get("name") or item.get("key")):
+                # AitherSecrets rows carry "name"; workspace-vault rows carry "key".
+                out.append(str(item.get("name") or item["key"]))
         return out
     if isinstance(payload, dict):
         inner = payload.get("secrets", payload)
@@ -82,11 +83,17 @@ class SecretsSync:
             secrets_url
             or os.environ.get("AITHER_SECRETS_URL", "")
         ).rstrip("/")
-        self.gateway_url = (
+        # The online vault is the caller's WORKSPACE secrets: Genesis
+        # /workspace-secrets/{keys,value,set}, reached through the portal's allowlisted
+        # /api/genesis proxy and scoped server-side by the bearer. The old fallback
+        # posted /secrets and /secrets/batch to the portal (Veil) or the MCP gateway;
+        # neither serves those paths, so pull always got 0 and push always failed.
+        self.portal_url = (
             gateway_url
-            or os.environ.get("AITHER_GATEWAY_URL", "")
-            or os.environ.get("AITHER_PORTAL_URL", "https://api.aitherium.com")
+            or os.environ.get("AITHER_PORTAL_URL", "")
+            or "https://api.aitherium.com"
         ).rstrip("/")
+        self.gateway_url = self.portal_url  # kept for callers that read the old name
 
     async def pull(self) -> Dict[str, str]:
         """Pull secrets from vault and store in encrypted local keyring.
@@ -138,33 +145,23 @@ class SecretsSync:
             except (httpx.HTTPError, OSError) as exc:
                 logger.debug("AitherSecrets pull failed: %s", exc)
 
-        # Fallback: Try gateway vault (online)
-        if not synced and self.api_key and self.gateway_url:
+        # Fallback: the workspace vault through the portal (online)
+        if not synced and self.api_key and self.portal_url:
+            base = f"{self.portal_url}/api/genesis/workspace-secrets"
             try:
-                async with httpx.AsyncClient(
-                    timeout=15, verify=tls_verify()
-                ) as client:
-                    # Gateway uses the same /secrets endpoints
-                    resp = await client.get(
-                        f"{self.gateway_url}/secrets",
-                        headers=self._headers(),
-                    )
+                async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as client:
+                    resp = await client.get(f"{base}/keys", headers=self._headers())
                     if resp.status_code == 200:
-                        names_data = resp.json()
-                        names = _extract_secret_names(names_data)
-
-                        if names:
-                            batch_resp = await client.post(
-                                f"{self.gateway_url}/secrets/batch",
-                                json={"names": names},
-                                headers=self._headers(),
-                            )
-                            if batch_resp.status_code == 200:
-                                batch_data = batch_resp.json()
-                                synced = batch_data.get("secrets", {})
-                        logger.info("Pulled %d secrets from gateway vault", len(synced))
+                        for name in _extract_secret_names(resp.json()):
+                            vr = await client.get(f"{base}/value", params={"key": name},
+                                                  headers=self._headers())
+                            if vr.status_code == 200 and "value" in vr.json():
+                                synced[name] = vr.json()["value"]
+                        logger.info("Pulled %d secrets from the workspace vault", len(synced))
+                    else:
+                        logger.warning("Workspace vault list failed: HTTP %s", resp.status_code)
             except (httpx.HTTPError, OSError) as exc:
-                logger.debug("Gateway secrets pull failed: %s", exc)
+                logger.debug("Workspace vault pull failed: %s", exc)
 
         # Store synced secrets in encrypted keyring (merge with existing)
         if synced:
@@ -206,29 +203,22 @@ class SecretsSync:
             except (httpx.HTTPError, OSError) as exc:
                 logger.debug("Failed to push to AitherSecrets: %s", exc)
 
-        # Fallback: Try gateway vault
-        if self.api_key and self.gateway_url:
+        # Fallback: the workspace vault through the portal
+        if self.api_key and self.portal_url:
             try:
-                async with httpx.AsyncClient(
-                    timeout=15, verify=tls_verify()
-                ) as client:
+                async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as client:
                     resp = await client.post(
-                        f"{self.gateway_url}/secrets",
-                        json={
-                            "name": key,
-                            "value": value,
-                            "secret_type": "api_key",
-                            "access_level": "private",
-                            "allowed_services": [],
-                            "expires_in_days": None,
-                        },
+                        f"{self.portal_url}/api/genesis/workspace-secrets/set",
+                        json={"key": key, "value": value},
                         headers=self._headers(),
                     )
                     if resp.status_code in (200, 201):
-                        logger.info("Pushed secret '%s' to gateway vault", key)
+                        logger.info("Pushed secret '%s' to the workspace vault", key)
                         return True
+                    logger.warning("Workspace vault push of '%s' failed: HTTP %s",
+                                   key, resp.status_code)
             except (httpx.HTTPError, OSError) as exc:
-                logger.debug("Failed to push to gateway vault: %s", exc)
+                logger.debug("Failed to push to the workspace vault: %s", exc)
 
         logger.warning("Failed to push secret '%s' to any vault", key)
         return False
@@ -246,7 +236,7 @@ class SecretsSync:
         # Step 2: Push any local-only secrets (those in keyring but not in vault)
         # Only attempt push if we have credentials
         pushed: Dict[str, str] = {}
-        if self.api_key and (self.secrets_url or self.gateway_url):
+        if self.api_key and (self.secrets_url or self.portal_url):
             local = _load_secrets()
             # Find keys that are in local keyring but weren't just pulled
             local_only = {k: v for k, v in local.items() if k not in pulled}

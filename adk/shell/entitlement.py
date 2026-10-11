@@ -6,7 +6,7 @@ Client-side entitlement / quota gate for privileged CLI commands.
 
 Sits between the auth layer (who are you?) and the feature execution
 (can you do this, and do you have budget left?). Truth lives server-side
-at ``GET /v1/billing/entitlement`` and ``POST /v1/billing/debit``; this
+at the gateway's ``GET /v1/billing/balance`` (metering is server-side); this
 module is a fast local hint with a signed cache and an offline grace.
 
 Threat model
@@ -261,8 +261,22 @@ def save_cached(ent: Entitlement) -> None:
 # Remote refresh
 # --------------------------------------------------------------------------- #
 
+def _billing_url() -> str:
+    """The authenticated plan + balance endpoint: the platform gateway's
+    ``GET /v1/billing/balance`` (``{plan, tier, tokens, ...}`` for the bearer).
+
+    This used to call ``{identity endpoint}/v1/billing/entitlement``. Identity has no
+    billing routes and nothing anywhere serves the singular path, so every remote
+    refresh failed and EVERY user fell back to the explorer tier.
+    """
+    base = (os.environ.get("AITHER_MCP_GATEWAY_URL")
+            or os.environ.get("AITHER_BILLING_URL")
+            or "https://gateway.aitherium.com")
+    return base.rstrip("/") + "/v1/billing/balance"
+
+
 async def _fetch_remote(profile: Dict[str, Any]) -> Optional[Entitlement]:
-    """Hit /v1/billing/entitlement. Returns None on any failure."""
+    """Read the caller's plan and balance. Returns None on any failure."""
     endpoint = (profile or {}).get("endpoint", "")
     token = (profile or {}).get("access_token", "")
     if not endpoint or endpoint == "local" or not token or token == "aither_root_local":
@@ -274,7 +288,7 @@ async def _fetch_remote(profile: Dict[str, Any]) -> Optional[Entitlement]:
     try:
         async with httpx.AsyncClient(timeout=8.0) as http:
             resp = await http.get(
-                f"{endpoint}/v1/billing/entitlement",
+                _billing_url(),
                 headers={"Authorization": f"Bearer {token}",
                          "X-Device-Id": _get_device_id()},
             )
@@ -284,13 +298,14 @@ async def _fetch_remote(profile: Dict[str, Any]) -> Optional[Entitlement]:
     except Exception:
         return None
 
-    plan = body.get("plan", "explorer")
+    plan = body.get("plan") or body.get("tier") or "explorer"
     features = body.get("features") or PLAN_FEATURE_FALLBACK.get(plan, EXPLORER_TIER_FEATURES)
     now = datetime.now(timezone.utc).isoformat()
+    balance = body.get("tokens_remaining", body.get("tokens", 0))
     return Entitlement(
         plan=plan,
-        tokens_remaining=int(body.get("tokens_remaining", 0)),
-        tokens_total=int(body.get("tokens_total", 0)),
+        tokens_remaining=int(balance or 0),
+        tokens_total=int(body.get("tokens_total", balance or 0)),
         features=features,
         expires_at=body.get("expires_at", ""),
         status=body.get("status", "active"),
@@ -403,30 +418,18 @@ async def require(feature: str, *, debit: int = 0) -> Entitlement:
 
 
 async def report_debit(feature: str, amount: int) -> bool:
-    """Locally decrement + best-effort server-side debit. Returns True on success."""
+    """Decrement the cached balance so the local gate stays honest between refreshes.
+
+    There is no client-side debit endpoint (the old POST /v1/billing/debit existed
+    nowhere): the platform meters each billable call itself, at the gateway, so the
+    next refresh() reads the authoritative balance.
+    """
+    del feature
     if amount <= 0:
         return True
     ent = load_cached() or await refresh()
     ent.tokens_remaining = max(0, ent.tokens_remaining - amount)
     save_cached(ent)
-
-    profile = AuthStore.get_active_profile() or {}
-    endpoint = profile.get("endpoint", "")
-    token = profile.get("access_token", "")
-    if not endpoint or endpoint == "local" or token == "aither_root_local":
-        return True
-
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as http:
-            await http.post(
-                f"{endpoint}/v1/billing/debit",
-                headers={"Authorization": f"Bearer {token}",
-                         "X-Device-Id": _get_device_id()},
-                json={"feature": feature, "amount": amount},
-            )
-    except Exception:
-        return False
     return True
 
 

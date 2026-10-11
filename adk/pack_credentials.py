@@ -112,7 +112,7 @@ def _get_acta_base() -> str:
     Order:
         1. AITHER_ACTA_URL (explicit override)
         2. AITHERIUM_BASE_URL (fallback to portal)
-        3. https://api.aitheros.ai (default)
+        3. https://api.aitherium.com (default; api.aitheros.ai never resolved)
     """
     acta = os.environ.get("AITHER_ACTA_URL", "").strip()
     if acta:
@@ -120,7 +120,7 @@ def _get_acta_base() -> str:
     portal = os.environ.get("AITHERIUM_BASE_URL", "").strip()
     if portal:
         return portal.rstrip("/")
-    return "https://api.aitheros.ai"
+    return "https://api.aitherium.com"
 
 
 def _get_internal_token() -> Optional[str]:

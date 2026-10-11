@@ -1,4 +1,9 @@
-"""Expeditions service client (port 8785)."""
+"""Expeditions service client (AitherExpedition, port 8785).
+
+Paths are the service's own routes, served at its root: /list, /submit, /{id},
+/{id}/pause|resume|cancel. This client used to prefix them with /expedition
+(the Genesis router's prefix), so every call 404'd against the service it targets.
+"""
 
 from typing import Optional
 
@@ -10,7 +15,7 @@ class ExpeditionClient(ServiceClient):
 
     async def list(self) -> dict:
         """List all expeditions."""
-        return await self._get("/expeditions")
+        return await self._get("/list")
 
     async def submit(
         self,
@@ -39,20 +44,20 @@ class ExpeditionClient(ServiceClient):
             payload["additional_context"] = context
         if strategy_hint:
             payload["strategy_hint"] = strategy_hint
-        return await self._post("/expedition/submit", json=payload, timeout=60.0)
+        return await self._post("/submit", json=payload, timeout=60.0)
 
     async def status(self, expedition_id: str) -> dict:
         """Get expedition status."""
-        return await self._get(f"/expedition/{expedition_id}")
+        return await self._get(f"/{expedition_id}")
 
     async def pause(self, expedition_id: str) -> dict:
         """Pause a running expedition."""
-        return await self._post(f"/expedition/{expedition_id}/pause")
+        return await self._post(f"/{expedition_id}/pause")
 
     async def resume(self, expedition_id: str) -> dict:
         """Resume a paused expedition."""
-        return await self._post(f"/expedition/{expedition_id}/resume")
+        return await self._post(f"/{expedition_id}/resume")
 
     async def cancel(self, expedition_id: str) -> dict:
         """Cancel an expedition."""
-        return await self._post(f"/expedition/{expedition_id}/cancel")
+        return await self._post(f"/{expedition_id}/cancel")

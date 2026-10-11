@@ -46,7 +46,8 @@ async def discover_agents(gateway_url: str = None) -> dict[str, str]:
         Dict mapping agent names to their service URLs.
     """
     if gateway_url is None:
-        gateway_url = os.environ.get("AITHER_GATEWAY_URL", "http://localhost:8182")
+        gateway_url = (os.environ.get("AITHER_MCP_GATEWAY_URL")
+                       or os.environ.get("AITHER_GATEWAY_URL", "http://localhost:8182"))
 
     agents = {}
     try:

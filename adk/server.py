@@ -4552,7 +4552,9 @@ def create_app(
         body = await request.json()
         message = body.get("message", body.get("content", ""))
         session_id = body.get("session_id")
-        agent_name = body.get("agent")
+        # The platform gateway's ask_agent sends `persona` (Genesis's field name);
+        # reading only `agent` silently answered with the default agent instead.
+        agent_name = body.get("agent") or body.get("persona")
 
         # An empty prompt runs the FULL agentic pipeline on nothing: the model has
         # no user question in context, burns turns calling tools aimlessly, and
@@ -4641,7 +4643,7 @@ def create_app(
         body = await request.json()
         message = body.get("message", body.get("content", ""))
         session_id = body.get("session_id") or f"adk-{uuid.uuid4().hex[:8]}"
-        agent_name = body.get("agent")
+        agent_name = body.get("agent") or body.get("persona")  # same alias as /chat
         reasoning = body.get("reasoning", False)
         mcp_endpoints = body.get("mcp_endpoints")
         system_additions = body.get("system_additions")

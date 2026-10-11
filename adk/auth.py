@@ -17,7 +17,8 @@ Supported credential types:
 
 Environment overrides:
 
-- ``AITHERIUM_BASE_URL``   — portal API root (default ``https://api.aitheros.ai``)
+- ``AITHERIUM_BASE_URL``   — identity root for login
+  (default ``https://idp.aitherium.com/identity``)
 - ``AITHERIDENTITY_URL``   — identity service URL (default uses base URL)
 - ``AITHER_OIDC_CLIENT_ID`` — OAuth client_id (default ``aither-cli``)
 - ``AITHERIUM_API_KEY``    — short-circuit: skip the file store entirely

@@ -23,12 +23,21 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger("adk.mesh_provider")
 
-# Public federation entry point. Internal fleet callers override these via
-# AITHER_STRATA_URL / AITHER_CONDUCTOR_URL (set in placement_policy.yaml + compose)
-# with the in-cluster service addresses; a standalone/remote node reaches the same
-# services through the authenticated public gateway.
-DEFAULT_STRATA_URL = os.getenv("AITHER_STRATA_URL", "https://gateway.aitherium.com")
-DEFAULT_CONDUCTOR_URL = os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com")
+# Internal fleet callers override these via AITHER_STRATA_URL / AITHER_CONDUCTOR_URL
+# (placement_policy.yaml + compose) with in-cluster addresses.
+#
+# A remote node reaches the Conductor's /v1/mesh/peers/* routes (consent, trust-request,
+# join-pool, leave-pool, federation-token) at conductor.aitherium.com. These defaults
+# used to be gateway.aitherium.com, which is the MCP gateway: none of those routes
+# exist there, so every call 404'd.
+#
+# Strata has NO public host, so there is no default: advertise() and poll_trust_tier()
+# say so instead of posting to a host that cannot answer.
+DEFAULT_STRATA_URL = os.getenv("AITHER_STRATA_URL", "")
+DEFAULT_CONDUCTOR_URL = os.getenv("AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com")
+
+_NO_STRATA = ("AITHER_STRATA_URL is not set; Strata has no public endpoint, so this "
+              "step only works from inside the fleet or with an explicit strata_url")
 
 
 def _tls_verify() -> Any:
@@ -104,7 +113,7 @@ async def advertise(
     peer_id: str,
     inference_url: str,
     inference_model: str,
-    strata_url: str = DEFAULT_STRATA_URL,
+    strata_url: str | None = None,
     auth_token: str | None = None,
 ) -> dict[str, Any]:
     """Register the inference endpoint on the peer record.
@@ -133,6 +142,9 @@ async def advertise(
             "step": "advertise",
         }
 
+    strata_url = strata_url or os.getenv("AITHER_STRATA_URL", DEFAULT_STRATA_URL)
+    if not strata_url:
+        return {"ok": False, "error": _NO_STRATA, "step": "advertise"}
     url = strata_url.rstrip("/") + "/strata/mesh/peers/inference"
     payload = {
         "peer_id": peer_id,
@@ -332,7 +344,7 @@ async def request_trust(
 
 async def poll_trust_tier(
     peer_id: str,
-    strata_url: str = DEFAULT_STRATA_URL,
+    strata_url: str | None = None,
     auth_token: str | None = None,
     max_wait_seconds: int = 30,
 ) -> dict[str, Any]:
@@ -360,6 +372,9 @@ async def poll_trust_tier(
             "step": "poll_trust",
         }
 
+    strata_url = strata_url or os.getenv("AITHER_STRATA_URL", DEFAULT_STRATA_URL)
+    if not strata_url:
+        return {"ok": False, "error": _NO_STRATA, "step": "poll_trust"}
     url = strata_url.rstrip("/") + f"/strata/mesh/peers/{peer_id}"
     headers = {}
     if auth_token:

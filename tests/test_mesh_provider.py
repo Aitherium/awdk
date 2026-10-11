@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+import os
+
 from adk.mesh_provider import (
     advertise,
     grant_consent,
@@ -718,3 +720,42 @@ class TestFluxNode:
                         assert call_env["FLUX_PORT"] == "9000"
                         # And secret should resolve from env when not passed
                         assert call_env["AITHER_INTERNAL_SECRET"] == "env_secret_xyz"
+
+
+
+# ---------------------------------------------------------------------------
+# Endpoint defaults. The conductor's /v1/mesh/peers/* routes live at
+# conductor.aitherium.com; the old default (gateway.aitherium.com) is the MCP gateway,
+# which has none of them. Strata has no public host, so there is no default at all.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _strata_env(monkeypatch, request):
+    """The mocked happy paths stand in for an in-fleet Strata."""
+    if "no_strata" not in request.node.name:
+        monkeypatch.setenv("AITHER_STRATA_URL", "https://strata.test")
+
+
+def test_conductor_default_is_the_public_conductor():
+    import adk.mesh_provider as mp
+    if not os.getenv("AITHER_CONDUCTOR_URL"):
+        assert mp.DEFAULT_CONDUCTOR_URL == "https://conductor.aitherium.com"
+    assert "gateway.aitherium.com" not in mp.DEFAULT_CONDUCTOR_URL
+
+
+@pytest.mark.asyncio
+async def test_advertise_no_strata_says_so_without_a_request(monkeypatch):
+    monkeypatch.delenv("AITHER_STRATA_URL", raising=False)
+    with patch("httpx.AsyncClient") as http:
+        out = await advertise("peer-1", "http://x:8000/v1", "m")
+    assert out["ok"] is False and "AITHER_STRATA_URL" in out["error"]
+    http.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poll_trust_no_strata_says_so_without_a_request(monkeypatch):
+    monkeypatch.delenv("AITHER_STRATA_URL", raising=False)
+    with patch("httpx.AsyncClient") as http:
+        out = await poll_trust_tier("peer-1", max_wait_seconds=0)
+    assert out["ok"] is False and "AITHER_STRATA_URL" in out["error"]
+    http.assert_not_called()

@@ -25,16 +25,56 @@ def control_plane_url() -> str:
     ).rstrip("/")
 
 
-def genesis_api_base() -> str:
-    """Base URL for Genesis ``/v1/...`` routes.
+#: The portal's generic Genesis bridge (auth forwarded, no path allowlist). Data-plane
+#: clients (session/file/lockbox sync, packs, training) use it: their routes are not on
+#: the browser-facing ``/api/genesis`` allowlist.
+GENESIS_BRIDGE_PREFIX = "/api/bridge/genesis"
 
-    An explicit ``AITHER_API_URL`` / ``AITHER_GATEWAY_URL`` is a DIRECT Genesis
-    base and is used as given; otherwise the portal's Genesis proxy.
+_warned_gateway_alias = False
+
+
+def genesis_override() -> str:
+    """An explicitly configured DIRECT Genesis base, or "".
+
+    ``AITHER_GENESIS_URL`` (preferred) or ``AITHER_API_URL``. ``AITHER_GATEWAY_URL``
+    is still honoured for backward compatibility but is deprecated here: other
+    modules read the same variable as the MCP gateway (``AITHER_MCP_GATEWAY_URL``),
+    so setting it for one silently re-pointed the other.
     """
-    explicit = os.environ.get("AITHER_API_URL") or os.environ.get("AITHER_GATEWAY_URL")
+    global _warned_gateway_alias
+    explicit = os.environ.get("AITHER_GENESIS_URL") or os.environ.get("AITHER_API_URL")
     if explicit:
         return explicit.rstrip("/")
-    return control_plane_url() + GENESIS_PROXY_PREFIX
+    legacy = os.environ.get("AITHER_GATEWAY_URL", "")
+    if legacy:
+        if not _warned_gateway_alias:
+            _warned_gateway_alias = True
+            import warnings
+            warnings.warn(
+                "AITHER_GATEWAY_URL as a Genesis base is deprecated; set AITHER_GENESIS_URL "
+                "(Genesis) or AITHER_MCP_GATEWAY_URL (MCP gateway) instead",
+                DeprecationWarning, stacklevel=3)
+        return legacy.rstrip("/")
+    return ""
 
 
-__all__ = ["DEFAULT_CONTROL_PLANE", "GENESIS_PROXY_PREFIX", "control_plane_url", "genesis_api_base"]
+def genesis_api_base() -> str:
+    """Base URL for Genesis ``/v1/...`` routes the portal allowlists.
+
+    An explicit override (see ``genesis_override``) is a DIRECT Genesis base and is
+    used as given; otherwise the portal's ``/api/genesis`` proxy.
+    """
+    return genesis_override() or control_plane_url() + GENESIS_PROXY_PREFIX
+
+
+def genesis_data_base() -> str:
+    """Base URL for Genesis data-plane routes (sync, packs, training).
+
+    Direct override first, else the portal's generic bridge. Never
+    ``http://localhost:8001``: Genesis publishes no host port and speaks TLS.
+    """
+    return genesis_override() or control_plane_url() + GENESIS_BRIDGE_PREFIX
+
+
+__all__ = ["DEFAULT_CONTROL_PLANE", "GENESIS_PROXY_PREFIX", "GENESIS_BRIDGE_PREFIX",
+           "control_plane_url", "genesis_api_base", "genesis_data_base", "genesis_override"]

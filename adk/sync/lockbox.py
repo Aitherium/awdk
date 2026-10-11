@@ -20,7 +20,7 @@ Supported modes:
 
 Environment:
   - AITHER_LOCKBOX_SYNC=true/false — enable/disable sync (default: false)
-  - AITHER_GATEWAY_URL=http://localhost:8001 — sync endpoint (default: local)
+  - AITHER_GENESIS_URL — direct Genesis base for sync (default: the portal bridge)
   - AITHER_SYNC_TOKEN=Bearer ... — auth token override
   - AITHER_SYNC_TIMEOUT=30.0 — HTTP timeout in seconds
 
@@ -49,6 +49,17 @@ from dataclasses import dataclass
 import httpx
 
 log = logging.getLogger("adk.lockbox_sync")
+
+
+
+def _genesis_data_base() -> str:
+    """Direct Genesis override, else the portal bridge (never localhost:8001)."""
+    # The variable these clients always read keeps precedence over AITHER_API_URL.
+    explicit = os.environ.get("AITHER_GENESIS_URL") or os.environ.get("AITHER_GATEWAY_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    from adk.control_plane import genesis_data_base
+    return genesis_data_base()
 
 
 @dataclass
@@ -99,10 +110,7 @@ class LockboxSyncClient:
             "true",
             "1",
         )
-        gateway_url = os.environ.get(
-            "AITHER_GATEWAY_URL",
-            "http://localhost:8001"
-        )
+        gateway_url = _genesis_data_base()
         timeout = float(os.environ.get("AITHER_SYNC_TIMEOUT", "30.0"))
 
         return LockboxSyncConfig(
@@ -505,6 +513,6 @@ async def create_lockbox_sync_client_from_auth(
         log.debug("No access_token in auth.json")
         return None
 
-    url = gateway_url or os.environ.get("AITHER_GATEWAY_URL", "http://localhost:8001")
+    url = gateway_url or _genesis_data_base()
 
     return LockboxSyncClient(gateway_url=url, auth_token=access_token)
