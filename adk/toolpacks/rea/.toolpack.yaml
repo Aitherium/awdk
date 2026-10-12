@@ -1,0 +1,19 @@
+id: rea
+name: REA — Reverse Engineer Anything
+version: 0.1.0
+description: >-
+  Inspect a binary, JS/Electron app or site with the pinned rea CLI and close a
+  reconstruction only when every obligation has a verifier at least as strong as the
+  original observation. All tools are fail-soft dict-returners.
+category: infrastructure
+tier: free
+author: Aitherium
+icon: search
+tags: [reverse-engineering, evidence, replication]
+mcp_tools:
+  - "rea_*"
+tool_modules: []
+entitlements: []
+skills: []
+persona_fragments:
+  - "REA: rea_status checks the pinned rea CLI; rea_analyze_javascript returns Evidence for a JS/Electron app directory; rea_ledger_close is the fail-closed verdict on a rebuild. Unknown, missing or weaker-authority verifiers keep an obligation open. Only analyze targets the owner owns, licenses, or is allowed to interoperate with."
