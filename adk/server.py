@@ -7161,6 +7161,36 @@ def create_app(
     return app
 
 
+async def _effort_step_budget(agent, message: str, session_id: str, on_event) -> int:
+    """The ReAct step budget for one streamed turn, from the intent/effort classifier.
+
+    Until 2026-10-12 the daemon's stream path never consulted ``classify_intent``:
+    every awsh turn ran a fixed 6 steps whatever it asked, so a multi-tool task hit the
+    step limit and a search -> call chain had no room to recover. Same scale as
+    ``stream_respond``. Fail-open to 6 within ``ADK_INTENT_TIMEOUT_S`` (default 6 s).
+    """
+    try:
+        timeout = float(os.environ.get("ADK_INTENT_TIMEOUT_S", "6"))
+    except ValueError:
+        timeout = 6.0
+    try:
+        hist = await agent.memory.get_history(session_id, limit=6)
+        decision = await asyncio.wait_for(agent.classify_intent(message, history=hist),
+                                          timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 -- routing is advisory; the turn still runs
+        logger.debug("effort classification skipped: %s", exc)
+        return 6
+    effort = int(getattr(decision, "effort", 5) or 5)
+    steps = 6 if effort <= 5 else (10 if effort <= 7 else 14)
+    try:
+        on_event({"type": "effort", "effort": effort, "max_steps": steps,
+                  "intent": str(getattr(decision, "intent", "") or ""),
+                  "agentic": bool(getattr(decision, "agentic", False))})
+    except Exception as exc:  # noqa: BLE001 -- trace only
+        logger.debug("effort event dropped: %s", exc)
+    return steps
+
+
 async def _strata_ingest_bg(**kwargs):
     """Module-level fire-and-forget Strata ingest for _aitheros_stream.
 
@@ -7325,6 +7355,8 @@ async def _aitheros_stream(
                         on_event=_on_stream_event,
                         session_id=session_id,
                         system_additions=system_additions,
+                        max_steps=await _effort_step_budget(agent, message, session_id,
+                                                            _on_stream_event),
                     )
                 finally:
                     unregister_steering_queue(session_id)
@@ -7375,7 +7407,7 @@ async def _aitheros_stream(
                     text = ev.get("text", "")
                     if text:
                         yield f"event: token\ndata: {json.dumps({'type': 'token', 't': text})}\n\n"
-                elif ev_type in ("crystal", "intent"):
+                elif ev_type in ("crystal", "intent", "effort"):
                     # Context assembly and routing, visible: what memory the turn
                     # started from and which intent drove the tool menu. Rendered by
                     # the CLI's pipeline/stage formatter as a trace line.
@@ -7385,6 +7417,9 @@ async def _aitheros_stream(
                         _deg = ev.get("degraded") or []
                         if _deg:
                             _pmsg += " (degraded: " + ", ".join(map(str, _deg)) + ")"
+                    elif ev_type == "effort":
+                        _pmsg = (f"effort {ev.get('effort')}: {ev.get('max_steps')} steps"
+                                 f" ({ev.get('intent') or 'default'})")
                     else:
                         _pmsg = f"intent: {ev.get('intent', 'default')}"
                     yield ("event: pipeline\ndata: "

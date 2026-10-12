@@ -121,6 +121,39 @@ _RETRY_NUDGE_MSG = (
 )
 _MAX_RETRY_NUDGES = 2
 
+#: Discovery meta-tools: their result is a MENU, never an answer. Measured 2026-10-11
+#: in awsh: "what is in the news today" -> search_tools("news") -> the 8B described
+#: the newsletter tools it found and stopped; "do it" -> search_tools("do it").
+_DISCOVERY_TOOLS = frozenset({"search_tools", "load_tools"})
+_MAX_DISCOVERY_NUDGES = 2
+
+
+def discovery_nudge(tool: str, observation: str) -> str:
+    """The follow-up after a discovery tool's menu was answered with prose, not a call.
+
+    Names the top hit as a copyable line: an 8B repeats a concrete template, it does
+    not act on "use one of these".
+    """
+    top, req = "", []
+    try:
+        hits = (json.loads(observation) or {}).get("results") or []
+        if hits:
+            top = str((hits[0] or {}).get("name") or "")
+            req = list(((hits[0] or {}).get("parameters") or {}).get("required") or [])
+    except (ValueError, TypeError, AttributeError):
+        top, req = "", []
+    args = ", ".join(f'"{r}": "<value>"' for r in req)
+    lines = [
+        f"You called {tool} to FIND a tool; that list is not the answer and the user is "
+        "still waiting. Do not describe the tools. Call the one that does what the user "
+        "asked, now."]
+    if tool == "search_tools" and top:
+        lines.append("If one of those does what the user asked, reply exactly:\nACTION: call_tool\n"
+                     f'INPUT: {{"name": "{top}", "arguments": {{{args}}}}}')
+    lines.append("If none of them fits, call a tool from your own menu instead (web_search "
+                 "for news, current events or anything on the public internet).")
+    return "\n".join(lines)
+
 
 def parse_react_input(text: str) -> dict | None:
     """The JSON object after ``INPUT:`` in a text-ReAct reply, or None when unreadable.
@@ -173,6 +206,14 @@ _PLATFORM_REACH_LINE = (
     "call_tool with the best match. When the question is about platform state "
     "and no direct tool fits, call search_tools FIRST — never answer that you "
     "cannot access platform data before trying it."
+)
+
+#: search_tools ranks the PLATFORM catalogue; "news" matched newsletter_create_campaign
+#: (2026-10-11). Public-web questions go straight to web_search.
+_WEB_REACH_LINE = (
+    "\n\nNews, current events, prices and anything else on the public internet: call "
+    "web_search directly (then web_fetch for a page). search_tools only finds platform "
+    "tools; it never returns web content."
 )
 
 
@@ -1800,6 +1841,8 @@ class AitherAgent:
         if self._tools.get("search_tools") is not None:
             messages.insert(1, Message(role="system",
                                        content=_PLATFORM_REACH_LINE.strip()))
+            if self._tools.get("web_search") is not None:
+                messages.insert(1, Message(role="system", content=_WEB_REACH_LINE.strip()))
         if self._tools.get("repl_run") is not None:
             messages.insert(1, Message(role="system", content=(
                 "Installed instruments, callable by name: repl_run (persistent Python), "
@@ -3137,6 +3180,8 @@ class AitherAgent:
         # for the model to know the capability exists.
         if self._tools.get("search_tools") is not None:
             sys_prompt += _PLATFORM_REACH_LINE
+            if self._tools.get("web_search") is not None:
+                sys_prompt += _WEB_REACH_LINE
         # The instruments, NAMED like the platform reach: measured 2026-10-05, a
         # capability absent from the prompt menu is absent to the 8B.
         if self._tools.get("repl_run") is not None:
@@ -3188,6 +3233,15 @@ class AitherAgent:
             except Exception:
                 pass
         _tokens_streamed = 0
+        # The daemon's /chat/stream passes no history, so every awsh line reached the
+        # model cold: "do it" after "what is in the news today" ran search_tools("do
+        # it") (2026-10-11). This loop persists each turn under sid; read it back.
+        if history is None and sid:
+            try:
+                history = await self.memory.get_history(sid, limit=16)
+            except Exception as exc:  # noqa: BLE001 -- the turn runs without it
+                logger.debug("stream_react history load failed: %s", exc)
+                history = []
         for h in (history or [])[-8:]:
             if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
                 msgs.append(Message(role=h["role"], content=str(h["content"])[:3000]))
@@ -3200,6 +3254,9 @@ class AitherAgent:
         answer = ""
         tools_made: list[str] = []
         _react_retry_nudges = 0  # see announces_retry
+        _discovery_nudges = 0  # see discovery_nudge
+        _last_tool = ""
+        _last_obs = ""
         _failed_in_a_row = 0  # tool_result_failed streak; 2 -> consult ask_reasoner
         _consulted = False
 
@@ -3306,6 +3363,22 @@ class AitherAgent:
             elif phase == "answer" and buf:
                 await _emit({"type": "token", "text": scrub_orphan_think(buf)})
 
+            # A discovery tool's menu answered with prose (FINAL: or bare text) is the
+            # turn stopping one call short of the work; the user asked about tools only
+            # when they said "tool".
+            _discovery_stall = (_last_tool in _DISCOVERY_TOOLS
+                                and _discovery_nudges < _MAX_DISCOVERY_NUDGES
+                                and _step < max_steps - 1
+                                and "tool" not in message.lower()
+                                and not _ACT.search(full))
+            if _discovery_stall:
+                _discovery_nudges += 1
+                logger.info("[REACT-STREAM] %s menu answered with prose - nudging (%d)",
+                            _last_tool, _discovery_nudges)
+                # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
+                msgs.append(Message(role="assistant", content=full))
+                msgs.append(Message(role="user", content=discovery_nudge(_last_tool, _last_obs)))
+                continue
             if phase == "answer":
                 cleaned = _THINK.sub("", full)
                 answer = cleaned.split("FINAL:", 1)[-1].strip() if "FINAL:" in cleaned else cleaned.strip()
@@ -3370,6 +3443,7 @@ class AitherAgent:
             except Exception as exc:
                 obs = f"(tool error: {type(exc).__name__}: {exc})"
             tools_made.append(name)
+            _last_tool, _last_obs = name, obs
             await _emit({"type": "tool_result", "name": name, "result": obs[:1500]})
             # Track tool result for knowledge graph
             _kg_tools.add(str(name).lower())
