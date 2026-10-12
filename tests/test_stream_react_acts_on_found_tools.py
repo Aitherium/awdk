@@ -135,3 +135,34 @@ def test_daemon_stream_budget_follows_effort_and_fails_open():
     assert asyncio.run(server._effort_step_budget(_agent_with(3), "m", "s", events.append)) == 6
     assert asyncio.run(server._effort_step_budget(_agent_with(boom=True), "m", "s",
                                                   events.append)) == 6
+
+
+def test_an_offer_to_look_it_up_is_answered_by_looking_it_up():
+    seen: list = []
+    agent = _agent([
+        "FINAL: I'm not currently aware of any news about Tanium. Would you like me "
+        "to search for more information?",
+        'ACTION: web_search\nINPUT: {"query": "Tanium news"}',
+        "FINAL: Tanium relaunched Security Operations.",
+    ], seen)
+    calls = {"web": 0}
+
+    @agent.tool
+    def web_search(query: str) -> str:
+        """web"""
+        calls["web"] += 1
+        return "Tanium relaunches Security Operations"
+
+    resp = asyncio.run(agent.stream_react("anything exciting about tanium?",
+                                          on_event=lambda e: None, max_steps=6))
+    assert calls["web"] == 1
+    assert resp.content == "Tanium relaunched Security Operations."
+
+
+def test_offers_lookup_leaves_real_questions_alone():
+    from adk.agent import offers_lookup
+    assert offers_lookup("Would you like me to search for more information?")
+    assert offers_lookup("Should I look it up for you?")
+    assert not offers_lookup("Would you like me to delete the branch?")
+    assert not offers_lookup("Do you want me to send the email?")
+    assert not offers_lookup("Here are the results. Anything else?")

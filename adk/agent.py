@@ -121,6 +121,29 @@ _RETRY_NUDGE_MSG = (
 )
 _MAX_RETRY_NUDGES = 2
 
+#: An answer that ENDS by offering a read-only lookup it could have just done.
+#: Measured 2026-10-12 in the owner's shell: "anything exciting about tanium?" ->
+#: "I'm not currently aware ... Would you like me to search for more information?",
+#: zero tool calls; the owner had to type "yes". Read-only verbs only: an offer to
+#: delete, send or buy is a real question and stays one.
+_OFFERS_LOOKUP = re.compile(
+    r"(?is)\b(?:would you like|do you want|shall i|should i|want me to|"
+    r"i can|i could)\b[^.?!\n]{0,40}?\b(?:search|look(?:\s+(?:it|that|this))?\s+up|"
+    r"look\s+into|check|find|fetch|get|pull\s+up|research|browse|query|"
+    r"investigate|dig|scan|read)\b[^?\n]{0,160}\?\s*$"
+)
+_OFFER_NUDGE_MSG = (
+    "You offered to look it up instead of looking it up. The user asked, so the answer "
+    "is yes: do it now with your tools (web_search for anything on the public internet) "
+    "and answer with what you found."
+)
+
+
+def offers_lookup(text: str) -> bool:
+    """True when ``text`` ends by offering a read-only lookup instead of doing it."""
+    tail = (text or "").strip()[-300:]
+    return bool(tail) and bool(_OFFERS_LOOKUP.search(tail))
+
 #: Discovery meta-tools: their result is a MENU, never an answer. Measured 2026-10-11
 #: in awsh: "what is in the news today" -> search_tools("news") -> the 8B described
 #: the newsletter tools it found and stopped; "do it" -> search_tools("do it").
@@ -213,7 +236,8 @@ _PLATFORM_REACH_LINE = (
 _WEB_REACH_LINE = (
     "\n\nNews, current events, prices and anything else on the public internet: call "
     "web_search directly (then web_fetch for a page). search_tools only finds platform "
-    "tools; it never returns web content."
+    "tools; it never returns web content. If web_fetch fails, answer from the "
+    "web_search results you already have and cite them; do not hunt for another fetcher."
 )
 
 
@@ -3255,6 +3279,7 @@ class AitherAgent:
         tools_made: list[str] = []
         _react_retry_nudges = 0  # see announces_retry
         _discovery_nudges = 0  # see discovery_nudge
+        _offer_nudged = False  # see offers_lookup
         _last_tool = ""
         _last_obs = ""
         _failed_in_a_row = 0  # tool_result_failed streak; 2 -> consult ask_reasoner
@@ -3371,6 +3396,17 @@ class AitherAgent:
                                 and _step < max_steps - 1
                                 and "tool" not in message.lower()
                                 and not _ACT.search(full))
+            # Offered a lookup instead of making one, before any tool ran this turn.
+            if (not _discovery_stall and not tools_made and not _offer_nudged
+                    and _step < max_steps - 1 and not _ACT.search(full)
+                    and offers_lookup(scrub_orphan_think(_THINK.sub("", full)))):
+                _offer_nudged = True
+                logger.info("[REACT-STREAM] Reply offered a lookup instead of making one "
+                            "- nudging")
+                # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
+                msgs.append(Message(role="assistant", content=full))
+                msgs.append(Message(role="user", content=_OFFER_NUDGE_MSG))
+                continue
             if _discovery_stall:
                 _discovery_nudges += 1
                 logger.info("[REACT-STREAM] %s menu answered with prose - nudging (%d)",
