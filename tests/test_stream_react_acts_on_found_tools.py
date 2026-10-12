@@ -166,3 +166,22 @@ def test_offers_lookup_leaves_real_questions_alone():
     assert not offers_lookup("Would you like me to delete the branch?")
     assert not offers_lookup("Do you want me to send the email?")
     assert not offers_lookup("Here are the results. Anything else?")
+
+
+def test_companion_identity_scopes_honesty_to_shared_history(monkeypatch):
+    import adk.private_companion as pc
+
+    class _Vault:
+        def get_safety_level(self):
+            return "professional"
+
+        def get_system_prompt_for_level(self, level):
+            return "You are Mira."
+
+    monkeypatch.setattr(pc, "get_companion_vault", lambda: _Vault())
+    agent = _agent([], [])
+    agent._system_prompt = None
+    sp = agent.system_prompt
+    assert "You are Mira." in sp
+    assert "LOOK UP with your tools" in sp
+    assert "operating system" not in sp, "the persona may talk about the user's platform"
