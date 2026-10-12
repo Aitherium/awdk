@@ -8059,6 +8059,12 @@ def main():
     """CLI entry point: aither-serve"""
     # Air gap first: no client may be built before the egress guard is in place.
     _install_air_gap_guard()
+    # One client vanishing mid-accept must not close :9001 (Windows; adk.accept_resilience).
+    try:
+        from adk.accept_resilience import install as _install_accept_resilience
+        _install_accept_resilience()
+    except Exception as exc:  # noqa: BLE001 - the daemon still serves without it
+        logger.warning("accept resilience not installed: %s", exc)
     parser = argparse.ArgumentParser(description="AitherADK Agent Server")
     parser.add_argument("--identity", "-i", default="aither", help="Agent identity to load (single-agent mode)")
     parser.add_argument("--port", "-p", type=int, default=None, help="Port (default: 8080)")
