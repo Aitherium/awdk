@@ -10,8 +10,14 @@ checkout ``adk.commands.fleet_host.find_tool`` finds.
     adk gpu sleep    [--execute] [--json]
     adk gpu wake     [--execute] [--force] [--json]
     adk fleet sleep  [--execute] [--json]        # `adk fleet` otherwise manages AGENTS;
-    adk fleet wake   [--execute] [--json]        # sleep/wake/critical are the machine's
+    adk fleet wake   [--execute] [--json]        # sleep/wake/park/critical are the machine's
+    adk fleet park   [--execute] [--json]
     adk fleet critical [--execute] [--json]
+
+``fleet sleep`` frees the PC for a game: the fleet is stopped and held, then its WSL VM is
+terminated (RAM, CPU and GPU go back to Windows). ``fleet wake`` boots it back through the
+host's attach task and restores what sleep recorded. ``fleet park`` is the older in-VM stop
+that leaves the VM (and the customer-facing set) running.
 
 Every mutating verb is a DRY RUN unless ``--execute``. gpu wake refuses when awnix reports
 "GPU access blocked" (a maintenance restart is the fix) and while a game runs (``--force``).
@@ -27,7 +33,7 @@ from typing import Any, List
 
 TOOL_REL = Path("AitherOS") / "dev" / "tools" / "fleet_verbs.py"
 GPU_VERBS = ("status", "sleep", "wake")
-FLEET_VERBS = ("sleep", "wake", "critical")
+FLEET_VERBS = ("sleep", "wake", "park", "critical")
 
 
 def build_argv(noun: str, verb: str, tool: Path, *, execute: bool = False,

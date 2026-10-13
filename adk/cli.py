@@ -17330,7 +17330,7 @@ def main():
     elif args.command == "pack":
         sys.exit(_cmd_pack(args))
     elif args.command == "fleet":
-        if getattr(args, "fleet_command", None) in ("sleep", "wake", "critical"):
+        if getattr(args, "fleet_command", None) in ("sleep", "wake", "park", "critical"):
             from adk.commands.fleet_verbs import cmd_fleet_verb
             sys.exit(cmd_fleet_verb(args))
         sys.exit(_cmd_fleet(args))

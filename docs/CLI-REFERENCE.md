@@ -654,8 +654,9 @@ Create & manage a fleet of agents (local | managed | hosted | cloud-run)
 
 **Subcommands**
 
-- `adk fleet sleep` — machine fleet sleep (fleet_verbs.py; dry-run default)
-- `adk fleet wake` — machine fleet wake (fleet_verbs.py; dry-run default)
+- `adk fleet sleep` — machine fleet sleep: stop + hold the fleet, then terminate its WSL VM so the PC is free (fleet_verbs.py; dry-run default)
+- `adk fleet wake` — machine fleet wake: boot via the attach task, restore, health-gate (fleet_verbs.py; dry-run default)
+- `adk fleet park` — machine fleet park: the in-VM stop, VM stays up (fleet_verbs.py; dry-run default)
 - `adk fleet critical` — machine fleet critical (fleet_verbs.py; dry-run default)
 - `adk fleet create` — Create an agent in a runtime
 - `adk fleet list` — List fleet members

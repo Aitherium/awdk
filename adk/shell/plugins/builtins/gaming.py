@@ -14,7 +14,10 @@ Usage:
     /gpu wake  | /gaming resume     GPU wake: units back one at a time, posture + lanes home,
                                     lock released (refused while GPU access is blocked)
     /gpu status | /gaming status    distro, systemd, containers, GPU access, posture, lock, record
-    /fleet sleep | wake | critical  the whole fleet (sleep recorded, wake health-gated)
+    /fleet sleep | wake | critical  the whole fleet. sleep = game mode: stop + hold the fleet,
+                                    then terminate its WSL VM so RAM/CPU/GPU go back to the PC;
+                                    wake = boot via the attach task, restore, health-gated
+    /fleet park                     the in-VM stop (the VM and customer-facing set stay up)
     add --dry-run to print the steps without running them; --force wakes the GPU mid-game
 
 A typed slash command IS the consent, so verbs run with --execute unless --dry-run.
@@ -39,8 +42,8 @@ _GPU_WORDS = {
     "wake": "wake", "resume": "wake", "back": "wake", "start": "wake", "up": "wake", "on": "wake",
     "status": "status",
 }
-_FLEET_WORDS = {"sleep": "sleep", "down": "sleep", "wake": "wake", "up": "wake",
-                "critical": "critical", "status": "status"}
+_FLEET_WORDS = {"sleep": "sleep", "down": "sleep", "off": "sleep", "wake": "wake", "up": "wake",
+                "on": "wake", "park": "park", "critical": "critical", "status": "status"}
 
 
 def build_verb_args(noun: str, args: List[str]) -> List[str]:

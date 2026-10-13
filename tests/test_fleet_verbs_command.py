@@ -88,3 +88,14 @@ def test_find_tool_finds_fleet_verbs_by_rel(tmp_path):
     tool.parent.mkdir(parents=True)
     tool.write_text("", encoding="utf-8")
     assert find_tool(env={"AITHEROS_ROOT": str(tmp_path)}, rel=fv.TOOL_REL) == tool
+
+
+@pytest.mark.parametrize("words,expect", [
+    (["park"], ["fleet", "park", "--execute"]),
+    (["off"], ["fleet", "sleep", "--execute"]),
+    (["on", "--dry-run"], ["fleet", "wake"]),
+])
+def test_fleet_park_and_on_off_words(words, expect):
+    """`fleet sleep` now turns the VM off; the old in-VM stop is `park` (2026-10-13)."""
+    assert gaming.build_verb_args("fleet", words) == expect
+    assert fv.build_argv("fleet", "park", TOOL, execute=True)[2:] == ["fleet", "park", "--execute"]
