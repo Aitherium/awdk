@@ -28,7 +28,7 @@ Built from `v3.8.68` (adk 3.8.68).
 
 | Pack | Version | Download | Size | What it is |
 |---|---|---|---|---|
-| **[Aither System Orchestrator](packs/aither.md)** | `3.8.68` | [aither-3.8.68.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/aither-3.8.68.tar.gz) | 9.9 KB | Aither — System Overseer & Orchestrator Brain Pack |
+| **[Aither System Orchestrator](packs/aither.md)** | `3.8.68` | [aither-3.8.68.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/aither-3.8.68.tar.gz) | 9.8 KB | Aither — System Overseer & Orchestrator Brain Pack |
 | **[Analyst Studio](packs/analyst.md)** | `3.8.68` | [analyst-3.8.68.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/analyst-3.8.68.tar.gz) | 5.3 KB | Analyst — Data & Structured-ML Agent Brain Pack |
 | **[BeadSpace](packs/bead-space.md)** | `3.8.68` | [bead-space-3.8.68.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/bead-space-3.8.68.tar.gz) | 1.5 KB | BeadSpace — an aither-adk agent pack for bead-space |
 | **[Claude Code Studio](packs/claude-code.md)** | `3.8.68` | [claude-code-3.8.68.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/claude-code-3.8.68.tar.gz) | 5.0 KB | Claude Code — Software Development Agent Brain Pack |
@@ -42,22 +42,22 @@ Built from `v3.8.68` (adk 3.8.68).
 ## Contents
 
 - **aither** `3.8.68` — skills  
-  `sha256:e2e107b1a963e3a4…`
+  `sha256:b60da5710331657b…`
 - **analyst** `3.8.68` — agent config, skills  
-  `sha256:4ae0e662521de4c1…`
+  `sha256:3d483aede68cc39d…`
 - **bead-space** `3.8.68` — brain pack only  
-  `sha256:117f0454d203b4a3…`
+  `sha256:c9dd4c2b3c61e0c1…`
 - **claude-code** `3.8.68` — agent config, skills  
-  `sha256:674a393dc8b00cba…`
+  `sha256:5d86542c55a5e55f…`
 - **dgg_research** `3.8.68` — agent config, skills  
-  `sha256:98c242b8e68b71bd…`
+  `sha256:ff183da35c727387…`
 - **gobbonet** `3.8.68` — agent config, Python  
-  `sha256:e294b180efdab6cd…`
+  `sha256:9c4d2088f88be044…`
 - **hermes** `3.8.68` — agent config, skills  
-  `sha256:beb965882bf3a0a2…`
+  `sha256:280a1382349279f2…`
 - **iris** `3.8.68` — skills  
-  `sha256:e456c75864ed53a0…`
+  `sha256:d95ffc34fbf45ca2…`
 - **openclaw** `3.8.68` — agent config, skills  
-  `sha256:52ccd31b35e5961e…`
+  `sha256:d027c9179b108f06…`
 - **persona** `3.8.68` — brain pack only  
-  `sha256:c2eda53ebc1e92d5…`
+  `sha256:2d35fea9e5b7860a…`

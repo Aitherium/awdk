@@ -186,6 +186,14 @@ _ASKS_LIVE_STATE = re.compile(
     r"(?i)\b(?:how(?:'s| is| are)\b[^?.!\n]{0,40}\b(?:looking|doing|going|running)|"
     r"(?:what(?:'s| is) the )?(?:status|health|state) of|is\s+\S+(?:\s+\S+)?\s+(?:up|down|"
     r"running|healthy|working)\b|right now|currently|at the moment|in the news|today\b)")
+#: Heads the recalled facts that share a word with the question (split_near_question).
+#: Live 2026-10-14 with a softer "use if it answers" label, the 12B model still searched
+#: tools for "why were awsh turns slow yesterday?" with the answering fact right there.
+_NEAR_MEMORY_HEAD = (
+    "[FROM MEMORY] Facts recorded earlier that bear on this question. If they answer "
+    "it, answer from them now and cite them -- do not search for or call a tool to "
+    "re-find them. Use a tool only for what they do not cover or for a current state."
+)
 _LIVE_STATE_NUDGE_MSG = (
     "The user asked about the CURRENT state of something, and you answered without "
     "calling any tool. Memory is not the current state. Call the tool that reports it "
@@ -3736,8 +3744,7 @@ class AitherAgent:
         # history); compaction only ever rewrites the scratchpad after it.
         _head_n = len(msgs)
         msgs.append(Message(role="user", content=(
-            f"[FROM MEMORY -- use if it answers the question]\n{_recalled}\n\n---\n{message}"
-            if _recalled else message)))
+            f"{_NEAR_MEMORY_HEAD}\n{_recalled}\n\n---\n{message}" if _recalled else message)))
         _tokens_streamed = 0
 
         _ACT = _re.compile(r"ACTION:\s*([a-zA-Z_][a-zA-Z0-9_]*)", _re.I)
