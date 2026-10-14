@@ -147,3 +147,17 @@ def _closed_embed_breaker():
     _emb._BREAKER["until"] = 0.0
     yield
     _emb._BREAKER["until"] = 0.0
+
+
+@pytest.fixture(autouse=True)
+def _closed_reasoner_breaker():
+    """adk.model_tools skips a reasoner that just failed, process-wide; one test's
+    failure must not make the next test's reasoner skipped."""
+    try:
+        from adk import model_tools as _mt
+    except Exception:  # noqa: BLE001 -- a test tree without adk.model_tools
+        yield
+        return
+    _mt._REASONER_DOWN["until"] = 0.0
+    yield
+    _mt._REASONER_DOWN["until"] = 0.0

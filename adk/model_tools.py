@@ -27,7 +27,27 @@ REASONING_DEFAULT = "deepseek-v4-flash"
 VISION_DEFAULT = "bonsai2-27b"
 _TIMEOUT_S = float(os.getenv("AITHER_MODEL_TOOL_TIMEOUT_S", "180"))
 
+#: After the reasoner fails (error, timeout, empty), it is skipped for this long, process-
+#: wide. Measured 2026-10-14: its lane 502'd three times per call (8.7 + 10.6 + 12.6 s
+#: plus retry backoff) and one code question spent 31.9 of its 38 s waiting on it.
+REASONER_BREAKER_S = float(os.getenv("AITHER_REASONER_BREAKER_S", "120"))
+_REASONER_DOWN = {"until": 0.0, "why": ""}
+
 _router = None
+
+
+def reasoner_down() -> str:
+    """Why the reasoner is being skipped right now ('' = it may be asked)."""
+    import time
+
+    return _REASONER_DOWN["why"] if time.monotonic() < _REASONER_DOWN["until"] else ""
+
+
+def _trip_reasoner(why: str) -> None:
+    import time
+
+    _REASONER_DOWN["until"] = time.monotonic() + REASONER_BREAKER_S
+    _REASONER_DOWN["why"] = why[:200]
 
 
 def _get_router():
@@ -77,6 +97,10 @@ async def ask_reasoner(question: str, context: str = "") -> str:
     from adk.llm.base import Message
 
     model = _model("AITHER_REASONING_MODEL", REASONING_DEFAULT)
+    down = reasoner_down()
+    if down:
+        return json.dumps({"error": f"{model} skipped: it failed recently ({down}); "
+                                    "decide without it", "model": model})
     msgs = [
         Message(role="system", content=(
             "You are the reasoning tool of a smaller agent. Answer exactly and briefly. When "
@@ -87,11 +111,19 @@ async def ask_reasoner(question: str, context: str = "") -> str:
     try:
         answer = await _ask(msgs, model, 1200)
     except asyncio.TimeoutError:
+        _trip_reasoner(f"no answer within {int(_TIMEOUT_S)} s")
         return json.dumps({"error": f"{model} did not answer within {int(_TIMEOUT_S)} s",
                            "model": model})
+    except asyncio.CancelledError:
+        # The caller's own budget ran out (the loop's auto-consult cap): the lane is too
+        # slow to wait on, so the next turns skip it too.
+        _trip_reasoner("too slow for the consult budget")
+        raise
     except Exception as e:  # noqa: BLE001 -- surfaced to the agent, not raised
+        _trip_reasoner(f"{type(e).__name__}: {e}")
         return json.dumps({"error": f"{type(e).__name__}: {e}", "model": model})
     if not answer:
+        _trip_reasoner("empty answer")
         return json.dumps({"error": f"{model} returned an empty answer", "model": model})
     return json.dumps({"model": model, "answer": answer})
 

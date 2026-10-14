@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**136 commands.**
+**137 commands.**
 
 | command | what it does |
 |---|---|
@@ -142,6 +142,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk storage`](#adk-storage) | Storage inventory — scan a drive, rank what fills it, diff, propose, apply |
 | [`adk support`](#adk-support) | Get help — Discord, GitHub, docs |
 | [`adk sync`](#adk-sync) | Sync local directory with AitherOS platform |
+| [`adk tenant`](#adk-tenant) | Company app helpers (watch an Inbox folder) |
 | [`adk test`](#adk-test) | Run agent tests |
 | [`adk tools`](#adk-tools) | Manage available tools (list, sync from platform) |
 | [`adk train`](#adk-train) | Manage model training (launch, monitor, cancel) |
@@ -626,6 +627,7 @@ Register this workstation with the control plane
 | `--label` | str |  |  | Name for this device under --invite (default: hostname) |
 | `--inference-url` | str |  | `auto` | Local inference base URL to advertise (e.g. http://127.0.0.1:8080). 'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), 11434 (Ollama), 8120 (vLLM) in that order |
 | `--node-class` | str |  |  | What this device is (default: detected from the hardware) |
+| `--no-autostart` | str |  | `false` | Do not install the per-user heartbeat autostart (python -m adk.node_beat); the machine then reads offline once this command exits |
 | `--no-link` | str |  | `false` | Do not hold the outbound reverse link to the tunnel. WireGuard stays the default where `wg` exists; without either transport the device is enrolled but not reachable from your browser |
 
 ## `adk eval`
@@ -1625,6 +1627,14 @@ Sync local directory with AitherOS platform
 - `adk sync ignore` — Add ignore pattern
 - `adk sync config` — Show sync configuration
 - `adk sync packs` — Sync your workspace's agent/skill/tool packs and apps to this machine
+
+## `adk tenant`
+
+Company app helpers (watch an Inbox folder)
+
+**Subcommands**
+
+- `adk tenant watch` — Upload every file dropped into a folder to the company app's documents
 
 ## `adk test`
 

@@ -51,6 +51,7 @@ def test_reasoning_model_follows_config(monkeypatch):
 def test_failures_come_back_as_errors_not_exceptions(monkeypatch):
     monkeypatch.setattr(mt, "_router", _Router(exc=RuntimeError("lane down")))
     assert "lane down" in json.loads(_run(mt.ask_reasoner("q")))["error"]
+    mt._REASONER_DOWN["until"] = 0.0  # the failure above opened the breaker
     monkeypatch.setattr(mt, "_router", _Router(content=""))
     assert "empty" in json.loads(_run(mt.ask_reasoner("q")))["error"]
     assert "empty" in json.loads(_run(mt.ask_reasoner("  ")))["error"]
@@ -268,3 +269,69 @@ def test_native_chat_loop_also_looks_at_a_named_image():
     asyncio.run(agent.chat("what is in C:/pics/a.png ?", history=[]))
     assert looked == ["C:/pics/a.png"]
     assert any("pink hair" in m for call in sent for m in call)
+
+
+def test_a_failed_reasoner_is_skipped_until_the_breaker_closes(monkeypatch):
+    # 2026-10-14: its lane 502'd three times per call; one turn waited 31.9 s on it.
+    r = _Router(exc=RuntimeError("HTTPStatusError: 502 Bad Gateway"))
+    monkeypatch.setattr(mt, "_router", r)
+    first = json.loads(_run(mt.ask_reasoner("q1")))
+    assert "502" in first["error"]
+    second = json.loads(_run(mt.ask_reasoner("q2")))
+    assert "skipped" in second["error"] and len(r.calls) == 1, "not asked again"
+    mt._REASONER_DOWN["until"] = 0.0
+    r.exc = None
+    assert "answer" in json.loads(_run(mt.ask_reasoner("q3")))
+
+
+def test_the_auto_consult_never_waits_past_its_budget(monkeypatch):
+    import time
+
+    from adk import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_AUTO_CONSULT_S", 0.3)
+
+    class _Slow(_Router):
+        async def chat(self, messages, model=None, **kw):
+            self.calls.append((messages, model))
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(mt, "_router", _Slow())
+    t0 = time.monotonic()
+    out = _run(_stream_turn_with_two_failures())
+    assert time.monotonic() - t0 < 10, "the consult must not hold the turn"
+    assert mt.reasoner_down(), "a reasoner too slow for the budget is skipped next time"
+    assert out
+
+
+async def _stream_turn_with_two_failures() -> str:
+    """A streaming turn whose tool fails twice (the auto-consult trigger), using the REAL
+    ask_reasoner so the router behind it decides how long the consult takes."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from adk.agent import AitherAgent
+    from adk.llm.base import StreamChunk
+
+    replies = iter([
+        'ACTION: probe\nINPUT: {"n": 1}',
+        'ACTION: probe\nINPUT: {"n": 2}',
+        "FINAL: the probe is down",
+    ])
+
+    async def _stream(messages, *a, **k):
+        yield StreamChunk(content=next(replies, "FINAL: done"), done=True, model="t")
+
+    llm = AsyncMock()
+    llm.chat_stream = _stream
+    llm.provider_name = "test"
+    llm.chat = AsyncMock(return_value=MagicMock(content="x", tool_calls=[], finish_reason="stop"))
+    agent = AitherAgent(name="t", llm=llm, builtin_tools=False, system_prompt="IDENTITY")
+
+    @agent.tool
+    def probe(n: int) -> str:
+        """probe"""
+        return "(tool error: HTTP 503 not available)"
+
+    agent._tools.register(mt.ask_reasoner, name="ask_reasoner")
+    resp = await agent.stream_react("is the probe up?", on_event=lambda e: None, max_steps=5)
+    return resp.content

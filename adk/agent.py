@@ -186,6 +186,19 @@ _MAX_REPEATS = 3
 #: Failed calls of one tool a streaming turn tolerates before refusing it for the turn.
 _MAX_TOOL_FAILS = 3
 
+#: The loop's automatic reasoner consult (after two failed calls) waits at most this
+#: long. Live 2026-10-14 it waited 31.9 s on a lane that 502'd, 84% of a 38 s turn.
+_AUTO_CONSULT_S = float(os.getenv("AITHER_AUTO_CONSULT_S", "10"))
+
+
+def _reasoner_down() -> str:
+    """adk.model_tools' breaker: why the reasoner is skipped now ('' = ask it)."""
+    try:
+        from adk.model_tools import reasoner_down
+        return reasoner_down()
+    except Exception:  # noqa: BLE001 -- no model_tools: nothing to skip
+        return ""
+
 #: Answers that report the turn did not get done (the loop's own fallbacks, a paused
 #: approval, a plain "I could not"). Such a turn must not be learned as a skill.
 _GAVE_UP_ANSWER = re.compile(
@@ -4229,7 +4242,8 @@ class AitherAgent:
             if _ctl is not None and getattr(_ctl, "consulted", False):
                 _consulted = True
             if (_failed_in_a_row >= 2 and not _consulted and name != "ask_reasoner"
-                    and self._tools.get("ask_reasoner") is not None):
+                    and self._tools.get("ask_reasoner") is not None
+                    and not _reasoner_down()):
                 _consulted = True
                 try:
                     if _ctl is not None:
@@ -4250,7 +4264,12 @@ class AitherAgent:
                 }
                 await _emit({"type": "tool", "name": "ask_reasoner", "args": _ask})
                 try:
-                    _advice = str(await self._tools.execute("ask_reasoner", _ask))
+                    # Advice is optional: never wait long for it (see _AUTO_CONSULT_S).
+                    _advice = str(await asyncio.wait_for(
+                        self._tools.execute("ask_reasoner", _ask), _AUTO_CONSULT_S))
+                except asyncio.TimeoutError:
+                    _advice = (f"(tool error: the reasoner did not answer within "
+                               f"{_AUTO_CONSULT_S:.0f} s; decide without it)")
                 except Exception as exc:  # noqa: BLE001 -- advice is optional
                     _advice = f"(tool error: {type(exc).__name__}: {exc})"
                 tools_made.append("ask_reasoner")
