@@ -377,6 +377,10 @@ class AwmFactStore:
             pass
 
 
+async def _no_hits() -> list[dict]:
+    return []
+
+
 class AwgraphUnavailable(RuntimeError):
     """The graph could not be opened. ``str(exc)`` is the specific reason, in the
     token form CodeWorld's telemetry uses (``ModuleNotFoundError: ...`` when awgraph
@@ -898,7 +902,7 @@ class Crystal:
             return []
 
     async def recall_block(self, message: str, exclude: "tuple | list" = (),
-                           max_chars: "int | None" = None) -> str:
+                           max_chars: "int | None" = None, graph: bool = True) -> str:
         """The system block for a turn: facts + graph hits under ``max_chars``. "" = nothing.
 
         ``exclude``: texts the caller already shows the model (history, another block);
@@ -913,10 +917,10 @@ class Crystal:
         # The cap is a parameter, not a temporary self.max_chars swap: two concurrent
         # turns on one crystal would otherwise read each other's cap.
         cap = int(max_chars) if max_chars is not None and max_chars > 0 else self.max_chars
-        return await self._recall_block(message, cap, exclude)
+        return await self._recall_block(message, cap, exclude, graph)
 
     async def _recall_block(self, message: str, cap: int,
-                            exclude: "Iterable[str]" = ()) -> str:
+                            exclude: "Iterable[str]" = (), graph: bool = True) -> str:
         self.telemetry["recalls"] += 1
         self._graph_degraded = ""
         stats: dict = {"dropped": 0}
@@ -925,7 +929,8 @@ class Crystal:
         # and one after the other they overran the turn's crystal stage under load
         # (2026-10-14), which then dropped the facts too.
         facts, hits = await asyncio.gather(self.recall_facts(message, stats=stats),
-                                           self.recall_graph(message))
+                                           self.recall_graph(message) if graph
+                                           else _no_hits())
         graph_lines: list[str] = []
         for h in hits:
             sig = (h.get("signature") or h.get("name") or "").strip()

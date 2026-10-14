@@ -483,3 +483,24 @@ def test_two_event_loops_hydrate_the_graph_once(monkeypatch):
         t.join()
     assert results == [True, True]
     assert loads["n"] == 1, "the index was hydrated once per event loop"
+
+
+async def test_graph_false_never_asks_the_code_graph():
+    """A news question must not run the in-process graph scorer (it held the GIL for a
+    whole turn, 2026-10-14)."""
+    graph = _Graph("/repo", [{"name": "x", "path": "a.py", "line": 1}], delay=30.0,
+                   warm=True)
+    rows = [("k", "the state cache module stores session entries", {})]
+    c = Crystal(scope=WRITE, store=_Store(rows), graph=graph)
+    t0 = time.monotonic()
+    block = await c.recall_block("state cache session entries", graph=False)
+    assert time.monotonic() - t0 < 0.5
+    assert "session entries" in block and "[CODE GRAPH]" not in block
+
+
+def test_only_code_requests_ask_the_code_graph():
+    from adk.agent import _wants_code_graph
+
+    assert _wants_code_graph("fix the bug in crystal.py")
+    assert not _wants_code_graph("anything exciting about tanium?")
+    assert not _wants_code_graph("hi")

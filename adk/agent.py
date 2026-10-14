@@ -241,6 +241,17 @@ def normalize_channel_markers(text: str) -> tuple[str, str]:
         body = body.replace(marker, repl)
     return body, held
 
+def _wants_code_graph(message: str) -> bool:
+    """True when ``message`` carries a code signal (the in-process graph is costly)."""
+    try:
+        from adk.intent import coarse_code_intent
+
+        return coarse_code_intent(message) == "CODE"
+    except Exception as exc:  # noqa: BLE001 -- no gate: ask the graph as before
+        logger.debug("code-intent gate unavailable: %s", exc)
+        return True
+
+
 #: Most of the context budget one turn gives the crystal block (facts + graph + memory).
 _CRYSTAL_TURN_MAX_CHARS = 4000
 
@@ -3536,9 +3547,14 @@ class AitherAgent:
                 # measured 2026-10-14, a 20k-char block of keyword-matched facts (the
                 # whole 20% of a 32k window) buried the question and the model
                 # answered "Hello! How can I help?".
+                # The code graph runs IN this process and its keyword scorer is a
+                # pure-Python pass over every chunk: py-spy (2026-10-14) showed one
+                # query holding the GIL for a whole turn, so a question about the news
+                # timed out every other memory stage. Only code requests ask it.
                 return await self.crystal.recall_block(
                     message, exclude=tuple(_hist_texts),
-                    max_chars=min(_ctx_budget_chars, _CRYSTAL_TURN_MAX_CHARS))
+                    max_chars=min(_ctx_budget_chars, _CRYSTAL_TURN_MAX_CHARS),
+                    graph=_wants_code_graph(message))
             except TypeError:  # a crystal built before the exclude/max_chars contract
                 return await self.crystal.recall_block(message)
 
