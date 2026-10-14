@@ -127,6 +127,9 @@ class GraphWorkerClient:
         # The child imports THIS adk (the daemon runs `python -P` from a snapshot that
         # is not on the child's default path) and logs to a file a failure can be read
         # from: on 2026-10-14 the first live start died silently with stderr discarded.
+        # cwd too: `python -m` puts the working directory FIRST on sys.path, and the
+        # daemon's cwd held an older adk tree without this module ("No module named
+        # adk.graph_worker", measured live), which shadowed PYTHONPATH.
         env = dict(os.environ)
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = os.pathsep.join(
@@ -135,7 +138,7 @@ class GraphWorkerClient:
         self._proc = subprocess.Popen(
             self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=self._log or subprocess.DEVNULL, text=True, encoding="utf-8",
-            bufsize=1, env=env, **kw)
+            bufsize=1, env=env, cwd=here, **kw)
         threading.Thread(target=self._read, name="graph-worker-reader", daemon=True).start()
         if not self._ready.wait(ready_timeout):
             self.reason = f"graph worker not ready after {ready_timeout:.0f}s"

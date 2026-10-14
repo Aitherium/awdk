@@ -97,3 +97,19 @@ def test_a_code_turn_waits_for_the_out_of_process_graph():
     waited = asyncio.run(c.recall_block("fix f in a.py",
                                         graph_wait=crystal_mod.CODE_GRAPH_WAIT_S))
     assert "a.py" not in quick and "a.py" in waited
+
+
+def test_the_child_imports_this_adk_even_from_a_cwd_holding_another(tmp_path, monkeypatch):
+    """Live 2026-10-14: the daemon's cwd held an older adk without graph_worker, and
+    `python -m` puts cwd first on sys.path -> "No module named adk.graph_worker"."""
+    shadow = tmp_path / "adk"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    probe = ("import json, adk.graph_worker as g; "
+             "print(json.dumps({'ready': True, 'reason': g.__file__}), flush=True)")
+    c = GraphWorkerClient(".", argv=[sys.executable, "-c", probe])
+    try:
+        assert c.start(ready_timeout=30), c.reason
+    finally:
+        c.close()
