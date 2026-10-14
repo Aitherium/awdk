@@ -135,6 +135,23 @@ def _merged_with_public_roots(bundle: str) -> str:
 _CTX_CACHE: dict = {}
 
 
+def _env_trust_store() -> tuple:
+    """``(cafile, capath)`` for ``verify=True``, matching httpx's ``trust_env`` lookup.
+
+    ``SSL_CERT_FILE`` (an existing file) wins, then ``SSL_CERT_DIR`` (an existing
+    directory), else certifi's bundle.
+    """
+    cert_file = os.environ.get("SSL_CERT_FILE", "").strip()
+    if cert_file and os.path.isfile(cert_file):
+        return cert_file, None
+    cert_dir = os.environ.get("SSL_CERT_DIR", "").strip()
+    if cert_dir and os.path.isdir(cert_dir):
+        return None, cert_dir
+    import certifi
+
+    return certifi.where(), None
+
+
 def ssl_context(verify: Union[bool, str, None] = None) -> Union[bool, "object"]:
     """A cached ``ssl.SSLContext`` for an httpx ``verify=`` value (default: ``tls_verify()``).
 
@@ -153,16 +170,20 @@ def ssl_context(verify: Union[bool, str, None] = None) -> Union[bool, "object"]:
     try:
         import ssl
 
+        capath = None
         if verify is True:
-            import certifi
-
-            path = certifi.where()
+            # httpx's own verify=True honours SSL_CERT_FILE / SSL_CERT_DIR (trust_env)
+            # before certifi. A container that points SSL_CERT_FILE at a bundle holding
+            # an internal CA relies on that; certifi alone fails every internal host
+            # with CERTIFICATE_VERIFY_FAILED.
+            path, capath = _env_trust_store()
         else:
             path = str(verify)
-        key = (path, os.path.getmtime(path))
+        stamp = os.path.getmtime(path) if path else os.path.getmtime(capath)
+        key = (path, capath, stamp)
         ctx = _CTX_CACHE.get(key)
         if ctx is None:
-            ctx = ssl.create_default_context(cafile=path)
+            ctx = ssl.create_default_context(cafile=path, capath=capath)
             if len(_CTX_CACHE) > 8:  # a CA file rewritten many times: drop old ones
                 _CTX_CACHE.clear()
             _CTX_CACHE[key] = ctx

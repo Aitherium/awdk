@@ -58,3 +58,33 @@ def test_the_daemon_hot_paths_use_the_shared_context():
         src = inspect.getsource(mod)
         n_clients = src.count("httpx.AsyncClient(")
         assert n_clients and src.count("ssl_context(") >= n_clients, mod.__name__
+
+
+def _one_cert_bundle(tmp_path):
+    import certifi
+
+    pem = open(certifi.where(), encoding="ascii").read()
+    end = "-----END CERTIFICATE-----"
+    first = pem[pem.index("-----BEGIN CERTIFICATE-----"):pem.index(end) + len(end)]
+    ca = tmp_path / "internal-ca.pem"
+    ca.write_text(first + "\n", encoding="ascii")
+    return ca
+
+
+def test_verify_true_honours_ssl_cert_file_like_httpx(tmp_path, monkeypatch):
+    """2026-10-14: ssl_context(True) loaded certifi only, dropping SSL_CERT_FILE, so every
+    adk LLM call from a container trusting the internal CA that way failed
+    CERTIFICATE_VERIFY_FAILED (room @mentions answered with the TLS error)."""
+    ca = _one_cert_bundle(tmp_path)
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    ctx = _tls.ssl_context(True)
+    assert isinstance(ctx, ssl.SSLContext)
+    assert len(ctx.get_ca_certs()) == 1, "SSL_CERT_FILE must be the trust store"
+
+
+def test_verify_true_falls_back_to_certifi_without_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    assert len(_tls.ssl_context(True).get_ca_certs()) > 1
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
+    assert len(_tls.ssl_context(True).get_ca_certs()) > 1
