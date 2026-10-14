@@ -329,3 +329,32 @@ def test_a_turn_stuck_repeating_one_call_answers_instead_of_burning_its_steps(mo
     assert len(seen) <= 6, f"stopped after the repeats, not at step 40 ({len(seen)} calls)"
     assert any(e["type"] == "synthesis" for e in events)
     assert "503" in resp.content and "step limit" not in resp.content
+
+
+def test_a_tool_that_keeps_failing_with_new_arguments_is_refused_then_the_turn_answers(
+        monkeypatch):
+    # Live 2026-10-14: ask_reasoner answered 502 every time and the 12B re-asked it with
+    # reworded arguments until the step budget ran out (429 s, "I reached my step limit").
+    seen: list = []
+    calls: list = []
+
+    async def replies_for(n, messages):
+        if SYNTH_MARK in str(messages[-1].content):
+            return "FINAL: the lookup service is down (502); I could not find it."
+        return f'ACTION: lookup\nINPUT: {{"q": "variant {n}"}}'
+
+    agent = _agent(monkeypatch, replies_for, seen)
+    agent._auto_neurons = None
+
+    @agent.tool
+    def lookup(q: str) -> str:
+        """look something up"""
+        calls.append(q)
+        return "(tool error: HTTPStatusError: 502 Bad Gateway)"
+
+    events: list = []
+    resp = asyncio.run(agent.stream_react("where is it defined?", on_event=events.append,
+                                          max_steps=40))
+    assert len(calls) == 3, f"refused after 3 failures, ran {len(calls)}"
+    assert len(seen) <= 9, f"answered soon after, not at step 40 ({len(seen)} calls)"
+    assert "502" in resp.content and "step limit" not in resp.content

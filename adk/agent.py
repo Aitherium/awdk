@@ -183,6 +183,9 @@ _CLAIM_NUDGE_MSG = (
 #: stops calling tools and answers from what it has.
 _MAX_REPEATS = 3
 
+#: Failed calls of one tool a streaming turn tolerates before refusing it for the turn.
+_MAX_TOOL_FAILS = 3
+
 
 #: A question about how something IS right now. Measured 2026-10-14: "how is the platform
 #: looking" answered "The platform is looking good! The majority of services are running
@@ -3829,6 +3832,12 @@ class AitherAgent:
         # re-sent one failing codegraph_search until the step budget ran out and the
         # owner got "I reached my step limit"; past _MAX_REPEATS the turn answers.
         _repeats = 0
+        # Failed calls per tool name this turn. Exact repeats are caught above, but live
+        # 2026-10-14 the 12B re-asked ask_reasoner with reworded arguments while it
+        # answered 502 every time; past _MAX_TOOL_FAILS the tool is refused for the turn
+        # and each refusal counts toward the stall exit.
+        _tool_fails: dict[str, int] = {}
+        _tool_last_err: dict[str, str] = {}
         _stalled = False
         _out_of_steps = False
 
@@ -4132,6 +4141,12 @@ class AitherAgent:
                 _hint = await _ctl_hook("on_stall")
                 if _hint:
                     obs += f"\n{str(_hint)[:600]}"
+            elif _tool_fails.get(name, 0) >= _MAX_TOOL_FAILS and not _exempt:
+                _repeats += 1
+                _ok = False
+                obs = (f"{name} failed {_tool_fails[name]} times this turn and is unavailable "
+                       f"now (last: {str(_tool_last_err.get(name, ''))[:200]}). Do not call it "
+                       "again: use a different tool or answer with FINAL: and say what failed.")
             elif _vact == LoopAction.CIRCUIT_BREAK or (_vact == LoopAction.BLOCK and not _exempt):
                 obs = str(getattr(_verdict, "nudge_message", "") or "Stop calling tools; answer.")
                 _hint = await _ctl_hook("on_stall")
@@ -4182,6 +4197,9 @@ class AitherAgent:
                         _call_steps[_call_key] = _mine
                 _call_steps.setdefault(_call_key, (_step + 1, _ok))
                 _last_tool, _last_obs = name, obs
+                if not _ok:
+                    _tool_fails[name] = _tool_fails.get(name, 0) + 1
+                    _tool_last_err[name] = obs
             await _emit({"type": "tool_result", "name": name, "result": obs[:1500],
                          "ok": _ok, **({} if _ran else {"ran": False})})
             # Two failed / empty results in a row: the orchestrator consults the bigger
