@@ -71,6 +71,18 @@ public class HeartbeatJob extends JobService {
         return family && commands;
     }
 
+    /** DeviceInfo.telemetry for this phone: Android release + security patch, app version. */
+    static java.util.Map<String, String> telemetry(Context ctx) {
+        long code = 0;
+        try {
+            code = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).getLongVersionCode();
+        } catch (Exception e) {
+            code = 0; // the version name still goes
+        }
+        return DeviceInfo.telemetry(android.os.Build.VERSION.RELEASE, android.os.Build.VERSION.SECURITY_PATCH,
+                Config.VERSION, code);
+    }
+
     /** The household check-in. Returns true when it is done (sent, or nothing to send). */
     static boolean beat(Context ctx) {
         Config cfg = new Config(ctx);
@@ -92,8 +104,11 @@ public class HeartbeatJob extends JobService {
             c.setRequestProperty("Origin", "https://aitherium.com");
             c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) Aither/0.2");
             if (cookie != null) c.setRequestProperty("Cookie", cookie);
+            // what this phone runs, so the owner's "are my devices up to date?" has an answer
+            JSONObject body = new JSONObject().put("token", token);
+            for (java.util.Map.Entry<String, String> e : telemetry(ctx).entrySet()) body.put(e.getKey(), e.getValue());
             try (OutputStream o = c.getOutputStream()) {
-                o.write(new JSONObject().put("token", token).toString().getBytes(StandardCharsets.UTF_8));
+                o.write(body.toString().getBytes(StandardCharsets.UTF_8));
             }
             int code = c.getResponseCode();
             if (code == 410) { // revoked by the owner: forget the device, AitherOS signs out

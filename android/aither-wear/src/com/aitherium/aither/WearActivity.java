@@ -144,6 +144,8 @@ public class WearActivity extends Activity {
     protected void onResume() {
         super.onResume();
         new WearNodeLink(this).beatIfDue();
+        new WearUpdater(this).maybeCheck(); // OTA from the GitHub release, every 6 h (WearUpdater)
+        WearUpdater.showPending(this); // a watch-face update waiting for its one tap
         resumed = true;
         work(api::renewIfDue); // keeps the 30-day sliding session alive (WearApi)
         if (loopAllowed == null && !api.token().isEmpty()) work(this::readLoopPolicy);

@@ -37,6 +37,7 @@ public class WearTile extends TileService {
     @Override
     protected ListenableFuture<TileBuilders.Tile> onTileRequest(RequestBuilders.TileRequest req) {
         new WearNodeLink(this).beatIfDue();
+        new WearUpdater(this).maybeCheck();
         ResolvableFuture<TileBuilders.Tile> f = ResolvableFuture.create();
         Context c = getApplicationContext();
         new Thread(() -> {

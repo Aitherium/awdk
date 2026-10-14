@@ -4,8 +4,8 @@
      phone/watch pair. Built by ../aither/build.py with the wear flag. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="12"
-    android:versionName="0.3.25">
+    android:versionCode="13"
+    android:versionName="0.3.26">
 
     <!-- Wear OS 3 (API 30) and up; Pixel Watch 4 ships Wear OS 6 (API 36) -->
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36" />
@@ -26,8 +26,17 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- Over-the-air updates without Play (WearUpdater): the app updates ITSELF from the
+         GitHub release with no prompt (Android allows a self-update without user action);
+         the watch face, another package, asks for one tap. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <uses-permission android:name="android.permission.ENFORCE_UPDATE_OWNERSHIP" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <queries>
+        <!-- the Aither watch face, kept current by WearUpdater when it is installed -->
+        <package android:name="com.aitherium.aither.watchface" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
@@ -83,6 +92,8 @@
                 android:name="androidx.wear.tiles.PREVIEW"
                 android:resource="@mipmap/ic_launcher" />
         </service>
+
+        <receiver android:name=".WearUpdateResult" android:exported="false" />
 
         <activity
             android:name=".WearBlePair"

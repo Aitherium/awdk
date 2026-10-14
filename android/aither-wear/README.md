@@ -34,6 +34,21 @@ and signs with the same key and certificate check as the phone app.
 5. `adb -s <ip>:<port> install -r D:\aither-build\wear\aither-wear.apk`
    (or `build.py --wear --install <ip>:<port>`).
 
+## Updates (over the air, no Play)
+
+From 0.3.26 the watch keeps itself current (`WearUpdater`): every 6 hours while the app or
+the Tile is used on an unmetered network, it reads the Aitherium/awdk releases, takes the
+newest `aither-android-vX.Y.Z`, downloads `aither-wear-X.Y.Z.apk`, and installs it only if
+the SHA-256 matches the release's `SHA256SUMS`, the APK is this package, newer, declares the
+watch feature, and is signed by the release certificate. It installs itself with no prompt
+(Android allows an app to update itself without user action, whoever installed it first,
+so an adb-installed watch app stays current). The watch face is another package, so its
+update asks for one tap: the confirmation opens the next time Aither is opened.
+
+The phone does not push the APK to the watch: that channel is the Wearable Data Layer, a
+Play services library this build does not carry. A watch on 0.3.25 or older has no updater
+yet: install 0.3.26 once by adb (below); every later release arrives on its own.
+
 ## Signing in (device link)
 
 The watch asks Identity for a device code and shows it as a QR of

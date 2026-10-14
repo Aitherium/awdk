@@ -117,6 +117,18 @@ def pins() -> None:
     cert = re.search(r'RELEASE_CERT = "([0-9a-f]{64})"', (src / "Updater.java").read_text(encoding="utf-8"))
     if not cert or cert.group(1) != RELEASE_CERT_SHA256.replace(":", "").lower():
         raise SystemExit("build: Updater.RELEASE_CERT and RELEASE_CERT_SHA256 differ")
+    # The watch updates itself from the same release (WearUpdater): it looks for
+    # aither-wear-<release version>.apk and checks the same certificate.
+    wear_src = HERE.parent / "aither-wear" / "src" / "com" / "aitherium" / "aither"
+    wear_manifest = HERE.parent / "aither-wear" / "AndroidManifest.xml"
+    wear_name = re.search(r'android:versionName="([^"]+)"',
+                          wear_manifest.read_text(encoding="utf-8"))
+    if not wear_name or wear_name.group(1) != name.group(1):
+        raise SystemExit("build: the watch app's versionName must equal the phone app's")
+    wear_cert = re.search(r'RELEASE_CERT = "([0-9a-f]{64})"',
+                          (wear_src / "WearUpdater.java").read_text(encoding="utf-8"))
+    if not wear_cert or wear_cert.group(1) != cert.group(1):
+        raise SystemExit("build: WearUpdater.RELEASE_CERT and Updater.RELEASE_CERT differ")
 
 
 def page_align(so: Path) -> int:
@@ -507,6 +519,7 @@ def wear_libs(out: Path) -> list[Path]:
 def build_wear(out: Path, keystore: str = "", storepass_file: str = "") -> Path:
     """The Wear OS app: its own manifest and sources, the phone's launcher icons and the
     WEAR_SHARED sources, signed exactly like the phone app (same key, same cert check)."""
+    pins()
     root = sdk()
     jar = root / "platforms" / f"android-{API}" / "android.jar"
     bt = root / "build-tools" / TOOLS
