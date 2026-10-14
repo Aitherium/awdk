@@ -144,6 +144,7 @@ public class WearActivity extends Activity {
     protected void onResume() {
         super.onResume();
         new WearNodeLink(this).beatIfDue();
+        WearBeatJob.schedule(this); // the same check-in with the app closed (no-op when pending)
         new WearUpdater(this).maybeCheck(); // OTA from the GitHub release, every 6 h (WearUpdater)
         WearUpdater.showPending(this); // a watch-face update waiting for its one tap
         resumed = true;

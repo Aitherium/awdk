@@ -50,10 +50,12 @@ final class WearNodeLink {
     static final String UA = "Mozilla/5.0 (Linux; Android; Wear OS) AitherWear/0.1";
     private static final int POLL_MS = 3000;
 
+    private final Context app;
     private final SharedPreferences p;
 
     WearNodeLink(Context c) {
-        p = c.getApplicationContext().getSharedPreferences("wear-node", Context.MODE_PRIVATE);
+        app = c.getApplicationContext();
+        p = app.getSharedPreferences("wear-node", Context.MODE_PRIVATE);
     }
 
     boolean linked() { return !p.getString("node_id", "").isEmpty() && !p.getString("bearer", "").isEmpty(); }
@@ -65,21 +67,32 @@ final class WearNodeLink {
      *  beat per BEAT_EVERY_MS; called from the app and the tile, off the main thread. */
     void beatIfDue() {
         if (!linked()) return;
+        new Thread(this::beatNow, "wear-node-beat").start();
+    }
+
+    /** The beat itself, on the caller's thread. WearBeatJob runs it in the background about
+     *  every 15 minutes, so a watch nobody has touched for hours still reads as online.
+     *  True when nothing needs a retry: sent, not joined, or a beat went out less than
+     *  BEAT_EVERY_MS ago. */
+    boolean beatNow() {
+        if (!linked()) return true;
         long now = System.currentTimeMillis();
-        if (now - p.getLong("beat_at", 0) < BEAT_EVERY_MS) return;
-        p.edit().putLong("beat_at", now).apply();
-        new Thread(() -> {
-            try {
-                JSONObject beat = new JSONObject().put("node_id", p.getString("node_id", ""))
-                        .put("inference_ready", false).put("available_models", new org.json.JSONArray())
-                        .put("inference_kind", "none").put("reach_kind", "none");
-                Resp r = call("/v1/nodes/device/heartbeat", p.getString("bearer", ""), beat);
-                android.util.Log.i("AitherWearNode", "heartbeat " + r.code);
-                if (r.code != 200) p.edit().putLong("beat_at", 0).apply(); // try again next time
-            } catch (Exception e) {
-                p.edit().putLong("beat_at", 0).apply();
-            }
-        }, "wear-node-beat").start();
+        synchronized (WearNodeLink.class) {
+            if (now - p.getLong("beat_at", 0) < BEAT_EVERY_MS) return true;
+            p.edit().putLong("beat_at", now).apply();
+        }
+        try {
+            JSONObject beat = new JSONObject().put("node_id", p.getString("node_id", ""))
+                    .put("inference_ready", false).put("available_models", new org.json.JSONArray())
+                    .put("inference_kind", "none").put("reach_kind", "none");
+            Resp r = call("/v1/nodes/device/heartbeat", p.getString("bearer", ""), beat);
+            android.util.Log.i("AitherWearNode", "heartbeat " + r.code);
+            if (r.code == 200) return true;
+        } catch (Exception e) {
+            android.util.Log.w("AitherWearNode", "heartbeat failed: " + e.getClass().getSimpleName());
+        }
+        p.edit().putLong("beat_at", 0).apply(); // try again next time
+        return false;
     }
 
     /** This watch's node id: made once, kept (a re-join keeps the same device row). */
@@ -256,6 +269,7 @@ final class WearNodeLink {
         if (r.code != 200 || node.isEmpty() || tok.isEmpty()) return "Identity answered " + r.code + ". Try again.";
         p.edit().putString("node_id", node).putString("bearer", tok)
                 .putString("key", r.json.optString("command_key", "")).apply();
+        WearBeatJob.schedule(app); // from now on it checks in with the app closed
         return "This watch is on your devices.";
     }
 

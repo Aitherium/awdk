@@ -33,6 +33,9 @@
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <uses-permission android:name="android.permission.ENFORCE_UPDATE_OWNERSHIP" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- the background device check-in (WearBeatJob) is a persisted job, and it is re-armed
+         after a reboot or an update (WearBootReceiver) -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <queries>
         <!-- the Aither watch face, kept current by WearUpdater when it is installed -->
@@ -94,6 +97,20 @@
         </service>
 
         <receiver android:name=".WearUpdateResult" android:exported="false" />
+
+        <!-- the device check-in every ~15 minutes with the app closed, so an idle watch stays
+             online in "my devices"; bound only by JobScheduler -->
+        <service
+            android:name=".WearBeatJob"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <receiver android:name=".WearBootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".WearBlePair"
