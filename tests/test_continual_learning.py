@@ -45,3 +45,31 @@ def test_agent_wires_skills_by_flag(monkeypatch, tmp_path, env, expect):
     agent = AitherAgent(name="learner_test", builtin_tools=False)
     assert hasattr(agent, "_learn_after")            # learn-after hook present
     assert (agent._skills is not None) is expect      # recall/learn store gated by flag
+
+
+@pytest.mark.parametrize("content,tools", [
+    ("I stopped: I kept repeating the same call and it gave nothing new.",
+     ["codegraph_search", "ask_reasoner"]),
+    ("Here is where it is defined.", ["codegraph_search[failed]", "file_search"]),
+    ("I couldn't find it: the code graph is down.", ["codegraph_search", "file_search"]),
+])
+def test_a_failed_turn_saves_and_reinforces_no_skill(monkeypatch, tmp_path, content, tools):
+    # 2026-10-14: a question that failed 16 times was saved as a skill (success_count 12)
+    # whose only step was the give-up message.
+    import asyncio
+
+    from adk.agent import AitherAgent
+    from adk.skills import Skill
+
+    monkeypatch.setenv("AITHER_SKILLS", "true")
+    monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+    agent = AitherAgent(name="learner_fail", builtin_tools=False)
+    agent._skills = SkillStore(data_dir=tmp_path)  # never the real ~/.aither/skills
+    reused = Skill(name="old way", description="d", steps=["a", "b"],
+                   tools_used=["x", "y"], success_count=1)
+    agent._skills.save(reused)
+    agent._recalled_skills = [reused]
+    asyncio.run(agent._learn_after("where is split_near_question defined?", content, tools))
+    names = [s.name for s in agent._skills.search("split_near_question defined", k=10)]
+    assert not any("split_near_question" in n for n in names)
+    assert agent._skills.load("old way").success_count == 1

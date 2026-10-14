@@ -186,6 +186,12 @@ _MAX_REPEATS = 3
 #: Failed calls of one tool a streaming turn tolerates before refusing it for the turn.
 _MAX_TOOL_FAILS = 3
 
+#: Answers that report the turn did not get done (the loop's own fallbacks, a paused
+#: approval, a plain "I could not"). Such a turn must not be learned as a skill.
+_GAVE_UP_ANSWER = re.compile(
+    r"(?i)^(?:I stopped:|I reached my step limit|Waiting for your approval|"
+    r"I (?:could ?n[o']t|was unable|am unable|can ?n[o']t) )")
+
 
 #: A question about how something IS right now. Measured 2026-10-14: "how is the platform
 #: looking" answered "The platform is looking good! The majority of services are running
@@ -1657,6 +1663,13 @@ class AitherAgent:
             logger.warning("[LEARN] world-model record failed: %s", exc)
 
         if not self._skills:
+            return
+        # A turn that failed teaches no skill and reinforces none. Measured 2026-10-14: a
+        # question that failed 16 times in a row was saved as a skill whose only "step"
+        # was the give-up message, success_count 12, and recalled to the next try.
+        if (any("[failed]" in t for t in tool_calls_made)
+                or _GAVE_UP_ANSWER.match((content or "").strip())):
+            self._recalled_skills = []
             return
         try:
             for s in getattr(self, "_recalled_skills", None) or []:
