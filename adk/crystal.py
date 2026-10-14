@@ -83,6 +83,10 @@ MIN_COSINE_SCORE = 0.45
 GRAPH_WAIT_S = 1.5
 #: What a turn waits for the whole crystal block (facts + memory + graph).
 CRYSTAL_STAGE_S = GRAPH_WAIT_S + 2.0
+#: The graph wait for a CODE request when the graph runs in its own process
+#: (``ADK_AWGRAPH_WORKER``): a warm query takes ~4.7 s there (measured 2026-10-14) and,
+#: out of process, waiting for it blocks nothing else in the turn.
+CODE_GRAPH_WAIT_S = 5.0
 #: How long recall waits for the query's embedding before ranking facts by keyword.
 EMBED_WAIT_S = 1.0
 #: Env var naming EXTRA scopes recall reads (comma-separated). Read from the process
@@ -384,6 +388,17 @@ async def _no_hits() -> list[dict]:
     return []
 
 
+def _worker_mode() -> bool:
+    """Open the code graph in a child process (``ADK_AWGRAPH_WORKER=1``; the daemon sets
+    it). In-process, awgraph's pure-Python load and scorer hold the GIL for whole turns."""
+    return os.environ.get("ADK_AWGRAPH_WORKER", "").strip().lower() in ("1", "true", "yes")
+
+
+def _worker_argv(root: str) -> "list | None":
+    """The worker command; None = the default (``python -m adk.graph_worker <root>``)."""
+    return None
+
+
 class AwgraphUnavailable(RuntimeError):
     """The graph could not be opened. ``str(exc)`` is the specific reason, in the
     token form CodeWorld's telemetry uses (``ModuleNotFoundError: ...`` when awgraph
@@ -444,6 +459,8 @@ class AwgraphIndex:
     async def _hydrate(self) -> bool:
         if self._ok is not None:
             return self._ok
+        if _worker_mode():
+            return await self._hydrate_worker()
         try:
             from awgraph.cli import _open_graph  # type: ignore[import-not-found]
         except Exception as exc:  # noqa: BLE001 -- reported through telemetry
@@ -478,9 +495,42 @@ class AwgraphIndex:
             self._ok = False
         return bool(self._ok)
 
+    async def _hydrate_worker(self) -> bool:
+        """Open the graph in a child process (``adk.graph_worker``), once per process."""
+        from adk.graph_worker import GraphWorkerClient
+
+        def _start() -> Any:
+            with self._hydrate_lock:
+                if self._ok is None:
+                    client = GraphWorkerClient(self.root, argv=_worker_argv(self.root))
+                    ok = client.start()
+                    self._graph, self._ok = client, ok
+                    if not ok:
+                        self.reason = client.reason or f"no-index for {self.root}"
+                        client.close()
+                return self._graph, self._ok
+
+        try:
+            await asyncio.to_thread(_start)
+        except Exception as exc:  # noqa: BLE001 -- reported through telemetry
+            self.reason = f"{type(exc).__name__}: {exc}"
+            logger.warning("[CRYSTAL] graph worker failed for %s: %s", self.root, exc)
+            self._ok = False
+        return bool(self._ok)
+
     async def query(self, text: str, k: int) -> list[dict]:
         if not await self._open():
             raise AwgraphUnavailable(self.reason or f"no-index for {self.root}")
+        from adk.graph_worker import GraphWorkerClient
+
+        if isinstance(self._graph, GraphWorkerClient):
+            client = self._graph
+            try:
+                return await asyncio.to_thread(client.query, text, k, GRAPH_WAIT_S + 1.0)
+            except RuntimeError as exc:
+                if not client.alive:  # the worker died: the next open restarts it
+                    self._graph, self._ok, self._opening = None, None, None
+                raise AwgraphUnavailable(str(exc)) from exc
         # hybrid_query is async in name only too: a warm query over ~495k chunks ran
         # 4-12 s of numpy on the loop and froze it up to 2 s at a time (measured
         # 2026-10-14), so every OTHER recall stage's timer fired late and the whole
@@ -864,7 +914,7 @@ class Crystal:
         scored.sort(key=lambda t: -t[0])
         return [f"{k}: {v.splitlines()[0][:240]}" for _s, k, v in scored[:limit]]
 
-    async def recall_graph(self, message: str) -> list[dict]:
+    async def recall_graph(self, message: str, wait: "float | None" = None) -> list[dict]:
         """Code-graph hits for ``message`` with ABSOLUTE paths, or [] (degraded).
 
         Bounded by ``GRAPH_WAIT_S``: the query runs as a shielded task, so a cold index
@@ -878,7 +928,8 @@ class Crystal:
             task = asyncio.ensure_future(self.graph.query(message, self.max_graph_hits))
             task.add_done_callback(_reap_background)
             try:
-                hits = await asyncio.wait_for(asyncio.shield(task), GRAPH_WAIT_S)
+                hits = await asyncio.wait_for(asyncio.shield(task),
+                                              GRAPH_WAIT_S if wait is None else wait)
             except asyncio.TimeoutError:
                 self._degrade("awgraph:degraded:cold" if cold else "awgraph:timeout")
                 self._graph_degraded = "cold" if cold else "timeout"
@@ -905,7 +956,8 @@ class Crystal:
             return []
 
     async def recall_block(self, message: str, exclude: "tuple | list" = (),
-                           max_chars: "int | None" = None, graph: bool = True) -> str:
+                           max_chars: "int | None" = None, graph: bool = True,
+                           graph_wait: "float | None" = None) -> str:
         """The system block for a turn: facts + graph hits under ``max_chars``. "" = nothing.
 
         ``exclude``: texts the caller already shows the model (history, another block);
@@ -920,10 +972,11 @@ class Crystal:
         # The cap is a parameter, not a temporary self.max_chars swap: two concurrent
         # turns on one crystal would otherwise read each other's cap.
         cap = int(max_chars) if max_chars is not None and max_chars > 0 else self.max_chars
-        return await self._recall_block(message, cap, exclude, graph)
+        return await self._recall_block(message, cap, exclude, graph, graph_wait)
 
     async def _recall_block(self, message: str, cap: int,
-                            exclude: "Iterable[str]" = (), graph: bool = True) -> str:
+                            exclude: "Iterable[str]" = (), graph: bool = True,
+                            graph_wait: "float | None" = None) -> str:
         self.telemetry["recalls"] += 1
         self._graph_degraded = ""
         stats: dict = {"dropped": 0}
@@ -932,7 +985,7 @@ class Crystal:
         # and one after the other they overran the turn's crystal stage under load
         # (2026-10-14), which then dropped the facts too.
         facts, hits = await asyncio.gather(self.recall_facts(message, stats=stats),
-                                           self.recall_graph(message) if graph
+                                           self.recall_graph(message, graph_wait) if graph
                                            else _no_hits())
         graph_lines: list[str] = []
         for h in hits:

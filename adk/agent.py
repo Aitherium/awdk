@@ -3554,7 +3554,7 @@ class AitherAgent:
                 return await self.crystal.recall_block(
                     message, exclude=tuple(_hist_texts),
                     max_chars=min(_ctx_budget_chars, _CRYSTAL_TURN_MAX_CHARS),
-                    graph=_wants_code_graph(message))
+                    graph=_code_turn, graph_wait=_graph_wait)
             except TypeError:  # a crystal built before the exclude/max_chars contract
                 return await self.crystal.recall_block(message)
 
@@ -3597,9 +3597,16 @@ class AitherAgent:
         async def _nothing():
             return None
 
+        _code_turn = _wants_code_graph(message)
+        _graph_wait = None
         try:  # the graph wait sits inside this bound, so a slow graph keeps the facts
             from adk import crystal as _crystal_mod
             _crystal_stage_s = float(_crystal_mod.CRYSTAL_STAGE_S)
+            if _code_turn and _crystal_mod._worker_mode():
+                # Out of process a slow graph blocks nothing else, so a code turn waits
+                # for its hits.
+                _graph_wait = float(_crystal_mod.CODE_GRAPH_WAIT_S)
+                _crystal_stage_s = max(_crystal_stage_s, _graph_wait + 2.0)
         except Exception:  # noqa: BLE001 -- no crystal module: the old bound
             _crystal_stage_s = 3.5
 

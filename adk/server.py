@@ -8519,6 +8519,9 @@ def main():
         _install_accept_resilience()
     except Exception as exc:  # noqa: BLE001 - the daemon still serves without it
         logger.warning("accept resilience not installed: %s", exc)
+    # The code graph runs in a child process (adk.graph_worker): in-process, awgraph's
+    # pure-Python load and scorer held the GIL for whole turns (2026-10-14).
+    os.environ.setdefault("ADK_AWGRAPH_WORKER", "1")
     parser = argparse.ArgumentParser(description="AitherADK Agent Server")
     parser.add_argument("--identity", "-i", default="aither", help="Agent identity to load (single-agent mode)")
     parser.add_argument("--port", "-p", type=int, default=None, help="Port (default: 8080)")
