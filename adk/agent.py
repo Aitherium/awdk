@@ -111,8 +111,13 @@ _ANNOUNCED_RETRY = re.compile(
     r"(?is)\b(?:let me|i(?:'ll| will)|i am going to|i'm going to)\s+"
     r"(?:(?:now|first|then|just|quickly)\s+)?"
     r"(?:try|retry|run|check|use|attempt|look|get|fetch|search|"
-    r"list|find|open|read|start|scan|query|call)\b"
-    r"[^.!?\n]{0,160}[.!?:]?\s*$"
+    r"list|find|open|read|start|scan|query|call|perform|make|pull|gather|grab|"
+    r"dig|browse|investigate|research)\b"
+    r"[^.!?\n]{0,160}[.!?:]?"
+    # A courtesy tail after the promise is still a promise (live 2026-10-14: "I'll
+    # perform a web search ... One moment, please!" ended the turn unsearched).
+    r"(?:\s*(?:one moment|just a moment|a moment|hang on|hold on|stand by|"
+    r"bear with me|please)[^.!?\n]{0,40}[.!?]*\s*\S{0,4})?\s*$"
 )
 _RETRY_NUDGE_MSG = (
     "You said what you would do next but did not do it. Do it now: call the tool "

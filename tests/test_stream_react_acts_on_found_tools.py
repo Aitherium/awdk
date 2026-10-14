@@ -363,3 +363,16 @@ def test_a_question_gets_room_for_discovery_even_at_low_effort(monkeypatch):
     intent["v"] = "conversation"
     r = asyncio.run(server._turn_routing(None, "hi", "s", lambda e: None))
     assert r.max_steps < server._STREAM_MIN_STEPS
+
+
+def test_a_promise_with_a_courtesy_tail_is_sent_back_to_act():
+    """Live 2026-10-14: "I'll perform a web search ... One moment, please!" ended the
+    turn without searching."""
+    from adk.agent import announces_retry
+
+    assert announces_retry("Let me try a different approach. I'll perform a web search "
+                           "to find the latest news and updates about Tanium.")
+    assert announces_retry("I'll perform a web search to see if there's any recent "
+                           "information available. One moment, please!")
+    assert not announces_retry("Tanium shipped X. Let me know if you want more.")
+    assert not announces_retry("I will do my best to help you.")

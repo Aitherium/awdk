@@ -1074,8 +1074,12 @@ class Crystal:
                 continue
             fact_lines.append(f"- {f}")
         if fact_lines:
-            head = ("[CRYSTAL] Facts this agent already established for this task, recalled "
-                    "from memory. Build on them; re-verify only what a tool result contradicts.")
+            # "Answer from them" is explicit: live 2026-10-14, "why were awsh turns slow
+            # yesterday?" recalled the fact that answers it and the model web-searched
+            # "awsh" instead (and found AWS outages).
+            head = ("[CRYSTAL] Facts recalled from memory. If they answer the question, "
+                    "answer from them (do not web-search them); re-verify only what a tool "
+                    "contradicts.")
             parts.append(head)
             used += len(head)
             for line in fact_lines:
