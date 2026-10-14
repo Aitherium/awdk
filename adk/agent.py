@@ -142,7 +142,21 @@ _OFFER_NUDGE_MSG = (
 def offers_lookup(text: str) -> bool:
     """True when ``text`` ends by offering a read-only lookup instead of doing it."""
     tail = (text or "").strip()[-300:]
-    return bool(tail) and bool(_OFFERS_LOOKUP.search(tail))
+    if not tail:
+        return False
+    if _OFFERS_LOOKUP.search(tail):
+        return True
+    # "I'll perform a web search ... Would you like me to do that?" (live, 2026-10-14):
+    # the lookup verb sits in the sentence BEFORE a bare "do that?".
+    return bool(_OFFERS_THAT.search(tail) and _LOOKUP_PLAN.search(tail))
+
+
+_OFFERS_THAT = re.compile(
+    r"(?i)\b(?:would you like|do you want|shall i|should i|want me to)\b[^.?!\n]{0,30}?"
+    r"\b(?:do|try|go ahead with|proceed with|run)\s+(?:that|it|this|so)\b[^?\n]{0,20}\?\s*$")
+_LOOKUP_PLAN = re.compile(
+    r"(?i)\b(?:web\s+search|search(?:ing)?\s+(?:the\s+web|for|online)|look(?:ing)?\s+(?:it\s+)?up|"
+    r"look\s+into|check(?:ing)?\s+(?:the\s+)?(?:news|latest|web))\b")
 
 
 #: Measured 2026-10-14 on the live daemon: "anything exciting about tanium?" ->
@@ -226,6 +240,9 @@ def normalize_channel_markers(text: str) -> tuple[str, str]:
     for marker, repl in _CHANNEL_MARKERS:
         body = body.replace(marker, repl)
     return body, held
+
+#: Most of the context budget one turn gives the crystal block (facts + graph + memory).
+_CRYSTAL_TURN_MAX_CHARS = 4000
 
 #: Discovery meta-tools: their result is a MENU, never an answer. Measured 2026-10-11
 #: in awsh: "what is in the news today" -> search_tools("news") -> the 8B described
@@ -3515,8 +3532,13 @@ class AitherAgent:
 
         async def _crystal_block() -> str:
             try:
+                # The crystal gets a SHARE of the context budget, not all of it:
+                # measured 2026-10-14, a 20k-char block of keyword-matched facts (the
+                # whole 20% of a 32k window) buried the question and the model
+                # answered "Hello! How can I help?".
                 return await self.crystal.recall_block(
-                    message, exclude=tuple(_hist_texts), max_chars=_ctx_budget_chars)
+                    message, exclude=tuple(_hist_texts),
+                    max_chars=min(_ctx_budget_chars, _CRYSTAL_TURN_MAX_CHARS))
             except TypeError:  # a crystal built before the exclude/max_chars contract
                 return await self.crystal.recall_block(message)
 

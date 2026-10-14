@@ -65,6 +65,10 @@ VEC_DECIMALS = 4
 #: filtered), so an unrelated fact spent the turn's budget. Keyword overlap is a
 #: normalized token-set ratio; cosine is over the bound embedder's vectors.
 MIN_KEYWORD_SCORE = 0.05
+#: With no query vector at all (embedder slow or down), every fact ranks by keyword:
+#: only scores above this floor count, and at most KEYWORD_FALLBACK_LIMIT facts.
+KEYWORD_FALLBACK_FLOOR = 0.15
+KEYWORD_FALLBACK_LIMIT = 8
 MIN_COSINE_SCORE = 0.3
 #: How long one turn waits for the code graph. A cold awgraph open hydrates the whole
 #: index (measured 37.3 s for a probe and ~55 s before the first token of a real turn on
@@ -797,6 +801,11 @@ class Crystal:
                 self._degrade("embed:slow")
         scored: list[tuple[float, float, str]] = []
         dropped = 0
+        if qvec is None:
+            # Keyword ranking is the fallback, and a weak one: one shared word ranks a
+            # fact. It keeps only clear matches, and few of them.
+            limit = min(limit, KEYWORD_FALLBACK_LIMIT)
+        kw_floor = MIN_KEYWORD_SCORE if qvec is not None else KEYWORD_FALLBACK_FLOOR
         for _key, value, meta in rows:
             vec = meta.get("vec") if isinstance(meta, dict) else None
             # A vector from another embedder (a different dimension) cannot be
@@ -804,7 +813,7 @@ class Crystal:
             if qvec is not None and vec and len(vec) == len(qvec):
                 s, floor = cosine(qvec, vec), MIN_COSINE_SCORE
             else:
-                s, floor = keyword_score(message, value), MIN_KEYWORD_SCORE
+                s, floor = keyword_score(message, value), kw_floor
             if s <= floor:
                 dropped += 1
                 continue

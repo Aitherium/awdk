@@ -166,6 +166,11 @@ def test_offers_lookup_leaves_real_questions_alone():
     assert not offers_lookup("Would you like me to delete the branch?")
     assert not offers_lookup("Do you want me to send the email?")
     assert not offers_lookup("Here are the results. Anything else?")
+    assert offers_lookup("Let me try a different approach. I'll perform a web search to find "
+                         "the most recent information about Tanium. Would you like me to do "
+                         "that?")
+    assert not offers_lookup("I can delete the old branch for you. Would you like me to do "
+                             "that?")
 
 
 def test_companion_identity_scopes_honesty_to_shared_history(monkeypatch):

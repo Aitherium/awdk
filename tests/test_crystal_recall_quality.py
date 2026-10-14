@@ -419,3 +419,15 @@ async def test_a_slow_embedder_still_recalls_facts_by_keyword():
     assert time.monotonic() - t0 < crystal_mod.EMBED_WAIT_S + 1.0
     assert "orchestrator lane was saturated" in block
     assert "embed:slow" in c.telemetry["degraded"]
+
+
+async def test_keyword_fallback_keeps_few_clear_matches():
+    """With no query vector, 36 facts sharing one word each filled a 20k-char block and
+    the model answered the greeting instead of the question (2026-10-14)."""
+    rows = [(f"k{i}", f"fact {i} about turns in some unrelated board game round", {})
+            for i in range(30)]
+    rows.append(("hit", "awsh turns were slow because the orchestrator lane was saturated", {}))
+    c = Crystal(scope=WRITE, store=_Store(rows), embed=None)
+    facts = await c.recall_facts("why were awsh turns slow yesterday")
+    assert facts[0].startswith("awsh turns were slow")
+    assert len(facts) <= crystal_mod.KEYWORD_FALLBACK_LIMIT

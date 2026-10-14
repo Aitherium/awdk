@@ -290,3 +290,13 @@ def test_a_slow_recall_does_not_drop_the_pinned_constraints(monkeypatch):
     assert resp.content == "ok"
     assert any("NEVER-DELETE-PROD-7" in str(m.content) for m in seen[0])
     assert any(e["type"] == "degraded" and e["stage"] == "typed_memory" for e in events)
+
+
+def test_the_crystal_gets_a_share_of_the_context_budget_not_all_of_it():
+    from adk import agent as agent_mod
+
+    assert agent_mod._CRYSTAL_TURN_MAX_CHARS <= 4000
+    import inspect
+
+    src = inspect.getsource(agent_mod.AitherAgent.stream_react)
+    assert "_CRYSTAL_TURN_MAX_CHARS" in src
