@@ -246,3 +246,24 @@ def test_gemma_channel_markers_never_reach_the_answer():
     assert resp.content == "It is sunny."
     assert "channel" not in streamed and "channel" not in resp.content
     assert normalize_channel_markers("a < b") == ("a < b", "")
+
+
+def test_a_gemma_native_tool_call_runs_the_tool():
+    seen: list = []
+    agent = _agent([
+        '<|tool_call>call:web_search{query:<|"|>Tanium news, today<|"|>,limit:5}<tool_call|>',
+        "FINAL: Tanium shipped Autonomous IT.",
+    ], seen)
+    got: dict = {}
+
+    @agent.tool
+    def web_search(query: str, limit: int = 5) -> str:
+        """web"""
+        got.update(query=query, limit=limit)
+        return "Tanium ships Autonomous IT"
+
+    resp = asyncio.run(agent.stream_react("anything exciting about tanium?",
+                                          on_event=lambda e: None, max_steps=4))
+    assert got == {"query": "Tanium news, today", "limit": 5}
+    assert resp.content == "Tanium shipped Autonomous IT."
+    assert "tool_call" not in resp.content

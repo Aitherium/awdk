@@ -172,6 +172,44 @@ _CHANNEL_MARKERS = (("<|channel>thought", "<think>"), ("<|channel>", "<think>"),
                     ("<channel|>", "</think>"))
 
 
+#: Gemma's NATIVE tool-call form. Measured 2026-10-14 on the live daemon: "anything
+#: exciting about tanium?" answered with the literal text
+#: '<|tool_call>call:web_search{query:<|"|>Tanium latest news<|"|>,limit:5}<tool_call|>'
+#: because the ReAct parser only knows ACTION:/INPUT:.
+_NATIVE_CALL = re.compile(
+    r"<\|tool_call>\s*call:\s*([A-Za-z_][\w.-]*)\s*(\{.*?\})\s*(?:<tool_call\|>|$)", re.S)
+_NATIVE_STR = re.compile(r'<\|"\|>(.*?)<\|"\|>', re.S)
+_BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_]\w*)\s*:")
+
+
+def native_tool_call_to_react(text: str) -> str | None:
+    """``ACTION: name\nINPUT: {json}`` for a Gemma-native tool call in ``text``, or None.
+
+    Gemma writes arguments with bare keys and strings fenced by ``<|"|>``; both are
+    rewritten to JSON. Arguments that still do not parse are passed as ``{}`` so the
+    loop's missing-argument template can ask for them.
+    """
+    m = _NATIVE_CALL.search(text or "")
+    if not m:
+        return None
+    name, raw_args = m.group(1), m.group(2)
+    strings: list[str] = []
+
+    def _keep(sm: "re.Match[str]") -> str:
+        strings.append(json.dumps(sm.group(1)))
+        return f"\x00{len(strings) - 1}\x00"
+
+    body = _BARE_KEY.sub(r'\1"\2":', _NATIVE_STR.sub(_keep, raw_args))
+    body = re.sub(r"\x00(\d+)\x00", lambda dm: strings[int(dm.group(1))], body)
+    try:
+        args = json.loads(body)
+    except ValueError:
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    return f"ACTION: {name}\nINPUT: {json.dumps(args)}"
+
+
 def normalize_channel_markers(text: str) -> tuple[str, str]:
     """``(normalized, held)``: markers mapped to think tags; ``held`` is a trailing
     fragment that may be the start of a marker split across stream chunks."""
@@ -3885,6 +3923,12 @@ class AitherAgent:
                 answer = cleaned.split("FINAL:", 1)[-1].strip() if "FINAL:" in cleaned else cleaned.strip()
                 answer = scrub_orphan_think(answer).strip()
                 break
+            if not _ACT.search(full):
+                _native = native_tool_call_to_react(full)
+                if _native:
+                    logger.info("[REACT-STREAM] native tool call rewritten: %s",
+                                _native.splitlines()[0])
+                    full = _native
             m = _ACT.search(full)
             if not m:
                 answer = scrub_orphan_think(_THINK.sub("", full)).strip()
