@@ -11,6 +11,8 @@ from typing import AsyncIterator
 
 import httpx
 
+from adk._tls import ssl_context
+
 logger = logging.getLogger("adk.llm.openai")
 
 
@@ -310,8 +312,7 @@ class OpenAIProvider(LLMProvider):
 
     def _client(self) -> httpx.AsyncClient:
         kw: dict = {"timeout": self._timeout, "headers": self._headers()}
-        if self._verify is not None:
-            kw["verify"] = self._verify
+        kw["verify"] = ssl_context(True if self._verify is None else self._verify)
         return httpx.AsyncClient(**kw)
 
     def capabilities(self) -> ProviderCapabilities:
@@ -599,8 +600,7 @@ class OpenAIProvider(LLMProvider):
         """Fast connectivity check — uses a 5s timeout instead of the default 120s."""
         try:
             kw: dict = {"timeout": 5.0, "headers": self._headers()}
-            if self._verify is not None:
-                kw["verify"] = self._verify
+            kw["verify"] = ssl_context(True if self._verify is None else self._verify)
             async with httpx.AsyncClient(**kw) as client:
                 resp = await client.get(f"{self.base_url}/models")
                 return resp.status_code == 200

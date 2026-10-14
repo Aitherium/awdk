@@ -47,6 +47,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from adk._tls import ssl_context
+
 logger = logging.getLogger("adk.graph_memory")
 
 
@@ -693,7 +695,7 @@ class GraphMemory:
             ingest_url = self._fleet_url.rstrip("/") + "/ingest"
             async with httpx.AsyncClient(
                 timeout=8.0,
-                verify=self._fleet_verify(),
+                verify=ssl_context(self._fleet_verify()),
             ) as client:
                 resp = await client.post(
                     ingest_url, json=payload, headers=self._fleet_headers(),
@@ -800,7 +802,7 @@ class GraphMemory:
         try:
             import httpx
             async with httpx.AsyncClient(
-                timeout=5.0, verify=self._fleet_verify()
+                timeout=5.0, verify=ssl_context(self._fleet_verify())
             ) as c:
                 await c.post(
                     url.rstrip("/") + "/events",
@@ -919,7 +921,10 @@ class GraphMemory:
             import httpx
             col = self._fleet_collection
             hdr = self._qdrant_headers()
-            async with httpx.AsyncClient(timeout=20.0, verify=self._qdrant_verify()) as c:
+            async with httpx.AsyncClient(
+                    timeout=20.0,
+                    verify=ssl_context(self._qdrant_verify()),
+            ) as c:
                 r = await c.get(f"{self._qdrant_url}/collections/{col}", headers=hdr)
                 if r.status_code != 200:
                     await c.put(
@@ -940,7 +945,10 @@ class GraphMemory:
         try:
             import httpx
             col = self._fleet_collection
-            async with httpx.AsyncClient(timeout=15.0, verify=self._qdrant_verify()) as c:
+            async with httpx.AsyncClient(
+                    timeout=15.0,
+                    verify=ssl_context(self._qdrant_verify()),
+            ) as c:
                 r = await c.post(
                     f"{self._qdrant_url}/collections/{col}/points/scroll",
                     json={"limit": limit, "with_payload": True,
@@ -1019,7 +1027,10 @@ class GraphMemory:
         try:
             import httpx
             hdr = self._qdrant_headers()
-            async with httpx.AsyncClient(timeout=20.0, verify=self._qdrant_verify()) as c:
+            async with httpx.AsyncClient(
+                    timeout=20.0,
+                    verify=ssl_context(self._qdrant_verify()),
+            ) as c:
                 r = await c.get(f"{self._qdrant_url}/collections/{col}", headers=hdr)
                 if r.status_code != 200:
                     # Dot space tolerates the zero vector (Cosine would reject a
@@ -1044,7 +1055,10 @@ class GraphMemory:
         col = self._edges_collection()
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=15.0, verify=self._qdrant_verify()) as c:
+            async with httpx.AsyncClient(
+                    timeout=15.0,
+                    verify=ssl_context(self._qdrant_verify()),
+            ) as c:
                 r = await c.post(
                     f"{self._qdrant_url}/collections/{col}/points/scroll",
                     json={"limit": limit, "with_payload": True,
@@ -1106,7 +1120,7 @@ class GraphMemory:
                 payload["tenant_id"] = self._tenant_id
             async with httpx.AsyncClient(
                 timeout=15.0,
-                verify=self._fleet_verify(),
+                verify=ssl_context(self._fleet_verify()),
             ) as client:
                 resp = await client.post(
                     search_url, json=payload, headers=self._fleet_headers(),
@@ -2291,7 +2305,7 @@ class GraphMemory:
 
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=5.0) as client:
                 resp = await client.post(
                     f"{self._ollama_url}/api/embeddings",
                     json={"model": self._embed_model, "prompt": text},

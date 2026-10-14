@@ -130,3 +130,42 @@ def _merged_with_public_roots(bundle: str) -> str:
         return str(out)
     except Exception:
         return bundle
+
+
+_CTX_CACHE: dict = {}
+
+
+def ssl_context(verify: Union[bool, str, None] = None) -> Union[bool, "object"]:
+    """A cached ``ssl.SSLContext`` for an httpx ``verify=`` value (default: ``tls_verify()``).
+
+    httpx builds a NEW context for every client it constructs from ``True`` or a CA
+    path, loading the whole CA file each time. Measured 2026-10-14 on the adk daemon:
+    those builds were ~60 % of the event loop's busy time during a turn (gateway ping,
+    LLM client, embeddings, service probe, spirit recall), each one blocking the loop
+    long enough that every per-stage recall timer fired late. One context per trust
+    decision is shared instead; a CA file that changes on disk gets a new one.
+    ``False`` stays ``False``. For ``requests``, keep passing ``tls_verify()``.
+    """
+    if verify is None:
+        verify = tls_verify()
+    if verify is False:
+        return False
+    try:
+        import ssl
+
+        if verify is True:
+            import certifi
+
+            path = certifi.where()
+        else:
+            path = str(verify)
+        key = (path, os.path.getmtime(path))
+        ctx = _CTX_CACHE.get(key)
+        if ctx is None:
+            ctx = ssl.create_default_context(cafile=path)
+            if len(_CTX_CACHE) > 8:  # a CA file rewritten many times: drop old ones
+                _CTX_CACHE.clear()
+            _CTX_CACHE[key] = ctx
+        return ctx
+    except Exception:  # noqa: BLE001 -- TLS policy must never crash an HTTP call
+        return verify

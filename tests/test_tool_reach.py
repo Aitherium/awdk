@@ -195,7 +195,7 @@ def test_long_gateway_tools_get_a_600s_timeout(monkeypatch):
     seen: list[object] = []
 
     class _Client:
-        def __init__(self, timeout=None, headers=None):
+        def __init__(self, timeout=None, headers=None, **_kw):
             seen.append(timeout)
 
         async def __aenter__(self):

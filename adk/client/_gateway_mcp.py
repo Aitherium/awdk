@@ -20,6 +20,8 @@ from typing import Optional
 
 import httpx
 
+from adk._tls import ssl_context
+
 logger = logging.getLogger("adk.client.gateway_mcp")
 
 # The device-flow bearer the local MCP stdio bridge re-reads on EVERY reconnect
@@ -145,7 +147,11 @@ class GatewayMCPClient:
         if self._session_id:
             return True
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers()) as client:
+            async with httpx.AsyncClient(
+                    verify=ssl_context(True),
+                    timeout=self._timeout,
+                    headers=self._headers(),
+            ) as client:
                 resp = await client.post(
                     f"{self.gateway_url}/mcp",
                     json={
@@ -209,6 +215,7 @@ class GatewayMCPClient:
         """
         try:
             async with httpx.AsyncClient(
+                verify=ssl_context(True),
                 timeout=self._timeout, headers=self._headers()
             ) as client:
                 resp = await client.get(f"{self.gateway_url}/health")
@@ -244,6 +251,7 @@ class GatewayMCPClient:
             return False
         try:
             async with httpx.AsyncClient(
+                verify=ssl_context(True),
                 timeout=self._timeout, headers=self._headers()
             ) as client:
                 resp = await client.post(
@@ -271,6 +279,7 @@ class GatewayMCPClient:
 
         try:
             async with httpx.AsyncClient(
+                verify=ssl_context(True),
                 timeout=self._timeout, headers=self._headers()
             ) as client:
                 resp = await client.post(
@@ -331,6 +340,7 @@ class GatewayMCPClient:
             return None
         try:
             async with httpx.AsyncClient(
+                verify=ssl_context(True),
                 timeout=self._timeout, headers=self._headers()
             ) as client:
                 resp = await client.get(
@@ -369,6 +379,7 @@ class GatewayMCPClient:
                        else self._timeout)
         try:
             async with httpx.AsyncClient(
+                verify=ssl_context(True),
                 timeout=timeout, headers=self._headers()
             ) as client:
                 resp = await client.post(

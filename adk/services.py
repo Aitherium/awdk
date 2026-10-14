@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from adk._tls import ssl_context
+
 if TYPE_CHECKING:
     from adk.agent import AitherAgent
 
@@ -113,7 +115,7 @@ class ServiceBridge:
 
         # Check awnode local
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=3.0) as client:
                 resp = await client.get(f"{self.node_url}/health")
                 if resp.status_code == 200:
                     self._status.node_available = True
@@ -129,7 +131,7 @@ class ServiceBridge:
         if self._status.node_available:
             try:
                 genesis_url = os.getenv("GENESIS_URL", _DEFAULT_GENESIS_URL)
-                async with httpx.AsyncClient(timeout=3.0) as client:
+                async with httpx.AsyncClient(verify=ssl_context(True), timeout=3.0) as client:
                     resp = await client.get(f"{genesis_url}/health")
                     if resp.status_code == 200:
                         self._status.genesis_available = True
@@ -142,7 +144,7 @@ class ServiceBridge:
         # Check MCP Gateway (cloud)
         if self.gateway_url and self.api_key:
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                async with httpx.AsyncClient(verify=ssl_context(True), timeout=5.0) as client:
                     resp = await client.get(
                         f"{self.gateway_url}/health",
                         headers={"Authorization": f"Bearer {self.api_key}"},

@@ -71,6 +71,8 @@ import threading
 import time
 from typing import Awaitable, Callable, List, Optional, Tuple
 
+from adk._tls import ssl_context
+
 logger = logging.getLogger("adk.embeddings")
 
 __all__ = [
@@ -489,7 +491,7 @@ class AdkEmbeddings:
         base = self._norm_base(base)
         verify = _tls_verify()
         try:
-            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT, verify=verify) as c:
+            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT, verify=ssl_context(verify)) as c:
                 r = await c.post(
                     f"{base}/v1/embeddings",
                     json={"input": ["ping"], "model": CANONICAL_MODEL},
@@ -526,7 +528,7 @@ class AdkEmbeddings:
             return False
         base = base.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as c:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=_PROBE_TIMEOUT) as c:
                 r = await c.post(
                     f"{base}/api/embeddings",
                     json={"model": _OLLAMA_EMBED_MODEL, "prompt": "ping"},
@@ -651,7 +653,7 @@ class AdkEmbeddings:
             return False
         base = self._norm_base(base)
         try:
-            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as c:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=_PROBE_TIMEOUT) as c:
                 r = await c.get(f"{base}/v1/models")
                 return r.status_code == 200
         except Exception:  # noqa: BLE001
@@ -709,7 +711,7 @@ class AdkEmbeddings:
         out: List[List[float]] = []
         for i in range(0, len(texts), _BATCH):
             batch = [_truncate(t) for t in texts[i:i + _BATCH]]
-            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=verify) as c:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, verify=ssl_context(verify)) as c:
                 r = await c.post(
                     f"{self._url}/v1/embeddings",
                     json={"input": batch, "model": self._model},
@@ -723,7 +725,7 @@ class AdkEmbeddings:
     async def _embed_ollama(self, texts: List[str]) -> Optional[List[List[float]]]:
         import httpx
         out: List[List[float]] = []
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as c:
+        async with httpx.AsyncClient(verify=ssl_context(True), timeout=_HTTP_TIMEOUT) as c:
             for t in texts:
                 r = await c.post(
                     f"{self._url}/api/embeddings",

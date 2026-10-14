@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from adk._tls import ssl_context
+
 logger = logging.getLogger("adk.memory")
 
 
@@ -204,7 +206,10 @@ class Memory:
             headers = {}
             if self._spirit_auth_token:
                 headers["Authorization"] = f"Bearer {self._spirit_auth_token}"
-            async with httpx.AsyncClient(timeout=5.0, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
+            async with httpx.AsyncClient(
+                    timeout=5.0,
+                    verify=ssl_context(os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"),
+            ) as client:
                 await client.post(
                     f"{self._spirit_url}{self._spirit_teach_path}",
                     json=payload,
@@ -233,7 +238,10 @@ class Memory:
             headers = {}
             if self._spirit_auth_token:
                 headers["Authorization"] = f"Bearer {self._spirit_auth_token}"
-            async with httpx.AsyncClient(timeout=5.0, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
+            async with httpx.AsyncClient(
+                    timeout=5.0,
+                    verify=ssl_context(os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"),
+            ) as client:
                 resp = await client.post(
                     f"{self._spirit_url}{self._spirit_recall_path}",
                     json=payload,
@@ -322,7 +330,7 @@ class Memory:
 
             async with httpx.AsyncClient(
                 timeout=8.0,
-                verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false",
+                verify=ssl_context(os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"),
             ) as client:
                 resp = await client.post(
                     ingest_url, json=payload, headers=self._fleet_headers(),
@@ -390,7 +398,7 @@ class Memory:
 
             async with httpx.AsyncClient(
                 timeout=5.0,
-                verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false",
+                verify=ssl_context(os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"),
             ) as client:
                 resp = await client.post(
                     search_url, json=payload, headers=self._fleet_headers(),
