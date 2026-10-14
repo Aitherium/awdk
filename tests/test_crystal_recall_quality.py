@@ -525,3 +525,19 @@ async def test_a_greeting_recalls_no_unrelated_facts():
     c = Crystal(scope=WRITE, store=_Store(rows), embed=embed)
     facts = await c.recall_facts("anything")
     assert facts == ["tanium shipped autonomous IT"]
+
+
+async def test_a_timed_out_recall_names_the_step_still_running():
+    """A bare 'crystal (TimeoutError)' on every live turn took hours to explain
+    (2026-10-14); a timeout now says which step was running and for how long."""
+    async def hang(texts):
+        await asyncio.sleep(30)
+
+    rows = [("k", "the state cache module stores session entries", {})]
+    c = Crystal(scope=WRITE, store=_Store(rows), embed=hang)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(c._vectors(["q"]), 0.2)
+    assert c.describe_open_steps().startswith("embed ")
+    c.embed = None
+    await c.recall_block("state cache")  # the next recall starts clean
+    assert c.describe_open_steps() == ""

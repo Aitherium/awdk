@@ -3383,12 +3383,24 @@ class AitherAgent:
             # trace says which one is missing instead of the answer just being thinner.
             logger.warning("[REACT-STREAM] %s degraded for %s: %s: %s", stage, self.name,
                            type(exc).__name__, exc)
-            await _emit({"type": "degraded", "stage": stage, "error": type(exc).__name__})
+            await _emit({"type": "degraded", "stage": stage, "error": type(exc).__name__,
+                         "reason": f"{type(exc).__name__}: {exc}"[:200] if str(exc)
+                         else type(exc).__name__})
 
         async def _bounded(stage: str, factory, timeout: float):
             try:
                 return await asyncio.wait_for(factory(), timeout)
-            except Exception as exc:  # noqa: BLE001 -- incl. TimeoutError; fail open
+            except asyncio.TimeoutError:
+                # Name the slow step, not just the stage: a bare "crystal
+                # (TimeoutError)" on every live turn (2026-10-14) took hours to explain.
+                slow = ""
+                if stage == "crystal":
+                    describe = getattr(self.crystal, "describe_open_steps", None)
+                    slow = describe() if callable(describe) else ""
+                await _degraded(stage, TimeoutError(
+                    f"over {timeout:.1f}s" + (f"; still running: {slow}" if slow else "")))
+                return None
+            except Exception as exc:  # noqa: BLE001 -- fail open
                 await _degraded(stage, exc)
                 return None
 

@@ -743,6 +743,10 @@ class Crystal:
     graph: Optional[GraphIndex] = None
     embed: Optional[Embedder] = None
     max_chars: int = 1500
+    #: step -> monotonic start, for the steps of a recall still running. A turn whose
+    #: crystal stage times out reports these, so the trace names the slow step
+    #: instead of a bare TimeoutError (2026-10-14: that bare error cost hours).
+    open_steps: dict = field(default_factory=dict)
     max_graph_hits: int = 6
     telemetry: dict = field(default_factory=lambda: {
         "writes": 0, "compactions": 0, "recalls": 0, "recalled_facts": 0,
@@ -786,22 +790,50 @@ class Crystal:
         bind(complete)
         return True
 
+    def _open_step(self, step: str) -> None:
+        self.open_steps[step] = time.monotonic()
+
+    def _close_step(self, step: str) -> None:
+        self.open_steps.pop(step, None)
+
+    def describe_open_steps(self) -> str:
+        """``"embed 3.1s, scan 0.4s"`` for the recall steps still running ('' = none)."""
+        now = time.monotonic()
+        return ", ".join(f"{k} {now - t:.1f}s" for k, t in
+                         sorted(self.open_steps.items(), key=lambda kv: kv[1]))
+
     async def _read(self, fn: Callable[..., Any], *args: Any) -> Any:
         """Run a store read off the event loop when the store says it may: a turn's
         scans cover every read scope (sqlite + a JSON parse of every row's vector,
         measured 283 ms on 1,400 rows) and on the loop they stalled every other turn."""
-        if getattr(self.store, "offload_reads", False) is True:
-            return await asyncio.to_thread(fn, *args)
-        return fn(*args)
+        step = f"read:{getattr(fn, '__name__', 'store')}"
+        self._open_step(step)
+        try:
+            if getattr(self.store, "offload_reads", False) is True:
+                out = await asyncio.to_thread(fn, *args)
+            else:
+                out = fn(*args)
+        except asyncio.CancelledError:
+            raise  # left open on purpose: the turn's timeout report names it
+        except BaseException:
+            self._close_step(step)
+            raise
+        self._close_step(step)
+        return out
 
     async def _vectors(self, texts: list[str]) -> list[Optional[list[float]]]:
         if self.embed is None or not texts:
             return [None] * len(texts)
+        self._open_step("embed")
         try:
             vecs = await self.embed(texts)
+        except asyncio.CancelledError:
+            raise  # left open on purpose: the turn's timeout report names it
         except Exception as exc:  # noqa: BLE001
+            self._close_step("embed")
             self._degrade(f"embed:{type(exc).__name__}")
             return [None] * len(texts)
+        self._close_step("embed")
         if len(vecs) != len(texts):
             self._degrade("embed:short-answer")
             return [None] * len(texts)
@@ -985,6 +1017,7 @@ class Crystal:
                             exclude: "Iterable[str]" = (), graph: bool = True,
                             graph_wait: "float | None" = None) -> str:
         self.telemetry["recalls"] += 1
+        self.open_steps.clear()  # a cancelled recall's steps are history now
         self._graph_degraded = ""
         stats: dict = {"dropped": 0}
         seen_lines, seen_blob = _exclusion_index(exclude)
