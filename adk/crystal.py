@@ -76,6 +76,8 @@ MIN_COSINE_SCORE = 0.3
 GRAPH_WAIT_S = 1.5
 #: What a turn waits for the whole crystal block (facts + memory + graph).
 CRYSTAL_STAGE_S = GRAPH_WAIT_S + 2.0
+#: How long recall waits for the query's embedding before ranking facts by keyword.
+EMBED_WAIT_S = 1.0
 #: Env var naming EXTRA scopes recall reads (comma-separated). Read from the process
 #: environment only -- the daemon's own config -- never from a request: a scope taken
 #: from a payload would let one caller read another tenant's memory.
@@ -784,7 +786,15 @@ class Crystal:
             return []
         if not rows:
             return []
-        qvec = (await self._vectors([message]))[0] if self.embed is not None else None
+        qvec = None
+        if self.embed is not None:
+            # The embedder shares the GPU with the chat models; measured 2026-10-14 it
+            # answered one query in 3-10 s, past the whole crystal stage, and the turn
+            # lost every fact. Past EMBED_WAIT_S the facts rank by keyword instead.
+            try:
+                qvec = (await asyncio.wait_for(self._vectors([message]), EMBED_WAIT_S))[0]
+            except asyncio.TimeoutError:
+                self._degrade("embed:slow")
         scored: list[tuple[float, float, str]] = []
         dropped = 0
         for _key, value, meta in rows:

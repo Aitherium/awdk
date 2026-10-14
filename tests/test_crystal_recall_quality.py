@@ -401,3 +401,21 @@ async def test_a_graph_query_never_blocks_the_event_loop():
     await idx.query("q", 5)
     await tk
     assert max(ticks) < 0.3, f"the loop stalled {max(ticks):.2f}s during a graph query"
+
+
+async def test_a_slow_embedder_still_recalls_facts_by_keyword():
+    """The embedder shares the GPU with the chat models; it answered a query in 3-10 s
+    (2026-10-14), past the turn's crystal stage, so the turn lost every fact."""
+    async def slow_embed(texts):
+        await asyncio.sleep(30)
+        return [[1.0, 0.0]] * len(texts)
+
+    rows = [("k", "awsh turns were slow because the orchestrator lane was saturated",
+             {"vec": [0.0, 1.0]})]
+    c = Crystal(scope=WRITE, store=_Store(rows), embed=slow_embed)
+    t0 = time.monotonic()
+    block = await asyncio.wait_for(c.recall_block("why were awsh turns slow"),
+                                   crystal_mod.CRYSTAL_STAGE_S)
+    assert time.monotonic() - t0 < crystal_mod.EMBED_WAIT_S + 1.0
+    assert "orchestrator lane was saturated" in block
+    assert "embed:slow" in c.telemetry["degraded"]
