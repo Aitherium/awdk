@@ -330,3 +330,47 @@ async def test_awm_scans_do_not_block_the_event_loop(db, monkeypatch):
     await t
     assert "podman quadlets" in block  # the offloaded scan still recalls
     assert max(gaps) < 0.12, f"loop stalled {max(gaps):.3f}s on awm scans"
+
+
+def test_landed_scan_is_cached_between_turns(tmp_path, monkeypatch):
+    """scan_landed read every row of every read scope on every turn (~10 s on a 2.5k-row
+    project scope, past the 3 s crystal budget). It is reused until it ages out."""
+    import adk.crystal as crystal_mod
+
+    path = tmp_path / "memory.db"
+    store = MemoryStore(path)
+    store.remember(Scope.parse(READ), "deploy-notes", "how the fleet deploys",
+                   kind="fact", meta={"source": "memory-file", "name": "deploy-notes"})
+    store.close()
+    fs = crystal_mod.AwmFactStore(WRITE, db=path)
+    fs.read_scopes = [Scope.parse(READ)]
+    calls = {"n": 0}
+    real = fs._store.recall
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    fs._store.recall = counting
+    first = fs.scan_landed(20)
+    after_first = calls["n"]
+    assert any(k == "deploy-notes" for k, _v, _m in first)
+    assert fs.scan_landed(20) == first
+    assert calls["n"] == after_first, "the second turn re-read the whole scope"
+    monkeypatch.setattr(crystal_mod, "LANDED_CACHE_S", 0.0)
+    fs.scan_landed(20)
+    assert calls["n"] > after_first, "an aged-out cache reads again"
+
+
+async def test_a_slow_graph_never_costs_the_turn_its_facts():
+    """GRAPH_WAIT_S equalled the turn's 3 s crystal stage, so a slow graph query always
+    lost the race and the stage dropped the facts it had recalled (every live turn,
+    2026-10-14). The graph wait now sits inside the stage with room to spare."""
+    assert crystal_mod.GRAPH_WAIT_S + 1.0 <= crystal_mod.CRYSTAL_STAGE_S
+    graph = _Graph("/repo", [{"name": "x", "path": "a.py", "line": 1}], delay=30.0,
+                   warm=True)
+    rows = [("k", "the state cache module stores session entries", {})]
+    c = Crystal(scope=WRITE, store=_Store(rows), graph=graph)
+    block = await asyncio.wait_for(c.recall_block("state cache session"),
+                                   crystal_mod.CRYSTAL_STAGE_S)
+    assert "session entries" in block

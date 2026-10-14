@@ -3521,11 +3521,18 @@ class AitherAgent:
         async def _nothing():
             return None
 
+        try:  # the graph wait sits inside this bound, so a slow graph keeps the facts
+            from adk import crystal as _crystal_mod
+            _crystal_stage_s = float(_crystal_mod.CRYSTAL_STAGE_S)
+        except Exception:  # noqa: BLE001 -- no crystal module: the old bound
+            _crystal_stage_s = 3.5
+
         # Constraints are bounded apart from the recall: they are the pinned block, and
         # a slow ranked recall must not take the user's standing corrections with it.
         (_crystal_text, _typed_recalled, _constraints, _graph_text, _skills_text,
          _plan_text) = await asyncio.gather(
-            _bounded("crystal", _crystal_block, 3.0) if _has_crystal else _nothing(),
+            _bounded("crystal", _crystal_block, float(_crystal_stage_s))
+            if _has_crystal else _nothing(),
             _bounded("typed_memory", _typed_recall, 1.5) if _has_typed else _nothing(),
             _bounded("constraints", _typed_constraints, 1.5) if _has_typed else _nothing(),
             _bounded("graph_memory", _graph_block, 2.0),

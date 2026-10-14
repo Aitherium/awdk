@@ -70,11 +70,21 @@ MIN_COSINE_SCORE = 0.3
 #: index (measured 37.3 s for a probe and ~55 s before the first token of a real turn on
 #: a 493k-chunk index); past this the turn goes on without graph hits, marked degraded,
 #: and the open keeps running in the background for the next turn.
-GRAPH_WAIT_S = 3.0
+#: Kept well under the turn's crystal stage budget (``CRYSTAL_STAGE_S``): at 3.0 s, equal
+#: to the stage, a slow graph query always lost the race and the stage dropped the
+#: facts it had already recalled with it (measured 2026-10-14: every live turn).
+GRAPH_WAIT_S = 1.5
+#: What a turn waits for the whole crystal block (facts + memory + graph).
+CRYSTAL_STAGE_S = GRAPH_WAIT_S + 2.0
 #: Env var naming EXTRA scopes recall reads (comma-separated). Read from the process
 #: environment only -- the daemon's own config -- never from a request: a scope taken
 #: from a payload would let one caller read another tenant's memory.
 READ_SCOPES_ENV = "ADK_CRYSTAL_READ_SCOPES"
+#: How long a scan of landed memory files is reused (``ADK_CRYSTAL_LANDED_CACHE_S``).
+try:
+    LANDED_CACHE_S = float(os.environ.get("ADK_CRYSTAL_LANDED_CACHE_S") or 300)
+except ValueError:
+    LANDED_CACHE_S = 300.0
 
 _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 #: ``<dotted.slot>: value`` / ``<dotted.slot> = value``. Two or more segments, letters
@@ -167,6 +177,10 @@ class AwmFactStore:
         #: True while can_reconcile is off ONLY because the file is an older schema: a
         #: migration run by another process while this handle is open turns it back on.
         self._needs_migration = False
+        #: limit -> (monotonic time, rows). Landed rows change only on `awm land`;
+        #: reading every row of every read scope cost ~10 s per turn on a 2.5k-row
+        #: project scope (measured 2026-10-14), past the turn's 3 s crystal budget.
+        self._landed_cache: dict = {}
 
     def _recheck_reconcile(self) -> None:
         """Re-enable reconcile once the file this handle holds has been migrated."""
@@ -324,8 +338,14 @@ class AwmFactStore:
         project memory lands at the owner's scope, a SIBLING of the agent's, which the
         write scope alone can never see (measured 2026-10-11: 0 landed rows visible).
         """
+        now = time.monotonic()
         with self._lock:
-            return self._scan_landed(limit)
+            hit = self._landed_cache.get(limit)
+            if hit is not None and now - hit[0] < LANDED_CACHE_S:
+                return list(hit[1])
+            rows = self._scan_landed(limit)
+            self._landed_cache[limit] = (now, rows)
+            return list(rows)
 
     def _scan_landed(self, limit: int) -> list[tuple[str, str, dict]]:
         rows: list = []
