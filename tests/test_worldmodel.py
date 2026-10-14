@@ -639,8 +639,14 @@ class TestRegistry:
 class TestIntegration:
     """End-to-end integration tests."""
 
-    def test_full_workflow_learn_save_load(self, wm_tmp_dir, enable_learn_mode):
+    def test_full_workflow_learn_save_load(self, wm_tmp_dir, enable_learn_mode, monkeypatch):
         """Full workflow: create -> record -> train -> save -> load -> advise."""
+        # get_world_model must load the builtin this test saved: the backend autoload is
+        # process-global, and an earlier test with AitherOS lib on sys.path installed the
+        # host FleetWorldModel (cold) for the rest of a full run.
+        from adk.worldmodel import clear_world_model_registry
+        monkeypatch.setenv("AITHER_AGENT_WM_BACKEND", "")
+        clear_world_model_registry()
         # Create and train
         wm1 = BuiltinWorldModel("Integration", root=str(wm_tmp_dir))
         state = [0.5] * len(STATE_DIMS)
