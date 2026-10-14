@@ -48,6 +48,10 @@ _ISOLATION_VARS = [
     # (crystal_from_env): a developer shell with ADK_CRYSTAL_SCOPE set would bind
     # every test agent to the real ~/.aither/awm/memory.db.
     "ADK_CRYSTAL_SCOPE",
+    # adk.server.main() setdefaults this for the daemon; a test calling main() leaked it
+    # into every later test, so an in-process AwgraphIndex spawned a real graph worker
+    # (test_crystal_names_why_awgraph_is_unavailable failed only in a full run).
+    "ADK_AWGRAPH_WORKER",
     "ADK_CRYSTAL_DB",
     "ADK_CRYSTAL_GRAPH_ROOT",
     "ADK_CRYSTAL_NO_EMBED",
