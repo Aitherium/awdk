@@ -364,12 +364,15 @@ def test_node_beat_resumes_as_the_device_when_nobody_is_signed_in(monkeypatch):
     seen = {}
     monkeypatch.setattr(fleet_enroll, "_load_auth_config", lambda: {})
     monkeypatch.setattr(enrollment, "resume_heartbeat",
-                        lambda tok, default_base_url: seen.update(tok=tok, base=default_base_url)
+                        lambda tok, default_base_url, **kw: seen.update(
+                            tok=tok, base=default_base_url,
+                            fresh=kw["token_provider"]() if kw.get("token_provider") else None)
                         or {"started": False, "reason": "not registered", "node_id": ""})
     monkeypatch.delenv("AITHER_IDP_URL", raising=False)
     monkeypatch.delenv("AITHER_IDP_BASE_URL", raising=False)
     assert asyncio.run(node_beat._main()) == 1
-    assert seen == {"tok": "", "base": "https://idp.aitherium.com"}
+    # The token is re-read every beat (a refreshed sign-in reaches the loop).
+    assert seen == {"tok": "", "base": "https://idp.aitherium.com", "fresh": ""}
 
 
 def test_a_refused_beat_gets_a_fresh_client(monkeypatch):
@@ -662,7 +665,10 @@ def test_a_401_sign_in_beat_falls_back_to_the_paired_device_token(monkeypatch):
     ]
 
 
-def test_resume_passes_the_device_token_as_fallback_only_for_a_paired_record(monkeypatch):
+def test_resume_passes_the_device_token_as_fallback_for_an_identity_record(monkeypatch):
+    """Since 2026-10-14 a signed-in `adk enroll` keeps its device token too, so a
+    lapsed sign-in falls back to beating as the device instead of 401 forever. A
+    record with no device token gets no fallback."""
     from adk import fleet_enroll
     rec = {"node_id": NODE, "bearer_token": "device-tok", "enrolled_via": "pairing-code",
            "mode": "rich", "node_class": "sovereign"}
@@ -674,6 +680,9 @@ def test_resume_passes_the_device_token_as_fallback_only_for_a_paired_record(mon
     enrollment.resume_heartbeat("user-tok", default_base_url="https://idp.test")
     assert calls[-1][0] == "user-tok" and calls[-1][1]["device_fallback_token"] == "device-tok"
     rec["enrolled_via"] = "device-flow"
+    enrollment.resume_heartbeat("user-tok", default_base_url="https://idp.test")
+    assert calls[-1][1]["device_fallback_token"] == "device-tok"
+    del rec["bearer_token"]
     enrollment.resume_heartbeat("user-tok", default_base_url="https://idp.test")
     assert "device_fallback_token" not in calls[-1][1]
 

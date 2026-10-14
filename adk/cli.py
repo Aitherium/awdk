@@ -4730,6 +4730,41 @@ def cmd_onboard(args):
     return asyncio.run(_onboard())
 
 
+def _ensure_enroll_heartbeat(args) -> str:
+    """Keep an enrolled machine beating after `adk enroll` exits. Returns one line.
+
+    The heartbeat `adk enroll` starts lives in ITS event loop, which ends when the
+    command does -- so a machine enrolled by the setup door (which never runs the
+    daemon on a non-interactive box) read online for ten minutes and then offline
+    for good. The per-user `python -m adk.node_beat` autostart (the one `adk pair`
+    installs) keeps it beating, as the signed-in person or, when that sign-in
+    lapses, as the device itself. Idempotent; never raises.
+    """
+    if getattr(args, "no_heartbeat", False):
+        return "Heartbeat: off (--no-heartbeat)"
+    if getattr(args, "no_autostart", False):
+        return ("Heartbeat: this session only (--no-autostart) -- run "
+                "`python -m adk.node_beat` or `adk up` to keep this machine online")
+    try:
+        from adk.node_beat import install_autostart
+
+        auto = install_autostart()
+    except Exception as exc:  # noqa: BLE001 - enrolment succeeded; say what failed
+        auto = {"autostart": "failed", "detail": f"{type(exc).__name__}: {exc}"[:200]}
+    how = auto.get("autostart", "failed")
+    if how in ("failed", "unsupported"):
+        return (f"Heartbeat: NOT kept running ({how}: {auto.get('detail', '')}) -- "
+                "run `python -m adk.node_beat` or `adk up` or this machine goes offline")
+    return f"Heartbeat: every 60s, kept running at login ({how})"
+
+
+#: `adk enroll` exit code: signed in (and any invite accepted), but Identity did not
+#: register this machine (refused -- 402 no plan, 403 quota -- unavailable after
+#: retries, or the legacy hub only). Distinct from 1 so the setup page can say it
+#: loudly and still finish the steps that do not need it (AitherZero 3266).
+EXIT_NOT_REGISTERED = 4
+
+
 def cmd_enroll(args) -> int:
     """Register this workstation with the control plane.
 
@@ -4767,6 +4802,11 @@ def cmd_enroll(args) -> int:
             or (_auth.get("user") or {}).get("tenant_slug")
             or _auth.get("api_key")
             or _auth.get("token")
+            # A device-flow `adk login` saves an access_token; when the account's
+            # /me answer carried no tenant_slug, this check refused a person who
+            # WAS signed in ("Not signed in") and the setup page registered nothing.
+            # Identity derives the tenant from the bearer, never from this file.
+            or _auth.get("access_token")
         )
         if not _has_identity and not os.environ.get("AITHER_NODE_TOKEN"):
             print("✗ Not signed in — refusing to enrol.")
@@ -4796,6 +4836,15 @@ def cmd_enroll(args) -> int:
 
         # Check if already enrolled
         existing = _load_node_auth()
+        if (existing.get("node_id") and not force
+                and existing.get("mode") != "rich"
+                and existing.get("enrolled_via") != "pairing-code"):
+            # Registered with the legacy hub only (an Identity outage once fell
+            # through to it): no device list shows this machine, and "Already
+            # enrolled" was the answer forever after. Register it with Identity now.
+            print(f"! {existing['node_id']} is registered with the legacy hub only, "
+                  "not with Identity -- registering it now.")
+            force = True
         if existing.get("node_id") and not force:
             node_id = existing["node_id"]
             print(f"✓ Already enrolled: {node_id}")
@@ -4807,6 +4856,7 @@ def cmd_enroll(args) -> int:
             print(f"  Class: {existing.get('node_class', 'laptop')}")
             print(f"  Inference: {existing.get('inference_kind', 'none')} "
                   f"{existing.get('inference_url') or '-'}")
+            print(f"  {_ensure_enroll_heartbeat(args)}")
             print()
             print("To re-enroll, use: adk enroll --force")
             return 0
@@ -4821,6 +4871,7 @@ def cmd_enroll(args) -> int:
             inference_url=inference_url,
             node_class=node_class,
             start_link=not no_link,
+            force=force,
         ))
 
         if not result.get("enrolled"):
@@ -4830,10 +4881,21 @@ def cmd_enroll(args) -> int:
                 print(f"x Enrollment refused: HTTP {result['http_status']} "
                       f"from {result.get('url') or 'identity'}")
                 print(result.get("body") or "(empty body)")
-                return 1
+                return EXIT_NOT_REGISTERED
             error_detail = result.get("error", "unknown error")
             print(f"ERROR: Enrollment failed: {error_detail}")
-            return 1
+            return EXIT_NOT_REGISTERED
+
+        if result.get("mode") == "legacy":
+            # Identity could not be reached; only the legacy hub took it. That
+            # machine is in NO device list, so this is a failure, said as one --
+            # the next `adk enroll` registers it with Identity (see above).
+            why = result.get("identity_error") or "unreachable"
+            print(f"x Not registered with Identity: {why}")
+            print("  Registered with the legacy hub only, so this machine will not show")
+            print("  in your workspace's devices. Check your connection and run")
+            print("  `adk enroll` again.")
+            return EXIT_NOT_REGISTERED
 
         # The registration that was actually SENT (already-enrolled re-runs carry
         # only the persisted fields).
@@ -4870,8 +4932,7 @@ def cmd_enroll(args) -> int:
         print(f"  Agents Upserted: {result.get('agents_upserted', 0)}")
         if result.get("public_url"):
             print(f"  Public URL: {result['public_url']}")
-        if not no_heartbeat:
-            print("  Heartbeat: enabled (60s interval)")
+        print(f"  {_ensure_enroll_heartbeat(args)}")
         # REACH, said plainly. "Enrolled" and "reachable from your browser" are
         # different states, and every prior version of this output conflated them.
         reach = result.get("reach_kind", "none")
@@ -14708,6 +14769,10 @@ def _register_commands(sub):
         default=None,
         help="What this device is (default: detected from the hardware)")
     enroll_p.add_argument(
+        "--no-autostart", action="store_true",
+        help="Do not install the per-user heartbeat autostart (python -m adk.node_beat); "
+             "the machine then reads offline once this command exits")
+    enroll_p.add_argument(
         "--no-link", action="store_true",
         help="Do not hold the outbound reverse link to the tunnel. WireGuard "
              "stays the default where `wg` exists; without either transport the "
@@ -15559,6 +15624,10 @@ def _register_commands(sub):
     # adk kb query|list, adk embed — read back what `adk ingest` stored
     from adk.cli_knowledge import register as _register_knowledge_verbs
     _register_knowledge_verbs(sub)
+
+    # adk tenant watch -- a folder on this PC feeds the company app's documents
+    from adk.tenant_watch import register as _register_tenant_verbs
+    _register_tenant_verbs(sub)
 
     # adk doctor — system health checks
     sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
@@ -17295,6 +17364,9 @@ def main():
         sys.exit(cmd_backup(args))
     elif args.command == "ingest":
         sys.exit(cmd_ingest(args))
+    elif args.command == "tenant":
+        from adk.tenant_watch import cmd_tenant
+        sys.exit(cmd_tenant(args))
     elif args.command == "kb":
         from adk.cli_knowledge import cmd_kb
         sys.exit(cmd_kb(args))

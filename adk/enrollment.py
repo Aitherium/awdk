@@ -12,7 +12,9 @@ Distinct from the legacy ``adk/fleet_enroll.py`` path (``FederationLiteClient`` 
 ``/federation/register``), which only carries agents, not hardware. ``fleet_enroll``
 now calls :func:`rich_enroll` first and falls back to the federation path — except
 when identity REFUSED (401/402/403), which is surfaced verbatim and never papered
-over by the federation path.
+over by the federation path, and except when identity answered 5xx on every retry
+(``identity_unavailable``), which fails loudly instead of "enrolling" a machine into
+a list no owner sees.
 
 Inference detection is :func:`probe_inference`. It used to look only at Ollama
 (:11434) and vLLM (:8120), so a phone running llama-server on :8099 or a laptop
@@ -717,9 +719,15 @@ def resume_heartbeat(
     if not node_id:
         return _skip("not registered")
     device_token = str(node_auth.get("bearer_token") or "")
-    if not token and device_token and node_auth.get("enrolled_via") == "pairing-code":
-        # Paired with a code: no person is signed in here, so the device beats as
-        # itself with the capability token its registration answer carried.
+    # The device's own capability token (scope endpoint:node, 365 days) is on any
+    # identity registration that kept it: a code pairing, and since 2026-10-14 a
+    # signed-in `adk enroll` too. A person's sign-in expires or is logged out long
+    # before the machine stops being theirs; the machine must keep beating.
+    has_device_token = bool(device_token) and (
+        node_auth.get("enrolled_via") == "pairing-code" or node_auth.get("mode") == "rich")
+    if not token and has_device_token:
+        # No person is signed in here, so the device beats as itself with the
+        # capability token its registration answer carried.
         started = start_heartbeat(
             str(node_auth.get("enroll_base") or default_base_url), device_token, node_id,
             interval=interval, inference_url=node_auth.get("inference_url") or None,
@@ -735,7 +743,7 @@ def resume_heartbeat(
         return _skip("not an identity registration")
     if not token:
         return _skip("no sign-in on this device")
-    fallback = (device_token if node_auth.get("enrolled_via") == "pairing-code" else "")
+    fallback = device_token if has_device_token else ""
     started = start_heartbeat(
         str(node_auth.get("enroll_base") or default_base_url),
         token,
@@ -1114,6 +1122,42 @@ def _persist_device_cert(register_response: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": f"cert persistence failed: {e}"}
 
 
+#: Identity answered but could not serve (2026-10-14: every node register and beat
+#: answered 503 while its Postgres was down on a full disk). Retried, then loud.
+_REGISTER_RETRY_STATUSES = (500, 502, 503, 504)
+#: Seconds before retry 1, 2, ... (tests set this to zeros).
+REGISTER_RETRY_DELAYS: Tuple[float, ...] = (2.0, 5.0, 15.0)
+
+
+async def _post_register_with_retry(httpx: Any, url: str, reg: Dict[str, Any],
+                                    headers: Dict[str, str]) -> Any:
+    """POST the registration, retrying a 5xx or a transport failure with backoff.
+
+    A refusal (4xx) is final on the first answer. After the last retry the last
+    5xx response is returned (the caller reports it verbatim) or the last transport
+    error is raised (the caller's ``except`` reports it). Each retry is logged at
+    WARNING so a slow enrolment is never silent.
+    """
+    delays = tuple(REGISTER_RETRY_DELAYS)
+    for attempt in range(len(delays) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=reg, headers=headers)
+        except (httpx.TransportError, OSError) as e:
+            if attempt >= len(delays):
+                raise
+            log.warning("Endpoint register unreachable (%s); retry %d/%d in %.0fs",
+                        type(e).__name__, attempt + 1, len(delays), delays[attempt])
+        else:
+            status = getattr(resp, "status_code", 0)
+            if status not in _REGISTER_RETRY_STATUSES or attempt >= len(delays):
+                return resp
+            log.warning("Endpoint register answered HTTP %s; retry %d/%d in %.0fs",
+                        status, attempt + 1, len(delays), delays[attempt])
+        await asyncio.sleep(delays[attempt])
+    raise RuntimeError("unreachable")  # pragma: no cover - the loop always returns/raises
+
+
 async def rich_enroll(
     base_url: str,
     token: str,
@@ -1158,10 +1202,7 @@ async def rich_enroll(
         reg = build_registration(node_id, inference_url=inference_url, node_class=node_class)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         base = base_url.rstrip("/")
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{base}/v1/nodes/register", json=reg, headers=headers
-            )
+        resp = await _post_register_with_retry(httpx, f"{base}/v1/nodes/register", reg, headers)
         if resp.status_code != 200:
             body = resp.text
             log.warning("Endpoint register HTTP %s: %s", resp.status_code, body[:200])
@@ -1171,6 +1212,10 @@ async def rich_enroll(
                 "http_status": resp.status_code,
                 "body": body,
                 "url": f"{base}/v1/nodes/register",
+                # Identity was reached and said it cannot serve right now (a 5xx
+                # after every retry): the caller must NOT paper over it with the
+                # legacy hub -- that "enrolls" a machine no device list shows.
+                "identity_unavailable": resp.status_code in _REGISTER_RETRY_STATUSES,
             }
 
         data = resp.json()
@@ -1209,6 +1254,8 @@ async def rich_enroll(
                 reach_provider=reach_provider,
                 harness_provider=harness_provider,
                 token_provider=token_provider,
+                **({"device_fallback_token": str(data["bearer_token"])}
+                   if data.get("bearer_token") else {}),
             )
 
         log.info("Enrolled endpoint %s (tenant=%s, cert_enrolled=%s, inference=%s %s)",

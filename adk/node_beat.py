@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import IO, Any, Dict, Optional
 
 log = logging.getLogger("adk.node_beat")
 
@@ -29,16 +29,81 @@ def default_identity() -> str:
             or "https://idp.aitherium.com").rstrip("/")
 
 
+def lock_path() -> Path:
+    return Path.home() / ".aither" / "node_beat.lock"
+
+
+def acquire_singleton(path: Optional[Path] = None) -> Optional[IO[Any]]:
+    """Hold this machine's one node_beat lock for the life of the process.
+
+    Returns the open lock file (keep it referenced; the OS drops the lock when the
+    process exits, however it exits), or None when another node_beat already holds
+    it. Every `adk enroll` and every login used to start ANOTHER detached beater
+    (2026-10-14 review); the device lease stopped double beats, not the processes.
+    """
+    p = path or lock_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(p, "a+")  # noqa: SIM115 - held open on purpose
+    except OSError:
+        return None
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def is_running(path: Optional[Path] = None) -> bool:
+    """True when another process holds the node_beat lock."""
+    fh = acquire_singleton(path)
+    if fh is None:
+        return True
+    release_singleton(fh)
+    return False
+
+
+def release_singleton(fh: IO[Any]) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError as exc:
+        log.debug("node_beat lock release failed: %s", exc)
+    fh.close()
+
+
 async def _main() -> int:
     from adk import enrollment
 
-    token = ""
-    try:
-        from adk.fleet_enroll import _load_auth_config
-        token = str(_load_auth_config().get("access_token") or "")
-    except Exception:  # noqa: BLE001 - no session: a paired box beats as itself
-        token = ""
-    out = enrollment.resume_heartbeat(token, default_base_url=default_identity())
+    lock = acquire_singleton()
+    if lock is None:
+        log.info("node beat: already running on this machine; exiting")
+        return 0
+
+    def _signed_in_token() -> str:
+        # Re-read every beat: a sign-in refreshed on disk (adk login, the daemon)
+        # reaches this long-lived process without a restart. When it has lapsed the
+        # loop falls back to the device's own token (enrollment.resume_heartbeat).
+        try:
+            from adk.fleet_enroll import _load_auth_config
+            return str(_load_auth_config().get("access_token") or "")
+        except Exception:  # noqa: BLE001 - no session: the box beats as itself
+            return ""
+
+    out = enrollment.resume_heartbeat(_signed_in_token(), default_base_url=default_identity(),
+                                      token_provider=_signed_in_token)
     log.info("node beat: %s", out)
     if not out.get("started"):
         return 1
@@ -59,6 +124,9 @@ def install_autostart() -> Dict[str, str]:
                                encoding="utf-8", errors="replace")
             if r.returncode != 0:
                 return {"autostart": "failed", "detail": (r.stderr or r.stdout).strip()[:200]}
+            if is_running():
+                # One beater per machine: a re-run of `adk enroll` adds nothing.
+                return {"autostart": "windows-run-key", "running": "already"}
             flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
                 subprocess, "CREATE_NO_WINDOW", 0)
             subprocess.Popen([str(pyw if pyw.exists() else py), "-m", "adk.node_beat"],

@@ -714,6 +714,7 @@ async def enroll_on_boot(
     start_link: bool = True,
     harness_url: str = "",
     harness_token: str = "",
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Enroll this node into both local and portal fleets.
 
@@ -731,6 +732,11 @@ async def enroll_on_boot(
             walks :func:`adk.enrollment.probe_inference`'s ladder. The url the
             probe settles on is persisted so the heartbeat re-probes the SAME one.
         node_class: ``phone`` | ``laptop`` | ``sovereign``.
+        force: Register with Identity again even though ``node_auth.json`` names a
+            node (``adk enroll --force``, or a record only the legacy hub knows).
+            The stored node id is reused so Identity updates the same device.
+            Before 2026-10-14 ``--force`` only skipped the CLI's own check and this
+            function still returned "already registered" -- it re-registered nothing.
 
     Returns:
         {
@@ -766,7 +772,7 @@ async def enroll_on_boot(
 
     # Check if already registered
     node_auth = _load_node_auth()
-    if node_auth.get("node_id"):
+    if node_auth.get("node_id") and not force:
         log.info("Node already enrolled: %s", node_auth["node_id"])
         _backfill_node_tenant_id(node_auth)
         # Still upsert agents and start heartbeat if enabled
@@ -817,7 +823,8 @@ async def enroll_on_boot(
             "node_class": resolve_stored(node_auth.get("node_class"), node_auth.get("node_class_source")),
         }
 
-    node_id = _generate_node_id()
+    node_id = str(node_auth.get("node_id") or "") if force else ""
+    node_id = node_id or _generate_node_id()
 
     # PRIMARY: rich endpoint enrollment (hardware + inference readiness → Identity
     # node registry → AitherDirectory). Falls through to the legacy federation path
@@ -850,6 +857,22 @@ async def enroll_on_boot(
     except Exception as e:  # never let enrollment block boot
         log.debug("Rich enrollment unavailable: %s", e)
         rich = {"enrolled": False, "error": str(e)}
+
+    if not rich.get("enrolled") and rich.get("identity_unavailable"):
+        # Identity ANSWERED 5xx on every retry (2026-10-14: its Postgres was down).
+        # The legacy hub would "enroll" this machine into a list no owner sees and
+        # every later `adk enroll` would say "Already enrolled": fail loudly instead.
+        log.error("Identity could not register this device (HTTP %s) after retries: %s",
+                  rich.get("http_status"), (rich.get("body") or "")[:200])
+        return {
+            "enrolled": False,
+            "error": ("identity unavailable (HTTP %s) after retries -- nothing was "
+                      "registered; run `adk enroll` again" % rich.get("http_status")),
+            "http_status": rich.get("http_status"),
+            "body": rich.get("body", ""),
+            "url": rich.get("url", ""),
+            "identity_unavailable": True,
+        }
 
     if not rich.get("enrolled") and rich.get("http_status") in _REFUSAL_STATUSES:
         log.error("Identity refused enrollment (HTTP %s): %s",
@@ -901,6 +924,11 @@ async def enroll_on_boot(
             "inference_kind": reg.get("inference_kind", "none"),
             "node_class": reg.get("node_class", node_class),
             "public_url": rich.get("public_url", ""),
+            # The DEVICE's own capability token (endpoint:node, 365 days). The
+            # person's sign-in expires; with this the machine keeps beating as
+            # itself (enrollment.resume_heartbeat / adk.node_beat), so it does not
+            # drop offline the day its owner's token does.
+            **({"bearer_token": str(rich["bearer_token"])} if rich.get("bearer_token") else {}),
         })
 
         # Enable session sync by default (post-enrollment)
@@ -936,8 +964,12 @@ async def enroll_on_boot(
         }
 
     # FALLBACK: legacy federation registration (agents only, no hardware).
-    log.info("Rich enrollment did not take (%s); using federation path",
-             rich.get("error", "unknown"))
+    # Said at WARNING and carried in the answer: a legacy-only machine is in no
+    # Identity device list, and the caller must be able to say so.
+    identity_error = str(rich.get("error") or "unknown")
+    log.warning("Identity registration did not take (%s); using the legacy hub -- "
+                "this device will not appear in the workspace device list",
+                identity_error)
     result = await _register_node_with_federation(portal_url, api_key, node_id)
     if result.get("error"):
         # Fallback to Genesis
@@ -989,4 +1021,6 @@ async def enroll_on_boot(
         "agents_upserted": agents_upserted,
         "packs_installed": packs_installed,
         "packs_failed": packs_failed,
+        "mode": "legacy",
+        "identity_error": identity_error,
     }
