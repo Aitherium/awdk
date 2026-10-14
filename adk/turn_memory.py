@@ -251,7 +251,13 @@ _ERROR_LINE = re.compile(
 #: 2026-10-14: call_tool results were crystallized line by line -- timestamps, uptimes,
 #: web-search titles and urls wrapped in call_tool's JSON -- and recalled as "facts".
 _FRAGMENT_LINE = re.compile(
-    r'^(?:"[^"]{1,80}"\s*:|[\[\]{}(),]+$|\[compacted\b|\.\.\. \(\d+ similar)')
+    r'^(?:"[^"]{1,80}"\s*:|[\[\]{}(),]+$|\[compacted\b|\.\.\. \(\d+ similar|'
+    # a one-line JSON object, a harness notice ("[LOOP DETECTED] ...", "[RE-ROUTER]")
+    # or a cut marker ("[... 502 chars cut ...]"): output about the loop, not the world
+    r'\{"|\[[A-Z][A-Z -]{2,}\]|\[\.\.\. )')
+#: Tools whose result is about the agent's own machinery (tool discovery, the safety
+#: gate), never about the world. 2026-10-14 the store held search_tools listings.
+_META_TOOL = re.compile(r"^(?:search_tools|load_tools|list_tools|check_safety_gate)$", re.I)
 
 
 def _observation_facts(pairs: list[tuple[str, str]]) -> str:
@@ -265,6 +271,7 @@ def _observation_facts(pairs: list[tuple[str, str]]) -> str:
     facts: list[str] = []
     for name, obs in pairs:
         if (_PROSE_TOOL.search(name) or _MEMORY_TOOL.search(name) or _WEB_TOOL.search(name)
+                or _META_TOOL.search(name)
                 or _SECRET_TOOL.search(name) or _tool_failed(obs)):
             continue
         for raw in obs.splitlines():

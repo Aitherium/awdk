@@ -381,3 +381,19 @@ def test_json_fragments_and_compaction_markers_are_not_facts():
     assert "uptime_seconds" not in facts and "Tanium" not in facts
     assert "compacted" not in facts and "similar lines" not in facts
     assert "node seven" in facts
+
+
+def test_loop_notices_cut_markers_and_meta_tools_are_not_facts():
+    facts = turn_memory._observation_facts([
+        ("codegraph_search",
+         "[LOOP DETECTED] You already called codegraph_search with these exact arguments\n"
+         "[RE-ROUTER] 3 steps with no change to the work tree. Another call like these\n"
+         "[... 502 chars cut ...]\n"
+         '{"results": [], "count": 0, "query": "split_near_question in the awdk tree"}\n'
+         "split_near_question is defined in awdk/adk/context_assembly.py near line 120"),
+        ("search_tools", "fleet_status - Live fleet status for every running container"),
+    ])
+    assert "LOOP DETECTED" not in facts and "RE-ROUTER" not in facts
+    assert "chars cut" not in facts and '"results"' not in facts
+    assert "fleet_status" not in facts
+    assert "context_assembly.py" in facts
