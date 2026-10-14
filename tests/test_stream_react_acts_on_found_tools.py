@@ -298,3 +298,26 @@ def test_an_outward_tool_asks_before_it_runs(tmp_path, monkeypatch):
     assert posted == [], "a public post ran without the owner's yes"
     assert getattr(resp, "requires_action", False) or any(
         e.get("type") == "approval_required" for e in events)
+
+
+def test_a_live_state_question_answered_from_memory_is_sent_back_to_look():
+    """Live 2026-10-14: "how is the platform looking" -> "The platform is looking good!"
+    with zero tool calls."""
+    seen: list = []
+    agent = _agent([
+        "FINAL: The platform is looking good! Most services are running smoothly.",
+        'ACTION: get_platform_health\nINPUT: {}',
+        "FINAL: 2 services are down: mail and cert.",
+    ], seen)
+    calls = {"n": 0}
+
+    @agent.tool
+    def get_platform_health() -> str:
+        """health"""
+        calls["n"] += 1
+        return "down: mail, cert"
+
+    resp = asyncio.run(agent.stream_react("how is the platform looking",
+                                          on_event=lambda e: None, max_steps=6))
+    assert calls["n"] == 1
+    assert resp.content == "2 services are down: mail and cert."

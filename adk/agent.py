@@ -174,6 +174,26 @@ _CLAIM_NUDGE_MSG = (
 )
 
 
+#: A question about how something IS right now. Measured 2026-10-14: "how is the platform
+#: looking" answered "The platform is looking good! The majority of services are running
+#: smoothly" with ZERO tool calls -- memory is stale, a current state must be looked at.
+_ASKS_LIVE_STATE = re.compile(
+    r"(?i)\b(?:how(?:'s| is| are)\b[^?.!\n]{0,40}\b(?:looking|doing|going|running)|"
+    r"(?:what(?:'s| is) the )?(?:status|health|state) of|is\s+\S+(?:\s+\S+)?\s+(?:up|down|"
+    r"running|healthy|working)\b|right now|currently|at the moment|in the news|today\b)")
+_LIVE_STATE_NUDGE_MSG = (
+    "The user asked about the CURRENT state of something, and you answered without "
+    "calling any tool. Memory is not the current state. Call the tool that reports it "
+    "now (find one with search_tools if needed, web_search for the public internet), "
+    "then answer from its result."
+)
+
+
+def asks_live_state(message: str) -> bool:
+    """True when ``message`` asks how something is right now (needs a live look)."""
+    return bool(_ASKS_LIVE_STATE.search(message or ""))
+
+
 def claims_lookup(text: str) -> bool:
     """True when ``text`` says it searched/checked/looked something up."""
     return bool(_CLAIMS_LOOKUP.search(text or ""))
@@ -3752,6 +3772,7 @@ class AitherAgent:
         _discovery_nudges = 0  # see discovery_nudge
         _offer_nudged = False  # see offers_lookup
         _claim_nudged = False  # see claims_lookup
+        _live_nudged = False  # see asks_live_state
         _last_tool = ""
         _last_obs = ""
         _failed_in_a_row = 0  # tool_result_failed streak; 2 -> consult ask_reasoner
@@ -3945,6 +3966,16 @@ class AitherAgent:
                             "- nudging")
                 msgs.append(_assistant(full))
                 msgs.append(Message(role="user", content=_OFFER_NUDGE_MSG))
+                continue
+            # Answered a question about the current state from memory alone.
+            if (not _discovery_stall and not tools_made and not _live_nudged
+                    and _step < max_steps - 1 and not _ACT.search(full)
+                    and asks_live_state(message)):
+                _live_nudged = True
+                logger.info("[REACT-STREAM] Live-state question answered with no tool "
+                            "call - nudging")
+                msgs.append(_assistant(full))
+                msgs.append(Message(role="user", content=_LIVE_STATE_NUDGE_MSG))
                 continue
             # Claimed a lookup it never made (no tool ran this turn).
             if (not _discovery_stall and not tools_made and not _claim_nudged
