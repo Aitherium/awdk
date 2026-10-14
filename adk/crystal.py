@@ -908,8 +908,11 @@ class Crystal:
         self._graph_degraded = ""
         stats: dict = {"dropped": 0}
         seen_lines, seen_blob = _exclusion_index(exclude)
-        facts = await self.recall_facts(message, stats=stats)
-        hits = await self.recall_graph(message)
+        # Concurrently: each waits on a different slow plane (the embedder, the graph),
+        # and one after the other they overran the turn's crystal stage under load
+        # (2026-10-14), which then dropped the facts too.
+        facts, hits = await asyncio.gather(self.recall_facts(message, stats=stats),
+                                           self.recall_graph(message))
         graph_lines: list[str] = []
         for h in hits:
             sig = (h.get("signature") or h.get("name") or "").strip()

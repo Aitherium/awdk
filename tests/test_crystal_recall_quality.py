@@ -431,3 +431,22 @@ async def test_keyword_fallback_keeps_few_clear_matches():
     facts = await c.recall_facts("why were awsh turns slow yesterday")
     assert facts[0].startswith("awsh turns were slow")
     assert len(facts) <= crystal_mod.KEYWORD_FALLBACK_LIMIT
+
+
+async def test_facts_and_graph_are_recalled_concurrently(monkeypatch):
+    """The embedder wait and the graph wait ran back to back and overran the crystal
+    stage under load (2026-10-14); they overlap now."""
+    async def slow_embed(texts):
+        await asyncio.sleep(30)
+        return [[1.0, 0.0]] * len(texts)
+
+    monkeypatch.setattr(crystal_mod, "EMBED_WAIT_S", 0.6)
+    monkeypatch.setattr(crystal_mod, "GRAPH_WAIT_S", 0.6)
+    graph = _Graph("/repo", [{"name": "x", "path": "a.py", "line": 1}], delay=30.0,
+                   warm=True)
+    rows = [("k", "the state cache module stores session entries", {})]
+    c = Crystal(scope=WRITE, store=_Store(rows), graph=graph, embed=slow_embed)
+    t0 = time.monotonic()
+    block = await c.recall_block("state cache session entries")
+    assert time.monotonic() - t0 < 1.0, "the two waits ran back to back"
+    assert "session entries" in block
