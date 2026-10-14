@@ -244,6 +244,12 @@ _HTTP_TIMEOUT = 30.0
 #: recall. After one failure the backend is skipped for EMBED_BREAKER_S and callers
 #: take their no-vector fallback at once.
 EMBED_BREAKER_S = 60.0
+#: A QUERY embedding (a few short texts, on a turn's critical path) that takes longer than
+#: this counts as a failure: measured 2026-10-14 the embedder answered in 8-14 s while
+#: sharing a busy GPU -- slow successes never tripped the breaker, so every memory stage
+#: still waited out its budget. Bulk ingestion (more texts) keeps the full HTTP timeout.
+EMBED_QUERY_DEADLINE_S = 3.0
+EMBED_QUERY_MAX_TEXTS = 4
 _BREAKER = {"until": 0.0, "reason": ""}
 
 
@@ -697,7 +703,11 @@ class AdkEmbeddings:
         await self._resolve()
         try:
             if self._backend in ("vllm", "microscheduler", "gateway"):
-                vecs = await self._embed_openai(texts)
+                if len(texts) <= EMBED_QUERY_MAX_TEXTS:
+                    vecs = await asyncio.wait_for(self._embed_openai(texts),
+                                                  EMBED_QUERY_DEADLINE_S)
+                else:
+                    vecs = await self._embed_openai(texts)
             elif self._backend == "ollama":
                 vecs = await self._embed_ollama(texts)
             elif self._backend == "cpu":
