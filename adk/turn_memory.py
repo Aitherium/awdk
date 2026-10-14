@@ -58,6 +58,11 @@ DIGEST_MAX_CHARS = 1500
 # either re-writes model output (or an old fact) as new ground truth.
 _PROSE_TOOL = re.compile(r"reason|^ask_|delegate|think|summar|^chat", re.I)
 _MEMORY_TOOL = re.compile(r"recall|remember|memory", re.I)
+# Tools that read the public web. Their result is a snapshot of something live and is
+# fetched again on demand; stored as a fact it outlives its truth. Measured 2026-10-14:
+# news headlines and sports snippets were recalled as "facts" on later turns and
+# "anything exciting about tanium?" was answered from this morning's search with no look.
+_WEB_TOOL = re.compile(r"web|fetch|^http_|browse|news", re.I)
 # Tools whose output is a credential or private store: never crystallized at all.
 _SECRET_TOOL = re.compile(r"secret|credential|lockbox|vault|token|password|keyring|auth", re.I)
 # The streaming loop appends a consulted reasoner's advice to the failing tool's own
@@ -252,7 +257,7 @@ def _observation_facts(pairs: list[tuple[str, str]]) -> str:
         fact_min, fact_max = 24, 400
     facts: list[str] = []
     for name, obs in pairs:
-        if (_PROSE_TOOL.search(name) or _MEMORY_TOOL.search(name)
+        if (_PROSE_TOOL.search(name) or _MEMORY_TOOL.search(name) or _WEB_TOOL.search(name)
                 or _SECRET_TOOL.search(name) or _tool_failed(obs)):
             continue
         for raw in obs.splitlines():

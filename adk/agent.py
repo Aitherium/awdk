@@ -179,6 +179,11 @@ _CLAIM_NUDGE_MSG = (
 )
 
 
+#: Exact repeats (answered from the scratchpad) a streaming turn tolerates before it
+#: stops calling tools and answers from what it has.
+_MAX_REPEATS = 3
+
+
 #: A question about how something IS right now. Measured 2026-10-14: "how is the platform
 #: looking" answered "The platform is looking good! The majority of services are running
 #: smoothly" with ZERO tool calls -- memory is stale, a current state must be looked at.
@@ -3820,6 +3825,12 @@ class AitherAgent:
         _consulted = False
         _pending_hint = ""  # a turn_control rescue hint for the next step
         _call_steps: dict[str, tuple] = {}  # exact call -> (step that ran it, ok)
+        # Exact repeats answered from the scratchpad this turn. Live 2026-10-14 the 12B
+        # re-sent one failing codegraph_search until the step budget ran out and the
+        # owner got "I reached my step limit"; past _MAX_REPEATS the turn answers.
+        _repeats = 0
+        _stalled = False
+        _out_of_steps = False
 
         def _reads_only(tool: str) -> bool:
             # By the name's leading verb; an unknown verb counts as a state change, so
@@ -4112,6 +4123,7 @@ class AitherAgent:
             _ok = True
             _repeat = _prev_step is not None and not _exempt
             if _repeat:
+                _repeats += 1
                 obs = (f"Same call as step {_prev_step}: {name} already ran with these exact "
                        "arguments and its result is above. Use that result, change the "
                        "arguments, or answer with FINAL:.")
@@ -4224,16 +4236,23 @@ class AitherAgent:
             msgs.append(Message(role="user", content=(
                 f"OBSERVATION from YOUR {name} call (tool output; the user did not write "
                 f"or send this): {_obs_text}")))
+            if _repeats >= _MAX_REPEATS:
+                _stalled = True
+                logger.info("[REACT-STREAM] %d exact repeats - forcing the answer", _repeats)
+                break
         else:
-            # Step budget spent while the model still wanted tools. "(reached step
-            # limit)" with no answer left the owner with nothing; one more call with
-            # no tool option turns what the loop observed into an answer.
+            _out_of_steps = True
+        if _out_of_steps or _stalled:
+            # Step budget spent (or the model stuck repeating one call) while it still
+            # wanted tools. "(reached step limit)" with no answer left the owner with
+            # nothing; one more call with no tool option turns what the loop observed
+            # into an answer.
             await _compact(max_steps + 1)
             _say_to_model("Answer now from the observations above. Do not call a tool. "
                           "Reply with FINAL: and your answer; say plainly what is still "
                           "unfinished.")
             await _emit({"type": "synthesis", "forced": True})
-            _turn_finish = "step_limit"
+            _turn_finish = "repeat_stall" if _stalled else "step_limit"
             _synth = ""
             try:
                 async for chunk in self.llm.chat_stream(msgs):
@@ -4249,7 +4268,8 @@ class AitherAgent:
             elif not _ACT.search(_clean):
                 answer = _clean.strip()
             if not answer:
-                answer = "I reached my step limit before finishing."
+                answer = ("I stopped: I kept repeating the same call and it gave nothing new."
+                          if _stalled else "I reached my step limit before finishing.")
                 if _last_tool:
                     answer += f" The last result ({_last_tool}): {_last_obs[:400]}"
             await _emit({"type": "token", "text": answer})

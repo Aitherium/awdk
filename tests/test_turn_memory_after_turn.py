@@ -351,3 +351,17 @@ def test_credentials_and_secret_tools_are_never_crystallized():
     assert "node seven" in written
     digest = "\n".join(str(r) for r in agent.memory.rows) if hasattr(agent.memory, "rows") else ""
     assert "hunter2" not in digest
+
+
+def test_web_results_are_not_crystallized():
+    # A web result is a live snapshot: recalled later as a fact, it answered "anything
+    # exciting about tanium?" from this morning's search with no new look (2026-10-14).
+    agent = _agent()
+    _run(turn_memory.after_turn(
+        agent, message="what is in the news and how full is the disk",
+        answer="done", tools=["web_search", "disk_usage"],
+        observations=["Ravens news: the new overtime rules were cracked this week",
+                      OBS_FACT], sid="s1"))
+    written = "\n".join(agent.crystal.summaries)
+    assert "Ravens" not in written
+    assert "41 GB free" in written

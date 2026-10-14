@@ -300,3 +300,32 @@ def test_the_crystal_gets_a_share_of_the_context_budget_not_all_of_it():
 
     src = inspect.getsource(agent_mod.AitherAgent.stream_react)
     assert "_CRYSTAL_TURN_MAX_CHARS" in src
+
+
+def test_a_turn_stuck_repeating_one_call_answers_instead_of_burning_its_steps(monkeypatch):
+    # Live 2026-10-14: one failing codegraph_search re-sent until the step budget ran
+    # out; the owner got "I reached my step limit". Past _MAX_REPEATS the turn answers.
+    seen: list = []
+    calls: list = []
+
+    async def replies_for(n, messages):
+        if SYNTH_MARK in str(messages[-1].content):
+            return "FINAL: the code graph is unavailable (503), so I could not look it up."
+        return 'ACTION: find_symbol\nINPUT: {"q": "split_near_question"}'
+
+    agent = _agent(monkeypatch, replies_for, seen)
+    agent._auto_neurons = None
+
+    @agent.tool
+    def find_symbol(q: str) -> str:
+        """find a symbol"""
+        calls.append(q)
+        return "(tool error: HTTP 503 CodeGraph not available)"
+
+    events: list = []
+    resp = asyncio.run(agent.stream_react("where is split_near_question defined?",
+                                          on_event=events.append, max_steps=40))
+    assert calls == ["split_near_question"], "the repeats were answered, not re-run"
+    assert len(seen) <= 6, f"stopped after the repeats, not at step 40 ({len(seen)} calls)"
+    assert any(e["type"] == "synthesis" for e in events)
+    assert "503" in resp.content and "step limit" not in resp.content
