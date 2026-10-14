@@ -1646,7 +1646,11 @@ def _local_code_graph() -> Any:
     root = _local_graph_root()
     if not root:
         return None
-    key = os.path.abspath(root)
+    # The SAME key crystal.shared_graph uses: with a bare abspath, "C:\\AitherOS-Fresh"
+    # never matched crystal's normcased "c:\\aitheros-fresh" on Windows, so the tools and
+    # the crystal each started a graph worker (measured 2026-10-14: two 2-2.6 GB
+    # children of one daemon for one root).
+    key = os.path.normcase(os.path.abspath(root))
     cache = _shared_graph_cache()
     idx = cache.get(key) or _LOCAL_GRAPHS.get(key)
     if idx is not None:
@@ -1654,7 +1658,7 @@ def _local_code_graph() -> Any:
     try:
         from adk.crystal import AwgraphIndex
 
-        idx = AwgraphIndex(key)
+        idx = AwgraphIndex(os.path.abspath(root))
         if not idx.probe():
             return None
     except Exception as exc:  # noqa: BLE001 -- an unusable graph is "no local graph"

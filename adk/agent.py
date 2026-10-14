@@ -3671,12 +3671,16 @@ class AitherAgent:
             _crystal_text = _crystal_text or ""
             _last = getattr(self.crystal, "last_recall", None)
             _last = _last if isinstance(_last, dict) else {}
+            # This turn's degrades (Crystal.turn_degraded), not the process history.
+            _turn_deg = getattr(self.crystal, "turn_degraded", None)
+            if not isinstance(_turn_deg, list):
+                _turn_deg = self.crystal.telemetry.get("degraded") or []
             await _emit({
                 "type": "crystal",
                 "facts": sum(1 for ln in _crystal_text.splitlines() if ln.startswith("- ")),
                 "chars": len(_crystal_text),
                 "graph_hits": int(_last.get("graph_hits", 0) or 0),
-                "degraded": list(self.crystal.telemetry.get("degraded") or [])[:3],
+                "degraded": list(_turn_deg)[:3],
             })
         if _has_typed:
             await _emit({"type": "typed_memory", "chars": len(_typed_recalled or ""),

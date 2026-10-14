@@ -781,6 +781,10 @@ class Crystal:
     # {"facts": int, "memory": int, "graph_hits": int, "chars": int}. {} until the
     # first recall. Telemetry counters are cumulative and cannot say what ONE turn saw.
     last_recall: dict = field(default_factory=dict)
+    #: What THIS recall degraded on (reset per recall_block). telemetry["degraded"] is
+    #: the process history: 2026-10-14 every turn's trace read "awgraph:degraded:cold"
+    #: from a startup warm-up long after the graph was serving, and that cost an hour.
+    turn_degraded: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # planes = bound AND not known to be unavailable. A bound graph whose awgraph
@@ -801,6 +805,8 @@ class Crystal:
             self._degrade(f"awgraph:{str(getattr(self.graph, 'reason', ''))[:200]}")
 
     def _degrade(self, reason: str) -> None:
+        if reason not in self.turn_degraded:
+            self.turn_degraded.append(reason)
         if reason not in self.telemetry["degraded"]:
             self.telemetry["degraded"].append(reason)
             logger.warning("[CRYSTAL] plane degraded: %s", reason)
@@ -1042,6 +1048,7 @@ class Crystal:
                             graph_wait: "float | None" = None) -> str:
         self.telemetry["recalls"] += 1
         self.open_steps.clear()  # a cancelled recall's steps are history now
+        self.turn_degraded = []
         self._graph_degraded = ""
         stats: dict = {"dropped": 0}
         seen_lines, seen_blob = _exclusion_index(exclude)

@@ -59,7 +59,7 @@ def local_graph(tmp_path, monkeypatch):
     monkeypatch.delenv("AITHER_GENESIS_URL", raising=False)
     monkeypatch.setenv("ADK_CRYSTAL_GRAPH_ROOT", root)
     fake = _FakeGraph(os.path.abspath(root))
-    monkeypatch.setitem(bt._LOCAL_GRAPHS, os.path.abspath(root), fake)
+    monkeypatch.setitem(bt._LOCAL_GRAPHS, os.path.normcase(os.path.abspath(root)), fake)
     return fake
 
 
@@ -271,7 +271,7 @@ def test_first_local_graph_query_hydrates_off_the_event_loop(tmp_path, monkeypat
     root = os.path.abspath(str(tmp_path / "repo"))
     monkeypatch.delenv("AITHER_GENESIS_URL", raising=False)
     monkeypatch.setenv("ADK_CRYSTAL_GRAPH_ROOT", root)
-    monkeypatch.setitem(bt._LOCAL_GRAPHS, root, _SlowOpen(root))
+    monkeypatch.setitem(bt._LOCAL_GRAPHS, os.path.normcase(root), _SlowOpen(root))
 
     async def _run() -> tuple[int, dict]:
         ticks = 0
@@ -326,7 +326,7 @@ def test_failed_local_graph_open_unregisters_the_code_tools(tmp_path, monkeypatc
     dead = AwgraphIndex(root)
     dead._ok = False
     dead.reason = "no-index"
-    monkeypatch.setitem(bt._LOCAL_GRAPHS, root, dead)
+    monkeypatch.setitem(bt._LOCAL_GRAPHS, os.path.normcase(root), dead)
     assert bt.code_graph_reachable() is False
     agent = _agent()
     bt.register_builtin_tools(agent, categories=["graph"])
