@@ -149,6 +149,13 @@ def offers_lookup(text: str) -> bool:
 #: the newsletter tools it found and stopped; "do it" -> search_tools("do it").
 _DISCOVERY_TOOLS = frozenset({"search_tools", "load_tools"})
 _MAX_DISCOVERY_NUDGES = 2
+# Leading verbs of tools that only read. stream_react answers an exact repeat of a
+# call from the scratchpad, but only while no tool outside this set has run since.
+_READ_VERBS = frozenset({
+    "get", "list", "search", "query", "find", "describe", "read", "show", "view",
+    "fetch", "look", "recall", "grep", "glob", "stat", "inspect", "status", "health",
+    "info", "help", "load",
+})
 
 
 def discovery_nudge(tool: str, observation: str) -> str:
@@ -287,13 +294,26 @@ def register_crystal_memory_tools(agent, crystal) -> int:
         if store is None:
             return json.dumps({"error": "awm_unbound", "degraded": list(
                 crystal.telemetry.get("degraded", []))[:3]})
+        meta: dict = {"src": "agent-tool", "ts": round(time.time(), 1)}
+        # Embed the fact so recall ranks it by meaning: measured 2026-10-11, facts
+        # saved here carried no vector and ranked by keyword overlap even with a
+        # healthy embedder. An embedder fault falls back to a keyword-only row
+        # (the crystal records the degrade), never a lost fact.
+        vectors = getattr(crystal, "_vectors", None)
+        if callable(vectors) and getattr(crystal, "embed", None) is not None:
+            try:
+                vec = (await vectors([fact]))[0]
+                if vec:
+                    meta["vec"] = vec
+            except Exception as exc:  # noqa: BLE001 — keyword recall still works
+                logger.warning("remember_fact: embedding failed, stored keyword-only: %s",
+                               exc)
         try:
             # put_fact returns (ROUTE, degraded_reason) — "reconciled:<action>" or
             # "legacy" — not a key: labeling it "key" made the tool report
             # {"key": "legacy"} on a live turn and the model read that as an
             # identifier.
-            route, degraded_reason = store.put_fact(
-                fact, {"src": "agent-tool", "ts": round(time.time(), 1)})
+            route, degraded_reason = store.put_fact(fact, meta)
             out = {"ok": True, "route": route}
             if degraded_reason:
                 out["degraded_reason"] = degraded_reason
@@ -1415,7 +1435,24 @@ class AitherAgent:
 
     async def _learn_after(self, message: str, content: str, tool_calls_made: list) -> None:
         """Continual learning after a run: reinforce skills we reused (success_count++),
-        and extract+save a NEW skill from a successful multi-tool run. Non-fatal."""
+        and extract+save a NEW skill from a successful multi-tool run. Non-fatal.
+
+        ``tool_calls_made`` takes either caller's shape: chat()'s names with an error
+        marker (``"x[denied]"``), or the streaming loop's plain names and
+        ``{"name": ..., "ok": bool}`` dicts. A dict reached the ``"[" in t`` tests below as
+        a dict, so a failed stream call counted as a success and its dict was recorded
+        as a world-model action; both shapes become chat()'s strings first."""
+        _calls: list = []
+        for _t in tool_calls_made or []:
+            if isinstance(_t, dict):
+                _n = str(_t.get("name") or "").strip()
+                if _n and (_t.get("ok") is False or _t.get("error")) and "[" not in _n:
+                    _n = f"{_n}[failed]"
+            else:
+                _n = str(_t or "").strip()
+            if _n:
+                _calls.append(_n)
+        tool_calls_made = _calls
         # KEYSTONE (per-agent world-model training): emit each tool this turn chose onto the fleet bus as an
         # `agent.action` event, tagged by agent identity + timestamp. Gated OFF by default and fire-and-forget;
         # the lazy, guarded import keeps the adk fully decoupled from AitherOS's lib (the feed only activates
@@ -1428,8 +1465,8 @@ class AitherAgent:
             import importlib
             _feed = importlib.import_module("lib.cognitive.agent_action_feed")
             await _feed.emit_turn_action_names(self.name, tool_calls_made)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- optional host module; absent off-platform
+            logger.debug("[LEARN] agent action feed unavailable: %s", exc)
 
         # World model learning: record transitions from previous state. Build context from
         # this turn's observable outcomes (tools used, errors encountered, depth, success).
@@ -1461,8 +1498,8 @@ class AitherAgent:
                 # Periodically save (bootstrap may already have, but don't double-save every turn)
                 if self._wm_turns % 20 == 0:
                     await asyncio.to_thread(self._wm.save)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- learning never fails the turn
+            logger.warning("[LEARN] world-model record failed: %s", exc)
 
         if not self._skills:
             return
@@ -1482,8 +1519,8 @@ class AitherAgent:
                     tools_called=tools)
                 if skill:
                     self._skills.save(skill)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- learning never fails the turn
+            logger.warning("[LEARN] skill reinforce/extract failed: %s", exc)
 
     # ── Routines heartbeat + self-managed memory maintenance (opt-in) ──────
 
@@ -3119,6 +3156,31 @@ class AitherAgent:
         await _emit({"type": "done"})
         return resp
 
+    async def _summarize_for_compaction(self, prompt: str) -> str:
+        """The summarizer ``maybe_compact`` calls when snipping is not enough.
+
+        Pinned to the SAME model as the turn: effort=2 alone lets the router pick its
+        cheap tier, which the fleet scheduler served from a cloud fallback (measured
+        2026-09-21: the only compaction call of a long run came back from a different
+        model, the served-by check raised inside the summarizer, and the run continued
+        unsummarized until the slot overflowed). The facts in the summary are
+        crystallized before the window forgets them; a memory fault is logged, never
+        fatal to the turn.
+        """
+        resp = await self.llm.chat(
+            [Message(role="user", content=prompt)],
+            effort=2,  # cheap: summarization is not a reasoning task
+            model=(getattr(self.llm, "model", None) or getattr(self.llm, "_model", None)),
+        )
+        text = getattr(resp, "content", "") or ""
+        text = text if isinstance(text, str) else str(text)
+        if getattr(self, "crystal", None) is not None and text:
+            try:
+                await self.crystal.crystallize(text)
+            except Exception as exc:  # noqa: BLE001 -- the summary still compacts
+                logger.warning("[CRYSTAL] crystallize failed: %s", exc)
+        return text
+
     async def stream_react(
         self,
         message: str,
@@ -3128,8 +3190,16 @@ class AitherAgent:
         session_id: str | None = None,
         steering: "Callable[[], list[str]] | None" = None,
         system_additions: list[str] | None = None,
+        decision: Any = None,
+        effort: "int | None" = None,
     ) -> AgentResponse:
         """Streaming, tool-using ReAct loop.
+
+        ``decision`` (an ``adk.intent.IntentDecision`` or None) and ``effort`` (1-10 or
+        None) are the turn's routing verdict, passed by a host that already classified
+        the message so the loop does not classify it twice. None = the loop decides on
+        its own, exactly as before these kwargs existed; a caller that omits them sees
+        no behaviour change.
 
         Unlike ``chat()`` (native OpenAI function-calling, which can't stream —
         streaming structured tool_calls is unsupported), this drives a TEXT-based
@@ -3138,17 +3208,30 @@ class AitherAgent:
         canonical *streaming* agent loop — surfaces shipping live reasoning
         (terminals, web chat) should use it; ``chat()`` remains for one-shot.
 
+        The turn is budgeted against the model window W (``_compaction_limit`` or the
+        model table): context blocks share at most 20% of W through
+        ``adk.context_assembly.assemble``, history at most 15%, and the scratchpad is
+        compacted at 75% of W before every step. Every context stage fails open.
+
         ``on_event`` is a sync or async callable receiving dict events::
 
+            {"type": "turn_start", "window_tokens": ..., "max_steps": ...}
             {"type": "thinking", "text": ...}     # reasoning delta (live)
             {"type": "token", "text": ...}         # final-answer delta (live)
             {"type": "tool", "name": ..., "args": ...}
-            {"type": "tool_result", "name": ..., "result": ...}
+            {"type": "tool_result", "name": ..., "result": ..., "ok": bool}
+            {"type": "context", "kept": [...], "evicted": [...], ...}
+            {"type": "compact", "step": ..., "before_tokens": ..., "after_tokens": ...}
+            {"type": "degraded", "stage": ..., "error": ...}
             {"type": "error", "error": ...}
             {"type": "done"}
         """
         import json as _json
         import re as _re
+
+        from adk.context_assembly import Source as _Source
+        from adk.context_assembly import assemble as _assemble
+        from adk.context_budget import context_limit_for, estimate_tokens, maybe_compact
         sid = session_id or self._session_id
         TOOL_SESSION_CTX.set(sid or "")  # conversation scope for stateful tools (repl)
         _t0 = time.perf_counter()
@@ -3158,8 +3241,66 @@ class AitherAgent:
                 r = on_event(evt)
                 if asyncio.iscoroutine(r):
                     await r
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- a broken listener is not the turn
+                logger.debug("stream_react event listener raised: %s", exc)
+
+        async def _degraded(stage: str, exc: BaseException) -> None:
+            # Every pre-turn stage fails open: the turn runs without that block, and the
+            # trace says which one is missing instead of the answer just being thinner.
+            logger.warning("[REACT-STREAM] %s degraded for %s: %s: %s", stage, self.name,
+                           type(exc).__name__, exc)
+            await _emit({"type": "degraded", "stage": stage, "error": type(exc).__name__})
+
+        async def _bounded(stage: str, factory, timeout: float):
+            try:
+                return await asyncio.wait_for(factory(), timeout)
+            except Exception as exc:  # noqa: BLE001 -- incl. TimeoutError; fail open
+                await _degraded(stage, exc)
+                return None
+
+        # The window every budget below is a share of. Chars, not tokens, because the
+        # blocks are text: 3.5 chars/token is the estimator's own (conservative) ratio.
+        _cpt = 3.5
+        try:
+            _window = int(self._compaction_limit() or 0) or int(
+                context_limit_for(getattr(self.llm, "model", None)))
+        except Exception as exc:  # noqa: BLE001 -- the model table's floor
+            logger.debug("stream_react window lookup failed: %s", exc)
+            _window = 8192
+        _ctx_budget_chars = int(_window * 0.20 * _cpt)
+        _hist_budget_chars = int(_window * 0.15 * _cpt)
+        await _emit({"type": "turn_start", "session_id": sid, "max_steps": max_steps,
+                     "window_tokens": _window, "effort": effort})
+
+        # Input safety, as chat() does it, before any recall or model call.
+        if getattr(self, "_safety", None) is not None:
+            _blocked = False
+            try:
+                _blocked = bool(getattr(self._safety.check(message), "blocked", False))
+            except Exception as exc:  # noqa: BLE001 -- the guard faulting is not a block
+                await _degraded("safety", exc)
+            if _blocked:
+                logger.warning("Safety blocked input for agent %s", self.name)
+                _refusal = ("I can't process that request — it was flagged by the "
+                            "safety filter.")
+                await _emit({"type": "token", "text": _refusal})
+                await _emit({"type": "done"})
+                return AgentResponse(content=_refusal, session_id=sid,
+                                     latency_ms=round((time.perf_counter() - _t0) * 1000, 1))
+
+        # Steering. A host that passes ``steering`` owns the drain. Otherwise the loop
+        # drains adk.steering itself: /chat/steer queued into lists nobody read on this
+        # path, so a redirect sent mid-turn reached only the NEXT turn. Register the
+        # session only when no host did, and unregister only what this turn registered.
+        _own_steer_queue = False
+        if steering is None and sid:
+            try:
+                from adk import steering as _steer_mod
+                if sid not in _steer_mod._steering_queues:
+                    await register_steering_queue(sid)
+                    _own_steer_queue = True
+            except Exception as exc:  # noqa: BLE001 -- the turn runs unsteerable
+                await _degraded("steering", exc)
 
         # Intent classification (fail-open: use keyword heuristic on error).
         # Used to filter tools by intent type.
@@ -3167,8 +3308,8 @@ class AitherAgent:
         try:
             from adk.intent import coarse_code_intent
             _intent = coarse_code_intent(message)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- the unfiltered menu is the fallback
+            logger.debug("stream_react intent failed: %s", exc)
         # Routing is part of the pipeline; the trace says which intent drove the
         # menu rather than leaving the filtering unexplained.
         await _emit({"type": "intent", "intent": _intent or "default"})
@@ -3190,17 +3331,21 @@ class AitherAgent:
             _meta = _tool_sel.meta_schema()["function"]
             tool_lines.append(f"- {LOAD_TOOLS_NAME}(category) -> {_meta['description']}")
         tools_block = "\n".join(tool_lines) if tool_lines else "(no tools available)"
+        # The reasoning doctrine, as chat() carries it (_turn_system_prompt): without it
+        # the two loops built different system prompts for the same agent.
+        _identity = self.system_prompt or ""
+        try:
+            from adk.reasoning_doctrine import with_doctrine
+            _identity = with_doctrine(_identity)
+        except Exception as exc:  # noqa: BLE001 -- the bare identity still works
+            await _degraded("doctrine", exc)
         sys_prompt = (
-            (self.system_prompt or "").rstrip() + "\n\n"
+            _identity.rstrip() + "\n\n"
             "Think step by step inside <think>...</think>. To call a tool, after your "
             "<think> reply EXACTLY:\nACTION: <tool_name>\nINPUT: <one-line JSON args, or {}>\n"
             "When you have enough information, after your <think> reply:\n"
             "FINAL: <concise answer for the user>\n\n"
             f"Available tools:\n{tools_block}"
-            # Situation LAST: identity + protocol + tools is the stable, cacheable
-            # prefix; the clock and the caller's [USER'S SHELL] block change per
-            # turn and must not sit in front of it. See adk.situation.
-            + self._situation_suffix(system_additions)
         )
         # The platform reach, named the way look_at is named below. An 8B does not
         # connect "is the fleet healthy?" to a tool called search_tools: measured
@@ -3221,6 +3366,15 @@ class AitherAgent:
                 "a question from a very large file), predict_engines / predict_conforms "
                 "(world-model engines on this machine). Reach for one when the task fits."
             )
+        # What else this agent reaches (memory, graph, peers), stated next to the menu.
+        try:
+            from adk import reach as _reach
+            _reach_fn = getattr(_reach, "reach_lines", None)
+            _reach_text = _reach_fn(self, decision) if _reach_fn is not None else ""
+            if _reach_text:
+                sys_prompt += "\n\n" + str(_reach_text).strip()
+        except Exception as exc:  # noqa: BLE001 -- the menu alone still works
+            await _degraded("reach", exc)
         # The user named an image: say which tool SEES it (image_* tools make images).
         _img = image_reference(message)
         # Registered is enough: the intent filter may leave look_at off the menu, and the
@@ -3229,60 +3383,233 @@ class AitherAgent:
             sys_prompt += (f"\n\nThe user's message refers to the image {_img}. To see it, "
                            f"call look_at with image={_json.dumps(_img)}; the image_* tools "
                            "only CREATE images.")
+        # Situation LAST: identity + protocol + tools is the stable, cacheable prefix;
+        # the clock, the caller's [USER'S SHELL] block and the per-turn image line
+        # change per turn and must not sit in front of it. See adk.situation.
+        sys_prompt += self._situation_suffix(system_additions)
 
-        msgs = [Message(role="system", content=sys_prompt)]
-        # Context assembly, visible. Until 2026-10-05 stream_react never recalled at
-        # all — the crystal fired in chat() only, so the owner's path ran contextless
-        # while the log said the crystal was bound. The recall block (awm facts +
-        # graph symbols, one capped system message) and the classified intent are
-        # emitted so the trace shows what context the turn started from.
-        if getattr(self, "crystal", None) is not None:
-            _crystal_block = ""
-            try:
-                _crystal_block = await self.crystal.recall_block(message)
-            except Exception as _cexc:  # noqa: BLE001 — a memory fault must not kill a turn
-                logger.warning("[CRYSTAL] recall failed: %s", _cexc)
-            _entries = sum(1 for ln in (_crystal_block or "").splitlines()
-                           if ln.startswith("- "))
-            await _emit({
-                "type": "crystal",
-                "facts": _entries,
-                "chars": len(_crystal_block or ""),
-                "degraded": list(self.crystal.telemetry.get("degraded") or [])[:3],
-            })
-            if _crystal_block:
-                msgs.insert(1, Message(role="system", content=_crystal_block))
-        if getattr(self, "_typed", None):
-            try:
-                _recalled = await self._typed.context_block(message, limit=5)
-                if _recalled:
-                    msgs.insert(1, Message(role="system", content=_recalled))
-                _constraints = await self._typed.constraints_block()
-                if _constraints:
-                    msgs.insert(1, Message(role="system", content=_constraints))
-            except Exception:
-                pass
-        _tokens_streamed = 0
-        # The daemon's /chat/stream passes no history, so every awsh line reached the
-        # model cold: "do it" after "what is in the news today" ran search_tools("do
-        # it") (2026-10-11). This loop persists each turn under sid; read it back.
-        if history is None and sid:
+        # History BEFORE recall: recall dedupes against it. The daemon's /chat/stream
+        # passes no history, so every awsh line reached the model cold: "do it" after
+        # "what is in the news today" ran search_tools("do it") (2026-10-11). This loop
+        # persists each turn under sid; read it back -- unless the caller already sent
+        # the transcript as a "Conversation so far" addition, which would put the same
+        # turns in front of the model twice.
+        _has_transcript = any("Conversation so far" in str(a) for a in (system_additions or ()))
+        if history is None and sid and not _has_transcript:
             try:
                 history = await self.memory.get_history(sid, limit=16)
             except Exception as exc:  # noqa: BLE001 -- the turn runs without it
                 logger.debug("stream_react history load failed: %s", exc)
                 history = []
-        for h in (history or [])[-8:]:
-            if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
-                msgs.append(Message(role=h["role"], content=str(h["content"])[:3000]))
+        # Newest first into 15% of W: a fixed 8 x 3000 chars was ~6.9k tokens, more than
+        # an 8k orchestrator window before the first tool ran.
+        _hist_msgs: list = []
+        _hist_left = _hist_budget_chars
+        for h in reversed((history or [])[-8:]):
+            if not (isinstance(h, dict) and h.get("role") in ("user", "assistant")
+                    and h.get("content")):
+                continue
+            _ht = str(h["content"])[:3000]
+            if len(_ht) > _hist_left:
+                if _hist_left < 200:
+                    break
+                _ht = _ht[:_hist_left] + " [...]"
+            _hist_msgs.insert(0, Message(role=h["role"], content=_ht))
+            _hist_left -= len(_ht)
+        _hist_texts = [m.content for m in _hist_msgs] + [str(a) for a in (system_additions or ())]
+
+        # ── Context assembly, Genesis order: crystal → typed memory → graph → skills →
+        # neurons. Until 2026-10-05 this loop never recalled at all (the crystal fired
+        # in chat() only); after that each provider appended its own capped block, so
+        # six blocks could outgrow the window together. Now each provider is bounded in
+        # time, offered as a Source, and ``assemble`` keeps what fits 20% of W.
+        _kg_tools = set()  # tool names called
+        _kg_memory_recalls = set()  # memory planes that put a block in front of the model
+        _kg_sources = set()  # source identifiers
+
+        async def _crystal_block() -> str:
+            try:
+                return await self.crystal.recall_block(
+                    message, exclude=tuple(_hist_texts), max_chars=_ctx_budget_chars)
+            except TypeError:  # a crystal built before the exclude/max_chars contract
+                return await self.crystal.recall_block(message)
+
+        async def _typed_recall() -> str:
+            return await self._typed.context_block(message, limit=5)
+
+        async def _typed_constraints() -> str:
+            return await self._typed.constraints_block()
+
+        try:
+            from adk import turn_memory as _turn_memory
+        except Exception as exc:  # noqa: BLE001 -- the turn runs without these planes
+            _turn_memory = None
+            await _degraded("turn_memory", exc)
+
+        async def _graph_block() -> str:
+            fn = getattr(_turn_memory, "graph_block", None)
+            return await fn(self, message, 5) if fn is not None else ""
+
+        async def _skills_block() -> str:
+            fn = getattr(_turn_memory, "skills_block", None)
+            return await fn(self, message, 3) if fn is not None else ""
+
+        _ctl = None
+        try:
+            from adk import turn_control as _turn_control
+            _ctl = _turn_control.EscalationController(self, decision, max_steps)
+        except Exception as exc:  # noqa: BLE001 -- the turn runs without escalation
+            await _degraded("turn_control", exc)
+
+        async def _ctl_hook(hook: str, *args, timeout: float = 6.0):
+            fn = getattr(_ctl, hook, None) if _ctl is not None else None
+            if fn is None:
+                return None
+            return await _bounded("turn_control", lambda: fn(*args), timeout)
+
+        _has_crystal = getattr(self, "crystal", None) is not None
+        _has_typed = bool(getattr(self, "_typed", None))
+
+        async def _nothing():
+            return None
+
+        # Constraints are bounded apart from the recall: they are the pinned block, and
+        # a slow ranked recall must not take the user's standing corrections with it.
+        (_crystal_text, _typed_recalled, _constraints, _graph_text, _skills_text,
+         _plan_text) = await asyncio.gather(
+            _bounded("crystal", _crystal_block, 3.0) if _has_crystal else _nothing(),
+            _bounded("typed_memory", _typed_recall, 1.5) if _has_typed else _nothing(),
+            _bounded("constraints", _typed_constraints, 1.5) if _has_typed else _nothing(),
+            _bounded("graph_memory", _graph_block, 2.0),
+            _bounded("skills", _skills_block, 1.5),
+            _ctl_hook("before_loop"),
+        )
+        if _has_crystal:
+            _crystal_text = _crystal_text or ""
+            _last = getattr(self.crystal, "last_recall", None)
+            _last = _last if isinstance(_last, dict) else {}
+            await _emit({
+                "type": "crystal",
+                "facts": sum(1 for ln in _crystal_text.splitlines() if ln.startswith("- ")),
+                "chars": len(_crystal_text),
+                "graph_hits": int(_last.get("graph_hits", 0) or 0),
+                "degraded": list(self.crystal.telemetry.get("degraded") or [])[:3],
+            })
+        if _has_typed:
+            await _emit({"type": "typed_memory", "chars": len(_typed_recalled or ""),
+                         "constraints": len(_constraints or "")})
+        await _emit({"type": "graph_memory", "chars": len(_graph_text or "")})
+        await _emit({"type": "skills", "chars": len(_skills_text or "")})
+        # Neurons last: a code-graph block already in hand makes the graph neuron a
+        # second copy of the same symbols.
+        _neuron_text = ""
+        if getattr(self, "_auto_neurons", None) is not None:
+            _skip = ("graph",) if "[CODE GRAPH]" in str(_crystal_text or "") else ()
+            _neuron_text = await _bounded(
+                "neurons",
+                lambda: self._auto_neurons.gather_context(
+                    message, intent_category=_intent, effort=effort, max_chars=1200,
+                    skip=_skip),
+                2.5) or ""
+            await _emit({"type": "neurons", "chars": len(_neuron_text),
+                         "fired": list(getattr(self._auto_neurons, "last_fired", []) or [])})
+
+        _offered = [
+            _Source("constraints", str(_constraints or ""), 100, pinned=True),
+            _Source("plan", str(_plan_text or ""), 70),
+            _Source("crystal", str(_crystal_text or ""), 60),
+            _Source("skills", str(_skills_text or ""), 40),
+            _Source("graph_memory", str(_graph_text or ""), 30),
+            _Source("typed_memory", str(_typed_recalled or ""), 20),
+            _Source("neurons", str(_neuron_text or ""), 10),
+        ]
+        _offered = [s for s in _offered if s.text]
+        try:
+            _kept, _evicted = _assemble(_offered, _ctx_budget_chars, message, _hist_texts)
+        except Exception as exc:  # noqa: BLE001 -- assemble fails open itself; belt
+            await _degraded("context", exc)
+            _kept, _evicted = _offered, []
+        _chars_offered = sum(len(s.text) for s in _offered)
+        _chars_kept = sum(len(s.text) for s in _kept)
+        await _emit({
+            "type": "context",
+            "kept": [{"name": s.name, "chars": len(s.text)} for s in _kept],
+            "evicted": list(_evicted),
+            "budget_chars": _ctx_budget_chars,
+            "chars_kept": _chars_kept,
+            "chars_dropped": max(0, _chars_offered - _chars_kept),
+            "history_messages": len(_hist_msgs),
+        })
+        msgs = [Message(role="system", content=sys_prompt)]
+        for s in _kept:
+            msgs.append(Message(role="system", content=s.text))
+            if s.name not in ("constraints", "plan"):
+                _kg_memory_recalls.add(s.name)
+        msgs.extend(_hist_msgs)
+        # Everything before this index is the turn's fixed head (prompt, context,
+        # history); compaction only ever rewrites the scratchpad after it.
+        _head_n = len(msgs)
         msgs.append(Message(role="user", content=message))
+        _tokens_streamed = 0
 
         _ACT = _re.compile(r"ACTION:\s*([a-zA-Z_][a-zA-Z0-9_]*)", _re.I)
         _INP = _re.compile(r"INPUT:\s*(\{.*?\})", _re.I | _re.S)
         _THINK = _re.compile(r"<think>.*?</think>\s*", _re.S)
 
+        def _assistant(text: str) -> Message:
+            # The scratchpad keeps what the model DID, not how it got there: <think>
+            # text was kept every step and was most of a step's tokens on the 8B.
+            # reasoning-n/a: streamed text, no response object -- the stream loop has
+            # no reasoning to carry; thinking-mode backends run the non-stream loop
+            kept = scrub_orphan_think(_THINK.sub("", text or "")).strip()
+            return Message(role="assistant", content=kept or "(no visible reply)")
+
+        def _cut(obs_text: str) -> str:
+            # Head AND tail: the useful part of a long result is often at the end (a
+            # traceback, a summary line), which a head-only obs[:3000] threw away.
+            if len(obs_text) <= 2700:
+                return obs_text
+            return (f"{obs_text[:1500]}\n[... {len(obs_text) - 2700} chars cut ...]\n"
+                    f"{obs_text[-1200:]}")
+
+        async def _compact(step: int, extra_tokens: int = 0) -> None:
+            nonlocal msgs
+            head, tail = msgs[:_head_n], msgs[_head_n:]
+            if not tail:
+                return
+            before = estimate_tokens(msgs)
+            try:
+                new_tail, did = await maybe_compact(
+                    tail, model=getattr(self.llm, "model", None),
+                    summarize=self._summarize_for_compaction, budget_ratio=0.75,
+                    make_message=lambda role, content: Message(role=role, content=content),
+                    overhead_tokens=estimate_tokens(head) + max(0, int(extra_tokens)),
+                    limit_override=_window,
+                )
+            except Exception as exc:  # noqa: BLE001 -- an uncompacted step beats none
+                await _degraded("compact", exc)
+                return
+            if not did:
+                return
+            if new_tail is not tail and new_tail:
+                # Layer 2 summarized the prefix. The user's request must survive it
+                # verbatim: a summary keeps "facts established", not the question.
+                first = new_tail[0]
+                if message not in str(first.content or ""):
+                    new_tail[0] = Message(role=first.role, content=(
+                        f"{message}\n\n{first.content}"))
+            msgs = head + list(new_tail)
+            await _emit({"type": "compact", "step": step, "before_tokens": before,
+                         "after_tokens": estimate_tokens(msgs),
+                         "layer": "summary" if new_tail is not tail else "snip"})
+
+        def _is_overflow(exc: BaseException) -> bool:
+            return bool(getattr(exc, "requested_tokens", 0)) or \
+                type(exc).__name__ == "ContextOverflowError"
+
         answer = ""
         tools_made: list[str] = []
+        _observations: list[str] = []
         _react_retry_nudges = 0  # see announces_retry
         _discovery_nudges = 0  # see discovery_nudge
         _offer_nudged = False  # see offers_lookup
@@ -3290,6 +3617,22 @@ class AitherAgent:
         _last_obs = ""
         _failed_in_a_row = 0  # tool_result_failed streak; 2 -> consult ask_reasoner
         _consulted = False
+        _pending_hint = ""  # a turn_control rescue hint for the next step
+        _call_steps: dict[str, tuple] = {}  # exact call -> (step that ran it, ok)
+
+        def _reads_only(tool: str) -> bool:
+            # By the name's leading verb; an unknown verb counts as a state change, so
+            # the cost of a wrong guess is one re-run, never a stale answer.
+            if tool == LOAD_TOOLS_NAME:
+                return True
+            return tool.lower().split("_", 1)[0] in _READ_VERBS
+        # The same guard chat() runs. Its circuit breaker counts every call; at effort
+        # >= 4 it only nudges. Exact repeats are answered below without re-running.
+        _guard_effort = int(effort) if isinstance(effort, int) else 5
+        _guard = LoopGuard(warn_threshold=2, block_threshold=4,
+                           circuit_break_total=max_steps + 5, effort_level=_guard_effort)
+        from adk.approval import get_approval_store, needs_approval
+        _pending_approvals: list[dict] = []
 
         # The user named an image: LOOK at it first, then let the model answer from
         # what was seen. The 8B ignored the "call look_at" line above 3/3 (2026-10-05)
@@ -3303,37 +3646,64 @@ class AitherAgent:
             except Exception as exc:  # noqa: BLE001 -- the turn continues without it
                 _seen = f"(tool error: {type(exc).__name__}: {exc})"
             tools_made.append("look_at")
-            await _emit({"type": "tool_result", "name": "look_at", "result": _seen[:1500]})
+            await _emit({"type": "tool_result", "name": "look_at", "result": _seen[:1500],
+                         "ok": not tool_result_failed(_seen)})
+            _observations.append(_cut(_seen))
             msgs.append(Message(role="user", content=(
                 f"OBSERVATION (look_at, the vision model, already called on {_img}): "
-                f"{_seen[:3000]}\nAnswer the user from this.")))
+                f"{_cut(_seen)}\nAnswer the user from this.")))
 
-        # Knowledge graph tracking — tools, memory, sources touched in this turn
-        _kg_tools = set()  # tool names called
-        _kg_memory_recalls = set()  # memory keys/types recalled
-        _kg_sources = set()  # source identifiers
+        def _say_to_model(text: str) -> None:
+            # Fold into the last user message when there is one, so roles keep
+            # alternating: strict chat templates refuse two user turns in a row.
+            if msgs and msgs[-1].role == "user" and len(msgs) > _head_n:
+                msgs[-1] = Message(role="user", content=f"{msgs[-1].content}\n\n{text}")
+            else:
+                msgs.append(Message(role="user", content=text))
 
+        _paused = False
+        # How the loop ended, for after_turn's step-limit lesson (turn_memory reads
+        # agent._last_turn_finish): "answer", or "step_limit" when synthesis was forced.
+        _turn_finish = "answer"
         for _step in range(max_steps):
             # Chat-as-steering (Layer 2): drain messages the user sent WHILE this
             # loop is running and inject them so it REDIRECTS mid-flight, instead of
             # the user waiting for a fresh agentic loop. ``steering()`` is supplied
-            # by a ReasoningSession (adk.reasoning_session); default None = no-op.
-            if steering is not None:
-                try:
-                    for _sm in (steering() or []):
-                        if _sm:
-                            msgs.append(Message(role="user", content=f"[Steering] {_sm}"))
-                            await _emit({"type": "steering", "text": str(_sm)})
-                except Exception:  # noqa: BLE001
-                    pass
+            # by a ReasoningSession (adk.reasoning_session); without one the loop
+            # drains /chat/steer's inputs and hints for this session itself.
+            try:
+                if steering is not None:
+                    _inputs, _hints = list(steering() or []), []
+                elif sid:
+                    _inputs, _hints = drain_steering_inputs(sid), drain_steering_hints(sid)
+                else:
+                    _inputs, _hints = [], []
+                for _sm in _inputs:
+                    if _sm:
+                        _say_to_model(f"[Steering] {_sm}")
+                        await _emit({"type": "steering", "text": str(_sm)})
+                # A hint rides in a user turn, not a mid-conversation system message:
+                # several chat templates refuse a system role after the first message.
+                for _sh in _hints:
+                    if _sh:
+                        _say_to_model(f"[Steering hint] {_sh}")
+                        await _emit({"type": "steering", "text": str(_sh), "hint": True})
+            except Exception as exc:  # noqa: BLE001 -- the step runs unsteered
+                await _degraded("steering", exc)
+            if _pending_hint:
+                _say_to_model(_pending_hint)
+                _pending_hint = ""
+            await _compact(_step + 1)
             full = ""
             buf = ""
             phase = "scan"  # scan | thinking | answer | action
             _turn_err = None
             # Retry the turn once on a transient connection error (the provider may
-            # hold a stale keep-alive between turns). Only retry if nothing has been
-            # emitted yet, so a mid-stream failure never double-streams.
-            for _attempt in range(2):
+            # hold a stale keep-alive between turns), and once on a context overflow
+            # after compacting against the size the provider named. Only retry if
+            # nothing has been emitted yet, so a mid-stream failure never double-streams.
+            _transient_left, _overflow_left = 1, 1
+            while True:
                 full = ""
                 buf = ""
                 phase = "scan"
@@ -3380,7 +3750,25 @@ class AitherAgent:
                     break
                 except Exception as exc:
                     _turn_err = exc
-                    if _attempt == 0 and not _emitted:
+                    if _emitted:
+                        break
+                    if _overflow_left and _is_overflow(exc):
+                        _overflow_left -= 1
+                        # The provider named the real size: budget against THAT from
+                        # now on, compact once against it, retry once.
+                        _limit_said = int(getattr(exc, "limit_tokens", 0) or 0)
+                        if _limit_said > 0:
+                            self._context_limit_observed = _limit_said
+                            _window = _limit_said
+                        _requested = int(getattr(exc, "requested_tokens", 0) or 0)
+                        _extra = (max(0, _requested - estimate_tokens(msgs)) if _requested
+                                  else max(1024, _window // 8))
+                        logger.warning("[CONTEXT] stream overflow (%s requested) -- compacting "
+                                       "and retrying once", _requested or "?")
+                        await _compact(_step + 1, extra_tokens=_extra)
+                        continue
+                    if _transient_left:
+                        _transient_left -= 1
                         logger.warning("stream_react retry (%s) for %s", type(exc).__name__, self.name)
                         await asyncio.sleep(0.3)
                         continue
@@ -3409,16 +3797,14 @@ class AitherAgent:
                 _offer_nudged = True
                 logger.info("[REACT-STREAM] Reply offered a lookup instead of making one "
                             "- nudging")
-                # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
-                msgs.append(Message(role="assistant", content=full))
+                msgs.append(_assistant(full))
                 msgs.append(Message(role="user", content=_OFFER_NUDGE_MSG))
                 continue
             if _discovery_stall:
                 _discovery_nudges += 1
                 logger.info("[REACT-STREAM] %s menu answered with prose - nudging (%d)",
                             _last_tool, _discovery_nudges)
-                # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
-                msgs.append(Message(role="assistant", content=full))
+                msgs.append(_assistant(full))
                 msgs.append(Message(role="user", content=discovery_nudge(_last_tool, _last_obs)))
                 continue
             if phase == "answer":
@@ -3437,8 +3823,7 @@ class AitherAgent:
                     logger.info("[REACT-STREAM] Reply announced a step without making it "
                                 "- nudging (%d)",
                                 _react_retry_nudges)
-                    # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
-                    msgs.append(Message(role="assistant", content=full))
+                    msgs.append(_assistant(full))
                     msgs.append(Message(role="user", content=_RETRY_NUDGE_MSG))
                     continue
                 if answer:
@@ -3455,8 +3840,7 @@ class AitherAgent:
                 # copy — measured 2026-10-05: "INPUT: {}" for remember_fact survived
                 # three attempts and an ask_reasoner consult; a concrete template is
                 # what the 8B can repeat.
-                # reasoning-n/a: streamed text, no response object (as the OBSERVATION path)
-                msgs.append(Message(role="assistant", content=full))
+                msgs.append(_assistant(full))
                 if _missing:
                     _tmpl = ", ".join(f'"{r}": "<value>"' for r in _missing)
                     msgs.append(Message(role="user", content=(
@@ -3473,31 +3857,108 @@ class AitherAgent:
             await _emit({"type": "tool", "name": name, "args": args})
             # Knowledge graph tracking
             _kg_tools.add(str(name).lower())
+            # Guard before the call. An exact repeat of an earlier call is answered from
+            # the scratchpad instead of re-running and re-appending the same result:
+            # measured on the 8B, a repeated 3k-char read was the fastest way to fill the
+            # window. Status and poll tools are exempt: their answer changes over time.
             try:
-                if name == LOAD_TOOLS_NAME and _tool_sel.active:
-                    _before = {t.name for t in _tool_sel.offered}
-                    obs = _tool_sel.load(args)
-                    _new = [t for t in _tool_sel.offered if t.name not in _before]
-                    if _new:
-                        obs += "\n" + "\n".join(_tool_line(t) for t in _new)
+                _call_key = name + "|" + _json.dumps(args, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                _call_key = name + "|" + repr(args)
+            _exempt = any(w in name.lower() for w in ("status", "poll"))
+            _prev = _call_steps.get(_call_key)
+            _prev_step = _prev[0] if _prev else None
+            try:
+                _verdict = _guard.check(name, args)
+            except Exception as exc:  # noqa: BLE001 -- run unguarded rather than not at all
+                await _degraded("loop_guard", exc)
+                _verdict = None
+            _vact = getattr(_verdict, "action", None)
+            _ran = False
+            _ok = True
+            _repeat = _prev_step is not None and not _exempt
+            if _repeat:
+                obs = (f"Same call as step {_prev_step}: {name} already ran with these exact "
+                       "arguments and its result is above. Use that result, change the "
+                       "arguments, or answer with FINAL:.")
+                # Repeating a call that failed is the stall the reasoner consult is for.
+                _ok = bool(_prev[1])
+                _hint = await _ctl_hook("on_stall")
+                if _hint:
+                    obs += f"\n{str(_hint)[:600]}"
+            elif _vact == LoopAction.CIRCUIT_BREAK or (_vact == LoopAction.BLOCK and not _exempt):
+                obs = str(getattr(_verdict, "nudge_message", "") or "Stop calling tools; answer.")
+                _hint = await _ctl_hook("on_stall")
+                if _hint:
+                    obs += f"\n{str(_hint)[:600]}"
+            else:
+                _decision_gate = None
+                try:
+                    if needs_approval(self.name, name):
+                        _decision_gate = get_approval_store().decision_for(sid, name, args) or "ask"
+                except Exception as exc:  # noqa: BLE001 -- an unreadable gate does not run
+                    await _degraded("approval", exc)
+                    _decision_gate = "ask"
+                if _decision_gate == "ask":
+                    # Gated and undecided: pause the turn exactly as chat() does, so
+                    # the caller surfaces Allow/Deny and resume() re-runs it.
+                    _pending_approvals.append({"tool_use_id": f"stream-{_step + 1}",
+                                               "tool": name, "args": args})
+                    _paused = True
+                    break
+                if _decision_gate == "deny":
+                    obs = "The user denied this tool call. Do not retry it."
+                    _ok = False
                 else:
-                    obs = str(await self._tools.execute(name, args))
-            except Exception as exc:
-                obs = f"(tool error: {type(exc).__name__}: {exc})"
-            tools_made.append(name)
-            _last_tool, _last_obs = name, obs
-            await _emit({"type": "tool_result", "name": name, "result": obs[:1500]})
-            # Track tool result for knowledge graph
-            _kg_tools.add(str(name).lower())
+                    try:
+                        if name == LOAD_TOOLS_NAME and _tool_sel.active:
+                            _before = {t.name for t in _tool_sel.offered}
+                            obs = _tool_sel.load(args)
+                            _new = [t for t in _tool_sel.offered if t.name not in _before]
+                            if _new:
+                                obs += "\n" + "\n".join(_tool_line(t) for t in _new)
+                        else:
+                            obs = str(await self._tools.execute(name, args))
+                    except Exception as exc:
+                        obs = f"(tool error: {type(exc).__name__}: {exc})"
+                    _ran = True
+                    _ok = not tool_result_failed(obs)
+                    if _vact == LoopAction.WARN and getattr(_verdict, "nudge_message", ""):
+                        obs += f"\n{_verdict.nudge_message}"
+            if _ran:
+                tools_made.append(name)
+                if not _reads_only(name):
+                    # A call that may have changed state makes every OTHER earlier
+                    # result stale: read -> edit -> read must run the second read.
+                    _mine = _call_steps.get(_call_key)
+                    _call_steps.clear()
+                    if _mine is not None:
+                        _call_steps[_call_key] = _mine
+                _call_steps.setdefault(_call_key, (_step + 1, _ok))
+                _last_tool, _last_obs = name, obs
+            await _emit({"type": "tool_result", "name": name, "result": obs[:1500],
+                         "ok": _ok, **({} if _ran else {"ran": False})})
             # Two failed / empty results in a row: the orchestrator consults the bigger
             # reasoning model AS A TOOL (adk.model_tools.ask_reasoner) and hands its
             # answer back as an observation -- once per turn. Owner, 2026-10-05: "the
             # agent/orchestrator should call the deepseek/gemma models as
             # vision/reasoning as TOOLS". The small model drives; the big one unblocks.
-            _failed_in_a_row = _failed_in_a_row + 1 if tool_result_failed(obs) else 0
+            _obs_text = _cut(obs)
+            if _ran or _repeat:
+                _failed_in_a_row = _failed_in_a_row + 1 if not _ok else 0
+            # One reasoning-tier consult per turn, shared with turn_control: its
+            # re-router / stall rescue may already have spent it, and once the loop
+            # spends it the controller must not consult again on the same stuck step.
+            if _ctl is not None and getattr(_ctl, "consulted", False):
+                _consulted = True
             if (_failed_in_a_row >= 2 and not _consulted and name != "ask_reasoner"
                     and self._tools.get("ask_reasoner") is not None):
                 _consulted = True
+                try:
+                    if _ctl is not None:
+                        _ctl.mark_consulted()
+                except Exception as exc:  # noqa: BLE001 -- budget sharing is best-effort
+                    logger.debug("turn_control mark_consulted failed: %s", exc)
                 # The tool menu goes along: the fix is often a DIFFERENT tool, not better
                 # arguments for the wrong one (measured: it repaired ask_human's urgency
                 # field when look_at was the answer).
@@ -3517,14 +3978,56 @@ class AitherAgent:
                     _advice = f"(tool error: {type(exc).__name__}: {exc})"
                 tools_made.append("ask_reasoner")
                 await _emit({"type": "tool_result", "name": "ask_reasoner",
-                             "result": _advice[:1500]})
-                obs = f"{obs[:2000]}\n\nREASONER (a bigger model you consulted): {_advice[:2000]}"
-            # reasoning-n/a: streamed text, no response object -- the stream loop has
-            # no reasoning to carry; thinking-mode backends run the non-stream loop
-            msgs.append(Message(role="assistant", content=full))
-            msgs.append(Message(role="user", content=f"OBSERVATION: {obs[:3000]}"))
+                             "result": _advice[:1500], "ok": not tool_result_failed(_advice)})
+                _obs_text = (f"{_obs_text[:2000]}\n\nREASONER (a bigger model you "
+                             f"consulted): {_advice[:2000]}")
+            if _ran:
+                _extra_hint = await _ctl_hook("observe", _step + 1, name, args, _obs_text, _ok)
+                if _extra_hint:
+                    _obs_text += f"\n{str(_extra_hint)[:600]}"
+                _observations.append(_obs_text)
+            msgs.append(_assistant(full))
+            msgs.append(Message(role="user", content=f"OBSERVATION: {_obs_text}"))
         else:
-            await _emit({"type": "token", "text": "\n(reached step limit)"})
+            # Step budget spent while the model still wanted tools. "(reached step
+            # limit)" with no answer left the owner with nothing; one more call with
+            # no tool option turns what the loop observed into an answer.
+            await _compact(max_steps + 1)
+            _say_to_model("Answer now from the observations above. Do not call a tool. "
+                          "Reply with FINAL: and your answer; say plainly what is still "
+                          "unfinished.")
+            await _emit({"type": "synthesis", "forced": True})
+            _turn_finish = "step_limit"
+            _synth = ""
+            try:
+                async for chunk in self.llm.chat_stream(msgs):
+                    _d = getattr(chunk, "content", "") or ""
+                    if _d:
+                        _tokens_streamed += 1
+                        _synth += _d
+            except Exception as exc:  # noqa: BLE001 -- the honest fallback below
+                await _degraded("synthesis", exc)
+            _clean = scrub_orphan_think(_THINK.sub("", _synth))
+            if "FINAL:" in _clean:
+                answer = _clean.split("FINAL:", 1)[-1].strip()
+            elif not _ACT.search(_clean):
+                answer = _clean.strip()
+            if not answer:
+                answer = "I reached my step limit before finishing."
+                if _last_tool:
+                    answer += f" The last result ({_last_tool}): {_last_obs[:400]}"
+            await _emit({"type": "token", "text": answer})
+
+        if _paused:
+            try:
+                get_approval_store().put_pending(
+                    sid, user_message=message, agent=self.name, pending=_pending_approvals)
+            except Exception as exc:  # noqa: BLE001 -- the card still reaches the caller
+                await _degraded("approval", exc)
+            _pend_names = ", ".join(p["tool"] for p in _pending_approvals)
+            answer = f"Waiting for your approval to run: {_pend_names}."
+            await _emit({"type": "approval_required", "pending": list(_pending_approvals)})
+            await _emit({"type": "token", "text": answer})
 
         await _emit({"type": "done"})
 
@@ -3543,12 +4046,32 @@ class AitherAgent:
 
         try:
             await self.memory.add_message(sid, "user", message)
-            if answer:
+            if answer and not _paused:
                 # Ground the persisted + returned copy (tokens already streamed).
                 answer = await self._companion_grounding_repair(answer, message, sid)
                 await self.memory.add_message(sid, "assistant", answer)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- the answer was already streamed
+            logger.debug("stream_react persist failed: %s", exc)
+
+        if _own_steer_queue:
+            unregister_steering_queue(sid)
+
+        # Post-turn writes run AFTER the answer is out and never hold the stream open.
+        if answer and not _paused:
+            try:
+                self._last_turn_finish = _turn_finish
+                _after = getattr(_turn_memory, "after_turn", None)
+                if _after is not None:
+                    _task = asyncio.ensure_future(_after(
+                        self, message=message, answer=answer, tools=list(tools_made),
+                        observations=list(_observations), sid=sid))
+                    # A bare ensure_future can be collected mid-write; hold it until done.
+                    _bg = self.__dict__.setdefault("_after_turn_tasks", set())
+                    _bg.add(_task)
+                    _task.add_done_callback(_bg.discard)
+            except Exception as exc:  # noqa: BLE001 -- learning is optional
+                logger.warning("[REACT-STREAM] after_turn not scheduled: %s", exc)
+
         return AgentResponse(
             content=answer or "",
             session_id=sid,
@@ -3560,7 +4083,9 @@ class AitherAgent:
             completion_tokens=_tokens_streamed,
             tool_calls_made=tools_made,
             latency_ms=round((time.perf_counter() - _t0) * 1000, 1),
-            finish_reason="stop",
+            finish_reason="requires_action" if _paused else "stop",
+            requires_action=_paused,
+            pending=list(_pending_approvals) if _paused else [],
         )
 
     async def classify_intent(self, message: str, history: list[dict] | None = None):

@@ -502,6 +502,11 @@ class LicenseManager:
         return bool(self.license.entitlements.channels)
 
     def can_use_auto_neurons(self) -> bool:
+        # Honour the explicit opt-out like require() and max_effort() do. Without it,
+        # AITHER_LICENSE_ENFORCE=0 lifted every other gate but left the daemon agent's
+        # neuron pool None on a host whose license file failed to verify.
+        if not self._enforced():
+            return True
         return bool(self.license.entitlements.auto_neurons)
 
     def can_use_cron(self) -> bool:

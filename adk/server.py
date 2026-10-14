@@ -797,13 +797,25 @@ def _prioritise_mcp_specs(specs: list) -> list:
     selection (tool search over the tool graph / MCTS planning / intent), so the agent
     retrieves from all ~1200 on demand instead of pre-loading any fixed slice.
     """
+    # Delegation first, in this order. Measured: the prefix list below matched no
+    # delegation tool, so ask_agent / forge_subagent never made the eager cap and
+    # were reachable only if the model guessed to search_tools for them -- which
+    # the small local model does not do.
+    delegation = ("ask_agent", "forge_subagent", "relay_a2a_delegate", "delegate_to_agent")
     preferred = (
         "codegraph_", "repowise_", "fs_", "git_", "web_", "search_", "recall",
         "remember", "query_", "knowledge_", "graph_", "http_",
     )
-    head = [s for s in specs if str(s.get("name", "")).lower().startswith(preferred)]
-    tail = [s for s in specs if s not in head]
-    return head + tail
+
+    def _name(s) -> str:
+        return str(s.get("name", "")).lower()
+
+    first = sorted((s for s in specs if _name(s) in delegation),
+                   key=lambda s: delegation.index(_name(s)))
+    rest = [s for s in specs if _name(s) not in delegation]
+    head = [s for s in rest if _name(s).startswith(preferred)]
+    tail = [s for s in rest if not _name(s).startswith(preferred)]
+    return first + head + tail
 
 
 def gateway_tool_denied(name: str, agent=None) -> bool:
@@ -1072,6 +1084,23 @@ def create_app(
             await a.llm.get_provider()
         except (ImportError, RuntimeError, OSError):
             pass
+        # Say which turn planes this daemon actually has. Measured 2026-10-12: the
+        # owner's daemon ran COMMUNITY tier (unsigned license.json) with auto-neurons
+        # off and, from the shipped launcher, no crystal -- and logged none of it.
+        # Then hydrate the code graph in the background: a cold awgraph open costs
+        # 35-55 s, which otherwise lands on the first code question's turn.
+        if not is_fleet:
+            try:
+                _primary = await get_agent()
+                _planes = _turn_planes(_primary)
+                _log = logger.info if (_planes["crystal_bound"]
+                                       and _planes["auto_neurons"]) else logger.warning
+                _log("turn planes for %s: license=%s auto_neurons=%s crystal=%s planes=%s",
+                     _primary.name, _planes["license_tier"], _planes["auto_neurons"],
+                     _planes["crystal_scope"] or "unbound", _planes["crystal_planes"])
+                _state["crystal_warm_task"] = asyncio.create_task(_warm_crystal(_primary))
+            except Exception as exc:  # noqa: BLE001 -- diagnostics must never block boot
+                logger.warning("turn-plane report failed: %s", exc)
 
         # ── Settings sync: portal profile is the source of truth ──
         # Pull the user's profile settings and apply them over the local cache,
@@ -1316,6 +1345,16 @@ def create_app(
         # loading. Measured live 2026-08-24: 5-90+ seconds of silent work on
         # EVERY message, not just the first.
         "agents_by_name": {},
+        # The scope template for agents THIS server builds. Until 2026-10-12 the
+        # crystal bound only when an out-of-repo launcher exported
+        # ADK_CRYSTAL_SCOPE; the shipped start script and `adk serve` left it unset,
+        # so every awsh turn ran with no awm facts and no code-graph symbols and
+        # nothing logged it. Held here, not written into os.environ, so building an
+        # app never changes what other agents in the process (or a test run) bind.
+        # ADK_CRYSTAL_SCOPE set to "" is the explicit opt-out.
+        "crystal_scope": (os.environ.get("ADK_CRYSTAL_SCOPE")
+                          if os.environ.get("ADK_CRYSTAL_SCOPE") is not None
+                          else _DEFAULT_CRYSTAL_SCOPE),
     }
 
     # ─── Auth middleware (optional, enabled via AITHER_API_KEY or --api-key) ───
@@ -1578,8 +1617,14 @@ def create_app(
         _state["fleet"] = fleet
         return fleet
 
-    async def get_agent(name: str | None = None) -> AitherAgent:
-        """Get agent by name. In fleet mode, routes to the right agent."""
+    async def get_agent(name: str | None = None, *, is_local: bool = False) -> AitherAgent:
+        """Get agent by name. In fleet mode, routes to the right agent.
+
+        ``is_local`` marks a request from the owner's own terminal client. Such a
+        client sends the default persona ``aither`` when no pack names an agent;
+        on a daemon started with its own ``--identity`` that persona is answered by
+        the primary agent instead of a second, thinner one (see below).
+        """
         if is_fleet:
             fleet = await _init_fleet()
             if name and name in fleet.registry:
@@ -1617,9 +1662,22 @@ def create_app(
                 kwargs["system_prompt"] = agent_spec["system_prompt"]
             if agent_spec.get("tool_grants"):
                 kwargs["tool_grants"] = agent_spec["tool_grants"]
+            _cr = _daemon_default_crystal(identity, _state.get("crystal_scope"))
+            if _cr is not None:
+                kwargs["crystal"] = _cr
 
             _state["agent"] = AitherAgent(**kwargs)
+            _wire_daemon_agent(_state["agent"])
         agent = _state["agent"]
+
+        # The terminal client's default persona is the daemon's own agent. Measured
+        # 2026-10-12: awsh sent persona "aither" on every turn, so a daemon started
+        # with --identity adk-daemon built a SECOND agent named aither whose identity
+        # defaults carry no python, code, git or graph tools, and every awsh turn ran
+        # on that one. Only the local client's default is aliased; any other name,
+        # and any remote caller, still gets the agent it asked for.
+        if is_local and name == _CLIENT_DEFAULT_PERSONA and agent.name != name:
+            return agent
 
         # If a different agent is requested in single mode, reuse it if we
         # already built one. Rebuilding on every call redid pack
@@ -1653,8 +1711,12 @@ def create_app(
                 kwargs["system_prompt"] = agent_spec["system_prompt"]
             if agent_spec.get("tool_grants"):
                 kwargs["tool_grants"] = agent_spec["tool_grants"]
+            _cr = _daemon_default_crystal(name, _state.get("crystal_scope"))
+            if _cr is not None:
+                kwargs["crystal"] = _cr
 
             built = AitherAgent(**kwargs)
+            _wire_daemon_agent(built)
             cache[name] = built
             # Platform tools are PER-AGENT: a freshly built agent starts from its
             # built-ins, and the startup attach registered on the default agent only.
@@ -1804,6 +1866,7 @@ def create_app(
 
     @app.get("/health")
     async def health():
+        a = None
         try:
             a = await get_agent()
             provider = a.llm.provider_name or "detecting..."
@@ -1867,6 +1930,18 @@ def create_app(
         except Exception as exc:  # noqa: BLE001 -- /health must always answer
             result["node_heartbeat"] = {"running": False, "online": False,
                                         "last_error": str(exc)[:200]}
+
+        # The memory plane, as bound: a crystal that is None, or bound with every
+        # plane degraded, read identically to a working one from outside until this
+        # key existed. `last_recall` is what the most recent turn was actually given.
+        result["crystal"] = _crystal_health(a)
+        if a is not None:
+            try:
+                _tp = _turn_planes(a)
+                result["turn_planes"] = {"license_tier": _tp["license_tier"],
+                                         "auto_neurons": _tp["auto_neurons"]}
+            except Exception as exc:  # noqa: BLE001 -- /health must always answer
+                result["turn_planes"] = {"error": str(exc)[:200]}
 
         if is_fleet and _state["fleet"]:
             fleet = _state["fleet"]
@@ -4694,9 +4769,13 @@ def create_app(
         _sc = body.get("session_context") or {}
         _summary = str(_sc.get("summary") or "").strip() if isinstance(_sc, dict) else ""
         if _summary:
+            # The TAIL, not the head: the block is labelled "most recent last" and a
+            # follow-up refers to the newest exchange. A head cut (then situation's
+            # 4000-char cap per addition) dropped exactly that exchange. 3700 keeps
+            # the summary plus this prefix under that cap.
             system_additions = list(system_additions or []) + [
                 "Conversation so far in this terminal (most recent last); the new "
-                "line may be a follow-up to it:\n" + _summary[:6000]
+                "line may be a follow-up to it:\n" + _summary[-3700:]
             ]
 
         # Optional per-turn generation params (honored by the OpenAI-compatible
@@ -4714,7 +4793,8 @@ def create_app(
         return StreamingResponse(
             _aitheros_stream(get_agent, message, session_id, agent_name, reasoning,
                              mcp_endpoints, gen_params=gen_params or None,
-                             system_additions=system_additions),
+                             system_additions=system_additions,
+                             is_local=bool(body.get("is_local", False))),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -7161,25 +7241,308 @@ def create_app(
     return app
 
 
-async def _effort_step_budget(agent, message: str, session_id: str, on_event) -> int:
-    """The ReAct step budget for one streamed turn, from the intent/effort classifier.
+#: The persona a terminal client sends when no pack names an agent (see get_agent).
+_CLIENT_DEFAULT_PERSONA = "aither"
 
-    Until 2026-10-12 the daemon's stream path never consulted ``classify_intent``:
-    every awsh turn ran a fixed 6 steps whatever it asked, so a multi-tool task hit the
-    step limit and a search -> call chain had no room to recover. Same scale as
-    ``stream_respond``. Fail-open to 6 within ``ADK_INTENT_TIMEOUT_S`` (default 6 s).
+#: The crystal scope template for agents the daemon builds when the operator set none.
+#: ``{agent}`` keeps one scope per agent name, so no agent reads a sibling's facts.
+_DEFAULT_CRYSTAL_SCOPE = "aitherium:{agent}:desktop"
+
+#: The step budget when the intent classifier cannot answer. Six, not the larger
+#: effort-5 ceiling: a dead router is a reason to keep the turn short, not long.
+_FAIL_OPEN_STEPS = 6
+
+
+def _daemon_default_crystal(agent_name: str, scope: "str | None"):
+    """A crystal for an agent this server builds, or None to let the agent decide.
+
+    When ``ADK_CRYSTAL_SCOPE`` is in the environment the agent binds from it on its
+    own (``crystal_from_env``), so this returns None and changes nothing. Otherwise
+    the server's template is bound through the same factory, with the variable set
+    only for the duration of the synchronous call, so the process environment that
+    other agents (and other apps in a test run) read is left as it was.
     """
+    if os.environ.get("ADK_CRYSTAL_SCOPE") is not None or not scope:
+        return None
+    try:
+        from adk.crystal import crystal_from_env
+    except Exception as exc:  # noqa: BLE001 -- a memory fault must not stop the agent
+        logger.warning("crystal module unavailable; %s runs without one: %s",
+                       agent_name, exc)
+        return None
+    os.environ["ADK_CRYSTAL_SCOPE"] = scope
+    try:
+        return crystal_from_env(agent_name)
+    finally:
+        os.environ.pop("ADK_CRYSTAL_SCOPE", None)
+
+
+def _wire_daemon_agent(agent) -> None:
+    """Give an agent the daemon builds the reach its turn path expects.
+
+    Every step is independent and fails open with a warning: a missing optional
+    plane must leave a working agent, and must say so in the log.
+    """
+    try:
+        names = {t.name for t in agent._tools.list_tools()}
+    except Exception as exc:  # noqa: BLE001 -- an agent without a registry holds no tools
+        logger.warning("agent %s has no tool registry: %s", getattr(agent, "name", "?"), exc)
+        return
+    # AitherAgent.__init__ swallows a failed built-in registration whole. Measured
+    # 2026-10-12: nothing distinguishes that agent from a healthy one until a turn
+    # asks for a file and gets an answer from memory. Make the failure visible here.
+    if "file_read" not in names:
+        logger.warning("agent %s has no built-in tools (registration failed or was "
+                       "disabled); its turns can only answer from the model",
+                       getattr(agent, "name", "?"))
+    if "deep_reasoning" not in names:
+        _register_daemon_reasoning_tool(agent)
+    _register_code_graph_search(agent, names)
+
+
+def _register_daemon_reasoning_tool(agent) -> None:
+    """Register ``deep_reasoning`` so the stream supervisor has a reasoner to force.
+
+    Until 2026-10-12 nothing in the daemon registered it: the supervisor looked it up,
+    found None, and its fallback steer told the model to call a tool that did not
+    exist. The reasoner is the agent's own LLM at effort 9 (the reasoning tier), then
+    ``ask_reasoner`` (the dedicated reasoning model) when that fails or is empty.
+    """
+    async def _reasoner(problem: str) -> str:
+        from adk.llm import strip_internal_tags
+        try:
+            resp = await agent.llm.chat([
+                Message(role="system", content=(
+                    "You are a deep-reasoning engine. Reason rigorously and step by "
+                    "step, then return a single clear, correct conclusion.")),
+                Message(role="user", content=problem),
+            ], effort=9)
+            text = strip_internal_tags(getattr(resp, "content", "") or "").strip()
+            if text:
+                return text
+            logger.warning("deep_reasoning: effort-9 answer was empty; asking the reasoner")
+        except Exception as exc:  # noqa: BLE001 -- fall through to the reasoning model
+            logger.warning("deep_reasoning: effort-9 call failed (%s); asking the reasoner",
+                           exc)
+        from adk.model_tools import ask_reasoner
+        raw = await ask_reasoner(problem)
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return str(raw or "")
+        if isinstance(parsed, dict) and parsed.get("answer"):
+            return str(parsed["answer"])
+        return str(raw or "")
+
+    try:
+        from adk.supervisor import register_reasoning_tool
+        register_reasoning_tool(agent, reasoner=_reasoner)
+    except Exception as exc:  # noqa: BLE001 -- the supervisor then steers advisory-only
+        logger.warning("deep_reasoning not registered on %s: %s",
+                       getattr(agent, "name", "?"), exc)
+
+
+def _register_code_graph_search(agent, names: set) -> None:
+    """Expose the crystal's code graph as a tool when one is bound.
+
+    The crystal already holds the awgraph index for its recall block; this lets the
+    model query that same index directly instead of grepping. Offered on code and
+    analysis intents only, so a chat turn's menu does not grow.
+    """
+    graph = getattr(getattr(agent, "crystal", None), "graph", None)
+    if graph is None or "code_graph_search" in names:
+        return
+
+    async def code_graph_search(query: str, k: int = 8) -> str:
+        """Search this machine's code graph for symbols matching a query.
+
+        query: What to find (a symbol, a concept, an error string).
+        k: Maximum number of hits (default 8, at most 20).
+        """
+        try:
+            limit = max(1, min(int(k), 20))
+        except (TypeError, ValueError):
+            limit = 8
+        try:
+            timeout = float(os.environ.get("ADK_CODE_GRAPH_TIMEOUT_S", "60"))
+        except ValueError:
+            timeout = 60.0
+        try:
+            hits = await asyncio.wait_for(graph.query(query, limit), timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 -- surfaced to the model, not raised
+            return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+        return json.dumps({"results": list(hits or [])[:limit],
+                           "count": len(hits or [])}, default=str)
+
+    try:
+        agent._tools.register(
+            code_graph_search, name="code_graph_search",
+            description=("Search this machine's code graph (symbols, files, lines) for a "
+                         "query; faster and more exact than grepping."),
+            intent_categories=["code", "analysis"])
+    except Exception as exc:  # noqa: BLE001 -- recall still uses the graph
+        logger.warning("code_graph_search not registered on %s: %s",
+                       getattr(agent, "name", "?"), exc)
+
+
+def _turn_planes(agent) -> dict:
+    """License tier, auto-neuron state and crystal binding of one agent."""
+    lic = getattr(agent, "_license", None)
+    tier = getattr(getattr(lic, "license", None), "tier", None)
+    crystal = getattr(agent, "crystal", None)
+    planes: dict = {}
+    if crystal is not None:
+        planes = dict((getattr(crystal, "telemetry", None) or {}).get("planes") or {})
+    return {
+        "license_tier": str(getattr(tier, "value", tier) or "unknown"),
+        "auto_neurons": getattr(agent, "_auto_neurons", None) is not None,
+        "crystal_bound": crystal is not None,
+        "crystal_scope": getattr(crystal, "scope", None) if crystal is not None else None,
+        "crystal_planes": planes,
+    }
+
+
+def _crystal_health(agent) -> dict:
+    """The ``crystal`` block of /health: binding, telemetry and the last recall."""
+    crystal = getattr(agent, "crystal", None) if agent is not None else None
+    if crystal is None:
+        return {"bound": False}
+    try:
+        return json.loads(json.dumps({
+            "bound": True,
+            "scope": getattr(crystal, "scope", None),
+            "telemetry": getattr(crystal, "telemetry", None) or {},
+            "last_recall": getattr(crystal, "last_recall", None) or {},
+        }, default=str))
+    except Exception as exc:  # noqa: BLE001 -- /health must always answer
+        return {"bound": True, "error": str(exc)[:200]}
+
+
+async def _warm_crystal(agent) -> bool:
+    """Hydrate the agent's code graph once, off the request path.
+
+    Prefers the crystal's own ``warm()``; without one, a throwaway graph recall
+    opens the same index. Returns True when a warm call completed.
+    """
+    crystal = getattr(agent, "crystal", None)
+    if crystal is None or getattr(crystal, "graph", None) is None:
+        return False
+    def _warm_in_thread() -> None:
+        # awgraph's index load and embedding hydrate are SYNCHRONOUS inside its async
+        # open (measured 35-55 s). Awaited on the server's loop they froze /health and
+        # every turn for that long right after boot, so the warm runs on a worker
+        # thread with a loop of its own.
+        warm = getattr(crystal, "warm", None)
+        res = warm() if callable(warm) else crystal.recall_graph("warm")
+        if asyncio.iscoroutine(res):
+            asyncio.run(res)
+
+    try:
+        await asyncio.to_thread(_warm_in_thread)
+        logger.info("code graph warm for %s", getattr(agent, "name", "?"))
+        return True
+    except Exception as exc:  # noqa: BLE001 -- recall reports the graph degraded later
+        logger.warning("code graph warm failed for %s: %s", getattr(agent, "name", "?"), exc)
+        return False
+
+
+#: Longest single steering item stream_react is given; the rest is cut with a marker.
+_STEER_MAX_CHARS = 4000
+
+
+def _cap_steer(text: str) -> str:
+    """One steering item, bounded to ``_STEER_MAX_CHARS`` (head kept, cut marked)."""
+    if len(text) <= _STEER_MAX_CHARS:
+        return text
+    return text[:_STEER_MAX_CHARS] + f" [... {len(text) - _STEER_MAX_CHARS} chars cut]"
+
+
+def _control_frame(ev: dict) -> str:
+    """One SSE frame for a supervision, steering or degraded event of the turn."""
+    ev_type = str(ev.get("type") or "")
+    if ev_type == "supervision":
+        data = {"type": "supervision", "action": ev.get("action"),
+                "score": ev.get("score"), "reason": str(ev.get("reason") or "")[:300]}
+    elif ev_type == "steering":
+        data = {"type": "steering", "text": str(ev.get("text") or "")[:500]}
+    else:
+        stage = str(ev.get("stage") or "?")
+        why = str(ev.get("reason") or ev.get("error") or "")[:200]
+        return ("event: pipeline\ndata: "
+                + json.dumps({"type": "pipeline", "stage": "degraded",
+                              "message": f"degraded: {stage}" + (f" ({why})" if why else "")})
+                + "\n\n")
+    return f"event: {ev_type}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+class _TurnRouting:
+    """One streamed turn's routing verdict: the decision, its effort and step budget."""
+
+    __slots__ = ("decision", "effort", "max_steps")
+
+    def __init__(self, decision: Any, effort: "int | None", max_steps: int) -> None:
+        self.decision = decision
+        self.effort = effort
+        self.max_steps = max_steps
+
+
+async def _classify_turn(agent, message: str, session_id: str):
+    """``agent.classify_intent`` within ``ADK_INTENT_TIMEOUT_S``; None when it cannot."""
     try:
         timeout = float(os.environ.get("ADK_INTENT_TIMEOUT_S", "6"))
     except ValueError:
         timeout = 6.0
     try:
         hist = await agent.memory.get_history(session_id, limit=6)
-        decision = await asyncio.wait_for(agent.classify_intent(message, history=hist),
-                                          timeout=timeout)
+        return await asyncio.wait_for(agent.classify_intent(message, history=hist),
+                                      timeout=timeout)
     except Exception as exc:  # noqa: BLE001 -- routing is advisory; the turn still runs
-        logger.debug("effort classification skipped: %s", exc)
-        return 6
+        logger.info("effort classification skipped: %s", exc)
+        return None
+
+
+async def _turn_routing(agent, message: str, session_id: str, on_event,
+                        *, reasoning: bool = False) -> _TurnRouting:
+    """Classify once and hand the whole verdict to ``stream_react``.
+
+    Until 2026-10-12 only ``effort`` survived the classifier, mapped onto a private
+    6/10/14 table that matched nothing else in adk, and the client's ``reasoning``
+    flag was read and dropped. Now the decision itself rides into the loop, the
+    budget comes from the same ``_max_tool_loops`` ceiling ``chat()`` uses, and
+    ``reasoning: true`` lifts the effort to at least 8.
+    """
+    from adk.agent import _max_tool_loops
+
+    decision = await _classify_turn(agent, message, session_id)
+    effort: "int | None" = None
+    if decision is not None:
+        try:
+            effort = int(getattr(decision, "effort", 5) or 5)
+        except (TypeError, ValueError):
+            effort = 5
+    if reasoning:
+        effort = max(effort or 0, 8)
+    steps = _max_tool_loops(effort) if effort is not None else _FAIL_OPEN_STEPS
+    try:
+        on_event({"type": "effort", "effort": effort, "max_steps": steps,
+                  "intent": str(getattr(decision, "intent", "") or ""),
+                  "agentic": bool(getattr(decision, "agentic", False)),
+                  "reasoning": bool(reasoning)})
+    except Exception as exc:  # noqa: BLE001 -- trace only
+        logger.debug("effort event dropped: %s", exc)
+    return _TurnRouting(decision, effort, steps)
+
+
+async def _effort_step_budget(agent, message: str, session_id: str, on_event) -> int:
+    """The ReAct step budget alone, on the original 6/10/14 scale.
+
+    Kept for callers written against the int-returning API; the daemon's stream
+    path uses ``_turn_routing``, which also returns the decision and effort. Same
+    classifier call, same fail-open to 6.
+    """
+    decision = await _classify_turn(agent, message, session_id)
+    if decision is None:
+        return _FAIL_OPEN_STEPS
     effort = int(getattr(decision, "effort", 5) or 5)
     steps = 6 if effort <= 5 else (10 if effort <= 7 else 14)
     try:
@@ -7235,7 +7598,7 @@ def _tool_result_ok(result) -> bool:
 async def _aitheros_stream(
     get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool,
     mcp_endpoints: list | None = None, gen_params: dict | None = None,
-    system_additions: list | None = None,
+    system_additions: list | None = None, is_local: bool = False,
 ):
     """SSE generator emitting AitherOS-typed events.
 
@@ -7253,19 +7616,25 @@ async def _aitheros_stream(
     """
     start = time.time()
     try:
-        agent = await get_agent_fn(agent_name)
+        # Only a local client's flag is passed on, so a get_agent written against the
+        # one-argument form keeps working for every other caller.
+        agent = await (get_agent_fn(agent_name, is_local=True) if is_local
+                       else get_agent_fn(agent_name))
 
         # Layer-3 supervised reasoning (gated): a parallel watcher escalates a
         # stuck tool loop by calling the agent's deep_reasoning tool ON ITS
         # BEHALF and injecting the conclusion via the steering queue — a fast
         # router does not self-diagnose being stuck (measured: deep_reasoning
         # registered AND advertised on 12/12 instances, called 0 times).
-        # Conservative here: escalate on repeated tool failures only
-        # (drift_steps=999). AITHER_ADK_SUPERVISOR=0 disables. The daemon has no
-        # ReasoningSession of its own, so the supervisor steers through
-        # queue_steering_message — the same channel POST /chat/steer uses.
+        # fail_threshold=3 so it acts after ask_reasoner's own 2-failure consult
+        # instead of duplicating it; drift_steps is set from the turn's step budget
+        # once routing lands (it was 999, so drift never fired). AITHER_ADK_SUPERVISOR=0
+        # disables. The daemon has no ReasoningSession of its own, so the supervisor
+        # steers through queue_steering_message — the same channel POST /chat/steer
+        # uses, and the one stream_react now drains (see _drain_steering below).
         _sup_task: Optional[asyncio.Task] = None
         _sup_sess = None
+        _sup = None
         if os.environ.get("AITHER_ADK_SUPERVISOR", "1") not in ("0", "false", "False"):
             try:
                 from adk.reasoning_session import ReasoningSession as _RS
@@ -7286,13 +7655,16 @@ async def _aitheros_stream(
                     _sup_reasoner = _forced_reasoner
                 _sup = _Sup(_sup_sess, _SupGoal(message, session_id),
                             reasoning_tool_name="deep_reasoning",
-                            fail_threshold=2, drift_steps=999, emit_events=True,
+                            fail_threshold=3, drift_steps=_FAIL_OPEN_STEPS - 2,
+                            emit_events=True,
                             reasoner=_sup_reasoner,
                             steer_fn=lambda m: _qsm(session_id, "hint", m))
                 _sup_task = asyncio.ensure_future(_sup.run(tick_s=0.5))
-            except Exception:  # noqa: BLE001 — supervisor is best-effort
+            except Exception as _sup_exc:  # noqa: BLE001 — supervisor is best-effort
+                logger.warning("stream supervisor not started: %s", _sup_exc)
                 _sup_task = None
                 _sup_sess = None
+                _sup = None
 
         # Attach the customer's self-hosted MCP "hands" relayed by the platform in
         # the /stream body (brain/body/HANDS). Best-effort; never blocks the turn.
@@ -7300,8 +7672,8 @@ async def _aitheros_stream(
             try:
                 from adk.mcp_endpoint_tools import register_mcp_endpoint_tools
                 register_mcp_endpoint_tools(agent, mcp_endpoints)
-            except Exception:
-                pass
+            except Exception as _mcp_exc:  # noqa: BLE001 — the turn runs without them
+                logger.warning("relayed MCP endpoints not attached: %s", _mcp_exc)
         # The MODEL, not the backend profile: "desktop" told every client the routing
         # name while the turn actually ran on the configured lane (aither-orchestrator).
         model_name = (getattr(agent.llm, "model", None)
@@ -7332,6 +7704,8 @@ async def _aitheros_stream(
             # yields a heartbeat so the client can show liveness during a slow
             # tool or a long model stall. The steering queue is registered around
             # the task exactly as before (clients may inject mid-turn).
+            from adk.steering import drain_steering_hints, drain_steering_inputs
+
             _q: asyncio.Queue = asyncio.Queue()
             _done = object()
             tool_calls_for_kg = []
@@ -7340,23 +7714,78 @@ async def _aitheros_stream(
                 """Relay one stream_react event to the SSE loop below, live."""
                 if ev.get("type") == "tool":
                     tool_calls_for_kg.append(ev.get("name", "?"))
+                # The supervisor counts a failure only on ok=False or an error key,
+                # and stream_react's tool_result carried neither, so failures stayed
+                # 0 whatever the tools returned. Judge the payload here when the loop
+                # did not.
+                if ev.get("type") == "tool_result" and "ok" not in ev:
+                    try:
+                        ev["ok"] = _tool_result_ok(ev.get("result", ""))
+                    except Exception as _ok_exc:  # noqa: BLE001 — trace only
+                        logger.debug("tool_result ok not derived: %s", _ok_exc)
                 if _sup_sess is not None:
                     try:
                         _sup_sess.emit(ev)   # the supervisor observes this stream
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as _emit_exc:  # noqa: BLE001
+                        logger.debug("supervisor emit dropped: %s", _emit_exc)
                 _q.put_nowait(ev)
+
+            # The supervisor's own events went to its session only, so a client never
+            # saw an escalation happen. Relay them onto the same SSE queue.
+            if _sup_sess is not None:
+                _sup_emit = _sup_sess.emit
+
+                def _sup_emit_and_relay(ev: dict) -> None:
+                    _sup_emit(ev)
+                    if isinstance(ev, dict) and ev.get("type") == "supervision":
+                        _q.put_nowait(ev)
+                _sup_sess.emit = _sup_emit_and_relay
+
+            def _drain_steering() -> list:
+                """POST /chat/steer and supervisor hints, for stream_react's next step.
+
+                Until 2026-10-12 /chat/steer returned ok on the stream path and the
+                message was never read: hints were drained by chat() only and no
+                steering callable was passed here.
+                """
+                try:
+                    out = [f"[STEERING HINT] {h}" for h in drain_steering_hints(session_id)]
+                    out += list(drain_steering_inputs(session_id))
+                    # Each item stays in the prompt for every later step, so one
+                    # pasted steer or a long reasoner conclusion must not flood it.
+                    return [_cap_steer(str(m)) for m in out]
+                except Exception as _st_exc:  # noqa: BLE001 — steering is advisory
+                    logger.warning("steering drain failed: %s", _st_exc)
+                    return []
+
+            # Classification starts now, alongside the steering registration, instead
+            # of inline as an argument expression.
+            _routing_task = asyncio.ensure_future(
+                _turn_routing(agent, message, session_id, _on_stream_event,
+                              reasoning=bool(reasoning)))
 
             async def _run_turn():
                 try:
                     await register_steering_queue(session_id)
+                    try:
+                        _routing = await _routing_task
+                    except Exception as _rt_exc:  # noqa: BLE001 — routing is advisory
+                        logger.warning("turn routing failed: %s", _rt_exc)
+                        _on_stream_event({"type": "degraded", "stage": "routing",
+                                          "reason": f"{type(_rt_exc).__name__}"})
+                        _routing = _TurnRouting(None, 8 if reasoning else None,
+                                                _FAIL_OPEN_STEPS)
+                    if _sup is not None:
+                        _sup.drift_steps = max(2, _routing.max_steps - 2)
                     return await agent.stream_react(
                         message,
                         on_event=_on_stream_event,
                         session_id=session_id,
                         system_additions=system_additions,
-                        max_steps=await _effort_step_budget(agent, message, session_id,
-                                                            _on_stream_event),
+                        max_steps=_routing.max_steps,
+                        steering=_drain_steering,
+                        decision=_routing.decision,
+                        effort=_routing.effort,
                     )
                 finally:
                     unregister_steering_queue(session_id)
@@ -7432,10 +7861,17 @@ async def _aitheros_stream(
                 elif ev_type == "tool_result":
                     tool_name = ev.get("name", "?")
                     result = ev.get("result", "")
-                    yield f"event: tool_result\ndata: {json.dumps({'type': 'tool_result', 'results': [{'tool': tool_name, 'success': True, 'output': str(result)[:500]}]})}\n\n"
+                    # success follows the payload now (it was a hardcoded True).
+                    _tr = {'type': 'tool_result',
+                           'results': [{'tool': tool_name,
+                                        'success': ev.get("ok") is not False,
+                                        'output': str(result)[:500]}]}
+                    yield f"event: tool_result\ndata: {json.dumps(_tr)}\n\n"
                 elif ev_type == "knowledge_graph":
                     # Emit KG event directly (gap B fix)
                     yield f"event: knowledge_graph\ndata: {json.dumps({'type': 'knowledge_graph', 'nodes': ev.get('nodes', []), 'edges': ev.get('edges', [])})}\n\n"
+                elif ev_type in ("supervision", "steering", "degraded"):
+                    yield _control_frame(ev)
                 elif ev_type == "error":
                     error_msg = ev.get("error", "Unknown error")
                     yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
@@ -7452,6 +7888,14 @@ async def _aitheros_stream(
                     await asyncio.wait_for(_sup_task, timeout=2.0)
                 except asyncio.TimeoutError:
                     _sup_task.cancel()
+                except Exception as _sv_exc:  # noqa: BLE001 — the answer still ships
+                    logger.warning("stream supervisor ended with %s", _sv_exc)
+            # The supervisor assesses on the turn's terminal events too, so its last
+            # verdict can land after the loop above saw the end-of-turn marker.
+            while not _q.empty():
+                _late = _q.get_nowait()
+                if isinstance(_late, dict) and _late.get("type") == "supervision":
+                    yield _control_frame(_late)
 
             # No silent empty answers: an empty completion must surface as a typed
             # error, not a blank answer that reads as "the model said nothing".

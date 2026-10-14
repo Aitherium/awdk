@@ -122,8 +122,12 @@ def test_core_set_is_small():
     core, "call remember_fact with the fact: ..." wrote a FILE named after the fact
     (measured live) — the invisible-capability defect this module already records
     for web_search. Two tiny schemas (~15% more core tokens) against that miss.
+
+    Pin raised 11 -> 14 on 2026-10-12 for repl_run, skill_search, load_pack_skill:
+    same defect (named in the prompt, no schema). Their token cost is pinned by
+    tests/test_tool_reach.py at <= 200.
     """
-    assert len(CORE_TOOL_NAMES) <= 11
+    assert len(CORE_TOOL_NAMES) <= 14
 
 
 def _agent_with(llm, reg) -> AitherAgent:

@@ -83,6 +83,10 @@ def _isolate_env(monkeypatch, tmp_path):
     # NOT the per-test Memory db) so prior runs don't pollute a "fresh" agent's
     # graph — otherwise a memory-question recalls its own past asks and self-grounds.
     monkeypatch.setenv("AITHER_DATA_DIR", str(tmp_path / ".aither"))
+    # create_app now binds a crystal for the agents it builds even with
+    # ADK_CRYSTAL_SCOPE unset; with no DB named, that opened (and could write) the
+    # developer's real ~/.aither/awm/memory.db from every create_app test.
+    monkeypatch.setenv("ADK_CRYSTAL_DB", str(tmp_path / ".aither" / "awm" / "memory.db"))
 
     # An auto-keyed MCPServer / /mcp-workstation mint persists its bearer to a
     # file under ~/.aither. Without this every run of the suite writes into the

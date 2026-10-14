@@ -1208,7 +1208,7 @@ def repowise_search(query: str, max_results: int = 10) -> str:
     return code_search(pattern=query, max_results=max_results)
 
 
-def _swarm_code_local(problem: str, mode: str = "forge", effort: int = 8) -> str:
+async def _swarm_code_local(problem: str, mode: str = "forge", effort: int = 8) -> str:
     """Local A2A-based multi-agent dispatch for sovereign swarm coding.
 
     Runs a bounded fan-out of subtasks to local agents instead of calling Genesis.
@@ -1225,42 +1225,24 @@ def _swarm_code_local(problem: str, mode: str = "forge", effort: int = 8) -> str
     import json as _json
 
     try:
-        import asyncio
         from adk.a2a_dispatch import bounded_recursive_dispatch
 
-        # Run the async dispatcher in a new event loop (if not already in one)
-        try:
-            loop = asyncio.get_running_loop()
-            # Already in an event loop; create a task
-            task = loop.create_task(
-                bounded_recursive_dispatch(
-                    problem,
-                    max_depth=2,  # Bounded depth
-                    max_breadth=3,  # Bounded fan-out
-                )
-            )
-            # For sync context, we can't await; return a placeholder
-            return _json.dumps({
-                "status": "working",
-                "message": "Local swarm dispatch submitted; results will be available async",
-            })
-        except RuntimeError:
-            # No event loop; create one
-            result = asyncio.run(
-                bounded_recursive_dispatch(
-                    problem,
-                    max_depth=2,  # Bounded depth
-                    max_breadth=3,  # Bounded fan-out
-                )
-            )
-            return _json.dumps({
-                "status": result.get("status", "unknown"),
-                "plan": result.get("plan", "")[:2000],
-                "code": "",  # Local dispatch doesn't generate code; that's follow-up work
-                "tests": "",
-                "artifacts": result.get("results", []),
-            })
-
+        # Awaited, not scheduled: the sync version ran inside the agent's event loop,
+        # so it could only create_task() and return {"status": "working"} -- the
+        # result landed nowhere and the model was told work was underway that no one
+        # would ever report.
+        result = await bounded_recursive_dispatch(
+            problem,
+            max_depth=2,  # Bounded depth
+            max_breadth=3,  # Bounded fan-out
+        )
+        return _json.dumps({
+            "status": result.get("status", "unknown"),
+            "plan": result.get("plan", "")[:2000],
+            "code": "",  # Local dispatch doesn't generate code; that's follow-up work
+            "tests": "",
+            "artifacts": result.get("results", []),
+        })
     except Exception as e:
         return _json.dumps({
             "status": "failed",
@@ -1268,7 +1250,33 @@ def _swarm_code_local(problem: str, mode: str = "forge", effort: int = 8) -> str
         })
 
 
-def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
+def _swarm_code_genesis(problem: str, mode: str, effort: int) -> str:
+    """The blocking Genesis call; run off the event loop by ``swarm_code``."""
+    import json as _json
+
+    genesis_url = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
+    try:
+        import httpx
+        resp = httpx.post(
+            f"{genesis_url}/swarm/code/sync",
+            json={"problem": problem, "mode": mode, "effort": effort},
+            timeout=600,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return _json.dumps({
+                "status": data.get("status", "unknown"),
+                "plan": data.get("architect_plan", "")[:2000],
+                "code": data.get("code", "")[:5000],
+                "tests": data.get("tests", "")[:2000],
+                "artifacts": data.get("artifacts", []),
+            })
+        return _json.dumps({"error": f"Genesis returned {resp.status_code}"})
+    except Exception as e:
+        return _json.dumps({"error": str(e)})
+
+
+async def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
     """Dispatch to AitherOS swarm coding engine for complex implementation tasks.
 
     The swarm runs 11 specialized agents in 4 phases:
@@ -1301,29 +1309,11 @@ def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
 
     # Sovereign (offline) mode: use local A2A dispatch
     if os.environ.get("AITHER_OFFLINE") == "1":
-        return _swarm_code_local(problem, mode, effort)
+        return await _swarm_code_local(problem, mode, effort)
 
-    # Cloud mode: call Genesis
-    genesis_url = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
-    try:
-        import httpx
-        resp = httpx.post(
-            f"{genesis_url}/swarm/code/sync",
-            json={"problem": problem, "mode": mode, "effort": effort},
-            timeout=600,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return _json.dumps({
-                "status": data.get("status", "unknown"),
-                "plan": data.get("architect_plan", "")[:2000],
-                "code": data.get("code", "")[:5000],
-                "tests": data.get("tests", "")[:2000],
-                "artifacts": data.get("artifacts", []),
-            })
-        return _json.dumps({"error": f"Genesis returned {resp.status_code}"})
-    except Exception as e:
-        return _json.dumps({"error": str(e)})
+    # Cloud mode: the call blocks up to 600 s, so it runs in a worker thread; inline
+    # it froze the daemon's event loop (every other session's stream) for that long.
+    return await asyncio.to_thread(_swarm_code_genesis, problem, mode, effort)
 
 
 def code_symbols(path: str, pattern: str = "") -> str:
@@ -1622,6 +1612,122 @@ def _graph_url() -> str:
     return os.getenv("AITHER_GENESIS_URL", "http://localhost:8001") + "/api/graph"
 
 
+# Local code graph. Measured on the daemon host: Genesis publishes no host port, so
+# the localhost:8001 default refuses every call and graph_code_search /
+# code_concept_search answered each code question with a connection error, while the
+# same repo's awgraph index sat on disk (the crystal reads it for its [CODE GRAPH]
+# block). The two code tools now prefer that index whenever AITHER_GENESIS_URL is not
+# set explicitly, and fall back to it when Genesis errors.
+#
+# Hydrating the index costs tens of seconds and hundreds of MB, so it is ONE object
+# per root per process. ``adk.crystal._GRAPH_CACHE`` (when the crystal keeps one) is
+# read and fed first, so the tool and the crystal block share one hydration.
+_LOCAL_GRAPHS: dict[str, Any] = {}
+
+
+def _local_graph_root() -> str:
+    return (os.getenv("ADK_CRYSTAL_GRAPH_ROOT") or "").strip()
+
+
+def _shared_graph_cache() -> dict:
+    try:
+        from adk import crystal as _crystal
+
+        cache = getattr(_crystal, "_GRAPH_CACHE", None)
+        if isinstance(cache, dict):
+            return cache
+    except Exception as exc:  # noqa: BLE001 -- no crystal module = our own cache
+        logger.debug("crystal graph cache unavailable: %s", exc)
+    return _LOCAL_GRAPHS
+
+
+def _local_code_graph() -> Any:
+    """The process-shared awgraph index for ADK_CRYSTAL_GRAPH_ROOT, or None."""
+    root = _local_graph_root()
+    if not root:
+        return None
+    key = os.path.abspath(root)
+    cache = _shared_graph_cache()
+    idx = cache.get(key) or _LOCAL_GRAPHS.get(key)
+    if idx is not None:
+        return idx
+    try:
+        from adk.crystal import AwgraphIndex
+
+        idx = AwgraphIndex(key)
+        if not idx.probe():
+            return None
+    except Exception as exc:  # noqa: BLE001 -- an unusable graph is "no local graph"
+        logger.debug("local code graph unavailable for %s: %s", key, exc)
+        return None
+    cache.setdefault(key, idx)
+    return cache[key]
+
+
+def _genesis_explicit() -> str:
+    return (os.getenv("AITHER_GENESIS_URL") or "").strip()
+
+
+def code_graph_reachable() -> bool:
+    """True when graph_code_search / code_concept_search have a backend to ask:
+    an explicit AITHER_GENESIS_URL, or a local awgraph index. No network I/O."""
+    if _genesis_explicit():
+        return True
+    idx = _local_code_graph()
+    # An index whose open already failed (no index on disk, awgraph broken) is no
+    # backend: counted as one, it registered both tools on every later agent build
+    # and each call returned the same error. The query path still reports why.
+    return idx is not None and getattr(idx, "_ok", None) is not False
+
+
+_GRAPH_OPEN_LOCK = threading.Lock()
+
+
+def _open_graph_blocking(idx: Any) -> None:
+    """Open (hydrate) ``idx`` on THIS worker thread, once per index.
+
+    awgraph's ``_open_graph`` is ``async def`` but its body is synchronous: a pickle
+    load of the chunk cache plus the embedding hydrate (measured 34.7 s on 387k
+    chunks). Awaited on the daemon's loop it froze every session's stream for that
+    long, so the first query opens the index here, in a private loop, and the lock
+    keeps two concurrent first queries from hydrating it twice.
+    """
+    with _GRAPH_OPEN_LOCK:
+        if getattr(idx, "_ok", None) is None:
+            asyncio.run(idx._open())
+
+
+async def _local_graph_hits(query: str, limit: int) -> dict | None:
+    """Hits from the local graph as ``{"count", "results", "source"}``, or None.
+
+    Paths come back ABSOLUTE: the index stores them relative to its root, and the
+    daemon's cwd is not that root, so a relative hit sent file_read to the wrong file.
+    """
+    idx = _local_code_graph()
+    if idx is None:
+        return None
+    try:
+        k = max(1, min(int(limit or 10), 50))
+    except (TypeError, ValueError):
+        k = 10
+    try:
+        if callable(getattr(idx, "_open", None)) and getattr(idx, "_ok", "") is None:
+            await asyncio.to_thread(_open_graph_blocking, idx)
+        hits = await idx.query(query, k)
+    except Exception as exc:  # noqa: BLE001 -- reported to the model, never raised
+        logger.warning("local code graph query failed: %s", exc)
+        return {"error": f"local code graph: {type(exc).__name__}: {exc}"}
+    root = str(getattr(idx, "root", "") or "")
+    out = []
+    for h in hits or []:
+        path = str(h.get("path", "") or "")
+        if root and path and not os.path.isabs(path):
+            path = os.path.join(root, path)
+        out.append({"name": h.get("name", ""), "path": path, "line": h.get("line", 0),
+                    "signature": h.get("signature", "")})
+    return {"count": len(out), "results": out, "source": "local-awgraph"}
+
+
 def _graph_request(
     method: str, path: str, params: dict | None = None,
     payload: dict | None = None, timeout: float = 30,
@@ -1656,27 +1762,27 @@ def graph_search(query: str, domain: str = "", limit: int = 10) -> str:
     return _graph_request("GET", "/search", params=params)
 
 
-def graph_code_search(query: str, limit: int = 10) -> str:
-    """Search CodeGraph for functions, classes, and symbols.
+async def graph_code_search(query: str, limit: int = 10) -> str:
+    """Search the code graph for functions, classes and symbols (path:line + signature).
 
     Args:
         query: Symbol name or search text.
         limit: Max results.
     """
-    return _graph_request("GET", "/code/search", params={"q": query, "limit": limit})
+    if not _genesis_explicit():
+        local = await _local_graph_hits(query, limit)
+        if local is not None:
+            return json.dumps(local)
+    out = await asyncio.to_thread(
+        _graph_request, "GET", "/code/search", {"q": query, "limit": limit})
+    if out.startswith('{"error"'):
+        local = await _local_graph_hits(query, limit)
+        if local is not None and "error" not in local:
+            return json.dumps(local)
+    return out
 
 
-def code_concept_search(query: str, limit: int = 5) -> str:
-    """Token-cheap code lookup: concept cards (signature + call graph) only.
-
-    ~30-40 tokens per result vs ~130 for full chunks — use this FIRST for
-    "what calls X?" / "where does X live?" questions; fall back to
-    graph_code_search when you actually need docstrings/bodies.
-
-    Args:
-        query: Symbol name or natural-language code question.
-        limit: Max results (keep small — cards are dense).
-    """
+def _concept_search_genesis(query: str, limit: int) -> str:
     import httpx
     base = os.getenv("AITHER_GENESIS_URL", "http://localhost:8001")
     url = f"{base}/codegraph/search"
@@ -1689,6 +1795,29 @@ def code_concept_search(query: str, limit: int = 5) -> str:
         return json.dumps({"count": data.get("count", 0), "results": data.get("results", [])})
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+async def code_concept_search(query: str, limit: int = 5) -> str:
+    """Token-cheap code lookup: concept cards (signature + location) only.
+
+    ~30-40 tokens per result vs ~130 for full chunks — use this FIRST for
+    "what calls X?" / "where does X live?" questions; fall back to
+    graph_code_search when you actually need docstrings/bodies.
+
+    Args:
+        query: Symbol name or natural-language code question.
+        limit: Max results (keep small — cards are dense).
+    """
+    if not _genesis_explicit():
+        local = await _local_graph_hits(query, limit)
+        if local is not None:
+            return json.dumps(local)
+    out = await asyncio.to_thread(_concept_search_genesis, query, limit)
+    if out.startswith('{"error"'):
+        local = await _local_graph_hits(query, limit)
+        if local is not None and "error" not in local:
+            return json.dumps(local)
+    return out
 
 
 def graph_kb_query(base_id: str, query: str, limit: int = 10) -> str:
@@ -1738,9 +1867,16 @@ _GRAPH_TOOLS = [
 
 
 def _init_graph_tools():
-    """Lazily populate the graph category."""
-    if not TOOL_CATEGORIES.get("graph"):
-        TOOL_CATEGORIES["graph"] = _GRAPH_TOOLS
+    """Populate the graph category; rebuilt per registration because it reads env.
+
+    The two code tools join only when they have a backend (an explicit Genesis URL
+    or a local awgraph index): a tool that can only ever return a connection error
+    costs schema tokens and a wasted step every time the model believes it.
+    """
+    tools = list(_GRAPH_TOOLS)
+    if not code_graph_reachable():
+        tools = [t for t in tools if t not in (graph_code_search, code_concept_search)]
+    TOOL_CATEGORIES["graph"] = tools
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2688,18 +2824,22 @@ def _repl_session():
 
 
 async def repl_run(code: str, timeout_ms: int = 30000) -> str:
-    """Run Python in a PERSISTENT session — variables survive between calls.
+    """Run Python; variables persist across calls.
 
     The namespace is scoped to THIS conversation (one worker per session id per
     daemon; up to 16 workers, least-recently-used evicted). Still do not put
     credentials in it: the code and any output pass through the model's context.
 
+    The summary line and each ``name:`` arg line are the tool's schema text, shipped
+    on every turn since repl_run joined the core menu, so they stay short;
+    timeout_ms is written ``timeout_ms=`` on purpose so it ships no description.
+
     Args:
-        code: Python source. The last expression's value is returned.
-        timeout_ms: Kill-and-respawn budget (awrepl enforces it parent-side,
-            about 2 s over; clamped here to 120 s). On timeout the worker
-            respawns with an EMPTY namespace — the result says so instead of
-            pretending continuity.
+        code: Python; the last expression's value is returned.
+        timeout_ms=30000 is the kill-and-respawn budget (awrepl enforces it
+            parent-side, about 2 s over; clamped here to 120 s). On timeout the
+            worker respawns with an EMPTY namespace — the result says so instead
+            of pretending continuity.
     """
 
     def _run() -> str:
@@ -2780,10 +2920,246 @@ async def repl_reset() -> str:
 _INSTRUMENTS_TOOLS = [recurse_file, predict_engines, predict_conforms, repl_run, repl_reset]
 
 
+#: Package each instrument imports per call. The imports are lazy, so a missing
+#: package used to register the tool anyway: the system prompt advertised repl_run
+#: and the call came back {"error": "awrepl not available"} -- a capability the
+#: model was told it had and did not.
+_INSTRUMENT_PACKAGES = {
+    "recurse_file": "awrecurse",
+    "predict_engines": "awpredict",
+    "predict_conforms": "awpredict",
+    "repl_run": "awrepl",
+    "repl_reset": "awrepl",
+}
+
+
+def _package_importable(name: str) -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError) as exc:  # a broken finder or a spec-less stub
+        logger.debug("find_spec(%s) failed: %s", name, exc)
+        return name in sys.modules
+
+
 def _init_instruments_tools():
-    """Lazily populate the instruments category."""
-    if not TOOL_CATEGORIES.get("instruments"):
-        TOOL_CATEGORIES["instruments"] = _INSTRUMENTS_TOOLS
+    """Populate the instruments category with the tools whose package imports.
+
+    Rebuilt on every registration (find_spec is a cheap path lookup, no import), so
+    a package installed or removed while the daemon runs is reflected on the next
+    agent build.
+    """
+    TOOL_CATEGORIES["instruments"] = [
+        fn for fn in _INSTRUMENTS_TOOLS
+        if _package_importable(_INSTRUMENT_PACKAGES.get(fn.__name__, fn.__name__))
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Skills — search and load what this box already knows how to do
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Two formats share the same directories: SkillStore writes learned skills as
+# <slug>.json under ~/.aither/skills, and packs / the skill library ship
+# <name>/SKILL.md (or <name>.md) under the same dirs plus AITHER_SKILL_DIRS. Until
+# these tools a turn could do neither: no skill tool existed in adk or in the gateway
+# catalogue, so a skill the box had learned or installed was invisible to the model.
+
+_SKILL_BODY_CAP = 3000  # Genesis's per-skill cap: enough for steps, not a whole manual
+_SKILL_SCAN_CAP = 2000  # files per call; a runaway skill dir must not stall a turn
+
+
+def _skill_index() -> list[dict]:
+    """Every skill on disk as ``{name, description, path, kind, text}``; first wins."""
+    from adk.pack_activation import _describe, _skill_search_dirs
+
+    seen: set[str] = set()
+    out: list[dict] = []
+
+    def _add(entry: dict) -> None:
+        key = entry["name"].strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(entry)
+
+    scanned = 0
+    for d in _skill_search_dirs():
+        if not d.is_dir() or scanned >= _SKILL_SCAN_CAP:
+            continue
+        for jp in sorted(d.glob("*.json"))[:_SKILL_SCAN_CAP - scanned]:
+            scanned += 1
+            try:
+                data = json.loads(jp.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                logger.debug("skill file %s unreadable: %s", jp, exc)
+                continue
+            if not isinstance(data, dict) or not data.get("name"):
+                continue
+            steps = [str(x) for x in (data.get("steps") or [])]
+            extra = [str(x) for x in (data.get("tools_used") or []) + (data.get("tags") or [])]
+            desc = str(data.get("description") or "")
+            _add({"name": str(data["name"]), "description": desc[:240], "path": str(jp),
+                  "kind": "json", "text": " ".join([desc, *steps, *extra])})
+        md = sorted(d.glob("*/SKILL.md")) + sorted(d.glob("*.md"))
+        for mp in md[:max(0, _SKILL_SCAN_CAP - scanned)]:
+            scanned += 1
+            fallback = mp.parent.name if mp.name == "SKILL.md" else mp.stem
+            name, desc = _describe(mp, fallback)
+            _add({"name": name, "description": desc, "path": str(mp), "kind": "md",
+                  "text": desc})
+    return out
+
+
+def _skill_tokens(text: str) -> list[str]:
+    return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(t) > 2]
+
+
+def _skill_search_sync(query: str, k: int) -> str:
+    toks = _skill_tokens(query)
+    if not toks:
+        return json.dumps({"error": "query is empty"})
+    scored: list[tuple[int, dict]] = []
+    for e in _skill_index():
+        name = e["name"].lower()
+        blob = f"{name} {e['description']} {e['text']}".lower()
+        score = sum(2 if t in name else 1 for t in toks if t in blob)
+        if score:
+            scored.append((score, e))
+    scored.sort(key=lambda p: p[0], reverse=True)
+    hits = [{"name": e["name"], "description": e["description"], "kind": e["kind"]}
+            for _, e in scored[:k]]
+    return json.dumps({"count": len(hits), "results": hits,
+                       "next": "skill_load(name) returns a skill's full instructions"})
+
+
+async def skill_search(query: str) -> str:
+    """Search saved how-to skills for a task."""
+    # One argument on purpose: this schema ships on every turn (core menu), and a
+    # top-5 list is all a turn needs before skill_load.
+    try:
+        return await asyncio.to_thread(_skill_search_sync, query, 5)
+    except Exception as e:  # noqa: BLE001 -- surfaced to the agent
+        logger.warning("skill_search failed: %s", e)
+        return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+
+def _skill_slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+
+
+def _skill_load_sync(name: str) -> str:
+    want = (name or "").strip().lower()
+    if not want:
+        return json.dumps({"error": "name is empty"})
+    index = _skill_index()
+    entry = next((e for e in index if e["name"].lower() == want), None) or next(
+        (e for e in index if _skill_slug(e["name"]) == _skill_slug(want)), None)
+    if entry is None:
+        return json.dumps({"error": f"no skill named {name!r}",
+                           "hint": "skill_search(query) lists the skill names"})
+    path = Path(entry["path"])
+    if entry["kind"] == "json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        steps = "\n".join(f"{i}. {st}" for i, st in enumerate(data.get("steps") or [], 1))
+        tools = ", ".join(map(str, data.get("tools_used") or []))
+        body = f"# {entry['name']}\n{data.get('description', '')}\n\n{steps}"
+        if tools:
+            body += f"\n\nTools used: {tools}"
+    else:
+        body = path.read_text(encoding="utf-8", errors="replace")
+    if len(body) > _SKILL_BODY_CAP:
+        body = (body[:_SKILL_BODY_CAP]
+                + f"\n[truncated: {len(body) - _SKILL_BODY_CAP} more chars in {path}]")
+    return body
+
+
+async def skill_load(name: str) -> str:
+    """Load one skill's full instructions by name (from skill_search).
+
+    name: the skill name
+    """
+    try:
+        return await asyncio.to_thread(_skill_load_sync, name)
+    except Exception as e:  # noqa: BLE001 -- surfaced to the agent
+        logger.warning("skill_load(%s) failed: %s", name, e)
+        return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+
+_SKILL_TOOLS = [skill_search, skill_load]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# A2A — hand a message to a peer agent over the signed A2A protocol
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _a2a_sender_name() -> str:
+    """The identity this process signs as: the served agent, never a model argument.
+
+    A sender name taken from the call would let the model sign with any local
+    agent's key, so it is read from the running server's state instead.
+    """
+    srv = sys.modules.get("adk.server")
+    state = getattr(srv, "_state", None)
+    if isinstance(state, dict) and state.get("identity"):
+        return str(state["identity"])
+    return "adk-client"
+
+
+def _a2a_reply(agent_name: str, res: dict) -> str:
+    texts: list[str] = []
+    msg = res.get("message") or {}
+    for part in (msg.get("parts") or []) if isinstance(msg, dict) else []:
+        if isinstance(part, dict) and part.get("text"):
+            texts.append(str(part["text"]))
+    task = res.get("task") if isinstance(res.get("task"), dict) else {}
+    status = task.get("status") if isinstance(task.get("status"), dict) else {}
+    out = {
+        "agent": agent_name,
+        "reply": "\n".join(texts)[:4000],
+        "task_id": task.get("id", ""),
+        "state": status.get("state", ""),
+    }
+    # A failed peer task carries its reason only in status.message; without it the
+    # model saw state=failed and an empty reply, and retried blind.
+    if status.get("message") and status.get("state") != "completed":
+        out["detail"] = str(status["message"])[:1000]
+    return json.dumps(out)
+
+
+async def a2a_send(agent_name: str, text: str, timeout: int = 120) -> str:
+    """Send a message to another agent over A2A and return its reply.
+
+    agent_name: the peer agent's name
+    """
+    sender = _a2a_sender_name()
+    if (agent_name or "").strip().lower() == sender.strip().lower():
+        # A turn that messages itself re-enters its own /a2a handler, which can call
+        # a2a_send again: an unbounded chain the outer timeout does not cancel.
+        return json.dumps({"error": f"a2a_send cannot message itself ({sender})"})
+    try:
+        from adk.a2a_client import send_message
+    except Exception as e:  # noqa: BLE001 -- surfaced to the agent
+        return json.dumps({"error": f"a2a client unavailable: {e}"})
+    try:
+        budget = max(5, min(int(timeout or 120), 600))
+    except (TypeError, ValueError):
+        budget = 120
+    try:
+        res = await send_message(agent_name, text, this_agent_name=sender,
+                                 timeout=budget)
+    except Exception as e:  # noqa: BLE001 -- surfaced to the agent
+        logger.warning("a2a_send to %s failed: %s", agent_name, e)
+        return json.dumps({"error": f"{type(e).__name__}: {e}"})
+    # A trust refusal (AITHER_A2A_REQUIRE_TRUST on the peer) comes back verbatim: it
+    # is the correct fail-closed answer and the model must see why, not a summary.
+    if not isinstance(res, dict) or "error" in res:
+        return json.dumps(res, default=str)[:4000]
+    return _a2a_reply(agent_name, res)
+
+
+_A2A_TOOLS = [a2a_send]
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -3443,6 +3819,8 @@ TOOL_CATEGORIES: dict = {
     "browse": [],  # populated lazily by _init_browse_tools()
     "find": [],  # populated lazily by _init_find_tools()
     "instruments": [],  # populated lazily by _init_instruments_tools()
+    "skills": _SKILL_TOOLS,
+    "a2a": _A2A_TOOLS,
 }
 
 # Default categories for common identity profiles
@@ -3483,7 +3861,10 @@ def categories_from_env(value: str) -> list[str] | None:
 IDENTITY_DEFAULTS = {
     "adk-daemon": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
-        "workspace", "notebooks", "models", "safety", "self", "decisions", "instruments"
+        "workspace", "notebooks", "models", "safety", "self", "decisions", "instruments",
+        # browse/find were initialised and installed but in no identity's list, so the
+        # awsh agent never had them; skills/a2a are the skill library and peer reach.
+        "browse", "find", "skills", "a2a",
     ],
     "demiurge": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
@@ -3498,7 +3879,7 @@ IDENTITY_DEFAULTS = {
         "self", "decisions"
     ],
     "aither": ["file_io", "shell", "web", "creative", "models", "self", "decisions",
-               "instruments"],
+               "instruments", "browse", "find", "skills", "a2a"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self", "decisions"],
     "hydra": [
         "file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety",

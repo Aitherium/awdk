@@ -19,8 +19,14 @@ _HAS_AWREPL = importlib.util.find_spec("awrepl") is not None
 
 
 def test_category_registers_the_five_tools():
+    # The category holds the tools whose package imports here (a missing brick's
+    # tool is not offered); test_tool_reach.py proves the removal itself.
     _init_instruments_tools()
-    assert TOOL_CATEGORIES["instruments"] == _INSTRUMENTS_TOOLS
+    have = {"recurse_file": _HAS_AWRECURSE, "predict_engines": _HAS_AWPREDICT,
+            "predict_conforms": _HAS_AWPREDICT, "repl_run": _HAS_AWREPL,
+            "repl_reset": _HAS_AWREPL}
+    assert TOOL_CATEGORIES["instruments"] == [
+        fn for fn in _INSTRUMENTS_TOOLS if have[fn.__name__]]
     names = {fn.__name__ for fn in _INSTRUMENTS_TOOLS}
     assert names == {"recurse_file", "predict_engines", "predict_conforms",
                      "repl_run", "repl_reset"}

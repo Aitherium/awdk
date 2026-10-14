@@ -277,6 +277,13 @@ def pinned_tool_call_ids(messages: list,
     return pins
 
 
+def _is_text_observation(message: Any) -> bool:
+    """A text-protocol tool result: a user message whose content starts OBSERVATION."""
+    content = (message.get("content", "") if isinstance(message, dict)
+               else getattr(message, "content", ""))
+    return isinstance(content, str) and content.lstrip().startswith("OBSERVATION")
+
+
 def _is_already_snipped(content: str) -> bool:
     return bool(_SNIP_MARKER.search(content))
 
@@ -299,9 +306,15 @@ def snip_old_tool_results(
 
     Mutates ``messages`` in place. Returns the number of characters reclaimed.
 
-    Only the ``content`` of ``tool``-role messages is touched — role,
+    Only the ``content`` of tool results is touched — role,
     ``tool_call_id`` and message ORDER are all preserved, so the
     assistant-tool_calls → tool-results pairing invariant cannot be broken here.
+
+    A tool result is a ``tool``-role message, OR a ``user`` message that starts with
+    ``OBSERVATION``: the text ReAct loop (``AitherAgent.stream_react``) cannot use the
+    tool role and hands results back that way, so before this its results were never
+    snipped and a 14-step turn on an 8k window had nothing for Layer 1 to reclaim.
+    Such a result has no call id, so it is never pinned and uses ``max_chars``.
     """
     cutoff = max(0, len(messages) - preserve_last_n)
     reclaimed = 0
@@ -312,7 +325,7 @@ def snip_old_tool_results(
     for index in range(cutoff):
         message = messages[index]
         role = message.get("role") if isinstance(message, dict) else getattr(message, "role", "")
-        if role != "tool":
+        if role != "tool" and not (role == "user" and _is_text_observation(message)):
             continue
 
         call_id = (

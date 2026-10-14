@@ -1545,25 +1545,56 @@ class LLMRouter:
         repetition_penalty: float | None = None,
         **kwargs,
     ):
-        """Stream a chat response with degeneration detection."""
+        """Stream a chat response with degeneration detection.
+
+        Provider selection follows ``chat()``: effort >= 9 -> the grid cluster, effort
+        >= 7 -> the hybrid reasoning provider, else the primary. Before this, an effort-9
+        streaming turn ran on the same model as "hi" and ``set_reasoning_backend`` did
+        nothing on the streaming path. A tier that fails BEFORE its first chunk falls
+        through to the next one; after a chunk has gone out the error is raised, because
+        a second provider would restart the answer mid-sentence.
+        """
         provider = await self.get_provider()
         if effort is not None:
             effort = int(effort)
         if model is None and effort is not None:
             model = self.model_for_effort(effort)
+
+        tiers: list[tuple[str, LLMProvider, str | None]] = []
+        cluster_prov = getattr(self, "_cluster_provider", None)
+        if effort is not None and effort >= 9 and cluster_prov is not None:
+            tiers.append(("cluster", cluster_prov,
+                          getattr(self, "_cluster_model", None) or model))
+        reasoning_prov = getattr(self, "_reasoning_provider", None)
+        if effort is not None and effort >= 7 and reasoning_prov is not None:
+            tiers.append((self._reasoning_provider_name or "reasoning", reasoning_prov,
+                          getattr(self, "_reasoning_model", None) or model))
+        tiers.append((self._provider_name, provider, model))
+
         detector = DegenerationDetector()
-        async for chunk in provider.chat_stream(
-            messages, model=model, tool_choice=tool_choice,
-            top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
-        ):
-            if chunk.content and detector.feed(chunk.content):
-                # Degeneration detected — signal done with special finish_reason
-                yield StreamChunk(
-                    content="", done=True, model=chunk.model,
-                    finish_reason="degeneration",
-                )
+        for i, (tier_name, tier_prov, tier_model) in enumerate(tiers):
+            last = i == len(tiers) - 1
+            started = False
+            try:
+                async for chunk in tier_prov.chat_stream(
+                    messages, model=tier_model, tool_choice=tool_choice,
+                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                ):
+                    started = True
+                    if chunk.content and detector.feed(chunk.content):
+                        # Degeneration detected — signal done with special finish_reason
+                        yield StreamChunk(
+                            content="", done=True, model=chunk.model,
+                            finish_reason="degeneration",
+                        )
+                        return
+                    yield chunk
                 return
-            yield chunk
+            except Exception as e:
+                if started or last:
+                    raise
+                logger.warning("%s stream backend failed before its first chunk, "
+                               "falling back: %s", tier_name, e)
 
     async def list_models(self) -> list[str]:
         provider = await self.get_provider()

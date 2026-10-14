@@ -1,11 +1,13 @@
 """Tests for adk/builtin_tools.py — 21 built-in tool functions."""
 
-import sys
+import asyncio
 import importlib.util
 import json
-import pytest
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -778,7 +780,7 @@ class TestSwarmCode:
         }
         mock_post.return_value = mock_resp
 
-        result = bt.swarm_code("Build a REST API endpoint")
+        result = asyncio.run(bt.swarm_code("Build a REST API endpoint"))
         data = json.loads(result)
         assert data["status"] == "completed"
         assert "Design API" in data["plan"]
@@ -792,7 +794,7 @@ class TestSwarmCode:
         mock_resp.json.return_value = {"status": "ok"}
         mock_post.return_value = mock_resp
 
-        bt.swarm_code("task", mode="plan_only", effort=5)
+        asyncio.run(bt.swarm_code("task", mode="plan_only", effort=5))
         call_json = mock_post.call_args[1]["json"]
         assert call_json["problem"] == "task"
         assert call_json["mode"] == "plan_only"
@@ -804,7 +806,7 @@ class TestSwarmCode:
         mock_resp.status_code = 503
         mock_post.return_value = mock_resp
 
-        result = bt.swarm_code("task")
+        result = asyncio.run(bt.swarm_code("task"))
         data = json.loads(result)
         assert "error" in data
         assert "503" in data["error"]
@@ -813,7 +815,7 @@ class TestSwarmCode:
     def test_swarm_code_connection_error(self, mock_post):
         mock_post.side_effect = Exception("Connection refused")
 
-        result = bt.swarm_code("task")
+        result = asyncio.run(bt.swarm_code("task"))
         data = json.loads(result)
         assert "error" in data
         assert "Connection refused" in data["error"]
@@ -823,7 +825,7 @@ class TestSwarmCode:
         import httpx
         mock_post.side_effect = httpx.TimeoutException("timed out")
 
-        result = bt.swarm_code("task")
+        result = asyncio.run(bt.swarm_code("task"))
         data = json.loads(result)
         assert "error" in data
 
@@ -834,7 +836,7 @@ class TestSwarmCode:
         mock_resp.json.return_value = {"status": "ok"}
 
         with patch("httpx.post", return_value=mock_resp) as mock_post:
-            bt.swarm_code("task")
+            asyncio.run(bt.swarm_code("task"))
             url = mock_post.call_args[0][0]
             assert url.startswith("http://custom:9001")
 

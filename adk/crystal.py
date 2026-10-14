@@ -33,15 +33,17 @@ so in ``telemetry["degraded"]`` -- the file is never migrated from here.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import math
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Iterable, Optional, Protocol
 
 logger = logging.getLogger("adk.crystal")
 
@@ -58,6 +60,21 @@ SCAN_LIMIT = 200
 #: Vectors are stored rounded: 768 floats (nomic; 1024 in the aither-code-embed space)
 #: at 4 decimals is ~5 KB (~7 KB) per fact.
 VEC_DECIMALS = 4
+#: Recall score floors. A fact scoring at or below these shares nothing with the request:
+#: before the floor, rows scoring 0.0 still filled the block (only landed memory was
+#: filtered), so an unrelated fact spent the turn's budget. Keyword overlap is a
+#: normalized token-set ratio; cosine is over the bound embedder's vectors.
+MIN_KEYWORD_SCORE = 0.05
+MIN_COSINE_SCORE = 0.3
+#: How long one turn waits for the code graph. A cold awgraph open hydrates the whole
+#: index (measured 37.3 s for a probe and ~55 s before the first token of a real turn on
+#: a 493k-chunk index); past this the turn goes on without graph hits, marked degraded,
+#: and the open keeps running in the background for the next turn.
+GRAPH_WAIT_S = 3.0
+#: Env var naming EXTRA scopes recall reads (comma-separated). Read from the process
+#: environment only -- the daemon's own config -- never from a request: a scope taken
+#: from a payload would let one caller read another tenant's memory.
+READ_SCOPES_ENV = "ADK_CRYSTAL_READ_SCOPES"
 
 _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 #: ``<dotted.slot>: value`` / ``<dotted.slot> = value``. Two or more segments, letters
@@ -129,10 +146,19 @@ class AwmFactStore:
         path = Path(db) if db else Path.home() / ".aither" / "awm" / "memory.db"
         path.parent.mkdir(parents=True, exist_ok=True)
         # auto_migrate=False: an older file stays readable by its older readers.
+        # check_same_thread=False lets the per-turn scans run in a worker thread
+        # (``offload_reads``); every use of the handle is serialized by ``_lock``.
+        self._lock = threading.RLock()
+        #: True when scan/scan_landed may run off the event loop (Crystal reads this).
+        self.offload_reads = False
         try:
-            self._store = MemoryStore(path, auto_migrate=False)
-        except TypeError:  # an awm that predates the flag
-            self._store = MemoryStore(path)
+            self._store = MemoryStore(path, auto_migrate=False, check_same_thread=False)
+            self.offload_reads = True
+        except TypeError:  # an awm that predates one of the flags
+            try:
+                self._store = MemoryStore(path, auto_migrate=False)
+            except TypeError:
+                self._store = MemoryStore(path)
         self.path = path
         self._complete = complete
         #: Feature detection, not a version compare: the method must exist AND work on
@@ -167,7 +193,8 @@ class AwmFactStore:
         return LLMReconciler(self._complete) if self._complete else SlotReconciler()
 
     def put(self, key: str, value: str, meta: dict) -> None:
-        self._store.remember(self._scope, key, value, kind="crystal", meta=meta)
+        with self._lock:
+            self._store.remember(self._scope, key, value, kind="crystal", meta=meta)
 
     def put_fact(self, fact: str, meta: dict) -> tuple[str, Optional[str]]:
         """Write one fact. Returns ``(route, degraded_reason)``.
@@ -176,6 +203,10 @@ class AwmFactStore:
         run (old file, a malformed model reply) falls back to a legacy write so the fact
         is never lost, and the reason is returned for telemetry.
         """
+        with self._lock:
+            return self._put_fact(fact, meta)
+
+    def _put_fact(self, fact: str, meta: dict) -> tuple[str, Optional[str]]:
         derived = derive_subject(fact)
         reason: Optional[str] = None
         self._recheck_reconcile()
@@ -230,23 +261,53 @@ class AwmFactStore:
                 n += 1
         return n
 
-    def scan(self, limit: int) -> list[tuple[str, str, dict]]:
-        """Legacy crystal rows (``f:<hash>``) plus reconciled slot facts, as ``slot: value``.
+    def _read_scopes(self) -> list:
+        """The write scope first, then each configured read scope (``read_scopes``,
+        set by ``build_crystal`` from the daemon environment), deduplicated."""
+        out, seen = [self._scope], {str(self._scope)}
+        for sc in getattr(self, "read_scopes", None) or ():
+            if str(sc) not in seen:
+                seen.add(str(sc))
+                out.append(sc)
+        return out
 
-        Both kinds are merged NEWEST first and only then cut to ``limit``: legacy rows
-        first and a cut would hide every slot fact once a scope holds ``limit`` legacy
-        ones -- including the fact written this turn.
+    def scan(self, limit: int) -> list[tuple[str, str, dict]]:
+        """Legacy crystal rows (``f:<hash>``) plus ``kind=fact`` rows as ``key: value``,
+        from the write scope AND every read scope (each with its ancestors).
+
+        Per scope, both kinds are merged NEWEST first and only then cut to ``limit``:
+        legacy rows first and a cut would hide every slot fact once a scope holds
+        ``limit`` legacy ones -- including the fact written this turn. Each scope gets
+        its own ``limit`` so a large read scope never crowds out this task's own facts.
+
+        ``kind=fact`` rows are read whether or not this file can RECONCILE (reading needs
+        no migration) and whether or not they carry a subject: measured 2026-10-11, the
+        platform facts visible to the daemon were all subject-less, so all were dropped.
         """
-        rows = [(m.updated, (m.key, m.value, dict(m.meta or {})))
-                for m in self._store.recall(self._scope, limit=limit, kind="crystal")]
+        with self._lock:
+            return self._scan(limit)
+
+    def _scan(self, limit: int) -> list[tuple[str, str, dict]]:
+        merged: list[tuple[str, str, dict]] = []
+        seen: set[tuple[str, str]] = set()
+        for sc in self._read_scopes():
+            rows = [(m.updated, m.scope, (m.key, m.value, dict(m.meta or {})))
+                    for m in self._store.recall(sc, limit=limit, kind="crystal")]
+            for m in self._store.recall(sc, limit=limit, kind="fact"):
+                # A landed memory file with no `type` is kind=fact too; it belongs
+                # to scan_landed / the [MEMORY] section, never whole in the facts.
+                if (m.meta or {}).get("source") == "memory-file":
+                    continue
+                rows.append((m.updated, m.scope, (m.key, f"{m.key}: {m.value}",
+                                                  dict(m.meta or {}))))
+            rows.sort(key=lambda t: -t[0])
+            for _u, row_scope, row in rows[:limit]:
+                if (row_scope, row[0]) in seen:  # an ancestor two read scopes share
+                    continue
+                seen.add((row_scope, row[0]))
+                merged.append(row)
         self._recheck_reconcile()
-        if self.can_reconcile:
-            for m in self._store.recall(self._scope, limit=limit, kind="fact"):
-                meta = dict(m.meta or {})
-                if meta.get("subject"):
-                    rows.append((m.updated, (m.key, f"{m.key}: {m.value}", meta)))
-        rows.sort(key=lambda t: -t[0])
-        return [r for _u, r in rows[:limit]]
+        return merged
 
     def scan_landed(self, limit: int) -> list[tuple[str, str, dict]]:
         """Memory files landed by ``awm land`` at this scope or an ancestor
@@ -258,9 +319,25 @@ class AwmFactStore:
         turn's context -- ordinary output, or text an attacker got into it, crowding
         out the owner's rules. The landed rows alone are cut to ``limit``, nearest
         scope first; a cut that drops any is logged.
+
+        Read scopes (``read_scopes``) are unioned after the write scope: an owner's
+        project memory lands at the owner's scope, a SIBLING of the agent's, which the
+        write scope alone can never see (measured 2026-10-11: 0 landed rows visible).
         """
-        rows = [m for m in self._store.recall(self._scope, limit=10_000_000)
-                if (m.meta or {}).get("source") == "memory-file"]
+        with self._lock:
+            return self._scan_landed(limit)
+
+    def _scan_landed(self, limit: int) -> list[tuple[str, str, dict]]:
+        rows: list = []
+        seen: set[tuple[str, str]] = set()
+        for sc in self._read_scopes():
+            for m in self._store.recall(sc, limit=10_000_000):
+                if (m.meta or {}).get("source") != "memory-file":
+                    continue
+                if (m.scope, m.key) in seen:
+                    continue
+                seen.add((m.scope, m.key))
+                rows.append(m)
         if len(rows) > limit:
             logger.warning("[CRYSTAL] %d landed memory rows visible from %s; only the "
                            "nearest %d are scanned", len(rows), self._scope, limit)
@@ -268,7 +345,8 @@ class AwmFactStore:
 
     def close(self) -> None:
         try:
-            self._store.close()
+            with self._lock:
+                self._store.close()
         except Exception:  # noqa: BLE001
             pass
 
@@ -306,7 +384,29 @@ class AwgraphIndex:
             self.reason, self._ok = why, False
         return found
 
+    @property
+    def is_warm(self) -> bool:
+        """True once the index is hydrated and usable."""
+        return self._ok is True
+
     async def _open(self) -> bool:
+        """Hydrate once per process, however many callers ask at the same time.
+
+        Every concurrent caller awaits ONE shielded open task: two turns arriving while
+        the index is cold used to start two 37 s hydrations of the same index, and a
+        caller that stops waiting (the recall timeout) must not cancel the open the
+        next turn will use.
+        """
+        if self._ok is not None:
+            return self._ok
+        loop = asyncio.get_running_loop()
+        task = getattr(self, "_opening", None)
+        if task is None or task.get_loop() is not loop or task.done():
+            task = loop.create_task(self._hydrate())
+            self._opening = task
+        return await asyncio.shield(task)
+
+    async def _hydrate(self) -> bool:
         if self._ok is not None:
             return self._ok
         try:
@@ -317,7 +417,12 @@ class AwgraphIndex:
             self._ok = False
             return False
         try:
-            self._graph, self._ok = await _open_graph(self.root, build=False)
+            # _open_graph is async in name only: the chunk-cache load and the
+            # embedding hydrate are synchronous (~37 s). On the loop they froze every
+            # turn and GRAPH_WAIT_S could never fire, so it runs in a worker thread.
+            root = self.root
+            self._graph, self._ok = await asyncio.to_thread(
+                lambda: asyncio.run(_open_graph(root, build=False)))
             if not self._ok:
                 self.reason = f"no-index for {self.root} (run `awgraph index`)"
         except Exception as exc:  # noqa: BLE001 -- reported through telemetry
@@ -535,6 +640,10 @@ class Crystal:
         "recalled_memory": 0, "graph_hits": 0, "degraded": [], "planes": {},
         "reconciled": {"add": 0, "update": 0, "ignore": 0}, "legacy_writes": 0,
     })
+    # What the LAST recall_block put in front of the model, for the turn trace:
+    # {"facts": int, "memory": int, "graph_hits": int, "chars": int}. {} until the
+    # first recall. Telemetry counters are cumulative and cannot say what ONE turn saw.
+    last_recall: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # planes = bound AND not known to be unavailable. A bound graph whose awgraph
@@ -567,6 +676,14 @@ class Crystal:
             return False
         bind(complete)
         return True
+
+    async def _read(self, fn: Callable[..., Any], *args: Any) -> Any:
+        """Run a store read off the event loop when the store says it may: a turn's
+        scans cover every read scope (sqlite + a JSON parse of every row's vector,
+        measured 283 ms on 1,400 rows) and on the loop they stalled every other turn."""
+        if getattr(self.store, "offload_reads", False) is True:
+            return await asyncio.to_thread(fn, *args)
+        return fn(*args)
 
     async def _vectors(self, texts: list[str]) -> list[Optional[list[float]]]:
         if self.embed is None or not texts:
@@ -619,12 +736,16 @@ class Crystal:
         logger.info("[CRYSTAL] crystallized %d/%d facts into %s", n, len(facts), self.scope)
         return n
 
-    async def recall_facts(self, message: str, *, limit: int = 20) -> list[str]:
+    async def recall_facts(self, message: str, *, limit: int = 20,
+                           stats: Optional[dict] = None) -> list[str]:
+        """The facts nearest ``message``, best first. Rows at or below the score floor
+        (``MIN_COSINE_SCORE`` / ``MIN_KEYWORD_SCORE``) share nothing with the request
+        and are dropped; ``stats["dropped"]``, when a dict is passed, counts them."""
         if self.store is None:
             self._degrade("awm:unbound")
             return []
         try:
-            rows = self.store.scan(SCAN_LIMIT)
+            rows = await self._read(self.store.scan, SCAN_LIMIT)
         except Exception as exc:  # noqa: BLE001
             self._degrade(f"awm:{type(exc).__name__}")
             return []
@@ -632,18 +753,27 @@ class Crystal:
             return []
         qvec = (await self._vectors([message]))[0] if self.embed is not None else None
         scored: list[tuple[float, float, str]] = []
+        dropped = 0
         for _key, value, meta in rows:
             vec = meta.get("vec") if isinstance(meta, dict) else None
             # A vector from another embedder (a different dimension) cannot be
             # compared; keyword overlap still can, so fall back to it.
             if qvec is not None and vec and len(vec) == len(qvec):
-                s = cosine(qvec, vec)
+                s, floor = cosine(qvec, vec), MIN_COSINE_SCORE
             else:
-                s = keyword_score(message, value)
-            ts = float(meta.get("ts", 0.0)) if isinstance(meta, dict) else 0.0
+                s, floor = keyword_score(message, value), MIN_KEYWORD_SCORE
+            if s <= floor:
+                dropped += 1
+                continue
+            try:
+                ts = float(meta.get("ts", 0.0)) if isinstance(meta, dict) else 0.0
+            except (TypeError, ValueError):
+                ts = 0.0  # a foreign row's ts is not ours to trust
             scored.append((s, ts, value))
         # Best match first; a tie goes to the most recently established fact.
         scored.sort(key=lambda t: (-t[0], -t[1]))
+        if stats is not None:
+            stats["dropped"] = stats.get("dropped", 0) + dropped
         return [v for _s, _ts, v in scored[:limit]]
 
     async def recall_landed(self, message: str, *, limit: int = 6) -> list[str]:
@@ -653,7 +783,7 @@ class Crystal:
         if scan is None:
             return []
         try:
-            rows = scan(SCAN_LIMIT)
+            rows = await self._read(scan, SCAN_LIMIT)
         except Exception as exc:  # noqa: BLE001
             self._degrade(f"awm-landed:{type(exc).__name__}")
             return []
@@ -663,10 +793,35 @@ class Crystal:
         return [f"{k}: {v.splitlines()[0][:240]}" for _s, k, v in scored[:limit]]
 
     async def recall_graph(self, message: str) -> list[dict]:
+        """Code-graph hits for ``message`` with ABSOLUTE paths, or [] (degraded).
+
+        Bounded by ``GRAPH_WAIT_S``: the query runs as a shielded task, so a cold index
+        that is still hydrating returns [] with ``awgraph:degraded:cold`` and keeps
+        hydrating for the next turn instead of blocking this one for ~40-55 s.
+        """
         if self.graph is None:
             return []
+        cold = getattr(self.graph, "is_warm", True) is False
         try:
-            return await self.graph.query(message, self.max_graph_hits)
+            task = asyncio.ensure_future(self.graph.query(message, self.max_graph_hits))
+            task.add_done_callback(_reap_background)
+            try:
+                hits = await asyncio.wait_for(asyncio.shield(task), GRAPH_WAIT_S)
+            except asyncio.TimeoutError:
+                self._degrade("awgraph:degraded:cold" if cold else "awgraph:timeout")
+                self._graph_degraded = "cold" if cold else "timeout"
+                return []
+            root = getattr(self.graph, "root", "") or ""
+            out: list[dict] = []
+            for h in hits or []:
+                h = dict(h)
+                path = str(h.get("path") or "")
+                # Relative paths were relative to the GRAPH root, not the agent's cwd:
+                # the model opened them from its own cwd and missed (measured 10-11).
+                if path and root and not os.path.isabs(path):
+                    h["path"] = os.path.normpath(os.path.join(root, path))
+                out.append(h)
+            return out
         except AwgraphUnavailable as exc:
             # The specific reason: "not installed" and "no index here" have different
             # fixes, and CodeWorld reports the same brick the same way.
@@ -677,69 +832,225 @@ class Crystal:
             self._degrade(f"awgraph:{type(exc).__name__}")
             return []
 
-    async def recall_block(self, message: str) -> str:
-        """The system block for a turn: facts + graph hits under ``max_chars``. "" = nothing."""
+    async def recall_block(self, message: str, exclude: "tuple | list" = (),
+                           max_chars: "int | None" = None) -> str:
+        """The system block for a turn: facts + graph hits under ``max_chars``. "" = nothing.
+
+        ``exclude``: texts the caller already shows the model (history, another block);
+        a recalled fact whose normalized text equals one of their lines, or appears inside
+        one of them, is a duplicate and skipped. ``max_chars``: this call's cap,
+        overriding ``self.max_chars`` when given (None = the instance cap). Up to half
+        the cap is reserved for code-graph hits: measured 2026-10-11, a full fact block
+        left no room for the [CODE GRAPH] lines, which are the ones that save file reads.
+        Fails open: a plane that raises is reported in ``telemetry["degraded"]`` and
+        contributes nothing.
+        """
+        # The cap is a parameter, not a temporary self.max_chars swap: two concurrent
+        # turns on one crystal would otherwise read each other's cap.
+        cap = int(max_chars) if max_chars is not None and max_chars > 0 else self.max_chars
+        return await self._recall_block(message, cap, exclude)
+
+    async def _recall_block(self, message: str, cap: int,
+                            exclude: "Iterable[str]" = ()) -> str:
         self.telemetry["recalls"] += 1
-        facts = await self.recall_facts(message)
+        self._graph_degraded = ""
+        stats: dict = {"dropped": 0}
+        seen_lines, seen_blob = _exclusion_index(exclude)
+        facts = await self.recall_facts(message, stats=stats)
         hits = await self.recall_graph(message)
+        graph_lines: list[str] = []
+        for h in hits:
+            sig = (h.get("signature") or h.get("name") or "").strip()
+            graph_lines.append(f"- {h.get('path', '')}:{h.get('line', 0)} {sig}"[:200])
+        graph_head = ("[CODE GRAPH] Symbols the code graph matched for this request. Open "
+                      "these before any broad file read.")
+        # Reserve what the graph section will actually use, up to half the cap: no graph
+        # hits means the facts may use the whole block.
+        reserve = 0
+        if graph_lines:
+            reserve = min(cap // 2, len(graph_head) + 1
+                          + sum(len(ln) + 1 for ln in graph_lines))
+        text_cap = cap - reserve
         parts: list[str] = []
         used = 0
         kept_facts = 0
-        if facts:
+        fact_lines: list[str] = []
+        for f in facts:
+            if _is_excluded(f, seen_lines, seen_blob):
+                stats["dropped"] += 1
+                continue
+            fact_lines.append(f"- {f}")
+        if fact_lines:
             head = ("[CRYSTAL] Facts this agent already established for this task, recalled "
                     "from memory. Build on them; re-verify only what a tool result contradicts.")
             parts.append(head)
             used += len(head)
-            for f in facts:
-                line = f"- {f}"
-                if used + len(line) + 1 > self.max_chars:
-                    break
+            for line in fact_lines:
+                if used + len(line) + 1 > text_cap:
+                    continue  # one oversized fact must not starve the shorter rest
                 parts.append(line)
                 used += len(line) + 1
                 kept_facts += 1
+            stats["dropped"] += len(fact_lines) - kept_facts
+            if kept_facts == 0:
+                parts.pop()
+                used = 0
         kept_mem = 0
-        landed = await self.recall_landed(message)
+        landed = [m for m in await self.recall_landed(message)
+                  if not _is_excluded(m, seen_lines, seen_blob)]
         if landed:
             head = ("[MEMORY] Owner and project memory that matches this request. Treat "
                     "owner rules as standing instructions.")
-            if used + len(head) + 1 <= self.max_chars:
+            if used + len(head) + 1 <= text_cap:
                 parts.append(head)
                 used += len(head) + 1
                 for m in landed:
                     line = f"- {m}"
-                    if used + len(line) + 1 > self.max_chars:
+                    if used + len(line) + 1 > text_cap:
                         break
                     parts.append(line)
                     used += len(line) + 1
                     kept_mem += 1
+                if kept_mem == 0:
+                    parts.pop()
+                    used -= len(head) + 1
         kept_hits = 0
-        if hits:
-            head = ("[CODE GRAPH] Symbols the code graph matched for this request. Open these "
-                    "before any broad file read.")
-            if used + len(head) + 1 <= self.max_chars:
-                parts.append(head)
-                used += len(head) + 1
-                for h in hits:
-                    sig = (h.get("signature") or h.get("name") or "").strip()
-                    line = f"- {h.get('path', '')}:{h.get('line', 0)} {sig}"[:200]
-                    if used + len(line) + 1 > self.max_chars:
-                        break
-                    parts.append(line)
-                    used += len(line) + 1
-                    kept_hits += 1
+        if graph_lines and used + len(graph_head) + 1 <= cap:
+            parts.append(graph_head)
+            used += len(graph_head) + 1
+            for line in graph_lines:
+                if used + len(line) + 1 > cap:
+                    break
+                parts.append(line)
+                used += len(line) + 1
+                kept_hits += 1
+            if kept_hits == 0:
+                parts.pop()
+                used -= len(graph_head) + 1
         self.telemetry["recalled_facts"] += kept_facts
         self.telemetry["graph_hits"] += kept_hits
         self.telemetry["recalled_memory"] += kept_mem
-        if kept_facts == 0 and kept_hits == 0 and kept_mem == 0:
+        any_kept = bool(kept_facts or kept_hits or kept_mem)
+        self.last_recall = {"facts": kept_facts, "memory": kept_mem, "graph_hits": kept_hits,
+                            "dropped": stats["dropped"],
+                            "degraded": list(self.telemetry.get("degraded", [])),
+                            "graph": self._graph_degraded or ("ok" if hits else "none"),
+                            "chars": used if any_kept else 0}
+        if not any_kept:
             return ""
         return "\n".join(parts)
 
 
+def _norm_line(text: str) -> str:
+    return re.sub(r"\s+", " ", _BULLET.sub("", text or "").strip().lower())
+
+
+def _exclusion_index(exclude: "Iterable[str]") -> tuple[set, str]:
+    """(normalized lines, normalized blob) of everything the caller already shows."""
+    lines: set = set()
+    blobs: list[str] = []
+    for text in exclude or ():
+        if not isinstance(text, str) or not text:
+            continue
+        for raw in text.splitlines():
+            n = _norm_line(raw)
+            if n:
+                lines.add(n)
+        blobs.append(re.sub(r"\s+", " ", text.lower()))
+    return lines, "\n".join(blobs)
+
+
+def _is_excluded(fact: str, lines: set, blob: str) -> bool:
+    n = _norm_line(fact)
+    if not n:
+        return False
+    # Substring only for fact-sized text: a 6-char line would match half the history.
+    return n in lines or (len(n) >= FACT_MIN_CHARS and n in blob)
+
+
+def _reap_background(task: "asyncio.Future") -> None:
+    """Retrieve a background graph task's outcome so a failure is logged, not lost."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None and not isinstance(exc, AwgraphUnavailable):
+        logger.warning("[CRYSTAL] background graph query failed: %s: %s",
+                       type(exc).__name__, exc)
+
+
+# ── one hydrated code graph per process ─────────────────────────────────────
+
+#: One ``AwgraphIndex`` per absolute root, shared by every crystal in the process:
+#: each agent name used to build its own and pay its own cold load (measured 37-55 s
+#: per agent on a 493k-chunk index).
+_GRAPH_CACHE: dict = {}
+
+
+def shared_graph(root: "str | None" = None) -> "Optional[AwgraphIndex]":
+    """The process-wide ``AwgraphIndex`` for ``root`` (default: the env
+    ``ADK_CRYSTAL_GRAPH_ROOT``), created on first use. None when no root is known.
+    This is the handle local graph tools use, so they share the crystal's hydration."""
+    root = root or os.environ.get("ADK_CRYSTAL_GRAPH_ROOT") or ""
+    if not root:
+        return None
+    key = os.path.normcase(os.path.abspath(root))
+    idx = _GRAPH_CACHE.get(key)
+    if idx is None:
+        idx = AwgraphIndex(root)
+        _GRAPH_CACHE[key] = idx
+    return idx
+
+
+def warm(root: "str | None" = None) -> int:
+    """Start hydrating the code graph in the background (call at server startup).
+
+    ``root`` = one root; None = every cached root plus ``ADK_CRYSTAL_GRAPH_ROOT``.
+    Returns how many opens were scheduled. Needs a running event loop; without one it
+    logs and returns 0 -- warming is an optimisation, never a startup failure.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.info("[CRYSTAL] warm(): no running event loop; graph opens on first use")
+        return 0
+    if root:
+        one = shared_graph(root)
+        targets = [one] if one is not None else []
+    else:
+        env_idx = shared_graph(None)
+        targets = list(_GRAPH_CACHE.values())
+        if env_idx is not None and env_idx not in targets:
+            targets.append(env_idx)
+    n = 0
+    for idx in targets:
+        try:
+            if idx._ok is not None or not idx.probe():
+                continue
+            loop.create_task(idx._open()).add_done_callback(_reap_background)
+            n += 1
+        except Exception as exc:  # noqa: BLE001 -- warming must never fail startup
+            logger.warning("[CRYSTAL] warm(%s) failed: %s", idx.root, exc)
+    return n
+
+
+def _env_read_scopes() -> list:
+    """``ADK_CRYSTAL_READ_SCOPES`` from the process environment, comma-separated."""
+    raw = os.environ.get(READ_SCOPES_ENV, "") or ""
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 def build_crystal(scope: str, *, db: Path | str | None = None, graph_root: str | None = None,
                   embed_url: str | None = None, embed: bool = True,
-                  complete: Optional[Callable[[str], str]] = None) -> Crystal:
+                  complete: Optional[Callable[[str], str]] = None,
+                  read_scopes: "Optional[Iterable[str]]" = None) -> Crystal:
     """The shipped composition: awm store + awgraph index + scheduler embedder, each
-    bound only if it can be, the rest reported as degraded on the returned crystal."""
+    bound only if it can be, the rest reported as degraded on the returned crystal.
+
+    ``read_scopes``: extra scopes recall reads (writes stay at ``scope``). None reads
+    ``ADK_CRYSTAL_READ_SCOPES`` from the process environment; callers must never pass
+    a value that came from a request. An unparseable scope is skipped and reported.
+    The graph index is the process-wide one for ``graph_root`` (``shared_graph``).
+    """
     store: Optional[FactStore] = None
     graph: Optional[GraphIndex] = None
     degraded: list[str] = []
@@ -747,8 +1058,22 @@ def build_crystal(scope: str, *, db: Path | str | None = None, graph_root: str |
         store = AwmFactStore(scope, db, complete=complete)
     except Exception as exc:  # noqa: BLE001
         degraded.append(f"awm:{type(exc).__name__}")
+    if store is not None:
+        wanted = list(read_scopes) if read_scopes is not None else _env_read_scopes()
+        parsed = []
+        for raw in wanted:
+            try:
+                from awm.scope import Scope  # type: ignore[import-not-found]
+
+                parsed.append(Scope.parse(str(raw).strip()))
+            except Exception as exc:  # noqa: BLE001 -- one bad entry never unbinds awm
+                degraded.append(f"awm-read-scope:{type(exc).__name__}")
+                logger.warning("[CRYSTAL] read scope %r refused: %s", raw, exc)
+        store.read_scopes = parsed  # type: ignore[attr-defined]
+        if parsed:
+            logger.info("[CRYSTAL] recall reads %s plus %d read scope(s)", scope, len(parsed))
     if graph_root:
-        graph = AwgraphIndex(graph_root)
+        graph = shared_graph(graph_root)
     embedder = make_scheduler_embedder(embed_url) if embed else None
     c = Crystal(scope=scope, store=store, graph=graph, embed=embedder)
     for d in degraded:

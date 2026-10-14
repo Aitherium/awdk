@@ -58,6 +58,17 @@ def _resolve_gateway_token() -> str:
     )
 
 
+#: Gateway tools that hand work to another agent or a swarm and wait for the result.
+#: Measured: with the 30 s client default a forge_subagent / ask_agent run longer than
+#: that failed with an HTTP timeout while the delegate kept working, and its answer
+#: was lost. These get LONG_TOOL_TIMEOUT unless the caller passes its own.
+LONG_TOOLS: frozenset[str] = frozenset({
+    "forge_subagent", "ask_agent", "relay_a2a_delegate", "delegate_to_agent",
+    "swarm_code", "swarm_code_async", "dispatch_swarm",
+})
+LONG_TOOL_TIMEOUT = 600.0
+
+
 class GatewayMCPClient:
     """Connects self-hosted agent to gateway MCP endpoint.
 
@@ -334,12 +345,15 @@ class GatewayMCPClient:
             logger.debug("gateway tool search failed: %s", exc)
             return None
 
-    async def call_tool(self, name: str, arguments: dict | None = None) -> dict:
+    async def call_tool(self, name: str, arguments: dict | None = None,
+                        timeout: float | None = None) -> dict:
         """Call a tool on the gateway.
 
         Args:
             name: Tool name
             arguments: Tool arguments dict
+            timeout: Seconds for this call; None = LONG_TOOL_TIMEOUT for a
+                LONG_TOOLS name, else the client's timeout.
 
         Returns:
             Result dict from MCP response (may contain error)
@@ -350,9 +364,12 @@ class GatewayMCPClient:
         if not await self._ensure_session():
             return {"error": "gateway_unreachable", "message": "MCP initialize failed"}
 
+        if timeout is None:
+            timeout = (max(LONG_TOOL_TIMEOUT, self._timeout) if name in LONG_TOOLS
+                       else self._timeout)
         try:
             async with httpx.AsyncClient(
-                timeout=self._timeout, headers=self._headers()
+                timeout=timeout, headers=self._headers()
             ) as client:
                 resp = await client.post(
                     f"{self.gateway_url}/mcp",

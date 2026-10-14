@@ -46,6 +46,11 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # the fact: ..." wrote a FILE named after the fact instead — the 8B reaches
     # for the capability it can see, and these two cost ~15% of the core's tokens.
     "remember_fact", "recall_facts",
+    # Reach, each offered only when registered. Outside the core the model saw these
+    # names in the system prompt with no argument schema, so it guessed the args or
+    # spent a step on load_tools. Measured by chars/4: the built-in core went from
+    # 748 to 944 tokens (+196); tests/test_tool_reach.py pins the increase at 200.
+    "repl_run", "skill_search", "load_pack_skill",
 })
 
 #: Intents that mean "the classifier could not tell". Only these get the core set;

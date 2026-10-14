@@ -23,6 +23,15 @@ class MemoryEntry:
     metadata: dict | None = None
 
 
+def _folds_into_previous(meta: str | None) -> bool:
+    if not meta or "fold" not in meta:
+        return False
+    try:
+        return (json.loads(meta) or {}).get("fold") == "previous"
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 class Memory:
     """Local SQLite-backed memory store for agents.
 
@@ -556,14 +565,25 @@ class Memory:
             )
 
     async def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
-        """Get conversation history for a session."""
+        """Get conversation history for a session.
+
+        A row written with ``metadata={"fold": "previous"}`` (the post-turn tool digest)
+        is appended to the row before it when both have the same role: stored as its
+        own row it reached the model as a second assistant turn in a row, which strict
+        chat templates refuse."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT role, content, timestamp FROM conversations "
+                "SELECT role, content, timestamp, metadata FROM conversations "
                 "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-        return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in reversed(rows)]
+        out: list[dict] = []
+        for role, content, ts, meta in reversed(rows):
+            if out and out[-1]["role"] == role and _folds_into_previous(meta):
+                out[-1]["content"] = f"{out[-1]['content']}\n\n{content}"
+                continue
+            out.append({"role": role, "content": content, "timestamp": ts})
+        return out
 
     async def clear_session(self, session_id: str):
         """Clear conversation history for a session."""

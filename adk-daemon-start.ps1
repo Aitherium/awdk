@@ -36,6 +36,11 @@ $env:AITHER_MCP_GATEWAY = "127.0.0.1:8182"
 $env:AITHER_PORT = $Port
 $env:AITHER_HOST = "127.0.0.1"
 $env:AITHER_JSON_LOGGING = "false"
+# Memory plane: bind the crystal (awm facts + code graph) for the daemon agent.
+# Without it every turn ran with no recall and nothing said so. An operator value
+# wins; set it to a single space to run without a crystal (PowerShell deletes a
+# variable assigned an empty string, which would bring this default back).
+if ($null -eq $env:ADK_CRYSTAL_SCOPE) { $env:ADK_CRYSTAL_SCOPE = "aitherium:{agent}:desktop" }
 
 # Optional: Cloud fallback (set before running if you want cloud tools)
 # $env:AITHER_API_KEY = "..."
@@ -59,6 +64,7 @@ $job = Start-Job -ScriptBlock {
     $env:AITHER_PORT = $port
     $env:AITHER_HOST = "127.0.0.1"
     $env:AITHER_JSON_LOGGING = "false"
+    if ($null -eq $env:ADK_CRYSTAL_SCOPE) { $env:ADK_CRYSTAL_SCOPE = "aitherium:{agent}:desktop" }
 
     python -m adk.server --port $port --backend auto --identity adk-daemon
 } -ArgumentList $Port
