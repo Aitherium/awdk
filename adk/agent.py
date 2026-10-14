@@ -144,6 +144,51 @@ def offers_lookup(text: str) -> bool:
     tail = (text or "").strip()[-300:]
     return bool(tail) and bool(_OFFERS_LOOKUP.search(tail))
 
+
+#: Measured 2026-10-14 on the live daemon: "anything exciting about tanium?" ->
+#: "I've taken a look into what's happening with Tanium ..." with ZERO tool calls --
+#: a claimed lookup is a fabricated one.
+_CLAIMS_LOOKUP = re.compile(
+    r"(?i)\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:taken a look|had a look|looked(?:\s+(?:into|"
+    r"up|at))?|checked|searched|dug into|pulled up|researched)|based on (?:my|the) "
+    r"(?:search|research|results|findings)|from what i (?:found|can find|dug up))\b"
+)
+_CLAIM_NUDGE_MSG = (
+    "You wrote that you looked something up, but you have not called any tool this turn, "
+    "so you have not. Call the tool now (web_search for anything on the public internet) "
+    "and answer from its result. If no lookup is needed, answer without claiming one."
+)
+
+
+def claims_lookup(text: str) -> bool:
+    """True when ``text`` says it searched/checked/looked something up."""
+    return bool(_CLAIMS_LOOKUP.search(text or ""))
+
+
+#: Gemma-family thinking markers. Measured 2026-10-14: aither-orchestrator (served by
+#: gemma4-12b) streamed "<|channel>thought <channel|>It looks like ..." and the markers
+#: reached the user. They are mapped onto the <think> tags every parser here knows.
+_CHANNEL_MARKERS = (("<|channel>thought", "<think>"), ("<|channel>", "<think>"),
+                    ("<channel|>", "</think>"))
+
+
+def normalize_channel_markers(text: str) -> tuple[str, str]:
+    """``(normalized, held)``: markers mapped to think tags; ``held`` is a trailing
+    fragment that may be the start of a marker split across stream chunks."""
+    text = text or ""
+    held = ""
+    for marker, _ in _CHANNEL_MARKERS:
+        for k in range(min(len(marker), len(text)), 0, -1):
+            frag = marker[:k]
+            if text.endswith(frag) and (k < len(marker) or marker == "<|channel>"):
+                if k > len(held):
+                    held = text[-k:]
+                break
+    body = text[:len(text) - len(held)] if held else text
+    for marker, repl in _CHANNEL_MARKERS:
+        body = body.replace(marker, repl)
+    return body, held
+
 #: Discovery meta-tools: their result is a MENU, never an answer. Measured 2026-10-11
 #: in awsh: "what is in the news today" -> search_tools("news") -> the 8B described
 #: the newsletter tools it found and stopped; "do it" -> search_tools("do it").
@@ -257,7 +302,10 @@ def scrub_orphan_think(text: str) -> str:
     ("</think>" then "The code graph indicates..."). Orphans-only; the paired
     form is stripped by the regex before this runs.
     """
-    return (text or "").replace("</think>", "").replace("<think>", "")
+    text = text or ""
+    for marker, _ in _CHANNEL_MARKERS:
+        text = text.replace(marker, "")
+    return text.replace("</think>", "").replace("<think>", "")
 
 
 def missing_required_args(tool_def, parsed) -> list:
@@ -3613,6 +3661,7 @@ class AitherAgent:
         _react_retry_nudges = 0  # see announces_retry
         _discovery_nudges = 0  # see discovery_nudge
         _offer_nudged = False  # see offers_lookup
+        _claim_nudged = False  # see claims_lookup
         _last_tool = ""
         _last_obs = ""
         _failed_in_a_row = 0  # tool_result_failed streak; 2 -> consult ask_reasoner
@@ -3708,9 +3757,13 @@ class AitherAgent:
                 buf = ""
                 phase = "scan"
                 _emitted = False
+                _held = ""
                 try:
                     async for chunk in self.llm.chat_stream(msgs):
                         delta = getattr(chunk, "content", "") or ""
+                        if not delta:
+                            continue
+                        delta, _held = normalize_channel_markers(_held + delta)
                         if not delta:
                             continue
                         _tokens_streamed += 1
@@ -3746,6 +3799,9 @@ class AitherAgent:
                             elif phase == "answer":
                                 if buf:
                                     await _emit({"type": "token", "text": buf}); buf = ""; _emitted = True
+                    if _held:  # a fragment that never became a marker is text
+                        full += _held
+                        buf += _held
                     _turn_err = None
                     break
                 except Exception as exc:
@@ -3799,6 +3855,16 @@ class AitherAgent:
                             "- nudging")
                 msgs.append(_assistant(full))
                 msgs.append(Message(role="user", content=_OFFER_NUDGE_MSG))
+                continue
+            # Claimed a lookup it never made (no tool ran this turn).
+            if (not _discovery_stall and not tools_made and not _claim_nudged
+                    and _step < max_steps - 1 and not _ACT.search(full)
+                    and claims_lookup(scrub_orphan_think(_THINK.sub("", full)))):
+                _claim_nudged = True
+                logger.info("[REACT-STREAM] Reply claimed a lookup with no tool call "
+                            "- nudging")
+                msgs.append(_assistant(full))
+                msgs.append(Message(role="user", content=_CLAIM_NUDGE_MSG))
                 continue
             if _discovery_stall:
                 _discovery_nudges += 1
@@ -3987,7 +4053,9 @@ class AitherAgent:
                     _obs_text += f"\n{str(_extra_hint)[:600]}"
                 _observations.append(_obs_text)
             msgs.append(_assistant(full))
-            msgs.append(Message(role="user", content=f"OBSERVATION: {_obs_text}"))
+            msgs.append(Message(role="user", content=(
+                f"OBSERVATION from YOUR {name} call (tool output; the user did not write "
+                f"or send this): {_obs_text}")))
         else:
             # Step budget spent while the model still wanted tools. "(reached step
             # limit)" with no answer left the owner with nothing; one more call with

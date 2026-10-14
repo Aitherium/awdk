@@ -185,3 +185,64 @@ def test_companion_identity_scopes_honesty_to_shared_history(monkeypatch):
     assert "You are Mira." in sp
     assert "LOOK UP with your tools" in sp
     assert "operating system" not in sp, "the persona may talk about the user's platform"
+
+
+def test_a_claimed_lookup_with_no_tool_call_is_sent_back_to_look():
+    seen: list = []
+    agent = _agent([
+        "I've taken a look into what's happening with Tanium: lots of AI momentum.",
+        'ACTION: web_search\nINPUT: {"query": "Tanium news"}',
+        "FINAL: Tanium shipped Autonomous IT.",
+    ], seen)
+    calls = {"web": 0}
+
+    @agent.tool
+    def web_search(query: str) -> str:
+        """web"""
+        calls["web"] += 1
+        return "Tanium ships Autonomous IT"
+
+    resp = asyncio.run(agent.stream_react("anything exciting about tanium?",
+                                          on_event=lambda e: None, max_steps=6))
+    assert calls["web"] == 1, "the claimed lookup was made for real"
+    assert resp.content == "Tanium shipped Autonomous IT."
+
+
+def test_a_tool_result_is_framed_as_the_agents_own_call():
+    seen: list = []
+    agent = _agent([
+        'ACTION: web_search\nINPUT: {"query": "news today"}',
+        "FINAL: Top story: X.",
+    ], seen)
+
+    @agent.tool
+    def web_search(query: str) -> str:
+        """web"""
+        return "X happened"
+
+    asyncio.run(agent.stream_react("what is in the news today",
+                                   on_event=lambda e: None, max_steps=4))
+    obs = [c for c in seen[1] if "X happened" in str(c)]
+    assert obs and "YOUR web_search call" in obs[-1]
+    assert "the user did not write" in obs[-1]
+
+
+def test_gemma_channel_markers_never_reach_the_answer():
+    from adk.agent import normalize_channel_markers
+
+    seen: list = []
+    events: list = []
+    it = iter(["<|chan", "nel>thought planning<chan", "nel|>FINAL: It is sunny."])
+
+    async def _stream(messages, *a, **k):
+        seen.append(1)
+        for part in it:
+            yield StreamChunk(content=part, done=False, model="t")
+
+    agent = _agent([], [])
+    agent.llm.chat_stream = _stream
+    resp = asyncio.run(agent.stream_react("weather?", on_event=events.append, max_steps=3))
+    streamed = "".join(e.get("text", "") for e in events if e.get("type") == "token")
+    assert resp.content == "It is sunny."
+    assert "channel" not in streamed and "channel" not in resp.content
+    assert normalize_channel_markers("a < b") == ("a < b", "")
