@@ -15,6 +15,9 @@ from adk._tls import ssl_context
 
 logger = logging.getLogger("adk.memory")
 
+#: How long a search waits for Spirit + fleet before answering from local SQLite alone.
+REMOTE_SEARCH_WAIT_S = 0.8
+
 
 @dataclass
 class MemoryEntry:
@@ -540,9 +543,18 @@ class Memory:
             # Fetch from Spirit + fleet in parallel
             spirit_task = self._spirit_recall(query, limit=remaining)
             fleet_task = self._fleet_search(query, limit=remaining)
-            spirit_results, fleet_results = await asyncio.gather(
-                spirit_task, fleet_task, return_exceptions=True,
-            )
+            # Remote stores answer within REMOTE_SEARCH_WAIT_S or not at all: each has a
+            # 5 s client timeout, and a turn's typed-memory stage has 1.5 s in total, so
+            # an unreachable Spirit took the LOCAL results down with it (2026-10-14).
+            try:
+                spirit_results, fleet_results = await asyncio.wait_for(
+                    asyncio.gather(spirit_task, fleet_task, return_exceptions=True),
+                    REMOTE_SEARCH_WAIT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.debug("memory search: remote stores slower than %.1fs; local only",
+                             REMOTE_SEARCH_WAIT_S)
+                spirit_results, fleet_results = [], []
 
             # Merge Spirit results
             if isinstance(spirit_results, list):

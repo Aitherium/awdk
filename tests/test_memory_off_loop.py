@@ -67,3 +67,31 @@ def test_wal_is_set_once_not_per_query(tmp_path, monkeypatch):
     asyncio.run(mem.add_message("s", "user", "a"))
     asyncio.run(mem.add_message("s", "user", "b"))
     assert not any("journal_mode" in q for q in seen)
+
+
+def test_search_answers_locally_when_remote_stores_are_slow(tmp_path, monkeypatch):
+    """Spirit/fleet each wait up to 5 s; typed memory's whole turn stage is 1.5 s, so an
+    unreachable Spirit cost the turn its LOCAL results too (2026-10-14)."""
+    mem = Memory(db_path=tmp_path / "m.db", agent_name="t")
+
+    async def slow(*a, **k):
+        await asyncio.sleep(10)
+        return []
+
+    async def nothing(*a, **k):
+        return None
+
+    monkeypatch.setattr(mem, "_spirit_recall", slow)
+    monkeypatch.setattr(mem, "_fleet_search", slow)
+    monkeypatch.setattr(mem, "_spirit_teach", nothing)
+    monkeypatch.setattr(mem, "_fleet_push", nothing)
+
+    async def main():
+        await mem.remember("awsh-slow", "orchestrator lane saturated")
+        t = time.perf_counter()
+        hits = await mem.search("awsh", limit=5)
+        return time.perf_counter() - t, hits
+
+    took, hits = asyncio.run(main())
+    assert [h.key for h in hits] == ["awsh-slow"]
+    assert took < memory_mod.REMOTE_SEARCH_WAIT_S + 1.0
