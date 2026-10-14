@@ -246,6 +246,13 @@ _ERROR_LINE = re.compile(
     r"(?i)\b(?:unknown tool|not found|no such|error|exception|traceback|failed|"
     r"timed? ?out|refused|unauthori[sz]ed|forbidden|denied)\b")
 
+#: A line that is a piece of structured output, not a statement: a JSON key/value
+#: ("uptime_seconds": 15536.5,), a lone bracket, or a compaction marker. Measured
+#: 2026-10-14: call_tool results were crystallized line by line -- timestamps, uptimes,
+#: web-search titles and urls wrapped in call_tool's JSON -- and recalled as "facts".
+_FRAGMENT_LINE = re.compile(
+    r'^(?:"[^"]{1,80}"\s*:|[\[\]{}(),]+$|\[compacted\b|\.\.\. \(\d+ similar)')
+
 
 def _observation_facts(pairs: list[tuple[str, str]]) -> str:
     """Bulleted fact lines from successful, non-prose tool observations only."""
@@ -262,7 +269,7 @@ def _observation_facts(pairs: list[tuple[str, str]]) -> str:
             continue
         for raw in obs.splitlines():
             line = " ".join(raw.split())
-            if _ERROR_LINE.search(line):
+            if _ERROR_LINE.search(line) or _FRAGMENT_LINE.match(line):
                 continue
             clean = _redact(line)
             if clean != line:  # a credential shape: the whole line stays out

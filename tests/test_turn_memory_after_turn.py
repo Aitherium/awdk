@@ -365,3 +365,19 @@ def test_web_results_are_not_crystallized():
     written = "\n".join(agent.crystal.summaries)
     assert "Ravens" not in written
     assert "41 GB free" in written
+
+
+def test_json_fragments_and_compaction_markers_are_not_facts():
+    # call_tool results were stored one JSON line at a time (2026-10-14).
+    facts = turn_memory._observation_facts([(
+        "call_tool",
+        '[compacted by the decision door: kept 244 of 1016 lines]\n'
+        '"uptime_seconds": 15536.558002233505\n'
+        '"title": "Tanium adds endpoint behavior detection and AI threat hunting",\n'
+        "... (12 similar lines dropped)\n"
+        "{\n"
+        "the orchestrator lane served 41 requests in the last hour on node seven",
+    )])
+    assert "uptime_seconds" not in facts and "Tanium" not in facts
+    assert "compacted" not in facts and "similar lines" not in facts
+    assert "node seven" in facts
