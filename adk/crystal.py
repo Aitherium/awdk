@@ -387,6 +387,7 @@ class AwgraphIndex:
         self._ok: bool | None = None
         #: Why the graph is unavailable ("" while unknown or available).
         self.reason = ""
+        self._query_lock = threading.Lock()
 
     def probe(self) -> bool:
         """Cheap, no-hydration check that awgraph is importable at all. False sets
@@ -454,7 +455,19 @@ class AwgraphIndex:
     async def query(self, text: str, k: int) -> list[dict]:
         if not await self._open():
             raise AwgraphUnavailable(self.reason or f"no-index for {self.root}")
-        chunks = await self._graph.hybrid_query(text, max_results=k)
+        # hybrid_query is async in name only too: a warm query over ~495k chunks ran
+        # 4-12 s of numpy on the loop and froze it up to 2 s at a time (measured
+        # 2026-10-14), so every OTHER recall stage's timer fired late and the whole
+        # turn context read "degraded: TimeoutError". It runs in a worker thread,
+        # one query at a time (the graph object is not known to be thread-safe).
+        graph = self._graph
+
+        def _run() -> Any:
+            with self._query_lock:
+                query = graph.hybrid_query(text, max_results=k)
+                return asyncio.run(query)  # blocking-ok: runs in a worker thread
+
+        chunks = await asyncio.to_thread(_run)
         out: list[dict] = []
         for c in chunks:
             path = getattr(c, "source_path", "") or ""

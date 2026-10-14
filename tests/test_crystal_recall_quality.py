@@ -374,3 +374,30 @@ async def test_a_slow_graph_never_costs_the_turn_its_facts():
     block = await asyncio.wait_for(c.recall_block("state cache session"),
                                    crystal_mod.CRYSTAL_STAGE_S)
     assert "session entries" in block
+
+
+async def test_a_graph_query_never_blocks_the_event_loop():
+    """awgraph's hybrid_query is async in name only: 4-12 s of numpy on the loop froze
+    it, and every other recall stage's timer fired late (2026-10-14). It must run in a
+    worker thread so the loop keeps ticking."""
+    idx = AwgraphIndex("/repo")
+
+    class _SyncHeavy:
+        async def hybrid_query(self, text, max_results=5):
+            time.sleep(0.6)  # blocking-ok: simulates awgraph's synchronous scan
+            return []
+
+    idx._graph, idx._ok = _SyncHeavy(), True
+    ticks: list = []
+
+    async def ticker():
+        for _ in range(10):
+            t = time.perf_counter()
+            await asyncio.sleep(0.02)
+            ticks.append(time.perf_counter() - t)
+
+    tk = asyncio.create_task(ticker())
+    await asyncio.sleep(0.03)  # the ticker is running before the query starts
+    await idx.query("q", 5)
+    await tk
+    assert max(ticks) < 0.3, f"the loop stalled {max(ticks):.2f}s during a graph query"
