@@ -394,6 +394,7 @@ class AwgraphIndex:
         #: Why the graph is unavailable ("" while unknown or available).
         self.reason = ""
         self._query_lock = threading.Lock()
+        self._hydrate_lock = threading.Lock()
 
     def probe(self) -> bool:
         """Cheap, no-hydration check that awgraph is importable at all. False sets
@@ -447,9 +448,21 @@ class AwgraphIndex:
             # _open_graph is async in name only: the chunk-cache load and the
             # embedding hydrate are synchronous (~37 s). On the loop they froze every
             # turn and GRAPH_WAIT_S could never fire, so it runs in a worker thread.
+            # ONE hydration per process. The single-flight task above is per event loop,
+            # and the server's warm-up runs on a worker thread's own loop: measured
+            # 2026-10-14, the warm-up and the first turn each hydrated the same 495k-chunk
+            # index at once (two threads, ~3 GB RSS, the GIL starved for minutes).
             root = self.root
-            self._graph, self._ok = await asyncio.to_thread(
-                lambda: asyncio.run(_open_graph(root, build=False)))
+
+            def _load() -> Any:
+                with self._hydrate_lock:
+                    if self._ok is None:
+                        graph, ok = asyncio.run(  # blocking-ok: runs in a worker thread
+                            _open_graph(root, build=False))
+                        self._graph, self._ok = graph, ok
+                    return self._graph, self._ok
+
+            self._graph, self._ok = await asyncio.to_thread(_load)
             if not self._ok:
                 self.reason = f"no-index for {self.root} (run `awgraph index`)"
         except Exception as exc:  # noqa: BLE001 -- reported through telemetry

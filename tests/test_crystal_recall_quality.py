@@ -450,3 +450,36 @@ async def test_facts_and_graph_are_recalled_concurrently(monkeypatch):
     block = await c.recall_block("state cache session entries")
     assert time.monotonic() - t0 < 1.0, "the two waits ran back to back"
     assert "session entries" in block
+
+
+def test_two_event_loops_hydrate_the_graph_once(monkeypatch):
+    """The server warms the graph on a worker thread's own loop while the first turn
+    opens it on the daemon loop; both hydrated the same index at once (2026-10-14)."""
+    import sys
+    import threading
+    import types
+
+    loads = {"n": 0}
+
+    async def fake_open_graph(root, build=False):
+        loads["n"] += 1
+        time.sleep(0.3)  # blocking-ok: awgraph's synchronous hydrate, simulated
+        return object(), True
+
+    fake_cli = types.ModuleType("awgraph.cli")
+    fake_cli._open_graph = fake_open_graph
+    monkeypatch.setitem(sys.modules, "awgraph", types.ModuleType("awgraph"))
+    monkeypatch.setitem(sys.modules, "awgraph.cli", fake_cli)
+    idx = AwgraphIndex("/repo")
+    results: list = []
+
+    def opener():
+        results.append(asyncio.run(idx._open()))
+
+    threads = [threading.Thread(target=opener) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [True, True]
+    assert loads["n"] == 1, "the index was hydrated once per event loop"
