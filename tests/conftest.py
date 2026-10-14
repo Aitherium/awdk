@@ -129,3 +129,17 @@ def _isolate_env(monkeypatch, tmp_path):
         reset_license_manager()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _closed_embed_breaker():
+    """adk.embeddings keeps a process-wide circuit breaker; one test tripping it must
+    not leave the next test's embedder skipped."""
+    try:
+        from adk import embeddings as _emb
+    except Exception:  # noqa: BLE001 -- a test tree without adk.embeddings
+        yield
+        return
+    _emb._BREAKER["until"] = 0.0
+    yield
+    _emb._BREAKER["until"] = 0.0

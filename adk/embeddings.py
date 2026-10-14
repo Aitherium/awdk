@@ -237,6 +237,28 @@ def installer_embed_model() -> str:
 _DEFAULT_MANAGED_V1 = "https://mcp.aitherium.com"
 
 _HTTP_TIMEOUT = 30.0
+
+#: Circuit breaker for the embedding backend, shared by every caller in the process.
+#: Measured 2026-10-14: the embedder answered /health while every embedding hung 30 s;
+#: each adk memory stage embeds the question, so every turn waited on it and lost its
+#: recall. After one failure the backend is skipped for EMBED_BREAKER_S and callers
+#: take their no-vector fallback at once.
+EMBED_BREAKER_S = 60.0
+_BREAKER = {"until": 0.0, "reason": ""}
+
+
+def embed_breaker_open() -> bool:
+    """True while the embedding backend is being skipped after a failure."""
+    return time.monotonic() < _BREAKER["until"]
+
+
+def trip_embed_breaker(reason: str) -> None:
+    """Skip the embedding backend for EMBED_BREAKER_S (one failure is enough)."""
+    if not embed_breaker_open():
+        logger.warning("adk.embeddings: backend failing (%s) -- skipping it for %.0fs",
+                       reason, EMBED_BREAKER_S)
+    _BREAKER["until"] = time.monotonic() + EMBED_BREAKER_S
+    _BREAKER["reason"] = reason
 # 15s, not 3s: backend RESOLUTION IS CACHED FOR THE PROCESS LIFETIME, so one
 # probe that times out pins that service to a degraded 384-d fallback until it
 # restarts — and a consumer holding a 768-d index then stores NOTHING at all.
@@ -669,6 +691,9 @@ class AdkEmbeddings:
         if not texts:
             await self._resolve()
             return [], self._dim
+        if embed_breaker_open() and self._backend in ("vllm", "microscheduler", "gateway",
+                                                      "ollama"):
+            return self._no_vectors(texts)
         await self._resolve()
         try:
             if self._backend in ("vllm", "microscheduler", "gateway"):
@@ -688,10 +713,16 @@ class AdkEmbeddings:
                 return vecs, self._dim
         except Exception as exc:  # noqa: BLE001 — degrade, don't crash the caller
             logger.warning("adk.embeddings backend=%s failed: %s", self._backend, exc)
+            if self._backend in ("vllm", "microscheduler", "gateway", "ollama"):
+                trip_embed_breaker(f"{type(exc).__name__}: {exc}"[:160])
 
         # Backend failed at call time (was reachable at probe). Re-resolve next
         # call; for THIS call degrade to the dim-consistent fallback we can honour.
         self._resolved = False
+        return self._no_vectors(texts)
+
+    def _no_vectors(self, texts: List[str]) -> Tuple[List[List[float]], int]:
+        """The dim-consistent fallback when the backend cannot answer."""
         if _CE or self._dim == CANONICAL_DIM:
             # Can't produce the canonical dim offline — skip rather than mix dims. Empty vectors
             # let dimension-aware consumers (GraphMemory) drop the embedding safely.

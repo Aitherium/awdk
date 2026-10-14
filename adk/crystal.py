@@ -861,7 +861,13 @@ class Crystal:
         if not rows:
             return []
         qvec = None
-        if self.embed is not None:
+        try:
+            from adk.embeddings import embed_breaker_open, trip_embed_breaker
+        except Exception:  # noqa: BLE001 -- no shared breaker: wait as before
+            embed_breaker_open, trip_embed_breaker = (lambda: False), (lambda reason: None)
+        if self.embed is not None and embed_breaker_open():
+            self._degrade("embed:breaker-open")
+        elif self.embed is not None:
             # The embedder shares the GPU with the chat models; measured 2026-10-14 it
             # answered one query in 3-10 s, past the whole crystal stage, and the turn
             # lost every fact. Past EMBED_WAIT_S the facts rank by keyword instead.
@@ -869,6 +875,7 @@ class Crystal:
                 qvec = (await asyncio.wait_for(self._vectors([message]), EMBED_WAIT_S))[0]
             except asyncio.TimeoutError:
                 self._degrade("embed:slow")
+                trip_embed_breaker(f"crystal query embedding over {EMBED_WAIT_S:.1f}s")
         scored: list[tuple[float, float, str]] = []
         dropped = 0
         if qvec is None:
