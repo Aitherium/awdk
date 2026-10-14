@@ -1547,9 +1547,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             # Measured 2026-09-21: `--agent atlas` on this harness answered as
             # "your helpful, warm test companion". Genesis loads the identity
             # itself, so the `aither` harness gets nothing here.
-            entry = next((a for a in AGENT_ROSTER if a["id"] == body.agent), None)
-            if entry and entry.get("persona"):
-                persona = f"You are {entry['label']} ({entry['role']}). {entry['persona']}"
+            from adk.harnesses.agents import persona_for
+
+            persona = persona_for(body.agent)
+            if persona:
                 fields["system_prompt_append"] = (
                     persona + "\n\n" + (fields.get("system_prompt_append") or "").strip()
                 ).strip()

@@ -284,6 +284,15 @@ _PIPELINE_EVENTS = frozenset(
 )
 
 
+def _entries(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    """The per-call dicts of a tool event: ``payload[key]`` when it is a list, else
+    the payload itself (one flat call). Non-dict list items are dropped."""
+    batch = payload.get(key)
+    if isinstance(batch, list):
+        return [e for e in batch if isinstance(e, dict)]
+    return [payload]
+
+
 def translate_genesis(event_name: str, payload: dict[str, Any]) -> list[HarnessEvent]:
     """Map one Genesis SSE event onto normalized events."""
     name = event_name or str(payload.get("type") or "")
@@ -311,21 +320,30 @@ def translate_genesis(event_name: str, payload: dict[str, Any]) -> list[HarnessE
         text = payload.get("text") or payload.get("content") or ""
         return [thinking_delta(str(text))] if text else []
     if name == "tool_call":
+        # Genesis sends one call flat ({tool|name, id, args}); adk serve batches
+        # them as {tools: [{name, args}]}. Reading only the flat shape left every
+        # awdk-harness call as tool="" input={} (measured 2026-10-14).
+        calls = _entries(payload, "tools")
         return [
             tool_call(
-                tool=str(payload.get("tool") or payload.get("name") or ""),
-                tool_use_id=str(payload.get("id") or ""),
-                tool_input=payload.get("args") if isinstance(payload.get("args"), dict) else {},
+                tool=str(c.get("tool") or c.get("name") or ""),
+                tool_use_id=str(c.get("id") or ""),
+                tool_input=c.get("args") if isinstance(c.get("args"), dict) else {},
             )
+            for c in calls
         ]
     if name == "tool_result":
+        # Same split: Genesis {id, tool, result, error}; adk serve
+        # {results: [{tool, success, output}]}.
+        results = _entries(payload, "results")
         return [
             tool_result(
-                tool_use_id=str(payload.get("id") or ""),
-                output=payload.get("result"),
-                is_error=bool(payload.get("error")),
-                tool=str(payload.get("tool") or ""),
+                tool_use_id=str(r.get("id") or ""),
+                output=r.get("result") if "result" in r else r.get("output"),
+                is_error=bool(r.get("error")) or r.get("success") is False,
+                tool=str(r.get("tool") or r.get("name") or ""),
             )
+            for r in results
         ]
     if name == "complete":
         return [
@@ -459,6 +477,35 @@ def fetch_workforce(base_url: str = "") -> tuple[list[dict[str, str]], str]:
     return (roster, "")
 
 
+def genesis_url_configured() -> bool:
+    """True when the operator named a Genesis route (``AITHER_GENESIS_URL``).
+
+    Otherwise ``GENESIS_URL`` is the in-network default, which no fleet publishes
+    to the host."""
+    return bool(os.environ.get("AITHER_GENESIS_URL", "").strip())
+
+
+def persona_for(agent: str) -> str:
+    """The roster's persona line for ``agent`` as a system addition, or "".
+
+    adk serve has no identity store, so this line is how a named agent answers as
+    itself on the local loop (the ``awdk`` harness and the Genesis fallback)."""
+    entry = next((a for a in AGENT_ROSTER if a["id"] == agent), None)
+    if not entry or not entry.get("persona"):
+        return ""
+    return f"You are {entry['label']} ({entry['role']}). {entry['persona']}"
+
+
+def _is_refused(httpx: Any, exc: BaseException) -> bool:
+    """True for a transport error raised before any byte of a reply (connect
+    refused, unresolvable, connect timeout). Only then is a retry elsewhere safe."""
+    kinds = tuple(
+        k for k in (getattr(httpx, "ConnectError", None), getattr(httpx, "ConnectTimeout", None))
+        if isinstance(k, type)
+    )
+    return bool(kinds) and isinstance(exc, kinds)
+
+
 def _iter_sse(response: Any) -> Iterable[tuple[str, dict[str, Any]]]:
     """Yield ``(event_name, payload)`` from an httpx streaming response."""
     event_name = ""
@@ -495,6 +542,12 @@ class AgentRelaySession(HarnessSession):
         super().__init__(*args, **kwargs)
         self.agent = agent or "aither"
         self.base_url = (base_url or GENESIS_URL).rstrip("/")
+        # No caller base_url and no AITHER_GENESIS_URL: the default is an
+        # in-network address the host cannot reach (WinError 10061 on every
+        # `aither` turn, measured 2026-10-14). Such a session falls back to this
+        # host's awdk loop, with the agent's persona, when Genesis refuses.
+        self._may_fall_back = not base_url and not genesis_url_configured()
+        self._on_local_loop = False
 
     def start(self) -> None:
         self._emit(
@@ -545,45 +598,24 @@ class AgentRelaySession(HarnessSession):
         # ``system_additions``; without this line it was accepted and never sent.
         if self.config.system_prompt_append:
             body["system_additions"] = [self.config.system_prompt_append]
-        url = f"{self.base_url}{STREAM_PATH}"
         try:
-            # The owner's local credential, sent ONLY to a loopback daemon
-            # (adk.local_auth): an offline daemon refuses an anonymous caller.
-            from adk.local_auth import headers_for
-
-            with httpx.Client(timeout=httpx.Timeout(600.0, connect=15.0)) as client:
-                with client.stream("POST", url, json=body, headers=headers_for(url)) as response:
-                    if response.status_code >= 400:
-                        response.read()
-                        self._emit(
-                            error(
-                                f"agent {self.agent} returned HTTP {response.status_code}",
-                                status=response.status_code,
-                                body=response.text[:500],
-                            )
-                        )
-                        self._emit(
-                            HarnessEvent(
-                                kind=EventKind.TURN_COMPLETED,
-                                data={"is_error": True},
-                                turn=turn,
-                            )
-                        )
-                        return
-                    streamed = False
-                    for name, payload in _iter_sse(response):
-                        if name == "token":
-                            streamed = True
-                        elif name == "answer" and streamed:
-                            # adk serve streams `token` deltas AND then repeats the
-                            # whole text as `answer`; Genesis sends one or the other.
-                            # Measured 2026-09-21: every awdk-harness reply arrived
-                            # twice. The deltas already carried it; skip the repeat.
-                            continue
-                        for event in translate_genesis(name, payload):
-                            event.turn = turn
-                            self._observe(event)
-                            self._emit(event)
+            try:
+                self._stream_turn(httpx, body, turn)
+            except Exception as exc:  # noqa: BLE001 - re-raised unless it is a refusal
+                if not (self._may_fall_back and not self._on_local_loop
+                        and _is_refused(httpx, exc)):
+                    raise
+                self._emit(notice(
+                    f"Genesis at {self.base_url} refused ({type(exc).__name__}); "
+                    f"agent {self.agent} answers on the local awdk loop {ADK_URL}. "
+                    "Set AITHER_GENESIS_URL to a host-reachable route to use Genesis.",
+                    stage="genesis_unreachable",
+                    base_url=self.base_url,
+                    fallback=ADK_URL,
+                ))
+                self._on_local_loop = True
+                self.base_url = ADK_URL.rstrip("/")
+                self._stream_turn(httpx, body, turn)
         except Exception as exc:  # noqa: BLE001 — network/transport of any shape
             # An agent turn that dies must reach the UI. A swallowed exception
             # here is a stream that silently stops, which reads as a hung model.
@@ -594,6 +626,54 @@ class AgentRelaySession(HarnessSession):
         finally:
             self.state = SessionState.IDLE
 
+    def _stream_turn(self, httpx: Any, body: dict[str, Any], turn: int) -> None:
+        """POST one turn to ``self.base_url`` and emit its events."""
+        if self._on_local_loop:
+            # adk serve has no identity store: the roster persona is how the
+            # agent answers as itself there (what the `awdk` harness gets).
+            persona = persona_for(self.agent)
+            if persona:
+                body = dict(body)
+                body["system_additions"] = [persona, *(body.get("system_additions") or [])]
+        url = f"{self.base_url}{STREAM_PATH}"
+        # The owner's local credential, sent ONLY to a loopback daemon
+        # (adk.local_auth): an offline daemon refuses an anonymous caller.
+        from adk.local_auth import headers_for
+
+        with httpx.Client(timeout=httpx.Timeout(600.0, connect=15.0)) as client:
+            with client.stream("POST", url, json=body, headers=headers_for(url)) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    self._emit(
+                        error(
+                            f"agent {self.agent} returned HTTP {response.status_code}",
+                            status=response.status_code,
+                            body=response.text[:500],
+                        )
+                    )
+                    self._emit(
+                        HarnessEvent(
+                            kind=EventKind.TURN_COMPLETED,
+                            data={"is_error": True},
+                            turn=turn,
+                        )
+                    )
+                    return
+                streamed = False
+                for name, payload in _iter_sse(response):
+                    if name == "token":
+                        streamed = True
+                    elif name == "answer" and streamed:
+                        # adk serve streams `token` deltas AND then repeats the
+                        # whole text as `answer`; Genesis sends one or the other.
+                        # Measured 2026-09-21: every awdk-harness reply arrived
+                        # twice. The deltas already carried it; skip the repeat.
+                        continue
+                    for event in translate_genesis(name, payload):
+                        event.turn = turn
+                        self._observe(event)
+                        self._emit(event)
+
     def stop(self, timeout: float = 8.0) -> None:
         self.state = SessionState.EXITED
         self._emit(HarnessEvent(kind=EventKind.SESSION_EXITED, data={"exit_code": 0}))
@@ -601,7 +681,8 @@ class AgentRelaySession(HarnessSession):
 
     def info(self) -> dict[str, Any]:
         data = super().info()
-        data.update({"agent": self.agent, "base_url": self.base_url, "relay": True})
+        data.update({"agent": self.agent, "base_url": self.base_url, "relay": True,
+                     "local_fallback": self._on_local_loop})
         return data
 
 
@@ -619,6 +700,9 @@ class GroupSession(HarnessSession):
         super().__init__(*args, **kwargs)
         self.participants = participants or ["aither"]
         self.base_url = (base_url or GENESIS_URL).rstrip("/")
+        # Members get the caller's base_url as given, so an unset one keeps
+        # their local-loop fallback (a resolved default would read as explicit).
+        self._requested_base_url = base_url
         self._members: dict[str, AgentRelaySession] = {}
 
     def start(self) -> None:
@@ -651,7 +735,7 @@ class GroupSession(HarnessSession):
         def run_one(agent: str) -> None:
             relay = AgentRelaySession(
                 self.spec, self.config, None, root=self.dir, session_id=f"{self.id}-{agent}",
-                agent=agent, base_url=self.base_url,
+                agent=agent, base_url=self._requested_base_url,
             )
             # Re-publish the member's events into the GROUP stream, tagged.
             relay._emit = self._make_forwarder(agent, turn)  # type: ignore[method-assign]

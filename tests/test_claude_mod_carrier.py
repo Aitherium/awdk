@@ -156,25 +156,94 @@ def test_vendored_skills_match_the_sources():
 
 
 # --------------------------------------------------------- wrapper and hooks
-def test_brick_mcp_missing_brick_exits_zero_with_one_stderr_line():
+def test_brick_mcp_missing_brick_exits_zero_with_one_stderr_line(tmp_path):
+    import os
+
+    env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    env.pop("AW_PLUGIN_SKIP", None)
     r = subprocess.run([sys.executable, "-m", "adk.harnesses.brick_mcp", MISSING],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       cwd=AWDK)
+                       cwd=AWDK, env=env)
     assert r.returncode == 0
     assert r.stdout == ""
     assert len(r.stderr.strip().splitlines()) == 1 and MISSING in r.stderr
 
 
-def test_brick_mcp_runs_the_brick_mcp_subcommand(monkeypatch):
+def test_brick_mcp_runs_the_brick_mcp_subcommand(monkeypatch, tmp_path):
     from adk.harnesses import brick_mcp
 
     calls = []
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.delenv("AW_PLUGIN_SKIP", raising=False)
     monkeypatch.setattr(brick_mcp.shutil, "which", lambda n: f"/bin/{n}")
-    monkeypatch.setattr(brick_mcp.os, "name", "nt")
-    monkeypatch.setattr(brick_mcp.subprocess, "call", lambda cmd: calls.append(cmd) or 7)
+    # The module flags, never the global os.name: patching that makes every Path()
+    # a WindowsPath on Linux and crashes pytest itself (payload suite, 2026-10-14).
+    monkeypatch.setattr(brick_mcp, "_EXEC_IN_PLACE", False)
+    monkeypatch.setattr(brick_mcp, "_WINDOWS", True)
+    monkeypatch.setattr(brick_mcp.subprocess, "call",
+                        lambda cmd, **kw: calls.append((cmd, kw)) or 7)
     assert brick_mcp.main(["awfind", "--x"]) == 7
-    assert calls == [["/bin/awfind", "mcp", "--x"]]
+    (cmd, kw), = calls
+    assert cmd == ["/bin/awfind", "mcp", "--x"]
+    # Windows: the child gets THIS process's stdio explicitly, or it never sees the
+    # client's initialize (CONNECT_TIMEOUT on every Claude Code session).
+    assert kw["stdin"] is sys.stdin and kw["stdout"] is sys.stdout
+    assert kw["stderr"] is sys.stderr
     assert brick_mcp.resolve("../evil") is None
+
+
+@pytest.mark.parametrize("cfg", [
+    {"mcpServers": {"awfind": {"command": "awfind", "args": ["mcp"]}}},
+    {"mcpServers": {"hub": {"command": "python", "args": ["bridge.py", "--hub"]}}},
+])
+def test_brick_mcp_stays_off_when_the_project_already_serves_it(monkeypatch, tmp_path, cfg):
+    from adk.harnesses import brick_mcp
+
+    (tmp_path / ".mcp.json").write_text(json.dumps(cfg), encoding="utf-8")
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(nested))
+    monkeypatch.delenv("AW_PLUGIN_SKIP", raising=False)
+    monkeypatch.setattr(brick_mcp.shutil, "which", lambda n: f"/bin/{n}")
+    monkeypatch.setattr(brick_mcp.subprocess, "call", lambda *a, **k: pytest.fail("ran"))
+    monkeypatch.setattr(brick_mcp.os, "execv", lambda *a: pytest.fail("ran"))
+    assert brick_mcp.main(["awfind"]) == 0
+
+
+def test_brick_mcp_skip_env_and_unrelated_config(monkeypatch, tmp_path):
+    from adk.harnesses import brick_mcp
+
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"other": {"command": "x", "args": []}}}), encoding="utf-8")
+    assert brick_mcp.mcp_already_declared("awfind", tmp_path) is None
+    assert brick_mcp.skipped("awfind", {"AW_PLUGIN_SKIP": "awm, AWFIND"})
+    assert not brick_mcp.skipped("awfind", {"AW_PLUGIN_SKIP": "awm"})
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the stdio-handle defect is Windows-only")
+def test_brick_mcp_relays_piped_stdio_to_the_child_on_windows(tmp_path):
+    """The real spawn: a child brick must read the wrapper's piped stdin and answer."""
+    import os
+    import shutil
+
+    if shutil.which("python") is None:
+        raise AssertionError("no python on PATH to stand in for a brick")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    # A fake brick `awecho`: `awecho mcp` echoes one stdin line back, upper-cased.
+    (bindir / "awecho.py").write_text(
+        "import sys\nprint(sys.stdin.readline().strip().upper(), flush=True)\n",
+        encoding="utf-8")
+    (bindir / "awecho.cmd").write_text(
+        f'@"{sys.executable}" "%~dp0awecho.py" %*\n', encoding="utf-8")
+    env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+           "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    env.pop("AW_PLUGIN_SKIP", None)
+    r = subprocess.run([sys.executable, "-m", "adk.harnesses.brick_mcp", "awecho"],
+                       input="initialize\n", capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", cwd=AWDK, env=env, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "INITIALIZE"
 
 
 @pytest.mark.parametrize("mode", ["relay-inbox", "awm-recall", "awvoice-reply", "unknown"])
