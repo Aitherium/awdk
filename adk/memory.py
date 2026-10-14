@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -181,8 +182,29 @@ class Memory:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
+        # WAL is a property of the FILE and persists; setting it is a write that takes
+        # the database lock, so it runs once per process, not on every query.
+        if not getattr(self, "_wal_set", False):
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._wal_set = True
         return conn
+
+    async def _db(self, fn):
+        """Run ``fn(conn)`` in a worker thread on its own connection, closed after.
+
+        Every method here used to run sqlite on the event loop: py-spy on the adk
+        daemon during an awsh turn (2026-10-14) put add_message/_connect at ~15 % of
+        the loop's busy time, and a blocked loop fires every turn-stage timer late.
+        """
+        def _go():
+            conn = self._connect()
+            try:
+                with conn:
+                    return fn(conn)
+            finally:
+                conn.close()
+
+        return await asyncio.to_thread(_go)
 
     async def _spirit_teach(self, content: str, category: str = "general"):
         """Push memory to Spirit for cross-session persistence (best-effort).
@@ -459,16 +481,14 @@ class Memory:
         Writes locally (SQLite), then syncs to Spirit (cross-session) and
         fleet (Qdrant/RAG) in parallel. Both syncs are best-effort.
         """
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO kv_store "
-                "(key, value, category, timestamp, metadata, synced) "
-                "VALUES (?, ?, ?, ?, ?, 0)",
-                (key, value, category, time.time(),
-                 json.dumps(metadata) if metadata else None),
-            )
+        await self._db(lambda conn: conn.execute(
+            "INSERT OR REPLACE INTO kv_store "
+            "(key, value, category, timestamp, metadata, synced) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (key, value, category, time.time(),
+             json.dumps(metadata) if metadata else None),
+        ))
         # Sync to Spirit + fleet in parallel (both non-fatal)
-        import asyncio
         await asyncio.gather(
             self._spirit_teach(f"{key}: {value}", category),
             self._fleet_push(key, f"{key}: {value}", category),
@@ -477,8 +497,8 @@ class Memory:
 
     async def recall(self, key: str) -> str | None:
         """Retrieve a value by key."""
-        with self._connect() as conn:
-            row = conn.execute("SELECT value FROM kv_store WHERE key = ?", (key,)).fetchone()
+        row = await self._db(lambda conn: conn.execute(
+            "SELECT value FROM kv_store WHERE key = ?", (key,)).fetchone())
         if row:
             return row[0]
         # Spirit fallback -- cross-session recall when local DB misses
@@ -501,12 +521,11 @@ class Memory:
         Local SQLite results come first, then Spirit cross-session, then
         fleet/Qdrant vector matches fill remaining slots. Deduped by key.
         """
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT key, value, category, timestamp, metadata FROM kv_store "
-                "WHERE key LIKE ? OR value LIKE ? ORDER BY timestamp DESC LIMIT ?",
-                (f"%{query}%", f"%{query}%", limit),
-            ).fetchall()
+        rows = await self._db(lambda conn: conn.execute(
+            "SELECT key, value, category, timestamp, metadata FROM kv_store "
+            "WHERE key LIKE ? OR value LIKE ? ORDER BY timestamp DESC LIMIT ?",
+            (f"%{query}%", f"%{query}%", limit),
+        ).fetchall())
         results = [
             MemoryEntry(
                 key=r[0], value=r[1], category=r[2], timestamp=r[3],
@@ -519,7 +538,6 @@ class Memory:
 
         if remaining > 0:
             # Fetch from Spirit + fleet in parallel
-            import asyncio
             spirit_task = self._spirit_recall(query, limit=remaining)
             fleet_task = self._fleet_search(query, limit=remaining)
             spirit_results, fleet_results = await asyncio.gather(
@@ -566,11 +584,12 @@ class Memory:
 
     async def add_message(self, session_id: str, role: str, content: str, metadata: dict | None = None):
         """Add a message to conversation history."""
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO conversations (session_id, role, content, timestamp, metadata) VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, time.time(), json.dumps(metadata) if metadata else None),
-            )
+        meta = json.dumps(metadata) if metadata else None
+        await self._db(lambda conn: conn.execute(
+            "INSERT INTO conversations (session_id, role, content, timestamp, metadata) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, content, time.time(), meta),
+        ))
 
     async def get_history(self, session_id: str, limit: int = 50) -> list[dict]:
         """Get conversation history for a session.
@@ -579,12 +598,11 @@ class Memory:
         is appended to the row before it when both have the same role: stored as its
         own row it reached the model as a second assistant turn in a row, which strict
         chat templates refuse."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT role, content, timestamp, metadata FROM conversations "
-                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-                (session_id, limit),
-            ).fetchall()
+        rows = await self._db(lambda conn: conn.execute(
+            "SELECT role, content, timestamp, metadata FROM conversations "
+            "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall())
         out: list[dict] = []
         for role, content, ts, meta in reversed(rows):
             if out and out[-1]["role"] == role and _folds_into_previous(meta):
