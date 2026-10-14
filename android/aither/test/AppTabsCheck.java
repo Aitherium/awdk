@@ -28,11 +28,13 @@ public class AppTabsCheck {
     public static void main(String[] a) {
         // the bars, by role
         eq("adult tabs", ids(AppTabs.tabs(false)), Arrays.asList("home", "learn", "family", "aither", "settings"));
-        eq("child tabs", ids(AppTabs.tabs(true)), Arrays.asList("learn", "sprite", "room", "space", "settings"));
+        // a child's bar is ONE tab, the classroom (kids-suite S4)
+        eq("child tabs", ids(AppTabs.tabs(true)), Arrays.asList("learn"));
         eq("adult home", AppTabs.homeTab(false), "home");
         eq("child home", AppTabs.homeTab(true), "learn");
         eq("home is native", AppTabs.isNative(AppTabs.tab(false, "home")), true);
-        eq("settings is native", AppTabs.isNative(AppTabs.tab(true, "settings")), true);
+        eq("settings is native", AppTabs.isNative(AppTabs.tab(false, "settings")), true);
+        eq("no child settings tab", AppTabs.tab(true, "settings"), null);
         eq("learn root", AppTabs.rootUrl(false, "learn"), AppTabs.ORIGIN + "/learn/parent/");
         eq("no root for home", AppTabs.rootUrl(false, "home"), "");
         // a child's bar and grid never reach a grown-up surface
@@ -108,19 +110,64 @@ public class AppTabsCheck {
         eq("garbage", AppTabs.route("http://[bad", false), "tab home");
 
         // links: child (the launcher's child set and the PWA's ?app= ids)
+        // every child page opens in the one classroom tab
         route(true, "/", "tab learn");
         route(true, "/learn", "tab learn");
-        route(true, "/learn/sprite", "tab sprite");
-        route(true, "/learn/sprite#quests", "tab sprite " + AppTabs.ORIGIN + "/learn/sprite#quests");
-        route(true, "/hearth#room", "tab room");
-        route(true, "/hearth", "tab space");
+        route(true, "/learn?talk=1", "tab learn " + AppTabs.ORIGIN + "/learn?talk=1");
+        route(true, "/learn/sprite", "tab learn " + AppTabs.ORIGIN + "/learn/sprite");
+        route(true, "/learn/sprite#quests", "tab learn " + AppTabs.ORIGIN + "/learn/sprite#quests");
+        route(true, "/hearth#room", "tab learn " + AppTabs.ORIGIN + "/hearth#room");
+        route(true, "/hearth", "tab learn " + AppTabs.ORIGIN + "/hearth");
         route(true, "/?app=hearth", "tab learn");
-        route(true, "/?app=quests", "tab sprite " + AppTabs.ORIGIN + "/learn/sprite#quests");
-        route(true, "/?app=room", "tab room");
-        route(true, "/?app=family", "tab space");
-        route(true, "/?app=avatar", "tab sprite");
+        route(true, "/?app=quests", "tab learn " + AppTabs.ORIGIN + "/learn/sprite#quests");
+        route(true, "/?app=room", "tab learn " + AppTabs.ORIGIN + "/hearth#room");
+        route(true, "/?app=family", "tab learn " + AppTabs.ORIGIN + "/hearth");
+        route(true, "/?app=avatar", "tab learn " + AppTabs.ORIGIN + "/learn/sprite");
         route(true, "/?app=control", "tab learn");
         route(true, "/classroom/x", "window " + AppTabs.ORIGIN + "/classroom/x");
+        // the Nest tile is the child's own Sprite, never Aither's general chat
+        for (String[] app : AppTabs.CHILD_APPS) {
+            if (app[0].equals("nest")) eq("nest tile", app[3], "/learn?talk=1");
+        }
+
+        // a link outside aitherium.com: the browser for a grown-up; never for a child
+        eq("adult off-site", AppTabs.link(false, "https://example.com/x"), AppTabs.Link.BROWSER);
+        eq("child off-site", AppTabs.link(true, "https://example.com/x"), AppTabs.Link.ASK_GROWNUP);
+        eq("child http", AppTabs.link(true, "http://app.aitherium.com/learn"), AppTabs.Link.ASK_GROWNUP);
+        eq("child lookalike", AppTabs.link(true, "https://aitherium.com.evil.example/"), AppTabs.Link.ASK_GROWNUP);
+        eq("child lookalike 2", AppTabs.link(true, "https://evilaitherium.com/"), AppTabs.Link.ASK_GROWNUP);
+        eq("child mailto", AppTabs.link(true, "mailto:x@example.com"), AppTabs.Link.ASK_GROWNUP);
+        eq("child intent", AppTabs.link(true, "intent://scan/#Intent;scheme=zxing;end"), AppTabs.Link.ASK_GROWNUP);
+        eq("child garbage", AppTabs.link(true, "http://[bad"), AppTabs.Link.ASK_GROWNUP);
+        eq("child ours", AppTabs.link(true, AppTabs.ORIGIN + "/learn"), AppTabs.Link.IN_APP);
+        eq("child apex", AppTabs.link(true, "https://aitherium.com/"), AppTabs.Link.IN_APP);
+        eq("adult ours", AppTabs.link(false, "https://api.aitherium.com/x"), AppTabs.Link.IN_APP);
+        // a child's phone opens only the classroom's own hosts: never the shop or a tenant site
+        eq("child shop", AppTabs.link(true, "https://shop.aitherium.com/"), AppTabs.Link.ASK_GROWNUP);
+        eq("child tenant", AppTabs.link(true, "https://acme.aitherium.com/"), AppTabs.Link.ASK_GROWNUP);
+        eq("child blog", AppTabs.link(true, "https://blog.aitherium.com/x"), AppTabs.Link.ASK_GROWNUP);
+        eq("child sign-in", AppTabs.link(true, "https://idp.aitherium.com/login"), AppTabs.Link.IN_APP);
+        eq("adult shop", AppTabs.link(false, "https://shop.aitherium.com/"), AppTabs.Link.IN_APP);
+        // "I told your grown-up" only when the server stored the card
+        String told = "That page is outside Aither. I told your grown-up, so you can look at it together.";
+        eq("told 201", AppTabs.askMessage(201, "{\"host\":\"x.org\",\"card_sent\":true,\"told\":true}"), told);
+        eq("told spaced", AppTabs.askMessage(201, "{\"told\": true}"), told);
+        for (int st : new int[] {-1, 409, 429, 503, 401, 500}) {
+            if (AppTabs.askMessage(st, "{\"told\":true}").contains("I told")) {
+                System.out.println("FAIL ask " + st + " claims a grown-up was told"); bad++;
+            }
+        }
+        if (AppTabs.askMessage(201, "{\"told\":false}").contains("I told")) {
+            System.out.println("FAIL ask told:false claims a grown-up was told"); bad++;
+        }
+        if (AppTabs.ASKING.contains("told")) { System.out.println("FAIL asking claims told"); bad++; }
+        // what the grown-up's card carries: scheme, host, path -- never the query or fragment
+        eq("ask body", AppTabs.linkRequestBody("https://User:pw@Example.com/a/b?token=s3cret#frag"),
+                "{\"url\":\"https://example.com/a/b\"}");
+        eq("ask body unparseable", AppTabs.linkRequestBody("https://example.com/a\"b"), "");
+        eq("ask body mailto", AppTabs.linkRequestBody("mailto:x@example.com"), "");
+        eq("ask body garbage", AppTabs.linkRequestBody("http://[bad"), "");
+        eq("ask body cap", AppTabs.linkRequestBody("https://example.com/" + "a".repeat(400)).length(), 300 + 10);
         // the launcher shortcuts (Shortcuts.java rows, passed in as c:/path or a:/path): a
         // child's opens one of their tabs, a grown-up's never just lands on Home
         for (String arg : a) {

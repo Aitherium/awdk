@@ -17,7 +17,8 @@ import android.webkit.WebViewClient;
  * extras running beside it: the model on this phone (LlmService, 127.0.0.1:8486), lending
  * memory (HolderService) and the household check-in (HeartbeatJob). One app, one icon.
  *
- * Only aitherium.com pages open here; any other link goes to the browser. The first time the
+ * Only aitherium.com pages open here; any other link goes to the browser -- except on a
+ * child's phone, where it never opens: "Ask a grown-up" (askGrownUp). The first time the
  * local model is available, the page is handed its per-install token through the URL
  * fragment (#local-pair=, never sent to a server), exactly as a separate browser would get it.
  */
@@ -144,7 +145,12 @@ public class MainActivity extends Activity implements Shell.Host {
                             android.widget.Toast.LENGTH_LONG).show();
                     return true;
                 }
-                if (ours(u)) return false;
+                AppTabs.Link to = AppTabs.link(cfg.childDevice(), u.toString());
+                if (to == AppTabs.Link.IN_APP) return false;
+                if (to == AppTabs.Link.ASK_GROWNUP) { // a child's phone never leaves the app
+                    askGrownUp(u.toString());
+                    return true;
+                }
                 try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (RuntimeException e) { /* none */ }
                 return true;
             }
@@ -192,6 +198,54 @@ public class MainActivity extends Activity implements Shell.Host {
             }
         });
         return web;
+    }
+
+    /**
+     * A child tapped a link outside aitherium.com: no browser opens. The child sees a kind
+     * card ("Ask a grown-up") and their grown-ups get one in their family inbox
+     * (POST /api/tutor/me/link-requests with this phone's session; the server derives the
+     * child and the guardians from it). Scheme, host and path only are sent.
+     */
+    private void askGrownUp(String url) {
+        String body = AppTabs.linkRequestBody(url);
+        android.app.AlertDialog card = new android.app.AlertDialog.Builder(this)
+                .setTitle("Ask a grown-up")
+                .setMessage(body.isEmpty() ? AppTabs.askMessage(-1, "") : AppTabs.ASKING)
+                .setPositiveButton("OK", null)
+                .show();
+        if (body.isEmpty()) return;
+        new Thread(() -> {
+            int status = -1;
+            String answer = "";
+            try {
+                String cookie = CookieManager.getInstance().getCookie(HeartbeatJob.API);
+                if (cookie != null && !cookie.isEmpty()) {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                            new java.net.URL(HeartbeatJob.API + "/api/tutor/me/link-requests").openConnection();
+                    c.setRequestMethod("POST");
+                    c.setConnectTimeout(20000);
+                    c.setReadTimeout(30000);
+                    c.setDoOutput(true);
+                    c.setRequestProperty("Content-Type", "application/json");
+                    c.setRequestProperty("Origin", "https://aitherium.com");
+                    c.setRequestProperty("Cookie", cookie);
+                    try (java.io.OutputStream o = c.getOutputStream()) {
+                        o.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                    status = c.getResponseCode(); // 201 + told:true only when a card is stored
+                    if (status == 200 || status == 201) {
+                        try (java.io.InputStream in = c.getInputStream()) {
+                            byte[] buf = new byte[2048];
+                            int n = in.read(buf);
+                            answer = n > 0 ? new String(buf, 0, n, java.nio.charset.StandardCharsets.UTF_8) : "";
+                        }
+                    }
+                    c.disconnect();
+                }
+            } catch (Exception e) { /* offline: the card says to show a grown-up */ }
+            final String say = AppTabs.askMessage(status, answer);
+            runOnUiThread(() -> { if (card.isShowing()) card.setMessage(say); });
+        }, "ask-grownup").start();
     }
 
     @Override

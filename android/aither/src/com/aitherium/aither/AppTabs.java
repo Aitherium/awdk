@@ -33,12 +33,12 @@ final class AppTabs {
         {"aither", "Aither", "/chat", "mark"},
         {SETTINGS, "Settings", "", "gear"},
     };
+    /** A child's bar is ONE tab, their classroom (kids-suite S4): every child page opens in
+     *  it, so the room is the menu and there is nothing else to wander into. Shell turns a
+     *  long-press on it into the phone's lite Settings, for a grown-up. Asserted with the nav
+     *  manifest (config/nav/aither-nav.yaml profiles.child.android) by check_child_nav.py. */
     static final String[][] CHILD_TABS = {
-        {"learn", "Learn", "/learn", "learn"},
-        {"sprite", "Sprite", "/learn/sprite", "sprite"},
-        {"room", "Room", "/hearth#room", "room"},
-        {"space", "My Space", "/hearth", "space"},
-        {SETTINGS, "Settings", "", "gear"},
+        {"learn", "Classroom", "/learn", "learn"},
     };
 
     /** id, label, one plain line, path, icon, tab it opens in ("" = its own window). */
@@ -62,14 +62,15 @@ final class AppTabs {
         {SETTINGS, "This phone", "Updates, AI on this phone, lending", "", "gear", SETTINGS},
     };
     static final String[][] CHILD_APPS = {
-        {"learn", "Learn", "Your quests and your class work", "/learn", "learn", "learn"},
-        {"sprite", "My Sprite", "Your learning buddy", "/learn/sprite", "sprite", "sprite"},
-        {"quests", "Quests", "Quests with your Sprite", "/learn/sprite#quests", "quests", "sprite"},
+        {"learn", "Classroom", "Your room: lessons, stories, art and games", "/learn", "learn", "learn"},
+        // the Nest: the child's own Sprite to talk to (never Aither's general chat)
+        {"nest", "Talk with my Sprite", "Your Sprite, in the Nest", "/learn?talk=1", "sprite", "learn"},
+        {"sprite", "My Sprite", "Your learning buddy", "/learn/sprite", "sprite", "learn"},
+        {"quests", "Quests", "Quests with your Sprite", "/learn/sprite#quests", "quests", "learn"},
         // the agents a grown-up turned on (or "Ask a grown-up"): lib/family/kid_grants.py
         {"helpers", "My helpers", "Helpers your grown-up turned on", "/learn/agents", "agents", "learn"},
-        {"room", "Room", "Your family room", "/hearth#room", "room", "room"},
-        {"space", "My Space", "Your own space", "/hearth", "space", "space"},
-        {SETTINGS, "Settings", "This phone", "", "gear", SETTINGS},
+        {"room", "Room", "Your family room", "/hearth#room", "room", "learn"},
+        {"space", "My Space", "Your own space", "/hearth", "space", "learn"},
     };
 
     /** Grown-up apps only the platform owner is offered (the web gate refuses everyone
@@ -215,11 +216,78 @@ final class AppTabs {
     }
 
     private static String childTabFor(String path, String frag) {
-        if ("/".equals(path)) return "learn"; // the child edge sends a child's / to /learn
-        if (under(path, "/learn/sprite")) return "sprite";
-        if (under(path, "/learn")) return "learn";
-        if (under(path, "/hearth")) return frag.startsWith("room") ? "room" : "space";
+        // one tab: the child edge sends a child's / to /learn, and the classroom's own pages
+        // (their Sprite, the family room, their space) all open inside it
+        if ("/".equals(path) || under(path, "/learn") || under(path, "/hearth")) return "learn";
         return "";
+    }
+
+    /** What a tapped link does: stay in the app, open the browser, or -- on a child's phone,
+     *  for anything outside aitherium.com -- never open: "Ask a grown-up", and a card to them.
+     *  MainActivity starts no ACTION_VIEW for ASK_GROWNUP. */
+    enum Link { IN_APP, BROWSER, ASK_GROWNUP }
+
+    static Link link(boolean child, String url) {
+        String host = "";
+        String scheme = "";
+        try {
+            URI u = new URI(url == null ? "" : url);
+            host = u.getHost() == null ? "" : u.getHost().toLowerCase(java.util.Locale.ROOT);
+            scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(java.util.Locale.ROOT);
+        } catch (Exception e) { /* unparseable: never ours */ }
+        boolean ours = "https".equals(scheme)
+                && (host.equals("aitherium.com") || host.endsWith(".aitherium.com"));
+        // A child's phone stays on the classroom's own hosts: never the shop, a customer's
+        // site (<tenant>.aitherium.com) or any other page that happens to be under the domain.
+        if (child) return "https".equals(scheme) && CHILD_HOSTS.contains(host) ? Link.IN_APP : Link.ASK_GROWNUP;
+        return ours ? Link.IN_APP : Link.BROWSER;
+    }
+
+    /** The only hosts a child's phone opens in the app: the classroom (and its apex alias),
+     *  its API and the sign-in host. Everything else is "Ask a grown-up". */
+    static final java.util.Set<String> CHILD_HOSTS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "app.aitherium.com", "aitherium.com", "api.aitherium.com", "idp.aitherium.com"));
+
+    /** What the "Ask a grown-up" card says once POST /me/link-requests answered. "I told your
+     *  grown-up" ONLY when the server says a card is stored in their inbox (201 + told:true);
+     *  offline, no session, no grown-up yet, the day's ceiling or a card that did not send all
+     *  say what to do instead, never that a grown-up knows. status -1 = no answer at all. */
+    static String askMessage(int status, String body) {
+        boolean told = (status == 200 || status == 201) && body != null
+                && body.replaceAll("\s", "").contains("\"told\":true");
+        if (told) return "That page is outside Aither. I told your grown-up, so you can look at it together.";
+        return "That page is outside Aither. Show it to your grown-up, or a grown-up you trust, so you can look at it together.";
+    }
+
+    /** What the card says while the ask is on its way: no claim yet. */
+    static final String ASKING = "That page is outside Aither. Asking your grown-up...";
+
+    /** The body of POST /api/tutor/me/link-requests for an off-site link a child tapped:
+     *  scheme, host and path only (never the query, fragment or userinfo -- a link can carry
+     *  anything), at most 300 characters. "" when it is not a web link (mailto:, intent:...):
+     *  the child still sees "Ask a grown-up", nothing is sent. */
+    static String linkRequestBody(String url) {
+        try {
+            URI u = new URI(url == null ? "" : url);
+            String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(java.util.Locale.ROOT);
+            if ((!scheme.equals("http") && !scheme.equals("https")) || u.getHost() == null) return "";
+            String path = u.getRawPath() == null ? "" : u.getRawPath();
+            String clean = scheme + "://" + u.getHost().toLowerCase(java.util.Locale.ROOT) + path;
+            if (clean.length() > 300) clean = clean.substring(0, 300);
+            return "{\"url\":\"" + jsonEscape(clean) + "\"}";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String jsonEscape(String s) {
+        StringBuilder b = new StringBuilder();
+        for (char c : s.toCharArray()) {
+            if (c == '"' || c == '\\') b.append('\\').append(c);
+            else if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
+            else b.append(c);
+        }
+        return b.toString();
     }
 
     private static boolean under(String path, String prefix) {

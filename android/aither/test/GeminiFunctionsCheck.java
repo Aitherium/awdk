@@ -66,7 +66,7 @@ public class GeminiFunctionsCheck {
         eq("route adult hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", false), false),
                 "window " + AppTabs.ORIGIN + "/?app=hearth");
         eq("route child learn", AppTabs.route(GeminiFunctions.appUrl("learn", true), true), "tab learn");
-        eq("route child hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", true), true), "tab space");
+        eq("route child hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", true), true), "tab learn " + AppTabs.ORIGIN + "/hearth"); // one child tab, the classroom
         // the Hearth draft survives the shell: it opens as a window on the full link
         String draft = GeminiFunctions.hearthUrl("water the plants", false);
         eq("route hearth draft", AppTabs.route(draft, false), "window " + draft);

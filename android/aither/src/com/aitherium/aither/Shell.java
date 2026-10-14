@@ -372,6 +372,13 @@ final class Shell {
         item.addView(label, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         item.setOnClickListener(v -> select(t[0]));
+        if (child) {
+            // a child's bar is one tab (the classroom): a grown-up long-presses it for Settings
+            item.setOnLongClickListener(v -> {
+                host.openSettings();
+                return true;
+            });
+        }
         paintNav(item, t[3], false);
         return item;
     }
