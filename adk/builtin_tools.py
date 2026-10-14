@@ -1701,6 +1701,12 @@ def _open_graph_blocking(idx: Any) -> None:
             asyncio.run(idx._open())
 
 
+#: A graph_code_search call's worker budget. The crystal's 2.5 s fits a recall that
+#: must not hold a turn; a tool the model asked for waits for its answer (a warm hybrid
+#: query measured 2.5-4.7 s on the 496k-chunk index, 2026-10-14).
+TOOL_GRAPH_WAIT_S = float(os.getenv("ADK_TOOL_GRAPH_WAIT_S", "8"))
+
+
 async def _local_graph_hits(query: str, limit: int) -> dict | None:
     """Hits from the local graph as ``{"count", "results", "source"}``, or None.
 
@@ -1717,7 +1723,8 @@ async def _local_graph_hits(query: str, limit: int) -> dict | None:
     try:
         if callable(getattr(idx, "_open", None)) and getattr(idx, "_ok", "") is None:
             await asyncio.to_thread(_open_graph_blocking, idx)
-        hits = await idx.query(query, k)
+        from adk.crystal import _graph_query
+        hits = await _graph_query(idx, query, k, TOOL_GRAPH_WAIT_S)
     except Exception as exc:  # noqa: BLE001 -- reported to the model, never raised
         logger.warning("local code graph query failed: %s", exc)
         return {"error": f"local code graph: {type(exc).__name__}: {exc}"}

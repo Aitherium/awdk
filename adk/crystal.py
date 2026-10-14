@@ -388,6 +388,17 @@ async def _no_hits() -> list[dict]:
     return []
 
 
+async def _graph_query(graph: Any, text: str, k: int, timeout: float) -> list[dict]:
+    """``graph.query`` with a worker timeout when the graph takes one (AwgraphIndex);
+    an older or fake graph without the parameter is asked as before."""
+    try:
+        return await graph.query(text, k, timeout=timeout)
+    except TypeError as exc:
+        if "timeout" not in str(exc):
+            raise
+        return await graph.query(text, k)
+
+
 def _worker_mode() -> bool:
     """Open the code graph in a child process (``ADK_AWGRAPH_WORKER=1``; the daemon sets
     it). In-process, awgraph's pure-Python load and scorer hold the GIL for whole turns."""
@@ -518,7 +529,10 @@ class AwgraphIndex:
             self._ok = False
         return bool(self._ok)
 
-    async def query(self, text: str, k: int) -> list[dict]:
+    async def query(self, text: str, k: int, timeout: "float | None" = None) -> list[dict]:
+        """Hits for ``text``. ``timeout`` bounds a worker query (default GRAPH_WAIT_S + 1):
+        a warm hybrid query takes 2.5-4.7 s, so the tool path and a code turn's recall
+        pass their own longer budget (2026-10-14: every one timed out at 2.5 s)."""
         if not await self._open():
             raise AwgraphUnavailable(self.reason or f"no-index for {self.root}")
         from adk.graph_worker import GraphWorkerClient
@@ -526,7 +540,8 @@ class AwgraphIndex:
         if isinstance(self._graph, GraphWorkerClient):
             client = self._graph
             try:
-                return await asyncio.to_thread(client.query, text, k, GRAPH_WAIT_S + 1.0)
+                return await asyncio.to_thread(client.query, text, k,
+                                               timeout or GRAPH_WAIT_S + 1.0)
             except RuntimeError as exc:
                 if not client.alive:  # the worker died: the next open restarts it
                     self._graph, self._ok, self._opening = None, None, None
@@ -994,11 +1009,12 @@ class Crystal:
             return []
         cold = getattr(self.graph, "is_warm", True) is False
         try:
-            task = asyncio.ensure_future(self.graph.query(message, self.max_graph_hits))
+            budget = GRAPH_WAIT_S if wait is None else wait
+            task = asyncio.ensure_future(
+                _graph_query(self.graph, message, self.max_graph_hits, budget + 1.0))
             task.add_done_callback(_reap_background)
             try:
-                hits = await asyncio.wait_for(asyncio.shield(task),
-                                              GRAPH_WAIT_S if wait is None else wait)
+                hits = await asyncio.wait_for(asyncio.shield(task), budget)
             except asyncio.TimeoutError:
                 self._degrade("awgraph:degraded:cold" if cold else "awgraph:timeout")
                 self._graph_degraded = "cold" if cold else "timeout"

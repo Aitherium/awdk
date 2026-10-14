@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -909,6 +910,74 @@ def _point_to_web_when_nothing_matches(out: str, query: str, agent=None) -> str:
     return json.dumps(data)
 
 
+# Gateway tool -> the LOCAL tool that answers the same question. Measured
+# 2026-10-14: "where is split_near_question defined?" sent the model to the gateway's
+# codegraph_search, Genesis answered 503 "CodeGraph not available", and the turn ran
+# 38-429 s with no answer while the local awgraph index answered in ~3 s.
+_LOCAL_SHADOWS: dict[str, str] = {"codegraph_search": "graph_code_search"}
+
+
+def _local_shadow_args(gateway_name: str, arguments: dict) -> dict:
+    """Map a gateway call's arguments onto its local twin's signature."""
+    args = arguments or {}
+    if gateway_name == "codegraph_search":
+        query = args.get("query") or args.get("q") or ""
+        try:
+            limit = int(args.get("limit") or 10)
+        except (TypeError, ValueError):
+            limit = 10
+        return {"query": str(query), "limit": limit}
+    return dict(args)
+
+
+#: The longest a gateway call waits on its local twin before asking the gateway.
+_SHADOW_WAIT_S = float(os.getenv("ADK_LOCAL_SHADOW_WAIT_S", "10"))
+
+
+async def _try_local_shadow(agent, gateway_name: str, arguments: dict) -> str | None:
+    """The local twin's answer when it has one, else None (caller asks the gateway).
+
+    Only a JSON answer with no "error" and count > 0 counts: an empty or failed local
+    search falls through to the gateway exactly as before.
+    """
+    local_name = _LOCAL_SHADOWS.get(str(gateway_name or "").strip().lower())
+    if not local_name:
+        return None
+    tools = getattr(agent, "_tools", None)
+    try:
+        td = tools.get(local_name) if tools is not None else None
+    except Exception:  # noqa: BLE001 -- a registry without get(): no local twin
+        td = None
+    fn = getattr(td, "fn", None)
+    # The gateway catalogue can carry a tool with the local name too; replace-by-name
+    # then leaves a gateway closure under it, which is no local answer.
+    if fn is None or getattr(fn, "_adk_gateway_tool", False):
+        return None
+    try:
+        from adk.builtin_tools import _local_code_graph, code_graph_reachable
+        if not code_graph_reachable():
+            return None
+        # A cold index (still hydrating, up to minutes after a restart) is not asked:
+        # the gateway answers at once, as before this shadow existed (review 2026-10-14).
+        if getattr(_local_code_graph(), "is_warm", True) is not True:
+            return None
+        out = fn(**_local_shadow_args(gateway_name, arguments))
+        if inspect.isawaitable(out):
+            out = await asyncio.wait_for(out, _SHADOW_WAIT_S)
+        data = json.loads(out) if isinstance(out, str) else None
+    except Exception as exc:  # noqa: BLE001 -- the gateway is still the fallback
+        logger.warning("local shadow %s for %s failed: %s", local_name, gateway_name, exc)
+        return None
+    if not isinstance(data, dict) or "error" in data:
+        return None
+    try:
+        if int(data.get("count") or 0) <= 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return out
+
+
 def register_gateway_tools_on(
     agent,
     *,
@@ -985,6 +1054,9 @@ def register_gateway_tools_on(
                 "fix": ("use search_tools to find an allowed alternative; if none fits, "
                         "tell the user this host denies that tool"),
             })
+        local = await _try_local_shadow(agent, name, arguments or {})
+        if local is not None:
+            return local
         return await call_tool_impl(name, arguments or {}, client_getter())
 
     call_tool.__doc__ = (
@@ -1015,12 +1087,16 @@ def register_gateway_tools_on(
             continue
 
         async def _gateway_tool_call(tn=tool_name, **kwargs) -> str:
+            local = await _try_local_shadow(agent, tn, kwargs)
+            if local is not None:
+                return local
             result = await client_getter().call_tool(tn, kwargs)
             if result.get("success"):
                 return result.get("text", "")
             return f"Error: {result.get('message', 'unknown')}"
 
         _gateway_tool_call.__name__ = tool_name
+        _gateway_tool_call._adk_gateway_tool = True  # type: ignore[attr-defined]
         _gateway_tool_call.__doc__ = tool_spec.get("description", "")
         try:
             agent._tools.register(
