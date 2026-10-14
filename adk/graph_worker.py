@@ -79,6 +79,28 @@ def serve(root: str, stdin: Any = None, stdout: Any = None) -> int:
     return 0
 
 
+def _log_path() -> str:
+    return os.path.join(os.path.expanduser("~"), ".aither", "logs", "graph-worker.log")
+
+
+def _log_file() -> Any:
+    try:
+        os.makedirs(os.path.dirname(_log_path()), exist_ok=True)
+        return open(_log_path(), "a", encoding="utf-8")  # noqa: SIM115 -- the child owns it
+    except OSError as exc:
+        logger.debug("graph worker log unavailable: %s", exc)
+        return None
+
+
+def _last_log_line() -> str:
+    try:
+        with open(_log_path(), encoding="utf-8", errors="replace") as fh:
+            lines = [ln.strip() for ln in fh.readlines()[-20:] if ln.strip()]
+        return lines[-1][:300] if lines else "(no output)"
+    except OSError:
+        return "(no log)"
+
+
 class GraphWorkerClient:
     """One worker process for one repository root."""
 
@@ -102,9 +124,18 @@ class GraphWorkerClient:
         kw: dict = {}
         if os.name == "nt":
             kw["creationflags"] = _WIN_FLAGS
+        # The child imports THIS adk (the daemon runs `python -P` from a snapshot that
+        # is not on the child's default path) and logs to a file a failure can be read
+        # from: on 2026-10-14 the first live start died silently with stderr discarded.
+        env = dict(os.environ)
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = os.pathsep.join(
+            [here] + [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p])
+        self._log = _log_file()
         self._proc = subprocess.Popen(
             self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, **kw)
+            stderr=self._log or subprocess.DEVNULL, text=True, encoding="utf-8",
+            bufsize=1, env=env, **kw)
         threading.Thread(target=self._read, name="graph-worker-reader", daemon=True).start()
         if not self._ready.wait(ready_timeout):
             self.reason = f"graph worker not ready after {ready_timeout:.0f}s"
@@ -130,7 +161,8 @@ class GraphWorkerClient:
                 slot[1].update(msg)
                 slot[0].set()
         if not self._ready.is_set():
-            self.reason = self.reason or "graph worker exited before it was ready"
+            self.reason = self.reason or ("graph worker exited before it was ready: "
+                                          + _last_log_line())
             self._ready.set()
 
     def query(self, text: str, k: int, timeout: float) -> list[dict]:
