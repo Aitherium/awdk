@@ -45,7 +45,7 @@ from adk import browser_grant as _browser_grant
 from adk import extension_pair as _extension_pair
 from adk import local_auth as _local_auth
 from adk import node_commands
-from adk._tls import tls_verify
+from adk._tls import ssl_context, tls_verify
 from adk.agent import AitherAgent, AgentResponse
 from adk.config import Config
 from adk.identity import list_identities, load_identity
@@ -2017,7 +2017,7 @@ def create_app(
         # off for the loopback hop only.
         for base, verify in bases:
             try:
-                async with httpx.AsyncClient(timeout=120.0, verify=verify) as client:
+                async with httpx.AsyncClient(timeout=120.0, verify=ssl_context(verify)) as client:
                     r = await client.post(
                         f"{base}/social/x/import-session",
                         headers=headers, json=payload)
@@ -2209,7 +2209,7 @@ def create_app(
             raise HTTPException(status_code=401, detail=f"local-only sign-in — {_local_only_hint}")
         base = _handoff_identity_base(prof)
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=8.0) as client:
                 resp = await client.post(
                     f"{base}/auth/handoff/mint",
                     json={"client": "adk-daemon", "audience": audience},
@@ -2300,7 +2300,7 @@ def create_app(
 
         # 1. mesh key — Identity refuses (403) when the caller has no tenant.
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=15.0) as client:
                 r = await client.post(
                     f"{idp}/v1/mesh-keys/issue",
                     headers={"Authorization": f"Bearer {token}"},
@@ -3631,7 +3631,7 @@ def create_app(
                 "content": ciphertext_b64,
             }
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=120.0) as client:
                 r = await client.put(url, headers=headers, json=payload)
                 if r.status_code not in (201, 200):
                     return JSONResponse({
@@ -3686,7 +3686,7 @@ def create_app(
             headers = {"Authorization": f"token {github_token}"}
             url = f"https://api.github.com/repos/{github_repo}/contents/aither-backups"
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=30.0) as client:
                 r = await client.get(url, headers=headers)
                 if r.status_code == 404:
                     return JSONResponse({"ok": True, "backups": []})
@@ -3752,7 +3752,7 @@ def create_app(
             headers = {"Authorization": f"token {github_token}"}
             url = f"https://api.github.com/repos/{github_repo}/contents/{github_path}"
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=120.0) as client:
                 r = await client.get(url, headers=headers)
                 if r.status_code == 404:
                     # 200-with-ok:false (not HTTP 404) so the extension's port-probe,
@@ -3849,7 +3849,7 @@ def create_app(
         # self-signed internal certs are trusted WITH verification, and only an
         # explicit AITHER_TLS_VERIFY=false disables it (loudly). adk/_tls.py exists
         # precisely to stop this call site hardcoding a bypass.
-        async with httpx.AsyncClient(timeout=10.0, verify=tls_verify()) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=ssl_context(tls_verify())) as client:
             base_url = await _resolve_operator_base(client, "chronicle", 8121)
             if base_url is None:
                 return JSONResponse(
@@ -3935,7 +3935,7 @@ def create_app(
         errors: list[str] = []
 
         async with httpx.AsyncClient(
-            timeout=8.0, verify=tls_verify(),
+            timeout=8.0, verify=ssl_context(tls_verify()),
             http2=False,  # Pulse may not support h2; stick to h1
         ) as client:
             base_url = await _resolve_operator_base(client, "pulse", 8081)
@@ -4027,7 +4027,7 @@ def create_app(
         # transport error that reads as "service down"), and a loopback-only URL
         # is wrong whenever adk runs inside the fleet network. The resolver tries
         # both hosts over https.
-        async with httpx.AsyncClient(timeout=5.0, verify=tls_verify()) as client:
+        async with httpx.AsyncClient(timeout=5.0, verify=ssl_context(tls_verify())) as client:
             base_url = await _resolve_operator_base(client, "watch", 8082)
             if base_url is None:
                 return JSONResponse(
@@ -4112,7 +4112,7 @@ def create_app(
         errors: list[str] = []
 
         async with httpx.AsyncClient(
-            timeout=8.0, verify=tls_verify(), http2=False,
+            timeout=8.0, verify=ssl_context(tls_verify()), http2=False,
         ) as client:
             base_url = await _resolve_operator_base(client, "flux", 8117)
             if base_url is None:
@@ -4272,7 +4272,7 @@ def create_app(
             return JSONResponse(content=cached)
 
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=8.0) as client:
                 resp = await client.get(upstream)
             if resp.status_code != 200:
                 raise RuntimeError("upstream answered " + str(resp.status_code))
@@ -5040,6 +5040,9 @@ def create_app(
             "x_tool_calls": x_tool_calls,
         }
 
+    _models_cache: dict = {}
+    _models_cache_s = 5.0
+
     @app.get("/v1/models")
     async def list_models_endpoint():
         import inspect as _inspect
@@ -5060,12 +5063,19 @@ def create_app(
             provider = None
         base = getattr(provider, "base_url", None)
         if isinstance(base, str) and base:
+            # Polled several times a second by open pages (measured 2026-10-14: 45% of
+            # the daemon loop's busy time during a turn). One upstream fetch per window.
+            hit = _models_cache.get(base)
+            if hit is not None and time.monotonic() - hit[0] < _models_cache_s:
+                return hit[1]
             try:
-                async with httpx.AsyncClient(timeout=10.0, verify=tls_verify()) as _c:
+                async with httpx.AsyncClient(timeout=10.0, verify=ssl_context(tls_verify())) as _c:
                     r = await _c.get(base.rstrip("/").removesuffix("/v1") + "/v1/models")
                 if r.status_code == 200 and isinstance(r.json().get("data"), list):
-                    return {"object": "list", "data": r.json()["data"],
-                            "aither_source": base}
+                    listing = {"object": "list", "data": r.json()["data"],
+                               "aither_source": base}
+                    _models_cache[base] = (time.monotonic(), listing)
+                    return listing
             except Exception as exc:  # noqa: BLE001 - fall through to the flat list
                 logger.debug("upstream /v1/models unavailable, serving the flat "
                              "list without availability: %s", exc)
@@ -5171,7 +5181,7 @@ def create_app(
         steps = int((req or {}).get("steps") or 24)
         cfg = float((req or {}).get("cfg") or 7.0)
         seed = int((req or {}).get("seed") or int(time.time() * 1000) % 2**31)
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(verify=ssl_context(True), timeout=30.0) as client:
             ckpt = await _comfy_checkpoint(client, str((req or {}).get("checkpoint") or ""))
             wf = _comfy_workflow(ckpt, prompt, width, height, steps, cfg, seed)
             r = await client.post(f"{_comfy_url}/prompt", json={"prompt": wf})
@@ -5265,7 +5275,7 @@ def create_app(
         body = {"prompt": prompt, "style": style, "count": 1, "width": width,
                 "height": height, "preset": preset, "timeout": int(budget)}
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=30.0) as client:
                 # The dispatch itself can outlive its own HTTP call on this route --
                 # media-forge runs the job inside the request. A read timeout here is
                 # therefore NOT a failure; the job is already tracked, and the poll
@@ -5335,7 +5345,7 @@ def create_app(
         check: the browser needs to know whether to offer the tool at all, and
         `media-forge is up` does not imply `it can render` -- it needs a diffusion
         backend behind it."""
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        async with httpx.AsyncClient(verify=ssl_context(True), timeout=6.0) as client:
             for name, url, path in (("media-forge", _mediaforge_url, "/api/studio/loras"),
                                     ("comfyui", _comfy_url, "/system_stats")):
                 try:
@@ -5574,7 +5584,7 @@ def create_app(
         try:
             portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
             import httpx
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=15) as client:
                 await client.post(
                     f"{portal_url}/v1/agents/upsert",
                     json={
@@ -5603,7 +5613,7 @@ def create_app(
             portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
             import httpx
             billing_email = saved.get("billing_email", "")
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=15) as client:
                 fleet_resp = await client.post(
                     f"{portal_url}/api/fleet/endpoints/register",
                     json={
@@ -5637,7 +5647,7 @@ def create_app(
         try:
             fleet_svc_url = os.getenv("AITHER_FLEET_URL", "http://localhost:8162")
             import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=10) as client:
                 await client.post(
                     f"{fleet_svc_url}/fleet/agents",
                     json={
@@ -5674,7 +5684,7 @@ def create_app(
         try:
             portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
             import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=10) as client:
                 await client.post(
                     f"{portal_url}/v1/agents/upsert",
                     json={
@@ -5694,7 +5704,7 @@ def create_app(
             try:
                 portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
                 import httpx
-                async with httpx.AsyncClient(timeout=10) as client:
+                async with httpx.AsyncClient(verify=ssl_context(True), timeout=10) as client:
                     await client.delete(
                         f"{portal_url}/api/fleet/endpoints/{fleet_endpoint_id}",
                         headers={"Authorization": f"Bearer {api_key}"},
@@ -5812,7 +5822,7 @@ def create_app(
                 else:
                     # Fallback: direct HTTP heartbeat
                     import httpx
-                    async with httpx.AsyncClient(timeout=15) as client:
+                    async with httpx.AsyncClient(verify=ssl_context(True), timeout=15) as client:
                         await client.post(
                             f"{portal_url}/v1/agents/upsert",
                             json={
@@ -6336,7 +6346,7 @@ def create_app(
             if mesh_url:
                 import httpx
                 try:
-                    async with httpx.AsyncClient(timeout=10.0) as client:
+                    async with httpx.AsyncClient(verify=ssl_context(True), timeout=10.0) as client:
                         await client.post(
                             f"{mesh_url}/heartbeat",
                             json={"node_id": saved.get("node_id", ""), "status": "online"},
@@ -7014,7 +7024,7 @@ def create_app(
             fwd_headers["Content-Type"] = request.headers["content-type"]
 
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=30) as client:
                 resp = await client.request(
                     request.method, target,
                     params=dict(request.query_params),

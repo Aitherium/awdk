@@ -27,18 +27,21 @@ def test_a_changed_ca_file_gets_a_new_context(tmp_path):
     assert _tls.ssl_context(str(ca)) is not first
 
 
-def test_reusing_the_context_makes_client_construction_cheap():
+def test_reusing_the_context_builds_no_new_ssl_contexts(monkeypatch):
     ctx = _tls.ssl_context(True)
-    httpx.AsyncClient(verify=ctx), httpx.AsyncClient(verify=True)  # import-time warm-up
-    t = time.perf_counter()
+    builds = {"n": 0}
+    real = ssl.create_default_context
+
+    def counting(*a, **k):
+        builds["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(ssl, "create_default_context", counting)
     for _ in range(20):
-        httpx.AsyncClient(verify=ctx)
-    cached = time.perf_counter() - t
-    t = time.perf_counter()
-    for _ in range(20):
-        httpx.AsyncClient(verify=True)
-    fresh = time.perf_counter() - t
-    assert cached < fresh / 3, (cached, fresh)
+        httpx.AsyncClient(verify=_tls.ssl_context(True))
+    assert builds["n"] == 0 and _tls.ssl_context(True) is ctx
+    httpx.AsyncClient(verify=True)
+    assert builds["n"] >= 1, "httpx builds a context per client without the cache"
 
 
 def test_the_daemon_hot_paths_use_the_shared_context():
@@ -48,7 +51,10 @@ def test_the_daemon_hot_paths_use_the_shared_context():
     from adk.client import _gateway_mcp
     from adk.llm import openai_compat
 
-    for mod in (embeddings, graph_memory, memory, services, _gateway_mcp, openai_compat):
+    from adk import server
+
+    for mod in (embeddings, graph_memory, memory, services, _gateway_mcp, openai_compat,
+                server):
         src = inspect.getsource(mod)
         n_clients = src.count("httpx.AsyncClient(")
         assert n_clients and src.count("ssl_context(") >= n_clients, mod.__name__

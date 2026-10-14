@@ -348,3 +348,45 @@ def test_a_single_space_scope_opts_out_of_the_daemon_crystal(monkeypatch):
     monkeypatch.setenv("ADK_CRYSTAL_SCOPE", " ")
     assert server._daemon_default_crystal("probe", server._DEFAULT_CRYSTAL_SCOPE) is None
     assert crystal_from_env("probe") is None
+
+
+def test_models_listing_is_fetched_upstream_once_per_window(daemon, monkeypatch):
+    """Open pages poll GET /v1/models several times a second; each call built a client
+    and fetched MicroScheduler's listing on the daemon loop (45% of its busy time during
+    a turn, 2026-10-14). One upstream fetch serves a short window."""
+    import types
+
+    app, _script, built = daemon
+    client = TestClient(app)
+    client.get("/health")
+    fetches = {"n": 0}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"data": [{"id": "aither-orchestrator", "object": "model"}]}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            fetches["n"] += 1
+            return _Resp()
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", _Client)
+    for agent in built:
+        monkeypatch.setattr(agent.llm, "get_provider",
+                            lambda: types.SimpleNamespace(base_url="https://up.test/v1"),
+                            raising=False)
+    first = client.get("/v1/models").json()
+    second = client.get("/v1/models").json()
+    assert first["data"][0]["id"] == "aither-orchestrator" and second == first
+    assert fetches["n"] == 1
