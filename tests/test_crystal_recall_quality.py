@@ -504,3 +504,24 @@ def test_only_code_requests_ask_the_code_graph():
     assert _wants_code_graph("fix the bug in crystal.py")
     assert not _wants_code_graph("anything exciting about tanium?")
     assert not _wants_code_graph("hi")
+
+
+async def test_a_greeting_recalls_no_unrelated_facts():
+    """Live 2026-10-14: "hi" scored 0.41 at best and recalled 20 unrelated facts at the old
+    0.3 floor; a fact the question is about scored 0.46+."""
+    import math
+
+    def vec(angle):
+        return [math.cos(angle), math.sin(angle)]
+
+    q = vec(0.0)
+    near, far = vec(math.acos(0.55)), vec(math.acos(0.41))
+    rows = [("a", "tanium shipped autonomous IT", {"vec": near}),
+            ("b", "business headlines this morning", {"vec": far})]
+
+    async def embed(texts):
+        return [q for _ in texts]
+
+    c = Crystal(scope=WRITE, store=_Store(rows), embed=embed)
+    facts = await c.recall_facts("anything")
+    assert facts == ["tanium shipped autonomous IT"]

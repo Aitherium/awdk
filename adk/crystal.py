@@ -69,7 +69,10 @@ MIN_KEYWORD_SCORE = 0.05
 #: only scores above this floor count, and at most KEYWORD_FALLBACK_LIMIT facts.
 KEYWORD_FALLBACK_FLOOR = 0.15
 KEYWORD_FALLBACK_LIMIT = 8
-MIN_COSINE_SCORE = 0.3
+#: Measured 2026-10-14 on the daemon's store (scheduler embedder): "hi" scored 0.41 at
+#: best against 86 facts (37 cleared 0.3, so a greeting recalled 20 unrelated facts and
+#: the agent tried to post "Hi!" publicly); facts the question was about scored 0.46-0.57.
+MIN_COSINE_SCORE = 0.45
 #: How long one turn waits for the code graph. A cold awgraph open hydrates the whole
 #: index (measured 37.3 s for a probe and ~55 s before the first token of a real turn on
 #: a 493k-chunk index); past this the turn goes on without graph hits, marked degraded,

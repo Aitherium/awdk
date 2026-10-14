@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -90,9 +91,44 @@ def runtime_gates(agent_name: str) -> set[str]:
         return set(_RUNTIME_GATES.get((agent_name or "").lower(), ()))
 
 
-def needs_approval(agent_name: str, tool_name: str) -> bool:
-    """True if ``tool_name`` is gated for ``agent_name`` per the approval policy
-    (``AITHER_TOOL_APPROVAL``) or a runtime gate (:func:`set_runtime_gates`)."""
+#: Tools that act on the world outside this machine or cannot be undone: posting,
+#: sending, publishing, paying, refunding, deleting. They ask first by DEFAULT, policy or
+#: not. Measured 2026-10-14 on the live daemon: the owner typed "hi" and the agent called
+#: post_to_social("Hi!", twitter+linkedin) with no question asked -- only a network error
+#: stopped a public post. ``AITHER_TOOL_APPROVAL_OUTWARD=0`` turns the default off.
+_OUTWARD = re.compile(
+    r"(?:^|_)(?:post|send|publish|tweet|email|purchase|buy|pay|refund|charge|"
+    r"delete|destroy|drop|transfer|wire|unsubscribe|void|cancel|teardown)(?:_|$)")
+#: A tool whose name STARTS with one of these only reads, whatever noun follows.
+_READ_FIRST = frozenset({"get", "list", "search", "query", "find", "read", "show", "view",
+                         "fetch", "describe", "check", "inspect", "status", "count", "recall",
+                         "preview", "estimate", "draft"})
+#: Discovery tools that RUN another tool by name; the gate judges the tool they run.
+_PROXY_TOOLS = frozenset({"call_tool", "load_and_call", "invoke_tool"})
+
+
+def is_outward(tool_name: str) -> bool:
+    """True when ``tool_name`` posts, sends, pays or deletes (see ``_OUTWARD``)."""
+    if os.getenv("AITHER_TOOL_APPROVAL_OUTWARD", "1").strip().lower() in ("0", "false", "off"):
+        return False
+    name = (tool_name or "").lower()
+    if name.split("_", 1)[0] in _READ_FIRST:  # list_posts, get_refund_status: reads
+        return False
+    return bool(_OUTWARD.search(name))
+
+
+def needs_approval(agent_name: str, tool_name: str, args: Any = None) -> bool:
+    """True if ``tool_name`` is gated for ``agent_name``: an outward action by default
+    (:func:`is_outward`), the approval policy (``AITHER_TOOL_APPROVAL``) or a runtime
+    gate (:func:`set_runtime_gates`). For a proxy tool (``call_tool``) the tool it RUNS,
+    named in ``args["name"]``, is judged too."""
+    inner = ""
+    if (tool_name or "").lower() in _PROXY_TOOLS and isinstance(args, dict):
+        inner = str(args.get("name") or args.get("tool") or "")
+    if inner and needs_approval(agent_name, inner):
+        return True
+    if is_outward(tool_name):
+        return True
     if (tool_name or "").lower() in runtime_gates(agent_name):
         return True
     pol = _policy_set()

@@ -272,3 +272,29 @@ def test_a_gemma_native_tool_call_runs_the_tool():
     assert got == {"query": "Tanium news, today", "limit": 5}
     assert resp.content == "Tanium shipped Autonomous IT."
     assert "tool_call" not in resp.content
+
+
+def test_an_outward_tool_asks_before_it_runs(tmp_path, monkeypatch):
+    """Live 2026-10-14: the owner typed "hi" and the agent posted "Hi!" to twitter and
+    linkedin with no question asked. Posting, sending and paying ask first by default."""
+    monkeypatch.delenv("AITHER_TOOL_APPROVAL", raising=False)
+    monkeypatch.setenv("AITHER_ADK_STATE_DIR", str(tmp_path))
+    seen: list = []
+    agent = _agent([
+        'ACTION: post_to_social\nINPUT: {"text": "Hi!"}',
+        "FINAL: done",
+    ], seen)
+    posted: list = []
+
+    @agent.tool
+    def post_to_social(text: str) -> str:
+        """post"""
+        posted.append(text)
+        return "posted"
+
+    events: list = []
+    resp = asyncio.run(agent.stream_react("hi", on_event=events.append, max_steps=4,
+                                          session_id="s-outward"))
+    assert posted == [], "a public post ran without the owner's yes"
+    assert getattr(resp, "requires_action", False) or any(
+        e.get("type") == "approval_required" for e in events)

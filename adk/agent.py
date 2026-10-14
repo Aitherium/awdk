@@ -2797,7 +2797,7 @@ class AitherAgent:
                 # memory) with the decision recorded, so the gate consumes it here on the
                 # second pass: deny → feed a denial observation; allow → fall through to
                 # execute; undecided → record the pending call and pause the whole turn.
-                if needs_approval(self.name, tc.name):
+                if needs_approval(self.name, tc.name, tc.arguments):
                     # Per call: an allow covers the args on the card, not the tool.
                     _decision = _approval_store.decision_for(
                         sid, tc.name,
@@ -4049,7 +4049,7 @@ class AitherAgent:
             else:
                 _decision_gate = None
                 try:
-                    if needs_approval(self.name, name):
+                    if needs_approval(self.name, name, args):
                         _decision_gate = get_approval_store().decision_for(sid, name, args) or "ask"
                 except Exception as exc:  # noqa: BLE001 -- an unreadable gate does not run
                     await _degraded("approval", exc)
