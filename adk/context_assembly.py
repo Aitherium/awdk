@@ -116,6 +116,36 @@ def _drop_seen_lines(text: str, seen: set[str]) -> tuple[str, int]:
     return "\n".join(out), left
 
 
+#: Words a question shares with every fact and that pick none out ("what is in the news
+#: today" must not pull a fact because it says "today").
+_NEAR_STOP = frozenset({"today", "now", "yesterday", "current", "currently", "right",
+                        "looking", "going", "doing", "were", "there", "any", "anything",
+                        "some", "something", "know", "think", "need", "want", "like"})
+
+
+def split_near_question(text: str, question: str) -> tuple[str, str]:
+    """Split a recall block into ``(near, rest)``: the fact lines sharing a word with
+    ``question``, and the block without them ('' when only its header would be left).
+
+    Recalled facts at the top of the prompt were ignored by a 12B model (measured
+    2026-10-14: the right fact was recalled first and it web-searched anyway), so the
+    facts that bear on the question go next to it. Gluing ALL of them there made it
+    answer the facts instead: "what is in the news today" got last turn's platform facts
+    and answered about the platform. Only lines with a shared content word move.
+    """
+    q = _words(question) - _NEAR_STOP
+    lines = (text or "").splitlines()
+    if not q or len(lines) < 2:
+        return "", text
+    near: list[str] = []
+    rest = [lines[0]]
+    for ln in lines[1:]:
+        (near if ln.strip() and q & _words(ln) else rest).append(ln)
+    if not near:
+        return "", text
+    return "\n".join(near), ("\n".join(rest) if any(r.strip() for r in rest[1:]) else "")
+
+
 def assemble(
     sources: Iterable[Source],
     budget_chars: int,

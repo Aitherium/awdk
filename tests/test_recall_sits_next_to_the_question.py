@@ -64,3 +64,17 @@ def test_failed_lines_inside_an_ok_result_are_not_crystallized():
     )])
     assert "Unknown tool" not in facts
     assert "node seven" in facts
+
+
+def test_only_facts_sharing_a_word_with_the_question_move_next_to_it():
+    from adk.context_assembly import split_near_question
+    block = ("[FACTS] Known facts.\n"
+             "- ops_state: platform llm pool is not available on the mesh\n"
+             "- web_search: tanium ships autonomous endpoint management")
+    near, rest = split_near_question(block, "what is in the news today")
+    assert near == "" and rest == block, "an unrelated question gets nothing glued on"
+    near, rest = split_near_question(block, "anything new about tanium?")
+    assert "tanium" in near and "tanium" not in rest
+    assert rest.startswith("[FACTS]") and "platform" in rest
+    near, rest = split_near_question(block, "is the platform llm pool up and is tanium ok")
+    assert rest == "", "a header with no facts left is dropped"
