@@ -234,6 +234,14 @@ def _pairs(tools: list, observations: list) -> list[tuple[str, str]]:
     return out
 
 
+#: An observation LINE reporting a failure. tool_result_failed judges the whole result;
+#: a meta tool (call_tool) can return ok text whose line is "Unknown tool ..." --
+#: measured 2026-10-14, such lines were crystallized and recalled as facts.
+_ERROR_LINE = re.compile(
+    r"(?i)\b(?:unknown tool|not found|no such|error|exception|traceback|failed|"
+    r"timed? ?out|refused|unauthori[sz]ed|forbidden|denied)\b")
+
+
 def _observation_facts(pairs: list[tuple[str, str]]) -> str:
     """Bulleted fact lines from successful, non-prose tool observations only."""
     try:
@@ -249,6 +257,8 @@ def _observation_facts(pairs: list[tuple[str, str]]) -> str:
             continue
         for raw in obs.splitlines():
             line = " ".join(raw.split())
+            if _ERROR_LINE.search(line):
+                continue
             clean = _redact(line)
             if clean != line:  # a credential shape: the whole line stays out
                 continue

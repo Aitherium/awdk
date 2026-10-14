@@ -3716,15 +3716,26 @@ class AitherAgent:
             "history_messages": len(_hist_msgs),
         })
         msgs = [Message(role="system", content=sys_prompt)]
+        _recalled = ""
         for s in _kept:
-            msgs.append(Message(role="system", content=s.text))
             if s.name not in ("constraints", "plan"):
                 _kg_memory_recalls.add(s.name)
+            if s.name == "crystal":
+                # Next to the question, not at the top of the prompt: live 2026-10-14
+                # the fact answering "why were awsh turns slow yesterday?" was recalled
+                # first in a top-of-prompt system block and the 12B model web-searched
+                # anyway. Carried in THIS turn's user message only (a mid-conversation
+                # system message is refused by strict chat templates); history keeps
+                # the plain question.
+                _recalled = s.text
+                continue
+            msgs.append(Message(role="system", content=s.text))
         msgs.extend(_hist_msgs)
         # Everything before this index is the turn's fixed head (prompt, context,
         # history); compaction only ever rewrites the scratchpad after it.
         _head_n = len(msgs)
-        msgs.append(Message(role="user", content=message))
+        msgs.append(Message(role="user", content=(
+            f"{_recalled}\n\n---\n{message}" if _recalled else message)))
         _tokens_streamed = 0
 
         _ACT = _re.compile(r"ACTION:\s*([a-zA-Z_][a-zA-Z0-9_]*)", _re.I)
