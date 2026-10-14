@@ -724,12 +724,36 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+_SCORE_WORD = re.compile(r"[a-z0-9]{3,}")
+#: Question words that carry no topic ("why were ..." matched every fact with "were").
+_STOP = frozenset({"why", "were", "was", "what", "how", "did", "does", "the", "and",
+                   "for", "with", "about", "this", "that", "are", "you", "your", "have",
+                   "has", "from", "any", "anything", "who", "when", "where", "which"})
+
+
+def _score_words(text: str) -> set:
+    """Topic words for keyword scoring: split on ANY punctuation, so a key like
+    ``awsh-slow-is-orchestrator-lane-contention`` contributes awsh, slow, ... ."""
+    return {w for w in _SCORE_WORD.findall((text or "").lower()) if w not in _STOP}
+
+
 def keyword_score(query: str, fact: str) -> float:
-    q = {w.lower() for w in _WORD.findall(query)}
-    f = {w.lower() for w in _WORD.findall(fact)}
+    """Word overlap, length-normalised, blended with how much of the QUERY the fact covers.
+
+    The plain cosine-style score divides by the fact's length, so a long, on-topic fact
+    lost to a short off-topic one: measured 2026-10-14, "why were awsh turns slow
+    yesterday?" scored 0.077 against the 460-char fact that answers it (three of the
+    question's five words), under the 0.15 floor of keyword-only recall.
+    """
+    q = _score_words(query)
+    f = _score_words(fact)
     if not q or not f:
         return 0.0
-    return len(q & f) / math.sqrt(len(q) * len(f))
+    shared = len(q & f)
+    score = max(shared / math.sqrt(len(q) * len(f)), 0.5 * shared / len(q))
+    if shared < 2 and len(q) >= 3:  # one shared word of a 3+-word question is noise
+        score = min(score, 0.1)
+    return score
 
 
 # ── the crystal ──────────────────────────────────────────────────────────────

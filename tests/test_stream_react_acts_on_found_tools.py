@@ -321,3 +321,25 @@ def test_a_live_state_question_answered_from_memory_is_sent_back_to_look():
                                           on_event=lambda e: None, max_steps=6))
     assert calls["n"] == 1
     assert resp.content == "2 services are down: mail and cert."
+
+
+def test_search_tools_points_to_the_web_when_no_platform_tool_matches():
+    """Live 2026-10-14: search_tools("Tanium") ranked a generic text tool first and the
+    turn never reached the web."""
+    from adk.server import _point_to_web_when_nothing_matches
+
+    agent = _agent([], [])
+
+    @agent.tool
+    def web_search(query: str) -> str:
+        """web"""
+        return ""
+
+    menu = json.dumps({"results": [{"name": "awdesk_command",
+                                    "description": "Run a desk command from text"}]})
+    out = json.loads(_point_to_web_when_nothing_matches(menu, "Tanium", agent))
+    assert out["results"][0]["name"] == "web_search" and "hint" in out
+    hit = json.dumps({"results": [{"name": "get_platform_health",
+                                   "description": "platform health summary"}]})
+    same = json.loads(_point_to_web_when_nothing_matches(hit, "platform health", agent))
+    assert same["results"][0]["name"] == "get_platform_health" and "hint" not in same

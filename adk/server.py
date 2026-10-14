@@ -867,6 +867,48 @@ def _filter_search_json(out: str, agent=None) -> str:
     return json.dumps(data)
 
 
+_QUERY_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{3,}")
+
+
+def _point_to_web_when_nothing_matches(out: str, query: str, agent=None) -> str:
+    """Put ``web_search`` first when no platform tool shares a word with the query.
+
+    The catalogue holds platform tools only. Measured 2026-10-14: "anything exciting
+    about tanium?" -> search_tools("Tanium") ranked a generic text tool
+    (awdesk_command) first, the model called it, and the turn never reached the web.
+    A query no tool name or description mentions is about the outside world.
+    """
+    words = {w.lower() for w in _QUERY_WORD.findall(query or "")}
+    tools = getattr(agent, "_tools", None)
+    has_web = False
+    try:
+        has_web = tools is not None and tools.get("web_search") is not None
+    except Exception:  # noqa: BLE001 -- a registry without get(): no hint
+        has_web = False
+    if not words or not has_web:
+        return out
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return out
+    rows = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return out
+    for r in rows:
+        blob = f"{(r or {}).get('name', '')} {(r or {}).get('description', '')}".lower()
+        if any(w in blob for w in words):
+            return out
+    data["results"] = [{"name": "web_search",
+                        "description": "Search the public internet (news, companies, "
+                                       "prices, anything outside this platform).",
+                        "parameters": {"type": "object", "required": ["query"],
+                                       "properties": {"query": {"type": "string"}}}}] + rows
+    data["count"] = len(data["results"])
+    data["hint"] = ("No platform tool matches this query, so it is about the outside "
+                    "world: call web_search directly with the user's question.")
+    return json.dumps(data)
+
+
 def register_gateway_tools_on(
     agent,
     *,
@@ -909,7 +951,8 @@ def register_gateway_tools_on(
         out = await search_tools_ranked(
             query, catalogue_getter() or [], limit, client_getter()
         )
-        return _filter_search_json(out, agent)
+        return _point_to_web_when_nothing_matches(_filter_search_json(out, agent),
+                                                  query, agent)
 
     search_tools.__doc__ = (
         "Search available tools by name and description. Returns "

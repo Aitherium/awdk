@@ -541,3 +541,15 @@ async def test_a_timed_out_recall_names_the_step_still_running():
     c.embed = None
     await c.recall_block("state cache")  # the next recall starts clean
     assert c.describe_open_steps() == ""
+
+
+def test_a_long_on_topic_fact_outranks_the_keyword_floor():
+    """Live 2026-10-14: the 460-char fact answering "why were awsh turns slow
+    yesterday?" scored 0.077 by keyword, under the 0.15 floor, and was never recalled."""
+    fact = ("awsh-slow-is-orchestrator-lane-contention: awsh/adk turns took 220 s on the "
+            "live daemon; the harness was not the cause. " + "context " * 60)
+    assert crystal_mod.keyword_score("why were awsh turns slow yesterday?", fact) > \
+        crystal_mod.KEYWORD_FALLBACK_FLOOR
+    assert crystal_mod.keyword_score("why were awsh turns slow yesterday?",
+                                     "turns of a board game") < \
+        crystal_mod.KEYWORD_FALLBACK_FLOOR
