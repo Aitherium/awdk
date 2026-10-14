@@ -7576,6 +7576,14 @@ async def _turn_routing(agent, message: str, session_id: str, on_event,
     if reasoning:
         effort = max(effort or 0, 8)
     steps = _max_tool_loops(effort) if effort is not None else _FAIL_OPEN_STEPS
+    # A stream turn spends steps on DISCOVERY (search_tools -> call_tool) before the
+    # tool that answers. Measured 2026-10-14: "anything exciting about tanium?" was
+    # classified effort 2 -> 4 steps, spent them on search_tools + a wrong call_tool,
+    # and ended on "I'll perform a web search ... one moment". Anything but small talk
+    # gets room for discovery + the real call + the answer.
+    _intent = str(getattr(decision, "intent", "") or "").lower()
+    if _intent not in _SMALL_TALK_INTENTS:
+        steps = max(steps, _STREAM_MIN_STEPS)
     try:
         on_event({"type": "effort", "effort": effort, "max_steps": steps,
                   "intent": str(getattr(decision, "intent", "") or ""),
@@ -7584,6 +7592,11 @@ async def _turn_routing(agent, message: str, session_id: str, on_event,
     except Exception as exc:  # noqa: BLE001 -- trace only
         logger.debug("effort event dropped: %s", exc)
     return _TurnRouting(decision, effort, steps)
+
+
+#: The floor for any non-small-talk stream turn (see _turn_routing).
+_STREAM_MIN_STEPS = 6
+_SMALL_TALK_INTENTS = frozenset({"conversation", "chat", "greeting", "smalltalk"})
 
 
 async def _effort_step_budget(agent, message: str, session_id: str, on_event) -> int:

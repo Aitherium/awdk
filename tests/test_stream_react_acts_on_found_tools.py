@@ -343,3 +343,23 @@ def test_search_tools_points_to_the_web_when_no_platform_tool_matches():
                                    "description": "platform health summary"}]})
     same = json.loads(_point_to_web_when_nothing_matches(hit, "platform health", agent))
     assert same["results"][0]["name"] == "get_platform_health" and "hint" not in same
+
+
+def test_a_question_gets_room_for_discovery_even_at_low_effort(monkeypatch):
+    """Live 2026-10-14: effort 2 -> 4 steps; the turn spent them on search_tools + a
+    wrong call_tool and ended on "I'll perform a web search ... one moment"."""
+    from types import SimpleNamespace
+
+    from adk import server
+
+    async def classify(agent, message, session_id):
+        return SimpleNamespace(effort=2, intent=intent["v"], agentic=True)
+
+    monkeypatch.setattr(server, "_classify_turn", classify)
+    intent = {"v": "question"}
+    r = asyncio.run(server._turn_routing(None, "anything exciting about tanium?", "s",
+                                         lambda e: None))
+    assert r.max_steps >= server._STREAM_MIN_STEPS
+    intent["v"] = "conversation"
+    r = asyncio.run(server._turn_routing(None, "hi", "s", lambda e: None))
+    assert r.max_steps < server._STREAM_MIN_STEPS
