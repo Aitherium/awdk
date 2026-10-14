@@ -72,11 +72,17 @@ from adk.harnesses.well import default_well
 #: loopback-only on a machine that runs no containers.
 DEFAULT_HOST = os.environ.get("AITHER_HARNESS_HOST", "127.0.0.1")
 
+#: GET /decisions bounds (see ``list_decisions``): history defaults to the newest
+#: 50; the open queue is unbounded unless the caller passes a limit.
+_DECISIONS_HISTORY_LIMIT = 50
+_DECISIONS_LIMIT_MAX = 500
+
 #: What the SERVER binds to — deliberately separate from DEFAULT_HOST, which is what
 #: CLIENTS connect to (`cli.py:_base_url` builds `http://{DEFAULT_HOST}:{PORT}`). Setting
 #: one value to `0.0.0.0` would point every local client at a bind-all address, which is
 #: not connectable. `daemon_endpoint.py` already draws this distinction the same way
 #: (`advertised_host = DEFAULT_HOST if host in ("0.0.0.0", "::", "")`).
+
 def _default_bind_host(env: Optional[dict] = None) -> str:
     """The bind address when nothing on the command line names one.
 
@@ -2363,12 +2369,46 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     def list_decisions(
         status: str = Query(default="open"),
         session_id: str = Query(default=""),
+        limit: Optional[int] = Query(default=None),
     ) -> dict[str, Any]:
+        # ``status=open`` is UNBOUNDED by default: every surface (desk, phone, Veil
+        # through Genesis, the shell) polls it with no limit, and the OLDEST open
+        # cards are the longest-blocking ones -- dropping them hides exactly what
+        # the owner most needs to answer. History (any other status, or ``all``)
+        # defaults to the newest 50: unbounded, ``status=all`` returned every card
+        # on disk (194 KB measured 2026-10-14). An explicit ``limit`` is clamped to
+        # 1..500, never refused (Genesis forwards its own default). For ``open`` it
+        # keeps the OLDEST N, for history the N most recently CLOSED. ``total`` is the pre-limit
+        # count. The window is returned oldest-first, the order surfaces render.
         from adk.decisions.store import get_store
 
+        store = get_store()
         wanted = None if status == "all" else status
-        cards = get_store().list(status=wanted, session_id=session_id)
-        return {"decisions": [c.to_dict() for c in cards], "count": len(cards)}
+        open_queue = wanted == "open"
+        if limit is not None:
+            limit = max(1, min(limit, _DECISIONS_LIMIT_MAX))
+        elif not open_queue:
+            limit = _DECISIONS_HISTORY_LIMIT
+        cards = store.list(status=wanted, session_id=session_id,
+                           newest_first=not open_queue)
+        if not open_queue:
+            # History is ranked by when the card CLOSED (answered/expired/cancelled),
+            # falling back to created_at for open cards under ``all``. Ranking by
+            # created_at alone pushed an old card answered today out of the window,
+            # and an act-once consumer polling status=answered never saw it.
+            cards.sort(key=lambda c: c.answered_at or c.created_at, reverse=True)
+        total = len(cards)
+        if limit is not None:
+            cards = cards[:limit]
+        if not open_queue:
+            cards = cards[::-1]
+        return {
+            "decisions": [c.to_dict() for c in cards],
+            "count": len(cards),
+            "total": total,
+            "truncated": total > len(cards),
+            "corrupt": store.corrupt_cards(),
+        }
 
     @app.get("/decisions/count", dependencies=[Depends(auth)])
     def count_decisions() -> dict[str, Any]:

@@ -13,9 +13,18 @@ Design notes that are consequences of real constraints, not preference:
   corrupt JSON, and the card would flicker out of the list and back. ``os.replace``
   is atomic on both POSIX and Windows.
 
-* **A corrupt card is skipped, never fatal.** ``list()`` is called by surfaces that
-  must keep working. One unreadable file must not empty the cockpit — that would
-  turn "one bad write" into "you have no pending decisions", which reads as done.
+* **Durable before visible.** The scratch file is flushed and ``fsync``'d before the
+  replace publishes it. Without that, a crash or power loss after the rename but
+  before the page cache reached disk left the NAME pointing at NUL bytes: measured
+  2026-09-25, ``d-depe.json`` and ``d-pjg7.json`` were 1,466 and 1,545 bytes of
+  ``\x00`` and the answers they held were gone.
+
+* **A corrupt card is skipped, never fatal, and never silent.** ``list()`` is called
+  by surfaces that must keep working. One unreadable file must not empty the
+  cockpit — that would turn "one bad write" into "you have no pending decisions",
+  which reads as done. A card that is still unparseable once it is older than
+  :data:`CORRUPT_MIN_AGE_SECONDS` is moved to ``corrupt/`` and logged, so it stops
+  being re-parsed on every poll and :meth:`DecisionStore.corrupt_cards` reports it.
 
 * **Answering is compare-and-set.** Two surfaces can answer the same card at once
   (you click the toast on the desktop while the phone card is open). The first
@@ -41,6 +50,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import secrets
@@ -52,6 +62,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger("adk.decisions.store")
 
 
 def scrub_surrogates(value: Any) -> Any:
@@ -121,6 +133,35 @@ _DEDUPE_RE = re.compile(r"^[A-Za-z0-9:._@+-]{1,160}$")
 
 class DecisionError(RuntimeError):
     """A card operation that could not be completed as asked."""
+
+
+#: Sub-directory of the store that unparseable cards are moved into. Not ``d-*.json``
+#: at the top level, so no listing, glob or dedupe scan sees them again.
+CORRUPT_DIRNAME = "corrupt"
+
+#: A card file must have been unparseable for at least this long before it is
+#: quarantined. Every writer here publishes through an atomic replace, so a young
+#: unparseable file is only ever a foreign, non-atomic writer mid-write; the grace
+#: window keeps that writer's file from being moved out from under it.
+CORRUPT_MIN_AGE_SECONDS = 60.0
+
+#: Scratch ``*.tmp`` files older than this are a writer that died between write
+#: and replace. Nothing will ever publish them, so :meth:`DecisionStore.sweep`
+#: removes them.
+STALE_TMP_SECONDS = 3600.0
+
+
+def _durable_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` and force it to disk before returning.
+
+    The caller publishes ``path`` with ``os.replace``; the fsync is what makes the
+    bytes, not just the name, survive a crash. Same newline translation as
+    ``Path.write_text`` so the on-disk format does not change.
+    """
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 # ── cross-process exclusion ───────────────────────────────────────────────────
@@ -290,14 +331,30 @@ def decisions_dir() -> Path:
     return base
 
 
+_TEST_STEER_DIR: Path | None = None
+
+
 def steer_dir() -> Path:
     """Root of the steering mailbox the answer round-trip writes into.
 
     This is the path ``COCKPIT-DESIGN.md`` specifies and the UserPromptSubmit hook
     drains. Keeping the two in one place stops them drifting apart.
+
+    Under pytest with no explicit dir, a per-process TEMP mailbox -- the same seam
+    :func:`decisions_dir` has. Without it a test that answered a card wrote a steer
+    file into the owner's real ``~/.aither/steer``, where nothing drains a test
+    session's box and the files accumulate forever.
     """
+    global _TEST_STEER_DIR
     env = os.getenv("AITHER_STEER_DIR", "").strip()
-    base = Path(env) if env else (Path.home() / ".aither" / "steer")
+    if env:
+        base = Path(env)
+    elif _under_pytest():
+        if _TEST_STEER_DIR is None:
+            _TEST_STEER_DIR = Path(tempfile.mkdtemp(prefix="aither-steer-test-"))
+        base = _TEST_STEER_DIR
+    else:
+        base = Path.home() / ".aither" / "steer"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -423,7 +480,7 @@ def write_steer(
     # replace publishes it whole. The pid keeps two processes racing on the same
     # second from sharing one scratch file and truncating each other's bytes.
     tmp = box / f"{target.name}.{os.getpid()}.tmp"
-    tmp.write_text(body, encoding="utf-8")
+    _durable_write_text(tmp, body)
     os.replace(tmp, target)
     return target
 
@@ -827,8 +884,7 @@ class DecisionStore:
     def _write(self, card: DecisionCard) -> None:
         target = self._file(card.id)
         tmp = target.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(scrub_surrogates(card.to_dict()), indent=2),
-                       encoding="utf-8")
+        _durable_write_text(tmp, json.dumps(scrub_surrogates(card.to_dict()), indent=2))
         # Writers are serialised by the directory lock, but READERS are not: the
         # cockpit, the desk tray and the popup poll this directory constantly and
         # take no lock, by design. On Windows a reader with the file momentarily
@@ -1203,11 +1259,16 @@ class DecisionStore:
                 # never skipped here: it may expire into a wanted status below;
                 # a closed card cannot change status by being read.
                 raw = self._read_raw(target, st)
-                status_raw = str((raw or {}).get("status") or STATUS_OPEN)
-                if raw is None or (status_raw != STATUS_OPEN and status_raw not in wanted):
+                if raw is None:
+                    self._quarantine_if_corrupt(target, st)
+                    continue
+                status_raw = str(raw.get("status") or STATUS_OPEN)
+                if status_raw != STATUS_OPEN and status_raw not in wanted:
                     continue
             card = self._read_file(target, st)
             if card is None:
+                if wanted is None:
+                    self._quarantine_if_corrupt(target, st)
                 continue
             if self._expire_if_due(card):
                 pass  # status is now 'expired'; the filter below decides visibility
@@ -1218,6 +1279,98 @@ class DecisionStore:
             out.append(card)
         out.sort(key=lambda c: c.created_at, reverse=newest_first)
         return out
+
+    # ── corrupt cards ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _unparseable(data: bytes) -> bool:
+        """True when ``data`` is not a JSON object (NUL-filled, truncated, mangled)."""
+        if not data.strip(b"\x00 \t\r\n"):
+            return True
+        try:
+            raw = json.loads(data.decode("utf-8"))
+        except ValueError:  # UnicodeDecodeError and JSONDecodeError are both ValueError
+            return True
+        return not isinstance(raw, dict)
+
+    def _quarantine_if_corrupt(self, target: Path,
+                               st: Optional[os.stat_result] = None) -> Optional[Path]:
+        """Move an old, unparseable card into ``corrupt/``. Returns the new path.
+
+        Judged again UNDER the directory lock from fresh bytes, because the
+        lock-free read that flagged it may have raced a writer: a card rewritten
+        between that read and this move must stay where it is. A read error
+        (the file busy or gone) is not corruption and leaves the file alone, and
+        so does a parseable card whose SHAPE ``from_dict`` rejects -- that can be
+        a newer writer's schema, not damage.
+        """
+        try:
+            st = st if st is not None else target.stat()
+        except OSError:
+            return None
+        if time.time() - st.st_mtime < CORRUPT_MIN_AGE_SECONDS:
+            return None
+        with self._lock:
+            try:
+                data = target.read_bytes()
+            except OSError:
+                return None
+            if not self._unparseable(data):
+                return None
+            dest_dir = self.path / CORRUPT_DIRNAME
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / target.name
+                if dest.exists():
+                    dest = dest_dir / f"{int(time.time() * 1000)}-{target.name}"
+                os.replace(target, dest)
+            except OSError as exc:
+                logger.warning("decision card %s is corrupt and could not be "
+                               "quarantined: %s", target.name, exc)
+                return None
+        with _RAW_CACHE_LOCK:
+            _RAW_CACHE.get(str(self.path), {}).pop(target.name, None)
+        logger.warning("decision card %s was unparseable (%d bytes, %d NUL) and was "
+                       "moved to %s -- whatever it held is lost", target.name,
+                       len(data), data.count(b"\x00"), dest)
+        return dest
+
+    def quarantine_corrupt(self) -> list[str]:
+        """Quarantine every old unparseable card now. Returns the moved names."""
+        moved: list[str] = []
+        for target, st in self._scan():
+            if self._read_raw(target, st) is not None:
+                continue
+            if self._quarantine_if_corrupt(target, st) is not None:
+                moved.append(target.name)
+        return moved
+
+    def corrupt_cards(self) -> list[str]:
+        """Names of every card file sitting in ``corrupt/``, sorted. Empty when none."""
+        folder = self.path / CORRUPT_DIRNAME
+        try:
+            return sorted(p.name for p in folder.iterdir() if p.is_file())
+        except OSError:
+            return []
+
+    def sweep_stale_tmp(self, *, older_than: float = STALE_TMP_SECONDS) -> int:
+        """Delete scratch ``*.tmp`` files a dead writer left behind. Returns the count."""
+        removed = 0
+        cutoff = time.time() - older_than
+        try:
+            with os.scandir(self.path) as it:
+                entries = [e for e in it if e.name.endswith(".tmp")]
+        except OSError:
+            return 0
+        for entry in entries:
+            try:
+                if not entry.is_file() or entry.stat().st_mtime >= cutoff:
+                    continue
+                os.unlink(entry.path)
+                removed += 1
+            except OSError:
+                continue  # busy or already gone; the next sweep retries
+        return removed
 
     def _expire_if_due(self, card: DecisionCard) -> bool:
         """Flip an overdue open card to expired, applying its default. Returns True
@@ -1652,6 +1805,8 @@ class DecisionStore:
         """
         import zipfile
 
+        self.quarantine_corrupt()
+        self.sweep_stale_tmp()
         removed = 0
         busy = 0
         cutoff = time.time() - keep_closed_seconds
