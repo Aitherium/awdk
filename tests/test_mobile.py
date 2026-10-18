@@ -6,7 +6,7 @@ import json
 import subprocess
 
 import pytest
-from adk.mobile import Device, list_devices, pick_device, run_flow
+from adk.mobile import PNG_MAGIC, Device, list_devices, pick_device, run_flow, screenshot
 
 ADB_OUT = (
     "List of devices attached\n"
@@ -27,7 +27,7 @@ def fake_run(calls, maestro_code=0):
         if argv[:2] == ["xcrun", "simctl"] and "list" in argv:
             return subprocess.CompletedProcess(argv, 0, json.dumps(SIMCTL), "")
         if "screencap" in argv:
-            return subprocess.CompletedProcess(argv, 0, b"\x89PNG fake", b"")
+            return subprocess.CompletedProcess(argv, 0, PNG_MAGIC + b"fake", b"")
         if argv[0] == "maestro":
             out = argv[argv.index("--output") + 1]
             open(out, "w").write("<testsuites/>")
@@ -85,3 +85,49 @@ def test_run_flow_needs_maestro_and_a_flow(tmp_path):
         run_flow(tmp_path / "x.yaml", dev, run=fake_run([]), which=lambda b: None)
     with pytest.raises(FileNotFoundError, match="flow not found"):
         run_flow(tmp_path / "x.yaml", dev, run=fake_run([]), which=lambda b: b)
+
+
+# A foldable (measured on a Pixel 10 Pro Fold): a bare `screencap -p` prints this warning
+# onto stdout ahead of the PNG, so the saved file opened in nothing.
+FOLD = Device("android", "58281FDCG000BB", "device", "Pixel_10_Pro_Fold")
+WARNING = (b"[Warning] Multiple displays were found, but no display id was specified! "
+           b"Defaulting to the first display found.\n")
+DISPLAYS = ('Display 4619827677550801152 (HWC display 0): port=0 displayName="Common Panel"\n'
+            'Display 4619827677550801153 (HWC display 1): port=1 displayName="Common Panel"\n')
+
+
+def fold_run(calls, png_on_retry=True):
+    def run(argv, timeout=60, **kw):
+        calls.append(argv)
+        if "SurfaceFlinger" in argv:
+            return subprocess.CompletedProcess(argv, 0, DISPLAYS, "")
+        if "screencap" in argv:
+            if "-d" in argv:
+                body = PNG_MAGIC + b"panel" if png_on_retry else WARNING
+                return subprocess.CompletedProcess(argv, 0, body, b"")
+            return subprocess.CompletedProcess(argv, 0, WARNING + PNG_MAGIC + b"x", b"")
+        raise AssertionError(f"unexpected {argv}")
+
+    return run
+
+
+def test_multi_display_shot_is_a_png_of_the_first_display(tmp_path):
+    calls = []
+    out = screenshot(FOLD, tmp_path / "s.png", run=fold_run(calls))
+    assert out.read_bytes() == PNG_MAGIC + b"panel"
+    assert calls[-1] == ["adb", "-s", FOLD.id, "exec-out", "screencap",
+                         "-d", "4619827677550801152", "-p"]
+
+
+def test_explicit_display_is_passed_through(tmp_path):
+    calls = []
+    screenshot(FOLD, tmp_path / "s.png", run=fold_run(calls), display="4619827677550801153")
+    assert calls == [["adb", "-s", FOLD.id, "exec-out", "screencap",
+                      "-d", "4619827677550801153", "-p"]]
+
+
+def test_no_png_raises_and_writes_nothing(tmp_path):
+    dest = tmp_path / "s.png"
+    with pytest.raises(RuntimeError, match="no PNG"):
+        screenshot(FOLD, dest, run=fold_run([], png_on_retry=False))
+    assert not dest.exists()

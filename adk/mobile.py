@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -104,13 +105,47 @@ def pick_device(devices: List[Device], wanted: str = "") -> Device:
     return usable[0]
 
 
-def screenshot(dev: Device, dest: Path, run: Runner = _run) -> Path:
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def android_displays(dev: Device, run: Runner = _run) -> List[str]:
+    """The display ids ``screencap -d`` takes, in SurfaceFlinger's order ([] if unknown)."""
+    out = run(["adb", "-s", dev.id, "shell", "dumpsys", "SurfaceFlinger", "--display-id"],
+              text=True, encoding="utf-8", errors="replace")
+    if out.returncode != 0:
+        return []
+    return re.findall(r"^Display (\d+)", out.stdout or "", re.M)
+
+
+def _screencap(dev: Device, display: str, run: Runner) -> bytes:
+    argv = ["adb", "-s", dev.id, "exec-out", "screencap"]
+    if display:
+        argv += ["-d", display]
+    out = run(argv + ["-p"])
+    if out.returncode != 0 or not out.stdout:
+        raise RuntimeError(f"screencap failed: {(out.stderr or b'')[:200]!r}")
+    return out.stdout
+
+
+def screenshot(dev: Device, dest: Path, run: Runner = _run, display: str = "") -> Path:
+    """Save one PNG of ``dev``. Never writes anything that is not a PNG.
+
+    A device with several displays (a foldable, a phone driving a monitor) makes a bare
+    ``screencap -p`` print a warning onto stdout ahead of the PNG, which used to land in
+    ``dest`` as a file no viewer opens. With no ``display`` asked for, such a device is
+    captured again with ``-d`` and its first SurfaceFlinger display, so every shot of it
+    is of the same panel.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dev.platform == "android":
-        out = run(["adb", "-s", dev.id, "exec-out", "screencap", "-p"])
-        if out.returncode != 0 or not out.stdout:
-            raise RuntimeError(f"screencap failed: {(out.stderr or b'')[:200]!r}")
-        dest.write_bytes(out.stdout)
+        data = _screencap(dev, display, run)
+        if not data.startswith(PNG_MAGIC) and not display:
+            ids = android_displays(dev, run)
+            if ids:
+                data = _screencap(dev, ids[0], run)
+        if not data.startswith(PNG_MAGIC):
+            raise RuntimeError(f"screencap returned no PNG: {data[:200]!r}")
+        dest.write_bytes(data)
     else:
         out = run(["xcrun", "simctl", "io", dev.id, "screenshot", str(dest)])
         if out.returncode != 0:
@@ -172,6 +207,9 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("devices", help="List reachable devices, emulators and simulators")
     s = sub.add_parser("shot", help="Screenshot a device into the proof dir")
     s.add_argument("--device", default="")
+    s.add_argument("--display", default="",
+                   help="Android display id (dumpsys SurfaceFlinger --display-id); "
+                        "default: the first one on a multi-display device")
     t = sub.add_parser("test", help="Run a Maestro flow and write a proof directory")
     t.add_argument("flow")
     t.add_argument("--device", default="")
@@ -201,7 +239,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "shot":
         dest = PROOF_ROOT / "shots" / f"{time.strftime('%Y%m%d-%H%M%S')}-{dev.id}.png"
         try:
-            print(screenshot(dev, dest))
+            print(screenshot(dev, dest, display=args.display))
         except RuntimeError as e:
             print(f"mobile: {e}", file=sys.stderr)
             return 1
@@ -220,4 +258,5 @@ if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
 
 
-__all__ = ["Device", "list_devices", "pick_device", "screenshot", "run_flow", "main"]
+__all__ = ["Device", "list_devices", "pick_device", "screenshot", "android_displays",
+           "run_flow", "main"]
