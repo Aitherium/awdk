@@ -1,12 +1,12 @@
 # GobboPack
 
-`gobbonet` · version `3.8.68` · 65.4 KB
+`gobbonet` · version `3.8.72` · 65.7 KB
 
-**[Download gobbonet-3.8.68.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/gobbonet-3.8.68.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/gobbonet-3.8.68.sha256)
+**[Download gobbonet-3.8.72.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.72/gobbonet-3.8.72.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.72/gobbonet-3.8.72.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.68/gobbonet-3.8.68.tar.gz
-tar xzf gobbonet-3.8.68.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.72/gobbonet-3.8.72.tar.gz
+tar xzf gobbonet-3.8.72.tar.gz
 python gobbonet/install.py
 ```
 
@@ -66,11 +66,11 @@ server.py
 
 # GobboNet on aither-adk
 
-Run [GobboNet](https://github.com/ElodineOfficial/GobboNet) (Elodine / GoblinCorps, MIT)
+Run [GobboNet](https://github.com/ElodineOfficial/GobboNet) (Elodine / GoblinCorps; MIT through 1.5.3, AGPL-3.0 from 1.7)
 with an agent engine behind it — keyless web search, conversation persistence, and model
 weights without a HuggingFace account — entirely on your own machine.
 
-**GobboNet is not modified and not redistributed.** You clone it yourself. This pack is the
+**GobboNet's engine is not modified.** You clone it yourself, from the MIT fork, which adds only our browser adapter (in-browser Bonsai, local-model detection) beside it. This pack is the
 engine; their UI, character cards and extension seams stay exactly as they are.
 
 **It also runs on macOS and Linux.** GobboNet ships `launch.bat`, `fileserver.ps1` and
@@ -86,7 +86,7 @@ unchanged and does not know the difference.
 
 ```bash
 pip install aither-adk
-git clone https://github.com/ElodineOfficial/GobboNet
+git clone https://github.com/wizzense/GobboNet   # the MIT fork adk gobbonet uses
 python -m adk.packs.gobbonet.server --ui ./GobboNet --port 11434
 ```
 
@@ -368,5 +368,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `90a1cabf6f3622968ce2044632e055b3667f5edbbb1bf1cbc43684f55c3d8680`  
-Built from `v3.8.68` (adk 3.8.68). [All packs](../packs.md)
+sha256 `ef9314043dc3cf68147ebea1f5e2f0cf9b25e5c73267c29242ac1e1a59d9bfbd`  
+Built from `v3.8.72` (adk 3.8.72). [All packs](../packs.md)

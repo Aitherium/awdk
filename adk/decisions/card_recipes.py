@@ -127,6 +127,9 @@ CARD_RECIPES: dict[str, dict[str, Any]] = {
         #: case the key cannot cover: the producer recomputing the first-failure
         #: timestamp mid-streak.
         "dedupe_prefix": "awrise:wake-failed:{job}:",
+        #: The universe object the card concerns (NOT the dedupe subject above):
+        #: the job itself, so a surface can draw the card on it.
+        "subject": "routine:{job}",
         "title": "Wake '{job}' has failed {n}x in a row",
         "summary": ("awrise job {job} ({every}) has failed {n} consecutive wakes since "
                     "{first_failure_ts}. Last: {last_state} - {last_reason}."),
@@ -451,6 +454,8 @@ def build_card(
         dedupe_key=str(recipe.get("dedupe_key") or "").format(**filled),
         card_recipe=recipe_id,
         recipe_vars=dict(filled),
+        # Optional; the store normalises an off-grammar fill to "".
+        subject=str(recipe.get("subject") or "").format(**filled),
     )
 
 

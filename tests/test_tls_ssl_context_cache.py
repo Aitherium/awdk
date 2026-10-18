@@ -37,6 +37,11 @@ def test_reusing_the_context_builds_no_new_ssl_contexts(monkeypatch):
         return real(*a, **k)
 
     monkeypatch.setattr(ssl, "create_default_context", counting)
+    # server.main() (run by an earlier test) installs adk's process-wide httpx cache;
+    # this test measures httpx itself, so it runs against httpx's own factory.
+    import httpx._transports.default as transports
+    factory = transports.create_ssl_context
+    monkeypatch.setattr(transports, "create_ssl_context", getattr(factory, "_adk_orig", factory))
     for _ in range(20):
         httpx.AsyncClient(verify=_tls.ssl_context(True))
     assert builds["n"] == 0 and _tls.ssl_context(True) is ctx

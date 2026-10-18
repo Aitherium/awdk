@@ -758,6 +758,11 @@ if BaseModel is not None:
         #: one, and verifiers check the signature. Any ``answer_attested`` boolean
         #: in the body is ignored (not a field).
         answer_receipt: Optional[dict] = None
+        #: The VAULT receipt a credential card closes on: signed by the vault
+        #: door (secure_prompt.vault_credential) over the card id, secret name,
+        #: scope and the value's sha256. A credential card answered without a
+        #: valid one is a 409 -- the marker alone is one constant string.
+        credential_receipt: Optional[dict] = None
 
     class CancelDecision(BaseModel):  # type: ignore[misc]
         note: str = ""
@@ -808,6 +813,9 @@ if BaseModel is not None:
         dedupe_key: str = ""
         card_recipe: str = ""
         recipe_vars: dict[str, str] = Field(default_factory=dict)
+        # The universe object this card concerns (``svc:Secrets``, ``platform``).
+        # Unrelated to dedupe; an off-grammar value is stored as "".
+        subject: str = ""
         # provenance — set by the caller that authenticated the raiser
         raised_by: str = ""
         agent: str = ""
@@ -818,6 +826,26 @@ if BaseModel is not None:
     class SteerDecision(BaseModel):  # type: ignore[misc]
         text: str
         via: str = "api"
+
+    class AskCredential(BaseModel):  # type: ignore[misc]
+        """Body for POST /decisions/ask-credential: WHICH secret and WHY.
+
+        No value field, ever -- same rule as ``RaiseDecision``. The value goes
+        owner -> masked field -> vault; the asker learns only stored/digest.
+        """
+
+        secret_name: str
+        why: str = ""
+        scope: str = "platform"
+        description: str = ""
+        agent: str = ""
+        session_id: str = ""
+        cwd: str = ""
+        task: str = ""
+        harness: str = ""
+        wait_seconds: float = 0
+        #: The universe object the ask concerns; "" = ``secret:<secret_name>``.
+        subject: str = ""
 
     class FsWrite(BaseModel):  # type: ignore[misc]
         """Body for POST /fs/write -- the browser IDE saving a file."""
@@ -2370,6 +2398,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         status: str = Query(default="open"),
         session_id: str = Query(default=""),
         limit: Optional[int] = Query(default=None),
+        order: str = Query(default="age"),
     ) -> dict[str, Any]:
         # ``status=open`` is UNBOUNDED by default: every surface (desk, phone, Veil
         # through Genesis, the shell) polls it with no limit, and the OLDEST open
@@ -2389,9 +2418,13 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             limit = max(1, min(limit, _DECISIONS_LIMIT_MAX))
         elif not open_queue:
             limit = _DECISIONS_HISTORY_LIMIT
+        # ``order=queue``: the shared rank (store.rank -- credential/blocked,
+        # urgency, age), the order the desk and the card window walk.
+        queue = order == "queue"
         cards = store.list(status=wanted, session_id=session_id,
-                           newest_first=not open_queue)
-        if not open_queue:
+                           newest_first=not open_queue,
+                           order="queue" if queue else "age")
+        if not open_queue and not queue:
             # History is ranked by when the card CLOSED (answered/expired/cancelled),
             # falling back to created_at for open cards under ``all``. Ranking by
             # created_at alone pushed an old card answered today out of the window,
@@ -2400,7 +2433,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         total = len(cards)
         if limit is not None:
             cards = cards[:limit]
-        if not open_queue:
+        if not open_queue and not queue:
             cards = cards[::-1]
         return {
             "decisions": [c.to_dict() for c in cards],
@@ -2783,6 +2816,8 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                                   source=_source)
             except CardRecipeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if (body.subject or "").strip() and hasattr(card, "subject"):
+                card.subject = body.subject.strip()
             return _store_and_notify(card)
 
         kwargs: dict[str, Any] = dict(
@@ -2816,6 +2851,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             )
         if "dedupe_key" in _dedupe_fields:
             kwargs["dedupe_key"] = _want_dedupe
+        # Feature-detected like dedupe_key, but never fail-closed: a subject is
+        # where a card is DRAWN, so an older store dropping it loses nothing else.
+        if "subject" in _dedupe_fields:
+            kwargs["subject"] = (body.subject or "").strip()
 
         # CREDENTIAL FIELDS ARE OPTIONAL AT THE STORE, AND THIS ROUTE MUST NOT DIE
         # WHEN THEY ARE ABSENT.
@@ -2864,6 +2903,25 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
         return _store_and_notify(DecisionCard(**kwargs))
 
+    @app.post("/decisions/ask-credential", dependencies=[Depends(auth)])
+    def ask_credential_route(body: AskCredential) -> dict[str, Any]:
+        """``ask_credential`` without the wait: check the vault, raise or join, prompt.
+
+        The caller (the gateway tool) polls ``GET /decisions/{id}`` for the
+        close. ``wait_seconds`` only marks how long it will be polling, so the
+        close does not ALSO steer a waiter whose own call is about to return it.
+        Root bearer only: ``/decisions`` is outside every scoped agent token.
+        """
+        from adk.decisions.agent_tools import start_credential_ask
+
+        return start_credential_ask(
+            body.secret_name, body.scope, body.description, body.why,
+            wait_seconds=max(0.0, float(body.wait_seconds or 0)),
+            agent=(body.agent or "gateway").strip(), session_id=body.session_id,
+            cwd=body.cwd, task=body.task, harness=body.harness,
+            subject=body.subject,
+        )
+
     @app.post("/decisions/{card_id}/steer", dependencies=[Depends(auth)])
     def steer_decision(card_id: str, body: SteerDecision) -> dict[str, Any]:
         """Free text to the raising session. Does NOT close the card."""
@@ -2876,6 +2934,48 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         if card is None:
             raise HTTPException(status_code=404, detail=f"no such card: {card_id}")
         return card.to_dict()
+
+    #: card id -> when its masked prompt was last launched. A phone tap, a /decide
+    #: tap and an awconnect click for one card inside this window open ONE window.
+    _prompt_launched_at: dict[str, float] = {}
+    prompt_debounce_sec = 30.0
+
+    @app.post("/decisions/{card_id}/prompt", dependencies=[Depends(auth)])
+    def open_credential_prompt(card_id: str) -> dict[str, Any]:
+        """Open the masked secure prompt for a credential card ON THIS PC.
+
+        The remote surfaces (the /decide page, a phone push action, awconnect) have
+        no value field; this is their one button. It carries no value in either
+        direction: the window that opens asks for it and writes it to the vault,
+        then closes the card itself. 409 when the card is closed or not a
+        credential ask; ``launched`` false (with why) when no window could open.
+        """
+        from adk.decisions.secure_prompt import launch_gui_prompt
+        from adk.decisions.store import DecisionError, get_store
+
+        try:
+            card = get_store().get(card_id)
+        except DecisionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"no such card: {card_id}")
+        if (card.kind or "").strip().lower() != "credential":
+            raise HTTPException(status_code=409,
+                                detail=f"{card_id} is not a credential ask")
+        if not card.is_open:
+            raise HTTPException(status_code=409,
+                                detail=f"{card_id} is already {card.status}")
+        now = time.time()
+        last = _prompt_launched_at.get(card.id, 0.0)
+        if now - last < prompt_debounce_sec:
+            return {"id": card.id, "launched": True, "secret_name": card.secret_name or "",
+                    "detail": (f"masked prompt for {card.secret_name or card.id} was opened "
+                               f"{int(now - last)}s ago and is on your screen")}
+        launched, why = launch_gui_prompt(card)
+        if launched:
+            _prompt_launched_at[card.id] = now
+        return {"id": card.id, "launched": bool(launched), "detail": why,
+                "secret_name": card.secret_name or ""}
 
     @app.get("/decisions/{card_id}", dependencies=[Depends(auth)])
     def get_decision(card_id: str) -> dict[str, Any]:
@@ -2892,7 +2992,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     @app.post("/decisions/{card_id}/answer", dependencies=[Depends(auth)])
     def answer_decision(card_id: str, body: AnswerDecision,
                         principal: Principal = Depends(auth)) -> dict[str, Any]:
-        from adk.decisions.store import DecisionError, get_store
+        from adk.decisions.store import DecisionCard, DecisionError, get_store
 
         store = get_store()
         # READ BEFORE ANSWERING. The answer TRANSITION is what spawns the recipe's
@@ -2911,6 +3011,34 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 and str(getattr(_existing, "dedupe_key", "") or "").startswith("awconnect-pair:")):
             raise HTTPException(status_code=403,
                                 detail="only the owner can answer a pairing card")
+        if _existing is not None and (_existing.kind or "").strip().lower() == "credential":
+            # A credential card closes ONLY on a signed vault receipt -- never on
+            # the bare marker, which any caller holding the bearer (MCP
+            # decisions_answer, Veil, a chat bridge) can send without storing
+            # anything. The way to supply the value is the masked prompt.
+            from adk.decisions import secure_prompt
+
+            if (body.choice or "").strip() != DecisionCard.CREDENTIAL_ANSWER:
+                # Free text on a credential card may BE the secret: refuse it
+                # before anything else reads it, in the store's own words.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"credential card {card_id} closes only with "
+                            f"{DecisionCard.CREDENTIAL_ANSWER!r} and a vault receipt "
+                            "— the value goes to the vault via the masked prompt"))
+            try:
+                card = secure_prompt.close_with_receipt(
+                    card_id, store, body.credential_receipt, via=body.via or "api")
+            except DecisionError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(str(exc) + f" -- open the masked prompt with POST "
+                            f"/decisions/{card_id}/prompt"),
+                ) from exc
+            delivered = store.deliver_answer(card)
+            return {"decision": card.to_dict(),
+                    "delivered_to_session": bool(delivered),
+                    "mailbox": str(delivered) if delivered else ""}
         if _existing is not None:
             _recipe_via = _guard_recipe_answer(principal, _existing, body.choice, body)
         _by = answerer_label(principal, body.answered_by)
@@ -2946,12 +3074,39 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "mailbox": str(delivered) if delivered else "",
         }
 
+    @app.post("/decisions/{card_id}/prompt")
+    def prompt_decision(card_id: str,
+                        principal: Principal = Depends(_require_owner)) -> dict[str, Any]:
+        """Open the masked vault prompt for a credential card, on THIS host's desktop.
+
+        Owner-only: the window it opens asks for a live credential. It ignores
+        ``.popup-off`` and the quiet hold by design -- that switch silences
+        AUTO-popups, and an owner pressing "open it" on a card is not one.
+        """
+        from adk.decisions import secure_prompt
+        from adk.decisions.store import DecisionError, get_store
+
+        try:
+            card = secure_prompt.resolve_card(card_id, get_store())
+        except DecisionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not card.is_open:
+            raise HTTPException(status_code=409, detail=f"{card_id} is already {card.status}")
+        launched, why = secure_prompt.launch_gui_prompt(card, owner_initiated=True)
+        return {"launched": launched, "detail": why, "card_id": card_id}
+
     @app.post("/decisions/{card_id}/cancel", dependencies=[Depends(auth)])
     def cancel_decision(card_id: str, body: CancelDecision) -> dict[str, Any]:
         from adk.decisions.store import DecisionError, get_store
 
         try:
-            card = get_store().cancel(card_id, note=body.note or "")
+            # The daemon's callers are the owner's surfaces (desk, phone, Veil),
+            # never the raising session, so a blank reason is recorded as WHO
+            # withdrew it rather than refused or left silent.
+            card = get_store().cancel(
+                card_id, note=(body.note or "").strip()
+                or "dismissed by the owner from a desk surface (no reason given)",
+                via="owner")
         except DecisionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return card.to_dict()
@@ -4225,8 +4380,13 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     # The KV relay on this host, for the MCP gateway; owner-gated (adk.kvholder_mesh).
     from adk.harnesses.kvholder_routes import mount as mount_kvholder
+    from adk.harnesses.posture_routes import mount as mount_posture
 
-    mount_kvholder(app, auth, load_owner_verifier())
+    owner_verifier = load_owner_verifier()
+    mount_kvholder(app, auth, owner_verifier)
+    # The host posture (shop / after / game / auto), for the gateway and the phone;
+    # the set is owner-gated the same way (adk.harnesses.posture_routes).
+    mount_posture(app, auth, owner_verifier)
 
     return app
 
@@ -4292,6 +4452,11 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
         live = {"starting", "ready", "busy", "idle"}
         return not any(str(s.get("state", "")) in live for s in default_manager().list_sessions())
 
+    # A secret already in the vault closes its own credential card: every 5 min,
+    # names and lengths only (AITHER_CREDENTIAL_SWEEP=0 turns it off).
+    from adk.decisions.secure_prompt import start_reconcile_sweep
+
+    start_reconcile_sweep()
     self_update.start("harness-daemon", _no_live_session,
                       health_url=f"http://127.0.0.1:{bind_port}/health")
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")

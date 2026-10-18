@@ -10,7 +10,7 @@ import android.widget.RemoteViews;
 
 /**
  * The "Aither" home-screen widget (2x1, stretches to 4x1): Talk to Aither opens the
- * assistant (AssistActivity), Learn and Family open those tabs. The tabs go the way a
+ * assistant (AssistActivity), Hearth opens its window and Family its tab. They go the way a
  * launcher shortcut goes (Shortcuts.ADULT's ?app= paths into MainActivity), so on a
  * child's phone AppTabs.route sends them to the child's homes (CHILD_APP_HOMES) and the
  * assistant says itself that it is off (Config.localAiBlocked).
@@ -21,7 +21,8 @@ import android.widget.RemoteViews;
 public class AitherWidget extends AppWidgetProvider {
     /** button id, path on the app origin; the request code is the row's index. */
     static final String[][] TABS = {
-        {"learn", "/?app=learn"},
+        // Learn and Family are one tab now (the guardian console): Hearth takes Learn's place
+        {"hearth", "/?app=hearth"},
         {"family", "/?app=family"},
     };
 
@@ -34,7 +35,7 @@ public class AitherWidget extends AppWidgetProvider {
     static RemoteViews views(Context c) {
         RemoteViews v = new RemoteViews(c.getPackageName(), R.layout.widget_aither);
         v.setOnClickPendingIntent(R.id.widget_talk, talk(c));
-        v.setOnClickPendingIntent(R.id.widget_learn, tab(c, 0));
+        v.setOnClickPendingIntent(R.id.widget_hearth, tab(c, 0));
         v.setOnClickPendingIntent(R.id.widget_family, tab(c, 1));
         return v;
     }

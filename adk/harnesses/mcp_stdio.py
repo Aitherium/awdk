@@ -89,8 +89,10 @@ AGENT_TOKEN_FILE_ENV = "AITHER_HARNESS_AGENT_TOKEN_FILE"
 #: are the only additions. ``/decisions`` is deliberately ABSENT: under it an agent
 #: could answer, cancel, steer or raise any card, including a credential card.
 #: ``/wakes`` and ``/awrun`` stay root-only because both schedule or run commands.
+#: ``/posture`` follows ``/kvholder``: a read for any scoped caller, a set only with the
+#: owner's signed assertion (adk.harnesses.posture_routes), so the token alone flips nothing.
 AGENT_TOKEN_PATHS = ("/sessions", "/events", "/rooms", "/harnesses", "/steer",
-                     "/profiles", "/health", "/kvholder")
+                     "/profiles", "/health", "/kvholder", "/posture")
 
 #: Hosts where minting is meaningful: the token lands in THIS machine's registry, so
 #: a daemon elsewhere would never know it and every call would 403.
@@ -993,7 +995,59 @@ def _solve(args: dict) -> dict:
     return run_bounded_solve(args)
 
 
+def _ask_credential(args: dict) -> dict:
+    """Ask the owner for a secret and block until it is stored (never the value).
+
+    In-process against THIS host's card store rather than the daemon's
+    ``/decisions`` routes: an agent tab's scoped token deliberately cannot reach
+    those (it could answer any card), and this tool must work from exactly that
+    tab. The store, the prompt and the vault check are the same ones the daemon
+    would use -- one host, one ``~/.aither/decisions``.
+    """
+    from adk.decisions.agent_tools import CREDENTIAL_WAIT_DEFAULT, ask_credential_sync
+
+    wait = args.get("wait_seconds")
+    return ask_credential_sync(
+        str(args.get("secret_name") or ""),
+        str(args.get("scope") or "platform"),
+        str(args.get("description") or ""),
+        str(args.get("why") or ""),
+        CREDENTIAL_WAIT_DEFAULT if wait is None else float(wait),
+        agent=str(args.get("agent") or "") or SENDER,
+        session_id=str(args.get("session_id") or ""),
+        cwd=str(args.get("cwd") or "") or os.getcwd(),
+        task=str(args.get("task") or ""),
+        harness=str(args.get("harness") or "claude"),
+    )
+
+
 TOOLS: list = [
+    {"name": "ask_credential",
+     "description": "Get a secret from the owner in ONE call. Checks the vault by "
+                    "name first (returns present=true, no card, if it is there), joins "
+                    "an open ask for the same secret instead of raising a second card, "
+                    "shows the masked field on the owner's desk, and blocks until it "
+                    "is stored. Returns {stored, scope, receipt_digest} -- never the "
+                    "value; read it from the vault yourself. On timeout do NOT ask "
+                    "again: this session is told, or resumed if it has ended, when "
+                    "the owner stores it.",
+     "schema": {"type": "object", "properties": {
+         "secret_name": {"type": "string", "description": "vault key, e.g. STRIPE_API_KEY"},
+         "scope": {"type": "string", "enum": ["platform", "workspace", "user"]},
+         "description": {"type": "string", "description": "what the secret is"},
+         "why": {"type": "string",
+                 "description": "one line the owner reads: what you will do with it"},
+         "wait_seconds": {"type": "number",
+                          "description": "how long to block (default 300; 0 = raise "
+                                         "and return)"},
+         "session_id": {"type": "string",
+                        "description": "your session id, so you can be resumed"},
+         "task": {"type": "string",
+                  "description": "the task to continue if your session has ended "
+                                 "by the time the owner answers"}},
+         "required": ["secret_name", "why"]},
+     "fn": _ask_credential},
+
     {"name": "awsh_health",
      "description": "Is the AitherShell harness daemon up, and what does it allow.",
      "schema": {"type": "object", "properties": {}},

@@ -29,7 +29,12 @@ import sys
 import webbrowser
 from pathlib import Path
 
-UPSTREAM = "https://github.com/ElodineOfficial/GobboNet"
+# The MIT fork, not upstream HEAD (2026-10-16). Upstream relicensed to AGPL-3.0 at 1.7
+# and its HEAD carries none of the in-browser Bonsai brain, local-model detection or
+# companion import that GobboNet on aitherium.com has; the fork is the MIT 1.5.3 base
+# plus that adapter, so what a person runs at home is what they tried on the site.
+# Pass --ui <folder> to run any other checkout, upstream included.
+UPSTREAM = "https://github.com/wizzense/GobboNet"
 DEFAULT_PORT = 11434
 
 

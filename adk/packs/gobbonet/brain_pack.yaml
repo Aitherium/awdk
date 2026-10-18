@@ -39,7 +39,7 @@ upstream:
   org: GoblinCorps
   repo: https://github.com/ElodineOfficial/GobboNet
   site: https://goblincorps.com/gobbonet
-  license: MIT
+  license: MIT through 1.5.3; AGPL-3.0 from 1.7 (adk gobbonet clones the MIT fork, wizzense/GobboNet)
   tagline: A local-first AI chat client. No account, no sign-up, no email.
   # Their palette, so the page reads as THEIRS rather than as ours.
   accent: "#6aa84f"

@@ -441,7 +441,7 @@ def run(app: str, inbox: Path, api_url: str,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.time,
         max_passes: Optional[int] = None,
-        device: Any = None) -> int:
+        device: Any = None, support: Any = None) -> int:
     """The command body: 0 ok, 1 a ``--once`` pass failed, 3 auth refused (``--once``
     or a fixed token). A continuous watch returns only on Ctrl+C or ``max_passes``.
 
@@ -453,7 +453,11 @@ def run(app: str, inbox: Path, api_url: str,
 
     ``device`` (an :class:`adk.app_device.AppDeviceBeat`) keeps THIS PC listed and
     online in the app's device list. It beats with the device's own secret, so it
-    runs on every pass even while the login is missing or refused."""
+    runs on every pass even while the login is missing or refused.
+
+    ``support`` (an :class:`adk.support_report.SupportFlusher`) uploads this PC's queued
+    crash/error/setup/feedback reports (``~/.aither/support-outbox``) to the same app;
+    a failed pass is queued there too."""
     inbox.mkdir(parents=True, exist_ok=True)
     state_path = state_path or default_state_path(app)
     notices = {k: inbox / notice_name(app, k) for k in ("login", "role")}
@@ -503,6 +507,8 @@ def run(app: str, inbox: Path, api_url: str,
             tok = _token()
             if device is not None:
                 said_device = _device_tick(device, client, tok, app, as_json, said_device)
+            if support is not None:
+                _support_tick(support, client, tok)
             if not tok:
                 rc = _refused("Not signed in. Run: adk login")
                 if rc is not None:
@@ -519,6 +525,7 @@ def run(app: str, inbox: Path, api_url: str,
                     if rc is not None:
                         return rc
                 except Exception as exc:  # noqa: BLE001 -- one bad pass must not end the watch
+                    _queue_failure(exc)
                     msg = f"pass failed ({type(exc).__name__}: {exc}); retrying"
                     if as_json:
                         print(json.dumps({"ok": False, "error": msg}))
@@ -546,6 +553,22 @@ def run(app: str, inbox: Path, api_url: str,
                 sleep(interval)
             except KeyboardInterrupt:
                 return 0
+
+
+def _queue_failure(exc: BaseException) -> None:
+    """Queue a failed pass for the app's support (never raises, honours the opt-out)."""
+    try:
+        from adk.support_report import report_exception
+        report_exception("awdk.tenant_watch", exc, context="adk tenant watch pass failed")
+    except Exception as err:  # noqa: BLE001 -- reporting must never add a failure
+        log.debug("failed pass not queued for support: %s", err)
+
+
+def _support_tick(support: Any, client: Any, tok: str) -> None:
+    try:
+        support.tick(client, tok)
+    except Exception as exc:  # noqa: BLE001 -- the upload must never end the watch
+        log.debug("support flush failed: %s", exc)
 
 
 def _device_tick(device: Any, client: Any, tok: str, app: str, as_json: bool,
@@ -630,6 +653,12 @@ def cmd_tenant(args: Any) -> int:
             app_device.forget(api_url)
         device = app_device.AppDeviceBeat(api_url)
 
+    # This PC's crash/error/feedback reports go to the same app (opt-out:
+    # `adk feedback off`); a crash of this watcher itself is queued first.
+    from adk import support_report
+
+    support_report.install_excepthook("awdk.tenant_watch")
+    support = support_report.SupportFlusher(api_url)
     return run(app, inbox, api_url, token, once=bool(args.once),
                interval=max(1.0, float(args.interval)), as_json=bool(args.json),
-               client_factory=_client, device=device)
+               client_factory=_client, device=device, support=support)

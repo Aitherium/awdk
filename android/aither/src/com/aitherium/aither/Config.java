@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.3.26";
+    static final String VERSION = "0.3.29";
 
     private final SharedPreferences p;
 
@@ -30,7 +30,10 @@ final class Config {
     String pubkey() { return p.getString("pubkey", ""); }
     boolean refreshApp() { return p.getBoolean("refresh_app", false); }
     /** A child signed in on this phone (the page's aither.device.child): child shortcuts. */
-    boolean childDevice() { return p.getBoolean("child_device", false); }
+    /** Sticky: the page's flag or a household "child" profile (AppTabs.childPhone). */
+    boolean childDevice() {
+        return AppTabs.childPhone(p.getBoolean("child_device", false), profileKind());
+    }
     /** The signed-in account is the platform owner (Session.owner): owner-only Home apps. */
     boolean platformOwner() { return p.getBoolean("platform_owner", false); }
     /**

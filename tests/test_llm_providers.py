@@ -530,13 +530,17 @@ class TestLLMRouter:
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_auto_detect_ollama(self):
-        respx.get("http://localhost:11434/api/tags").mock(
+    async def test_auto_detect_never_picks_ollama(self, monkeypatch):
+        # A live Ollama on :11434 must not become the brain by auto-detect.
+        tags = respx.get("http://localhost:11434/api/tags").mock(
             return_value=httpx.Response(200, json={"models": [{"name": "llama3.2"}]})
         )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
         router = LLMRouter()
-        provider = await router.get_provider()
-        assert router.provider_name == "ollama"
+        await router.get_provider()
+        assert router.provider_name != "ollama"
+        assert router._local_provider is None
+        assert not tags.called
 
     @respx.mock
     @pytest.mark.asyncio

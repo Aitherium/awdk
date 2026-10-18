@@ -550,7 +550,7 @@ def cmd_workspace(args):
             "connect": "Awconnect",
             "shell": "AitherShell (standalone + monorepo)",
             "adk": "awdk (this package)",
-            "desktop": "AitherDesktop + Veil + packages",
+            "desktop": "legacy AitherDesktop source + Veil + packages (not Desk)",
             "creative": "Canvas-Studio + creative services",
             "gpu": "VRAM-Sentinel + GPU services",
             "custom-app-dev": "custom apps + awkit (indie devs)",
@@ -756,7 +756,7 @@ def cmd_stack(args):
             print()
             print("  Configuration:")
             print(f"    AITHER_FLEET_QDRANT_URL={url}")
-            print(f"    AITHER_FLEET_QDRANT_API_KEY={api_key}")
+            print("    AITHER_FLEET_QDRANT_API_KEY=<qdrant_api_key in ~/.aither/config.yaml>")
             print()
             print("  Ready to use in graph_memory. Run 'adk status' to verify.")
             return 0
@@ -2234,14 +2234,14 @@ def _provision_qdrant() -> tuple[bool, str, str]:
         if start.returncode != 0:
             print(f"  [!] Failed to start Qdrant: {start.stderr.decode(errors='replace').strip()}")
             print("      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
-            print(f"      AITHER_FLEET_QDRANT_API_KEY={api_key}")
+            print("      AITHER_FLEET_QDRANT_API_KEY=<qdrant_api_key in ~/.aither/config.yaml>")
             return False, "", api_key
         print("  [+] Qdrant container is running")
     except (OSError, subprocess.TimeoutExpired):
         # Docker not available; just return config for manual setup
         print("  [!] Docker not available; set env manually:")
         print("      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
-        print(f"      AITHER_FLEET_QDRANT_API_KEY={api_key}")
+        print("      AITHER_FLEET_QDRANT_API_KEY=<qdrant_api_key in ~/.aither/config.yaml>")
         return False, "", api_key
 
     # Set env for this process + child processes — but a customer's explicit
@@ -2337,6 +2337,26 @@ def _derive_cloud_endpoints(identity_url: str) -> dict | None:
     return None
 
 
+def _keeps_own_inference_url(saved: dict) -> bool:
+    """True when the saved inference_url is the user's own (not the Aitherium
+    cloud) — a login/doctor save must then leave it alone.
+
+    The old rule also required ``default_backend``; a desktop configured by
+    ``adk setup`` (inference_url = its own MicroScheduler, no default_backend)
+    had its spine rewritten to mcp.aitherium.com/v1 on every login, and every
+    agent on that box 403'd on a free-tier token (measured 2026-10-17).
+    """
+    from urllib.parse import urlparse
+
+    url = (saved.get("inference_url") or "").strip()
+    if not url:
+        return False
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    return not (host == "aitherium.com" or host.endswith(".aitherium.com"))
+
+
 def _persist_workspace_endpoints(identity_url: str) -> dict | None:
     """After login, write the workspace endpoints to ~/.aither/config.json AND
     ~/.aither/shell.yaml so the `aither` REPL connects to the cloud with no
@@ -2358,7 +2378,7 @@ def _persist_workspace_endpoints(identity_url: str) -> dict | None:
         saved = load_saved_config()
     except Exception:  # noqa: BLE001 — a config read failure must not block login
         saved = {}
-    if saved.get("default_backend") and saved.get("inference_url"):
+    if _keeps_own_inference_url(saved):
         to_save["gateway_inference_url"] = to_save.pop("inference_url")
     save_saved_config(to_save)
 
@@ -3459,7 +3479,7 @@ def cmd_connect(args):
                 _prior = load_saved_config()
             except Exception:  # noqa: BLE001
                 _prior = {}
-            if not (_prior.get("default_backend") and _prior.get("inference_url")):
+            if not _keeps_own_inference_url(_prior):
                 save_data["inference_url"] = "https://mcp.aitherium.com/v1"
                 if backends_found:
                     save_data["default_backend"] = backends_found[0][0]
@@ -4962,6 +4982,12 @@ def cmd_enroll(args) -> int:
         return 0
     except Exception as e:
         print(f"ERROR: Enrollment failed: {e}")
+        try:  # queued for the company app's support; uploaded by `adk tenant watch`
+            from adk.support_report import report_exception
+            report_exception("awdk.enroll", e, context="adk enroll failed")
+        except Exception as _rep_err:  # noqa: BLE001 - reporting must never add a failure
+            import logging as _logging
+            _logging.getLogger("adk.cli").debug("enroll failure not queued: %s", _rep_err)
         return 1
 
 
@@ -10542,6 +10568,15 @@ def cmd_quickstart_local(args):
         prefer=getattr(args, "backend", "auto"),
         docker_available_override=docker_available(),
     )
+    # Bonsai without Docker (2026-10-14, a customer's Windows PC): the weights and the
+    # llama-server that install-bonsai.ps1 installed are on disk, so start THAT server
+    # natively; only with neither a native server nor Docker fall to plain llama.cpp.
+    # This used to go straight to the Docker-only `adk bonsai-local` and fail.
+    from adk import local_model_server as _lms
+    native_server = _lms.find_local_model_server() if backend == "bonsai" else None
+    if backend == "bonsai" and native_server is None and not docker_available():
+        print("  (Bonsai needs its installed server or Docker; neither is here -> llama.cpp)")
+        backend = "llamacpp"
     print(f"  Backend: {backend}")
     if backend == "vllm":
         print("    (NVIDIA CUDA + Docker: optimal throughput)")
@@ -10616,6 +10651,17 @@ def cmd_quickstart_local(args):
             return 1
         endpoint = "http://localhost:8209/v1"
         model_name = "auto"
+    elif backend == "bonsai" and native_server is not None:
+        if getattr(args, "dry_run", False):
+            print(f"  [DRY] Would start the installed model server: {native_server['argv'][0]}")
+        else:
+            print(f"  Starting the installed model server ({native_server['weights']}) ...")
+            started = _lms.start_local_model_server(native_server)
+            if not started.get("ok"):
+                print(f"  ERROR: {started.get('error')}", file=sys.stderr)
+                return 1
+        endpoint = native_server["inference_url"]
+        model_name = native_server["model"]
     elif backend == "bonsai":
         # pick_backend returns "bonsai" on a CPU-only box with Docker; this
         # branch did not exist, so quickstart-local printed "unknown backend
@@ -12582,6 +12628,18 @@ def _cmd_pack(args) -> int:
 
     if sub == "install":
         pack_id = args.pack_id
+
+        # A bundle on disk (`adk pack build` output): no Genesis, same verification gates.
+        from adk.pack_author import install_local, is_local_bundle
+        if is_local_bundle(pack_id):
+            try:
+                target = install_local(pack_id)
+            except (OSError, ValueError) as exc:
+                print(f"install failed: {exc}")
+                return 1
+            print(f"Pack installed from {Path(pack_id).name} to {target}")
+            print("Restart `adk mcp serve` to load new tools.")
+            return 0
 
         if pack_id.startswith("community:"):
             return _cmd_pack_install_community(pack_id[len("community:"):], genesis_url)
@@ -14628,8 +14686,15 @@ def _register_commands(sub):
     d_connect.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
     # aither deploy desktop
-    d_desktop = deploy_sub.add_parser("desktop", help="AitherDesktop native application")
-    d_desktop.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
+    d_desktop = deploy_sub.add_parser(
+        "desktop",
+        help="Install or update the Aither app (latest verified release, as the setup page)")
+    d_desktop.add_argument("--tenant", help="Workspace label (acme -> acme.aitherium.com); "
+                                            "default: the signed-in account's workspace")
+    d_desktop.add_argument("--force", action="store_true",
+                           help="Reinstall even when Desk is already the latest")
+    d_desktop.add_argument("--no-start", action="store_true", help="Do not start Desk")
+    d_desktop.add_argument("--api-key", help=argparse.SUPPRESS)  # accepted, unused
     d_desktop.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
     # aither deploy grid
@@ -15629,6 +15694,10 @@ def _register_commands(sub):
     from adk.tenant_watch import register as _register_tenant_verbs
     _register_tenant_verbs(sub)
 
+    # adk feedback send|flush|status|on|off -- feedback + crash reports to the company app
+    from adk.support_report import register as _register_support_verbs
+    _register_support_verbs(sub)
+
     # adk doctor — system health checks
     sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
 
@@ -15733,8 +15802,10 @@ def _register_commands(sub):
     pack_search_p.add_argument("query", help="Search query")
     pack_search_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     pack_install_p = pack_sub.add_parser(
-        "install", help="Install a tool pack (or a bought listing: community:<listing-id>)")
-    pack_install_p.add_argument("pack_id", help="Pack ID, or community:<listing-id>")
+        "install", help="Install a tool pack (a bought listing: community:<listing-id>; "
+                        "a local bundle: <path>.tar.gz)")
+    pack_install_p.add_argument("pack_id",
+                                help="Pack ID, community:<listing-id>, or a .tar.gz bundle path")
     pack_sync_p = pack_sub.add_parser(
         "sync", help="Install every entitled pack not already present (license-driven)")
     pack_sync_p.add_argument("--dry-run", "-n", action="store_true",
@@ -16291,6 +16362,8 @@ def _register_commands(sub):
     _register_fleet_host(sub)
     from adk.commands.fleet_verbs import register_gpu_parser as _register_gpu
     _register_gpu(sub)
+    from adk.commands.fleet_verbs import register_inference_parser as _register_inference
+    _register_inference(sub)
 
     # adk wm — world model management (status, inspect, train, reset)
     wm_p = sub.add_parser("wm", help="World model management (status, inspect, train, reset)")
@@ -17367,6 +17440,9 @@ def main():
     elif args.command == "tenant":
         from adk.tenant_watch import cmd_tenant
         sys.exit(cmd_tenant(args))
+    elif args.command == "feedback":
+        from adk.support_report import cmd_support
+        sys.exit(cmd_support(args))
     elif args.command == "kb":
         from adk.cli_knowledge import cmd_kb
         sys.exit(cmd_kb(args))
@@ -17402,13 +17478,17 @@ def main():
     elif args.command == "pack":
         sys.exit(_cmd_pack(args))
     elif args.command == "fleet":
-        if getattr(args, "fleet_command", None) in ("sleep", "wake", "park", "critical"):
+        from adk.commands.fleet_verbs import FLEET_VERBS as _MACHINE_FLEET_VERBS
+        if getattr(args, "fleet_command", None) in _MACHINE_FLEET_VERBS:
             from adk.commands.fleet_verbs import cmd_fleet_verb
             sys.exit(cmd_fleet_verb(args))
         sys.exit(_cmd_fleet(args))
     elif args.command == "gpu":
         from adk.commands.fleet_verbs import cmd_gpu
         sys.exit(cmd_gpu(args))
+    elif args.command == "inference":
+        from adk.commands.fleet_verbs import cmd_inference
+        sys.exit(cmd_inference(args))
     elif args.command == "desk":
         sys.exit(_cmd_desk(args))
     elif args.command == "instance":

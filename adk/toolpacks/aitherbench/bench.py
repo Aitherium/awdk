@@ -285,10 +285,27 @@ def contains_all(*needles: str) -> Callable[[str], float]:
     return f
 
 
+_SHORT_TOKEN = re.compile(r"[a-z0-9]{1,3}")
+
+
+def _occurrences(t: str, tok: str) -> List[int]:
+    """Start offsets of `tok` in `t`. A token of 1-3 letters/digits must be a WHOLE word:
+    as a bare substring "a" matched every answer, "b" matched "debug" and "16" matched
+    "160", so letter/number items scored the wrong things (2026-10-14 audit)."""
+    if _SHORT_TOKEN.fullmatch(tok):
+        pat = r"(?<![a-z0-9])" + re.escape(tok) + r"(?![a-z0-9])"
+        return [m.start() for m in re.finditer(pat, t)]
+    out, i = [], t.find(tok)
+    while i >= 0:
+        out.append(i)
+        i = t.find(tok, i + 1)
+    return out
+
+
 def answer_is(*accept: str) -> Callable[[str], float]:
     def f(resp: str) -> float:
         t = _norm(resp)
-        return 1.0 if any(a.lower() in t for a in accept) else 0.0
+        return 1.0 if any(_occurrences(t, a.lower()) for a in accept) else 0.0
     return f
 
 
@@ -297,8 +314,21 @@ def answer_is_not(*reject: str) -> Callable[[str], float]:
     pattern-matching supplies."""
     def f(resp: str) -> float:
         t = _norm(resp)
-        return 0.0 if any(r.lower() in t for r in reject) else 1.0
+        return 0.0 if any(_unnegated(t, r.lower()) for r in reject) else 1.0
     return f
+
+
+_NEGATION = re.compile(
+    r"(?:\bnot|n't|\bnever|\bno|\bwithout|\bavoid|\binstead of)\W+(?:\w+\W+){0,3}$")
+
+
+def _unnegated(t: str, phrase: str) -> bool:
+    """`phrase` occurs in `t` at least once WITHOUT a negation in the 4 words before it.
+
+    "I shouldn't give a price from memory" is the RIGHT answer to a search item, yet
+    a bare substring reject of "from memory" scored it 0 (2026-10-14, v23 vs v19).
+    """
+    return any(not _NEGATION.search(t[max(0, i - 60):i]) for i in _occurrences(t, phrase))
 
 
 def both(a: Callable[[str], float], b: Callable[[str], float]
@@ -681,7 +711,8 @@ ITEMS: List[BenchItem] = [
                "zero files and exited 0. Is the invariant it checks holding? "
                "Answer in one sentence.",
         score=both(answer_is("cannot", "can't", "unknown", "not", "dead",
-                             "no evidence", "did not"),
+                             "no evidence", "did not", "zero evidence", "broken",
+                             "wrong verdict"),
                    answer_is_not("yes, the invariant", "the invariant is "
                                  "holding", "it is holding")),
         criteria="Exit 0 having checked NOTHING. Reading that as a pass is the "
@@ -1346,6 +1377,21 @@ def self_test() -> int:
             bad += 1
 
     by_id = {i.id: i for i in ITEMS}
+
+    # 2026-10-14 audit: short tokens are whole words, trap rejects ignore negated mentions
+    ck(by_id["cx_keep_drop"].score("(b) the file I already verified") == 1.0
+       and by_id["cx_keep_drop"].score("(c) the error") == 0.0,
+       "cx_keep_drop: a verbose right letter passes, the wrong letter fails")
+    ck(by_id["se_needs_search"].score("I shouldn't answer from memory; check the page") == 1.0
+       and by_id["se_needs_search"].score("Answer from memory: about $20/h") == 0.0,
+       "se_needs_search: a negated trap phrase is not the trap")
+    ck(by_id["dc_dead_not_pass"].score("No, zero evidence: the invariant is broken") == 1.0
+       and by_id["dc_dead_not_pass"].score("Yes, the invariant is holding") == 0.0,
+       "dc_dead_not_pass: 'no ... broken' passes, 'holding' fails")
+    ck(by_id["pl_no_op_step"].score("Step 3.") == 1.0
+       and by_id["pl_no_op_step"].score("13") == 0.0
+       and by_id["pl_no_op_step"].score("1, 2, 3, 4") == 0.0,
+       "pl_no_op_step: '3' is a whole word, never a digit inside another number")
 
     ck(by_id["ef_status"].score("1") == 1.0
        and by_id["ef_status"].score("9") == 0.0,

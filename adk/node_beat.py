@@ -156,6 +156,13 @@ def install_autostart() -> Dict[str, str]:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    # A crash of the beater is queued for the company app's support (opt-out:
+    # `adk feedback off`); `adk tenant watch` uploads the outbox.
+    try:
+        from adk import support_report
+        support_report.install_excepthook("awdk.node_beat")
+    except Exception as exc:  # noqa: BLE001 - reporting must never stop the beat
+        log.debug("support excepthook not installed: %s", exc)
     try:
         return asyncio.run(_main())
     except KeyboardInterrupt:

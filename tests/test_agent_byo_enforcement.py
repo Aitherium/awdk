@@ -39,6 +39,11 @@ def _isolated_env(monkeypatch, tmp_path):
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("AITHER_DATA_DIR", str(tmp_path))
+    # adk.metering keeps usage at Path.home()/.aither/metering/usage.db, not under
+    # AITHER_DATA_DIR: on a dev box past the community 100k/month cap, the "within
+    # ceiling" test got the monthly-limit reply and the LLM was never called.
+    import pathlib
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("AITHER_TYPED_MEMORY", "false")
     monkeypatch.setenv("AITHER_SKILLS", "false")
 

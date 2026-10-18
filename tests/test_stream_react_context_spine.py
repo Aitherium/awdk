@@ -358,3 +358,89 @@ def test_a_tool_that_keeps_failing_with_new_arguments_is_refused_then_the_turn_a
     assert len(calls) == 3, f"refused after 3 failures, ran {len(calls)}"
     assert len(seen) <= 9, f"answered soon after, not at step 40 ({len(seen)} calls)"
     assert "502" in resp.content and "step limit" not in resp.content
+
+
+def test_a_request_to_write_code_gets_code_not_the_previous_answer_again(monkeypatch):
+    # awconnect 2026-10-14: after a news answer, "write me a python script that can
+    # scrape those websites." re-ran the news web_search and returned news, no code.
+    from adk.agent import asks_for_code
+
+    assert asks_for_code("write me a python script that can scrape those websites.")
+    assert asks_for_code("can you make a powershell script to restart it")
+    assert not asks_for_code("what is in the news today?")
+    assert not asks_for_code("write a short poem about the sea")
+
+    seen: list = []
+
+    async def replies_for(n, messages):
+        if n == 1:
+            return "FINAL: Here are some recent news stories about US politics: ..."
+        return "FINAL: ```python\nimport requests\nprint(requests.get('https://x').status_code)\n```"
+
+    agent = _agent(monkeypatch, replies_for, seen)
+    agent._auto_neurons = None
+    resp = asyncio.run(agent.stream_react(
+        "write me a python script that can scrape those websites.",
+        on_event=lambda e: None, max_steps=6))
+    assert "[TASK] The user asked you to WRITE code" in str(seen[0][-1].content)
+    assert "```" in resp.content and "news stories" not in resp.content
+
+
+def test_a_question_answered_with_a_bare_greeting_is_nudged_to_answer(monkeypatch):
+    # Live 2026-10-14: "where is stream_react defined?" -> "I'm here to help! How can I
+    # assist you today?" twice, with recall in the prompt.
+    from adk.agent import deflects_question
+
+    q = "where is stream_react defined?"
+    assert deflects_question(q, "I'm here to help! How can I assist you today?")
+    assert deflects_question(q, "Hello! How can I help you?")
+    assert not deflects_question("hi", "Hello! How can I help you today?")
+    assert not deflects_question(q, "It is defined in awdk/adk/agent.py at line 3318.")
+
+    seen: list = []
+
+    async def replies_for(n, messages):
+        if n == 1:
+            return "FINAL: I'm here to help! How can I assist you today?"
+        return "FINAL: AitherAgent.stream_react is in awdk/adk/agent.py:3318."
+
+    agent = _agent(monkeypatch, replies_for, seen)
+    agent._auto_neurons = None
+    resp = asyncio.run(agent.stream_react(q, on_event=lambda e: None, max_steps=6))
+    assert "agent.py:3318" in resp.content
+
+
+def test_a_new_question_after_another_topic_is_marked_new():
+    # Live 2026-10-14: "what is in the news today" right after a platform question
+    # answered about the platform; follow-ups ("scrape those websites") stay follow-ups.
+    from adk.agent import is_new_topic
+
+    assert is_new_topic("what is in the news today")
+    assert is_new_topic("where is register_gateway_tools_on defined?")
+    assert not is_new_topic("write me a python script that can scrape those websites.")
+    assert not is_new_topic("do it")
+    assert not is_new_topic("yo")
+
+
+def test_an_offer_to_search_after_a_failed_tool_is_still_nudged(monkeypatch):
+    seen: list = []
+
+    async def replies_for(n, messages):
+        if n == 1:
+            return 'ACTION: find_symbol\nINPUT: {"q": "register_gateway_tools_on"}'
+        if n == 2:
+            return ("FINAL: I don't have a record of it. Would you like me to search for "
+                    "it using another tool?")
+        return "FINAL: it is in awdk/adk/server.py at line 870."
+
+    agent = _agent(monkeypatch, replies_for, seen)
+    agent._auto_neurons = None
+
+    @agent.tool
+    def find_symbol(q: str) -> str:
+        """find a symbol"""
+        return "(tool error: HTTP 503 CodeGraph not available)"
+
+    resp = asyncio.run(agent.stream_react("where is register_gateway_tools_on defined?",
+                                          on_event=lambda e: None, max_steps=6))
+    assert "server.py" in resp.content

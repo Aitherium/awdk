@@ -444,6 +444,83 @@ def build(pack_dir: str | Path, out_dir: str | Path | None = None) -> BuildResul
     return BuildResult(tar_path, digest, len(files), len(blob))
 
 
+# ── install a local bundle ───────────────────────────────────────────────────────
+
+#: Marker written into a pack installed from a local bundle: the bundle it came from.
+LOCAL_MARKER = ".local-install"
+
+
+def is_local_bundle(arg: str) -> bool:
+    """True when ``adk pack install <arg>`` names a built bundle on disk, not a pack id."""
+    p = Path(arg).expanduser()
+    return p.is_file() and p.name.endswith((".tar.gz", ".tgz"))
+
+
+def install_local(bundle: str | Path, packs_dir: str | Path | None = None) -> Path:
+    """Install a ``adk pack build`` bundle from disk into ``~/.aitheros/packs/<id>``.
+
+    The same gates as a marketplace install, minus the download: the ``.sha256`` sidecar
+    (when present) must match; a ``.sig`` sidecar is verified, and an absent one follows
+    the signing policy (``adk.pack_verifier``: refused when signing is required); the
+    extracted pack must validate; members are path-checked before extraction. An existing
+    folder is replaced only when it is a previous LOCAL install of the same pack id --
+    never a marketplace or community pack.
+    """
+    from adk.community_publish import CommunityError, _extract, _manifest_name
+    from adk.pack_verifier import verify_pack_tarball
+
+    bundle = Path(bundle).expanduser().resolve()
+    data = bundle.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    side = bundle.with_name(bundle.name + ".sha256")
+    if side.is_file():
+        words = side.read_text("utf-8").split()
+        want = words[0].lower() if words else ""
+        if want != digest:
+            raise ValueError(f"sha256 mismatch: {side.name} says {want[:16]}..., "
+                             f"bundle is {digest[:16]}...")
+    sig_path = bundle.with_name(bundle.name + ".sig")
+    sig = sig_path.read_text("utf-8").strip() if sig_path.is_file() else None
+    ok, why = verify_pack_tarball(data, sig)
+    if not ok:
+        raise ValueError(f"signature check failed: {why}")
+    root = Path(packs_dir) if packs_dir else Path.home() / ".aitheros" / "packs"
+    root.mkdir(parents=True, exist_ok=True)
+    import tempfile
+
+    with tempfile.TemporaryDirectory(dir=root) as tmp:
+        stage = Path(tmp) / "x"
+        stage.mkdir()
+        try:
+            _extract(data, stage)
+        except CommunityError as exc:
+            raise ValueError(exc.message) from exc
+        entries = list(stage.iterdir())
+        src = entries[0] if len(entries) == 1 and entries[0].is_dir() else stage
+        rep = validate(src, community=False)
+        if not rep.ok:
+            raise ValueError("bundle does not validate:\n  " + "\n  ".join(
+                map(str, rep.findings)))
+        name = _manifest_name(rep.manifest.get("id"))
+        if not name:
+            raise ValueError(f"unusable pack id {rep.manifest.get('id')!r}")
+        target = (root / name).resolve()
+        if target.parent != root.resolve():
+            raise ValueError(f"refusing to install outside {root}: {name}")
+        if target.exists():
+            if not (target / LOCAL_MARKER).is_file():
+                raise ValueError(f"{target} holds a pack that was not installed from a local "
+                                 "bundle; remove it first (adk pack remove)")
+            import shutil
+
+            shutil.rmtree(target)
+        import shutil
+
+        shutil.move(str(src), str(target))
+        (target / LOCAL_MARKER).write_text(f"{bundle.name} sha256={digest}\n", encoding="utf-8")
+    return target
+
+
 # ── CLI glue (called from adk.cli._cmd_pack) ─────────────────────────────────────
 
 

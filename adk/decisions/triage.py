@@ -144,8 +144,15 @@ def is_decision_pattern_json() -> dict:
     The desk reads this at runtime and uses it to classify cards the same way
     the daemon does, without re-running Python. This keeps the two in sync.
     """
+    # The queue order travels with the patterns, so the desk ranks cards the
+    # way store.rank does (both are pinned by card_rank_cases.json).
+    from adk.decisions.store import RANK_FIRST_KINDS, URGENCY_RANK, stale_after_seconds
+
     return {
-        "decision_kinds": list(TRIAGE_PATTERNS["decision_kinds"]),
+        "decision_kinds": sorted(TRIAGE_PATTERNS["decision_kinds"]),
         "context_phrases": list(TRIAGE_PATTERNS["context_phrases"]),
         "context_kinds": sorted(TRIAGE_PATTERNS["context_kinds"]),
+        "rank_first_kinds": list(RANK_FIRST_KINDS),
+        "urgency_rank": dict(URGENCY_RANK),
+        "stale_after_seconds": stale_after_seconds(),
     }

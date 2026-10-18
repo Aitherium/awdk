@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The "Aither" home-screen widget (AitherWidget): Talk to Aither, Learn, Family. The
+<!-- The "Aither" home-screen widget (AitherWidget): Talk to Aither, Hearth, Family. The
      glyphs are the shell's own (Shell.iconRes), tinted as Shell.accent tints them; colours
      are the Ui.java brand tokens written out, since RemoteViews cannot take them from code. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -38,7 +38,7 @@
     </LinearLayout>
 
     <LinearLayout
-        android:id="@+id/widget_learn"
+        android:id="@+id/widget_hearth"
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_weight="1"
@@ -49,13 +49,13 @@
             android:layout_width="22dp"
             android:layout_height="22dp"
             android:contentDescription="@null"
-            android:src="@drawable/ic_app_learn"
+            android:src="@drawable/ic_app_hearth"
             android:tint="#FFD4872B" />
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:maxLines="1"
-            android:text="Learn"
+            android:text="Hearth"
             android:textColor="#FF9BA6B1"
             android:textSize="11sp" />
     </LinearLayout>

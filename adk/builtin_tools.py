@@ -1722,7 +1722,19 @@ async def _local_graph_hits(query: str, limit: int) -> dict | None:
         k = 10
     try:
         if callable(getattr(idx, "_open", None)) and getattr(idx, "_ok", "") is None:
-            await asyncio.to_thread(_open_graph_blocking, idx)
+            # A cold index opens in the background and the tool waits a bounded time:
+            # live 2026-10-14 a code question right after a daemon restart sat 11 min
+            # in code_concept_search while the worker loaded (ready timeout 900 s).
+            opening = getattr(idx, "_tool_opening", None)
+            if opening is None or opening.done():
+                opening = asyncio.ensure_future(asyncio.to_thread(_open_graph_blocking, idx))
+                idx._tool_opening = opening
+            try:
+                await asyncio.wait_for(asyncio.shield(opening), TOOL_GRAPH_WAIT_S)
+            except asyncio.TimeoutError:
+                return {"error": "local code graph is still loading after a restart; "
+                                 "use file_search or a text search for now, or retry in a "
+                                 "minute"}
         from adk.crystal import _graph_query
         hits = await _graph_query(idx, query, k, TOOL_GRAPH_WAIT_S)
     except Exception as exc:  # noqa: BLE001 -- reported to the model, never raised

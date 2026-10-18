@@ -176,6 +176,37 @@ def test_login_keeps_user_backend_url(monkeypatch):
     assert data["mcp_url"] == "https://mcp.aitherium.com/mcp"
 
 
+def test_login_keeps_desktop_spine_without_default_backend(monkeypatch):
+    """`adk setup` writes inference_url (its MicroScheduler) but no default_backend;
+    a later login must still not rewrite it to the cloud."""
+    import adk.cli as cli
+
+    saved_calls: list[dict] = []
+    monkeypatch.setattr(cli, "load_saved_config", lambda: {
+        "inference_url": "https://127.0.0.1:8150/v1", "setup_tier": "full",
+    })
+    monkeypatch.setattr(cli, "save_saved_config", lambda d: saved_calls.append(dict(d)))
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: __import__("pathlib").Path("/nonexistent-home-for-test")))
+
+    cli._persist_workspace_endpoints("https://idp.aitherium.com")
+    assert "inference_url" not in saved_calls[0]
+    assert saved_calls[0]["gateway_inference_url"] == "https://mcp.aitherium.com/v1"
+
+
+def test_login_refreshes_a_prior_cloud_url(monkeypatch):
+    import adk.cli as cli
+
+    saved_calls: list[dict] = []
+    monkeypatch.setattr(cli, "load_saved_config", lambda: {
+        "inference_url": "https://gateway.aitherium.com/v1",
+    })
+    monkeypatch.setattr(cli, "save_saved_config", lambda d: saved_calls.append(dict(d)))
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: __import__("pathlib").Path("/nonexistent-home-for-test")))
+
+    cli._persist_workspace_endpoints("https://idp.aitherium.com")
+    assert saved_calls[0]["inference_url"] == "https://mcp.aitherium.com/v1"
+
+
 def test_login_sets_url_on_unconfigured_box(monkeypatch):
     import adk.cli as cli
 

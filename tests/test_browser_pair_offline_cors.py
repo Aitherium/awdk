@@ -77,9 +77,44 @@ def test_a_foreign_origin_gets_nothing(daemon, origin):
 
 
 def test_routes_outside_the_door_stay_loopback_only(daemon):
-    for path in ("/health", "/chat", "/agents"):
+    for path in ("/chat", "/agents"):
         r = daemon.get(path, headers={"Origin": PAGE})
         assert acao(r) is None, path
+
+
+def test_offline_health_is_readable_liveness_only(daemon):
+    # 2026-10-13: the This-device page read "browser blocked the reply -- update awdk"
+    # on a current offline daemon, because /health answered with no ACAO.
+    r = daemon.get("/health", headers={"Origin": PAGE})
+    assert r.status_code == 200 and acao(r) == PAGE
+    body = r.json()
+    assert body["offline"] is True and body["status"] == "healthy"
+    # Liveness only: none of the full report (install paths, guard counters) leaks.
+    assert set(body) == {"status", "agent", "version", "offline", "pair"}
+
+
+def test_offline_health_preflight_grants_private_network(daemon):
+    r = daemon.options("/health", headers={
+        "Origin": PAGE, "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Private-Network": "true"})
+    assert r.status_code == 204 and acao(r) == PAGE
+    assert r.headers.get("access-control-allow-private-network") == "true"
+
+
+@pytest.mark.parametrize("origin", ["https://evil.example.com", "http://app.aitherium.com"])
+def test_offline_health_refuses_foreign_origins(daemon, origin):
+    r = daemon.get("/health", headers={"Origin": origin})
+    assert acao(r) is None
+    r = daemon.options("/health", headers={
+        "Origin": origin, "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Private-Network": "true"})
+    # Starlette's own refusal: 400 and no ACAO, so the browser discards it.
+    assert r.status_code == 400 and acao(r) is None
+
+
+def test_offline_health_without_origin_is_the_full_report(daemon):
+    r = daemon.get("/health")
+    assert r.status_code == 200 and "code_update" in r.json()
 
 
 def test_an_explicit_operator_list_still_wins(monkeypatch, tmp_path):

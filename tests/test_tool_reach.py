@@ -360,3 +360,41 @@ def test_a2a_send_reports_why_the_peer_failed_and_refuses_itself(monkeypatch):
     monkeypatch.setattr(bt, "_a2a_sender_name", lambda: "awsh-agent")
     me = json.loads(asyncio.run(bt.a2a_send("AWSH-Agent", "hi")))
     assert "error" in me and "itself" in me["error"], me
+
+
+def test_a_cold_graph_never_holds_the_tool_past_its_budget(tmp_path, monkeypatch):
+    """Live 2026-10-14: code_concept_search right after a daemon restart waited 11 min
+    for the worker's index load. The tool now answers within its budget and the load
+    keeps going for the next call."""
+    import time
+
+    from adk.crystal import AwgraphIndex
+
+    class _ColdOpen(AwgraphIndex):
+        async def _open(self) -> bool:
+            time.sleep(1.5)  # blocking-ok: models a long hydrate in the worker thread
+            self._ok = True
+            return True
+
+        async def query(self, text, k, timeout=None):
+            return [{"name": "x", "path": "a.py", "line": 1, "signature": ""}]
+
+    root = os.path.abspath(str(tmp_path / "repo"))
+    monkeypatch.delenv("AITHER_GENESIS_URL", raising=False)
+    monkeypatch.setenv("ADK_CRYSTAL_GRAPH_ROOT", root)
+    monkeypatch.setattr(bt, "TOOL_GRAPH_WAIT_S", 0.2)
+    idx = _ColdOpen(root)
+    monkeypatch.setitem(bt._LOCAL_GRAPHS, os.path.normcase(root), idx)
+
+    async def _run():
+        t0 = time.monotonic()
+        first = json.loads(await bt.graph_code_search("x"))
+        took = time.monotonic() - t0
+        await asyncio.sleep(2.0)  # the load finishes in the background
+        second = json.loads(await bt.graph_code_search("x"))
+        return first, took, second
+
+    first, took, second = asyncio.run(_run())
+    assert took < 1.0, f"the tool waited {took:.1f}s on a cold index"
+    assert "still loading" in str(first)
+    assert second.get("count") == 1, second

@@ -1,10 +1,10 @@
 # GobboNet on aither-adk
 
-Run [GobboNet](https://github.com/ElodineOfficial/GobboNet) (Elodine / GoblinCorps, MIT)
+Run [GobboNet](https://github.com/ElodineOfficial/GobboNet) (Elodine / GoblinCorps; MIT through 1.5.3, AGPL-3.0 from 1.7)
 with an agent engine behind it — keyless web search, conversation persistence, and model
 weights without a HuggingFace account — entirely on your own machine.
 
-**GobboNet is not modified and not redistributed.** You clone it yourself. This pack is the
+**GobboNet's engine is not modified.** You clone it yourself, from the MIT fork, which adds only our browser adapter (in-browser Bonsai, local-model detection) beside it. This pack is the
 engine; their UI, character cards and extension seams stay exactly as they are.
 
 **It also runs on macOS and Linux.** GobboNet ships `launch.bat`, `fileserver.ps1` and
@@ -20,7 +20,7 @@ unchanged and does not know the difference.
 
 ```bash
 pip install aither-adk
-git clone https://github.com/ElodineOfficial/GobboNet
+git clone https://github.com/wizzense/GobboNet   # the MIT fork adk gobbonet uses
 python -m adk.packs.gobbonet.server --ui ./GobboNet --port 11434
 ```
 

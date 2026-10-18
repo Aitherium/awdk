@@ -184,4 +184,4 @@ def test_call_desktop_reports_which_surfaces_are_open_and_an_old_desk_is_cannot_
     assert rc == 2 and "older build" in doc["error"]
     c, _ = _client([ConnectionError("refused")])
     rc, doc = c.call_desktop()
-    assert rc == 2 and "awdesk is not running" in doc["error"]
+    assert rc == 2 and "Aither app is not running" in doc["error"]

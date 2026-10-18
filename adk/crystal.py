@@ -81,6 +81,8 @@ MIN_COSINE_SCORE = 0.45
 #: to the stage, a slow graph query always lost the race and the stage dropped the
 #: facts it had already recalled with it (measured 2026-10-14: every live turn).
 GRAPH_WAIT_S = 1.5
+#: A graph worker that failed to start is started again after this long.
+WORKER_RETRY_S = float(os.environ.get("ADK_GRAPH_WORKER_RETRY_S", "120"))
 #: What a turn waits for the whole crystal block (facts + memory + graph).
 CRYSTAL_STAGE_S = GRAPH_WAIT_S + 2.0
 #: The graph wait for a CODE request when the graph runs in its own process
@@ -194,6 +196,27 @@ class AwmFactStore:
         #: reading every row of every read scope cost ~10 s per turn on a 2.5k-row
         #: project scope (measured 2026-10-14), past the turn's 3 s crystal budget.
         self._landed_cache: dict = {}
+        #: Per-turn reads use their OWN connection and lock. Writes hold ``_lock``
+        #: through an LLM reconcile call, and the next turn's recall waited behind
+        #: them: "crystal over 7.0s; still running: read:scan 7.0s" (2026-10-14).
+        self._reader: Any = None
+        self._reader_failed = False
+        self._read_lock = threading.Lock()
+        self._MemoryStore = MemoryStore
+
+    def _read_handle(self) -> "tuple[Any, Any]":
+        """``(store, lock)`` for a read: a second connection when the store allows one
+        (check_same_thread), else the write handle under the write lock."""
+        if self._reader is None and self.offload_reads and not self._reader_failed:
+            try:
+                self._reader = self._MemoryStore(self.path, auto_migrate=False,
+                                                 check_same_thread=False)
+            except Exception as exc:  # noqa: BLE001 -- reads fall back to the write handle
+                logger.debug("[CRYSTAL] no separate read connection: %s", exc)
+                self._reader_failed = True
+        if self._reader is not None:
+            return self._reader, self._read_lock
+        return self._store, self._lock
 
     def _recheck_reconcile(self) -> None:
         """Re-enable reconcile once the file this handle holds has been migrated."""
@@ -311,16 +334,18 @@ class AwmFactStore:
         no migration) and whether or not they carry a subject: measured 2026-10-11, the
         platform facts visible to the daemon were all subject-less, so all were dropped.
         """
-        with self._lock:
-            return self._scan(limit)
+        store, lock = self._read_handle()
+        with lock:
+            return self._scan(limit, store)
 
-    def _scan(self, limit: int) -> list[tuple[str, str, dict]]:
+    def _scan(self, limit: int, store: Any = None) -> list[tuple[str, str, dict]]:
+        store = store if store is not None else self._store
         merged: list[tuple[str, str, dict]] = []
         seen: set[tuple[str, str]] = set()
         for sc in self._read_scopes():
             rows = [(m.updated, m.scope, (m.key, m.value, dict(m.meta or {})))
-                    for m in self._store.recall(sc, limit=limit, kind="crystal")]
-            for m in self._store.recall(sc, limit=limit, kind="fact"):
+                    for m in store.recall(sc, limit=limit, kind="crystal")]
+            for m in store.recall(sc, limit=limit, kind="fact"):
                 # A landed memory file with no `type` is kind=fact too; it belongs
                 # to scan_landed / the [MEMORY] section, never whole in the facts.
                 if (m.meta or {}).get("source") == "memory-file":
@@ -352,19 +377,21 @@ class AwmFactStore:
         write scope alone can never see (measured 2026-10-11: 0 landed rows visible).
         """
         now = time.monotonic()
-        with self._lock:
+        store, lock = self._read_handle()
+        with lock:
             hit = self._landed_cache.get(limit)
             if hit is not None and now - hit[0] < LANDED_CACHE_S:
                 return list(hit[1])
-            rows = self._scan_landed(limit)
+            rows = self._scan_landed(limit, store)
             self._landed_cache[limit] = (now, rows)
             return list(rows)
 
-    def _scan_landed(self, limit: int) -> list[tuple[str, str, dict]]:
+    def _scan_landed(self, limit: int, store: Any = None) -> list[tuple[str, str, dict]]:
+        store = store if store is not None else self._store
         rows: list = []
         seen: set[tuple[str, str]] = set()
         for sc in self._read_scopes():
-            for m in self._store.recall(sc, limit=10_000_000):
+            for m in store.recall(sc, limit=10_000_000):
                 if (m.meta or {}).get("source") != "memory-file":
                     continue
                 if (m.scope, m.key) in seen:
@@ -380,6 +407,10 @@ class AwmFactStore:
         try:
             with self._lock:
                 self._store.close()
+            with self._read_lock:
+                if self._reader is not None:
+                    self._reader.close()
+                    self._reader = None
         except Exception:  # noqa: BLE001
             pass
 
@@ -458,6 +489,15 @@ class AwgraphIndex:
         caller that stops waiting (the recall timeout) must not cancel the open the
         next turn will use.
         """
+        failed_at = getattr(self, "_worker_failed_at", None)
+        if (self._ok is False and failed_at is not None
+                and time.monotonic() - failed_at > WORKER_RETRY_S):
+            # A worker that failed to start is tried again: live 2026-10-14 one start
+            # that missed its ready timeout (an orphan worker hogged the disk) left the
+            # daemon with no code graph until its next restart.
+            logger.info("[CRYSTAL] retrying the graph worker for %s (%s)", self.root,
+                        self.reason)
+            self._ok, self._worker_failed_at, self._opening = None, None, None
         if self._ok is not None:
             return self._ok
         loop = asyncio.get_running_loop()
@@ -518,6 +558,7 @@ class AwgraphIndex:
                     self._graph, self._ok = client, ok
                     if not ok:
                         self.reason = client.reason or f"no-index for {self.root}"
+                        self._worker_failed_at = time.monotonic()
                         client.close()
                 return self._graph, self._ok
 
@@ -527,6 +568,7 @@ class AwgraphIndex:
             self.reason = f"{type(exc).__name__}: {exc}"
             logger.warning("[CRYSTAL] graph worker failed for %s: %s", self.root, exc)
             self._ok = False
+            self._worker_failed_at = time.monotonic()
         return bool(self._ok)
 
     async def query(self, text: str, k: int, timeout: "float | None" = None) -> list[dict]:
@@ -619,9 +661,11 @@ def make_scheduler_embedder(url: str | None = None, model: str | None = None) ->
         import httpx
 
         try:
-            from adk._tls import tls_verify
+            from adk._tls import ssl_context
 
-            verify: Any = tls_verify()
+            # One cached context, not a CA-file load per embedding client (py-spy
+            # 2026-10-14: 27% of the loop's turn time was this client's TLS setup).
+            verify: Any = ssl_context()
         except Exception:  # noqa: BLE001
             verify = True
         # One STRING per request: MicroScheduler's /v1/embeddings validates `input` as a

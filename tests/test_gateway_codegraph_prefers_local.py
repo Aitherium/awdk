@@ -193,3 +193,13 @@ async def test_the_tool_and_a_code_turn_give_the_worker_their_own_budget():
     await _graph_query(G(), "q", 3, bt.TOOL_GRAPH_WAIT_S)
     await _graph_query(Old(), "q", 3, 9.0)
     assert seen == [bt.TOOL_GRAPH_WAIT_S, "old"] and bt.TOOL_GRAPH_WAIT_S > 2.5
+
+
+async def test_every_fall_through_says_why(monkeypatch, caplog):
+    import logging
+
+    agent, mcp, _ = _setup(monkeypatch, answer=json.dumps({"count": 0, "results": []}))
+    with caplog.at_level(logging.INFO, logger="adk.server"):
+        await agent.tools_by_name()["codegraph_search"].fn(query="x")
+    assert any("[SHADOW]" in r.getMessage() and "no local hits" in r.getMessage()
+               for r in caplog.records)

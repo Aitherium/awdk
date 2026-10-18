@@ -110,6 +110,115 @@ CLOSED_STATUSES = frozenset({STATUS_ANSWERED, STATUS_EXPIRED, STATUS_CANCELLED})
 
 URGENCIES = ("low", "normal", "high", "critical")
 
+#: Statuses a dedupe key no longer HOLDS. A card an AGENT cancelled (withdrawn,
+#: superseded by grouping, reconciled) or one that expired (nobody answered) did
+#: not decide its question, so it must not swallow the next raise of that key.
+#: Measured 2026-10-14: a cancelled ``ci-autofix-fail:12801`` would have hidden
+#: every later real failure of the same job behind a card nobody can see. A card
+#: the OWNER dismissed (``answered_via == CANCEL_VIA_OWNER``) still holds its key,
+#: like an answer: a dismissal that re-raised itself on the next pass would be
+#: the storm the key exists to stop.
+DEDUPE_RELEASED_STATUSES = frozenset({STATUS_CANCELLED, STATUS_EXPIRED})
+
+#: ``answered_via`` of a cancel made on the owner's behalf (desk, card window).
+CANCEL_VIA_OWNER = "owner"
+
+#: An ``info`` card is context, not a question ("Nothing to click -- this is
+#: context"): left open, it sat in the queue forever and popped like a decision.
+#: Owner, 2026-10-07, on an hourly digest still open as "30 of 30". With no
+#: deadline of its own, an info card closes after this many seconds. Override:
+#: ``AITHER_DECISIONS_INFO_TTL_HOURS``.
+INFO_TTL_SECONDS = 6 * 3600
+
+#: A card open longer than this is a STRAGGLER. It is never closed for being old
+#: (see :meth:`DecisionStore.sweep`: an unanswered question does not stop
+#: mattering), but the queue shows fresh cards before stragglers of the same
+#: tier -- measured 2026-10-07: 30 open cards, the oldest 27 days, and the
+#: window opened on that one every time. Override: ``AITHER_DECISIONS_STALE_DAYS``.
+STALE_AFTER_SECONDS = 7 * 24 * 3600
+
+#: Kinds that mean "a session is stopped until the owner acts". They lead the
+#: queue whatever their urgency: a credential ask buried at #28 of 41 behind
+#: reports is a session that stays blocked (measured 2026-10-14).
+RANK_FIRST_KINDS = ("credential", "blocked")
+
+URGENCY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+
+
+def _env_seconds(name: str, default: float, unit: float) -> float:
+    raw = os.getenv(name, "").strip()
+    try:
+        value = float(raw) * unit if raw else default
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def info_ttl_seconds() -> float:
+    return _env_seconds("AITHER_DECISIONS_INFO_TTL_HOURS", INFO_TTL_SECONDS, 3600)
+
+
+def stale_after_seconds() -> float:
+    return _env_seconds("AITHER_DECISIONS_STALE_DAYS", STALE_AFTER_SECONDS, 86400)
+
+
+def is_straggler(card: "DecisionCard", now: Optional[float] = None) -> bool:
+    """Open, and older than the staleness line."""
+    t = time.time() if now is None else now
+    return card.is_open and (t - card.created_at) > stale_after_seconds()
+
+
+def rank_key(card: "DecisionCard", now: Optional[float] = None) -> tuple:
+    """The sort key of :func:`rank`, exposed so a test can name which term decided.
+
+    1. credential / blocked first (a session is stopped on it);
+    2. urgency, critical first (an unknown urgency ranks as normal);
+    3. fresh before straggler (open past :func:`stale_after_seconds`);
+    4. age, oldest first -- the longest-blocking card of a tier leads;
+    5. id, so equal cards order the same way on every surface.
+    """
+    t = time.time() if now is None else now
+    kind = (card.kind or "").strip().lower()
+    return (
+        0 if kind in RANK_FIRST_KINDS else 1,
+        URGENCY_RANK.get((card.urgency or "").strip().lower(), 2),
+        1 if is_straggler(card, t) else 0,
+        float(card.created_at or 0.0),
+        card.id or "",
+    )
+
+
+def rank(cards: "Iterable[DecisionCard]", now: Optional[float] = None) -> "list[DecisionCard]":
+    """THE queue order. Every surface that shows "what is waiting" in order uses
+    this (the card window, ``list(order="queue")``, the daemon's ``?order=queue``)
+    and the desk reads the same cases from ``card_rank_cases.json``, so two
+    surfaces can never disagree about which card is first. Nothing is dropped."""
+    t = time.time() if now is None else now
+    return sorted(cards, key=lambda c: rank_key(c, t))
+
+
+def queue_order(cards: "Iterable[DecisionCard]",
+                now: Optional[float] = None) -> "list[DecisionCard]":
+    """The order the INTERRUPTING window walks. Kept as a name for its callers;
+    it is :func:`rank`, so the window and every other surface agree."""
+    return rank(cards, now)
+
+
+def credential_dedupe_key(card: "DecisionCard") -> str:
+    """``cred:<recipe or secret_name>:<scope>`` -- the identity of a credential ASK.
+
+    Two sessions asking for the same secret family must reach the owner as ONE
+    card (measured 2026-10-14: three open Proton Bridge cards for one login).
+    The recipe names the family when there is one (``AITHER_IMAP_PASS`` and
+    ``proton_bridge_pw_x`` are both the ``proton_bridge`` recipe); otherwise the
+    vault key does. Characters outside the dedupe-key alphabet become ``-``.
+    """
+    family = (card.credential_recipe or card.secret_name or "").strip()
+    if not family:
+        return ""
+    scope = (card.credential_scope or "platform").strip() or "platform"
+    return re.sub(r"[^A-Za-z0-9:._@+-]", "-", f"cred:{family}:{scope}")[:160]
+
 #: Card ids are typed by humans ("adk decide answer d-7f3a 2"), so they are short
 #: and use an unambiguous alphabet — no 0/o/1/l.
 _ID_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
@@ -130,9 +239,33 @@ _RAW_CACHE_LOCK = threading.Lock()
 #: pinned here rather than trusted: an unbounded key would be an unbounded scan.
 _DEDUPE_RE = re.compile(r"^[A-Za-z0-9:._@+-]{1,160}$")
 
+#: The id grammar of a universe object: ``platform`` or ``<kind>:<rest>``
+#: (``svc:Secrets``, ``secret:STRIPE_API_KEY``, ``repo:owner/name``).
+_SUBJECT_RE = re.compile(r"^(platform|[a-z]+:[A-Za-z0-9._/@:-]{1,160})$")
+
+
+def normalize_subject(value: Any) -> str:
+    """``value`` when it is a well-formed universe object id, else ``""``.
+
+    The subject is THE UNIVERSE OBJECT THIS CARD CONCERNS -- a service, a node, a
+    secret, a session -- so a surface can draw the card on that object. It is
+    unrelated to the dedupe "same subject" prefix (:meth:`DecisionStore._dedupe_prefix`),
+    which is the identity of the QUESTION and never reads this field.
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if _SUBJECT_RE.match(text) else ""
+
 
 class DecisionError(RuntimeError):
     """A card operation that could not be completed as asked."""
+
+
+class CancelNoteRequiredError(DecisionError, ValueError):
+    """A card was withdrawn by someone other than the session that raised it, with
+    no reason. Both a ``DecisionError`` (every surface already reports those) and
+    a ``ValueError`` (it is a bad argument, not a store failure)."""
 
 
 #: Sub-directory of the store that unparseable cards are moved into. Not ``d-*.json``
@@ -726,6 +859,16 @@ class DecisionCard:
     #: lockbox from the window" from "somebody closed the card". A receipt is
     #: the only durable record of which of those happened.
     credential_receipt: Optional[dict[str, Any]] = None
+    #: Further sessions blocked on THIS card's answer, beyond ``source``. A
+    #: credential ask raised by a second session joins the open card instead of
+    #: becoming a second card, and every waiter is resumed when it closes.
+    waiters: list[DecisionSource] = field(default_factory=list)
+    #: The universe object this card concerns (``svc:Secrets``, ``secret:NAME``,
+    #: ``session:<id>``, ``platform``), so a surface can glow the card on it.
+    #: UNRELATED to the dedupe "same subject" prefix (``_dedupe_prefix``), which
+    #: identifies the question, not the object. "" = not attached to anything;
+    #: anything off-grammar is normalised to "" by :func:`normalize_subject`.
+    subject: str = ""
 
     # ── derived helpers ────────────────────────────────────────────────────────
 
@@ -762,6 +905,7 @@ class DecisionCard:
         data["options"] = [o.to_dict() for o in self.options]
         data["source"] = self.source.to_dict()
         data["notes"] = [n.to_dict() for n in self.notes]
+        data["waiters"] = [w.to_dict() for w in self.waiters]
         return data
 
     #: What a credential card's answer is allowed to say. The VALUE never travels
@@ -840,7 +984,17 @@ class DecisionCard:
             card_recipe=str(raw.get("card_recipe") or ""),
             recipe_vars=(dict(raw["recipe_vars"])
                          if isinstance(raw.get("recipe_vars"), dict) else {}),
+            waiters=[DecisionSource.from_dict(w) for w in (raw.get("waiters") or [])
+                     if isinstance(w, dict)],
+            subject=normalize_subject(raw.get("subject")),
         )
+
+
+def _with_source(card: DecisionCard, source: DecisionSource) -> DecisionCard:
+    """A shallow copy of ``card`` routed to ``source`` (fields shared, not copied)."""
+    clone = copy.copy(card)
+    clone.source = source
+    return clone
 
 
 def _archive_delivered(path: Path) -> Path:
@@ -903,7 +1057,7 @@ class DecisionStore:
                     raise
                 time.sleep(0.01)
 
-    def create(self, card: DecisionCard) -> DecisionCard:
+    def create(self, card: DecisionCard, *, blocking: bool = False) -> DecisionCard:
         """Persist a new card, minting an id if it has none.
 
         A card carrying a ``dedupe_key`` is raised AT MOST ONCE. Two guards, in
@@ -911,13 +1065,28 @@ class DecisionStore:
         nothing — the caller can tell the difference because the object it gets
         back is not the object it passed in:
 
-        1. **Same key, ANY status.** A closed card with this key means the
-           question was already decided. Without this, an automated producer
+        1. **Same key, open or ANSWERED.** An answered card with this key means
+           the question was already decided. Without this, an automated producer
            raising on every pass would raise a fresh card the moment the owner
-           answered the last one — a storm that answering makes worse.
+           answered the last one — a storm that answering makes worse. A
+           CANCELLED, superseded or EXPIRED card decided nothing, so its key is
+           released (:data:`DEDUPE_RELEASED_STATUSES`) and the next raise is a
+           new card: a silently withdrawn card must not swallow a real future ask.
         2. **No second OPEN card for the same subject**, whatever the rest of
            the key says. This covers the case the first guard cannot: a producer
            recomputing part of its own key while a card is open.
+
+        A ``kind="credential"`` card is keyed by :func:`credential_dedupe_key`
+        (secret family + scope) whatever key it arrived with, and matches only
+        an OPEN card: the new session is added to that card's ``waiters`` so
+        both resume when the owner answers. An answered credential re-raised
+        means the stored value is needed again, so that is a new card.
+        ``blocking=True`` (the raiser waits on the answer) makes a credential ask
+        default to ``high`` urgency.
+
+        ``subject`` (the universe object this card concerns) is normalised by
+        :func:`normalize_subject`; a credential ask with none defaults to
+        ``secret:<secret_name>``. It plays no part in either dedupe guard.
 
         Both guards are a read-then-write, and the producer that raises them is a
         FRESH PROCESS on every failing pass, so the scan and the write are held
@@ -926,9 +1095,23 @@ class DecisionStore:
         for a single streak, which is precisely the storm the dedupe key exists
         to prevent.
         """
+        card.subject = normalize_subject(card.subject)
+        if (not card.subject and (card.kind or "").strip().lower() == "credential"
+                and card.secret_name):
+            card.subject = normalize_subject(f"secret:{card.secret_name}")
         with self._lock:
-            if card.dedupe_key:
-                existing = self.find_by_dedupe_key(card.dedupe_key)
+            if (card.kind or "").strip().lower() == "credential":
+                family = credential_dedupe_key(card)
+                if family:
+                    card.dedupe_key = family
+                if blocking and card.urgency in ("low", "normal"):
+                    card.urgency = "high"
+                if family:
+                    joined = self._join_credential_ask(family, card)
+                    if joined is not None:
+                        return joined
+            elif card.dedupe_key:
+                existing = self.find_by_dedupe_key(card.dedupe_key, live_only=True)
                 if existing is not None:
                     print(f"[decisions] dedupe hit {existing.id} ({existing.status})",
                           file=sys.stderr)
@@ -955,6 +1138,33 @@ class DecisionStore:
                     return twin
             self._write(card)
             return card
+
+    def _join_credential_ask(self, family: str,
+                             card: DecisionCard) -> Optional[DecisionCard]:
+        """Fold a credential raise into the OPEN card of its family (lock held).
+
+        Returns the open card -- with ``card.source`` added to its waiters, and
+        its urgency raised to the new ask's when that is higher -- or None when
+        the family has no open card.
+        """
+        existing = self.find_open_by_dedupe_key(family)
+        if existing is None:
+            return None
+        changed = False
+        new_src = card.source
+        known = {existing.source.session_id} | {w.session_id for w in existing.waiters}
+        if new_src.session_id and new_src.session_id not in known:
+            existing.waiters.append(new_src)
+            self._register_steer_waiter(existing.id, new_src)
+            changed = True
+        if URGENCY_RANK.get(card.urgency, 2) < URGENCY_RANK.get(existing.urgency, 2):
+            existing.urgency = card.urgency
+            changed = True
+        if changed:
+            self._write(existing)
+        print(f"[decisions] credential ask joined {existing.id} ({family}, "
+              f"{1 + len(existing.waiters)} waiting)", file=sys.stderr)
+        return existing
 
     #: Card grouping at raise time (adk.decisions.grouping): a newer card in a
     #: series supersedes the older open one, and a cross-source duplicate of an
@@ -1035,14 +1245,41 @@ class DecisionStore:
                   file=sys.stderr)
             return ""
 
-    def find_by_dedupe_key(self, key: str) -> Optional[DecisionCard]:
-        """The card carrying this key, whatever its status, or None."""
+    def find_by_dedupe_key(self, key: str, *,
+                           live_only: bool = False) -> Optional[DecisionCard]:
+        """The card carrying this key, or None.
+
+        Any status by default. With ``live_only`` a card whose status released
+        the key (:data:`DEDUPE_RELEASED_STATUSES`) is skipped, and an open card
+        is preferred over an answered one -- a released key can be re-raised, so
+        one key may name several cards over time.
+        """
+        want = (key or "").strip()
+        if not want:
+            return None
+        found: Optional[DecisionCard] = None
+        for target, st in self._scan():
+            card = self._read_file(target, st)
+            if card is None or card.dedupe_key != want:
+                continue
+            if not live_only:
+                return card
+            if (card.status in DEDUPE_RELEASED_STATUSES
+                    and card.answered_via != CANCEL_VIA_OWNER):
+                continue
+            if card.is_open:
+                return card
+            found = found or card
+        return found
+
+    def find_open_by_dedupe_key(self, key: str) -> Optional[DecisionCard]:
+        """The OPEN card carrying exactly this key, or None."""
         want = (key or "").strip()
         if not want:
             return None
         for target, st in self._scan():
             card = self._read_file(target, st)
-            if card is not None and card.dedupe_key == want:
+            if card is not None and card.is_open and card.dedupe_key == want:
                 return card
         return None
 
@@ -1236,13 +1473,17 @@ class DecisionStore:
         status: str | Iterable[str] | None = STATUS_OPEN,
         session_id: str = "",
         newest_first: bool = False,
+        order: str = "age",
     ) -> list[DecisionCard]:
         """Cards matching a filter, oldest first by default.
 
         Oldest-first is deliberate: the card that has been blocking longest is the
         one you most need to see, so it must not be pushed off the bottom of a
-        cockpit row or a toast that shows only the first entry.
+        cockpit row or a toast that shows only the first entry. ``order="queue"``
+        returns :func:`rank` instead -- the one ordering every surface shares.
         """
+        if order not in ("age", "queue"):
+            raise DecisionError(f"order must be 'age' or 'queue', got {order!r}")
         wanted: Optional[set[str]]
         if status is None:
             wanted = None
@@ -1277,6 +1518,8 @@ class DecisionStore:
             if session_id and card.source.session_id != session_id:
                 continue
             out.append(card)
+        if order == "queue":
+            return rank(out)
         out.sort(key=lambda c: c.created_at, reverse=newest_first)
         return out
 
@@ -1375,9 +1618,14 @@ class DecisionStore:
     def _expire_if_due(self, card: DecisionCard) -> bool:
         """Flip an overdue open card to expired, applying its default. Returns True
         if this call performed the transition."""
-        if not card.is_open or card.deadline is None:
+        if not card.is_open:
             return False
-        if time.time() < card.deadline:
+        due = card.deadline
+        info_ttl = due is None and card.kind == "info"
+        if info_ttl:
+            # Context, not a question: closes on its own (INFO_TTL_SECONDS).
+            due = card.created_at + info_ttl_seconds()
+        if due is None or time.time() < due:
             return False
         with self._lock:
             fresh = self.get(card.id)
@@ -1386,8 +1634,13 @@ class DecisionStore:
             fresh.status = STATUS_EXPIRED
             fresh.answer = fresh.default_key or None
             fresh.answered_at = time.time()
-            fresh.answered_via = "deadline"
-            fresh.answer_note = "no answer before the deadline; the declared default applied"
+            if info_ttl:
+                fresh.answered_via = "info-ttl"
+                fresh.answer_note = ("context card closed on its own after "
+                                     f"{info_ttl_seconds() / 3600:g}h; it was never a question")
+            else:
+                fresh.answered_via = "deadline"
+                fresh.answer_note = "no answer before the deadline; the declared default applied"
             self._write(fresh)
             card.status = fresh.status
             card.answer = fresh.answer
@@ -1523,6 +1776,15 @@ class DecisionStore:
                         f"credential card {card_id} closes only with "
                         f"{DecisionCard.CREDENTIAL_ANSWER!r} — the value goes to "
                         "the vault via secure_prompt, never the card")
+                # The marker alone is one constant string anybody can send, so
+                # it never closes a credential card on its own: the vault door
+                # attaches the receipt of what it stored. Verifying the
+                # signature is the door's job (secure_prompt.verify_receipt);
+                # the store refuses the receipt-less close outright.
+                if not isinstance(receipt, dict):
+                    raise DecisionError(
+                        f"credential card {card_id} closes only with a vault "
+                        "receipt — store the value through the masked prompt")
             if card.options:
                 opt = card.option(picked)
                 if opt is None:
@@ -1581,27 +1843,139 @@ class DecisionStore:
             self._write(card)
             return card
 
-    def cancel(self, card_id: str, *, note: str = "") -> DecisionCard:
+    def _register_steer_waiter(self, card_id: str, src: DecisionSource) -> None:
+        """Record a joined session in the steerback waiters file (lock held).
+
+        ``card.waiters`` is what a surface SHOWS ("2 sessions waiting"); the
+        waiters file is what delivery READS (live tier, mailbox, or resume of an
+        ended session). Both are written so a join is never shown but undelivered.
+        A failure here is said, never fatal: ``deliver_answer`` falls back to
+        ``card.waiters`` when no waiters file exists.
+        """
+        try:
+            from adk.decisions import steerback
+
+            # deliver_waiters adds the card's raiser itself; only the joiner
+            # is recorded here.
+            steerback.register_waiter(self, card_id, {
+                "session_id": src.session_id, "agent": src.agent, "cwd": src.cwd,
+                "session_pid": src.session_pid, "waiter_pid": 0, "waiting_until": 0,
+            })
+        except Exception as exc:  # noqa: BLE001 - a raise must survive this
+            print(f"[decisions] could not record waiter {src.session_id[:12]} on "
+                  f"{card_id}: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+
+    def add_waiters(self, card_id: str, sources: Iterable[Any]) -> DecisionCard:
+        """Add sessions that wait on this card's answer (open cards only).
+
+        Each source is a :class:`DecisionSource` or its dict; one with no
+        session id, or a session already waiting, is skipped.
+        """
+        with self._lock:
+            card = self.get(card_id)
+            if card is None:
+                raise DecisionError(f"no such card: {card_id}")
+            if not card.is_open:
+                return card
+            known = {card.source.session_id} | {w.session_id for w in card.waiters}
+            added = False
+            for raw in sources:
+                src = raw if isinstance(raw, DecisionSource) else (
+                    DecisionSource.from_dict(raw) if isinstance(raw, dict) else None)
+                if src is None or not src.session_id or src.session_id in known:
+                    continue
+                known.add(src.session_id)
+                card.waiters.append(src)
+                self._register_steer_waiter(card.id, src)
+                added = True
+            if added:
+                self._write(card)
+            return card
+
+    def cancel(self, card_id: str, *, note: str = "",
+               by: Optional[str] = None, via: str = "agent") -> DecisionCard:
         """Withdraw a card the agent no longer needs answered.
 
         This matters more than it looks: an agent that resolves a question on its
         own and leaves the card open trains the owner to ignore cards.
+
+        ``by`` is the cancelling session. Only the RAISER (``by`` equal to the
+        card's ``source.session_id``) may withdraw without a reason; anyone else
+        -- another session, a sweep, a caller that does not say who it is -- must
+        give a non-empty ``note`` or :class:`CancelNoteRequiredError` is raised.
+        Measured 2026-10-14: 13 CI cards cancelled with no reason, so the owner
+        could not tell "fixed" from "lost".
+
+        ``via`` is recorded as ``answered_via``. :data:`CANCEL_VIA_OWNER` marks an
+        owner dismissal, which keeps the card's dedupe key held; any other value
+        releases it for a later raise.
         """
+        reason = (note or "").strip()
         with self._lock:
             card = self.get(card_id)
             if card is None:
                 raise DecisionError(f"no such card: {card_id}")
             if card.status in CLOSED_STATUSES:
                 return card
+            raiser = card.source.session_id
+            if not reason and not (by and raiser and by == raiser):
+                raise CancelNoteRequiredError(
+                    f"card {card_id} was raised by another session; say why it is "
+                    "withdrawn (a non-empty note)")
             card.status = STATUS_CANCELLED
-            card.answer_note = note or "withdrawn by the agent that raised it"
+            card.answer_note = reason or self.SILENT_CANCEL_NOTE
             card.answered_at = time.time()
-            card.answered_via = "agent"
+            card.answered_via = (via or "agent").strip()[:40] or "agent"
             self._write(card)
         self._sync_relay(card)
         return card
 
-    def resolve(self, card_id: str, *, note: str = "") -> DecisionCard:
+    #: The note a raiser's cancel with no reason leaves. :meth:`reconcile` replaces it.
+    SILENT_CANCEL_NOTE = "withdrawn by the agent that raised it"
+
+    def reconcile(self, prefix: str, reason: str, *, by: str = "") -> dict[str, list[str]]:
+        """Close out every card whose dedupe key starts with ``prefix``, audited.
+
+        OPEN cards are cancelled with ``reason``; already-CANCELLED cards get
+        ``reason`` as their note when they were closed silently. Each touched card
+        records a ``reconcile`` note naming ``by``. Idempotent: a card already
+        carrying this exact reconcile note is left alone. Answered and expired
+        cards are history and are never rewritten.
+        Returns ``{"cancelled": [...], "renoted": [...]}``.
+        """
+        want, why = (prefix or "").strip(), (reason or "").strip()
+        if not want:
+            raise DecisionError("reconcile needs a dedupe-key prefix")
+        if not why:
+            raise CancelNoteRequiredError("reconcile needs a reason")
+        who = (by or "").strip() or "unknown caller"
+        text = f"reconciled by {who}: {why}"
+        out: dict[str, list[str]] = {"cancelled": [], "renoted": []}
+        with self._lock:
+            for target, st in self._scan():
+                card = self._read_file(target, st)
+                if card is None or not card.dedupe_key.startswith(want):
+                    continue
+                if any(n.via == "reconcile" and n.text == text for n in card.notes):
+                    continue
+                if card.is_open:
+                    self.cancel(card.id, note=why, by=by or None)
+                    fresh = self.get(card.id)
+                    if fresh is None:
+                        continue
+                    fresh.notes.append(DecisionNote(text=text, via="reconcile"))
+                    self._write(fresh)
+                    out["cancelled"].append(card.id)
+                elif card.status == STATUS_CANCELLED:
+                    if (card.answer_note or "").strip() in ("", self.SILENT_CANCEL_NOTE):
+                        card.answer_note = why
+                    card.notes.append(DecisionNote(text=text, via="reconcile"))
+                    self._write(card)
+                    out["renoted"].append(card.id)
+        return out
+
+    def resolve(self, card_id: str, *, note: str = "",
+                receipt: Optional[dict[str, Any]] = None) -> DecisionCard:
         """Close a card the raising agent has fulfilled itself: a promise KEPT,
         or a `blocked` card whose blocker went away.
 
@@ -1625,6 +1999,10 @@ class DecisionStore:
             card.answer_note = note or "resolved by the agent that raised it"
             card.answered_at = time.time()
             card.answered_via = "agent"
+            if receipt is not None:
+                # Same lock, same write: a credential card resolved because its
+                # secret is already in the vault keeps the presence receipt.
+                card.credential_receipt = dict(receipt)
             self._write(card)
         self._sync_relay(card)
         return card
@@ -1727,15 +2105,51 @@ class DecisionStore:
         )
 
     def deliver_answer(self, card: DecisionCard) -> Optional[Path]:
-        """Write the answer into the raising session's steering mailbox.
+        """Write the answer into the raising session's steering mailbox, and into
+        the mailbox of every further session in ``card.waiters``.
 
-        Returns the mailbox file, or None when the card names no session (a card
-        raised by a script rather than a session — nothing to steer).
+        Returns the raiser's mailbox file (or the first waiter's when the raiser
+        has none), or None when no session is named at all (a card raised by a
+        script rather than a session — nothing to steer).
 
         The mailbox is the only path into an interactive Claude Code tab: its TUI
         has no IPC, but its UserPromptSubmit/Stop hooks read this directory. Without
         this step a card is a survey, not a control.
+
+        A card with recorded WAITERS (``ask_credential``) is delivered to every
+        one of them instead -- including a waiter whose session has ended, which
+        is resumed rather than left a mailbox nobody reads (steerback).
         """
+        try:
+            from adk.decisions import steerback
+
+            if steerback.load_waiters(self, card.id):
+                steerback.deliver_waiters(self, card)
+                # The waiters file records where each delivery went; truthy so
+                # callers do not report "this card names no session".
+                return steerback.waiters_file(self, card.id)
+        except Exception as exc:  # noqa: BLE001 - the answer is already on disk
+            # Fall through to the single-session mailbox: a degraded delivery
+            # beats none, and the reason is said rather than swallowed.
+            print(f"[decisions] waiter delivery for {card.id} failed "
+                  f"({exc.__class__.__name__}: {exc}); mailbox only", file=sys.stderr)
+        # No waiters file: the raiser, then every session on ``card.waiters``
+        # (a credential ask another session joined through create()).
+        first = self._deliver_answer_to(card)
+        seen = {card.source.session_id}
+        for waiter in card.waiters:
+            if not waiter.session_id or waiter.session_id in seen:
+                continue
+            seen.add(waiter.session_id)
+            # A shallow copy with the waiter as the source: the mailbox and the
+            # live tiers both route on ``card.source``, and the stored card must
+            # keep naming its raiser.
+            written = self._deliver_answer_to(_with_source(card, waiter))
+            first = first or written
+        return first
+
+    def _deliver_answer_to(self, card: DecisionCard) -> Optional[Path]:
+        """Deliver ``card``'s answer to the one session ``card.source`` names."""
         chosen = card.option(card.answer or "")
         lines = [
             f"# Owner answered decision card {card.id}",

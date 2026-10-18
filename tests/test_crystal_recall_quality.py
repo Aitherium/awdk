@@ -345,13 +345,14 @@ def test_landed_scan_is_cached_between_turns(tmp_path, monkeypatch):
     fs = crystal_mod.AwmFactStore(WRITE, db=path)
     fs.read_scopes = [Scope.parse(READ)]
     calls = {"n": 0}
-    real = fs._store.recall
+    reader, _lock = fs._read_handle()  # reads use their own connection (not _store)
+    real = reader.recall
 
     def counting(*a, **k):
         calls["n"] += 1
         return real(*a, **k)
 
-    fs._store.recall = counting
+    reader.recall = counting
     first = fs.scan_landed(20)
     after_first = calls["n"]
     assert any(k == "deploy-notes" for k, _v, _m in first)

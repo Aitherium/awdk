@@ -62,7 +62,13 @@ import time
 from typing import Optional
 
 from adk.decisions.quiet import is_quiet
-from adk.decisions.store import CLOSED_STATUSES, DecisionCard, DecisionStore
+from adk.decisions.store import (
+    CLOSED_STATUSES,
+    DecisionCard,
+    DecisionStore,
+    is_straggler,
+    queue_order,
+)
 
 #: While quiet (Do-not-disturb, or a full-screen game/app in front) a window that
 #: was about to appear stays withdrawn and re-asks this often. Owner, 2026-09-23:
@@ -297,7 +303,7 @@ class CardWindow:
         return self.queue[min(self.index, len(self.queue) - 1)]
 
     def _refresh_queue(self) -> list[DecisionCard]:
-        """Open cards, oldest first, re-read from the store on every render.
+        """Open cards in queue order (store.rank), re-read from the store on every render.
 
         Re-reading is what lets one window absorb cards raised while it is up —
         the alternative (snapshot at startup) is how a second window used to get
@@ -310,7 +316,10 @@ class CardWindow:
         if self._injected:
             known = {c.id for c in cards}
             cards = [c for c in self._injected if c.id not in known] + cards
-        return cards
+        # One ordering for every surface: credential/blocked asks lead, then
+        # urgency; fresh cards before stragglers; oldest first within a tier.
+        # Measured 2026-10-07: the queue opened on a 27-day-old card every time.
+        return queue_order(cards)
 
     # ── keyboard ──────────────────────────────────────────────────────────────
 
@@ -1103,6 +1112,8 @@ class CardWindow:
         source = card.source
         where = " · ".join(p for p in (source.agent, source.branch) if p)
         meta = f"{_fmt_age(card.age_seconds)}" + (f"  ·  {where}" if where else "")
+        if is_straggler(card):
+            meta = "stale  ·  " + meta
         tk.Label(foot, text=meta, bg=CHROME, fg=MUTED,
                  font=(UI, 8)).pack(side="right")
 
@@ -1272,7 +1283,8 @@ class CardWindow:
         from adk.decisions.store import DecisionError
 
         try:
-            self.store.cancel(self.card.id, note="acknowledged from the card window")
+            self.store.cancel(self.card.id, note="acknowledged from the card window",
+                              via="owner")
             self.handled += 1
         except DecisionError as exc:
             self._flash(str(exc), RED)

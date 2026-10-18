@@ -105,3 +105,39 @@ def test_cli_exit_codes(tmp_path, capsys):
     v.output = str(tmp_path / "dist")
     assert pa.cli("build", v) == 0
     assert pa.cli("frobnicate", v) == 2
+
+
+def _built(tmp_path):
+    root = pa.scaffold("me.localpack", tmp_path / "src", author="t")
+    return pa.build(root, tmp_path / "dist")
+
+
+def test_install_local_bundle(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_PACK_REQUIRE_SIGNING", raising=False)
+    monkeypatch.delenv("AITHER_PACK_PUBLIC_KEY", raising=False)
+    res = _built(tmp_path)
+    assert pa.is_local_bundle(str(res.tarball)) and not pa.is_local_bundle("me.localpack")
+    packs = tmp_path / "packs"
+    target = pa.install_local(res.tarball, packs)
+    assert target == (packs / "me.localpack").resolve()
+    assert (target / ".toolpack.yaml").is_file() and (target / pa.LOCAL_MARKER).is_file()
+    # a re-install replaces its own previous local install
+    assert pa.install_local(res.tarball, packs) == target
+
+
+def test_install_local_refuses_bad_sum_unsigned_and_foreign_target(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_PACK_PUBLIC_KEY", raising=False)
+    res = _built(tmp_path)
+    packs = tmp_path / "packs"
+    (packs / "me.localpack").mkdir(parents=True)  # a marketplace pack already there
+    monkeypatch.setenv("AITHER_PACK_REQUIRE_SIGNING", "false")
+    with pytest.raises(ValueError, match="not installed from a local bundle"):
+        pa.install_local(res.tarball, packs)
+    monkeypatch.setenv("AITHER_PACK_REQUIRE_SIGNING", "true")
+    with pytest.raises(ValueError, match="signature"):
+        pa.install_local(res.tarball, tmp_path / "other")
+    monkeypatch.setenv("AITHER_PACK_REQUIRE_SIGNING", "false")
+    side = res.tarball.with_name(res.tarball.name + ".sha256")
+    side.write_text("0" * 64 + "  x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        pa.install_local(res.tarball, tmp_path / "other")

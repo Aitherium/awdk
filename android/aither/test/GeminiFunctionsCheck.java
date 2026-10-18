@@ -61,7 +61,7 @@ public class GeminiFunctionsCheck {
         eq("unknown app", GeminiFunctions.appUrl("settings", false), null);
         eq("url as app", GeminiFunctions.appUrl("https://evil.example/", false), null);
         // where the app shell takes each one (AppTabs.route): the app itself, never Home by accident
-        eq("route adult learn", AppTabs.route(GeminiFunctions.appUrl("learn", false), false), "tab learn");
+        eq("route adult learn", AppTabs.route(GeminiFunctions.appUrl("learn", false), false), "tab family"); // Learn is the Family tab (2026-10-16)
         eq("route adult family", AppTabs.route(GeminiFunctions.appUrl("family", false), false), "tab family");
         eq("route adult hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", false), false),
                 "window " + AppTabs.ORIGIN + "/?app=hearth");

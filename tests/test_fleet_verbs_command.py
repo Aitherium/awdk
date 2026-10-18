@@ -36,6 +36,43 @@ def test_unknown_verbs_refused():
         fv.build_argv("gpu", "critical", TOOL)
     with pytest.raises(ValueError):
         fv.build_argv("fleet", "explode", TOOL)
+    with pytest.raises(ValueError):
+        fv.build_argv("inference", "maybe", TOOL)
+    with pytest.raises(ValueError):
+        fv.build_argv("fleet", "profile", TOOL, tier="everything-but-core")
+
+
+@pytest.mark.parametrize("verb,kw,tail", [
+    ("on", {"execute": True}, ["inference", "on", "--execute"]),
+    ("dgx", {"execute": True, "as_json": True}, ["inference", "dgx", "--execute", "--json"]),
+    ("off", {"execute": True, "spark": True}, ["inference", "off", "--execute", "--spark"]),
+    ("off", {}, ["inference", "off"]),
+    ("status", {"execute": True, "as_json": True}, ["inference", "status", "--json"]),
+])
+def test_inference_argv(verb, kw, tail):
+    assert fv.build_argv("inference", verb, TOOL, **kw)[2:] == tail
+
+
+@pytest.mark.parametrize("tier", ["business", "platform", "critical", "full"])
+def test_fleet_profile_argv(tier):
+    argv = fv.build_argv("fleet", "profile", TOOL, execute=True, tier=tier)
+    assert argv[2:] == ["fleet", "profile", tier, "--execute"]
+
+
+def test_inference_parser_registers_every_mode():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="command")
+    fleet_sub = sub.add_parser("fleet").add_subparsers(dest="fleet_command")
+    fv.register_fleet_verbs(fleet_sub)
+    fv.register_inference_parser(sub)
+    for mode in fv.INFERENCE_VERBS:
+        a = ap.parse_args(["inference", mode] + ([] if mode == "status" else ["--execute"]))
+        assert (a.command, a.inference_command) == ("inference", mode)
+    assert ap.parse_args(["inference", "off", "--spark"]).spark is True
+    p = ap.parse_args(["fleet", "profile", "business", "--execute"])
+    assert (p.fleet_command, p.tier, p.execute) == ("profile", "business", True)
+    with pytest.raises(SystemExit):
+        ap.parse_args(["fleet", "profile", "nothing"])
 
 
 def test_parsers_register_without_touching_agent_fleet():

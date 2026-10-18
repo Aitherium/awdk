@@ -60,6 +60,67 @@ _TAGGED = re.compile(
 )
 _NEXT = re.compile(r"(?im)^[ \t>*_-]*next[ *_]*:[ *_]*(\S.*)$|^#+[ \t]*next[ \t]*\n+[ \t-]*(\S.*)$")
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+#: Under "Game on" --stop reads only this much of the transcript and skips the push.
+GAME_TAIL_BYTES = 2 * 1024 * 1024
+
+
+# ── "Game on" (2026-10-16: the owner's game lagged in its start menu while transcript
+# hooks read big jsonl files). The same rule as the host posture predicate and the
+# gaming lock; stdlib only, because hooks run under `python -S`.
+GAMING_LOCK_MAX_AGE_S = 12 * 3600
+
+
+def _iso_ts(text: object) -> float:
+    from datetime import datetime
+
+    return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+
+
+def _host_gaming(now: "float | None" = None) -> bool:
+    """True while ~/.aither/posture.json says desired=game (no `until`, or one in the
+    future) or ~/.aither/gaming.lock is active (future `expires`, else mtime < 12 h)."""
+    t = time.time() if now is None else now
+    aither = Path.home() / ".aither"
+    pf = Path(os.environ.get("AITHER_POSTURE_FILE") or aither / "posture.json")
+    try:
+        doc = json.loads(pf.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        doc = None
+    if isinstance(doc, dict) and doc.get("desired") == "game":
+        until = doc.get("until")
+        try:
+            if not until or _iso_ts(until) > t:
+                return True
+        except ValueError:
+            return True  # an unparseable `until` on a game override: still a game
+    lock = Path(os.environ.get("AITHER_GAMING_LOCK") or aither / "gaming.lock")
+    try:
+        age = t - lock.stat().st_mtime
+    except OSError:
+        return False
+    try:
+        expires = json.loads(lock.read_text(encoding="utf-8")).get("expires")
+    except (OSError, ValueError, AttributeError):
+        expires = None
+    if expires:
+        try:
+            return _iso_ts(expires) > t
+        except ValueError:
+            return age < GAMING_LOCK_MAX_AGE_S
+    return age < GAMING_LOCK_MAX_AGE_S
+
+
+def _tail_lines(path: str, max_bytes: int) -> list:
+    """The last `max_bytes` of a text file as lines (a partial first line dropped)."""
+    with open(path, "rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        start = max(0, size - max_bytes)
+        fh.seek(start)
+        data = fh.read()
+    if start:
+        data = data.split(b"\n", 1)[1] if b"\n" in data else b""
+    return data.decode("utf-8", errors="replace").splitlines()
 
 
 def _clean(text: str, limit: int) -> str:
@@ -86,14 +147,18 @@ def _blocks(content, kind: str) -> list:
     return [b for b in content if isinstance(b, dict) and b.get("type") == kind]
 
 
-def parse_transcript(path: str) -> dict:
-    """First/last human ask, edited files, last assistant prose and its NEXT step."""
+def parse_transcript(path: str, tail_bytes: "int | None" = None) -> dict:
+    """First/last human ask, edited files, last assistant prose and its NEXT step.
+    `tail_bytes`: read only the end of the file (the "first" ask is then the tail's)."""
     asks: list = []
     files: list = []
     report = ""
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            lines = fh.readlines()
+        if tail_bytes:
+            lines = _tail_lines(path, tail_bytes)
+        else:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
     except OSError:
         return {}
     for line in lines:
@@ -141,12 +206,22 @@ def record_stop(payload: dict, root: Path = FOCUS_ROOT) -> Path | None:
     tpath = payload.get("transcript_path") or ""
     if not sid or not tpath or not os.path.isfile(tpath):
         return None
-    rec = parse_transcript(tpath)
+    gaming = _host_gaming()
+    rec = parse_transcript(tpath, tail_bytes=GAME_TAIL_BYTES if gaming else None)
     if not rec:
         return None
     pdir = os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or ""
     rec.update(session_id=sid, transcript=tpath, project=pdir, updated=int(os.path.getmtime(tpath)))
     out = root / project_key(pdir) / f"{sid}.json"
+    if gaming:  # a tail read: the earlier record still knows the session's first ask
+        try:
+            prev = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            prev = {}
+        if prev.get("first_ask"):
+            rec["first_ask"] = prev["first_ask"]
+        rec["turns"] = max(int(prev.get("turns") or 0), int(rec.get("turns") or 0))
+        rec["partial"] = "tail only (Game on)"
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.write_text(json.dumps(rec, indent=1), encoding="utf-8")
@@ -516,7 +591,7 @@ def main(argv: list) -> int:
         if "--stop" in argv:
             out = record_stop(payload)
             if out:
-                if os.environ.get("AITHER_FOCUS_PUSH", "1") != "0":
+                if os.environ.get("AITHER_FOCUS_PUSH", "1") != "0" and not _host_gaming():
                     push_detached(str(payload.get("session_id")))
         elif "--deliver" in argv:
             _emit("UserPromptSubmit", deliver(sid, pdir))

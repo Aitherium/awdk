@@ -200,7 +200,7 @@ def test_cancel_and_resolve_push_their_state(tmp_path, pushed):
     store = DecisionStore(tmp_path / "cards")
     a = store.create(_card())
     b = store.create(_card(title="Second?"))
-    store.cancel(a.id)
+    store.cancel(a.id, note="no longer needed")
     store.resolve(b.id)
     assert (a.id, "cancelled", "") in pushed
     assert (b.id, "answered", "kept") in pushed

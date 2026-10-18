@@ -104,6 +104,11 @@ public class MainActivity extends Activity implements Shell.Host {
         web.addJavascriptInterface(new NearbyDevices.Bridge(this, web), "AitherNearby");
         web.setWebChromeClient(new android.webkit.WebChromeClient() {
             @Override
+            public void onReceivedTitle(WebView v, String t) {
+                shell.titleChanged(v); // the native bar names the page: one header, not two
+            }
+
+            @Override
             public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
                 // Only the voice's own line (awkit learnVoice): the exact text handed to
                 // text-to-speech, so "nothing like *blinks* is read aloud" can be checked on a
@@ -145,14 +150,26 @@ public class MainActivity extends Activity implements Shell.Host {
                             android.widget.Toast.LENGTH_LONG).show();
                     return true;
                 }
-                AppTabs.Link to = AppTabs.link(cfg.childDevice(), u.toString());
-                if (to == AppTabs.Link.IN_APP) return false;
-                if (to == AppTabs.Link.ASK_GROWNUP) { // a child's phone never leaves the app
-                    askGrownUp(u.toString());
-                    return true;
+                // docs/plans/2026-10-17-mobile-shell.md: app pages stay in the app (a tap that
+                // belongs to another tab or a window goes there), sign-in runs in place, every
+                // other web page opens in a Custom Tab, a child's phone never leaves the app.
+                switch (AppTabs.navigate(cfg.childDevice(), u.toString(), r.hasGesture(),
+                        r.isRedirect(), shell.tabOf(v))) {
+                    case LOAD:
+                        return false;
+                    case ROUTE:
+                        shell.openFromLink(u.toString());
+                        return true;
+                    case ASK_GROWNUP:
+                        askGrownUp(u.toString());
+                        return true;
+                    case CUSTOM_TAB:
+                        openCustomTab(u);
+                        return true;
+                    default:
+                        try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (RuntimeException e) { /* none */ }
+                        return true;
                 }
-                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (RuntimeException e) { /* none */ }
-                return true;
             }
 
             @Override
@@ -198,6 +215,28 @@ public class MainActivity extends Activity implements Shell.Host {
             }
         });
         return web;
+    }
+
+    /**
+     * A web page that is not part of the app, in a Chrome Custom Tab: the browser's own
+     * engine and sign-ins, Aither's colours, and an X that comes straight back here. Built
+     * without androidx.browser: a Custom Tab is an ACTION_VIEW carrying the session extra.
+     * A phone with no Custom Tabs browser opens the page in its browser instead.
+     */
+    private void openCustomTab(Uri u) {
+        Intent i = new Intent(Intent.ACTION_VIEW, u);
+        Bundle extras = new Bundle();
+        extras.putBinder("android.support.customtabs.extra.SESSION", null);
+        i.putExtras(extras);
+        i.putExtra("android.support.customtabs.extra.TOOLBAR_COLOR", Ui.BG);
+        i.putExtra("androidx.browser.customtabs.extra.COLOR_SCHEME", 2); // dark
+        i.putExtra("android.support.customtabs.extra.TITLE_VISIBILITY", 1);
+        i.putExtra("android.support.customtabs.extra.SHARE_STATE", 1);
+        try {
+            startActivity(i);
+        } catch (RuntimeException e) {
+            try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (RuntimeException e2) { /* none */ }
+        }
     }
 
     /**
@@ -288,7 +327,10 @@ public class MainActivity extends Activity implements Shell.Host {
                             fresh = true;
                         }
                         fresh |= cfg.acceptPairCode(j.optString("p", ""));
-                        boolean child = j.optBoolean("k", false);
+                        // a page may turn child mode ON, never off (AppTabs.afterPageReport):
+                        // a signed-out page reports no child and must not unlock the phone
+                        boolean child = AppTabs.afterPageReport(cfg.childDevice(),
+                                j.optBoolean("k", false));
                         if (j.has("k") && child != cfg.childDevice()) {
                             cfg.set("child_device", child);
                             Shortcuts.apply(MainActivity.this, child);

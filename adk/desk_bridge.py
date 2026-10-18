@@ -30,6 +30,8 @@ import subprocess
 import time
 from typing import Any, Callable, Optional, Tuple
 
+from adk.desk_release import desk_update_hint
+
 FLEET_VERBS = ("status", "down", "up", "gaming", "resume", "adopt", "panel")
 
 #: verb -> (method, path). ``panel`` is the owner-facing name of the bridge's ``open``.
@@ -275,7 +277,7 @@ class DeskBridgeClient:
         except Exception as exc:
             return (2, {"ok": False, "cannotJudge": True,
                         "error": f"desk bridge unreachable ({exc.__class__.__name__}) -- "
-                                 "awdesk is not running (desk-start)"})
+                                 "the Aither app is not running (desk-start)"})
         doc = _parse(raw)
         if not isinstance(doc, dict):
             doc = {"ok": False, "error": "non-object reply"}
@@ -283,7 +285,8 @@ class DeskBridgeClient:
             # A 404 with no verdict body is an awdesk built before the /desktop
             # routes existed -- could-not-judge (2), not a refusal (1).
             return (2, {"ok": False, "cannotJudge": True,
-                        "error": "this awdesk has no /desktop routes (older build) -- update Desk"})
+                        "error": "this Aither app is an older build (no /desktop routes) -- "
+                                 + desk_update_hint()})
         return (exit_code_for(status, doc), doc)
 
     def get_history(self, limit: int = 20) -> Tuple[int, list]:

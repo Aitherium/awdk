@@ -114,6 +114,7 @@ public class HeartbeatJob extends JobService {
             if (code == 410) { // revoked by the owner: forget the device, AitherOS signs out
                 last = "removed from the household";
                 cfg.set("profile_kind", "");
+                cfg.set("child_device", false); // the owner's act: the only way child mode ends
                 cfg.set("family_device", "");
                 cfg.set("shield_mode", "off");
                 ShieldVpnService.sync(ctx);

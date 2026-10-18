@@ -1,0 +1,96 @@
+{
+  "about": "THE queue order for decision cards. store.rank (Python) and the desk (JS) both read these cases, so two surfaces cannot disagree about which card is first. Sort key: (1) kind in rank_first_kinds first, (2) urgency_rank ascending (unknown = normal), (3) fresh before straggler (open and older than stale_after_seconds), (4) created_at ascending, (5) id ascending.",
+  "rank_first_kinds": ["credential", "blocked"],
+  "urgency_rank": {"critical": 0, "high": 1, "normal": 2, "low": 3},
+  "stale_after_seconds": 604800,
+  "cases": [
+    {
+      "name": "a credential ask leads a critical decision",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-aaaa", "kind": "decision", "urgency": "critical", "created_at": 1999990000},
+        {"id": "d-bbbb", "kind": "credential", "urgency": "normal", "created_at": 1999999000}
+      ],
+      "expected": ["d-bbbb", "d-aaaa"]
+    },
+    {
+      "name": "urgency orders a tier",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-low2", "kind": "decision", "urgency": "low", "created_at": 1999990000},
+        {"id": "d-hig2", "kind": "decision", "urgency": "high", "created_at": 1999990001},
+        {"id": "d-nrm2", "kind": "decision", "urgency": "normal", "created_at": 1999990002},
+        {"id": "d-crt2", "kind": "decision", "urgency": "critical", "created_at": 1999990003}
+      ],
+      "expected": ["d-crt2", "d-hig2", "d-nrm2", "d-low2"]
+    },
+    {
+      "name": "blocked shares the first tier; urgency decides inside it",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-cred", "kind": "credential", "urgency": "normal", "created_at": 1999990000},
+        {"id": "d-blkd", "kind": "blocked", "urgency": "high", "created_at": 1999999000},
+        {"id": "d-info", "kind": "info", "urgency": "critical", "created_at": 1999980000}
+      ],
+      "expected": ["d-blkd", "d-cred", "d-info"]
+    },
+    {
+      "name": "oldest first among equals",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-new3", "kind": "decision", "urgency": "normal", "created_at": 1999999000},
+        {"id": "d-old3", "kind": "decision", "urgency": "normal", "created_at": 1999990000}
+      ],
+      "expected": ["d-old3", "d-new3"]
+    },
+    {
+      "name": "a 27-day straggler follows a fresh card of the same tier and urgency",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-stal", "kind": "decision", "urgency": "normal", "created_at": 1997667200},
+        {"id": "d-frsh", "kind": "decision", "urgency": "normal", "created_at": 1999996400}
+      ],
+      "expected": ["d-frsh", "d-stal"]
+    },
+    {
+      "name": "staleness never outranks urgency or tier",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-frsl", "kind": "decision", "urgency": "low", "created_at": 1999999000},
+        {"id": "d-sthi", "kind": "decision", "urgency": "high", "created_at": 1997667200},
+        {"id": "d-stcr", "kind": "credential", "urgency": "low", "created_at": 1997667200}
+      ],
+      "expected": ["d-stcr", "d-sthi", "d-frsl"]
+    },
+    {
+      "name": "an unknown urgency ranks as normal",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-weir", "kind": "decision", "urgency": "whenever", "created_at": 1999990000},
+        {"id": "d-hig4", "kind": "decision", "urgency": "high", "created_at": 1999999000},
+        {"id": "d-low4", "kind": "decision", "urgency": "low", "created_at": 1999980000}
+      ],
+      "expected": ["d-hig4", "d-weir", "d-low4"]
+    },
+    {
+      "name": "the id breaks an exact tie",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-zzzz", "kind": "decision", "urgency": "normal", "created_at": 1999990000},
+        {"id": "d-aaab", "kind": "decision", "urgency": "normal", "created_at": 1999990000}
+      ],
+      "expected": ["d-aaab", "d-zzzz"]
+    },
+    {
+      "name": "measured 2026-10-14: a credential ask buried under reports comes first",
+      "now": 2000000000,
+      "cards": [
+        {"id": "d-ci01", "kind": "info", "urgency": "high", "created_at": 1999900000},
+        {"id": "d-ci02", "kind": "info", "urgency": "high", "created_at": 1999900001},
+        {"id": "d-dec5", "kind": "decision", "urgency": "high", "created_at": 1999950000},
+        {"id": "d-nwh4", "kind": "credential", "urgency": "normal", "created_at": 1999990000}
+      ],
+      "expected": ["d-nwh4", "d-ci01", "d-ci02", "d-dec5"]
+    }
+  ]
+}

@@ -234,6 +234,73 @@ def asks_live_state(message: str) -> bool:
     return bool(_ASKS_LIVE_STATE.search(message or ""))
 
 
+#: A request to WRITE code. Live 2026-10-14 in awconnect: after a news answer, "write me
+#: a python script that can scrape those websites." was classified creation and the 12B
+#: re-ran the previous question's web_search and answered the news again -- no code.
+_ASKS_FOR_CODE = re.compile(
+    r"(?i)\b(?:write|create|make|build|generate|give me|code)\b[^.?!\n]{0,60}"
+    r"\b(?:script|code|function|program|class|module|snippet|regex|cli|scraper|bot|"
+    r"python|powershell|bash|sql|query)\b")
+_WRITE_CODE_HEAD = (
+    "[TASK] The user asked you to WRITE code. Write it in this reply, complete and "
+    "runnable, inside a ``` block, using any names, URLs or sites from the conversation "
+    "above. Do not web-search or re-answer an earlier question; call a tool only to read "
+    "a file the code must change."
+)
+_CODE_NUDGE_MSG = (
+    "The user asked you to write code and your reply contains none. Write it now: one "
+    "complete ``` code block, then two lines on how to run it."
+)
+
+
+def asks_for_code(message: str) -> bool:
+    """True when ``message`` asks for code to be written."""
+    return bool(_ASKS_FOR_CODE.search(message or ""))
+
+
+#: Words that point back at the conversation ("do it", "those sites", "again").
+_BACK_REFERENCE = re.compile(
+    r"(?i)\b(?:it|that|those|these|this|them|above|again|same|previous|earlier|last|"
+    r"more|also|too|instead|continue|go on|do it|yes|no|ok|okay)\b")
+_NEW_QUESTION_HEAD = (
+    "[NEW QUESTION] This is a new question, not a follow-up: answer exactly what it asks. "
+    "The earlier turns are background only -- do not redo their lookups or answer them "
+    "again."
+)
+
+
+def is_new_topic(message: str) -> bool:
+    """True when ``message`` stands on its own (no back-reference to earlier turns).
+
+    Live 2026-10-14: "what is in the news today" asked right after "how is the platform
+    looking" called ops_state and answered about the platform, twice; asked first in a
+    fresh session it searched the news.
+    """
+    text = (message or "").strip()
+    return len(text.split()) >= 3 and not _BACK_REFERENCE.search(text)
+
+
+#: A reply that is only a greeting / offer of help. Live 2026-10-14 the 12B answered
+#: "where is stream_react defined?" with "I'm here to help! How can I assist you today?"
+#: (twice, with recall in the prompt) -- the question was never answered.
+_GENERIC_GREETING = re.compile(
+    r"(?is)^\W*(?:hi|hello|hey)?[!,.\s]*(?:i'?m (?:here|glad|happy) to help[^.?!]*[.!]?\s*)?"
+    r"(?:how (?:can|may) i (?:help|assist) you(?: today)?|what can i (?:do|help with) "
+    r"(?:for you )?(?:today)?|what'?s on your mind)\W*$")
+_GREETING_MSG = re.compile(r"(?i)^\W*(?:hi|hello|hey|yo|sup|good (?:morning|evening))\W*$")
+_DEFLECTION_NUDGE_MSG = (
+    "Your reply did not answer the user's question; it only offered help. Answer the "
+    "question above now, using a tool if you need to look something up."
+)
+
+
+def deflects_question(message: str, answer: str) -> bool:
+    """True when ``answer`` is a bare offer of help to a message that was not a greeting."""
+    text = (answer or "").strip()
+    return (bool(text) and len(text) < 200 and not _GREETING_MSG.match(message or "")
+            and bool(_GENERIC_GREETING.match(text)))
+
+
 def claims_lookup(text: str) -> bool:
     """True when ``text`` says it searched/checked/looked something up."""
     return bool(_CLAIMS_LOOKUP.search(text or ""))
@@ -3781,8 +3848,13 @@ class AitherAgent:
         # Everything before this index is the turn's fixed head (prompt, context,
         # history); compaction only ever rewrites the scratchpad after it.
         _head_n = len(msgs)
-        msgs.append(Message(role="user", content=(
-            f"{_NEAR_MEMORY_HEAD}\n{_recalled}\n\n---\n{message}" if _recalled else message)))
+        _turn_text = (f"{_NEAR_MEMORY_HEAD}\n{_recalled}\n\n---\n{message}"
+                      if _recalled else message)
+        if asks_for_code(message):
+            _turn_text = f"{_WRITE_CODE_HEAD}\n\n{_turn_text}"
+        elif _hist_msgs and is_new_topic(message):
+            _turn_text = f"{_NEW_QUESTION_HEAD}\n{_turn_text}"
+        msgs.append(Message(role="user", content=_turn_text))
         _tokens_streamed = 0
 
         _ACT = _re.compile(r"ACTION:\s*([a-zA-Z_][a-zA-Z0-9_]*)", _re.I)
@@ -3848,6 +3920,8 @@ class AitherAgent:
         _offer_nudged = False  # see offers_lookup
         _claim_nudged = False  # see claims_lookup
         _live_nudged = False  # see asks_live_state
+        _code_nudged = False  # see asks_for_code
+        _deflect_nudged = False  # see deflects_question
         _last_tool = ""
         _last_obs = ""
         _failed_in_a_row = 0  # tool_result_failed streak; 2 -> consult ask_reasoner
@@ -4045,7 +4119,9 @@ class AitherAgent:
                                 and "tool" not in message.lower()
                                 and not _ACT.search(full))
             # Offered a lookup instead of making one, before any tool ran this turn.
-            if (not _discovery_stall and not tools_made and not _offer_nudged
+            # (Also after a failed tool: live 2026-10-14 the 12B's codegraph_search 503'd
+            # and it replied "Would you like me to search for it?" -- never searched.)
+            if (not _discovery_stall and not _offer_nudged
                     and _step < max_steps - 1 and not _ACT.search(full)
                     and offers_lookup(scrub_orphan_think(_THINK.sub("", full)))):
                 _offer_nudged = True
@@ -4053,6 +4129,24 @@ class AitherAgent:
                             "- nudging")
                 msgs.append(_assistant(full))
                 msgs.append(Message(role="user", content=_OFFER_NUDGE_MSG))
+                continue
+            # Answered a real question with a bare offer of help.
+            _said = scrub_orphan_think(_THINK.sub("", full)).replace("FINAL:", "", 1)
+            if (not _discovery_stall and not _deflect_nudged and _step < max_steps - 1
+                    and not _ACT.search(full) and deflects_question(message, _said)):
+                _deflect_nudged = True
+                logger.info("[REACT-STREAM] Question answered with a bare greeting - nudging")
+                msgs.append(_assistant(full))
+                msgs.append(Message(role="user", content=_DEFLECTION_NUDGE_MSG))
+                continue
+            # Asked to write code and answered without any.
+            if (not _discovery_stall and not _code_nudged and _step < max_steps - 1
+                    and not _ACT.search(full) and asks_for_code(message)
+                    and "```" not in full):
+                _code_nudged = True
+                logger.info("[REACT-STREAM] Asked for code, answered without any - nudging")
+                msgs.append(_assistant(full))
+                msgs.append(Message(role="user", content=_CODE_NUDGE_MSG))
                 continue
             # Answered a question about the current state from memory alone.
             if (not _discovery_stall and not tools_made and not _live_nudged

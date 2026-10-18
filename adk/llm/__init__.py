@@ -136,7 +136,7 @@ class LLMRouter:
     """Multi-backend LLM router with auto-detection and effort-based model selection.
 
     Usage:
-        # Auto-detect (tries Ollama localhost first)
+        # Auto-detect (desktop spine → self-hosted → vLLM → gateway → cloud; never Ollama)
         router = LLMRouter()
 
         # Explicit backend
@@ -795,12 +795,17 @@ class LLMRouter:
     async def _auto_detect(self) -> LLMProvider:
         """Try backends in priority order:
         explicit → desktop (configured spine) → self-hosted (install-bonsai.sh :8080,
-        `adk bonsai-local` :8090, ...) → vLLM scan → Ollama → gateway → cloud APIs → demo.
+        `adk bonsai-local` :8090, ...) → vLLM scan → gateway → cloud APIs → demo.
 
         LOCAL FIRST. Desktop MicroScheduler is tried before anything blind because it
         requires explicit config. A self-hosted server the user started comes next —
-        see _try_local_selfhost. vLLM containers, then Ollama for AMD/Apple/no-Docker.
-        Gateway is cloud fallback when no local GPU.
+        see _try_local_selfhost. Then vLLM containers. Gateway is cloud fallback when
+        no local GPU.
+
+        Ollama is NEVER auto-detected: a stray Ollama on :11434 used to become the
+        brain (or a silent low-effort side path beside the spine) with whatever small
+        model it happened to hold. It is used only when asked for by name
+        (provider="ollama" / llm_backend: ollama).
 
         When cloud_mode is "cloud_first" or "cloud_only" (set by `adk setup --mode cloud`),
         skip local probes and go straight to cloud API keys.
@@ -893,23 +898,9 @@ class LLMRouter:
             self._remote_provider = desktop
             self._remote_provider_name = "desktop"
             self._remote_healthy = True
-            # Also try local Ollama as an explicit low-effort fast path.
-            ollama = await self._try_ollama()
-            if ollama:
-                self._local_provider = ollama
-                self._provider_name = "dual"
-                logger.info(
-                    "Dual-mode: local Ollama (%s) as low-effort fast path, "
-                    "desktop MicroScheduler (%s) as the default brain",
-                    getattr(ollama, "default_model", "?"),
-                    getattr(desktop, "default_model", "?"),
-                )
-            else:
-                self._provider_name = "desktop"
-            # The configured desktop spine is the DEFAULT provider. A configured
-            # spine must never be shadowed by local inference by default; the
-            # local fast path is only reached on an explicit low effort (<=3),
-            # routed in chat().
+            # The configured desktop spine is the ONLY provider. No local Ollama
+            # side path: low-effort turns go to the spine like every other turn.
+            self._provider_name = "desktop"
             return desktop
 
         # 2. A self-hosted server the user started (install-bonsai.sh :8080,
@@ -924,11 +915,6 @@ class LLMRouter:
         vllm = await self._try_vllm()
         if vllm:
             return vllm
-
-        # 3. Ollama — fallback local backend (AMD, Apple Silicon, no Docker)
-        ollama = await self._try_ollama()
-        if ollama:
-            return ollama
 
         # 3. Gateway — cloud inference via gateway.aitherium.com
         if gateway_key:

@@ -137,6 +137,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AITHER_DECISIONS_DIR", str(tmp_path / "decisions"))
     monkeypatch.setenv("AITHER_STEER_DIR", str(tmp_path / "steer"))
     monkeypatch.setenv("AITHER_HARNESS_TOKEN", "test-token-for-testing-only")
+    # These cards are info cards dated 1970 (a stable sort key); the info TTL
+    # would close them all on read, which is not what the listing tests measure.
+    monkeypatch.setenv("AITHER_DECISIONS_INFO_TTL_HOURS", str(200 * 365 * 24))
     monkeypatch.setattr(store_mod, "_STORE", None)
     from fastapi.testclient import TestClient
 
@@ -151,7 +154,9 @@ def test_list_limit_keeps_newest_n_oldest_first(client):
     store = store_mod.get_store()
     made = []
     for i in range(6):
-        card = DecisionCard(id="", title=f"card {i}", kind="info")
+        # Not kind="info": an info card this old closes on its own (INFO_TTL),
+        # which would stamp every card answered_at=now and reorder the history.
+        card = DecisionCard(id="", title=f"card {i}", kind="blocked")
         card.created_at = 1_000_000.0 + i
         made.append(store.create(card).id)
 
@@ -176,7 +181,8 @@ def test_list_limit_is_clamped_not_refused(client):
 def _make_open(store, n):
     made = []
     for i in range(n):
-        card = DecisionCard(id="", title=f"open {i}", kind="info")
+        # kind="blocked", not "info": a 1970 info card closes on its own (INFO_TTL).
+        card = DecisionCard(id="", title=f"open {i}", kind="blocked")
         card.created_at = 1_000_000.0 + i
         made.append(store.create(card).id)
     return made

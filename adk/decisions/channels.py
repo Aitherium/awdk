@@ -214,8 +214,52 @@ def authorize(
 # ── rendering ───────────────────────────────────────────────────────────────────
 
 
+#: Where a tapped card opens on the web. Overridable for a self-hosted Veil.
+DECIDE_BASE_ENV = "AITHER_DECIDE_URL"
+DEFAULT_DECIDE_BASE = "https://app.aitherium.com/decide"
+
+
+def decide_link(card_id: str) -> str:
+    """The web page that shows ``card_id`` first (``/decide?id=``)."""
+    from urllib.parse import quote
+
+    base = (os.environ.get(DECIDE_BASE_ENV) or DEFAULT_DECIDE_BASE).strip().rstrip("?")
+    return f"{base}?id={quote(card_id, safe='')}"
+
+
+def is_credential(card: DecisionCard) -> bool:
+    return (card.kind or "").strip().lower() == "credential"
+
+
+def _render_credential(card: DecisionCard) -> str:
+    """A credential ask as one chat message: WHICH secret, WHERE it goes, WHY.
+
+    It names the secret and the vault and links the page whose one button opens the
+    masked prompt on the owner's PC. It carries no value and asks for none: a reply
+    here could never be a secret (store.answer refuses free text on these cards).
+    """
+    name = (card.secret_name or "").strip() or "(unnamed secret)"
+    scope = (card.credential_scope or "platform").strip().lower() or "platform"
+    why = (card.credential_description or card.summary or "").strip().rstrip(".")
+    head = f"**SECRET NEEDED: {name} ({scope})**"
+    if why:
+        head += f": {why}."
+    lines = [head]
+    if card.title and card.title.strip() and name not in card.title:
+        lines += ["", card.title.strip()]
+    asker = (getattr(card.source, "agent", "") or "").strip()
+    if asker:
+        lines.append(f"Asked by {asker}.")
+    lines += ["", f"Opens on your PC: {decide_link(card.id)}",
+              "_Never paste the value here: it goes into the masked prompt only._",
+              f"\n`{card.id}`"]
+    return "\n".join(lines)
+
+
 def render_for_chat(card: DecisionCard) -> str:
     """A card as a chat message — answerable from a phone without scrolling."""
+    if is_credential(card):
+        return _render_credential(card)
     lines = [f"**{card.title}**"]
     if card.summary:
         lines += ["", card.summary]
@@ -282,7 +326,12 @@ class DecisionChannelBridge:
                 return False
         floor = _URGENCY_RANK.get(cfg.min_urgency, 1)
         rank = _URGENCY_RANK.get(card.urgency, 1)
-        if rank < floor:
+        # A credential ask is exempt from the floor. The owner set Discord to 'high'
+        # so normal option cards stop pinging him; a secret only he can type is not
+        # one of those -- raised at 'normal' (the default) it was blocked from the DM
+        # and sat as #28 of 41 cards nobody saw. The raise-side dedupe keeps this to
+        # one message per secret; every other kind keeps the floor.
+        if rank < floor and not is_credential(card):
             return False
 
         # PRESENCE, the Slack rule: the phone stays quiet while you are at the

@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**137 commands.**
+**139 commands.**
 
 | command | what it does |
 |---|---|
@@ -65,12 +65,13 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk enroll`](#adk-enroll) | Register this workstation with the control plane |
 | [`adk eval`](#adk-eval) | Evaluate MCP tools and packs on a connected gateway |
 | [`adk explore`](#adk-explore) | Browse packs, agents, and skills in the Aitherium marketplace |
+| [`adk feedback`](#adk-feedback) | Send feedback or logs to your company app's support |
 | [`adk fleet`](#adk-fleet) | Create & manage a fleet of agents (local \| managed \| hosted \| cloud-run) |
 | [`adk fleet-host`](#adk-fleet-host) | awnix fleet host (WSL2): status, start/stop/restart, reattach data, migrate (dry-run default) |
 | [`adk forge`](#adk-forge) | Dispatch tasks to agent forge (Genesis) |
 | [`adk gateway`](#adk-gateway) | Run agent across messaging platforms |
 | [`adk gobbonet`](#adk-gobbonet) | Run GobboNet with keyless web search (clones the UI if needed) |
-| [`adk gpu`](#adk-gpu) | the 5090: status \| sleep (game on) \| wake (game off) -- fleet_verbs.py, dry-run default |
+| [`adk gpu`](#adk-gpu) | the desktop GPU: status \| sleep (= inference dgx) \| wake (= inference on) -- fleet_verbs.py, dry-run default |
 | [`adk graph`](#adk-graph) | Provenance graph management (status, drain, claim, ground, context, leaves, lineage, runs, show, purge) |
 | [`adk grid`](#adk-grid) | Manage grid distributed nodes (add, remove, list, test, sync) |
 | [`adk harness`](#adk-harness) | AitherShell — drive Claude Code, other coding harnesses, agents and real terminals |
@@ -78,6 +79,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk host`](#adk-host) | Host a self-hosted agent (your model key) + connect it to your fleet — one command |
 | [`adk image`](#adk-image) | Generate an image on a local backend (ComfyUI/Sana/SD.Next) |
 | [`adk index`](#adk-index) | Index a codebase for code search (CodeGraph) |
+| [`adk inference`](#adk-inference) | the inference toggle: on \| dgx \| off \| status (status proves the mode with a real completion per lane) -- fleet_verbs.py, dry-run default |
 | [`adk ingest`](#adk-ingest) | Ingest files into the agent's knowledge graph |
 | [`adk init`](#adk-init) | Scaffold a new agent project |
 | [`adk install`](#adk-install) | Install an agent pack (e.g. adk install pack:openclaw) |
@@ -545,7 +547,7 @@ Deploy AitherOS components or agents
 - `adk deploy fleet-refresh` — Rebuild all lib-baking Python images + safe rolling recreate of the running fleet
 - `adk deploy addons` — Deploy self-hosted addon services
 - `adk deploy connect` — Awconnect browser extension
-- `adk deploy desktop` — AitherDesktop native application
+- `adk deploy desktop` — Install or update the Aither app (latest verified release, as the setup page)
 - `adk deploy grid` — Deploy grid distributed stack (GPU + Mac + cluster)
 - `adk deploy stop` — Stop a running deployment
 - `adk deploy agent` — Deploy a tenant agent to this machine (or upload to gateway)
@@ -650,6 +652,18 @@ Browse packs, agents, and skills in the Aitherium marketplace
 | `<category>` | str |  | `all` | Filter: agents, tools, skills, grid, all (default: all) |
 | `--free` | str |  | `false` | Show only free packs |
 
+## `adk feedback`
+
+Send feedback or logs to your company app's support
+
+**Subcommands**
+
+- `adk feedback send` — Send a message (and recent logs) to support
+- `adk feedback flush` — Upload queued reports now
+- `adk feedback status` — Show whether reports are on and what is queued
+- `adk feedback on` — Turn automatic crash/error reports on
+- `adk feedback off` — Turn automatic crash/error reports off
+
 ## `adk fleet`
 
 Create & manage a fleet of agents (local | managed | hosted | cloud-run)
@@ -660,6 +674,7 @@ Create & manage a fleet of agents (local | managed | hosted | cloud-run)
 - `adk fleet wake` — machine fleet wake (fleet_verbs.py; dry-run default)
 - `adk fleet park` — machine fleet park (fleet_verbs.py; dry-run default)
 - `adk fleet critical` — machine fleet critical (fleet_verbs.py; dry-run default)
+- `adk fleet profile` — machine fleet profile (fleet_verbs.py; dry-run default)
 - `adk fleet create` — Create an agent in a runtime
 - `adk fleet list` — List fleet members
 - `adk fleet status` — Refresh & show one member's status
@@ -721,7 +736,7 @@ Run GobboNet with keyless web search (clones the UI if needed)
 
 ## `adk gpu`
 
-the 5090: status | sleep (game on) | wake (game off) -- fleet_verbs.py, dry-run default
+the desktop GPU: status | sleep (= inference dgx) | wake (= inference on) -- fleet_verbs.py, dry-run default
 
 **Subcommands**
 
@@ -866,6 +881,17 @@ Index a codebase for code search (CodeGraph)
 | `<path>` | str |  | `.` | Path to index (default: current directory) |
 | `--embed` | str |  | `false` | Also generate embeddings for semantic search |
 | `--stats` | str |  | `false` | Show Python metrics after indexing |
+
+## `adk inference`
+
+the inference toggle: on | dgx | off | status (status proves the mode with a real completion per lane) -- fleet_verbs.py, dry-run default
+
+**Subcommands**
+
+- `adk inference on` — desktop GPU lanes home, proven
+- `adk inference dgx` — desktop GPU serves nothing; lanes on the DGX, proven
+- `adk inference off` — every LLM lane refuses at once
+- `adk inference status` — measure the mode (one tiny completion per lane)
 
 ## `adk ingest`
 
@@ -1224,7 +1250,7 @@ Manage ToolPack extensions (list, search, install, remove, info)
 
 - `adk pack list` — List available and installed packs
 - `adk pack search` — Search packs by name, description, or tags
-- `adk pack install` — Install a tool pack (or a bought listing: community:<listing-id>)
+- `adk pack install` — Install a tool pack (a bought listing: community:<listing-id>; a local bundle: <path>.tar.gz)
 - `adk pack sync` — Install every entitled pack not already present (license-driven)
 - `adk pack buy` — Autonomously buy a pack with Aitherium credits (no Stripe)
 - `adk pack negotiate` — Haggle with the seller Broker for a better price

@@ -943,6 +943,12 @@ async def _try_local_shadow(agent, gateway_name: str, arguments: dict) -> str | 
     local_name = _LOCAL_SHADOWS.get(str(gateway_name or "").strip().lower())
     if not local_name:
         return None
+    def _skip(why: str) -> None:
+        # Every fall-through says why: live 2026-10-14 the shadow returned None with no
+        # log line and the turn hit the gateway's 503 again, cause unknown.
+        logger.info("[SHADOW] %s -> gateway (local %s skipped: %s)", gateway_name,
+                    local_name, why)
+
     tools = getattr(agent, "_tools", None)
     try:
         td = tools.get(local_name) if tools is not None else None
@@ -951,15 +957,21 @@ async def _try_local_shadow(agent, gateway_name: str, arguments: dict) -> str | 
     fn = getattr(td, "fn", None)
     # The gateway catalogue can carry a tool with the local name too; replace-by-name
     # then leaves a gateway closure under it, which is no local answer.
-    if fn is None or getattr(fn, "_adk_gateway_tool", False):
+    if fn is None:
+        _skip("not registered on this agent")
+        return None
+    if getattr(fn, "_adk_gateway_tool", False):
+        _skip("the name holds a gateway tool, not the local one")
         return None
     try:
         from adk.builtin_tools import _local_code_graph, code_graph_reachable
         if not code_graph_reachable():
+            _skip("local code graph unreachable")
             return None
         # A cold index (still hydrating, up to minutes after a restart) is not asked:
         # the gateway answers at once, as before this shadow existed (review 2026-10-14).
         if getattr(_local_code_graph(), "is_warm", True) is not True:
+            _skip("local index still loading")
             return None
         out = fn(**_local_shadow_args(gateway_name, arguments))
         if inspect.isawaitable(out):
@@ -969,11 +981,14 @@ async def _try_local_shadow(agent, gateway_name: str, arguments: dict) -> str | 
         logger.warning("local shadow %s for %s failed: %s", local_name, gateway_name, exc)
         return None
     if not isinstance(data, dict) or "error" in data:
+        _skip(f"local answer is an error: {str(data)[:160]}")
         return None
     try:
         if int(data.get("count") or 0) <= 0:
+            _skip("no local hits")
             return None
     except (TypeError, ValueError):
+        _skip("local answer has no count")
         return None
     return out
 
@@ -1902,13 +1917,29 @@ def create_app(
     def _grant_door(path: str) -> bool:
         return path in _browser_pair_paths or path.startswith(_grant_door_prefixes)
 
+    # LIVENESS, NOT THE HEALTH REPORT. The "This device" page probes GET /health; offline,
+    # that answered 200 with no Access-Control-Allow-Origin, so the page read "browser
+    # blocked the reply -- update awdk" on a CURRENT daemon (measured 2026-10-13 on 3.8.68)
+    # and the advice could never work. The full body names install paths and the guard's
+    # counters, so a first-party page offline gets only what the pair door already
+    # discloses: it is up, which version, and that it is offline (pair to go further).
+    def _offline_liveness(request: Request) -> bool:
+        return request.url.path == "/health" and request.method in ("GET", "HEAD", "OPTIONS")
+
     @app.middleware("http")
     async def _grant_door_cors(request: Request, call_next):
         origin = request.headers.get("origin") or ""
-        if (not _offline_origins or _cors_origins or not _grant_door(request.url.path)
+        if (not _offline_origins or _cors_origins
+                or not (_grant_door(request.url.path) or _offline_liveness(request))
                 or not _browser_grant.FIRST_PARTY_ORIGIN.match(origin)):
             return await call_next(request)
         cors = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
+        if _offline_liveness(request) and request.method != "OPTIONS":
+            return JSONResponse(
+                {"status": "healthy", "agent": "adk-daemon", "version": __version__,
+                 "offline": True, "pair": "/local/browser-pair/challenge"},
+                headers=cors,
+            )
         if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
             cors.update({
                 "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -6288,7 +6319,7 @@ def create_app(
                         # Cache the full tool catalogue for runtime retrieval
                         _state["all_mcp_tools"] = tools
                         max_tools = int(os.getenv("ADK_MCP_MAX_TOOLS", "16"))
-                        registered = register_gateway_tools_on(
+                        tool_count = register_gateway_tools_on(
                             a,
                             catalogue_getter=lambda: _state.get("all_mcp_tools", []),
                             client_getter=lambda: _state.get("gateway_mcp_client"),
@@ -6302,7 +6333,7 @@ def create_app(
                         logger.info(
                             "Registered %d gateway tools with agent %s "
                             "(%d eager + 2 meta-tools)",
-                            registered, a.name, max_tools,
+                            tool_count, a.name, max_tools,
                         )
                 except Exception as exc:  # noqa: BLE001 — tool registration is advisory
                     logger.debug("Gateway tool registration failed (non-fatal): %s", exc)
@@ -8651,6 +8682,12 @@ def main():
         _install_accept_resilience()
     except Exception as exc:  # noqa: BLE001 - the daemon still serves without it
         logger.warning("accept resilience not installed: %s", exc)
+    # One SSLContext per trust decision for every httpx client in the daemon (adk._tls).
+    try:
+        from adk._tls import install_httpx_ssl_cache
+        install_httpx_ssl_cache()
+    except Exception as exc:  # noqa: BLE001 - the daemon still serves without it
+        logger.warning("httpx ssl cache not installed: %s", exc)
     # The code graph runs in a child process (adk.graph_worker): in-process, awgraph's
     # pure-Python load and scorer held the GIL for whole turns (2026-10-14).
     os.environ.setdefault("ADK_AWGRAPH_WORKER", "1")

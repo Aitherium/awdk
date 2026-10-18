@@ -1,9 +1,7 @@
 """aither deploy — Component deployment for the AitherOS ecosystem.
 
 Deploy individual components (Ollama, vLLM, awnode, core stack, full stack)
-or companion apps (AitherConnect, AitherDesktop) from public GitHub releases.
-Deploy individual components (Ollama, vLLM, AitherNode, core stack, full stack)
-or companion apps (Awconnect, AitherDesktop) from public GitHub releases.
+or companion apps (Awconnect, Desk) from public GitHub releases.
 
 Usage (via CLI):
     aither deploy ollama                   # Install + pull models for your GPU
@@ -15,7 +13,7 @@ Usage (via CLI):
     aither deploy full                     # Full AitherOS stack (~55 containers)
     aither deploy full --profile chat-full # Specific chat profile
     aither deploy connect                  # Awconnect browser extension
-    aither deploy desktop                  # AitherDesktop native app
+    aither deploy desktop                  # Desk (same install as the setup page)
     aither deploy stop node                # Stop a running deployment
 
 Pure stdlib -- no pip dependencies required.
@@ -30,8 +28,6 @@ import shutil
 import subprocess
 import sys
 import time
-import zipfile
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
@@ -62,7 +58,6 @@ from adk.setup_cli import (
 _COMPOSE_PIN = os.environ.get("AITHER_COMPOSE_PIN", "main")  # override for dev
 
 GITHUB_RAW = f"https://raw.githubusercontent.com/Aitherium/AitherOS/{_COMPOSE_PIN}"
-GITHUB_RELEASES = "https://github.com/Aitherium/AitherOS/releases/latest/download"
 AITHER_DIR = Path.home() / ".aither"
 REGISTRY = "ghcr.io/aitherium"
 
@@ -2743,112 +2738,64 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
 
 
 # ===========================================================================
-# Component: AitherDesktop
+# Component: Desk
 # ===========================================================================
 
-def deploy_desktop(dry_run: bool = False, api_key_arg: Optional[str] = None) -> int:
-    """Download the AitherDesktop native application.
+def deploy_desktop(dry_run: bool = False, tenant: Optional[str] = None,
+                   force: bool = False, start: bool = True) -> int:
+    """Install or update Desk exactly as the workspace setup page does.
 
-    Platform availability:
-        Windows: Portable .exe from GitHub releases
-        Linux:   Bootc ISO image (see documentation)
-        macOS:   Not yet available
-
-    Requires a valid Aitherium API key.
+    Latest public release of Aitherium/awdesk, SHA256SUMS-verified, installed silently
+    on Windows (a verified download on macOS/Linux), then ``~/.aither/desk-tenant.json``
+    so Desk opens the right workspace. See :mod:`adk.desk_release` for the contract.
 
     Args:
-        dry_run: If True, show what would happen without executing.
-        api_key_arg: Explicit API key (falls back to env/config).
+        dry_run: Print what would happen; download, install and write nothing.
+        tenant: Workspace label (``acme`` for acme.aitherium.com). Default: the signed-in
+            account's workspace when its host declares it, else none (Desk opens the
+            apex and finds the workspace at sign-in).
+        force: Reinstall even when the installed Desk is already the latest.
+        start: Start Desk after installing (never with an administrator token).
 
     Returns:
-        Exit code (0 = success, 1 = failure).
+        0 on success, 1 on a failed verification, download or installer.
     """
-    print()
-    print(bold("  AitherDesktop Native Application"))
-    print()
+    from adk import desk_release as dr
 
-    # Auth gate
-    if not _require_auth(api_key_arg):
-        return 1
-
+    print()
+    print(bold("  Aither (desktop app)"))
+    print()
     if dry_run:
         print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
 
-    plat = _platform_name()
+    def _launch(exe: str) -> None:
+        startfile = getattr(os, "startfile", None)
+        if startfile is not None:
+            startfile(exe)
 
-    if plat == "windows":
-        total_steps = 2
-        desktop_url = f"{GITHUB_RELEASES}/AitherDesktop-win64.zip"
-        dest_dir = AITHER_DIR / "AitherDesktop"
-
-        step(1, total_steps, "Downloading AitherDesktop for Windows")
-
-        if dry_run:
-            info(f"Would download: {desktop_url}")
-            info(f"Would extract to: {dest_dir}")
-        else:
-            data = _download_bytes(desktop_url)
-            if data is None:
-                err("Failed to download AitherDesktop")
-                print()
-                print(f"  Check releases: {cyan('https://github.com/Aitherium/AitherOS/releases')}")
-                return 1
-
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                with zipfile.ZipFile(BytesIO(data)) as zf:
-                    zf.extractall(dest_dir)
-                info(f"Extracted to {dest_dir}")
-            except zipfile.BadZipFile:
-                err("Downloaded file is not a valid zip archive")
-                return 1
-
-        step(2, total_steps, "Installation complete")
-
-        # Locate .exe
-        exe_path = dest_dir / "AitherDesktop.exe"
-        if not dry_run and not exe_path.exists():
-            # Search for it in subdirectories
-            exe_candidates = list(dest_dir.rglob("AitherDesktop.exe"))
-            if exe_candidates:
-                exe_path = exe_candidates[0]
-
-        print()
-        info(f"Executable: {cyan(str(exe_path))}")
-        info(f"Run: {cyan(str(exe_path))}")
-        print()
-        if not dry_run:
-            info(f"{green(bold('AitherDesktop downloaded!'))}")
-        return 0
-
-    elif plat == "linux":
-        print(f"  AitherDesktop for Linux is available as a {bold('Bootc ISO image')}.")
-        print()
-        print(f"  This provides a full AitherOS-powered desktop environment")
-        print(f"  built on Fedora CoreOS with atomic updates.")
-        print()
-        print(f"  For more information:")
-        print(f"    {cyan('https://github.com/Aitherium/AitherOS/wiki/AitherDesktop-Linux')}")
-        print()
-        print(f"  To download the ISO:")
-        print(f"    {cyan(f'{GITHUB_RELEASES}/AitherDesktop-bootc.iso')}")
-        print()
-        return 0
-
-    elif plat == "macos":
-        print(f"  AitherDesktop for macOS is {yellow('not yet available')}.")
-        print()
-        print(f"  In the meantime, you can use:")
-        print(f"    - {cyan('aither deploy node --dashboard')} (Docker-based, runs in browser)")
-        print(f"    - {cyan('aither deploy connect')} (Chrome extension)")
-        print()
-        print(f"  Follow progress: {cyan('https://github.com/Aitherium/AitherOS/issues')}")
-        print()
-        return 0
-
-    else:
-        err(f"Unsupported platform: {plat}")
+    step(1, 2, f"Latest verified Aither release ({dr.DESK_RELEASES})")
+    try:
+        res = dr.install_desk(explicit_label=tenant, force=force, start=start,
+                              dry_run=dry_run, launch=_launch, log=info)
+    except dr.DeskInstallError as exc:
+        err(str(exc))
+        print(f"  {dr.desk_update_hint(tenant)}")
         return 1
+
+    step(2, 2, "Workspace")
+    if res.tenant_label:
+        host = f"{res.tenant_label}.{dr.APEX_HOST}"
+        info(f"Aither opens {cyan(host)} ({res.tenant_note})")
+    else:
+        info(res.tenant_note)
+    print()
+    ver = res.asset.version if res.asset else "?"
+    if res.downloaded_to:
+        info(f"{green(bold(f'Aither {ver} downloaded and verified:'))} {res.downloaded_to}")
+        print(dim("  Open it to install (macOS: drag it to Applications; Linux: run it)."))
+    elif res.installed:
+        info(green(bold(f"Aither {ver} is installed.")))
+    return 0
 
 
 # ===========================================================================
@@ -3755,7 +3702,7 @@ def cmd_deploy_component(args) -> int:
         print(f"    {bold('addons')}     Self-hosted addon services (Qdrant, RAG, etc.)")
         print(f"    {bold('grid')}    Grid distributed (GPU + Mac + cluster)")
         print(f"    {bold('connect')}    Awconnect browser extension")
-        print(f"    {bold('desktop')}    AitherDesktop native application")
+        print(f"    {bold('desktop')}    Aither desktop app (install or update)")
         print(f"    {bold('stop')}       Stop a running deployment")
         print()
         print(f"  Examples:")
@@ -3943,8 +3890,9 @@ def cmd_deploy_component(args) -> int:
         return deploy_connect(dry_run=dry_run, api_key_arg=api_key)
 
     elif component == "desktop":
-        api_key = getattr(args, "api_key", None)
-        return deploy_desktop(dry_run=dry_run, api_key_arg=api_key)
+        return deploy_desktop(dry_run=dry_run, tenant=getattr(args, "tenant", None),
+                              force=bool(getattr(args, "force", False)),
+                              start=not getattr(args, "no_start", False))
 
     elif component == "stop":
         stop_target = getattr(args, "stop_target", None)

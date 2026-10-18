@@ -28,11 +28,11 @@ import java.util.List;
 final class Shortcuts {
     /** id, label, path on the app origin. */
     static final String[][] ADULT = {
-        {"hearth", "Hearth", "/?app=hearth"},
+        // one per destination: Learn and Family both open the Family tab (the guardian
+        // console), so Learn is not a second pin; Classroom stays one tap away on Home
         {"family", "Family", "/?app=family"},
+        {"hearth", "Hearth", "/?app=hearth"},
         {"sprite", "Sprite", "/?app=sprite"},
-        {"learn", "Learn", "/?app=learn"},
-        {"academy", "Academy", "/?app=academy"},
         {"spaces", "Spaces", "/?app=spaces"},
     };
     static final String[][] CHILD = {

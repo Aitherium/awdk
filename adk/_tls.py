@@ -119,6 +119,13 @@ def _merged_with_public_roots(bundle: str) -> str:
 
         import certifi  # httpx depends on it, so it is always importable
 
+        # Memoized on both files' mtimes: tls_verify() runs per request (a /v1/models
+        # poll every few seconds) and re-read + re-hashed both CA files ON the event loop
+        # every time (py-spy, 2026-10-14).
+        memo_key = (bundle, os.path.getmtime(bundle), os.path.getmtime(certifi.where()))
+        hit = _MERGED_MEMO.get(memo_key)
+        if hit and os.path.isfile(hit):
+            return hit
         public = Path(certifi.where()).read_bytes()
         internal = Path(bundle).read_bytes()
         digest = hashlib.sha256(public + b"|" + internal).hexdigest()[:16]
@@ -127,12 +134,66 @@ def _merged_with_public_roots(bundle: str) -> str:
             tmp = out.with_suffix(".tmp" + str(os.getpid()))
             tmp.write_bytes(public.rstrip(b"\n") + b"\n" + internal)
             os.replace(tmp, out)
+        if len(_MERGED_MEMO) > 8:
+            _MERGED_MEMO.clear()
+        _MERGED_MEMO[memo_key] = str(out)
         return str(out)
     except Exception:
         return bundle
 
 
+_MERGED_MEMO: dict = {}
 _CTX_CACHE: dict = {}
+_HTTPX_CTX: dict = {}
+
+
+def install_httpx_ssl_cache() -> bool:
+    """Make httpx reuse one ``SSLContext`` per trust decision, process-wide.
+
+    httpx builds a NEW context (loading the whole CA file) for every client constructed
+    with a True or CA-path verify value, and adk constructs clients per call in hundreds
+    of places. py-spy on the :9001 daemon, 2026-10-14: 27% of the event loop's time in a
+    turn was ``ssl.create_default_context`` under the crystal's embedding client, enough
+    that every recall timer fired late together and the turn got no memory at all.
+    ``ssl_context()`` fixed the call sites that use it; this covers every other one.
+    A client certificate, an explicit ``SSLContext`` or verification turned off is passed
+    through untouched; a CA file that changes on disk gets a new context. Idempotent;
+    False when this httpx has no such hook (then nothing changes).
+    """
+    try:
+        import ssl
+
+        import httpx._transports.default as _default  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 -- no httpx: nothing to cache
+        return False
+    orig = getattr(_default, "create_ssl_context", None)
+    if orig is None:
+        return False
+    if getattr(orig, "_adk_cached", False):
+        return True
+
+    def cached(verify=True, cert=None, trust_env=True):  # httpx 0.28 signature
+        if cert is not None or not verify or isinstance(verify, ssl.SSLContext):
+            return orig(verify=verify, cert=cert, trust_env=trust_env)
+        env = ((os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_CERT_DIR"))
+               if trust_env else (None, None))
+        try:
+            stamp = os.path.getmtime(verify) if isinstance(verify, str) else 0.0
+        except OSError:
+            stamp = -1.0
+        key = (verify, trust_env, env, stamp)
+        ctx = _HTTPX_CTX.get(key)
+        if ctx is None:
+            ctx = orig(verify=verify, cert=cert, trust_env=trust_env)
+            if len(_HTTPX_CTX) > 16:
+                _HTTPX_CTX.clear()
+            _HTTPX_CTX[key] = ctx
+        return ctx
+
+    cached._adk_cached = True  # type: ignore[attr-defined]
+    cached._adk_orig = orig  # type: ignore[attr-defined]
+    _default.create_ssl_context = cached
+    return True
 
 
 def _env_trust_store() -> tuple:

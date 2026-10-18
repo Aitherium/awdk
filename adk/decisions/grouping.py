@@ -31,6 +31,14 @@ G3 INFO TTL    A ``kind=info`` card has nothing to decide. It never counts
                whatever its deadline) and it is auto-closed once it is older than
                the TTL, with a note saying so.
 
+G4 CREDENTIAL  Two open credential asks for the same secret FAMILY (recipe, else
+               vault key, plus scope -- ``credential_family``) are one ask. The
+               OLDEST stands (it has been blocking longest); every other is
+               withdrawn with "duplicate credential ask of d-xxxx", and its
+               raising session is carried onto the standing card's waiters so
+               it still resumes when the owner answers. Measured 2026-10-14:
+               three open Proton Bridge asks for one login.
+
 Every withdrawal carries a note naming the rule and the card that stands. A
 card is never dropped silently and never deleted -- `sweep` reclaims disk later.
 
@@ -227,14 +235,26 @@ def richness(card: Any) -> tuple[int, int, int, float]:
 
 
 class Plan:
-    """What grouping wants done: withdrawals (each with its note) and facts to
-    append to the cards that stand."""
+    """What grouping wants done: withdrawals (each with its note), facts to
+    append to the cards that stand, and sessions to add to their waiters."""
 
     def __init__(self) -> None:
         #: card id -> (rule, note). The note is what the withdrawn card carries.
         self.withdraw: dict[str, tuple[str, str]] = {}
         #: card id -> facts to append (the record of what collapsed into it).
         self.facts: dict[str, list[str]] = {}
+        #: card id -> raising sources (dicts) of the duplicates withdrawn into it,
+        #: so those sessions resume when the standing card is answered.
+        self.waiters: dict[str, list[dict]] = {}
+
+    def add_waiter(self, cid: str, source: Any) -> None:
+        raw = source if isinstance(source, dict) else (
+            source.to_dict() if hasattr(source, "to_dict") else {})
+        if not str(raw.get("session_id") or ""):
+            return
+        bucket = self.waiters.setdefault(cid, [])
+        if all(w.get("session_id") != raw.get("session_id") for w in bucket):
+            bucket.append(dict(raw))
 
     def add_withdraw(self, cid: str, rule: str, note: str) -> None:
         self.withdraw.setdefault(cid, (rule, note))
@@ -245,7 +265,47 @@ class Plan:
             bucket.append(fact)
 
     def __bool__(self) -> bool:
-        return bool(self.withdraw or self.facts)
+        return bool(self.withdraw or self.facts or self.waiters)
+
+
+def credential_family(card: Any) -> str:
+    """``cred:<recipe or secret_name>:<scope>`` for a credential card, else "".
+
+    The same identity the store dedupes credential raises on; kept here as a
+    pure function of either card shape so G4 needs no store.
+    """
+    if _kind(card) != "credential":
+        return ""
+    family = str(_get(card, "credential_recipe") or _get(card, "secret_name") or "").strip()
+    if not family:
+        return ""
+    scope = str(_get(card, "credential_scope") or "platform").strip() or "platform"
+    return re.sub(r"[^A-Za-z0-9:._@+-]", "-", "cred:%s:%s" % (family, scope))[:160]
+
+
+def _credential_groups(open_cards: list, out: "Plan") -> None:
+    """G4: the oldest open ask of each credential family stands."""
+    families: dict[str, list[Any]] = {}
+    for c in open_cards:
+        fam = credential_family(c)
+        if fam and str(_get(c, "id")) not in out.withdraw:
+            families.setdefault(fam, []).append(c)
+    for fam, members in families.items():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda c: (_created(c), str(_get(c, "id"))))
+        keep = members[0]
+        keep_id = str(_get(keep, "id"))
+        for c in members[1:]:
+            cid = str(_get(c, "id"))
+            out.add_withdraw(cid, "G4", "duplicate credential ask of %s (same secret "
+                                        "family %s); the asking session waits on %s"
+                             % (keep_id, fam, keep_id))
+            out.add_fact(keep_id, "also asked as %s: %s"
+                         % (cid, str(_get(c, "title", "") or "")[:160]))
+            out.add_waiter(keep_id, _get(c, "source") or {})
+            for w in (_get(c, "waiters") or []):
+                out.add_waiter(keep_id, w)
 
 
 def plan(cards: Iterable[Any], now: float, *,
@@ -268,6 +328,9 @@ def plan(cards: Iterable[Any], now: float, *,
                     str(_get(c, "id")), "G3",
                     "info card auto-closed after %.0fh (TTL %.0fh): nothing to decide"
                     % (age / 3600, info_ttl / 3600))
+
+    # G4: one credential ask per secret family; the oldest stands.
+    _credential_groups(open_cards, out)
 
     # G1: newest of each series stands.
     series: dict[tuple[str, str, str, str], list[Any]] = {}
@@ -406,6 +469,14 @@ def plan_for_new(new: Any, open_cards: Iterable[Any], now: float) -> tuple[Optio
     others = [c for c in open_cards if _is_open(c) and str(_get(c, "id", "")) != new_id]
     out = Plan()
     if _kind(new) == "credential":
+        # G4 at raise time: an open ask of the same family IS this ask. (The
+        # store folds the raise into it before grouping runs; this keeps the
+        # pure planner saying the same thing.)
+        fam = credential_family(new)
+        if fam:
+            same = [c for c in others if credential_family(c) == fam]
+            if same:
+                return min(same, key=lambda c: (_created(c), str(_get(c, "id")))), out
         return None, out
 
     found = subject_of(str(_get(new, "title", "") or ""))

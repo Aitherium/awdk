@@ -4,6 +4,18 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.72] - 2026-10-17
+
+### Fixed
+- Auto-detect never picks Ollama. A stray Ollama on `:11434` used to become the agent's brain, or a silent low-effort side path beside the configured desktop spine, answering with whatever small model it held. Ollama is used only when named (`llm_backend: ollama` / `provider="ollama"`; `OLLAMA_HOST` for the shell).
+- `adk login` (and `doctor --save`) no longer rewrites your own `inference_url` to `mcp.aitherium.com/v1`. It used to keep a local URL only when `default_backend` was also set, so a desktop set up by `adk setup` lost its spine on every login and its agents got 403 on a free-tier token. Any URL that is not `*.aitherium.com` is now kept.
+
+## [3.8.71] - 2026-10-15
+
+### Fixed
+- `adk deploy desktop` installs Desk the same way the workspace setup page does: the latest `Aitherium/awdesk` release, verified against its `SHA256SUMS.txt`, installed silently on Windows, then `~/.aither/desk-tenant.json` so Desk opens your workspace (`--tenant <label>`, else the signed-in account's workspace). It used to download the retired AitherDesktop app.
+- "Update Desk" messages now say how: from Desk's own update notice, or re-run setup at `https://<workspace>.aitherium.com/setup-pc`.
+
 ## [3.8.68] - 2026-10-10
 
 ### Fixed

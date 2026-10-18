@@ -176,7 +176,7 @@ class DirectLLMClient:
 
 async def auto_detect_backend() -> Optional[DirectLLMClient]:
     """Try to find a working LLM backend. Returns client or None."""
-    # Priority: env vars → vLLM → Ollama
+    # Priority: env vars → vLLM → Ollama (explicit OLLAMA_HOST only)
 
     vllm_url = os.environ.get("AITHER_VLLM_URL") or os.environ.get("VLLM_URL")
     if vllm_url:
@@ -212,8 +212,11 @@ async def auto_detect_backend() -> Optional[DirectLLMClient]:
             return client
         await client.close()
 
-    # Try Ollama
-    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    # Ollama only when asked for by name (OLLAMA_HOST set) — never a blind
+    # :11434 probe, which silently made a stray small model the shell's brain.
+    ollama_host = os.environ.get("OLLAMA_HOST", "")
+    if not ollama_host:
+        return None
     if "0.0.0.0" in ollama_host:
         ollama_host = ollama_host.replace("0.0.0.0", "localhost")
     if not ollama_host.startswith("http"):

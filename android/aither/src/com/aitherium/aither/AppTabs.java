@@ -25,13 +25,19 @@ final class AppTabs {
     static final String SHOW_ME_PATH = "/talk?mode=show";
 
     /** id, label, root path ("" = native), icon (Shell.iconRes: the app's glyph
-     *  res/drawable/ic_app_*, "gear" = settings, "mark" = the Aither mark). */
+     *  res/drawable/ic_app_*, "gear" = settings, "mark" = the Aither mark).
+     *
+     *  A grown-up's ONE bar (owner, 2026-10-16: "no redundant apps/menus"): Home (the
+     *  searchable list of everything else), Aither, Family (the guardian control centre,
+     *  /learn/parent: Learn folded in, it was a second tab to the same household) and You
+     *  (this phone's settings, with My account in it). Nothing in the bar is also a Home
+     *  tile, and the top bar carries no second Settings gear. Pinned against the nav
+     *  manifest (config/nav/aither-nav.yaml profiles.adult.android). */
     static final String[][] ADULT_TABS = {
         {HOME, "Home", "", "home"},
-        {"learn", "Learn", "/learn/parent/", "learn"},
-        {"family", "Family", "/family", "family"},
         {"aither", "Aither", "/chat", "mark"},
-        {SETTINGS, "Settings", "", "gear"},
+        {"family", "Family", "/learn/parent/", "family"},
+        {SETTINGS, "You", "", "account"},
     };
     /** A child's bar is ONE tab, their classroom (kids-suite S4): every child page opens in
      *  it, so the room is the menu and there is nothing else to wander into. Shell turns a
@@ -41,26 +47,28 @@ final class AppTabs {
         {"learn", "Classroom", "/learn", "learn"},
     };
 
-    /** id, label, one plain line, path, icon, tab it opens in ("" = its own window). */
+    /** id, label, one plain line, path, icon, tab it opens in ("" = its own window), and
+     *  (grown-ups only) the bead-space cluster Home files it under
+     *  (docs/plans/2026-10-13-bead-space-navigation.md). One row per destination: what a
+     *  tab already opens (Learn, Family, Talk to Aither, This phone), what lives inside
+     *  another row (Packs & skills is a tab of My agents, My account is in You) and the
+     *  owner's second image tool (Media Forge; Image Studio is the one on a phone) are not
+     *  repeated here. */
     static final String[][] ADULT_APPS = {
-        {"learn", "Aither Learn", "Your children's tutor and their week", "/learn/parent/", "learn", "learn"},
-        {"family", "Family", "Who's home, the family room, devices", "/family", "family", "family"},
-        {"aither", "Talk to Aither", "Ask anything, by text or voice", "/chat", "mark", "aither"},
-        {"hearth", "Hearth", "Your home agent: it asks before it acts", "/?app=hearth", "hearth", ""},
-        {"sprite", "Sprite", "Hatch it. Teach it.", "/?app=sprite", "sprite", ""},
-        {"academy", "Classroom", "Teach a class, or link a child to theirs", "/classroom/", "academy", ""},
-        {"spaces", "Spaces", "Friends, agents and rooms", "/spaces/", "spaces", ""},
-        {"avatar", "Avatar", "Your avatars, and the one your Sprite wears", "/?app=avatar", "avatar", ""},
-        {"agents", "My agents", "Create, command and connect your agents", "/?app=agent-life", "agents", ""},
-        {"packs", "Packs & skills", "Add abilities to your agents", "/workspace/agents?tab=packs", "packs", ""},
-        {"image-studio", "Image Studio", "Make and edit images with your credits", "/?app=image-studio", "mediaforge", ""},
-        {"mediaforge", "Media Forge", "Make images, video and voice", "/?app=mediaforge", "mediaforge", ""},
-        {"shop", "Shop", "Packs, plans and devices", "/shop", "shop", ""},
-        {"desktop", "AitherOS", "The full desktop with every app", "/?shell=aither-desktop", "desktop", ""},
-        {"control", "Control", "Your devices, lending and models", "/?app=control", "phone", ""},
-        {"account", "My account", "Profile, sign-in and security", "/profile", "account", ""},
-        {SETTINGS, "This phone", "Updates, AI on this phone, lending", "", "gear", SETTINGS},
+        {"hearth", "Hearth", "Your home agent: it asks before it acts", "/?app=hearth", "hearth", "", "Home"},
+        {"household", "Household", "Members, invites and family devices", "/family", "family", "family", "Home"},
+        {"sprite", "Sprite", "Hatch it. Teach it.", "/?app=sprite", "sprite", "", "Home"},
+        {"academy", "Classroom", "Teach a class, or link a child to theirs", "/classroom/", "academy", "", "Home"},
+        {"agents", "My agents", "Your agents, their packs and skills", "/?app=agent-life", "agents", "", "Agents"},
+        {"image-studio", "Image Studio", "Make and edit images with your credits", "/?app=image-studio", "mediaforge", "", "Make"},
+        {"spaces", "Spaces", "Friends, agents and rooms", "/spaces/", "spaces", "", "Community"},
+        {"avatar", "Avatar", "Your avatars, and the one your Sprite wears", "/?app=avatar", "avatar", "", "You"},
+        {"control", "Control", "Your devices, lending and models", "/?app=control", "phone", "", "Fleet"},
+        {"shop", "Shop", "Packs, plans and devices", "/shop", "shop", "", "Market"},
+        {"desktop", "AitherOS", "The full desktop with every app", "/?shell=aither-desktop", "desktop", "", "More"},
     };
+    /** The order Home shows the clusters in. */
+    static final String[] CLUSTERS = {"Home", "Agents", "Make", "Community", "You", "Fleet", "Market", "More"};
     static final String[][] CHILD_APPS = {
         {"learn", "Classroom", "Your room: lessons, stories, art and games", "/learn", "learn", "learn"},
         // the Nest: the child's own Sprite to talk to (never Aither's general chat)
@@ -74,9 +82,10 @@ final class AppTabs {
     };
 
     /** Grown-up apps only the platform owner is offered (the web gate refuses everyone
-     *  else too: app-gating.ts rbac system:admin). A customer makes images in Image Studio
-     *  (paid with account credits), never Media Forge, which frames an owner-only host. */
-    static final String[] OWNER_APPS = {"mediaforge"};
+     *  else too: app-gating.ts rbac system:admin). Empty since Media Forge left the phone
+     *  (2026-10-16): a phone makes images in Image Studio; Media Forge stays on the
+     *  desktop (AitherOS), where the owner's operator tools live. */
+    static final String[] OWNER_APPS = {};
     /** Apps the Play build leaves out: Shop checks out through Stripe, which Play forbids
      *  for digital goods (Purchases). */
     static final String[] NOT_IN_STORE = {"shop"};
@@ -99,7 +108,7 @@ final class AppTabs {
 
     /** A grown-up's `?app=` ids that have a tab of their own (the rest open as a window). */
     static final String[][] ADULT_APP_TABS = {
-        {"learn", "learn"},
+        {"learn", "family"},
         {"family", "family"},
         {"greeter", "aither"},
     };
@@ -142,6 +151,20 @@ final class AppTabs {
             if (x.equals("owner") || x.equals("admin")) scoped = true;
         }
         return scoped && "platform".equals(tenantId == null ? "" : tenantId.trim());
+    }
+
+    /** Home's search: the apps whose label, line or cluster contain every word of `q`
+     *  (case-insensitive); all of them for an empty query. */
+    static String[][] search(String[][] apps, String q) {
+        String[] words = q == null ? new String[0] : q.trim().toLowerCase(java.util.Locale.ROOT).split("\\s+");
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        for (String[] app : apps) {
+            String hay = (app[1] + " " + app[2] + " " + (app.length > 6 ? app[6] : "")).toLowerCase(java.util.Locale.ROOT);
+            boolean all = true;
+            for (String w : words) if (!w.isEmpty() && !hay.contains(w)) all = false;
+            if (all) out.add(app);
+        }
+        return out.toArray(new String[0][]);
     }
 
     /** Where the app opens and where back ends: the grid for a grown-up, Learn for a child. */
@@ -209,8 +232,9 @@ final class AppTabs {
     }
 
     private static String adultTabFor(String path) {
-        if (under(path, "/learn")) return "learn";
-        if (under(path, "/hearth") || under(path, "/family")) return "family";
+        // the guardian console (/learn/parent) is the Family tab's root, and the household
+        // pages open in it too: one tab for the family, not two
+        if (under(path, "/learn") || under(path, "/hearth") || under(path, "/family")) return "family";
         if (under(path, "/chat")) return "aither";
         return "";
     }
@@ -226,6 +250,19 @@ final class AppTabs {
      *  for anything outside aitherium.com -- never open: "Ask a grown-up", and a card to them.
      *  MainActivity starts no ACTION_VIEW for ASK_GROWNUP. */
     enum Link { IN_APP, BROWSER, ASK_GROWNUP }
+
+    /** Is this a child's phone? The page's flag OR the household's profile kind: either one
+     *  is enough, so a signed-out page cannot make a child's phone an adult's. */
+    static boolean childPhone(boolean childDevice, String profileKind) {
+        return childDevice || "child".equals(profileKind);
+    }
+
+    /** The stored child flag after the page reports its own. A page may only turn child mode
+     *  ON; turning it off is a guardian's act (the owner removing the phone), never a page's:
+     *  a signed-out page reports no child and must not open adult link routing. */
+    static boolean afterPageReport(boolean stored, boolean reported) {
+        return stored || reported;
+    }
 
     static Link link(boolean child, String url) {
         String host = "";
@@ -243,10 +280,115 @@ final class AppTabs {
         return ours ? Link.IN_APP : Link.BROWSER;
     }
 
-    /** The only hosts a child's phone opens in the app: the classroom (and its apex alias),
-     *  its API and the sign-in host. Everything else is "Ask a grown-up". */
+    /** The hosts that serve the AitherOS web app itself (Veil): the app origin, the apex
+     *  and www (the static export of the same pages), the manual and the journal. A page
+     *  here is a phone-mode app of this shell (html[data-host="android"]). */
+    static final java.util.Set<String> APP_HOSTS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "app.aitherium.com", "aitherium.com", "www.aitherium.com", "docs.aitherium.com",
+            "blog.aitherium.com"));
+    /** Our sign-in and API hosts: a redirect chain passes through them, so they load in
+     *  place and are never re-routed. */
+    static final java.util.Set<String> AUTH_HOSTS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "idp.aitherium.com", "api.aitherium.com"));
+
+    /** What a navigation in one of the app's WebViews does (MainActivity's
+     *  shouldOverrideUrlLoading). docs/plans/2026-10-17-mobile-shell.md. */
+    enum Nav {
+        /** let the WebView load it where it is */
+        LOAD,
+        /** a tap on a link that belongs to another tab, Home, or its own window:
+         *  Shell.openFromLink puts it there */
+        ROUTE,
+        /** a web page off the app: a Chrome Custom Tab, whose X comes back here */
+        CUSTOM_TAB,
+        /** mailto:, tel:, intent:... the phone's app for it */
+        EXTERNAL,
+        /** a child's phone: never leaves the classroom */
+        ASK_GROWNUP
+    }
+
+    /**
+     * The one navigation rule. `gesture` = the person tapped (WebResourceRequest.hasGesture),
+     * `redirect` = a server redirect. Only a tap that is not a redirect is ever moved to
+     * another tab or window, so a sign-in or OAuth chain runs through uninterrupted.
+     * `currentTab` is the tab the WebView belongs to ("" for the window over the tabs).
+     */
+    static Nav navigate(boolean child, String url, boolean gesture, boolean redirect, String currentTab) {
+        Link l = link(child, url);
+        if (l == Link.ASK_GROWNUP) return Nav.ASK_GROWNUP;
+        URI u;
+        try {
+            u = new URI(url == null ? "" : url);
+        } catch (Exception e) {
+            return Nav.EXTERNAL;
+        }
+        String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(java.util.Locale.ROOT);
+        String host = u.getHost() == null ? "" : u.getHost().toLowerCase(java.util.Locale.ROOT);
+        if (child) return Nav.LOAD; // link() let only the classroom's own host through
+        if (!scheme.equals("http") && !scheme.equals("https")) {
+            return scheme.equals("about") || scheme.equals("data") || scheme.equals("blob") ? Nav.LOAD : Nav.EXTERNAL;
+        }
+        if (!scheme.equals("https")) return Nav.CUSTOM_TAB;
+        if (AUTH_HOSTS.contains(host) || signInPage(host, u.getRawPath())) return Nav.LOAD;
+        if (!APP_HOSTS.contains(host)) return Nav.CUSTOM_TAB;
+        if (!gesture || redirect) return Nav.LOAD;
+        Route r = linkRoute(url);
+        if (r.window) return currentTab.isEmpty() ? Nav.LOAD : Nav.ROUTE; // a window keeps its pages
+        return r.tab.equals(currentTab) ? Nav.LOAD : Nav.ROUTE;
+    }
+
+    /** Where a tapped app link goes (Shell.openFromLink): the manual and the journal hosts
+     *  are always a window (their `/` is not the app's Home); everything else as route(). */
+    static Route linkRoute(String url) {
+        try {
+            String host = new URI(url).getHost();
+            if ("docs.aitherium.com".equals(host) || "blog.aitherium.com".equals(host)) {
+                return new Route("", url, true);
+            }
+        } catch (Exception e) { /* route() answers for an unparseable link */ }
+        return route(url, false);
+    }
+
+    /** The OAuth providers' own sign-in pages (the app's /api/auth/oauth/<p> redirects to
+     *  them): they stay in the app, or the session would land in Chrome instead. */
+    static boolean signInPage(String host, String path) {
+        String p = path == null ? "" : path;
+        if (host.equals("github.com")) {
+            return p.startsWith("/login") || p.startsWith("/session") || p.startsWith("/sessions/");
+        }
+        if (host.equals("www.linkedin.com") || host.equals("linkedin.com")) {
+            return p.startsWith("/oauth/") || p.startsWith("/uas/") || p.startsWith("/login")
+                    || p.startsWith("/checkpoint/");
+        }
+        return false;
+    }
+
+    /** The native bar's title: the tab's name at its root, else the page's own title
+     *  ("Shop · AitherOS" -> "Shop"); "Aither" for an empty or URL-shaped title. */
+    static String barTitle(String tabLabel, boolean atRoot, String pageTitle) {
+        if (atRoot && tabLabel != null && !tabLabel.isEmpty()) return tabLabel;
+        String t = pageTitle == null ? "" : pageTitle.trim();
+        if (t.isEmpty() || t.startsWith("http") || t.contains("aitherium.com/")) {
+            return tabLabel == null || tabLabel.isEmpty() ? "Aither" : tabLabel;
+        }
+        for (String sep : new String[] {" · ", " | ", " — ", " - "}) {
+            int i = t.indexOf(sep);
+            if (i > 0) t = t.substring(0, i);
+        }
+        return t.length() > 32 ? t.substring(0, 31) + "…" : t;
+    }
+
+    /** The only host a child's phone NAVIGATES to in the app: the classroom pages
+     *  (app.aitherium.com, {@link #ORIGIN}). Everything else is "Ask a grown-up".
+     *  Not here, on purpose: the apex (a static marketing export that 307s to the app host;
+     *  the app opens its start URL with loadUrl, which this rule never sees), api. (data is
+     *  fetched by the page, and fetches never reach shouldOverrideUrlLoading) and idp. (a
+     *  child signs in on app.aitherium.com/learn/connect -- a one-time ticket redeemed by
+     *  fetch -- or app.aitherium.com/login through the BFF; idp's own pages are only the
+     *  OIDC hand-off for other sites and the device-link QR, which LinkActivity takes
+     *  natively before any WebView). */
     static final java.util.Set<String> CHILD_HOSTS = new java.util.HashSet<>(java.util.Arrays.asList(
-            "app.aitherium.com", "aitherium.com", "api.aitherium.com", "idp.aitherium.com"));
+            "app.aitherium.com"));
 
     /** What the "Ask a grown-up" card says once POST /me/link-requests answered. "I told your
      *  grown-up" ONLY when the server says a card is stored in their inbox (201 + told:true);
@@ -254,7 +396,7 @@ final class AppTabs {
      *  say what to do instead, never that a grown-up knows. status -1 = no answer at all. */
     static String askMessage(int status, String body) {
         boolean told = (status == 200 || status == 201) && body != null
-                && body.replaceAll("\s", "").contains("\"told\":true");
+                && body.replaceAll("\\s", "").contains("\"told\":true");
         if (told) return "That page is outside Aither. I told your grown-up, so you can look at it together.";
         return "That page is outside Aither. Show it to your grown-up, or a grown-up you trust, so you can look at it together.";
     }
@@ -352,11 +494,22 @@ final class AppTabs {
         }
     }
 
+    /** A child's door in (Veil lib/kid-sign-in.ts): "Ask your grown-up to connect this
+     *  phone" and a code the guardian approves from their own phone. Never /login: a child
+     *  cannot finish the adult form, and a grown-up signing in there hands the child their
+     *  account (2026-10-16). */
+    static final String KID_DOOR = "/learn/connect";
+
+    /** The sign-in page for this phone: the kid door on a child's phone, else /login. */
+    static String signInUrl(boolean child, String returnUrl) {
+        return child ? ORIGIN + KID_DOOR : signInUrl(returnUrl);
+    }
+
     /** Is this the sign-in page (where a tab lands when its page found no session)? */
     static boolean isSignIn(String url) {
         try {
             URI u = new URI(url == null ? "" : url);
-            return u.getRawPath() != null && under(u.getRawPath(), "/login");
+            return u.getRawPath() != null && (under(u.getRawPath(), "/login") || under(u.getRawPath(), KID_DOOR));
         } catch (Exception e) {
             return false;
         }

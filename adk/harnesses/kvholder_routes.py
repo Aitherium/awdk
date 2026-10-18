@@ -25,11 +25,12 @@ TARGET = "kvholder"
 ACTIONS = ("pending", "join", "elastic")
 
 
-def parse_action(body, action, principal_plan, verifier):
+def parse_action(body, action, principal_plan, verifier, target=TARGET):
     """``(args, error)``: the action's arguments if the caller may run it, else an error.
 
     ``body`` is ``{"id", "actor", "payload": {"text": json, "owner_assertion"?}}``; the
-    text is ``{"action": ..., **args}`` and its action must equal the route's.
+    text is ``{"action": ..., **args}`` and its action must equal the route's. ``target``
+    is the assertion's ``to`` (adk.harnesses.posture_routes reuses this with ``posture``).
     """
     if not isinstance(body, dict):
         return None, "body must be an object"
@@ -45,7 +46,7 @@ def parse_action(body, action, principal_plan, verifier):
         actor = body.get("actor") or {}
         if not (isinstance(actor, dict) and actor.get("kind") == "human"):
             return None, "owner only"
-        ok, why = verifier.verify(body, TARGET)
+        ok, why = verifier.verify(body, target)
         if not ok:
             return None, f"owner only ({why})"
     try:

@@ -7,6 +7,9 @@ One command family from "what is there" to "it is serving":
     adk models recommend       the largest permitted model this machine can run
     adk models pull <id>       download it, resumable and verified, into the Bonsai
                                installer's models directory
+    adk models pull <id> --uncensored
+                               the same, from your account's uncensored catalog: needs
+                               adk login, age verification and the opt-in (models.uncensored)
     adk models use <id>        serve it and point adk at it
 
 `pull` and `use` go through the licence gate (``catalogue.licence_verdict``) and refuse,
@@ -55,6 +58,9 @@ def add_parser(sub: Any) -> None:
     pull.add_argument("id", help="Catalogue id (see: adk models list)")
     pull.add_argument("--dir", default="", help="Download directory (default: the Bonsai "
                                                 "installer's models directory)")
+    pull.add_argument("--uncensored", action="store_true",
+                      help="Pull from your account's uncensored catalog (needs adk login, "
+                           "age verification and the opt-in on your account)")
     use = ms.add_parser("use", help="Serve a pulled model and point adk at it")
     use.add_argument("id", help="Catalogue id (see: adk models list)")
     use.add_argument("--port", type=int, default=0,
@@ -131,6 +137,14 @@ def _gated(cat: Dict[str, Any], model_id: str, verb: str) -> Optional[Dict[str, 
     return m
 
 
+def cmd_pull_uncensored(args: Any) -> int:
+    """``adk models pull <id> --uncensored``: the account-gated catalog, never the local one."""
+    from . import serve, uncensored
+
+    dest_dir = Path(args.dir) if args.dir else serve.models_dir()
+    return uncensored.pull(args.id, dest_dir, _say, _err)
+
+
 def cmd_pull(args: Any, cat: Dict[str, Any]) -> int:
     from . import download, serve
 
@@ -201,8 +215,10 @@ def run(args: Any) -> int:
     handlers = {"list": cmd_list, "recommend": cmd_recommend, "pull": cmd_pull,
                 "use": cmd_use}
     if sub not in handlers:
-        _say("usage: adk models {list | recommend | pull <id> | use <id>}")
+        _say("usage: adk models {list | recommend | pull <id> [--uncensored] | use <id>}")
         return 1
+    if sub == "pull" and getattr(args, "uncensored", False):
+        return cmd_pull_uncensored(args)
     try:
         return handlers[sub](args, catalogue.load())
     except catalogue.CatalogueError as exc:

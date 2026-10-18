@@ -48,7 +48,11 @@ def bonsai_available() -> bool:
     if any(models_dir.glob("**/bonsai*.gguf")) if models_dir.exists() else False:
         return True
 
-    return False
+    # The one-click installer's server + weights (install-bonsai.ps1/.sh), which live
+    # outside ~/.aither and were invisible here.
+    from adk.local_model_server import find_local_model_server
+    spec = find_local_model_server()
+    return bool(spec and spec.get("kind") == "bonsai-selfhost")
 
 # ---------------------------------------------------------------------------
 # Docker detection

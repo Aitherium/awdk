@@ -26,19 +26,23 @@ to ignore and worth answering respectively.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
 from adk.decisions.store import (
     CLOSED_STATUSES,
+    STATUS_ANSWERED,
     DecisionCard,
     DecisionError,
     DecisionOption,
     DecisionSource,
+    DecisionStore,
     get_store,
 )
 
@@ -405,8 +409,397 @@ async def withdraw_card(card_id: str, reason: str = "") -> str:
     return json.dumps({"ok": True, "id": card.id, "status": card.status})
 
 
+# ── ask_credential: one tool to get a secret, and resume afterwards ───────────
+#
+# Before this, an agent that needed a secret had to know four things: raise a
+# kind=credential card with five fields, open the masked prompt itself, poll for
+# the answer, and remember to come back. Agents got one of the four wrong every
+# time, and an agent whose session ended before the owner typed the value was
+# never told at all -- its answer sat in a mailbox nobody drained. Now it is one
+# call: it checks the vault first (by NAME), joins an open ask for the same
+# secret instead of raising a second card, opens the prompt, blocks, and returns
+# only {stored, scope, receipt_digest}. If the call times out or the session
+# dies, steerback delivers the "stored" answer later and resumes the session.
+
+#: The scopes a credential card may name (same three doors as secure_prompt).
+CREDENTIAL_SCOPES = ("platform", "workspace", "user")
+
+#: A vault key: what every store on the platform accepts, and nothing a path,
+#: a shell or a URL could misread.
+_SECRET_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]{0,127}$")
+
+#: How long ask_credential blocks when the caller does not say. Long enough for
+#: an owner at the desk; the session is resumed by steerback if it is longer.
+CREDENTIAL_WAIT_DEFAULT = 300.0
+
+
+def _find_recipe(secret_name: str) -> "tuple[str, dict[str, Any]]":
+    """``(recipe_id, recipe)`` whose vault_name is this secret, or ``("", {})``.
+
+    A missing recipes file or PyYAML is the common case off the owner's
+    checkout, so it degrades to "no recipe" rather than failing the ask.
+    """
+    try:
+        from adk.decisions.recipes import RecipeError, load_recipes
+    except ImportError:
+        return "", {}
+    try:
+        recipes = load_recipes()
+    except RecipeError:
+        return "", {}
+    for recipe_id, recipe in recipes.items():
+        if str(recipe.get("vault_name") or "").strip() == secret_name:
+            return recipe_id, recipe
+    return "", {}
+
+
+def _names_in(payload: Any) -> list[str]:
+    """Secret NAMES from a vault list response (the shapes adk.sync accepts)."""
+    if isinstance(payload, list):
+        out: list[str] = []
+        for item in payload:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict) and (item.get("name") or item.get("key")):
+                out.append(str(item.get("name") or item.get("key")))
+        return out
+    if isinstance(payload, dict):
+        inner = payload.get("secrets", payload)
+        if isinstance(inner, dict):
+            return [str(k) for k in inner]
+        if isinstance(inner, list):
+            return _names_in(inner)
+    return []
+
+
+def vault_presence(secret_name: str, scope: str) -> Optional[bool]:
+    """Is ``secret_name`` already stored in ``scope``? True / False / None (unknown).
+
+    NAMES ONLY: the platform vault is asked for its name list (``GET /secrets``
+    returns metadata, never values) and the user lockbox for its list. The
+    workspace store has no name-only listing reachable from here, so it is
+    unknown -- and unknown raises the card, because asking once more costs the
+    owner a click while claiming "present" wrongly costs the agent its task.
+    Reached through the fleet host's in-container path (the vault is an
+    in-network name), the same one secure_prompt writes through.
+    """
+    try:
+        from adk.decisions.secure_prompt import _host_vault_module
+    except ImportError:
+        return None
+    host = _host_vault_module()
+    if host is None:
+        return None
+    if scope == "user":
+        try:
+            found = int(host.vault_len(secret_name, scope="user"))
+        except (RuntimeError, OSError, ValueError, TypeError):
+            return None
+        return None if found < 0 else found > 0
+    if scope != "platform":
+        return None
+    vault_url = str(getattr(host, "VAULT_URL", "") or "").rstrip("/")
+    runner = getattr(host, "_sh_in_container", None)
+    if not vault_url or runner is None:
+        return None
+    script = ("curl -sk --max-time 15 -H \"X-API-Key: $AITHER_INTERNAL_SECRET\" "
+              f"-w '%{{http_code}}' {vault_url}/secrets\n")
+    try:
+        _rc, output = runner(script, timeout=40)
+    except (RuntimeError, OSError) as exc:
+        logger.debug("vault name list unavailable: %s", type(exc).__name__)
+        return None
+    output = output or ""
+    if len(output) < 3 or not output[-3:].startswith("2"):
+        return None
+    try:
+        names = _names_in(json.loads(output[:-3] or "[]"))
+    except ValueError:
+        return None
+    return secret_name in names
+
+
+def _receipt_digest(receipt: Optional[dict[str, Any]]) -> str:
+    """sha256 of the canonical receipt -- identifies the write, reveals nothing."""
+    if not isinstance(receipt, dict) or not receipt:
+        return ""
+    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def credential_result(card: DecisionCard) -> dict[str, Any]:
+    """What a waiter learns about a credential card. Never a value, never a length."""
+    receipt = card.credential_receipt if isinstance(card.credential_receipt, dict) else {}
+    stored = (card.status == STATUS_ANSWERED
+              and card.answer == DecisionCard.CREDENTIAL_ANSWER)
+    return {
+        "ok": True,
+        "card_id": card.id,
+        "status": card.status,
+        "stored": stored,
+        "secret_name": card.secret_name or "",
+        "scope": (card.credential_scope or "platform"),
+        "receipt_digest": _receipt_digest(receipt),
+        "receipt_signed": bool(receipt.get("signed")),
+    }
+
+
+def _open_credential_card(store: DecisionStore, secret_name: str,
+                          scope: str) -> Optional[DecisionCard]:
+    for card in store.list(status="open"):
+        if ((card.kind or "").strip().lower() == "credential"
+                and (card.secret_name or "") == secret_name
+                and (card.credential_scope or "platform") == scope):
+            return card
+    return None
+
+
+def ensure_prompt(card: DecisionCard, store: DecisionStore) -> str:
+    """Make sure the owner can SEE this ask. Returns where it is.
+
+    The desk Inbox hosts the masked field itself, so while the desk is alive no
+    Tk window opens beside it (two prompts for one secret is the "separate
+    dialogue" the owner vetoed). Otherwise the masked window is opened -- again
+    if the one opened earlier is gone -- because a credential ask the owner
+    cannot see is the "no card anywhere" failure this exists to end.
+    """
+    from adk.decisions import steerback
+    from adk.decisions.notify import desk_alive
+
+    if desk_alive(store.path):
+        return "desk"
+    pid = steerback.prompt_pid(store, card.id)
+    if pid and steerback.pid_alive(pid):
+        return "window"
+    from adk.decisions.secure_prompt import launch_gui_prompt
+
+    spawned: list[int] = []
+    launched, why = launch_gui_prompt(card, pid_out=spawned)
+    if launched and spawned:
+        steerback.set_prompt_pid(store, card.id, spawned[0])
+    return "window" if launched else f"none ({why})"
+
+
+def start_credential_ask(
+    secret_name: str,
+    scope: str = "platform",
+    description: str = "",
+    why: str = "",
+    *,
+    wait_seconds: float = 0.0,
+    agent: str = "",
+    session_id: str = "",
+    cwd: str = "",
+    task: str = "",
+    harness: str = "",
+    subject: str = "",
+) -> dict[str, Any]:
+    """The non-blocking half of ask_credential: check, raise or join, prompt.
+
+    ``subject`` is the universe object the ask concerns; the store defaults it
+    to ``secret:<secret_name>`` when empty.
+
+    Returns ``{present: True}`` when the vault already holds the name (no card),
+    an ``{"ok": False, "error"}`` for a bad ask, or ``{card_id, waiter, ...}``.
+    """
+    from adk.decisions import steerback
+
+    name = (secret_name or "").strip()
+    want_scope = (scope or "platform").strip().lower()
+    if not _SECRET_NAME_RE.match(name):
+        return {"ok": False, "error": "secret_name must be a vault key like "
+                                      "STRIPE_API_KEY (letters, digits, _ . -)"}
+    if want_scope not in CREDENTIAL_SCOPES:
+        return {"ok": False, "error": f"scope must be one of {CREDENTIAL_SCOPES}"}
+    why_line = (why or "").strip()
+    recipe_id, recipe = _find_recipe(name)
+    desc = ((description or "").strip() or str(recipe.get("why") or "").strip()
+            or why_line)
+    if not desc:
+        return {"ok": False, "error": "say why you need it (description or why) -- "
+                                      "the owner reads that line to decide"}
+
+    present = vault_presence(name, want_scope)
+    if present:
+        return {"ok": True, "present": True, "stored": True, "secret_name": name,
+                "scope": want_scope, "card_id": None,
+                "guidance": "already in the vault; read it from there, never print it"}
+
+    who = (agent or _agent_name()).strip()
+    sid = (session_id or _session_id()).strip()
+    try:
+        from adk.decisions import winproc
+
+        session_pid = winproc.resolve_owner_pid(os.getpid())
+    except (ImportError, OSError):
+        session_pid = os.getpid()
+
+    store = get_store()
+    created = False
+    # The scan and the write under ONE hold of the directory lock (an OS file
+    # lock, reentrant in-process): two agents asking at once must find each
+    # other's card, never each raise one -- three overlapping Proton cards is
+    # what that race looked like on the owner's desk.
+    with store._lock:  # noqa: SLF001 - the store's own cross-process lock
+        card = _open_credential_card(store, name, want_scope)
+        if card is None:
+            title = str(recipe.get("title") or "").strip() or f"Enter {name}"
+            detail = ""
+            summary = why_line or desc
+            if recipe:
+                from adk.decisions.recipes import render_detail, render_summary
+
+                summary = render_summary(recipe) or summary
+                detail = render_detail(recipe)
+            facts = [f"asked by {who}" + (f" (session {sid[:12]})" if sid else "")
+                     + (f": {why_line}" if why_line else "")]
+            candidate = DecisionCard(
+                id="",
+                title=title,
+                summary=summary,
+                detail=detail,
+                kind="credential",
+                urgency="normal",
+                facts=facts,
+                source=DecisionSource(session_id=sid, agent=who,
+                                      cwd=cwd or os.getcwd(), session_pid=session_pid),
+                secret_name=name,
+                credential_format=str(recipe.get("format") or "api_key"),
+                credential_scope=want_scope,
+                credential_description=desc,
+                credential_recipe=recipe_id or None,
+                subject=(subject or "").strip(),
+            )
+            try:
+                card = store.create(candidate)
+            except DecisionError as exc:
+                return {"ok": False, "error": str(exc)}
+            created = card is candidate
+        elif why_line:
+            store.add_facts(card.id, [f"also asked by {who}: {why_line}"[:240]])
+        waiter = steerback.register_waiter(store, card.id, {
+            "session_id": sid,
+            "agent": who,
+            "why": why_line,
+            "task": (task or why_line or desc)[:600],
+            "cwd": cwd or os.getcwd(),
+            "session_pid": session_pid,
+            "harness": harness,
+            "waiter_pid": os.getpid() if wait_seconds > 0 else 0,
+            "waiting_until": (time.time() + wait_seconds) if wait_seconds > 0 else 0,
+        })
+
+    if created:
+        from adk.decisions.notify import notify
+
+        _relay_card_if_configured(card)
+        notify(card, store)
+    where = ensure_prompt(card, store)
+    return {"ok": True, "present": False, "card_id": card.id, "joined": not created,
+            "waiter": waiter, "secret_name": name, "scope": want_scope,
+            "prompt": where, "presence_known": present is not None}
+
+
+def _finish_wait(card_id: str, waiter: str) -> Optional[dict[str, Any]]:
+    """One poll: the waiter's result once the card has closed, else None."""
+    store = get_store()
+    current = store.get(card_id)
+    if current is None:
+        return {"ok": False, "error": "the card disappeared while waiting",
+                "card_id": card_id}
+    if current.status in CLOSED_STATUSES:
+        from adk.decisions import steerback
+
+        steerback.mark_waiter(store, card_id, waiter, "returned")
+        return credential_result(current)
+    return None
+
+
+def _timed_out(card_id: str, waiter: str, wait: float, clamped: bool) -> dict[str, Any]:
+    from adk.decisions import steerback
+
+    store = get_store()
+    steerback.mark_waiter(store, card_id, waiter, "timed_out")
+    current = store.get(card_id)
+    out = credential_result(current) if current is not None else {"ok": True}
+    out.update({
+        "timed_out": True, "stored": False, "card_id": card_id,
+        "clamped_to_seconds": MAX_WAIT_SECONDS if clamped else None,
+        "guidance": (f"No answer in {int(wait)}s. The ask stays open; when the owner "
+                     "stores it this session is told (or resumed if it has ended). "
+                     "Do not ask again -- carry on with work that does not need it."),
+    })
+    return out
+
+
+def ask_credential_sync(
+    secret_name: str,
+    scope: str = "platform",
+    description: str = "",
+    why: str = "",
+    wait_seconds: float = CREDENTIAL_WAIT_DEFAULT,
+    **source: Any,
+) -> dict[str, Any]:
+    """Blocking ask_credential for a synchronous caller (the awsh MCP server)."""
+    wait = min(max(float(wait_seconds or 0), 0.0), MAX_WAIT_SECONDS)
+    clamped = float(wait_seconds or 0) > MAX_WAIT_SECONDS
+    started = start_credential_ask(secret_name, scope, description, why,
+                                   wait_seconds=wait, **source)
+    if not started.get("ok") or started.get("present") or wait <= 0:
+        return started
+    card_id, waiter = started["card_id"], started["waiter"]
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        done = _finish_wait(card_id, waiter)
+        if done is not None:
+            return {**done, "prompt": started.get("prompt")}
+        time.sleep(POLL_SECONDS)
+    return _timed_out(card_id, waiter, wait, clamped)
+
+
+async def ask_credential(
+    secret_name: str,
+    scope: str = "platform",
+    description: str = "",
+    why: str = "",
+    wait_seconds: float = CREDENTIAL_WAIT_DEFAULT,
+) -> str:
+    """Ask the owner to store a secret, and wait until it is in the vault.
+
+    One call does all of it: checks the vault for the NAME first (returns
+    present=true and raises nothing if it is already there), joins an open ask
+    for the same secret instead of raising a second card, puts the masked
+    field in front of the owner (desk Inbox, else the masked window), and
+    blocks. You get back {stored, scope, receipt_digest} -- never the value.
+    Then read the secret from the vault yourself. If this times out, do not ask
+    again: you are told (or resumed) when the owner stores it.
+
+    Args:
+        secret_name: The vault key, e.g. STRIPE_API_KEY.
+        scope: platform | workspace | user -- which store it belongs in.
+        description: What the secret is, shown to the owner.
+        why: One line: what you will do with it. Shown on the card.
+        wait_seconds: How long to block. 0 raises and returns at once.
+    """
+    loop = asyncio.get_running_loop()
+    wait = min(max(float(wait_seconds or 0), 0.0), MAX_WAIT_SECONDS)
+    clamped = float(wait_seconds or 0) > MAX_WAIT_SECONDS
+    started = await loop.run_in_executor(None, lambda: start_credential_ask(
+        secret_name, scope, description, why, wait_seconds=wait))
+    if not started.get("ok") or started.get("present") or wait <= 0:
+        return json.dumps(started)
+    card_id, waiter = started["card_id"], started["waiter"]
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        done = _finish_wait(card_id, waiter)
+        if done is not None:
+            return json.dumps({**done, "prompt": started.get("prompt")})
+        await asyncio.sleep(POLL_SECONDS)
+    return json.dumps(_timed_out(card_id, waiter, wait, clamped))
+
+
 #: Registered as the ``decisions`` category by ``adk.builtin_tools``.
-DECISION_TOOLS = [ask_human, check_human, list_my_cards, withdraw_card]
+DECISION_TOOLS = [ask_human, check_human, list_my_cards, withdraw_card, ask_credential]
 
 
 def _self_test() -> int:

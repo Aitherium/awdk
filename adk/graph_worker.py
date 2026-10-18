@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -41,10 +42,146 @@ def _hit(chunk: Any, root: str) -> dict:
             "signature": getattr(chunk, "signature", "") or ""}
 
 
+#: A query that is one identifier (``stream_react``, ``AitherAgent.stream_react``).
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+_TEST_PATH = re.compile(r"(^|/)(tests?/|__tests__/|test_[^/]*$|[^/]*_test\.py$|conftest\.py$"
+                        r"|[^/]*\.(test|spec)\.[a-z]+$)")
+#: A query shaped like code, not a word: snake_case, dotted, or camel/PascalCase with an
+#: inner capital. "auth", "config", "health" are concepts and stay on the hybrid search
+#: (review 2026-10-14: an exact-name map answered them with same-named files).
+_CODE_SHAPED = re.compile(r"[_.]|[a-z][A-Z]")
+#: More exact definitions than this = an ambiguous name (main, run, get_secret): the
+#: hybrid search ranks those by relevance; an alphabetical slice of them would not.
+MAX_EXACT_HITS = 8
+#: Kinds that define a symbol, best first; anything else (module, section) ranks after.
+_DEF_KINDS = ("class", "function", "method")
+#: A path segment marking a copy of the code, not the code: dot-trees (.DEPLOYMENT,
+#: .PRODUCTS), backups, broken dist bundles.
+_MIRROR = re.compile(r"(^|/)\.[^/]+/|backup|dist\.broken")
+
+
+def _kind(chunk: Any) -> str:
+    kind = getattr(chunk, "chunk_type", "")
+    return str(getattr(kind, "value", kind) or "").lower()
+
+
+def build_symbol_index(graph: Any) -> dict:
+    """Lowercased symbol name -> chunk ids, built once after the load.
+
+    Every chunk is keyed by its full name (``AitherAgent.stream_react``) and, when the
+    name is qualified, by its last segment (``stream_react``), because a model asks for
+    the bare name. Markdown/yaml ``section`` chunks are not definitions and are left
+    out. Values are the graph's own id strings, so the map adds references, not copies.
+    Measured 2026-10-14 on the 496,871-chunk index of the AitherOS-Fresh tree: 2.0 s, 329k keys.
+    """
+    index: dict = {}
+    for cid, chunk in (getattr(graph, "chunks", None) or {}).items():
+        name = getattr(chunk, "name", "") or ""
+        if not name or not _IDENT.match(name) or _kind(chunk) in ("section", "module"):
+            continue
+        low = name.lower()
+        index.setdefault(low, []).append(cid)
+        tail = low.rsplit(".", 1)[-1]
+        if tail != low and tail:
+            index.setdefault(tail, []).append(cid)
+    return index
+
+
+def exact_symbol_hits(graph: Any, index: dict, query: str, k: int) -> list:
+    """Chunks defining exactly ``query``, best first; [] when it is not one identifier
+    or nothing is named that (the caller then runs the full hybrid search).
+
+    hybrid_query scores every chunk in pure Python (0.6 s warm, 2.5-9.5 s cold on the
+    496k-chunk index, 2026-10-14) and still ranks a markdown heading above the
+    definition; a dict lookup answers "where is X defined" in microseconds.
+    """
+    q = (query or "").strip()
+    if not q or not _IDENT.match(q) or q.strip(".") != q or not _CODE_SHAPED.search(q):
+        return []
+    chunks = getattr(graph, "chunks", None) or {}
+    found = [chunks[cid] for cid in dict.fromkeys(index.get(q.lower(), ())) if cid in chunks]
+    if len(found) > MAX_EXACT_HITS:
+        return []
+
+    def rank(chunk: Any) -> tuple:
+        name = getattr(chunk, "name", "") or ""
+        path = str(getattr(chunk, "source_path", "") or "").replace("\\", "/").lower()
+        return (name != q and name.rsplit(".", 1)[-1] != q,  # case-exact first
+                name.lower() != q.lower(),                    # full name before tail
+                _kind(chunk) not in _DEF_KINDS,               # a definition first
+                bool(_MIRROR.search(path)),                   # the code before its copies
+                bool(_TEST_PATH.search(path)),                # source before tests
+                path, getattr(chunk, "start_line", 0) or 0)
+
+    found.sort(key=rank)
+    return found[:max(1, k)]
+
+
+#: The daemon that started this worker (set by GraphWorkerClient.start).
+PARENT_ENV = "ADK_GRAPH_WORKER_PARENT"
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while ``pid`` runs. Never signals it (os.kill on Windows TERMINATES)."""
+    if pid <= 0:
+        return True
+    if os.name == "nt":
+        import ctypes
+
+        k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            ok = k32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return bool(ok) and code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def watch_parent(pid: int, interval: float = 5.0, alive: Any = _pid_alive,
+                 exit_fn: Any = os._exit) -> threading.Thread:
+    """Exit this worker when its daemon is gone.
+
+    Live 2026-10-14: every daemon restart (a deploy) left its worker loading a 5-6 GB
+    index for a dead parent; the orphan competed for the disk with the new daemon's
+    worker, which then missed its 900 s ready timeout, and the orphan died writing
+    "ready" into a closed pipe (OSError 22). The index load cannot notice stdin EOF, so a
+    thread polls the parent.
+    """
+    def _loop() -> None:
+        import time
+
+        while True:
+            time.sleep(interval)
+            if not alive(pid):
+                logger.warning("graph worker: parent %s is gone -- exiting", pid)
+                exit_fn(0)
+                return
+
+    t = threading.Thread(target=_loop, name="graph-worker-parent-watch", daemon=True)
+    t.start()
+    return t
+
+
 def serve(root: str, stdin: Any = None, stdout: Any = None) -> int:
     """The worker loop. Returns the process exit code."""
     import asyncio
 
+    try:
+        parent = int(os.environ.get(PARENT_ENV, "0") or 0)
+    except ValueError:
+        parent = 0
+    if parent:
+        watch_parent(parent)
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
 
@@ -63,6 +200,18 @@ def serve(root: str, stdin: Any = None, stdout: Any = None) -> int:
     if not ok:
         say({"ready": False, "reason": f"no-index for {root} (run `awgraph index`)"})
         return 1
+    try:
+        symbols = build_symbol_index(graph)
+    except Exception as exc:  # noqa: BLE001 -- the hybrid path still answers
+        logger.warning("graph worker: symbol index failed: %s", exc)
+        symbols = {}
+    try:
+        # The first hybrid query pays one-time setup (embedding matrix, TLS context):
+        # 9.5 s cold vs 0.6 s warm, measured 2026-10-14. Pay it before "ready", not
+        # inside the first turn's timeout.
+        loop.run_until_complete(graph.hybrid_query("warm up", max_results=1))
+    except Exception as exc:  # noqa: BLE001 -- a failed warm-up costs only latency
+        logger.warning("graph worker: warm-up query failed: %s", exc)
     say({"ready": True, "reason": ""})
     for line in stdin:
         try:
@@ -71,8 +220,9 @@ def serve(root: str, stdin: Any = None, stdout: Any = None) -> int:
             continue
         rid = req.get("id")
         try:
-            chunks = loop.run_until_complete(
-                graph.hybrid_query(str(req.get("q") or ""), max_results=int(req.get("k") or 5)))
+            text, k = str(req.get("q") or ""), int(req.get("k") or 5)
+            chunks = exact_symbol_hits(graph, symbols, text, k) or loop.run_until_complete(
+                graph.hybrid_query(text, max_results=k))
             say({"id": rid, "hits": [_hit(c, root) for c in chunks]})
         except Exception as exc:  # noqa: BLE001 -- one failed query never ends the worker
             say({"id": rid, "error": f"{type(exc).__name__}: {exc}"})
@@ -131,6 +281,7 @@ class GraphWorkerClient:
         # daemon's cwd held an older adk tree without this module ("No module named
         # adk.graph_worker", measured live), which shadowed PYTHONPATH.
         env = dict(os.environ)
+        env[PARENT_ENV] = str(os.getpid())
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = os.pathsep.join(
             [here] + [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p])
