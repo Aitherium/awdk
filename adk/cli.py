@@ -6779,8 +6779,19 @@ def cmd_backend(args):
             print("Available:")
             for name in ("ollama", "vllm", "llamacpp", "bonsai-local", "bonsai", "openai",
                          "anthropic", "deepseek", "moonshot", "groq", "together",
-                         "gateway", "lmstudio", "genesis", "picolm"):
+                         "gateway", "lmstudio", "genesis", "freellmapi", "picolm"):
                 print(f"  - {name}")
+            # FreeLLMAPI: the non-local route (your own free-tier keys).
+            from adk import freellmapi as _fl
+            _s = _fl.load_settings()
+            _d = await _fl.detect(_s)
+            print()
+            print(f"{_fl.LABEL}:")
+            if _d.found:
+                _m = f"{len(_d.models)} models" if _d.authorized else _d.detail
+                print(f"  freellmapi           {_d.url} ({_m}; enabled={_s.enabled})")
+            else:
+                print("  freellmapi           not detected (adk free-cloud up)")
         asyncio.run(_list())
         return 0
 
@@ -7275,6 +7286,10 @@ _KNOWN_PROVIDERS = {
     "openrouter": {"env": "OPENROUTER_API_KEY", "test_url": "https://openrouter.ai/api/v1/models", "label": "OpenRouter"},
     "groq": {"env": "GROQ_API_KEY", "test_url": "https://api.groq.com/openai/v1/models", "label": "Groq"},
     "together": {"env": "TOGETHER_API_KEY", "test_url": "https://api.together.xyz/v1/models", "label": "Together AI"},
+    # The unified key of the user's OWN FreeLLMAPI (adk.freellmapi). Local-only:
+    # never pushed to a vault -- it opens a loopback proxy on one machine.
+    "freellmapi": {"env": "FREELLMAPI_API_KEY", "test_url": "http://127.0.0.1:3001/v1/models",
+                   "label": "FreeLLMAPI (unified key)"},
 }
 
 
@@ -7710,8 +7725,8 @@ def cmd_keys(args):
         os.environ[env_name] = key
         print(f"  Saved {_KNOWN_PROVIDERS[provider]['label']} key: {_mask_key(key)}")
 
-        # Try to push to vault
-        if _push_key_to_vault(provider, key):
+        # Try to push to vault (never the FreeLLMAPI unified key: it stays local)
+        if provider != "freellmapi" and _push_key_to_vault(provider, key):
             print("  Synced to AitherSecrets vault")
         return 0
 
@@ -16357,6 +16372,10 @@ def _register_commands(sub):
     from adk.commands.spend import register_parser as _register_spend
     _register_spend(sub)
 
+    # adk free-cloud — FreeLLMAPI, your own free-tier keys (adk/commands/free_cloud.py)
+    from adk.commands.free_cloud import register_parser as _register_free_cloud
+    _register_free_cloud(sub)
+
     # adk crypto — self-service crypto payment settings (adk/commands/crypto.py)
     from adk.commands.crypto import register_parser as _register_crypto
     _register_crypto(sub)
@@ -17629,6 +17648,9 @@ def main():
     elif args.command == "spend":
         from adk.commands.spend import cmd_spend
         sys.exit(cmd_spend(args))
+    elif args.command == "free-cloud":
+        from adk.commands.free_cloud import cmd_free_cloud
+        sys.exit(cmd_free_cloud(args))
     elif args.command == "crypto":
         from adk.commands.crypto import cmd_crypto
         sys.exit(cmd_crypto(args))

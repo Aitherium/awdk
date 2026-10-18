@@ -128,7 +128,7 @@ tree.** A merge, rebase or pull rewrites files every other session is reading; t
 pack's git guard hook blocks them in a shared checkout for that reason.
 
 ```bash
-git worktree add ../my-merge -b my/merge-branch <your-branch>
+awgit wt new my-merge --at <your-branch> --branch my/merge-branch   # retire with `awgit wt done my-merge`
 git -C ../my-merge merge origin/<branch>
 ```
 

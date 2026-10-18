@@ -109,6 +109,18 @@ _HARDWARE_SCORED_PROVIDERS = frozenset({"ollama", "llamacpp", "vllm", "local"})
 # Default inference URL — mcp.aitherium.com hosts the OpenAI-compatible
 # /v1/chat/completions endpoint with ACTA auth and tenant scoping.
 _GATEWAY_INFERENCE_URL = "https://mcp.aitherium.com/v1"
+
+
+def _freellmapi_base_url() -> str:
+    """The configured FreeLLMAPI ``/v1`` base, or "" to use the default port."""
+    try:
+        from ..freellmapi import load_settings, v1_url
+        url = load_settings().url
+    except Exception:  # noqa: BLE001 — optional route
+        return ""
+    return v1_url(url) if url else ""
+
+
 _DEMO_URL = "https://demo.aitherium.com"
 
 # Per-model chat_template_kwargs applied on the OpenAI-compatible family. qwen3.6
@@ -214,6 +226,8 @@ class LLMRouter:
         # silently falling back to auto-detect (measured 2026-09-12).
         "bonsai-local": "http://127.0.0.1:8090/v1",
         "bonsai": "http://127.0.0.1:8080/v1",
+        # FreeLLMAPI (BYO free-tier keys; adk.freellmapi). Docker/server default port.
+        "freellmapi": "http://127.0.0.1:3001/v1",
     }
 
     # Default models per named provider
@@ -226,6 +240,7 @@ class LLMRouter:
         "genesis": "workflow",  # Genesis routes by priority; "workflow" = default fleet model
         "bonsai-local": "bonsai-27b",
         "bonsai": "bonsai-selfhost",  # the --alias install-bonsai.sh gives llama-server
+        "freellmapi": "auto",  # FreeLLMAPI's own router picks among the user's free tiers
     }
 
     def _create_provider(
@@ -246,7 +261,9 @@ class LLMRouter:
                 host=base_url or "http://localhost:11434",
                 default_model=self._model or "gemma4:4b",
             )
-        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek", "moonshot", "genesis", "bonsai-local", "bonsai"):
+        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together",
+                      "deepseek", "moonshot", "genesis", "bonsai-local", "bonsai",
+                      "freellmapi"):
             from .openai_compat import OpenAIProvider
             default_url = self._COMPAT_URLS.get(name, "https://api.openai.com/v1")
             default_model = self._COMPAT_MODELS.get(name, "gpt-4o-mini")
@@ -314,7 +331,7 @@ class LLMRouter:
                 f"Unknown provider: {name}. "
                 "Use 'gateway', 'ollama', 'openai', 'anthropic', 'gemini', 'deepseek', "
                 "'moonshot', 'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', "
-                "'genesis', 'bonsai-local', 'bonsai', 'picolm', or 'acp'."
+                "'genesis', 'bonsai-local', 'bonsai', 'freellmapi', 'picolm', or 'acp'."
             )
 
     async def _try_local_selfhost(self) -> LLMProvider | None:
@@ -373,6 +390,57 @@ class LLMRouter:
         except Exception as e:  # noqa: BLE001 — detection is best-effort
             logger.debug("Self-host endpoint %s rejected: %s", found.endpoint_url, e)
         return None
+
+    async def _try_freellmapi(self) -> LLMProvider | None:
+        """The user's own FreeLLMAPI, when they turned it on (adk.freellmapi).
+
+        Off unless enabled: detection alone never routes a turn here, because the
+        traffic runs on the user's free-tier provider accounts under those
+        providers' terms. Needs the proxy's unified key; never logs it.
+        """
+        try:
+            from .. import freellmapi as fl
+        except Exception:  # noqa: BLE001 — optional route
+            return None
+        settings = fl.load_settings()
+        if not settings.enabled:
+            return None
+        key = fl.resolve_api_key()
+        if not key:
+            logger.info(
+                "FreeLLMAPI is enabled but no unified key is set "
+                "(adk keys set freellmapi); skipping it"
+            )
+            return None
+        det = await fl.detect(settings, api_key=key, available_only=True)
+        if not det.found or not det.authorized:
+            logger.info("FreeLLMAPI enabled but not usable: %s", det.detail)
+            return None
+        if not fl.callable_models(det.models):
+            logger.info(
+                "FreeLLMAPI at %s has no provider key that can serve a model yet "
+                "(add yours on its Keys page); skipping it", det.url,
+            )
+            return None
+        if self._model and det.models and self._model not in det.models:
+            logger.info(
+                "Skipping FreeLLMAPI at %s: it does not serve %s", det.url, self._model,
+            )
+            return None
+        model = self._model or fl.pick_model(det.models, settings.preferred_models)
+        from .openai_compat import OpenAIProvider
+        p = OpenAIProvider(
+            base_url=det.base_url,
+            api_key=key,
+            default_model=model,
+            ctk_by_model=_DEFAULT_CTK_BY_MODEL,
+        )
+        self._provider_name = "freellmapi"
+        logger.warning(
+            "Routing to %s at %s (model %s). Personal experimentation only; your "
+            "providers' terms apply: %s", fl.LABEL, det.url, model, fl.TOS_URL,
+        )
+        return p
 
     async def _try_ollama(self) -> LLMProvider | None:
         """Try Ollama on localhost. Returns provider or None."""
@@ -831,6 +899,15 @@ class LLMRouter:
                 "gemini": getattr(self._config, "gemini_api_key", ""),
             }
             api_key = key_for.get(explicit, "") or os.getenv(f"{explicit.upper()}_API_KEY", "")
+            if explicit == "freellmapi":
+                from ..freellmapi import resolve_api_key as _fl_key
+                api_key = api_key or _fl_key()
+                if not api_key:
+                    raise ConnectionError(
+                        "Backend 'freellmapi' needs your FreeLLMAPI unified key.\n\n"
+                        "  Copy it from the dashboard's Keys page, then:\n"
+                        "    adk keys set freellmapi\n"
+                    )
             # Guided onboarding: an explicitly chosen CLOUD backend with no key
             # is a dead end (it would 401 later with no hint) — fail NOW with
             # the exact setup steps instead of silently falling back.
@@ -852,6 +929,7 @@ class LLMRouter:
                 "lmstudio": _generic_base,
                 "bonsai-local": _generic_base,
                 "bonsai": _generic_base,
+                "freellmapi": _generic_base or _freellmapi_base_url(),
             }
             explicit_base_url = base_url_for.get(explicit, "") or None
             try:
@@ -877,7 +955,8 @@ class LLMRouter:
         cloud_mode = getattr(self._config, "cloud_mode", "") if self._config else ""
         if cloud_mode in ("cloud_only", "cloud_first"):
             logger.info("Cloud mode '%s' — skipping local backend probes", cloud_mode)
-            provider = await self._try_cloud_apis()
+            # Non-local but free: the user's own FreeLLMAPI goes before paid keys.
+            provider = await self._try_freellmapi() or await self._try_cloud_apis()
             if provider:
                 return provider
             if cloud_mode == "cloud_only":
@@ -915,6 +994,12 @@ class LLMRouter:
         vllm = await self._try_vllm()
         if vllm:
             return vllm
+
+        # 3b. FreeLLMAPI -- the NON-LOCAL route, only when the user enabled it. After
+        # every local backend, before every paid/BYO API (gateway, cloud keys).
+        free_cloud = await self._try_freellmapi()
+        if free_cloud:
+            return free_cloud
 
         # 3. Gateway — cloud inference via gateway.aitherium.com
         if gateway_key:

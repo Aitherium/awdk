@@ -13,6 +13,7 @@ One page per provider, each covering the same three surfaces:
 | **Local AitherOS fleet** (qwen3.6, gemma4, bonsai, orchestrator) | [local-aitheros.md](local-aitheros.md) | `aither` / gateway | via the bridge |
 | Anthropic Claude | — | `anthropic` | default, no config |
 | OpenAI / any OpenAI-compatible | [openai-compatible.md](openai-compatible.md) | `openai` | via the bridge |
+| **Free cloud** (your own free-tier keys, via FreeLLMAPI) | [freellmapi.md](freellmapi.md) | `freellmapi` | native — it serves `/v1/messages` |
 
 ---
 

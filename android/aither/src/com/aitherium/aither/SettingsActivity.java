@@ -25,6 +25,7 @@ public class SettingsActivity extends Activity {
     private TextView nodeStatus;
     private TextView alertsStatus;
     private Switch alerts;
+    private TextView connected;
     private final Handler h = new Handler(Looper.getMainLooper());
     private int ticks;
 
@@ -96,8 +97,18 @@ public class SettingsActivity extends Activity {
                 if (checked && checkSelfPermission(Manifest.permission.READ_CALENDAR) != 0) {
                     requestPermissions(new String[] {Manifest.permission.READ_CALENDAR}, 2);
                 }
+                syncHearth(checked);
             });
-            row(acct, cal, "Only read when an agent needs it; Android asks you too.");
+            row(acct, cal, "Only read when an agent needs it; Android asks you too. Your Hearth also "
+                    + "sees the next 14 days (titles, times, places). Off deletes them there.");
+            // ---- Connected: what Hearth reads for real (one row; Hearth's own page is elsewhere)
+            connected = dim();
+            connected.setText("Connected: checking…");
+            acct.addView(connected);
+            row(acct, Ui.action(this, "Connect email", v -> startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse(AppTabs.ORIGIN + "/workspace/settings?tab=mail-calendar")).setClass(this, MainActivity.class))),
+                    "Your mailbox for Hearth to read (read only; sends still ask you first).");
+            refreshConnected();
         }
         col.addView(acct);
 
@@ -235,6 +246,8 @@ public class SettingsActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         super.onRequestPermissionsResult(code, perms, results);
+        // READ_CALENDAR granted for the calendar switch: send Hearth the calendar now
+        if (code == 2 && results.length > 0 && results[0] == 0) syncHearth(true);
         if (code == 4) {
             if (results.length > 0 && results[0] == 0) {
                 DutyService.sync(this);
@@ -456,4 +469,23 @@ public class SettingsActivity extends Activity {
             h.postDelayed(this, 1000);
         }
     };
+
+    /** The calendar switch moved: push this phone's calendar to Hearth now, or forget it. */
+    private void syncHearth(boolean on) {
+        new Thread(() -> {
+            if (on) HearthLink.push(this);
+            else HearthLink.forget(this);
+            refreshConnected();
+        }, "aither-hearth-sources").start();
+    }
+
+    /** "Calendar: phone ✓ · Email: you@example.com ✓", from Hearth itself. */
+    private void refreshConnected() {
+        new Thread(() -> {
+            String line = HearthLink.connectedLine(this);
+            h.post(() -> {
+                if (connected != null) connected.setText(line == null ? "Connected: not reachable right now" : line);
+            });
+        }, "aither-hearth-connected").start();
+    }
 }

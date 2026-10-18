@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**139 commands.**
+**140 commands.**
 
 | command | what it does |
 |---|---|
@@ -69,6 +69,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk fleet`](#adk-fleet) | Create & manage a fleet of agents (local \| managed \| hosted \| cloud-run) |
 | [`adk fleet-host`](#adk-fleet-host) | awnix fleet host (WSL2): status, start/stop/restart, reattach data, migrate (dry-run default) |
 | [`adk forge`](#adk-forge) | Dispatch tasks to agent forge (Genesis) |
+| [`adk free-cloud`](#adk-free-cloud) | Free cloud (your own free-tier keys): run/detect FreeLLMAPI as the non-local route |
 | [`adk gateway`](#adk-gateway) | Run agent across messaging platforms |
 | [`adk gobbonet`](#adk-gobbonet) | Run GobboNet with keyless web search (clones the UI if needed) |
 | [`adk gpu`](#adk-gpu) | the desktop GPU: status \| sleep (= inference dgx) \| wake (= inference on) -- fleet_verbs.py, dry-run default |
@@ -572,6 +573,7 @@ List, add, inspect and remove the devices enrolled in your workspace
 - `adk devices list` — List enrolled devices
 - `adk devices add` — Add a device: mint a pairing code, show it with a QR, wait for it
 - `adk devices status` — Show one device (default: this one)
+- `adk devices rename` — Name a device (shown instead of its hostname; "" clears)
 - `adk devices rm` — Remove a device from the workspace
 - `adk devices command` — Send a device one signed, audited command (the Control channel)
 - `adk devices command-log` — The commands sent to a device and what each reported
@@ -706,6 +708,19 @@ Dispatch tasks to agent forge (Genesis)
 | `--effort` | int |  | `5` | Effort level 1-10 (default: 5) |
 | `--watch` | str |  | `true` | Stream progress (default: true) |
 | `--no-watch` | str |  | `true` | Don't stream progress |
+
+## `adk free-cloud`
+
+Free cloud (your own free-tier keys): run/detect FreeLLMAPI as the non-local route
+
+**Subcommands**
+
+- `adk free-cloud status` — Is FreeLLMAPI running, enabled, and serving models?
+- `adk free-cloud up` — Start the pinned FreeLLMAPI image (idempotent)
+- `adk free-cloud down` — Remove the FreeLLMAPI container (keys volume kept)
+- `adk free-cloud enable` — Route non-local turns to FreeLLMAPI
+- `adk free-cloud disable` — Stop routing to FreeLLMAPI
+- `adk free-cloud models` — Models FreeLLMAPI can serve now
 
 ## `adk gateway`
 

@@ -68,7 +68,9 @@ public class HeartbeatJob extends JobService {
         node.ensureLinked();
         boolean commands = node.checkIn();
         new Updater(ctx).maybeCheck();
-        return family && commands;
+        // Hearth's real calendar: this phone's next 14 days, when the owner allowed it
+        boolean calendar = HearthLink.push(ctx);
+        return family && commands && calendar;
     }
 
     /** DeviceInfo.telemetry for this phone: Android release + security patch, app version. */

@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.74] - 2026-10-18
+
+### Added
+- **Free cloud (your own free-tier keys).** awdk detects a [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) you run (`:3001` server/Docker, `:31415` desktop app, or a configured URL) and offers it as backend `freellmapi`, with models from its `/v1/models`. Off until you run `adk free-cloud enable`; then routing is local model first, FreeLLMAPI next, paid/BYO API last. `adk free-cloud up|down|status|models|enable|disable` manages a pinned FreeLLMAPI image (loopback-only, keys kept in its own encrypted volume). Provider keys never pass through awdk; the unified key stays on the machine (`adk keys set freellmapi`). Your providers' terms apply -- see `docs/providers/freellmapi.md`.
+
 ## [3.8.73] - 2026-10-18
 
 ### Fixed
