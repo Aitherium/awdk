@@ -61,6 +61,12 @@ with a named volume `freellmapi-data`. Its encryption key is generated once into
 
 Env overrides: `ADK_FREELLMAPI=1|0`, `ADK_FREELLMAPI_URL`, `ADK_FREELLMAPI_MODELS`.
 
+**The unified key only goes to loopback** (`127.0.0.1`, `::1`, `localhost`) by default. A URL can
+arrive from another machine through settings sync, so a non-loopback URL is ignored (and
+`adk free-cloud status` says so) until you allow it on THIS machine:
+`adk free-cloud enable --url http://host:3001 --allow-remote` (stored in
+`~/.aither/freellmapi/local.json`, never synced) or `ADK_FREELLMAPI_ALLOW_REMOTE=1`.
+
 ## Agent pack
 
 `awpack install free-cloud` installs the pack that does the steps above

@@ -88,7 +88,7 @@ def test_key_falls_back_to_the_local_key_store(isolated, tmp_path):
 
 
 def test_candidates_configured_first_then_default_ports():
-    s = fl.FreeLLMAPISettings(url="http://box:3001/v1")
+    s = fl.FreeLLMAPISettings(url="http://box:3001/v1", allow_remote=True)
     assert fl.candidate_urls(s) == [("http://box:3001", "configured"),
                                     ("http://127.0.0.1:3001", "port"),
                                     ("http://127.0.0.1:31415", "port")]
@@ -253,3 +253,60 @@ def test_down_removes_the_container_never_the_volume():
     flat = [" ".join(c) for c in rt.calls]
     assert not any("volume" in c for c in flat)
     assert any(c.startswith("docker rm -f") for c in flat)
+
+
+# -- the unified key only goes to loopback unless allowed LOCALLY -------------
+
+
+def test_loopback_hosts_are_recognised():
+    for u in ("http://127.0.0.1:3001", "http://localhost:3001/v1", "http://[::1]:3001",
+              "http://127.0.0.2:3001"):
+        assert fl.is_loopback(u), u
+    for u in ("http://10.0.0.5:3001", "https://evil.example.com", "http://localhost.evil.com"):
+        assert not fl.is_loopback(u), u
+
+
+def test_a_synced_remote_url_is_ignored_without_local_allow_remote(isolated):
+    fl.save_settings(enabled=True, url="http://10.0.0.5:3001")
+    s = fl.load_settings()
+    cands = [o for o, _ in fl.candidate_urls(s)]
+    assert "http://10.0.0.5:3001" not in cands
+    assert any("10.0.0.5" in n and "allow_remote" in n for n in fl.ignored_urls(s))
+
+
+def test_allow_remote_in_the_synced_file_does_not_count(isolated):
+    isolated.write_text(json.dumps({"freellmapi": {"enabled": True, "url": "http://10.0.0.5:3001",
+                                                   "allow_remote": True}}), encoding="utf-8")
+    assert fl.load_settings().allow_remote is False
+
+
+def test_local_allow_remote_admits_the_remote_url(isolated):
+    fl.save_settings(enabled=True, url="http://10.0.0.5:3001")
+    fl.set_allow_remote(True)
+    s = fl.load_settings()
+    assert s.allow_remote is True
+    assert fl.candidate_urls(s)[0] == ("http://10.0.0.5:3001", "configured")
+    assert "allow_remote" not in isolated.read_text(encoding="utf-8")
+
+
+async def test_probe_never_sends_the_key_to_a_remote_host_unless_allowed():
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("authorization"))
+        return _proxy()(req)
+    async with _client(handler) as c:
+        d = await fl.probe("http://10.0.0.5:3001", "freellmapi-test", client=c)
+    assert not d.found and seen == [], "no request at all to a non-loopback origin"
+    async with _client(handler) as c:
+        d = await fl.probe("http://10.0.0.5:3001", "freellmapi-test", client=c,
+                           allow_remote=True)
+    assert d.found and d.authorized
+
+
+def test_router_explicit_base_url_drops_a_remote_synced_url(isolated):
+    from adk.llm import _freellmapi_base_url
+    fl.save_settings(enabled=True, url="http://10.0.0.5:3001")
+    assert _freellmapi_base_url() == ""
+    fl.set_allow_remote(True)
+    assert _freellmapi_base_url() == "http://10.0.0.5:3001/v1"

@@ -114,11 +114,17 @@ _GATEWAY_INFERENCE_URL = "https://mcp.aitherium.com/v1"
 def _freellmapi_base_url() -> str:
     """The configured FreeLLMAPI ``/v1`` base, or "" to use the default port."""
     try:
-        from ..freellmapi import load_settings, v1_url
-        url = load_settings().url
+        from ..freellmapi import ignored_urls, load_settings, v1_url
+        settings = load_settings()
     except Exception:  # noqa: BLE001 — optional route
         return ""
-    return v1_url(url) if url else ""
+    if not settings.url:
+        return ""
+    skipped = ignored_urls(settings)
+    if skipped:
+        logger.warning("FreeLLMAPI: %s", skipped[0])
+        return ""
+    return v1_url(settings.url)
 
 
 _DEMO_URL = "https://demo.aitherium.com"

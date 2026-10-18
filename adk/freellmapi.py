@@ -18,9 +18,15 @@ provider accounts, and those providers' terms apply to traffic proxied through i
   key, read from ``FREELLMAPI_API_KEY`` or ``adk keys set freellmapi`` -- a local
   file, never a synced setting and never logged.
 
-Settings (enabled flag, URL, preferred models) live in ``~/.aither/mods.json``
-under ``freellmapi`` -- the file awsettings' ``mods`` domain already syncs across a
+Settings (enabled flag, URL, preferred models) live in ``~/.aither/mods.json`` under
+``freellmapi`` -- the file awsettings' ``mods`` domain already syncs across a
 user's machines. Env vars override the file.
+
+The unified key is only ever sent to a LOOPBACK FreeLLMAPI (127.0.0.0/8, ::1,
+localhost). A URL can arrive from another machine through that sync, so a
+non-loopback URL is ignored unless ``allow_remote`` is set on THIS machine
+(``adk free-cloud enable --allow-remote`` -> ``~/.aither/freellmapi/local.json``, or
+``ADK_FREELLMAPI_ALLOW_REMOTE=1``). ``allow_remote`` is never read from the synced file.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ipaddress
 import secrets
 import shutil
 import subprocess
@@ -35,6 +42,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("adk.freellmapi")
 
@@ -62,6 +70,7 @@ ENV_ENABLED = "ADK_FREELLMAPI"
 ENV_URL = "ADK_FREELLMAPI_URL"
 ENV_MODELS = "ADK_FREELLMAPI_MODELS"
 ENV_KEY = "FREELLMAPI_API_KEY"
+ENV_ALLOW_REMOTE = "ADK_FREELLMAPI_ALLOW_REMOTE"
 #: Tests only: the mods file awdk reads its settings from.
 ENV_MODS_FILE = "ADK_MODS_FILE"
 SETTINGS_KEY = "freellmapi"
@@ -83,6 +92,52 @@ class FreeLLMAPISettings:
     enabled: bool = False
     url: str = ""
     preferred_models: list[str] = field(default_factory=list)
+    #: May the unified key go to a NON-loopback URL? Machine-local only.
+    allow_remote: bool = False
+
+
+def local_settings_path() -> Path:
+    """Machine-local settings (never synced): ``~/.aither/freellmapi/local.json``."""
+    return Path.home() / ".aither" / "freellmapi" / "local.json"
+
+
+def _local_allow_remote() -> bool:
+    try:
+        data = json.loads(local_settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("allow_remote") is True
+
+
+def set_allow_remote(allowed: bool) -> Path:
+    """Write ``allow_remote`` to THIS machine's local file (never the synced one)."""
+    p = local_settings_path()
+    data: dict = {}
+    try:
+        loaded = json.loads(p.read_text(encoding="utf-8"))
+        data = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        data = {}
+    data["allow_remote"] = bool(allowed)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+    return p
+
+
+def is_loopback(url: str) -> bool:
+    """127.0.0.0/8, ::1 or ``localhost`` -- the only hosts the unified key goes to by default."""
+    try:
+        host = (urlsplit(url if "://" in url else "http://" + url).hostname or "").lower()
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def mods_path() -> Path:
@@ -131,6 +186,10 @@ def load_settings(env: Optional[dict] = None, path: Optional[Path] = None) -> Fr
         s.url = env[ENV_URL].strip()
     if (env.get(ENV_MODELS) or "").strip():
         s.preferred_models = _as_models(env[ENV_MODELS])
+    # Deliberately NOT from `section`: the synced file must not be able to widen
+    # where this machine's key is sent.
+    s.allow_remote = ((env.get(ENV_ALLOW_REMOTE) or "").strip().lower() in _TRUE
+                      or _local_allow_remote())
     return s
 
 
@@ -216,10 +275,22 @@ def origin_url(url: str) -> str:
     return u[:-3] if u.endswith("/v1") else u
 
 
+def ignored_urls(settings: FreeLLMAPISettings) -> list[str]:
+    """Why a configured URL is NOT probed (a status line each), or ``[]``."""
+    if settings.url and not settings.allow_remote and not is_loopback(settings.url):
+        return [f"ignored {origin_url(settings.url)}: not loopback, so the unified key is "
+                "not sent there; allow it on THIS machine with "
+                "`adk free-cloud enable --allow-remote` (allow_remote is never synced)"]
+    return []
+
+
 def candidate_urls(settings: FreeLLMAPISettings) -> list[tuple[str, str]]:
-    """``[(origin, source)]``: the configured URL first, then the default loopback ports."""
+    """``[(origin, source)]``: the configured URL first, then the default loopback ports.
+
+    A non-loopback configured URL is dropped unless ``allow_remote`` (see ignored_urls).
+    """
     out: list[tuple[str, str]] = []
-    if settings.url:
+    if settings.url and not ignored_urls(settings):
         out.append((origin_url(settings.url), "configured"))
     for port in DEFAULT_PORTS:
         u = f"http://127.0.0.1:{port}"
@@ -251,10 +322,13 @@ def _is_ping(resp: Any) -> bool:
 
 
 async def probe(origin: str, api_key: str = "", timeout: float = 2.0,
-                available_only: bool = False, client: Any = None) -> Detection:
+                available_only: bool = False, client: Any = None,
+                allow_remote: bool = False) -> Detection:
     """Probe ONE origin. Identifies FreeLLMAPI by its ping shape AND a /v1/models
     that answers 200 or an OpenAI-shaped 401 -- a bare 200 on :3001 is what every
     dev web server answers, and adopting one of those would fail every chat."""
+    if not allow_remote and not is_loopback(origin):
+        return Detection(False, origin, detail="not loopback and allow_remote is off")
     try:
         import httpx
     except ImportError:
@@ -299,12 +373,12 @@ async def detect(settings: Optional[FreeLLMAPISettings] = None, api_key: Optiona
     tried = []
     for origin, source in candidate_urls(settings):
         d = await probe(origin, key, timeout=timeout, available_only=available_only,
-                        client=client)
+                        client=client, allow_remote=settings.allow_remote)
         if d.found:
             d.source = source
             return d
         tried.append(f"{origin}: {d.detail}")
-    return Detection(False, detail="; ".join(tried))
+    return Detection(False, detail="; ".join(ignored_urls(settings) + tried))
 
 
 def detect_sync(**kw: Any) -> Detection:

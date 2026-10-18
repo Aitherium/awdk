@@ -4,6 +4,9 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- The FreeLLMAPI unified key is only sent to a loopback URL (`127.0.0.1`, `::1`, `localhost`). A non-loopback URL -- which can arrive from another machine through settings sync -- is ignored, with a status line saying why, unless `allow_remote` is set on this machine (`adk free-cloud enable --allow-remote`, or `ADK_FREELLMAPI_ALLOW_REMOTE=1`). `allow_remote` is never read from, or written to, the synced settings.
+
 ## [3.8.74] - 2026-10-18
 
 ### Added

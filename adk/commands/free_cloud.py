@@ -40,6 +40,9 @@ def register_parser(sub: Any) -> None:
     en.add_argument("--url", default=None, help="FreeLLMAPI URL (default: auto-detect)")
     en.add_argument("--models", default=None,
                     help="Comma-separated preferred models (default: its `auto` router)")
+    en.add_argument("--allow-remote", action="store_true",
+                    help="Let THIS machine send the unified key to a non-loopback URL "
+                         "(stored locally, never synced)")
     fsub.add_parser("disable", help="Stop routing to FreeLLMAPI")
     mo = fsub.add_parser("models", help="Models FreeLLMAPI can serve now")
     mo.add_argument("--all", action="store_true", help="The whole catalog, not just ready ones")
@@ -78,7 +81,11 @@ def cmd_free_cloud(args: Any, out: Callable[[str], None] = print) -> int:
         except ValueError as e:
             out(f"  [!] {e}")
             return 1
+        if getattr(args, "allow_remote", False):
+            out(f"  [+] allow_remote set on this machine only ({fl.set_allow_remote(True)})")
         out(f"  [+] {fl.LABEL} enabled ({path})")
+        for line in fl.ignored_urls(fl.load_settings()):
+            out(f"  [!] {line}")
         out("      Order: local model first, FreeLLMAPI next, paid/BYO API last.")
         if not fl.resolve_api_key():
             out("  [!] No unified key yet: adk keys set freellmapi")
@@ -110,6 +117,8 @@ def cmd_free_cloud(args: Any, out: Callable[[str], None] = print) -> int:
             "label": fl.LABEL,
             "enabled": settings.enabled,
             "configured_url": settings.url,
+            "allow_remote": settings.allow_remote,
+            "ignored": fl.ignored_urls(settings),
             "preferred_models": settings.preferred_models,
             "found": det.found,
             "url": det.url if det.found else "",
@@ -128,6 +137,8 @@ def cmd_free_cloud(args: Any, out: Callable[[str], None] = print) -> int:
             return 0 if det.found else 1
         out(f"{fl.LABEL}")
         out(f"  enabled:     {settings.enabled}")
+        for line in fl.ignored_urls(settings):
+            out(f"  [!] {line}")
         if det.found:
             out(f"  detected:    {det.url} (via {det.source})")
             out(f"  unified key: {'set' if payload['unified_key_set'] else 'NOT set'}"
