@@ -15,8 +15,9 @@ import android.os.IBinder;
  * "On duty for approvals": while the guardian leaves it on, this foreground service holds
  * ONE outbound long-poll on the household inbox (Notices.poll, 25 s per round), so an
  * approval card reaches this phone within seconds with Aither closed, without Google Play
- * Services and without any inbound path to the phone. Off by default; a guardian turns it
- * on in Aither's settings (or the page asks through window.AitherApp.setApprovalsOnDuty).
+ * Services and without any inbound path to the phone. The same long-poll carries the owner's
+ * decision cards (urgent notices). Off by default; an adult turns it on with Settings >
+ * Alerts > "Instant alerts on this phone" (or the page asks through window.AitherApp.setApprovalsOnDuty).
  *
  * Errors back off from 5 s to 2 min; a signed-out app waits for the next sign-in instead of
  * hammering. Android's battery optimisation can still pause the network in deep sleep: the
@@ -41,13 +42,13 @@ public class DutyService extends Service {
     public void onCreate() {
         super.onCreate();
         NotificationManager nm = getSystemService(NotificationManager.class);
-        nm.createNotificationChannel(new NotificationChannel("duty", "On duty for approvals", NotificationManager.IMPORTANCE_MIN));
+        nm.createNotificationChannel(new NotificationChannel("duty", "Instant alerts (on duty)", NotificationManager.IMPORTANCE_MIN));
         PendingIntent open = PendingIntent.getActivity(this, NOTE_ID,
                 new Intent(this, SettingsActivity.class), PendingIntent.FLAG_IMMUTABLE);
         Notification n = new Notification.Builder(this, "duty")
                 .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-                .setContentTitle("On duty for approvals")
-                .setContentText("Your home's approval requests reach this phone right away")
+                .setContentTitle("Instant alerts on")
+                .setContentText("Decisions and approvals reach this phone right away")
                 .setContentIntent(open)
                 .setOngoing(true)
                 .build();

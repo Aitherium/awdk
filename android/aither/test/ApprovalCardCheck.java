@@ -66,6 +66,19 @@ public class ApprovalCardCheck {
         eq("approval channel", card.channel(), "approvals");
         eq("quiet note", new ApprovalCard(id, "notice", "", "", false, true, "", "", 0, 0, "").channel(), "household_quiet");
         eq("note", new ApprovalCard(id, "notice", "", "", false, false, "", "", 0, 0, "").channel(), "household");
+        // an urgent notice (an owner decision card, "Aither test: phone alerts") rings on the
+        // high-importance alerts channel, quiet hours or not
+        eq("urgent notice", new ApprovalCard(id, "notice", "", "", true, false, "", "", 0, 0, "").channel(), "alerts");
+        eq("urgent quiet notice", new ApprovalCard(id, "notice", "", "", true, true, "", "", 0, 0, "").channel(), "alerts");
+        eq("decision card is shown", new ApprovalCard(id, "notice", "Aither test: phone alerts", "", true, false, "", "", 0, 0, "").shown(), true);
+        eq("family note not shown here", new ApprovalCard(id, "family_note", "", "", false, false, "", "", 0, 0, "").shown(), false);
+
+        // turning alerts on: Android's dialog first time, its settings page once it will not ask
+        eq("granted", ApprovalCard.askHow(true, true, false, false), "none");
+        eq("first ask", ApprovalCard.askHow(false, true, false, false), "dialog");
+        eq("asked once, rationale", ApprovalCard.askHow(false, true, true, true), "dialog");
+        eq("never ask again", ApprovalCard.askHow(false, true, true, false), "settings");
+        eq("app blocked in settings", ApprovalCard.askHow(true, false, true, false), "settings");
 
         // the two buttons of one card never share a PendingIntent; the card keeps its id
         eq("distinct codes", card.requestCode(true) != card.requestCode(false), true);

@@ -42,6 +42,10 @@ import java.util.List;
  * the card is replaced in place ("Approved · 2 of 2 · ran 6:41 pm", "Denied by Sam",
  * "Expired") without ringing again.
  *
+ * Every other notice is posted too: an urgent one (an owner decision card, kind "notice",
+ * url /decide?id=...) on the high-importance "alerts" channel; tapping it opens its own
+ * same-origin link in the app (ApprovalCard.openPath).
+ *
  * Family notes are not shown from here: FamilyNotices already posts them with their words.
  */
 final class Notices {
@@ -78,7 +82,7 @@ final class Notices {
             open.remove("");
             for (int i = 0; list != null && i < list.length(); i++) {
                 ApprovalCard card = parse(list.optJSONObject(i));
-                if (card == null || "family_note".equals(card.kind)) continue;
+                if (card == null || !card.shown()) continue;
                 // what waits for this account's OK, for the read-only count (openApprovals)
                 open.remove(card.noticeId);
                 if (card.answerable()) open.add(card.noticeId);
@@ -130,6 +134,11 @@ final class Notices {
         ap.setDescription("Something in your home is waiting for your OK");
         ap.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         nm.createNotificationChannel(ap);
+        // an urgent notice: an owner decision card, or the test from Settings > Alerts
+        NotificationChannel al = new NotificationChannel("alerts", "Alerts", NotificationManager.IMPORTANCE_HIGH);
+        al.setDescription("A decision is waiting for you");
+        al.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+        nm.createNotificationChannel(al);
         nm.createNotificationChannel(new NotificationChannel("household", "Household", NotificationManager.IMPORTANCE_DEFAULT));
         NotificationChannel q = new NotificationChannel("household_quiet", "Household (quiet hours)", NotificationManager.IMPORTANCE_LOW);
         q.setSound(null, null);
@@ -191,6 +200,20 @@ final class Notices {
             return post(ctx, "/api/push/decide", body, 60000);
         } catch (Exception e) {
             return new Object[] {0, null};
+        }
+    }
+
+    /** Settings > Alerts > "Send a test alert": the server drops one fixed notice in THIS
+     *  account's own inbox (POST /api/push/test), then the inbox is read at once, so the test
+     *  takes the same path a decision card does. Returns the HTTP status (0: no connection). */
+    static int test(Context ctx) {
+        try {
+            Object[] got = post(ctx, "/api/push/test", "{}", 30000);
+            int code = (Integer) got[0];
+            if (code == 201) poll(ctx, 0);
+            return code;
+        } catch (Exception e) {
+            return 0;
         }
     }
 

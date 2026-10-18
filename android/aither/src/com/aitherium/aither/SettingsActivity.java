@@ -23,6 +23,8 @@ public class SettingsActivity extends Activity {
     private TextView storageStatus;
     private TextView localStatus;
     private TextView nodeStatus;
+    private TextView alertsStatus;
+    private Switch alerts;
     private final Handler h = new Handler(Looper.getMainLooper());
     private int ticks;
 
@@ -31,6 +33,7 @@ public class SettingsActivity extends Activity {
         super.onCreate(b);
         cfg = new Config(this);
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0) {
+            getSharedPreferences("push", MODE_PRIVATE).edit().putBoolean("notif_asked", true).apply();
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
         // A child's phone gets the lite screen: no lending, assistant, calendar or model switches.
@@ -46,6 +49,25 @@ public class SettingsActivity extends Activity {
         storageStatus = dim(); // the family storage pool, refreshed by tick
         localStatus = dim(); // the model on this phone
         nodeStatus = dim(); // version, workspace node, updates
+        alertsStatus = dim(); // instant alerts: duty + permission
+
+        // ---- Alerts: first, for every adult. Decision cards and household approvals reach
+        // this phone through its own inbox (Notices); "instant" = DutyService's long-poll.
+        // A child's phone keeps the family wording (no switch here).
+        if (!"child".equals(cfg.profileKind()) && !lite) {
+            col.addView(Ui.section(this, "Alerts"));
+            LinearLayout al = Ui.card(this);
+            alerts = Ui.style(new Switch(this));
+            alerts.setText("Instant alerts on this phone");
+            alerts.setChecked(alertsOn());
+            alerts.setOnCheckedChangeListener((v, checked) -> setAlerts(checked));
+            row(al, alerts, "Decisions waiting for you and your home's approvals reach this phone in "
+                    + "seconds, even with Aither closed. Off: they arrive within 15 minutes.");
+            al.addView(alertsStatus);
+            row(al, Ui.action(this, "Send a test alert", v -> sendTest()),
+                    "Aither sends this phone one alert, the same way a decision card arrives.");
+            col.addView(al);
+        }
 
         // ---- Account & this phone
         col.addView(Ui.section(this, "Account & this phone"));
@@ -143,20 +165,7 @@ public class SettingsActivity extends Activity {
                 : "Lends part of this phone's free space to your family's mesh, only on Wi-Fi "
                         + "while charging, never more than the amount you choose.");
         famCard.addView(storageStatus);
-        if (!"child".equals(cfg.profileKind())) {
-            Switch duty = Ui.style(new Switch(this));
-            duty.setText("On duty for approvals");
-            duty.setChecked(cfg.approvalsOnDuty());
-            duty.setOnCheckedChangeListener((v, checked) -> {
-                cfg.set("approvals_duty", checked);
-                DutyService.sync(this);
-                if (checked && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0) {
-                    requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 3);
-                }
-            });
-            row(famCard, duty, "Your home's approval requests reach this phone in seconds, "
-                    + "with Approve and Deny on the lock screen. Otherwise they arrive within 15 minutes.");
-        }
+        // (an adult's "on duty for approvals" is the Alerts switch at the top)
         col.addView(famCard);
 
         // ---- About
@@ -198,7 +207,57 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        syncAlertsSwitch(); // back from Android's notification or battery page
         h.post(tick);
+    }
+
+    /** Instant alerts are on: on duty AND Aither may post notifications. */
+    private boolean alertsOn() {
+        return cfg.approvalsOnDuty() && FamilyNotices.allowed(this);
+    }
+
+    private void syncAlertsSwitch() {
+        if (alerts == null) return;
+        alerts.setOnCheckedChangeListener(null);
+        alerts.setChecked(alertsOn());
+        alerts.setOnCheckedChangeListener((v, checked) -> setAlerts(checked));
+    }
+
+    /** One switch: on duty (DutyService), the notification permission, then the battery hint
+     *  (deep sleep pauses the long-poll unless Aither may run with the screen off). */
+    private void setAlerts(boolean on) {
+        cfg.set("approvals_duty", on);
+        DutyService.sync(this);
+        if (!on) return;
+        if (FamilyNotices.askAlerts(this, 4)) askBattery(); // else after Android's answer
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == 4) {
+            if (results.length > 0 && results[0] == 0) {
+                DutyService.sync(this);
+                askBattery();
+            } else {
+                android.widget.Toast.makeText(this, "Aither needs notifications to alert you. "
+                        + "Tap the switch again to open Android's settings.", android.widget.Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    /** Settings > Alerts > "Send a test alert". */
+    private void sendTest() {
+        android.widget.Toast.makeText(this, "Sending a test alert…", android.widget.Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            int code = Notices.test(this);
+            String say = code == 201 ? (FamilyNotices.allowed(this) ? "Sent. It should show in a moment."
+                            : "Sent, but notifications are off for Aither: turn on Instant alerts.")
+                    : code == 401 ? "Sign in to Aither first, then try again."
+                    : code == 429 ? "That's enough tests for now. Try again in a few minutes."
+                    : code == 0 ? "No connection. Try again." : "The test was not sent (" + code + ").";
+            runOnUiThread(() -> android.widget.Toast.makeText(this, say, android.widget.Toast.LENGTH_LONG).show());
+        }, "aither-alert-test").start();
     }
 
     @Override
@@ -387,6 +446,9 @@ public class SettingsActivity extends Activity {
                     + "\nHousehold check-in: " + HeartbeatJob.last
                     + (cfg.profileKind().isEmpty() ? "" : " (" + cfg.profileKind() + ")")
                     + "\nApprovals: " + (cfg.approvalsOnDuty() ? DutyService.state : "each check-in · " + Notices.last));
+            alertsStatus.setText(!cfg.approvalsOnDuty() ? "Off · each check-in · " + Notices.last
+                    : !FamilyNotices.allowed(SettingsActivity.this) ? "Notifications are off for Aither: tap the switch"
+                    : "On · " + DutyService.state);
             NodeLink n = new NodeLink(SettingsActivity.this);
             nodeStatus.setText("Version " + Config.VERSION
                     + "\nWorkspace node: " + (n.linked() ? n.nodeId() : "-") + " · " + NodeLink.last

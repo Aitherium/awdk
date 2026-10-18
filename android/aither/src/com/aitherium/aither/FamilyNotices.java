@@ -99,6 +99,33 @@ final class FamilyNotices {
                 .build());
     }
 
+    /**
+     * Ask for the notification permission the way Android still allows (ApprovalCard.askHow):
+     * its own dialog when it has never been asked or will ask again, else the app's
+     * notification settings page. True when nothing needed asking. UI thread only.
+     */
+    static boolean askAlerts(Activity act, int requestCode) {
+        NotificationManager nm = act.getSystemService(NotificationManager.class);
+        boolean granted = act.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == 0;
+        boolean enabled = nm != null && nm.areNotificationsEnabled();
+        SharedPreferences p = act.getSharedPreferences("push", Context.MODE_PRIVATE);
+        String how = ApprovalCard.askHow(granted, enabled, p.getBoolean("notif_asked", false),
+                act.shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS));
+        if ("none".equals(how)) return true;
+        if ("dialog".equals(how)) {
+            p.edit().putBoolean("notif_asked", true).apply();
+            act.requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, requestCode);
+            return false;
+        }
+        try {
+            act.startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, act.getPackageName()));
+        } catch (RuntimeException e) {
+            act.requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, requestCode);
+        }
+        return false;
+    }
+
     /** window.AitherApp: what the page may ask the app. Read-only state plus one request. */
     static final class Bridge {
         private final Activity act;
@@ -120,19 +147,7 @@ final class FamilyNotices {
         /** Android's own permission dialog; the system settings page if it will not ask again. */
         @JavascriptInterface
         public void requestNotifications() {
-            act.runOnUiThread(() -> {
-                if (act.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0
-                        && act.shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
-                    act.requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 2);
-                } else if (!allowed(act)) {
-                    try {
-                        act.startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, act.getPackageName()));
-                    } catch (RuntimeException e) {
-                        act.requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 2);
-                    }
-                }
-            });
+            act.runOnUiThread(() -> askAlerts(act, 2));
         }
 
         /** True while this phone is on duty for approvals (DutyService). */

@@ -75,10 +75,25 @@ final class ApprovalCard {
     /** Approve/Deny buttons: an open approval this account has not answered yet. */
     boolean answerable() { return isApproval() && "pending".equals(state) && mine.isEmpty(); }
 
-    /** approvals: always the high-importance channel (quiet hours never hold one back). */
+    /** approvals: always the high-importance channel (quiet hours never hold one back); an
+     *  urgent notice (an owner decision card, a test alert) on the high-importance alerts
+     *  channel, quiet hours or not. */
     String channel() {
         if (isApproval()) return "approvals";
+        if (urgent) return "alerts";
         return quiet ? "household_quiet" : "household";
+    }
+
+    /** Posted from the inbox: every kind but a family note (FamilyNotices shows those). */
+    boolean shown() { return !"family_note".equals(kind); }
+
+    /** How "Instant alerts" asks for the notification permission: "none" (already allowed),
+     *  "dialog" (Android's own prompt: never asked, or it will still ask) or "settings" (the
+     *  app's notification page: the person said no for good, or turned Aither off there). */
+    static String askHow(boolean granted, boolean appEnabled, boolean askedBefore, boolean rationale) {
+        if (granted && appEnabled) return "none";
+        if (!granted && (!askedBefore || rationale)) return "dialog";
+        return "settings";
     }
 
     /** A stable notification id per notice, so an answer replaces its own card. */
