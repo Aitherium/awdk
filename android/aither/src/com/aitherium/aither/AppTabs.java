@@ -60,6 +60,8 @@ final class AppTabs {
         {"sprite", "Sprite", "Hatch it. Teach it.", "/?app=sprite", "sprite", "", "Home"},
         {"academy", "Classroom", "Teach a class, or link a child to theirs", "/classroom/", "academy", "", "Home"},
         {"agents", "My agents", "Your agents, their packs and skills", "/?app=agent-life", "agents", "", "Agents"},
+        // awsh sessions on every machine of yours: read, answer, start (the Agents window's Running tab)
+        {"running", "Running agents", "See, answer and start agents on your computers", "/?app=agents", "agents", "", "Agents"},
         {"image-studio", "Image Studio", "Make and edit images with your credits", "/?app=image-studio", "mediaforge", "", "Make"},
         {"spaces", "Spaces", "Friends, agents and rooms", "/spaces/", "spaces", "", "Community"},
         {"avatar", "Avatar", "Your avatars, and the one your Sprite wears", "/?app=avatar", "avatar", "", "You"},
