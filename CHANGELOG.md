@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.73] - 2026-10-18
+
+### Fixed
+- The public GitHub release is back. 3.8.71 and 3.8.72 reached PyPI but never got a release page on `Aitherium/awdk`: the publish check blocked on two internal paths in a test fixture. Same code as 3.8.72 otherwise.
+
 ## [3.8.72] - 2026-10-17
 
 ### Fixed
