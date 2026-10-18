@@ -14882,6 +14882,10 @@ def _register_commands(sub):
         "status", help="Show one device (default: this one)")
     devices_status_p.add_argument("node_id", nargs="?", help="Node id (default: this device)")
     devices_status_p.add_argument("--json", action="store_true", help="Print the raw response")
+    devices_rename_p = devices_sub.add_parser(
+        "rename", help="Name a device (shown instead of its hostname; \"\" clears)")
+    devices_rename_p.add_argument("node_id", help="Node id (see: adk devices list)")
+    devices_rename_p.add_argument("display_name", help="The new name, e.g. \"David's Fold\"")
     devices_rm_p = devices_sub.add_parser("rm", help="Remove a device from the workspace")
     devices_rm_p.add_argument("node_id", help="Node id to remove")
     devices_cmd_p = devices_sub.add_parser(

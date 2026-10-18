@@ -377,3 +377,58 @@ def test_quickstart_stops_on_a_refused_enroll(signed_in):
             patch("adk.devices.cmd_devices", lambda a: pytest.fail("status ran after refusal")):
         ns = SimpleNamespace(cloud=False, api_key=None, inference_url="auto", node_class="laptop")
         assert cli.cmd_quickstart(ns) == 1
+
+
+# ---------------------------------------------------------------------------
+# rename
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def http_body(monkeypatch):
+    """Like ``http`` but keeps the JSON body (rename sends one)."""
+    calls = []
+    answers = []
+
+    def _send(method, url, headers, timeout, body=None):
+        calls.append({"method": method, "url": url, "body": body})
+        status, resp = answers.pop(0)
+        return status, resp if isinstance(resp, str) else json.dumps(resp)
+
+    monkeypatch.setattr(devices, "_send", _send)
+    return SimpleNamespace(calls=calls, answers=answers)
+
+
+def test_rename_patches_the_name(signed_in, http_body, capsys):
+    http_body.answers.append((200, {"status": "renamed", "node_id": "kvh-fold",
+                                    "display_name": "David's Fold"}))
+    args = SimpleNamespace(devices_command="rename", node_id="kvh-fold",
+                           display_name="David's Fold")
+    assert devices.cmd_devices(args) == 0
+    assert http_body.calls == [{"method": "PATCH",
+                                "url": "https://identity.test/v1/nodes/kvh-fold",
+                                "body": {"display_name": "David's Fold"}}]
+    assert "David's Fold" in capsys.readouterr().out
+
+
+def test_rename_refusal_is_verbatim_and_nonzero(signed_in, http_body, capsys):
+    http_body.answers.append((400, {"detail": "display_name: letters, digits"}))
+    args = SimpleNamespace(devices_command="rename", node_id="kvh-fold", display_name="<b>")
+    assert devices.cmd_devices(args) == 1
+    assert "letters, digits" in capsys.readouterr().out
+
+
+def test_parser_has_rename():
+    ns = vars(_parser().parse_args(["devices", "rename", "kvh-fold", "David's Fold"]))
+    assert ns["devices_command"] == "rename"
+    assert ns["display_name"] == "David's Fold"
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["devices", "rename", "kvh-fold"])
+
+
+def test_list_shows_the_name_over_the_hostname(signed_in, http, capsys):
+    named = json.loads(json.dumps(NODES))
+    named["endpoints"][0]["display_name"] = "David's Fold"
+    http.answers.append((200, named))
+    assert devices.cmd_devices(_args("list")) == 0
+    assert "David's Fold" in capsys.readouterr().out

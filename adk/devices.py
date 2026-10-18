@@ -1,9 +1,9 @@
 """``adk devices`` — the devices enrolled in YOUR workspace, from one registry.
 
-``list`` / ``status <id>`` / ``rm <id>`` over ``{identity}/v1/nodes`` with the
-bearer ``adk login`` saved. This is the CLI twin of the portal's connected-devices
-page and reads the same store (AitherDirectory via AitherIdentity), so what
-``adk enroll`` wrote is what this lists.
+``list`` / ``status <id>`` / ``rename <id> <name>`` / ``rm <id>`` over
+``{identity}/v1/nodes`` with the bearer ``adk login`` saved. This is the CLI twin
+of the portal's connected-devices page and reads the same store (AitherDirectory
+via AitherIdentity), so what ``adk enroll`` wrote is what this lists.
 
 Two rules, both about honesty:
 
@@ -142,7 +142,7 @@ def _print_table(nodes: List[Dict[str, Any]], mine: str) -> None:
     for n in nodes:
         rows.append((
             str(n.get("node_id", "-")) + (" *" if n.get("node_id") == mine else ""),
-            str(n.get("hostname", "-")),
+            str(n.get("display_name") or n.get("hostname", "-")),
             str(n.get("node_class", "-")),
             str(n.get("status", "-")),
             str(n.get("last_seen", "-"))[:19],
@@ -196,6 +196,8 @@ def _status(args) -> int:
     n = parsed
     mine = " (this device)" if node_id == _local_node_id() else ""
     print(f"Device {n.get('node_id', node_id)}{mine}")
+    if n.get("display_name"):
+        print(f"  name:       {n['display_name']}")
     print(f"  hostname:   {n.get('hostname', '-')}")
     print(f"  class:      {n.get('node_class', '-')}")
     print(f"  status:     {n.get('status', '-')}")
@@ -230,6 +232,24 @@ def _rm(args) -> int:
             print("  cleared local enrollment (node_auth.json); re-enrol with: adk enroll")
         except OSError as e:
             print(f"  (could not clear node_auth.json: {e})")
+    return 0
+
+
+def _rename(args) -> int:
+    """``adk devices rename <id> "<name>"`` -- the name every Devices list shows.
+    ``""`` clears it. Identity validates the name and decides who may."""
+    node_id = (getattr(args, "node_id", None) or "").strip()
+    name = getattr(args, "display_name", None)
+    if not node_id or name is None:
+        print('x adk devices rename needs a node id and a name: adk devices rename <id> "<name>"')
+        return 2
+    status, text, parsed, url = request_nodes("PATCH", f"/{node_id}",
+                                              body={"display_name": name})
+    if status != 200:
+        _print_refusal("PATCH", url, status, text)
+        return 1
+    shown = (parsed or {}).get("display_name", name) if isinstance(parsed, dict) else name
+    print(f"Renamed {node_id} -> {shown!r}" if shown else f"Cleared the name of {node_id}")
     return 0
 
 
@@ -375,15 +395,15 @@ def _add(args, *, sleep=None, clock=None) -> int:
 
 
 def cmd_devices(args) -> int:
-    """Dispatch ``adk devices <list|add|status|rm|command|command-log>`` (bare = list).
+    """Dispatch ``adk devices <list|add|status|rename|rm|command|command-log>`` (bare = list).
 
     Returns the exit code.
     """
     sub = getattr(args, "devices_command", None) or "list"
     handlers = {"list": _list, "add": _add, "status": _status, "rm": _rm,
-                "command": _command, "command-log": _command_log}
+                "rename": _rename, "command": _command, "command-log": _command_log}
     if sub not in handlers:
-        print("usage: adk devices {list,add,status,rm,command,command-log} ...")
+        print("usage: adk devices {list,add,status,rename,rm,command,command-log} ...")
         return 2
     try:
         return handlers[sub](args)
