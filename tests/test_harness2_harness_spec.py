@@ -33,11 +33,13 @@ def test_harness2_is_registered_one_shot_and_entitlement_gated():
 
 def test_harness2_argv_is_one_executor_turn():
     spec = SPECS["harness2"]
+    # The prompt rides stdin (prompt_on_stdin), never argv.
+    assert spec.prompt_on_stdin is True
     assert spec.argv(LaunchSpec(prompt="rate this")) == [
-        "harness2-aither", "turn", "--prompt", "rate this",
+        "harness2-aither", "turn", "--prompt-stdin",
     ]
     assert spec.argv(LaunchSpec(prompt="p", model="aither-orchestrator")) == [
-        "harness2-aither", "--executor-model", "aither-orchestrator", "turn", "--prompt", "p",
+        "harness2-aither", "--executor-model", "aither-orchestrator", "turn", "--prompt-stdin",
     ]
 
 

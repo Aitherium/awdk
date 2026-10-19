@@ -26,6 +26,7 @@ audit record and the thing Workforce/Strata can ingest later.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -89,6 +90,29 @@ def scrub_nested_claude_markers(env: dict) -> dict:
 
 #: Tool names (lower-cased substrings) whose input names a file the agent changed.
 _EDIT_TOOL_MARKERS = ("edit", "write", "patch", "file_change", "create")
+
+
+def _feed_stdin(proc: "subprocess.Popen[str]", prompt: str) -> None:
+    """Write a per-turn prompt to the child's stdin and close it (prompt_on_stdin).
+
+    A child that exits before reading raises BrokenPipe here; that is the child's
+    verdict on the turn, reported through its exit code, not a second error.
+    Returns False when the prompt could not be fully delivered."""
+    stdin = proc.stdin
+    if stdin is None:
+        return False
+    try:
+        stdin.write(prompt)
+        stdin.flush()
+        return True
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).debug("prompt not delivered on stdin: %s", exc)
+        return False
+    finally:
+        try:
+            stdin.close()
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).debug("closing the child's stdin: %s", exc)
 
 
 def _edited_paths(event: HarnessEvent) -> list[str]:
@@ -652,7 +676,9 @@ class HarnessSession:
             )
             return False
 
-        argv = self.spec.argv(self._launch_spec(prompt=self._prompt_with_context(text)))
+        prompt = self._prompt_with_context(text)
+        on_stdin = bool(getattr(self.spec, "prompt_on_stdin", False))
+        argv = self.spec.argv(self._launch_spec(prompt=prompt))
         argv[0] = path
         self.state = SessionState.BUSY
         seq_at_start = self.last_seq
@@ -661,7 +687,7 @@ class HarnessSession:
             try:
                 proc = subprocess.Popen(
                     argv,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.PIPE if on_stdin else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=self.config.cwd or os.getcwd(),
@@ -689,6 +715,12 @@ class HarnessSession:
             )
             out.start()
             err.start()
+            if on_stdin:
+                # After the pumps start, so a child that writes before it reads
+                # cannot deadlock against a full stdout pipe.
+                threading.Thread(
+                    target=_feed_stdin, args=(proc, prompt), daemon=True
+                ).start()
 
             timeout = self.config.turn_timeout or TURN_TIMEOUT_SECONDS
             started = time.time()

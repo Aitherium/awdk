@@ -353,3 +353,30 @@ def test_oneshot_turn_that_never_exits_is_killed_and_reported(tmp_path):
     # The message must name the likely cause; "timed out" alone sends the
     # operator to the wrong layer.
     assert "unauthenticated" in timeout_error["text"].lower()
+
+
+# ── prompt on stdin, never argv ─────────────────────────────────────────────
+
+def test_harness2_turn_prompt_rides_stdin_not_argv():
+    """argv is readable by every local process; a prompt_on_stdin spec keeps it out."""
+    spec = get("harness2")
+    assert spec.prompt_on_stdin is True
+    secret = "turn-prompt-marker-7f3a"
+    argv = spec.argv(LaunchSpec(prompt=secret, model="m"))
+    assert secret not in " ".join(argv)
+    assert "--prompt-stdin" in argv
+
+
+def test_feed_stdin_delivers_the_prompt_and_closes_the_pipe():
+    import subprocess
+    import sys
+
+    from adk.harnesses.session import _feed_stdin
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read()[::-1])"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    _feed_stdin(proc, "abc")
+    out, _ = proc.communicate(timeout=30)
+    assert out == "cba"

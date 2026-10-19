@@ -188,6 +188,10 @@ tunnel = ["awtunnel>=0.2.0"]
 # on PyPI; the import is lazy and an absent awmail is reported as "pip install
 # awmail", so this is an extra rather than a hard dependency.
 mail = ["awmail>=0.1.0"]
+# Pool admission (adk/pool_admission.py, `adk grid join`): a node joins a pooled model
+# only with an awnboard invite. The import is lazy and an absent awnboard is reported
+# as "pip install awnboard", so this is an extra rather than a hard dependency.
+pool = ["awnboard>=0.1.0"]
 # Everything the family offers, for an agent that wants the lot.
 aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0", "awtunnel>=0.2.0", "awmail>=0.1.0"]
 

@@ -98,6 +98,11 @@ class HarnessSpec:
     #: skills, recalled memory) rides at the top of the turn prompt instead of being
     #: silently dropped by ``build_argv``.
     prompt_carries_context: bool = False
+    #: ONESHOT_PER_TURN only: the turn prompt is written to the child's stdin (then
+    #: closed) instead of riding in argv. argv is readable by every local process
+    #: (/proc/<pid>/cmdline, `ps`); stdin is not. ``build_argv`` must then leave
+    #: ``launch.prompt`` out.
+    prompt_on_stdin: bool = False
     #: Builds argv for a launch. Receives the spec itself for defaults.
     build_argv: Optional[Callable[["HarnessSpec", LaunchSpec], list[str]]] = None
     #: Encodes a user turn for STRUCTURED_BIDI stdin. Returns a line WITHOUT "\n".
@@ -446,10 +451,13 @@ for _late in (
             "AITHER_HARNESS_HARNESS2_BIN at a wrapper that runs aither_bench_adapter.py"
         ),
         adapter="text",
+        # The prompt goes on stdin (`turn --prompt-stdin`), never argv: the wrapper is
+        # ours, so there is no CLI reason to expose it to every local process.
+        prompt_on_stdin=True,
         build_argv=lambda spec, launch: [
             spec.binary,
             *(["--executor-model", launch.model] if launch.model else []),
-            "turn", "--prompt", launch.prompt,
+            "turn", "--prompt-stdin",
         ],
         # Third-party research code that executes model-written edits: licensed per
         # caller, not free to every principal the daemon authenticates.
