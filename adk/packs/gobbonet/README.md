@@ -47,7 +47,7 @@ GobboNet's maintainer has been specific about where it stops:
 > context limits [most agents have special sauce to handle this]"*
 
 And its front page promises **"No account, no sign-up, no email"** — while web search asks
-for an Ollama account and an API key.
+for a hosted search account and an API key.
 
 adk supplies the engine half. The parts that matter:
 
@@ -62,7 +62,7 @@ endpoint that answers a bare HTTP client.** Measured — `searx.be?format=json` 
 (public instances disable the JSON API), Mojeek 403s, Marginalia 302s, and DuckDuckGo's
 HTML endpoint answers a plain client with a bot interstitial containing no results. Every
 working option is a maintained Python or Node client. That is exactly why GobboNet reached
-for Ollama's keyed search, and why *installing something that has a maintained client* is
+for a keyed hosted search, and why *installing something that has a maintained client* is
 the fix rather than writing another scraper.
 
 We had that lesson the expensive way: our own scraper kept returning 3/3 results with
@@ -135,11 +135,11 @@ agent notebooks, aeon, Strata, Lockbox, AitherShell, and the node/MCP surface.
 
 ```bash
 adk gobbonet --setup-model    # install llama.cpp + a model sized to your machine
-adk gobbonet --backend URL    # or point at ollama / vLLM / LM Studio
+adk gobbonet --backend URL    # or point at llama-server / vLLM / LM Studio
 adk gobbonet --plain          # raw model, no tool loop
 ```
 
-Backends are discovered, not configured — llama.cpp, ollama, vLLM and LM Studio
+Backends are discovered, not configured — llama.cpp, vLLM and LM Studio
 all speak the same API.
 
 ### Its own knowledge ledger

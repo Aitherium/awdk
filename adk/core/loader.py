@@ -19,7 +19,7 @@ Lets users define agents as data files instead of writing Python::
     result = await agent.run("What is the boiling point of mercury?")
 
 Model strings use the ``"<backend>:<model>"`` form, e.g.
-``"openai:gpt-4o-mini"``, ``"ollama:llama3.1:8b"``, ``"anthropic:claude-3-5-sonnet"``,
+``"openai:gpt-4o-mini"``, ``"llamacpp:default"``, ``"anthropic:claude-3-5-sonnet"``,
 ``"deepseek:deepseek-chat"``, ``"vllm:auto"``. ``"auto"`` runs :func:`auto_backend`.
 
 Tools are loaded by dotted path. The target must be either a :class:`Tool`
@@ -40,6 +40,7 @@ from adk.core.memory import InMemoryStore, Memory
 from adk.core.model import ModelBackend, auto_backend
 from adk.core.persistence import FileStore
 from adk.core.tool import Tool
+from adk.legacy_backend import migrate_backend_name
 
 
 class AgentSpecError(ValueError):
@@ -104,7 +105,7 @@ _BACKEND_CLASSES: dict[str, str] = {
     "vllm": "adk.core.backends.openai_compat:VLLMBackend",
     "deepseek": "adk.core.backends.openai_compat:DeepSeekBackend",
     "anthropic": "adk.core.backends.anthropic:AnthropicBackend",
-    "ollama": "adk.core.backends.ollama:OllamaBackend",
+    "llamacpp": "adk.core.backends.openai_compat:LlamaCppBackend",
 }
 
 # Env-var fallbacks for backends that require credentials. Loader fills these
@@ -115,7 +116,7 @@ _BACKEND_ENV_KWARGS: dict[str, dict[str, str]] = {
     "deepseek": {"api_key": "DEEPSEEK_API_KEY"},
     "anthropic": {"api_key": "ANTHROPIC_API_KEY"},
     "vllm": {"base_url": "VLLM_BASE_URL", "api_key": "VLLM_API_KEY"},
-    "ollama": {"base_url": "OLLAMA_HOST"},
+    "llamacpp": {"base_url": "AITHER_LLAMACPP_URL"},
 }
 
 
@@ -133,7 +134,7 @@ def _resolve_model(value: Any) -> ModelBackend:
             f"model spec must be '<backend>:<model>' or 'auto', got {value!r}"
         )
     backend, _, model_name = value.partition(":")
-    backend = backend.lower()
+    backend = migrate_backend_name(backend.lower(), "model spec")
     path = _BACKEND_CLASSES.get(backend)
     if not path:
         raise AgentSpecError(

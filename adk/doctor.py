@@ -52,26 +52,26 @@ def check_python() -> bool:
     return ok
 
 
-def check_ollama() -> tuple[bool, list[str]]:
-    ollama = shutil.which("ollama")
-    if not ollama:
-        _fail("Ollama: not installed")
-        return False, []
-
-    import urllib.request
+def check_llamacpp() -> tuple[bool, list[str]]:
+    """A local llama-server (AITHER_LLAMACPP_URL, default :8080) and what it serves."""
+    import os
     import urllib.error
+    import urllib.request
 
+    base = (os.environ.get("AITHER_LLAMACPP_URL") or "http://127.0.0.1:8080").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags")
+        req = urllib.request.Request(f"{base}/v1/models")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
-            models = [m["name"] for m in data.get("models", [])]
-            _ok(f"Ollama: {len(models)} model(s) loaded")
+            models = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
+            _ok(f"llama.cpp: {len(models)} model(s) served at {base}")
             for m in models[:8]:
                 print(f"         - {m}")
             return True, models
-    except Exception:
-        _warn("Ollama: installed but not responding on :11434")
+    except (urllib.error.URLError, OSError, ValueError):
+        _warn(f"llama.cpp: no llama-server answering at {base} (optional)")
         return False, []
 
 
@@ -471,7 +471,7 @@ DOCTOR_CHECKS: list[tuple[str, object]] = [
     ("Version", check_version),
     ("GPU", check_gpu),
     ("Docker", check_docker),
-    ("Ollama", lambda: check_ollama()[0]),
+    ("llama.cpp", lambda: check_llamacpp()[0]),
     ("vLLM", lambda: check_vllm()[0]),
     ("DGX/Remote", lambda: check_dgx()[0]),
     ("API Key", check_api_key),

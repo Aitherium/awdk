@@ -1,6 +1,6 @@
 # Aither ADK — Full Documentation
 
-> Build AI agent fleets with any LLM backend. Local GPU inference via vLLM, CPU/Mac via Ollama, cloud via Elysium. Register agents on the Aitherium network. OpenAI-compatible API. MCP bridge for 200+ tools.
+> Build AI agent fleets with any LLM backend. Local GPU inference via vLLM, CPU/Mac via llama.cpp, cloud via Elysium. Register agents on the Aitherium network. OpenAI-compatible API. MCP bridge for 200+ tools.
 
 ## Installation
 
@@ -8,7 +8,7 @@
 pip install awdk
 ```
 
-Requirements: Python 3.10+, no native dependencies. Optional: Ollama for local inference, Docker for vLLM GPU containers.
+Requirements: Python 3.10+, no native dependencies. Optional: llama.cpp for local inference, Docker for vLLM GPU containers.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ AitherAgent ──> LLMRouter (auto-detects backend)
     |               |
     |         ┌─────┼──────────────┐─────────────┐
     |         v     v              v             v
-    |      vLLM   Ollama    OpenAI/Anthropic   Elysium
+    |      vLLM   llama.cpp OpenAI/Anthropic   Elysium
     |    (GPU)   (CPU/Mac)   (cloud API)     (Aitherium)
     |
     ├──> @tool functions (your custom tools)
@@ -34,7 +34,7 @@ AitherAgent ──> LLMRouter (auto-detects backend)
 The LLMRouter auto-detects backends in priority order:
 
 1. **vLLM** — Checks ports 8200-8203 and 8000 for running vLLM containers
-2. **Ollama** — Checks localhost:11434
+2. **llama.cpp** — a llama-server the user started (:8080 / :8099)
 3. **Elysium Gateway** — If `AITHER_API_KEY` env var is set
 4. **Anthropic** — If `ANTHROPIC_API_KEY` env var is set
 5. **OpenAI** — If `OPENAI_API_KEY` env var is set
@@ -44,8 +44,8 @@ Override explicitly:
 ```python
 from adk import LLMRouter
 
-# Force Ollama
-router = LLMRouter(provider="ollama")
+# Force llama.cpp
+router = LLMRouter(provider="llamacpp")
 
 # Force OpenAI-compatible (vLLM, LM Studio, etc.)
 router = LLMRouter(provider="openai", base_url="http://localhost:8000/v1")
@@ -70,7 +70,7 @@ Default model mapping per backend:
 
 | Backend | Small (1-3) | Medium (4-6) | Large (7-10) |
 |---------|-------------|-------------|--------------|
-| Ollama | llama3.2:3b | nemotron-orchestrator-8b | deepseek-r1:14b |
+| llama.cpp | aither-orchestrator | aither-orchestrator | aither-orchestrator |
 | Elysium | aither-small | aither-orchestrator | aither-reasoning |
 | OpenAI | gpt-4o-mini | gpt-4o | o1 |
 | Anthropic | claude-haiku-4-5 | claude-sonnet-4-6 | claude-opus-4-6 |
@@ -262,7 +262,7 @@ models = await ely.models()
 
 | Model | Backend | Min Tier | Cost (tokens/1K) | Context |
 |-------|---------|----------|-------------------|---------|
-| aither-small | Ollama | free | 1 | 8K |
+| aither-small | llama.cpp | free | 1 | 8K |
 | aither-orchestrator | vLLM | pro | 3 | 32K |
 | aither-reasoning | vLLM | enterprise | 10 | 32K |
 | aither-vision | vLLM | enterprise | 8 | 16K |

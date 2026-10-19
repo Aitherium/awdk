@@ -32,7 +32,7 @@ Claude Code ────────┤  Provider already speaks the Anthropic  
                     │  Provider is OpenAI-shaped. Route through     │
                     │  AitherClaudeBridge :8151, which translates   │
                     │  and preserves tool calls.                    │
-                    │  → local fleet, DeepSeek, Ollama, OpenAI      │
+                    │  → local fleet, DeepSeek, llama.cpp, OpenAI      │
                     └───────────────────────────────────────────────┘
 ```
 

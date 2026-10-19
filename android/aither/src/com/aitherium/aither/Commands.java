@@ -201,6 +201,10 @@ final class Commands {
                 .put("household_checkin", HeartbeatJob.last)
                 .put("profile_kind", cfg.profileKind())
                 .put("update_state", Updater.last);
+        // who installed this app and owns its updates, and the last installer status code
+        JSONObject upd = new JSONObject();
+        Updater.diagnostics(ctx, upd);
+        out.put("update", upd);
     }
 
     private boolean lend(boolean on, JSONObject out) throws Exception {

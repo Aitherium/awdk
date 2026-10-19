@@ -1,6 +1,6 @@
 """adk.home -- Agent Home: download and host your own agent.
 
-Pick a model (local Bonsai / llama.cpp / Ollama, or your own DeepSeek / OpenAI /
+Pick a model (local Bonsai / llama.cpp, or your own DeepSeek / OpenAI /
 Anthropic key), edit its persona files, choose the harness that runs it (adk's
 native loop, Claude Code, OpenClaw or Hermes), and let it join games through
 :mod:`adk.games`, where it explores, remembers and improves across sessions.

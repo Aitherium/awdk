@@ -1006,7 +1006,7 @@ class AitherAgent:
 
         # Apply the licensed monthly token ceiling — BUT ONLY to Aitherium-proxied
         # inference (our metered gateway). BYO keys (anthropic/openai/deepseek) and
-        # local backends (ollama/vllm/localhost) are NEVER capped because the user
+        # local backends (llamacpp/vllm/localhost) are NEVER capped because the user
         # pays for their own inference. This is the critical fix for the consumer
         # launch: community tier cap (100k/mo) applies ONLY to our gateway, not to
         # self-hosted or user-supplied API keys.
@@ -1014,7 +1014,7 @@ class AitherAgent:
         # Caps apply to EXACTLY ONE backend: Aitherium's metered cloud gateway
         # (provider="gateway"), where we pay for the inference. Every other
         # backend — BYO API keys (anthropic/openai/deepseek/groq/…), local
-        # runtimes (ollama/vllm/llamacpp/lmstudio), and any unknown/custom
+        # runtimes (vllm/llamacpp/lmstudio), and any unknown/custom
         # OpenAI-compatible endpoint — is the user's own inference and is NEVER
         # capped. This is the inverse of an allowlist: we uncap by default and
         # only the gateway opts INTO a cap, so a self-hosted/BYO agent can never
@@ -1361,14 +1361,14 @@ class AitherAgent:
         if not api_key:
             return
         # Respect an explicitly chosen backend. A self-hosted operator who set
-        # --backend deepseek (or anthropic/openai/their own vllm/ollama) must NOT
+        # --backend deepseek (or anthropic/openai/their own vllm/llamacpp) must NOT
         # have their own brain hijacked by Elysium just because AITHER_API_KEY is
         # present. Default is "auto" ("gateway" still falls through to Elysium).
         explicit = (getattr(self.config, "llm_backend", "") or "").strip().lower()
         if explicit and explicit not in ("auto", "gateway"):
             return
         # Check if the LLM router has a working local backend
-        if self.llm.provider_name in ("ollama", "vllm"):
+        if self.llm.provider_name in ("llamacpp", "vllm", "local"):
             return  # Local backend detected, no need for Elysium
         # Wire up Elysium inference
         try:
@@ -2334,7 +2334,7 @@ class AitherAgent:
                         "(100k tokens/month on Aitherium's cloud). "
                         "Options:\n"
                         "1. Upgrade to a paid tier: https://aitherium.com/buy\n"
-                        "2. Use local Ollama/vLLM (free): aither config llm\n"
+                        "2. Use local llama.cpp/vLLM (free): aither config llm\n"
                         "3. Use your own API key (Anthropic/OpenAI/DeepSeek): aither config llm"
                     )
                 else:
@@ -3255,7 +3255,7 @@ class AitherAgent:
         # Bounded with a timeout: an SSE HTTP handler awaiting this generator
         # must never hang the connection forever if the underlying model
         # doesn't cleanly terminate a tool-calling round-trip (observed live:
-        # a small non-tool-tuned Ollama model left a streaming request open
+        # a small non-tool-tuned local model left a streaming request open
         # indefinitely, with zero bytes sent, while the equivalent raw
         # non-streaming a.llm.chat() call — which bypasses the tool loop
         # entirely — completed in 1-2s).

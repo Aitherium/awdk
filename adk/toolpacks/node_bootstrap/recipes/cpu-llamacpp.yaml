@@ -1,0 +1,74 @@
+id: cpu-llamacpp
+name: CPU-Only llama.cpp
+tier: cpu
+description: >-
+  CPU-only inference via upstream llama.cpp (llama-server). Serves the Aitherium
+  orchestrator (8B, Q4_K_M GGUF) on any x86/ARM box, weights fetched from
+  artifact.aitherium.com. Self-contained Docker Compose deployment, port 8080,
+  OpenAI-compatible API.
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 8
+  gpu_vendor: none
+  min_vram_gb: 0
+  unified_memory: false
+  notes: >-
+    CPU inference is slow (~1-4 tok/s for an 8B Q4_K_M). Recommended for
+    fallback / offline scenarios. Cloud API key strongly recommended for
+    real-time tasks.
+
+inference_config:
+  engine: llamacpp
+  models:
+    - name: aither-orchestrator-v18
+      source: awrtifact://fleet-orchestrator-v18-q4/aither-orchestrator-v18-Q4_K_M.gguf
+      size_gb: 5.0
+      quantization: Q4_K_M
+      context_window: 8192
+      served_name: aither-orchestrator
+  # Weights come from Aitherium's artifact store first (size-checked); the public
+  # hub model is only the fallback when the store cannot deliver the full file.
+  weights:
+    awrtifact:
+      release: fleet-orchestrator-v18-q4
+      name: aither-orchestrator-v18-Q4_K_M.gguf
+      bytes: 5027783520
+    hf_fallback: bartowski/Qwen2.5-3B-Instruct-GGUF:Q4_K_M
+  serve_args:
+    - --host 0.0.0.0
+    - --port 8080
+    - --alias aither-orchestrator
+    - --ctx-size 8192
+    - --n-gpu-layers 0
+  image: ghcr.io/ggml-org/llama.cpp:server
+  platform_traps: []
+
+deployment:
+  target: docker-compose
+  compose_template: ""
+  delegate: ""
+  port: 8080
+
+backend_config:
+  backend_type: llamacpp_remote
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 15
+  completion:
+    model: aither-orchestrator
+    prompt: "Explain what an algorithm is."
+    min_tokens: 10
+    timeout_s: 120
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp_remote
+    category: general
+    context_window: 8192
+    vram_gb: 0
+    speed: 3
+    quality: 5
+  ms_env_var: ""

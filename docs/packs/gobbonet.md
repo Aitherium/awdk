@@ -1,12 +1,12 @@
 # GobboPack
 
-`gobbonet` · version `3.8.76` · 65.7 KB
+`gobbonet` · version `3.8.79` · 65.7 KB
 
-**[Download gobbonet-3.8.76.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.76/gobbonet-3.8.76.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.76/gobbonet-3.8.76.sha256)
+**[Download gobbonet-3.8.79.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.79/gobbonet-3.8.79.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.79/gobbonet-3.8.79.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.76/gobbonet-3.8.76.tar.gz
-tar xzf gobbonet-3.8.76.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.79/gobbonet-3.8.79.tar.gz
+tar xzf gobbonet-3.8.79.tar.gz
 python gobbonet/install.py
 ```
 
@@ -113,7 +113,7 @@ GobboNet's maintainer has been specific about where it stops:
 > context limits [most agents have special sauce to handle this]"*
 
 And its front page promises **"No account, no sign-up, no email"** — while web search asks
-for an Ollama account and an API key.
+for a hosted search account and an API key.
 
 adk supplies the engine half. The parts that matter:
 
@@ -128,7 +128,7 @@ endpoint that answers a bare HTTP client.** Measured — `searx.be?format=json` 
 (public instances disable the JSON API), Mojeek 403s, Marginalia 302s, and DuckDuckGo's
 HTML endpoint answers a plain client with a bot interstitial containing no results. Every
 working option is a maintained Python or Node client. That is exactly why GobboNet reached
-for Ollama's keyed search, and why *installing something that has a maintained client* is
+for a keyed hosted search, and why *installing something that has a maintained client* is
 the fix rather than writing another scraper.
 
 We had that lesson the expensive way: our own scraper kept returning 3/3 results with
@@ -201,11 +201,11 @@ agent notebooks, aeon, Strata, Lockbox, AitherShell, and the node/MCP surface.
 
 ```bash
 adk gobbonet --setup-model    # install llama.cpp + a model sized to your machine
-adk gobbonet --backend URL    # or point at ollama / vLLM / LM Studio
+adk gobbonet --backend URL    # or point at llama-server / vLLM / LM Studio
 adk gobbonet --plain          # raw model, no tool loop
 ```
 
-Backends are discovered, not configured — llama.cpp, ollama, vLLM and LM Studio
+Backends are discovered, not configured — llama.cpp, vLLM and LM Studio
 all speak the same API.
 
 ### Its own knowledge ledger
@@ -368,5 +368,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `f91427b40d3c7d9776b299c9616cf38add1377aa2d855919b5521817ad5ed94d`  
-Built from `v3.8.76` (adk 3.8.76). [All packs](../packs.md)
+sha256 `0c3a6b0a2790bf6e8258eb47580f3e6ee2b3fa2c137d9300b6a943f832b85556`  
+Built from `v3.8.79` (adk 3.8.79). [All packs](../packs.md)

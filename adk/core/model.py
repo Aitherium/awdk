@@ -93,7 +93,7 @@ def auto_backend(model: str | None = None) -> ModelBackend:
     4. OpenAI (``OPENAI_API_KEY`` set)
     5. Anthropic (``ANTHROPIC_API_KEY`` set)
     6. DeepSeek (``DEEPSEEK_API_KEY`` set)
-    7. Ollama (``OLLAMA_HOST`` set, default ``http://localhost:11434``)
+    7. llama.cpp (``AITHER_LLAMACPP_URL`` set — a local ``llama-server``)
 
     This call **does not** make network probes. It only inspects env vars.
     A real reachability probe lands in :mod:`awnode` in slice B.
@@ -102,14 +102,18 @@ def auto_backend(model: str | None = None) -> ModelBackend:
     """
     # Local imports keep ``adk.core`` import-cheap.
     from adk.core.backends.anthropic import AnthropicBackend
-    from adk.core.backends.ollama import OllamaBackend
     from adk.core.backends.openai_compat import (
         DeepSeekBackend,
+        LlamaCppBackend,
         OpenAIBackend,
         VLLMBackend,
     )
 
-    override = os.environ.get(_PRIORITY_ENV_KEYS[0], "").lower().strip()
+    from adk.legacy_backend import legacy_env_base_url, migrate_backend_name
+
+    override = migrate_backend_name(
+        os.environ.get(_PRIORITY_ENV_KEYS[0], "").lower().strip(), "AITHER_BACKEND"
+    )
 
     def _build(kind: str) -> ModelBackend | None:
         if kind == "vllm":
@@ -130,10 +134,10 @@ def auto_backend(model: str | None = None) -> ModelBackend:
             key = os.environ.get("DEEPSEEK_API_KEY")
             if key:
                 return DeepSeekBackend(api_key=key, model=model or "deepseek-chat")
-        elif kind == "ollama":
-            host = os.environ.get("OLLAMA_HOST")
+        elif kind == "llamacpp":
+            host = os.environ.get("AITHER_LLAMACPP_URL") or legacy_env_base_url()
             if host:
-                return OllamaBackend(base_url=host, model=model or "llama3.1:8b")
+                return LlamaCppBackend(base_url=host, model=model or "default")
         return None
 
     if override:
@@ -144,14 +148,14 @@ def auto_backend(model: str | None = None) -> ModelBackend:
             )
         return _maybe_speculative(chosen)
 
-    for kind in ("vllm", "openai", "anthropic", "deepseek", "ollama"):
+    for kind in ("vllm", "openai", "anthropic", "deepseek", "llamacpp"):
         backend = _build(kind)
         if backend is not None:
             return _maybe_speculative(backend)
 
     raise RuntimeError(
         "no model backend available. Set one of: AITHER_VLLM_URL, OPENAI_API_KEY, "
-        "ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, OLLAMA_HOST."
+        "ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, AITHER_LLAMACPP_URL."
     )
 
 

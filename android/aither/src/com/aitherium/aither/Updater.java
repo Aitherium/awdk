@@ -28,9 +28,10 @@ import java.security.MessageDigest;
  * A newer APK is downloaded into app-private storage and accepted only when its SHA-256
  * matches the release's SHA256SUMS AND it is signed with the release certificate, which
  * is also the certificate this installed app carries. Then it installs without a prompt
- * when Android allows that (this app is the installer of record or update owner and holds
- * UPDATE_PACKAGES_WITHOUT_USER_ACTION); otherwise a notification offers it and Android's
- * own installer asks to confirm. Nothing unverified is ever installed.
+ * when Android allows that (UpdatePolicy: a self-update holding
+ * UPDATE_PACKAGES_WITHOUT_USER_ACTION, no other app owning updates); a refusal is retried
+ * quietly once past Android's throttle (UpdateJob), and only then does one notification
+ * open Android's own confirmation. Nothing unverified is ever installed.
  */
 final class Updater {
     static final String RELEASES = "https://api.github.com/repos/Aitherium/awdk/releases?per_page=30";
@@ -39,6 +40,7 @@ final class Updater {
     static final String RELEASE_CERT = "a55fdd95f14cfabe194caa78a298769561dc4ac5fe5e8dbb9e73472774e81d56";
     static final long CHECK_EVERY_MS = 6L * 3600 * 1000;
     static volatile String last = "not checked yet";
+    static final String PREFS = "update";
 
     static final class Check {
         boolean ok;
@@ -52,7 +54,83 @@ final class Updater {
 
     Updater(Context c) {
         ctx = c.getApplicationContext();
-        p = ctx.getSharedPreferences("update", Context.MODE_PRIVATE);
+        p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    /** What Android knows about this install: who installed it, who owns its updates. */
+    static UpdatePolicy.Facts facts(Context ctx) {
+        UpdatePolicy.Facts f = new UpdatePolicy.Facts();
+        PackageManager pm = ctx.getPackageManager();
+        f.me = ctx.getPackageName();
+        f.sdk = android.os.Build.VERSION.SDK_INT;
+        f.targetSdk = ctx.getApplicationInfo().targetSdkVersion;
+        f.updatePermission = ctx.checkSelfPermission("android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION")
+                == PackageManager.PERMISSION_GRANTED;
+        try {
+            f.unknownSources = pm.canRequestPackageInstalls();
+        } catch (RuntimeException e) {
+            f.unknownSources = false;
+        }
+        try {
+            android.content.pm.InstallSourceInfo src = pm.getInstallSourceInfo(f.me);
+            f.installer = UpdatePolicy.clean(src.getInstallingPackageName());
+            f.initiator = UpdatePolicy.clean(src.getInitiatingPackageName());
+            if (f.sdk >= 34) f.updateOwner = UpdatePolicy.clean(src.getUpdateOwnerPackageName());
+        } catch (Exception e) {
+            f.installer = "unknown (" + e.getClass().getSimpleName() + ")";
+        }
+        return f;
+    }
+
+    /** The update half of collect-diagnostics: enough to tell from afar why a tap was needed. */
+    static void diagnostics(Context ctx, JSONObject out) throws org.json.JSONException {
+        UpdatePolicy.Facts f = facts(ctx);
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String why = UpdatePolicy.whyNotSilent(f);
+        out.put("installer_of_record", f.installer.isEmpty() ? "none" : f.installer)
+                .put("initiating_installer", f.initiator.isEmpty() ? "none" : f.initiator)
+                .put("update_owner", f.updateOwner.isEmpty() ? "none" : f.updateOwner)
+                .put("owns_updates", UpdatePolicy.ownsUpdates(f))
+                .put("install_unknown_apps_allowed", f.unknownSources)
+                .put("update_without_user_action_granted", f.updatePermission)
+                .put("target_sdk", f.targetSdk)
+                .put("silent_update_expected", why.isEmpty())
+                .put("silent_update_blocker", why)
+                .put("last_update_state", p.getString("last_state", last))
+                .put("last_update_attempt", new JSONObject()
+                        .put("version", p.getString("attempt_version", ""))
+                        .put("at", p.getLong("attempt_at", 0))
+                        .put("quiet", p.getBoolean("attempt_quiet", false))
+                        .put("quiet_tries", p.getInt("attempt_tries", 0))
+                        .put("status", p.contains("attempt_status") ? p.getInt("attempt_status", 0) : JSONObject.NULL)
+                        .put("status_name", p.contains("attempt_status")
+                                ? UpdatePolicy.statusName(p.getInt("attempt_status", 0)) : "none yet")
+                        .put("status_message", p.getString("attempt_message", ""))
+                        .put("status_at", p.getLong("attempt_status_at", 0)))
+                .put("last_installed", new JSONObject()
+                        .put("version", p.getString("installed_version", ""))
+                        .put("at", p.getLong("installed_at", 0))
+                        .put("quiet", p.getBoolean("installed_quiet", false)));
+    }
+
+    /** Record a PackageInstaller outcome where diagnostics can read it after a restart. */
+    static void recordStatus(Context ctx, String version, int status, String msg, boolean quiet) {
+        SharedPreferences.Editor e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putInt("attempt_status", status)
+                .putString("attempt_message", UpdatePolicy.clean(msg))
+                .putLong("attempt_status_at", System.currentTimeMillis());
+        if (status == UpdatePolicy.STATUS_SUCCESS) {
+            e.putString("installed_version", UpdatePolicy.clean(version))
+                    .putLong("installed_at", System.currentTimeMillis())
+                    .putBoolean("installed_quiet", quiet);
+        }
+        // commit, not apply: a successful install kills this process right after
+        e.commit();
+    }
+
+    static void remember(Context ctx, String state) {
+        last = state + " · " + new java.util.Date();
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("last_state", last).apply();
     }
 
     /** Every 6 hours, and only on an unmetered network: the background check. */
@@ -130,10 +208,11 @@ final class Updater {
             c.state = best + " is verified and ready to install";
             p.edit().putString("ready", apk.getName()).putString("ready_sha", want).apply();
             if (notify) {
-                // Silent when Android allows it (we are the installer of record and hold
-                // UPDATE_PACKAGES_WITHOUT_USER_ACTION); otherwise UpdateResult falls back to the
-                // one-tap notification. The same verification gate applies either way.
-                if (!installQuietly(apk, best)) offer(best);
+                // Silent when Android allows it (a self-update holding
+                // UPDATE_PACKAGES_WITHOUT_USER_ACTION, no other update owner); otherwise
+                // UpdateResult retries quietly or hands over Android's own confirmation in
+                // one notification. The same verification gate applies either way.
+                if (!installQuietly(apk, best)) offer(best, null);
                 else c.state = best + " is verified and installing";
             }
             return done(c, true);
@@ -143,9 +222,9 @@ final class Updater {
         }
     }
 
-    private static Check done(Check c, boolean ok) {
+    private Check done(Check c, boolean ok) {
         c.ok = ok;
-        last = c.state + " · " + new java.util.Date();
+        remember(ctx, c.state);
         return c;
     }
 
@@ -195,8 +274,25 @@ final class Updater {
      * caller should offer the notification instead.
      */
     boolean installQuietly(File apk, String version) {
-        if (!ctx.getPackageManager().canRequestPackageInstalls()) return false;
+        // Not gated on "install unknown apps": Android does not consult it for a silent
+        // self-update (it gated here before 0.3.32, so browser-installed phones never tried).
+        if (!UpdatePolicy.tryQuiet(facts(ctx))) return false;
         try {
+            // Two triggers close together (Identity's release autodeploy and a manual
+            // "update") must not abandon a session already committed: measured 2026-10-18
+            // on the Fold, the second attempt abandoned the first (FAILURE_ABORTED "Session
+            // was abandoned") and the throttled second one asked for a tap.
+            if (committedInFlight(version)) {
+                remember(ctx, version + " is already installing");
+                return true;
+            }
+            abandonMine(ctx);
+            int tries = version.equals(p.getString("attempt_version", "")) ? p.getInt("attempt_tries", 0) : 0;
+            p.edit().putString("attempt_version", version)
+                    .putLong("attempt_at", System.currentTimeMillis())
+                    .putBoolean("attempt_quiet", true)
+                    .putInt("attempt_tries", tries + 1)
+                    .remove("attempt_status").remove("attempt_message").commit();
             int id = writeSession(ctx, apk, true);
             Intent back = new Intent(ctx, UpdateResult.class).putExtra("version", version);
             PendingIntent cb = PendingIntent.getBroadcast(ctx, id, back,
@@ -207,9 +303,39 @@ final class Updater {
             }
             return true;
         } catch (Exception e) {
-            last = "quiet install failed: " + e.getClass().getSimpleName() + " · " + new java.util.Date();
+            remember(ctx, "quiet install failed: " + e.getClass().getSimpleName());
             return false;
         }
+    }
+
+    /** A session for {@code version} was committed in the last ten minutes and has not answered. */
+    private boolean committedInFlight(String version) {
+        if (!version.equals(p.getString("attempt_version", ""))) return false;
+        if (p.contains("attempt_status")) return false; // it answered
+        if (System.currentTimeMillis() - p.getLong("attempt_at", 0) > UpdatePolicy.IN_FLIGHT_MS) return false;
+        for (android.content.pm.PackageInstaller.SessionInfo s
+                : ctx.getPackageManager().getPackageInstaller().getMySessions()) {
+            if (s.isCommitted()) return true;
+        }
+        return false;
+    }
+
+    /** Drop this app's earlier sessions that were never committed: a committed one is left to finish. */
+    static void abandonMine(Context ctx) {
+        android.content.pm.PackageInstaller pi = ctx.getPackageManager().getPackageInstaller();
+        for (android.content.pm.PackageInstaller.SessionInfo s : pi.getMySessions()) {
+            if (s.isCommitted()) continue;
+            try {
+                pi.abandonSession(s.getSessionId());
+            } catch (RuntimeException ignored) {
+                // already gone
+            }
+        }
+    }
+
+    /** How many quiet attempts this version has had. */
+    int quietTries(String version) {
+        return version != null && version.equals(p.getString("attempt_version", "")) ? p.getInt("attempt_tries", 0) : 0;
     }
 
     /** A PackageInstaller session holding {@code apk}, not yet committed. */
@@ -249,16 +375,23 @@ final class Updater {
         return id;
     }
 
-    void offer(String version) {
+    /**
+     * The notification when Android has to ask. {@code confirm} is Android's own confirmation
+     * for a session already written (STATUS_PENDING_USER_ACTION's EXTRA_INTENT): the tap goes
+     * straight to it instead of building a second session and asking again.
+     */
+    void offer(String version, Intent confirm) {
         NotificationManager nm = ctx.getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("update", "App updates",
                 NotificationManager.IMPORTANCE_DEFAULT));
-        PendingIntent pi = PendingIntent.getActivity(ctx, 7, new Intent(ctx, UpdateActivity.class),
+        Intent open = new Intent(ctx, UpdateActivity.class);
+        if (confirm != null) open.putExtra(UpdateActivity.CONFIRM, confirm);
+        PendingIntent pi = PendingIntent.getActivity(ctx, 7, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification n = new Notification.Builder(ctx, "update")
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle("Aither " + version + " is ready")
-                .setContentText("Tap to install. It is checked and signed by Aitherium.")
+                .setContentText(UpdatePolicy.askText(facts(ctx)))
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .build();

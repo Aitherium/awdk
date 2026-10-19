@@ -2,7 +2,7 @@
 
 The AitherOS fleet compresses every LLM call at its gateway chokepoint. This is the
 adk-local equivalent so a standalone or BYO adk agent gets the SAME token savings
-against its own backend (Ollama / OpenAI / Anthropic / vLLM), by shrinking bulky
+against its own backend (llama.cpp / OpenAI / Anthropic / vLLM), by shrinking bulky
 context (verbose tool output, RAG, file dumps) just before it is sent.
 
 adk is a separate open-core package and cannot import ``AitherOS/lib`` — this mirrors

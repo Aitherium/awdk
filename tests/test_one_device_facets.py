@@ -94,6 +94,33 @@ def test_a_higher_facet_takes_the_lease_at_once(device_file):
     assert not di.claim_lease("daemon", 60, pid=1, now=4)
 
 
+def test_the_daemon_outranks_node_beat_and_node_beat_covers_when_it_stops(device_file):
+    assert di.claim_lease("node_beat", 60, pid=9, now=0)     # the keep-alive started first
+    assert di.claim_lease("daemon", 60, pid=1, now=1)        # adk rc / serve takes it at once
+    assert not di.claim_lease("node_beat", 60, pid=9, now=2)
+    assert di.claim_lease("node_beat", 60, pid=9, now=1 + 181)  # daemon gone 3 intervals: cover
+
+
+def test_node_beat_beats_as_its_own_facet(monkeypatch):
+    import asyncio
+
+    from adk import enrollment, node_beat
+
+    seen = {}
+
+    def fake_resume(token, **kw):
+        seen.update(kw)
+        return {"started": False, "reason": "test", "node_id": ""}
+
+    monkeypatch.setattr(enrollment, "resume_heartbeat", fake_resume)
+    # a real node_beat may be running on this machine
+    monkeypatch.setattr(node_beat, "acquire_singleton", lambda: object())
+    run = getattr(node_beat, "_main", None)
+    assert run is not None
+    assert asyncio.run(run()) == 1
+    assert seen.get("facet") == "node_beat"
+
+
 def test_release_hands_over_immediately(device_file):
     assert di.claim_lease("daemon", 60, pid=1, now=0)
     di.release_lease("daemon", pid=2)                        # not the holder: no effect

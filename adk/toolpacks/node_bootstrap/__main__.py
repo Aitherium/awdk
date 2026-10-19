@@ -234,7 +234,7 @@ def main() -> int:
     resolve_p.add_argument(
         "--prefer-backend",
         default="auto",
-        help="prefer backend (auto, ollama, etc.)",
+        help="prefer backend (auto, llamacpp, vllm, etc.)",
     )
     resolve_p.add_argument(
         "--recipe-id",
@@ -320,7 +320,7 @@ def main() -> int:
     register_p.add_argument(
         "--backend-type",
         required=True,
-        help="backend type (vllm, ollama, etc.)",
+        help="backend type (vllm, llamacpp, etc.)",
     )
     register_p.add_argument(
         "--models",
@@ -344,7 +344,7 @@ def main() -> int:
     verify_p.add_argument(
         "--backend-type",
         default="",
-        help="backend type (vllm, ollama, etc.); defaults to the recipe's",
+        help="backend type (vllm, llamacpp, etc.); defaults to the recipe's",
     )
     verify_p.add_argument(
         "--recipe-id",

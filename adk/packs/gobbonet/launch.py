@@ -159,7 +159,7 @@ def cmd_gobbonet(args) -> int:
     # hands the user a URL nothing is listening on, which is a worse failure
     # than the bind error it was hiding.
     # exclude_port stops the server proxying chat to ITSELF: this pack serves on
-    # GobboNet's default 11434, which is also ollama's, and forwarding to our own
+    # GobboNet's default 11434, and forwarding to our own
     # port is an infinite loop that presents as a hang rather than an error.
     # Agentic by DEFAULT — that is the whole reason to install a pack rather
     # than point GobboNet at a model directly. `--plain` is the escape hatch for

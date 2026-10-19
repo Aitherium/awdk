@@ -10,7 +10,6 @@ from adk.hardware_probe import (
     recommend_setup,
     _detect_cpu_cores,
     _detect_gpu,
-    _detect_ollama,
     _detect_ram,
 )
 
@@ -90,22 +89,6 @@ class TestDetectGPU:
         assert vram == 24576
 
 
-class TestDetectOllama:
-    """Test Ollama detection."""
-
-    def test_ollama_installed(self):
-        """Test when Ollama is installed."""
-        with patch("shutil.which", return_value="/usr/bin/ollama"):
-            result = _detect_ollama()
-        assert result is True
-
-    def test_ollama_not_installed(self):
-        """Test when Ollama is not installed."""
-        with patch("shutil.which", return_value=None):
-            result = _detect_ollama()
-        assert result is False
-
-
 class TestDetectSystem:
     """Test full system detection."""
 
@@ -114,13 +97,11 @@ class TestDetectSystem:
         with patch("adk.hardware_probe._detect_ram", return_value=16.0):
             with patch("adk.hardware_probe._detect_cpu_cores", return_value=8):
                 with patch("adk.hardware_probe._detect_gpu", return_value=("none", "", 0)):
-                    with patch("adk.hardware_probe._detect_ollama", return_value=False):
-                        result = detect_system()
+                    result = detect_system()
 
         assert result.ram_gb == 16.0
         assert result.cpu_cores == 8
         assert result.gpu_vendor == "none"
-        assert result.ollama_installed is False
 
 
 class TestRecommendSetup:
@@ -173,7 +154,7 @@ class TestRecommendSetup:
         assert len(rec.warnings) > 0
 
     def test_recommend_apple_16gb(self):
-        """Recommend Ollama for Apple Silicon with 16GB RAM."""
+        """Recommend a local 8B (llama.cpp, Metal) for Apple Silicon with 16GB RAM."""
         system = SystemInfo(
             ram_gb=16.0,
             cpu_cores=8,
@@ -183,11 +164,11 @@ class TestRecommendSetup:
         )
         rec = recommend_setup(system)
 
-        assert rec.backend == "ollama"
+        assert rec.backend == "local-8b"
         assert "nemotron" in rec.local_model.lower()
 
     def test_recommend_apple_8gb(self):
-        """Recommend small Ollama model for Apple Silicon with 8GB RAM."""
+        """Recommend a small llama.cpp model for Apple Silicon with 8GB RAM."""
         system = SystemInfo(
             ram_gb=8.0,
             cpu_cores=4,
@@ -197,7 +178,7 @@ class TestRecommendSetup:
         )
         rec = recommend_setup(system)
 
-        assert rec.backend == "ollama"
+        assert rec.backend == "local-3b"
         assert "qwen" in rec.local_model.lower()
         assert len(rec.warnings) > 0
 

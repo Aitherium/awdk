@@ -77,15 +77,13 @@ class TestPickBackend:
         """A running/downloaded Bonsai is used before anything else."""
         accel = MockAccelInfo(kind="cuda", vram_gb=32.0)
         with patch("adk.local_backends.bonsai_available", return_value=True):
-            with patch("adk.ollama_setup.is_installed", return_value=True):
-                result = pick_backend(accel, prefer="auto", docker_available_override=True)
+            result = pick_backend(accel, prefer="auto", docker_available_override=True)
         assert result == "bonsai"
 
-    def test_cpu_with_docker_no_ollama_recommends_bonsai(self):
-        """CPU-only + Docker + no Ollama -> bonsai (1-bit, runs anywhere)."""
+    def test_cpu_with_docker_recommends_bonsai(self):
+        """CPU-only + Docker -> bonsai (1-bit, runs anywhere)."""
         accel = MockAccelInfo(kind="cpu")
-        with patch("adk.ollama_setup.is_installed", return_value=False):
-            result = pick_backend(accel, prefer="auto", docker_available_override=True)
+        result = pick_backend(accel, prefer="auto", docker_available_override=True)
         assert result == "bonsai"
 
     def test_explicit_prefer_beats_host_bonsai(self):
@@ -99,12 +97,6 @@ class TestPickBackend:
         result = pick_backend(accel, prefer="llamacpp")
         assert result == "llamacpp"
 
-    def test_prefer_explicit_ollama(self):
-        """Explicit prefer=ollama always wins."""
-        accel = MockAccelInfo(kind="cpu")
-        result = pick_backend(accel, prefer="ollama")
-        assert result == "ollama"
-
     def test_prefer_explicit_vllm(self):
         """Explicit prefer=vllm always wins."""
         accel = MockAccelInfo(kind="cpu")
@@ -112,58 +104,44 @@ class TestPickBackend:
         assert result == "vllm"
 
     def test_cuda_16gb_docker_chooses_vllm(self):
-        """CUDA with 16+GB VRAM + Docker available (and no Ollama) → vllm."""
+        """CUDA with 16+GB VRAM + Docker available → vllm."""
         accel = MockAccelInfo(kind="cuda", vram_gb=16.0)
         with patch("adk.local_backends.docker_available", return_value=True):
-            with patch("adk.ollama_setup.is_installed", return_value=False):
-                result = pick_backend(accel, prefer="auto")
+            result = pick_backend(accel, prefer="auto")
         assert result == "vllm"
 
-    def test_cuda_16gb_no_docker_chooses_ollama_or_llamacpp(self):
-        """CUDA with 16+GB but no Docker → falls through to ollama/llamacpp."""
+    def test_cuda_16gb_no_docker_chooses_llamacpp(self):
+        """CUDA with 16+GB but no Docker → falls through to llamacpp."""
         accel = MockAccelInfo(kind="cuda", vram_gb=16.0)
         with patch("adk.local_backends.docker_available", return_value=False):
-            with patch("adk.ollama_setup.is_installed", return_value=False):
-                result = pick_backend(accel, prefer="auto")
+            result = pick_backend(accel, prefer="auto")
         assert result == "llamacpp"
 
     def test_cuda_small_vram_skips_vllm(self):
         """CUDA with <16GB VRAM → skips vllm even if Docker available."""
         accel = MockAccelInfo(kind="cuda", vram_gb=8.0)
         with patch("adk.local_backends.docker_available", return_value=True):
-            with patch("adk.ollama_setup.is_installed", return_value=False):
-                result = pick_backend(accel, prefer="auto")
+            result = pick_backend(accel, prefer="auto")
         assert result == "llamacpp"
 
-    def test_ollama_installed_fallback(self):
-        """Ollama installed → ollama (when not CUDA+Docker)."""
+    def test_cpu_llamacpp_fallback(self):
+        """CPU without Docker → llamacpp (always-works fallback)."""
         accel = MockAccelInfo(kind="cpu")
         with patch("adk.local_backends.docker_available", return_value=False):
-            with patch("adk.ollama_setup.is_installed", return_value=True):
-                result = pick_backend(accel, prefer="auto")
-        assert result == "ollama"
-
-    def test_cpu_no_ollama_llamacpp_fallback(self):
-        """CPU with no Ollama → llamacpp (always-works fallback)."""
-        accel = MockAccelInfo(kind="cpu")
-        with patch("adk.local_backends.docker_available", return_value=False):
-            with patch("adk.ollama_setup.is_installed", return_value=False):
-                result = pick_backend(accel, prefer="auto")
+            result = pick_backend(accel, prefer="auto")
         assert result == "llamacpp"
 
     def test_docker_available_override(self):
         """docker_available_override parameter works."""
         accel = MockAccelInfo(kind="cuda", vram_gb=20.0)
-        # Explicitly set docker_available_override=True (and no Ollama present)
-        with patch("adk.ollama_setup.is_installed", return_value=False):
-            result = pick_backend(accel, prefer="auto", docker_available_override=True)
+        # Explicitly set docker_available_override=True
+        result = pick_backend(accel, prefer="auto", docker_available_override=True)
         assert result == "vllm"
 
         # Explicitly set docker_available_override=False
-        with patch("adk.ollama_setup.is_installed", return_value=False):
-            result = pick_backend(
-                accel, prefer="auto", docker_available_override=False
-            )
+        result = pick_backend(
+            accel, prefer="auto", docker_available_override=False
+        )
         assert result == "llamacpp"
 
 
@@ -207,52 +185,6 @@ class TestCmdQuickstartLocal:
         assert saved_config["setup_backend"] == "llamacpp"
         assert "inference_url" in saved_config
 
-    def test_dry_run_ollama(self, tmp_path):
-        """Test dry-run flow for ollama backend."""
-        args = _make_args(
-            backend="ollama",
-            model="qwen2.5:3b",
-            dry_run=True,
-        )
-
-        with patch("adk.llamacpp_setup.detect_accel") as mock_detect:
-            mock_detect.return_value = MockAccelInfo(kind="cpu")
-
-            with patch("adk.ollama_setup.ensure_running", return_value=True):
-                with patch("adk.ollama_setup.pull") as mock_pull:
-                    mock_pull.return_value = True
-
-                    with patch(
-                        "adk.ollama_setup.register_config"
-                    ) as mock_ollama_save:
-                        with patch(
-                            "adk.ollama_setup.smoke_test", return_value=True
-                        ):
-                            with patch(
-                                "adk.cli.save_saved_config"
-                            ) as mock_save:
-                                exit_code = cmd_quickstart_local(args)
-
-        assert exit_code == 0
-        mock_save.assert_called_once()
-
-    def test_ollama_default_model_when_flag_omitted(self):
-        """--model omitted (None) must resolve to DEFAULT_OLLAMA_MODEL, not None."""
-        from adk.ollama_setup import DEFAULT_OLLAMA_MODEL
-
-        args = _make_args(backend="ollama", model=None, dry_run=True)
-
-        with patch("adk.llamacpp_setup.detect_accel") as mock_detect:
-            mock_detect.return_value = MockAccelInfo(kind="cpu")
-            with patch("adk.ollama_setup.ensure_running", return_value=True):
-                with patch("adk.ollama_setup.register_config") as mock_reg:
-                    with patch("adk.cli.save_saved_config"):
-                        exit_code = cmd_quickstart_local(args)
-
-        assert exit_code == 0
-        mock_reg.assert_called_once()
-        assert mock_reg.call_args[0][0] == DEFAULT_OLLAMA_MODEL
-
     def test_backend_auto_detection(self, tmp_path):
         """Test auto backend detection."""
         args = _make_args(
@@ -282,23 +214,6 @@ class TestCmdQuickstartLocal:
 
         assert exit_code == 0
         mock_pick.assert_called_once()
-
-    def test_ollama_pull_failure(self):
-        """Test error handling when ollama pull fails."""
-        args = _make_args(
-            backend="ollama",
-            model="qwen2.5:3b",
-            dry_run=False,
-        )
-
-        with patch("adk.llamacpp_setup.detect_accel") as mock_detect:
-            mock_detect.return_value = MockAccelInfo(kind="cpu")
-
-            with patch("adk.ollama_setup.ensure_running", return_value=True):
-                with patch("adk.ollama_setup.pull", return_value=False):
-                    exit_code = cmd_quickstart_local(args)
-
-        assert exit_code == 1
 
     def test_llamacpp_install_failure(self):
         """Test error handling when llamacpp install fails."""

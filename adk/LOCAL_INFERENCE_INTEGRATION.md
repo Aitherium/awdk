@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `local_inference.py` module enables agents to automatically discover and register local inference endpoints (llama.cpp, vLLM, Ollama, etc.) with MicroScheduler without requiring manual configuration.
+The `local_inference.py` module enables agents to automatically discover and register local inference endpoints (llama.cpp, vLLM, LM Studio, etc.) with MicroScheduler without requiring manual configuration.
 
 **Key concept:** An agent runs once with `auto_discover_and_register()`, discovers any local OpenAI-compatible endpoint, registers it with MicroScheduler, emits an event to the room, and subsequent LLM calls route through the discovered endpoint.
 
@@ -260,7 +260,7 @@ See `test_discovery_real.py` for a real end-to-end test that:
 
 ## Future Enhancements
 
-1. **Ollama integration**: Detect Ollama-specific model format and APIs
+1. **LM Studio integration**: detect its model-format specifics
 2. **Hardware scoring**: Choose model quant based on available VRAM (bridge to pooled-inference-ops)
 3. **Mesh auto-join**: Automatically join the AitherAeon room once endpoint is registered
 4. **Health monitoring**: Periodic health checks to detect when local endpoint goes down

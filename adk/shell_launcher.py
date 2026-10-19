@@ -363,11 +363,12 @@ def _preflight_check() -> tuple[bool, str]:
         except (urllib.error.URLError, ConnectionError, OSError):
             pass
 
-    # Check Ollama
+    # Check a local llama-server (llama.cpp)
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags")
+        req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
         with urllib.request.urlopen(req, timeout=2) as resp:
-            return True, "Ollama"
+            if resp.status == 200:
+                return True, "llama.cpp on :8080"
     except (urllib.error.URLError, ConnectionError, OSError):
         pass
 

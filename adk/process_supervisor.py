@@ -1,8 +1,8 @@
-"""Process supervisor for native consumer stack — manage Room, Ollama as system processes.
+"""Process supervisor for native consumer stack — manage Room, llama-server as system processes.
 
 The $1000 consumer SKU runs the sovereign stack as NATIVE processes:
   - AitherRoom (:8350)  — company/partner agent room
-  - Ollama (:11434)     — local model serving
+  - llama-server (:8080) — local model serving (llama.cpp)
 
 This module provides:
   - ProcessSpec: process definition (name, argv, port, health_url, cwd, env)

@@ -40,10 +40,10 @@ vllm:
       gpu: 1
       gpu_memory_utilization: 0.40
 
-ollama:
+local:
   gpu_memory_fraction: 0.55
   num_parallel: 4
-  models_to_pull:
+  models:
     - nemotron-orchestrator-8b
     - deepseek-r1:32b
     - llava:13b
@@ -88,10 +88,10 @@ resource_limits:
   max_concurrent_requests: 8
   max_batch_size: 8
   context_pipeline_timeout_s: 20
-  ollama_max_loaded_models: 3
+  max_loaded_models: 3
 
 notes: >
   Workstation profile assigns GPU 0 to vLLM (orchestrator + reasoning) and
-  GPU 1 to Ollama and the coding vLLM worker. Vision model loads on demand
-  via Ollama on GPU 1. Reasoning model is always warm for effort >= 7. The
+  GPU 1 to llama.cpp and the coding vLLM worker. Vision model loads on demand
+  via llama.cpp on GPU 1. Reasoning model is always warm for effort >= 7. The
   coding worker handles swarm coding tasks and forge dispatch.

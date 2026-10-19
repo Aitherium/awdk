@@ -47,7 +47,7 @@ class AitherConfig:
     auth_token: Optional[str] = None
     auth_user: Optional[Dict[str, Any]] = None
 
-    # LLM backend: genesis (default), ollama, vllm, openai, auto
+    # LLM backend: genesis (default), llamacpp, vllm, openai, auto
     llm_backend: str = "genesis"
     llm_url: str = ""
 
@@ -176,16 +176,16 @@ def save_default_config():
 # Edit this file to set defaults. CLI flags override these.
 # Env vars (AITHER_URL, AITHER_MODEL, etc.) also override.
 
-# LLM backend: genesis | ollama | vllm | openai | auto
+# LLM backend: genesis | llamacpp | vllm | openai | auto
 #   genesis = AitherOS orchestrator (default, full pipeline)
-#   ollama  = Direct Ollama connection (standalone)
+#   llamacpp = Direct llama-server connection (standalone)
 #   vllm    = Direct vLLM connection (standalone)
 #   openai  = Any OpenAI-compatible API (standalone)
 #   auto    = Try genesis first, then auto-detect local LLM
 llm_backend: genesis
 
 # LLM URL (only used when llm_backend is not genesis)
-# llm_url: http://localhost:11434     # Ollama
+# llm_url: http://127.0.0.1:8080      # llama-server
 # llm_url: http://localhost:8199      # vLLM
 # llm_url: https://api.openai.com/v1  # OpenAI
 

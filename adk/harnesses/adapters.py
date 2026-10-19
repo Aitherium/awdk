@@ -199,10 +199,218 @@ def translate_text(line: Any) -> list[HarnessEvent]:
     return [raw(str(line))]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenCode — `opencode run --format json`
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Shape read from the opencode 1.18 `run` command (its emitter writes
+# ``{"type", "timestamp", "sessionID", ...extra}`` per line): ``tool_use`` carries
+# a FINISHED ToolPart (``part.tool``, ``part.callID``, ``part.state.{status,
+# input, output, error}``) -- it is emitted only once the call is ``completed``
+# or ``error``, so one line is both the call and its result. ``text`` /
+# ``reasoning`` carry ``part.text``; ``step_start`` / ``step_finish`` frame each
+# model step (``step_finish.part.tokens`` / ``cost``); ``error`` carries
+# ``error.{name, data.message}``. Without ``--format json`` the same command
+# prints plain text, so a non-JSON line stays assistant text (an old binary, or
+# AITHER_HARNESS_OPENCODE_FORMAT=default, behaves exactly as before).
+#
+# Neither this adapter nor the Codex one emits TURN_COMPLETED: the session closes
+# a one-shot turn itself when the process exits (session.py); a second would
+# double it.
+
+
+def _opencode_error_text(err: Any) -> str:
+    if isinstance(err, dict):
+        data = err.get("data") if isinstance(err.get("data"), dict) else {}
+        msg = data.get("message") or err.get("message") or err.get("name")
+        return str(msg or "opencode error")
+    return str(err or "opencode error")
+
+
+def translate_opencode(obj: Any) -> list[HarnessEvent]:
+    """Translate one ``opencode run --format json`` line (or a plain-text line)."""
+    if isinstance(obj, str):
+        stripped = obj.strip()
+        if not stripped.startswith("{"):
+            return translate_text(obj)
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            return translate_text(obj)
+    if not isinstance(obj, dict):
+        return [raw(str(obj))]
+
+    etype = obj.get("type")
+    part = obj.get("part") if isinstance(obj.get("part"), dict) else {}
+
+    if etype == "tool_use":
+        state = part.get("state") if isinstance(part.get("state"), dict) else {}
+        call_id = str(part.get("callID") or part.get("id") or "")
+        name = str(part.get("tool") or "")
+        tool_input = state.get("input")
+        is_error = str(state.get("status") or "") == "error"
+        output = state.get("error") if is_error else state.get("output")
+        return [
+            tool_call(
+                tool=name,
+                tool_use_id=call_id,
+                tool_input=tool_input if isinstance(tool_input, dict) else {},
+            ),
+            tool_result(
+                tool_use_id=call_id,
+                output=output if output is not None else "",
+                is_error=is_error,
+                tool=name,
+            ),
+        ]
+
+    if etype == "text":
+        text = str(part.get("text") or "")
+        return [text_delta(text if text.endswith("\n") else text + "\n")] if text else []
+
+    if etype == "reasoning":
+        text = str(part.get("text") or "")
+        return [thinking_delta(text)] if text else []
+
+    if etype == "step_start":
+        return []
+
+    if etype == "step_finish":
+        tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
+        return [
+            HarnessEvent(
+                kind=EventKind.USAGE,
+                data={
+                    "usage": tokens,
+                    "cost_usd": part.get("cost"),
+                    "reason": part.get("reason"),
+                    "harness_session_id": obj.get("sessionID", ""),
+                },
+            )
+        ]
+
+    if etype == "error":
+        return [error(_opencode_error_text(obj.get("error")), payload=obj)]
+
+    return [raw(json.dumps(obj)[:2000], event_type=etype)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenAI Codex CLI — `codex exec --json`
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Codex >= 0.44 writes thread/turn/item events: ``thread.started``,
+# ``turn.started``, ``item.started|updated|completed`` (``item.type`` one of
+# agent_message, reasoning, command_execution, file_change, mcp_tool_call,
+# web_search, todo_list, error), ``turn.completed`` (``usage``), ``turn.failed``
+# and ``error``. Codex does not emit ``item.started`` for every call type, and an
+# adapter is a pure function with no memory of earlier lines, so a call and its
+# result are BOTH emitted from ``item.completed`` (paired by ``item.id``): an
+# orphaned result is never possible. MCP calls are named ``mcp__<server>__<tool>``
+# -- the Claude Code spelling -- so the training extractor recognises gateway
+# calls whichever harness made them.
+
+_CODEX_CALL_ITEMS = ("command_execution", "file_change", "mcp_tool_call", "web_search")
+
+
+def _codex_tool(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    itype = item.get("type")
+    if itype == "command_execution":
+        return "shell", {"command": item.get("command") or ""}
+    if itype == "file_change":
+        changes = item.get("changes") if isinstance(item.get("changes"), list) else []
+        return "apply_patch", {"changes": changes}
+    if itype == "mcp_tool_call":
+        args = item.get("arguments")
+        return (
+            f"mcp__{item.get('server') or 'unknown'}__{item.get('tool') or 'unknown'}",
+            args if isinstance(args, dict) else {},
+        )
+    return "web_search", {"query": item.get("query") or ""}
+
+
+def _codex_result(item: dict[str, Any]) -> tuple[Any, bool]:
+    itype = item.get("type")
+    failed = str(item.get("status") or "") == "failed"
+    if itype == "command_execution":
+        code = item.get("exit_code")
+        return item.get("aggregated_output") or "", failed or (
+            isinstance(code, int) and code != 0
+        )
+    if itype == "mcp_tool_call":
+        err = item.get("error")
+        if err:
+            return (err.get("message") if isinstance(err, dict) else str(err)), True
+        result = item.get("result")
+        if isinstance(result, dict) and isinstance(result.get("content"), list):
+            return result["content"], failed
+        return result if result is not None else "", failed
+    if itype == "file_change":
+        return str(item.get("status") or "completed"), failed
+    return "", failed
+
+
+def translate_codex(obj: Any) -> list[HarnessEvent]:
+    """Translate one ``codex exec --json`` object."""
+    if not isinstance(obj, dict):
+        return [raw(str(obj))]
+
+    etype = obj.get("type")
+    item = obj.get("item") if isinstance(obj.get("item"), dict) else {}
+    itype = item.get("type")
+
+    if etype == "thread.started":
+        return [
+            HarnessEvent(
+                kind=EventKind.SESSION_READY,
+                text="codex thread",
+                data={"model": "", "harness_session_id": obj.get("thread_id", "")},
+            )
+        ]
+
+    if etype == "turn.started":
+        return []
+
+    if etype == "turn.completed":
+        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+        return [HarnessEvent(kind=EventKind.USAGE, data={"usage": usage})]
+
+    if etype in ("turn.failed", "error"):
+        err = obj.get("error") if isinstance(obj.get("error"), dict) else {}
+        return [error(str(err.get("message") or obj.get("message") or etype), payload=obj)]
+
+    if etype in ("item.started", "item.updated"):
+        return []
+
+    if etype == "item.completed":
+        if itype in _CODEX_CALL_ITEMS:
+            item_id = str(item.get("id") or "")
+            name, tool_input = _codex_tool(item)
+            output, is_error = _codex_result(item)
+            return [
+                tool_call(tool=name, tool_use_id=item_id, tool_input=tool_input),
+                tool_result(tool_use_id=item_id, output=output, is_error=is_error, tool=name),
+            ]
+        if itype == "agent_message":
+            text = str(item.get("text") or "")
+            return [text_delta(text if text.endswith("\n") else text + "\n")] if text else []
+        if itype == "reasoning":
+            text = str(item.get("text") or "")
+            return [thinking_delta(text)] if text else []
+        if itype == "todo_list":
+            return [notice("todo list", items=item.get("items") or [])]
+        if itype == "error":
+            return [error(str(item.get("message") or "codex item error"), payload=item)]
+
+    return [raw(json.dumps(obj)[:2000], event_type=etype)]
+
+
 #: Adapters by harness id. Registry entries reference these by name so a spec
 #: stays declarative and serializable.
 ADAPTERS = {
     "claude": translate_claude,
     "gemini": translate_gemini,
     "text": translate_text,
+    "opencode": translate_opencode,
+    "codex": translate_codex,
 }

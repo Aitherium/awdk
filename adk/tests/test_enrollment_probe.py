@@ -1,9 +1,8 @@
 """probe_inference: the ladder, the explicit-url rule, and what the heartbeat carries.
 
-Stub HTTP servers on ephemeral loopback ports stand in for llama-server, awnode,
-Ollama and vLLM. The rule under test is awnode's: only a 200 on ``/v1/models``
-proves an OpenAI-compatible server (Ollama proves itself with ``/api/tags``, awnode
-needs ``/health`` too).
+Stub HTTP servers on ephemeral loopback ports stand in for llama-server, awnode
+and vLLM. The rule under test is awnode's: only a 200 on ``/v1/models``
+proves an OpenAI-compatible server (awnode needs ``/health`` too).
 """
 
 from __future__ import annotations
@@ -38,10 +37,6 @@ LLAMA_ROUTES: Routes = {
 AWNODE_ROUTES: Routes = {
     "/v1/models": (200, {"data": [{"id": "node-model-b"}]}),
     "/health": (200, {"status": "healthy", "service": "awnode", "mode": "llamacpp"}),
-}
-OLLAMA_ROUTES: Routes = {
-    "/api/tags": (200, {"models": [{"name": "local-model-d"}, {"model": "local-model-e"}]}),
-    "/v1/models": (200, {"data": [{"id": "local-model-d"}]}),
 }
 VLLM_ROUTES: Routes = {
     "/v1/models": (200, {"data": [{"id": "served-model-c"}]}),
@@ -122,7 +117,6 @@ def test_default_candidates_order_and_bonsai_port(monkeypatch):
         ("9123", "llama-server"),
         ("8099", "llama-server"),
         ("8090", "awnode"),
-        ("11434", "ollama"),
         ("8120", "vllm"),
     ]
 
@@ -165,11 +159,11 @@ def test_awnode_slot_without_health_is_not_awnode(stub):
     assert got.ready is False and got.inference_kind == "none"
 
 
-def test_ollama_slot_uses_api_tags(stub):
-    s = stub(OLLAMA_ROUTES)
-    got = probe_inference(None, candidates=[Candidate(s.url, "ollama")])
-    assert got.inference_kind == "ollama"
-    assert got.models == ["local-model-d", "local-model-e"]
+def test_a_retired_tags_only_server_is_not_proven(stub):
+    """A server answering only the retired ``/api/tags`` listing proves nothing."""
+    s = stub({"/api/tags": (200, {"models": [{"name": "local-model-d"}]})})
+    got = probe_inference(None, candidates=[Candidate(s.url, "llama-server")])
+    assert got.inference_kind == "none" and not got.ready
 
 
 def test_vllm_slot_detected(stub):
@@ -223,7 +217,7 @@ def test_nothing_listening_is_not_ready():
     got = probe_inference(None, candidates=[
         Candidate(_dead_url(), "llama-server"),
         Candidate(_dead_url(), "awnode"),
-        Candidate(_dead_url(), "ollama"),
+        Candidate(_dead_url(), "vllm"),
     ])
     assert got == InferenceProbe([], "", "none", False)
     assert tuple(got) == ([], "", "none", False)
@@ -252,8 +246,7 @@ def test_explicit_url_fingerprints_llama_server_and_strips_v1(stub):
     assert got.inference_kind == "llama-server"
 
 
-def test_explicit_url_fingerprints_ollama_and_vllm(stub):
-    assert probe_inference(stub(OLLAMA_ROUTES).url).inference_kind == "ollama"
+def test_explicit_url_fingerprints_vllm(stub):
     assert probe_inference(stub(VLLM_ROUTES).url).inference_kind == "vllm"
 
 
@@ -293,7 +286,7 @@ def test_build_registration_carries_the_contract_fields(stub, no_hardware_probe)
     assert reg["node_class"] == "phone"
     assert reg["inference_ready"] is True
     assert reg["available_models"] == ["tiny-model-a"]
-    assert reg["ollama_available"] is False and reg["vllm_available"] is False
+    assert reg["vllm_available"] is False
 
 
 def test_build_registration_rejects_an_unknown_class(no_hardware_probe):

@@ -253,7 +253,7 @@ async def run_onboarding(
         email / password: pre-filled for auto mode
         skip_gpu / skip_deploy / skip_mcp: existing skip flags
         skip_llm / skip_framework: skip the new local-LLM / framework steps
-        install_llm: in auto mode, ``True`` to install local vLLM/Ollama,
+        install_llm: in auto mode, ``True`` to install local vLLM/llama.cpp,
             ``False`` to explicitly skip. ``None`` defaults to skip in auto.
         llm_backend / llm_model / llm_port: passed to the local_llm helper
         install_framework: ``"hermes"`` / ``"openclaw"`` / ``None`` (skip).
@@ -425,24 +425,25 @@ async def run_onboarding(
             if interactive:
                 _print("Skipped. Run `aither mcp serve` to use manually.", style="skip")
 
-    # ── Step 8: Local LLM (vLLM / Ollama) ────────────────────────────────────
+    # ── Step 8: Local LLM (vLLM / llama.cpp) ─────────────────────────────────
     do_install_llm = False
     if not skip_llm:
         if interactive:
             _print("Local LLM server (optional)", style="step")
-            default_yes = bool(result.gpu_detected) or _which("ollama")
+            default_yes = bool(result.gpu_detected) or _which("llama-server")
             do_install_llm = _confirm(
-                "Install a local LLM (vLLM if GPU, otherwise Ollama)?",
+                "Install a local LLM (vLLM if GPU, otherwise llama.cpp)?",
                 default=default_yes,
             )
             if do_install_llm:
-                default_backend = "vllm" if result.gpu_detected else "ollama"
-                llm_backend = _prompt("Backend (vllm/ollama)", default=default_backend) or default_backend
-                if llm_backend not in ("vllm", "ollama"):
+                default_backend = "vllm" if result.gpu_detected else "llamacpp"
+                llm_backend = (_prompt("Backend (vllm/llamacpp)", default=default_backend)
+                               or default_backend)
+                if llm_backend not in ("vllm", "llamacpp"):
                     llm_backend = default_backend
                 default_model = (
                     "meta-llama/Meta-Llama-3.1-8B-Instruct"
-                    if llm_backend == "vllm" else "llama3.1:8b"
+                    if llm_backend == "vllm" else "aither-orchestrator-v18-Q4_K_M.gguf"
                 )
                 llm_model = _prompt("Model", default=llm_model or default_model) or default_model
         else:
@@ -453,7 +454,7 @@ async def run_onboarding(
                 backend=llm_backend,
                 model=llm_model or (
                     "meta-llama/Meta-Llama-3.1-8B-Instruct"
-                    if llm_backend == "vllm" else "llama3.1:8b"
+                    if llm_backend == "vllm" else "aither-orchestrator-v18-Q4_K_M.gguf"
                 ),
                 port=llm_port,
                 interactive=interactive,
@@ -761,6 +762,6 @@ def plan_onboarding(
         "notes": [
             "Agents should prefer `aither setup --auto --json` for a single-call orchestration.",
             "Individual steps remain runnable via the `cmd` field for step-by-step execution.",
-            "On hosts without a CUDA GPU, pass --llm-backend ollama (requires ollama already on PATH).",
+            "On hosts without a CUDA GPU, pass --llm-backend llamacpp (GGUF from artifact.aitherium.com).",
         ],
     }

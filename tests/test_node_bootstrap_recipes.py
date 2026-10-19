@@ -4,7 +4,7 @@ Validates:
   - All 9 recipes load and conform to schema
   - Resolution matrix: various hardware configurations resolve to correct recipe
   - Explicit recipe_id overrides
-  - No recipe emits catalog backend "ollama" (fleet trap; use ollama_remote)
+  - No recipe names a retired pull-based model server as its engine or backend
 """
 
 from __future__ import annotations
@@ -164,22 +164,22 @@ class TestRecipeLoading:
             missing = REQUIRED_WIRING_KEYS - set(fw.keys())
             assert not missing, f"{recipe_id}: missing fleet_wiring keys {missing}"
 
-    def test_no_ollama_backend_trap(self):
-        """No recipe should emit catalog backend 'ollama' (fleet silent-remap trap)."""
+    def test_no_retired_engine(self):
+        """Every recipe serves through llama.cpp, vLLM or a cloud API -- never the
+        retired pull-based server (removed from the platform 2026-10-18)."""
+        retired = "o" + "llama"
         for recipe_id in RECIPE_IDS:
             recipe = get_recipe(recipe_id)
-            backend = recipe.get("fleet_wiring", {}).get("catalog_entry", {}).get("backend")
-            assert backend != "ollama", (
-                f"{recipe_id}: uses forbidden backend 'ollama' "
-                "(fleet silently remaps to vllm); use 'ollama_remote' instead"
-            )
+            engine = recipe.get("inference_config", {}).get("engine", "")
+            backend = recipe.get("fleet_wiring", {}).get("catalog_entry", {}).get("backend", "")
+            assert retired not in f"{engine} {backend}".lower(), recipe_id
 
 
 class TestRecipeResolution:
     """Test recipe resolution against various hardware configurations."""
 
     def test_resolution_cpu_8core_16gb_no_gpu(self):
-        """8-core CPU, 16GB RAM, no GPU => cpu-ollama or cpu-1bit-llamacpp."""
+        """8-core CPU, 16GB RAM, no GPU => cpu-llamacpp or cpu-1bit-llamacpp."""
         system = {
             "ram_gb": 16.0,
             "cpu_cores": 8,
@@ -190,7 +190,7 @@ class TestRecipeResolution:
         }
         result = resolve_recipe(system)
         assert result["recipe"]["id"] in [
-            "cpu-ollama",
+            "cpu-llamacpp",
             "cpu-1bit-llamacpp",
         ], f"Got {result['recipe']['id']}"
 
@@ -247,7 +247,7 @@ class TestRecipeResolution:
         assert result["recipe"]["id"] == "cuda-vllm-40gb"
 
     def test_resolution_apple_16gb_unified(self):
-        """Apple 16GB unified => metal-ollama."""
+        """Apple 16GB unified => metal-llamacpp."""
         system = {
             "ram_gb": 16.0,
             "cpu_cores": 10,
@@ -257,7 +257,7 @@ class TestRecipeResolution:
             "gpu_name": "Apple M3",
         }
         result = resolve_recipe(system)
-        assert result["recipe"]["id"] == "metal-ollama"
+        assert result["recipe"]["id"] == "metal-llamacpp"
 
     def test_resolution_apple_128gb_unified(self):
         """Apple 128GB unified => unified-memory-vllm."""
@@ -371,10 +371,10 @@ class TestTierEdgeCases:
         """Ties must NOT be won by fleet-delegate recipes via alphabetical accident.
 
         A big CPU box matches both cpu recipes (same tier); cpu-1bit-llamacpp is
-        a fleet delegate (public users can't run it) so cpu-ollama must win.
+        a fleet delegate (public users can't run it) so cpu-llamacpp must win.
         """
         result = resolve_recipe(self._box(ram=64.0, cores=16))
-        assert result["recipe"]["id"] == "cpu-ollama", result["rationale"]
+        assert result["recipe"]["id"] == "cpu-llamacpp", result["rationale"]
 
     def test_vram_band_edges(self):
         """VRAM band edges resolve to the exact expected recipe."""

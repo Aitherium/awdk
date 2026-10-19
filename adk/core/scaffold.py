@@ -105,7 +105,7 @@ Set one of the following env vars and re-run:
   - `ANTHROPIC_API_KEY`  → Anthropic
   - `DEEPSEEK_API_KEY`   → DeepSeek
   - `AITHER_VLLM_URL`    → self-hosted vLLM
-  - `OLLAMA_HOST`        → local Ollama
+  - `AITHER_LLAMACPP_URL` → local llama.cpp (llama-server)
 
 Or set `model:` in `agent.yaml` to a specific backend, e.g.
 `model: openai:gpt-4o-mini`.
@@ -203,7 +203,7 @@ Set one of the following env vars and re-run:
   - `ANTHROPIC_API_KEY`  -> Anthropic
   - `DEEPSEEK_API_KEY`   -> DeepSeek
   - `AITHER_VLLM_URL`    -> self-hosted vLLM
-  - `OLLAMA_HOST`        -> local Ollama
+  - `AITHER_LLAMACPP_URL` -> local llama.cpp (llama-server)
 
 ## Grow the agent
 

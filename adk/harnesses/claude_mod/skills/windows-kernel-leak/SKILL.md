@@ -30,6 +30,8 @@ python tools/win-kernel-leak.py rate 30         # which tags GROW, live objects 
 python tools/win-kernel-leak.py spawn 5         # CreateProcess latency (the symptom)
 python tools/win-kernel-leak.py trace Toke 60   # ADMIN: WPR pool trace for ONE tag -> CSV
 python tools/win-kernel-leak.py attribute X.csv # un-freed allocations by process + kernel path
+python tools/win-kernel-leak.py hunt Toke 120   # ADMIN: objects that outlived their creator, read live
+python tools/win-kernel-leak.py debug status    # kernel debug mode; `on|off` toggle it (next boot)
 python tools/win-kernel-leak.py --self-test     # proves the parsers and exit codes still fail
 ```
 
@@ -59,13 +61,30 @@ rest came from ALPC client security contexts. So the box leaked tokens on its tw
 paths: process spawns and local RPC. The component holding the extra reference does not
 appear in those stacks.
 
-To name the holder, use **object reference tracing** on the tag:
+**`hunt` narrows the leak to exact objects** (admin rights, plus LiveKD and the Windows debuggers):
 
-- set it in `gflags` under *Kernel Flags → Object Reference Tracing* with tag `Toke`;
-- reboot;
-- once the leak has regrown, read the traces with `!obtrace` in a kernel debugger.
+1. It records the tag-filtered trace together with process start and end events.
+2. It keeps the allocations still alive whose *creating process has exited*.
+3. It snapshots the live kernel and reads each object's counts.
 
-This is the one step this skill cannot do live.
+`HandleCount 0` with `PointerCount > 0` means a reference held inside the kernel: the
+leak, by address. In the case above, 399 tokens in 2 minutes outlived their `bash` process,
+each holding 1–2 references. The object body sat at allocation + `0x50`.
+
+**Naming the holder needs a live kernel debugger:** run `debug on`, reboot, then use `kd -kl`.
+**Secure Boot forbids `debug on`.** bcdedit answers "protected by Secure Boot policy", and
+`debug on` exits 2 saying so. Turn Secure Boot off in the firmware setup first. Anti-cheat
+games will not start while it is off.
+
+**What did not work, so you don't repeat it:**
+- Object reference tracing on *every* process (`gflags -ko -t Toke`) made the desktop
+  unusable within minutes.
+- Filtered to one image (`-i bash.exe`), it recorded none of the leaked objects.
+- `!poolfind` and `s -q` across a 14 GB live dump never finished.
+
+**Starve the leak while you can't name it.** It fed on process creation. Every hook that ran
+`bash -c 'bash -c "python …"'`, or tried `python3` first on Windows (the Store stub), added
+processes. Removing those extra layers is a fix you can ship today.
 
 **Bisecting drivers by stopping them mostly fails.** `sc stop` on a filter or callback driver
 usually leaves it `RUNNING` or stuck in `STOP_PENDING`. Stopping its user-mode service changes

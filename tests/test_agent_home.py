@@ -97,7 +97,7 @@ def test_build_llm_byo_without_key_raises(monkeypatch):
 
 
 def test_build_llm_local_builds_router():
-    llm = models.build_llm(models.choose_model("ollama"))
+    llm = models.build_llm(models.choose_model("llamacpp"))
     assert llm.__class__.__name__ == "LLMRouter"
 
 
@@ -221,14 +221,14 @@ def test_expired_license_refused(home, signing_key):
 
 def test_cli_flow_init_model_harness_status(home, capsys):
     assert home_cli.main(["init", "--name", "pip"]) == 0
-    assert home_cli.main(["model", "--local", "ollama"]) == 0
+    assert home_cli.main(["model", "--local", "llamacpp"]) == 0
     assert home_cli.main(["harness", "hermes"]) == 0
     assert home_cli.main(["persona", "set", "rules.md", "- be kind"]) == 0
     capsys.readouterr()
     assert home_cli.main(["status"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["name"] == "pip"
-    assert out["model"]["provider"] == "ollama"
+    assert out["model"]["provider"] == "llamacpp"
     assert out["harness"]["kind"] == "hermes"
     assert out["license"]["owned"] is False
     assert "be kind" in hc.compose_system_prompt()

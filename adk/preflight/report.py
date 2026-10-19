@@ -120,7 +120,7 @@ def render(report: CapabilityReport) -> str:
     # Context lines.
     m = report.machine or {}
     machine_bits = []
-    for k in ("os", "arch", "cpu", "ram_gb", "gpu", "ollama"):
+    for k in ("os", "arch", "cpu", "ram_gb", "gpu", "llama_server"):
         if k in m and m[k] not in (None, ""):
             machine_bits.append(f"{k}={m[k]}")
     lines.append("machine      : " + ("  ".join(machine_bits) if machine_bits else "unknown"))

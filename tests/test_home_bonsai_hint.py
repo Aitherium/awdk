@@ -41,6 +41,6 @@ def test_describe_and_probe_use_the_os_hint(monkeypatch):
 
 
 def test_other_presets_keep_their_hint():
-    assert models.hint_for("ollama") == models.PRESETS["ollama"].hint
+    assert models.hint_for("llamacpp") == models.PRESETS["llamacpp"].hint
     assert models.hint_for("nope") == ""
     assert isinstance(models.describe(ModelConfig(provider="deepseek", mode="byo"))["hint"], str)

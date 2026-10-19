@@ -280,6 +280,39 @@ def test_a_paired_machine_boots_into_the_identity_heartbeat_as_itself(monkeypatc
         "https://idp.test", "device-tok", True, "deck")
 
 
+def test_a_paired_machine_signed_in_later_still_holds_the_link(monkeypatch):
+    """spark, 2026-10-18: paired before `mode` was saved, then `adk login` as the owner.
+    It fell into the legacy loop: no reverse link, `reach: none`, rc 'Holding the link'."""
+    from adk import fleet_enroll
+
+    rec = {"node_id": NODE, "bearer_token": "device-tok", "enrolled_via": "pairing-code",
+           "enroll_base": "https://idp.test", "node_class": "spark"}  # no "mode"
+    monkeypatch.setenv("AITHER_FLEET_ENROLL", "1")
+    monkeypatch.setattr(fleet_enroll, "_load_node_auth", lambda: dict(rec))
+    monkeypatch.setattr(fleet_enroll, "_load_auth_config", lambda: {"access_token": "owner-tok"})
+    monkeypatch.setattr(fleet_enroll, "_backfill_node_tenant_id", lambda r: None)
+    links, started = [], {}
+
+    def fake_link(node_id, token, **kw):
+        links.append((node_id, token))
+        return None
+
+    async def rich(base, token, node_id, **kw):
+        started.update(base=base, token=token, device=kw.get("device"))
+
+    async def legacy(*a, **kw):
+        started["legacy"] = True
+
+    monkeypatch.setattr(fleet_enroll, "_start_node_link", fake_link)
+    monkeypatch.setattr(enrollment, "heartbeat_loop", rich)
+    monkeypatch.setattr(fleet_enroll, "_heartbeat_loop", legacy)
+    monkeypatch.setattr(fleet_enroll, "_start_heartbeat_task", _drive)
+    asyncio.run(fleet_enroll.enroll_on_boot(start_link=True))
+    assert "legacy" not in started
+    assert links == [(NODE, "owner-tok")]          # the owner's sign-in holds the link
+    assert (started["token"], started["device"]) == ("owner-tok", False)
+
+
 def _drive(coro):
     """Run a coroutine that never suspends to completion (the fake loop above)."""
     try:

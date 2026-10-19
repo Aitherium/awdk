@@ -128,6 +128,25 @@ class VLLMBackend(_OpenAICompatBackend):
         super().__init__(base_url=base_url, model=model, api_key=api_key)
 
 
+class LlamaCppBackend(_OpenAICompatBackend):
+    """A local ``llama-server`` (llama.cpp) — OpenAI-compatible, no key needed."""
+
+    name = "llamacpp"
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "http://127.0.0.1:8080",
+        model: str = "default",
+        api_key: str | None = None,
+    ) -> None:
+        # Callers may pass the OpenAI-style base with /v1; requests add it back.
+        base = base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[: -len("/v1")]
+        super().__init__(base_url=base, model=model, api_key=api_key)
+
+
 class DeepSeekBackend(_OpenAICompatBackend):
     name = "deepseek"
 

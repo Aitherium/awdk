@@ -1,10 +1,10 @@
-"""Minimal AitherADK agent — 20 lines, talks to Ollama."""
+"""Minimal AitherADK agent — 20 lines, talks to a local llama-server."""
 
 import asyncio
 from adk import AitherAgent
 
 async def main():
-    # Create an agent with the "aither" identity (defaults to Ollama on localhost)
+    # Create an agent with the "aither" identity (defaults to a local llama-server)
     agent = AitherAgent("aither")
 
     # Chat

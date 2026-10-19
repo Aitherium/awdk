@@ -71,7 +71,7 @@ async def start_microscheduler_heartbeat(
         microscheduler_url: MicroScheduler base URL (default from env or localhost:8150)
         interval: Heartbeat interval in seconds (default 30)
         capabilities: List of agent capabilities (e.g., ['research', 'coding'])
-        current_model: Current LLM model in use (e.g., 'bonsai-4b', 'ollama:llama2')
+        current_model: Current LLM model in use (e.g., 'bonsai-4b', 'llamacpp:default')
 
     Returns: None (runs indefinitely in background)
 

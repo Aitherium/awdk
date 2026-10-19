@@ -8,7 +8,7 @@
 #   docker compose -f docker-compose.grid.yml --profile embeddings up -d  # vLLM + embedding model
 #
 # Requires:
-#   - Mac Mini running Ollama with deepseek-r1:8b (see scripts/setup-mac-node.sh)
+#   - Mac Mini running llama.cpp (llama-server, Metal) (see scripts/setup-mac-node.sh)
 #   - Cluster nodes running llama.cpp (see scripts/setup-cluster-node.sh)
 #
 # Env vars:

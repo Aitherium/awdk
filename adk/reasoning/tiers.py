@@ -18,8 +18,8 @@ Configuration is stored at ``~/.aither/reasoning.json``::
       "version": 1,
       "default_tier": "orchestrator",
       "tiers": {
-        "fast":         {"backend": "ollama",   "model": "qwen2.5:1.5b"},
-        "orchestrator": {"backend": "ollama",   "model": "qwen2.5:14b"},
+        "fast":         {"backend": "llamacpp", "model": "default"},
+        "orchestrator": {"backend": "llamacpp", "model": "default"},
         "reasoning":    {"backend": "anthropic","model": "claude-opus-4-1"}
       }
     }
@@ -107,7 +107,7 @@ def _setup_help(provider: str) -> str:
 class TierSpec:
     """How a single tier is wired."""
 
-    backend: str           # "ollama" | "vllm" | "openai" | "anthropic" | "deepseek" | "moonshot" | "genesis" | "auto"
+    backend: str           # "llamacpp" | "vllm" | "openai" | "anthropic" | "deepseek" | "moonshot" | "genesis" | "auto"
     model: str             # provider model id, e.g. "qwen2.5:14b", "claude-opus-4-1"
     max_tokens: int | None = None
     temperature: float = 0.7
@@ -320,14 +320,16 @@ class ReasoningRouter:
         # Local import to keep ``adk.reasoning`` import-cheap.
         from adk.core.model import auto_backend
         from adk.core.backends.anthropic import AnthropicBackend
-        from adk.core.backends.ollama import OllamaBackend
         from adk.core.backends.openai_compat import (
             DeepSeekBackend,
+            LlamaCppBackend,
             OpenAIBackend,
             VLLMBackend,
         )
 
-        kind = (spec.backend or "auto").lower().strip()
+        from adk.legacy_backend import migrate_backend_name
+
+        kind = migrate_backend_name((spec.backend or "auto").lower().strip(), "reasoning tier")
         model = spec.model or "auto"
 
         if kind == "auto":
@@ -358,9 +360,10 @@ class ReasoningRouter:
                 raise RuntimeError(_setup_help("moonshot"))
             from adk.core.backends.openai_compat import MoonshotBackend
             return MoonshotBackend(api_key=key, model=model)
-        if kind == "ollama":
-            host = spec.base_url or os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
-            return OllamaBackend(base_url=host, model=model)
+        if kind == "llamacpp":
+            host = (spec.base_url or os.environ.get("AITHER_LLAMACPP_URL")
+                    or "http://127.0.0.1:8080")
+            return LlamaCppBackend(base_url=host, model=model)
         if kind == "genesis":
             # When AitherOS Genesis is reachable, route through it for VRAM
             # coordination via MicroScheduler. We model it as an OpenAI-compat

@@ -8,7 +8,7 @@ error must GUIDE them step-by-step instead of dead-ending. Every "no key" /
 Usage:
     from adk.llm.onboarding import guide, missing_key_message, provider_menu
     raise RuntimeError(missing_key_message("moonshot"))
-    print(guide("ollama"))
+    print(guide("llamacpp"))
     print(provider_menu())
 
 Keep guides SHORT (a terminal error, not a manual): where to get the key/server,
@@ -112,16 +112,6 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         ],
         "aliases": ["aitherium", "aither"],
     },
-    "ollama": {
-        "label": "Ollama (local, easiest self-hosted)",
-        "kind": "local",
-        "steps": [
-            "Install: https://ollama.com/download  (winget install Ollama.Ollama / brew install ollama)",
-            "Start + pull a model:  ollama serve   then   ollama pull gemma4:4b",
-            "Configure:  adk backend set ollama    (auto-detects localhost:11434)",
-            "Test:       adk ask \"hello\" --backend ollama",
-        ],
-    },
     "vllm": {
         "label": "vLLM (local GPU server, OpenAI-compatible)",
         "kind": "local",
@@ -135,10 +125,14 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         "label": "llama.cpp (CPU-friendly local server)",
         "kind": "local",
         "steps": [
-            "Get llama.cpp:  https://github.com/ggml-org/llama.cpp/releases  (or adk node bootstrap on CPU boxes)",
-            "Serve OpenAI-compatible:  llama-server -m model.gguf --port 8080",
+            "Easiest: adk node bootstrap   (CPU boxes get the cpu-llamacpp recipe; "
+            "weights come from artifact.aitherium.com)",
+            "Manual:  llama-server -m model.gguf --port 8080   "
+            "(https://github.com/ggml-org/llama.cpp/releases)",
             "Configure:  adk backend set llamacpp --base-url http://localhost:8080/v1",
+            "Test:       adk ask \"hello\" --backend llamacpp",
         ],
+        "aliases": ["llama.cpp", "llama-server", "local"],
     },
     "lmstudio": {
         "label": "LM Studio (desktop app, local server)",
@@ -165,7 +159,7 @@ MODEL_HINTS: Dict[str, str] = {
     "nemotron": "gateway",
     "nemotron-orchestrator": "gateway",
     "aither-orchestrator": "gateway",
-    "gemma4": "ollama",
+    "gemma4": "llamacpp",
     "gemma4-12b": "gateway",
     "qwen3.6": "gateway",
     "qwen36": "gateway",
@@ -182,12 +176,14 @@ for _name, _g in PROVIDER_GUIDES.items():
 
 def resolve_name(name: str) -> Optional[str]:
     """Resolve a provider name, alias, or known model name to a guide key."""
-    n = (name or "").strip().lower()
+    from adk.legacy_backend import migrate_backend_name
+
+    n = migrate_backend_name((name or "").strip().lower(), "backend name")
     if n in _ALIAS_INDEX:
         return _ALIAS_INDEX[n]
     if n in MODEL_HINTS:
         return MODEL_HINTS[n]
-    # Longest prefix wins so "gemma4-12b" (gateway) beats "gemma4" (ollama).
+    # Longest prefix wins so "gemma4-12b" (gateway) beats "gemma4" (llamacpp).
     for prefix in sorted(MODEL_HINTS, key=len, reverse=True):
         if n.startswith(prefix):
             return MODEL_HINTS[prefix]

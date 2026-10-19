@@ -314,20 +314,20 @@ BIG_CPU_BOX = {"ram_gb": 64.0, "cpu_cores": 16, "gpu_vendor": "none", "gpu_vram_
 
 
 def test_resolve_recipe_unchanged_without_ranking():
-    assert resolve_recipe(BIG_CPU_BOX)["recipe"]["id"] == "cpu-ollama"
-    assert resolve_recipe(BIG_CPU_BOX, ranking=[])["recipe"]["id"] == "cpu-ollama"
+    assert resolve_recipe(BIG_CPU_BOX)["recipe"]["id"] == "cpu-llamacpp"
+    assert resolve_recipe(BIG_CPU_BOX, ranking=[])["recipe"]["id"] == "cpu-llamacpp"
 
 
 def test_resolve_recipe_measured_winner_beats_tier_order():
-    got = resolve_recipe(BIG_CPU_BOX, ranking=["cpu-1bit-llamacpp", "cpu-ollama"])
+    got = resolve_recipe(BIG_CPU_BOX, ranking=["cpu-1bit-llamacpp", "cpu-llamacpp"])
     assert got["recipe"]["id"] == "cpu-1bit-llamacpp"
     assert "engine-tournament" in got["rationale"]
 
 
 def test_resolve_recipe_never_lets_auto_select_false_or_unfit_win():
-    ranking = ["strata-moe-offload", "bonsai-selfhost", "cuda-vllm-40gb", "metal-ollama"]
+    ranking = ["strata-moe-offload", "bonsai-selfhost", "cuda-vllm-40gb", "metal-llamacpp"]
     got = resolve_recipe(BIG_CPU_BOX, ranking=ranking)["recipe"]["id"]
-    assert got == "cpu-ollama"
+    assert got == "cpu-llamacpp"
     # the ranked ids are real recipes, so the exclusion is the rule, not a missing file
     for rid in ranking:
         assert recipes._load_recipe(rid), rid
@@ -336,7 +336,7 @@ def test_resolve_recipe_never_lets_auto_select_false_or_unfit_win():
 def test_resolve_recipe_reads_the_tournament_file(tmp_path, monkeypatch):
     f = tmp_path / "tournament.json"
     run = {"finished_at": time.time(), "node": {"host_sha256": t._host_hash()},
-           "ranking": ["bonsai-selfhost", "cpu-1bit-llamacpp", "cpu-ollama"]}
+           "ranking": ["bonsai-selfhost", "cpu-1bit-llamacpp", "cpu-llamacpp"]}
     f.write_text(json.dumps({"models": {"m": run}, "latest_model": "m"}), encoding="utf-8")
     monkeypatch.setenv(t.ENV_TOURNAMENT_FILE, str(f))
     assert resolve_recipe(BIG_CPU_BOX)["recipe"]["id"] == "cpu-1bit-llamacpp"
@@ -347,11 +347,11 @@ def test_resolve_recipe_ignores_a_ranking_that_raises(monkeypatch):
         raise RuntimeError("broken")
 
     monkeypatch.setattr(t, "load_ranking", boom)
-    assert resolve_recipe(BIG_CPU_BOX)["recipe"]["id"] == "cpu-ollama"
+    assert resolve_recipe(BIG_CPU_BOX)["recipe"]["id"] == "cpu-llamacpp"
 
 
 def test_explicit_recipe_id_still_wins_over_ranking():
-    got = resolve_recipe(BIG_CPU_BOX, recipe_id="cloud-api", ranking=["cpu-ollama"])
+    got = resolve_recipe(BIG_CPU_BOX, recipe_id="cloud-api", ranking=["cpu-llamacpp"])
     assert got["recipe"]["id"] == "cloud-api"
 
 
@@ -515,4 +515,4 @@ def test_cli_rejects_a_duplicate_entrant_id(monkeypatch, capsys):
 def test_single_measured_recipe_does_not_leapfrog_unmeasured_ones():
     """A tournament between A and B says nothing about C: a lone entry changes nothing."""
     got = resolve_recipe(BIG_CPU_BOX, ranking=["cpu-1bit-llamacpp"])["recipe"]["id"]
-    assert got == "cpu-ollama"
+    assert got == "cpu-llamacpp"

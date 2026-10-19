@@ -171,6 +171,29 @@ CAPABILITIES: List[Capability] = [
         why_unavailable='',
     ),
     Capability(
+        id='agent_ready',
+        display_name='Agent Ready - make any website discoverable and usable by AI agents',
+        kind='toolpack',
+        tools=['agent_ready_*'],
+        owning_agent='prometheus',
+        available=True,
+        description=(
+            'Make a website agent-ready and prove it. agent_ready_probe checks a site with no thir'
+            'd party (Content Signals, Link headers, Accept text/markdown negotiation, RFC 9727 AP'
+            'I catalog, OAuth/OIDC discovery, RFC 9728 protected-resource metadata, auth.md, MCP s'
+            'erver card, A2A agent card, agent-skills index) and returns pass/fail, evidence and t'
+            'he fix per check. agent_ready_scan runs the public isitagentready.com scanner. agent_'
+            'ready_worker_template returns the Cloudflare Worker aitherium.com runs in front of Gi'
+            'tHub Pages for the headers, content types and markdown negotiation static hosting can'
+            'not do. Free, keyless, standard library only.'
+            ),
+        tier='free',
+        requires_auth=False,
+        icon='globe',
+        tags=['agents', 'discovery', 'mcp', 'oauth', 'markdown', 'well-known'],
+        why_unavailable='',
+    ),
+    Capability(
         id='deep_research',
         display_name='Deep Research â€” Multi-Engine Web Research & Report Writing',
         kind='toolpack',
@@ -328,9 +351,9 @@ CAPABILITIES: List[Capability] = [
         available=True,
         description=(
             'Hardware-aware inference node bootstrap. Detects system specs, resolves deployment re'
-            'cipes (vLLM, Ollama, llama.cpp, cloud-api), renders deployment plans, applies deploym'
-            'ent (Docker Compose or systemd), enrolls with the control plane, registers backends, '
-            'and verifies inference endpoints. All tools are fail-soft dict-returners.'
+            'cipes (vLLM, llama.cpp, cloud-api), renders deployment plans, applies deployment (Doc'
+            'ker Compose or systemd), enrolls with the control plane, registers backends, and veri'
+            'fies inference endpoints. All tools are fail-soft dict-returners.'
             ),
         tier='free',
         requires_auth=False,
@@ -341,7 +364,7 @@ CAPABILITIES: List[Capability] = [
                 'inference',
                 'deployment',
                 'vllm',
-                'ollama',
+                'llamacpp',
                 'hardware',
                 'edge'
             ],

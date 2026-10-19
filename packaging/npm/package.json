@@ -1,6 +1,6 @@
 {
   "name": "aither-adk",
-  "version": "3.8.76",
+  "version": "3.8.79",
   "description": "AitherADK CLI \u2014 build AI agent fleets with any LLM backend",
   "bin": {
     "aither": "bin/aither.js"
@@ -13,7 +13,7 @@
     "agents",
     "llm",
     "aitheros",
-    "ollama",
+    "llamacpp",
     "openai",
     "anthropic",
     "mcp"

@@ -40,7 +40,7 @@ class AgentRef:
     invoke_url: str = ""
     reach: str = "unknown"          # tunnel | mesh | lan | local | unknown
     model: str = ""                 # e.g. Bonsai-27B-Q1_0.gguf
-    provider_hint: str = ""         # e.g. llamacpp | ollama | genesis | vllm
+    provider_hint: str = ""         # e.g. llamacpp | genesis | vllm
     capabilities: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)   # A2A skill ids (for `adk invoke`)
     public_key: str = ""            # Ed25519 pubkey for signed-A2A trust
@@ -54,13 +54,16 @@ class AgentRef:
     def chat_protocol(self) -> str:
         """How to chat with this agent:
           "adk"    -> a full adk agent server, POST {url}/chat/stream (AitherOS SSE).
-          "openai" -> a raw OpenAI-compatible inference server (llama.cpp / ollama /
+          "openai" -> a raw OpenAI-compatible inference server (llama.cpp /
                       vllm), POST {url}/v1/chat/completions.
         Explicit override wins; else inferred from provider_hint (a raw inference
         backend => openai) — a registered adk agent defaults to "adk"."""
         if self.chat_protocol_override in ("adk", "openai"):
             return self.chat_protocol_override
-        if self.provider_hint.lower() in ("llamacpp", "ollama", "openai", "vllm", "lmstudio"):
+        from adk.legacy_backend import migrate_backend_name
+
+        hint = migrate_backend_name(self.provider_hint.lower(), "registry provider_hint")
+        if hint in ("llamacpp", "openai", "vllm", "lmstudio"):
             return "openai"
         return "adk"
 

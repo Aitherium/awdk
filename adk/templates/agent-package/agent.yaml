@@ -16,8 +16,8 @@ cognitive:
   intent_engine: true
 
 llm:
-  backend: ollama
-  model: llama3.2:3b
+  backend: llamacpp
+  model: default
   fallback_model: ""
 
 resources:

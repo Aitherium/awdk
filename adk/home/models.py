@@ -1,4 +1,4 @@
-"""Model choice for Agent Home: local (Bonsai / llama.cpp / Ollama / awnode) or BYO key.
+"""Model choice for Agent Home: local (Bonsai / llama.cpp / awnode) or BYO key.
 
 Every choice maps onto a provider ``adk.llm.LLMRouter`` already knows, so the
 agent's model is built by the same code every adk agent uses.
@@ -38,10 +38,8 @@ PRESETS: Dict[str, Preset] = {
                            "Bonsai 2 on the PrismML prism-b10685 build; again to restart)"),
     "llamacpp": Preset("local", "llamacpp", "http://127.0.0.1:8080/v1", "",
                        hint="run: llama-server -m <model.gguf> --port 8080"),
-    "ollama": Preset("local", "ollama", "http://localhost:11434", "gemma4:4b",
-                     hint="install Ollama, then: ollama pull gemma4:4b"),
     # awnode: this machine's own gateway (OpenAI-compatible /v1 on :8090). It routes
-    # to whichever local backend it found (Bonsai, llama.cpp, vLLM, Ollama) and
+    # to whichever local backend it found (Bonsai, llama.cpp, vLLM) and
     # resolves the unpinned model "auto" to one that backend actually serves.
     # Loopback callers need no token (awnode _require_node_owner).
     "awnode": Preset("local", "llamacpp", AWNODE_URL, "auto",
@@ -154,7 +152,7 @@ def probe(cfg: ModelConfig, timeout: float = 3.0) -> Dict[str, Any]:
     # the empty string reported every fresh home as "/models unreachable".
     preset = PRESETS.get(cfg.provider)
     url = (cfg.base_url or (preset.base_url if preset else "")).rstrip("/")
-    url = f"{url}/api/tags" if cfg.provider == "ollama" else f"{url}/models"
+    url = f"{url}/models"
     try:
         r = httpx.get(url, timeout=timeout)
     except httpx.HTTPError as exc:
@@ -178,7 +176,7 @@ def _awnode_verdict(url: str, r: Any) -> Dict[str, Any]:
     if not served:
         return {"ok": False, "detail": f"{url} -> 200, but awnode serves no model: start "
                                        "a local backend it can route to (Bonsai / "
-                                       "llama-server / vLLM / Ollama), then re-check"}
+                                       "llama-server / vLLM), then re-check"}
     backends = sorted({str(m.get("owned_by")) for m in data
                        if isinstance(m, dict) and m.get("owned_by")})
     return {"ok": True, "models": served,

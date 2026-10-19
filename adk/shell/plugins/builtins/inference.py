@@ -3,11 +3,11 @@ Inference Plugin for AitherShell
 ==================================
 
 Configure local/custom LLM inference backends. Lets users bring their own
-Ollama, vLLM, or cloud API keys and route all AitherOS inference through them.
+llama.cpp, vLLM, or cloud API keys and route all AitherOS inference through them.
 
 Usage:
     /inference                              — Show current config
-    /inference set --provider ollama --url http://localhost:11434
+    /inference set --provider llamacpp --url http://127.0.0.1:8080
     /inference set --provider openai --key sk-... --url https://api.openai.com/v1
     /inference set --provider vllm --url http://192.168.1.10:8000
     /inference map reasoning deepseek-r1:14b   — Route reasoning to local model
@@ -24,6 +24,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from adk.legacy_backend import migrate_backend_name
 from adk.shell.plugins import SlashCommand
 
 try:
@@ -116,7 +117,7 @@ class InferencePlugin(SlashCommand):
             return (
                 "**No custom inference configured** — using platform defaults.\n\n"
                 "Set up your local backend:\n"
-                "  `/inference set --provider ollama --url http://localhost:11434`\n"
+                "  `/inference set --provider llamacpp --url http://127.0.0.1:8080`\n"
                 "  `/inference set --provider vllm --url http://your-gpu:8000`\n"
                 "  `/inference set --provider openai --key sk-... --url https://api.openai.com/v1`"
             )
@@ -143,7 +144,7 @@ class InferencePlugin(SlashCommand):
     async def _set(self, args: List[str], ctx: Dict[str, Any]) -> str:
         import httpx
 
-        provider = "ollama"
+        provider = "llamacpp"
         url = None
         api_key = None
 
@@ -168,7 +169,7 @@ class InferencePlugin(SlashCommand):
 
         if not url:
             defaults = {
-                "ollama": "http://localhost:11434",
+                "llamacpp": "http://127.0.0.1:8080",
                 "vllm": "http://localhost:8000",
                 "openai": "https://api.openai.com/v1",
                 "anthropic": "https://api.anthropic.com",
@@ -226,7 +227,7 @@ class InferencePlugin(SlashCommand):
 
         # Update with new mapping
         body = {
-            "provider": config.get("provider", "ollama"),
+            "provider": migrate_backend_name(config.get("provider", "llamacpp")),
             "base_url": config.get("base_url"),
             "model_mapping": mappings,
         }
@@ -254,7 +255,7 @@ class InferencePlugin(SlashCommand):
             return "No inference backend configured. Run `/inference set` first."
 
         config = resp.json()["config"]
-        provider = config.get("provider", "?")
+        provider = migrate_backend_name(config.get("provider", "?"), "inference provider")
         base_url = config.get("base_url")
 
         if not base_url:
@@ -264,20 +265,7 @@ class InferencePlugin(SlashCommand):
         lines = [f"Testing **{provider}** at `{base_url}`..."]
 
         try:
-            if provider == "ollama":
-                async with httpx.AsyncClient(timeout=10) as c:
-                    resp = await c.get(f"{base_url}/api/tags")
-                if resp.status_code == 200:
-                    models = resp.json().get("models", [])
-                    lines.append(f"  Connected! {len(models)} model(s) available:")
-                    for m in models[:10]:
-                        name = m.get("name", "?")
-                        size = m.get("size", 0) / (1024**3)
-                        lines.append(f"    `{name}` ({size:.1f}GB)")
-                else:
-                    lines.append(f"  Connection failed: {resp.status_code}")
-
-            elif provider in ("vllm", "custom"):
+            if provider in ("vllm", "custom", "llamacpp"):
                 async with httpx.AsyncClient(timeout=10) as c:
                     resp = await c.get(f"{base_url}/v1/models")
                 if resp.status_code == 200:
@@ -328,24 +316,11 @@ class InferencePlugin(SlashCommand):
             return "No inference backend configured. Run `/inference set` first."
 
         config = resp.json()["config"]
-        provider = config.get("provider")
+        provider = migrate_backend_name(config.get("provider"), "inference provider")
         base_url = config.get("base_url")
 
         try:
-            if provider == "ollama":
-                async with httpx.AsyncClient(timeout=10) as c:
-                    resp = await c.get(f"{base_url}/api/tags")
-                models = resp.json().get("models", [])
-                if not models:
-                    return "No models pulled on your Ollama instance.\nPull one: `ollama pull llama3.2:8b`"
-                lines = [f"**Models on {provider} ({base_url})**\n"]
-                for m in models:
-                    name = m.get("name", "?")
-                    size = m.get("size", 0) / (1024**3)
-                    lines.append(f"  `{name}` — {size:.1f}GB")
-                return "\n".join(lines)
-
-            elif provider in ("vllm", "custom"):
+            if provider in ("vllm", "custom", "llamacpp"):
                 async with httpx.AsyncClient(timeout=10) as c:
                     resp = await c.get(f"{base_url}/v1/models")
                 models = resp.json().get("data", [])
@@ -389,7 +364,6 @@ class InferencePlugin(SlashCommand):
         "hybrid": "hybrid-dsv4",
         "dgx": "dgx-hybrid",
         "dgx-deepseek": "hybrid-dsv4",
-        "ollama": "ollama-only",
         "ultrathink": "local-ultrathink",
         "gemma4": "local-gemma4",
     }
@@ -431,7 +405,6 @@ class InferencePlugin(SlashCommand):
             lines.append("  `/inference mode deepseek`  — Orchestrator + DeepSeek V4 cloud")
             lines.append("  `/inference mode cloud`     — Orchestrator + cloud offload")
             lines.append("  `/inference mode dgx`       — Orchestrator + DGX Spark")
-            lines.append("  `/inference mode ollama`    — Ollama only (no GPU)")
             lines.append("")
             lines.append("  `/inference stacks` — List all available stacks")
             return "\n".join(lines)
@@ -542,7 +515,7 @@ class InferencePlugin(SlashCommand):
             "  `/inference mode cloud`          — Local orchestrator + cloud offload\n"
             "  `/inference stacks`              — List all model stacks\n\n"
             "**Custom Backend:**\n"
-            "  `/inference set --provider ollama --url http://localhost:11434`\n"
+            "  `/inference set --provider llamacpp --url http://127.0.0.1:8080`\n"
             "  `/inference set --provider vllm --url http://my-gpu:8000`\n"
             "  `/inference set --provider openai --key sk-... --url https://api.openai.com/v1`\n\n"
             "**Model Mapping:**\n"

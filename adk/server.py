@@ -4600,7 +4600,7 @@ def create_app(
             status_code=503,
             content={
                 "error": "no_backend",
-                "message": "No LLM backend available. Set AITHER_API_KEY to use the gateway, or install Ollama locally.",
+                "message": "No LLM backend available. Set AITHER_API_KEY to use the gateway, or run llama-server locally (adk node bootstrap).",
                 "demo": "https://demo.aitherium.com",
                 "gateway": "https://gateway.aitherium.com",
                 "docs": "https://github.com/Aitherium/awdk/blob/main/docs/GETTING_STARTED.md",
@@ -8222,7 +8222,7 @@ async def _stream_agent_response(agent, message: str, history: list[dict], model
             yield f"data: {json.dumps(data)}\n\n"
     except Exception as exc:  # noqa: BLE001 — this is the terminal SSE error
         # boundary; any uncaught exception here (observed live: httpx.HTTPStatusError
-        # from a backend rejecting a tool-calling request, e.g. an Ollama model that
+        # from a backend rejecting a tool-calling request, e.g. a local model that
         # doesn't support the tools schema) must surface as a clear error chunk to
         # the client, not crash the generator and leave the HTTP response hanging
         # with zero bytes sent ("(no response)" client-side, indistinguishable from
@@ -8697,7 +8697,7 @@ def main():
     parser.add_argument("--host", default=None,
                         help="Host (default: $AITHER_HOST or 0.0.0.0; "
                              "127.0.0.1 when AITHER_OFFLINE=1)")
-    parser.add_argument("--backend", "-b", help="LLM backend: ollama, openai, anthropic")
+    parser.add_argument("--backend", "-b", help="LLM backend: llamacpp, vllm, openai, anthropic")
     parser.add_argument("--model", "-m", help="Model name override")
     parser.add_argument("--fleet", "-f", default=None, help="Fleet YAML config file for multi-agent mode")
     parser.add_argument("--agents", "-a", default=None, help="Comma-separated agent identities for fleet mode (e.g. aither,lyra,demiurge)")

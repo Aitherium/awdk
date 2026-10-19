@@ -16,12 +16,12 @@ that offers a harness it cannot start is worse than one that says so.
 
 from __future__ import annotations
 
-import os
 import io
+import os
 import re
-import sys
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
@@ -371,6 +371,12 @@ register(
 )
 
 
+def _opencode_format_argv() -> list[str]:
+    """``--format json`` unless AITHER_HARNESS_OPENCODE_FORMAT says ``default``."""
+    fmt = (os.environ.get("AITHER_HARNESS_OPENCODE_FORMAT") or "json").strip().lower()
+    return [] if fmt == "default" else ["--format", "json"]
+
+
 # Harnesses declared but not installed on every box. Declaring them means
 # `harness list` tells you what AitherShell COULD drive and how to get it,
 # instead of silently pretending the world is Claude-only.
@@ -384,7 +390,9 @@ for _late in (
         binary="codex",
         version_argv=["--version"],
         install_hint="npm i -g @openai/codex",
-        adapter="text",
+        # thread/turn/item events -> tool.call/tool.result (adapters.translate_codex);
+        # under "text" every JSON line fell through to RAW and no call was harvestable
+        adapter="codex",
         json_lines=True,
         build_argv=lambda spec, launch: [spec.binary, "exec", "--json", launch.prompt],
     ),
@@ -411,8 +419,41 @@ for _late in (
         binary="opencode",
         version_argv=["--version"],
         install_hint="npm i -g opencode-ai",
+        # `run --format json` emits tool_use/text/step events (translate_opencode); a
+        # non-JSON line is still assistant text, so AITHER_HARNESS_OPENCODE_FORMAT=default
+        # (an old binary without --format) degrades to the previous plain-text session
+        adapter="opencode",
+        build_argv=lambda spec, launch: [spec.binary, "run", *_opencode_format_argv(),
+                                         launch.prompt],
+    ),
+    HarnessSpec(
+        id="harness2",
+        prompt_carries_context=True,
+        label="Harness² (recursive harness refinement)",
+        description=(
+            "Google's Harness² (Apache-2.0, pin 1cfe254e) on LOCAL models through "
+            "MicroScheduler -- one executor turn per prompt; refinement runs are "
+            "AitherBench-graded and live on the fleet host, never Vertex"
+        ),
+        transport=Transport.ONESHOT_PER_TURN,
+        # A wrapper, not upstream's `harness2` CLI: upstream's sweep CLI reaches its
+        # models through Vertex. The wrapper runs the bench adapter in harness2's
+        # own Python 3.12 -- a SUBPROCESS, because harness2 cannot be imported
+        # into this py3.10 package.
+        binary="harness2-aither",
+        install_hint=(
+            "Install the harness2-aither wrapper on PATH, or point "
+            "AITHER_HARNESS_HARNESS2_BIN at a wrapper that runs aither_bench_adapter.py"
+        ),
         adapter="text",
-        build_argv=lambda spec, launch: [spec.binary, "run", launch.prompt],
+        build_argv=lambda spec, launch: [
+            spec.binary,
+            *(["--executor-model", launch.model] if launch.model else []),
+            "turn", "--prompt", launch.prompt,
+        ],
+        # Third-party research code that executes model-written edits: licensed per
+        # caller, not free to every principal the daemon authenticates.
+        requires_entitlement="harness2",
     ),
 ):
     register(_late)

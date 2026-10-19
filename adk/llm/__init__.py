@@ -16,6 +16,7 @@ from .base import (
     llm_retry,
     strip_internal_tags,
 )
+from ..legacy_backend import LLAMACPP_DEFAULT_URL, migrate_backend_name
 from .continuation import run_continuation, stitch
 
 if TYPE_CHECKING:
@@ -56,10 +57,12 @@ _EFFORT_MODELS = {
         "medium": "aither-orchestrator",
         "large": "aither-reasoning",
     },
-    "ollama": {
-        "small": "gemma4:4b",
-        "medium": "nemotron-orchestrator-8b",
-        "large": "deepseek-r1:14b",
+    "llamacpp": {
+        # llama-server serves the one GGUF it was started with; "" lets the
+        # provider send its configured default model id.
+        "small": "",
+        "medium": "",
+        "large": "",
     },
     "openai": {
         "small": "gpt-4o-mini",
@@ -92,7 +95,7 @@ _EFFORT_MODELS = {
         "large": "",
     },
     "dual": {
-        "small": "gemma4:4b",               # local Ollama
+        "small": "bonsai-selfhost",         # local llama-server (install-bonsai.sh)
         "medium": "aither-orchestrator",     # remote desktop
         "large": "aither-reasoning",         # remote desktop
     },
@@ -104,7 +107,7 @@ _EFFORT_MODELS = {
 # sent to a cloud endpoint is a guaranteed 404. "dual" is excluded on purpose —
 # only its `small` tier is local, so a single tier-wide substitution would break
 # its remote tiers.
-_HARDWARE_SCORED_PROVIDERS = frozenset({"ollama", "llamacpp", "vllm", "local"})
+_HARDWARE_SCORED_PROVIDERS = frozenset({"llamacpp", "vllm", "local"})
 
 # Default inference URL — mcp.aitherium.com hosts the OpenAI-compatible
 # /v1/chat/completions endpoint with ACTA auth and tenant scoping.
@@ -154,7 +157,7 @@ class LLMRouter:
     """Multi-backend LLM router with auto-detection and effort-based model selection.
 
     Usage:
-        # Auto-detect (desktop spine → self-hosted → vLLM → gateway → cloud; never Ollama)
+        # Auto-detect (desktop spine → self-hosted → vLLM → gateway → cloud)
         router = LLMRouter()
 
         # Explicit backend
@@ -211,6 +214,7 @@ class LLMRouter:
         self._failover_cooldown: float = 0.0
 
         if provider:
+            provider = migrate_backend_name(provider, "LLMRouter(provider=...)")
             self._provider = self._create_provider(provider, base_url, api_key)
             self._provider_name = provider
         else:
@@ -234,6 +238,8 @@ class LLMRouter:
         "bonsai": "http://127.0.0.1:8080/v1",
         # FreeLLMAPI (BYO free-tier keys; adk.freellmapi). Docker/server default port.
         "freellmapi": "http://127.0.0.1:3001/v1",
+        # llama-server's own default (`llama-server -m model.gguf`).
+        "llamacpp": LLAMACPP_DEFAULT_URL,
     }
 
     # Default models per named provider
@@ -247,11 +253,13 @@ class LLMRouter:
         "bonsai-local": "bonsai-27b",
         "bonsai": "bonsai-selfhost",  # the --alias install-bonsai.sh gives llama-server
         "freellmapi": "auto",  # FreeLLMAPI's own router picks among the user's free tiers
+        "llamacpp": "default",  # llama-server answers for the one GGUF it serves
     }
 
     def _create_provider(
         self, name: str, base_url: str | None = None, api_key: str | None = None
     ) -> LLMProvider:
+        name = migrate_backend_name(name)
         if name == "gateway":
             from .openai_compat import OpenAIProvider
             gateway_url = base_url or _GATEWAY_INFERENCE_URL
@@ -260,12 +268,6 @@ class LLMRouter:
                 api_key=api_key or "",
                 default_model=self._model or "aither-orchestrator",
                 ctk_by_model=_DEFAULT_CTK_BY_MODEL,
-            )
-        elif name == "ollama":
-            from .ollama import OllamaProvider
-            return OllamaProvider(
-                host=base_url or "http://localhost:11434",
-                default_model=self._model or "gemma4:4b",
             )
         elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together",
                       "deepseek", "moonshot", "genesis", "bonsai-local", "bonsai",
@@ -335,7 +337,7 @@ class LLMRouter:
         else:
             raise ValueError(
                 f"Unknown provider: {name}. "
-                "Use 'gateway', 'ollama', 'openai', 'anthropic', 'gemini', 'deepseek', "
+                "Use 'gateway', 'openai', 'anthropic', 'gemini', 'deepseek', "
                 "'moonshot', 'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', "
                 "'genesis', 'bonsai-local', 'bonsai', 'freellmapi', 'picolm', or 'acp'."
             )
@@ -373,7 +375,7 @@ class LLMRouter:
             if await p.health_check():
                 # A configured model must actually be served here. Measured
                 # 2026-09-23: with the spine (:8150) unreachable, discovery found
-                # Ollama on :11434 and every turn asked it for bonsai2-27b ->
+                # a local server on :11434 and every turn asked it for bonsai2-27b ->
                 # 'model not found' -> 'empty completion' in awsh. Same rule the
                 # vLLM port scan already applies (Skipping localhost:%d).
                 if self._model:
@@ -447,49 +449,6 @@ class LLMRouter:
             "providers' terms apply: %s", fl.LABEL, det.url, model, fl.TOS_URL,
         )
         return p
-
-    async def _try_ollama(self) -> LLMProvider | None:
-        """Try Ollama on localhost. Returns provider or None."""
-        try:
-            from .ollama import OllamaProvider
-            host = (self._config.ollama_host if self._config else None) or "http://localhost:11434"
-            model = self._model or ""
-            p = OllamaProvider(host=host, default_model=model or "gemma4:4b")
-            if await p.health_check():
-                if model:
-                    # An explicitly configured model Ollama does not have 404s every
-                    # chat; skip so the ladder can reach a backend that serves it.
-                    try:
-                        installed_all = await p.list_models()
-                    except Exception:  # noqa: BLE001 — no list = cannot confirm
-                        installed_all = []
-                    tagged = model if ":" in model else f"{model}:latest"
-                    if installed_all and model not in installed_all and tagged not in installed_all:
-                        logger.info(
-                            "Skipping Ollama at %s: has %s, not %s",
-                            host, ", ".join(installed_all[:4]), model,
-                        )
-                        return None
-                if not model:
-                    # Validate against what is actually installed — a hardcoded
-                    # default that does not exist on this host 404s every chat
-                    # (measured: a box with only llama3.2:3b was defaulted to a
-                    # phantom gemma4:4b). Prefer a chat model over embedding tags.
-                    try:
-                        installed = [
-                            m for m in await p.list_models()
-                            if "embed" not in m.lower()
-                        ]
-                        if installed:
-                            p.default_model = installed[0]
-                    except Exception as e:  # noqa: BLE001 — list_models is best-effort
-                        logger.debug("Ollama model list unavailable, keeping default: %s", e)
-                self._provider_name = "ollama"
-                logger.info("Auto-detected Ollama at %s (model: %s)", host, p.default_model)
-                return p
-        except Exception as e:  # noqa: BLE001 — detection is best-effort
-            logger.debug("Ollama auto-detect failed: %s", e)
-        return None
 
     async def _try_vllm(self) -> LLMProvider | None:
         """Try vLLM on configured URL, standard AitherOS ports, and vLLM default.
@@ -729,14 +688,11 @@ class LLMRouter:
             elif backend == "gateway":
                 api_key = cfg.aither_api_key
 
-        if not api_key and backend not in ("vllm", "ollama"):
+        if not api_key and backend not in ("vllm", "llamacpp"):
             logger.debug("Reasoning backend '%s' configured but no API key available", backend)
             return
 
-        # Ollama uses native /api/chat, not OpenAI /v1 — strip /v1 suffix
         base_url = cfg.reasoning_base_url or None
-        if base_url and backend == "ollama":
-            base_url = base_url.rstrip("/").removesuffix("/v1")
 
         try:
             self._reasoning_provider = self._create_provider(
@@ -807,14 +763,11 @@ class LLMRouter:
             elif backend == "gateway":
                 api_key = cfg.aither_api_key
 
-        if not api_key and backend not in ("vllm", "ollama"):
+        if not api_key and backend not in ("vllm", "llamacpp"):
             logger.debug("Perception backend '%s' configured but no API key available", backend)
             return
 
-        # Ollama uses native /api/chat, not OpenAI /v1 — strip /v1 suffix
         base_url = cfg.perception_base_url or None
-        if base_url and backend == "ollama":
-            base_url = base_url.rstrip("/").removesuffix("/v1")
 
         try:
             self._perception_provider = self._create_provider(
@@ -876,11 +829,6 @@ class LLMRouter:
         see _try_local_selfhost. Then vLLM containers. Gateway is cloud fallback when
         no local GPU.
 
-        Ollama is NEVER auto-detected: a stray Ollama on :11434 used to become the
-        brain (or a silent low-effort side path beside the spine) with whatever small
-        model it happened to hold. It is used only when asked for by name
-        (provider="ollama" / llm_backend: ollama).
-
         When cloud_mode is "cloud_first" or "cloud_only" (set by `adk setup --mode cloud`),
         skip local probes and go straight to cloud API keys.
         """
@@ -888,11 +836,11 @@ class LLMRouter:
 
         # 0. Explicit backend (--backend / AITHER_LLM_BACKEND / config) ALWAYS wins.
         # For a self-hosted agent the operator's chosen brain (deepseek, their own
-        # vllm/ollama, etc.) must take precedence over gateway auto-selection — a
+        # vllm/llamacpp, etc.) must take precedence over gateway auto-selection — a
         # saved AITHER_API_KEY must not silently hijack an explicit --backend.
         # Default is "auto" (and "gateway" still flows through detection), so this
         # only fires when a concrete backend was explicitly requested.
-        explicit = (
+        explicit = migrate_backend_name(
             (getattr(self._config, "llm_backend", "") or "").strip().lower()
             if self._config else ""
         )
@@ -983,7 +931,7 @@ class LLMRouter:
             self._remote_provider = desktop
             self._remote_provider_name = "desktop"
             self._remote_healthy = True
-            # The configured desktop spine is the ONLY provider. No local Ollama
+            # The configured desktop spine is the ONLY provider. No local
             # side path: low-effort turns go to the spine like every other turn.
             self._provider_name = "desktop"
             return desktop
@@ -1103,7 +1051,7 @@ class LLMRouter:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             # Determine if this is a local or cloud request
             _prov = provider_name or self._provider_name
-            is_local = _prov in ("ollama", "vllm", "llamacpp", "picolm", "desktop")
+            is_local = _prov in ("vllm", "llamacpp", "picolm", "desktop", "local")
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "provider": "local" if is_local else _prov,
@@ -1184,7 +1132,7 @@ class LLMRouter:
             router.set_failover_chain([
                 ("deepseek", None, deepseek_key),
                 ("moonshot", None, moonshot_key),
-                ("ollama", None, None),
+                ("llamacpp", None, None),
             ])
         """
         self._failover_providers = []
@@ -1222,7 +1170,7 @@ class LLMRouter:
             "model": self._model or "auto",
         }
         if self._local_provider is not None:
-            info["local"] = "ollama"
+            info["local"] = "local"
         if self._remote_provider is not None:
             info["remote"] = self._remote_provider_name
         if hasattr(self, "_reasoning_provider") and self._reasoning_provider is not None:
@@ -1312,7 +1260,7 @@ class LLMRouter:
                 return profile_map[tier]
 
         # Hardware-scored recommendation — LOCAL providers only. The ODS catalog
-        # is a library of local GGUF/Ollama models, so handing `qwen2.5-1.5b`
+        # is a library of local GGUF models, so handing `qwen2.5-1.5b`
         # to the OpenAI or Anthropic API is a guaranteed 404. This path used to
         # be unreachable (a dead is_available() gate meant it always returned
         # None), which hid the fact that it applied to EVERY provider; removing
@@ -1346,7 +1294,7 @@ class LLMRouter:
         - medium → general (balanced)
         - large → reasoning (quality over speed)
 
-        Returns Ollama-compatible model name or None if llmfit unavailable.
+        Returns a local model name or None if llmfit unavailable.
         """
         global _llmfit_models, _llmfit_checked
 

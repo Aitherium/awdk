@@ -677,7 +677,7 @@ class SetupPlugin(SlashCommand):
                 lines.append("  ⚠️ nvidia-smi found but no GPU detected")
         else:
             lines.append("  ⚠️ No NVIDIA GPU detected — vLLM needs a CUDA GPU")
-            lines.append("  For CPU-only, use `/setup node` (Ollama backend)")
+            lines.append("  For CPU-only, use `/setup node` (llama.cpp backend)")
             return "\n".join(lines)
 
         compose_file = repo / ".DEPLOYMENT" / "compose" / "docker-compose.aitheros.yml"

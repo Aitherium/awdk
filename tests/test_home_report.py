@@ -64,7 +64,6 @@ def _build(home, days=30):
 
 @pytest.mark.parametrize("provider,url,boundary", [
     ("bonsai", "", "on-device"),
-    ("ollama", "", "on-device"),
     ("awnode", "", "on-device"),
     ("llamacpp", "http://192.168.1.20:8080/v1", "local-network"),
     ("deepseek", "", "cloud"),

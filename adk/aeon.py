@@ -1,7 +1,7 @@
 """Aeon — Multi-Agent Group Chat for AitherADK.
 
 Ports the core group chat pattern from AitherOS AitherAeon into a standalone
-module that works with any LLM backend (Ollama, vLLM, cloud APIs).
+module that works with any LLM backend (llama.cpp, vLLM, cloud APIs).
 
 Usage:
     from adk.aeon import AeonSession, group_chat
@@ -139,7 +139,7 @@ class AeonSession:
     """Multi-agent group chat session.
 
     Creates one AitherAgent per participant, fires them in parallel (or serial
-    for Ollama), and optionally synthesizes via the orchestrator.
+    for a single-slot local server), and optionally synthesizes via the orchestrator.
 
     Args:
         participants: Explicit list of agent names. Overrides preset.
@@ -329,10 +329,10 @@ class AeonSession:
                 self._history.append(resp)
                 continue
 
-            # Detect if Ollama (serial) or vLLM/cloud (parallel)
+            # Detect a single-slot local server (serial) vs vLLM/cloud (parallel)
             provider = self._shared_llm._provider_name
-            if provider == "ollama":
-                # Serial — Ollama serializes requests anyway
+            if provider in ("llamacpp", "picolm"):
+                # Serial — a single-slot llama-server serializes requests anyway
                 round_responses = []
                 for name in non_orch:
                     resp = await self._fire_agent(name, message, round_num)

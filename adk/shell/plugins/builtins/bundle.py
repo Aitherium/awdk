@@ -114,7 +114,6 @@ def _summarize_manifest(m: Dict[str, Any]) -> str:
         f"  playbooks:      {m.get('playbook_count', 0)}\n"
         f"  vllm workers:   {sm.get('vllm_workers', 0)}\n"
         f"  vllm backends:  {sm.get('vllm_backends', 0)}\n"
-        f"  ollama models:  {sm.get('ollama_models', 0)}\n"
         f"  license signed: {m.get('license_signed', False)}\n"
         f"  files:          {len(m.get('files', {}))}\n"
     )

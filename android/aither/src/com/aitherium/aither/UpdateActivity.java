@@ -18,6 +18,8 @@ import java.io.File;
  */
 public class UpdateActivity extends Activity {
     static final String STATUS = "com.aitherium.aither.INSTALL_STATUS";
+    /** Android's confirmation for a quiet session it would not finish alone (UpdateResult). */
+    static final String CONFIRM = "confirm";
 
     @Override
     protected void onCreate(Bundle b) {
@@ -26,7 +28,24 @@ public class UpdateActivity extends Activity {
             onStatus(getIntent());
             return;
         }
+        if (confirmPending(getIntent())) return;
         install();
+    }
+
+    /** The session is already written: open Android's own confirmation for it, one tap. */
+    private boolean confirmPending(Intent i) {
+        @SuppressWarnings("deprecation") // the typed overload is API 33; this app runs from 29
+        Intent confirm = i.getParcelableExtra(CONFIRM);
+        // only Android's installer confirmation is ever started from here, nothing else
+        if (confirm == null || confirm.getAction() == null
+                || !confirm.getAction().startsWith("android.content.pm.action.CONFIRM_")) return false;
+        try {
+            startActivity(confirm);
+            finish();
+            return true;
+        } catch (RuntimeException e) {
+            return false; // that session is gone: write a fresh one
+        }
     }
 
     @Override
@@ -61,8 +80,10 @@ public class UpdateActivity extends Activity {
             return;
         }
         try {
-            // Same session as the quiet path: this tap also makes Aither the update owner,
-            // so the next update can install without one.
+            // Same session as the quiet path: it asks for no user action and for update
+            // ownership, and after it Aither is the installer of record, so the next update
+            // installs without a tap.
+            Updater.abandonMine(this);
             int id = Updater.writeSession(this, apk, true);
             try (PackageInstaller.Session s = getPackageManager().getPackageInstaller().openSession(id)) {
                 Intent back = new Intent(this, UpdateActivity.class).setAction(STATUS);
@@ -78,6 +99,7 @@ public class UpdateActivity extends Activity {
 
     private void onStatus(Intent i) {
         int st = i.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+        Updater.recordStatus(this, null, st, i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE), false);
         if (st == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             @SuppressWarnings("deprecation") // the typed overload is API 33; this app runs from 29
             Intent confirm = i.getParcelableExtra(Intent.EXTRA_INTENT);

@@ -56,7 +56,7 @@ def _fake_httpx(monkeypatch, dim, seen):
             self._n = n
 
         def json(self):
-            # both wire shapes: OpenAI /v1/embeddings and Ollama /api/embeddings
+            # the OpenAI /v1/embeddings shape (plus a bare ``embedding`` key)
             return {"data": [{"embedding": [0.1] * dim} for _ in range(self._n)],
                     "embedding": [0.1] * dim}
 
@@ -135,11 +135,11 @@ def test_code_embed_space_never_pins_or_returns_a_768d_answer(emb, monkeypatch):
     assert asyncio.run(prov.embed_one("hello")) == []
     urls = [u for u, _ in seen]
     assert "https://byo.test:7000/v1/embeddings" in urls
-    assert not any("/api/embeddings" in u for u in urls)  # the nomic Ollama rung
+    assert not any("/api/embeddings" in u for u in urls)  # no retired native rung
     assert not any("nomic" in str(body.get("model")) for _, body in seen)
 
 
-def test_nomic_space_still_pins_a_degraded_answer_and_probes_ollama(emb, monkeypatch):
+def test_nomic_space_still_pins_a_degraded_answer(emb, monkeypatch):
     """Pre-switch behaviour, kept: another width is pinned and returned as degraded."""
     mod = emb()
     seen = []
@@ -149,10 +149,6 @@ def test_nomic_space_still_pins_a_degraded_answer_and_probes_ollama(emb, monkeyp
     vecs, dim = asyncio.run(prov.embed_texts(["hello"]))
     assert dim == 384 and len(vecs[0]) == 384 and prov.degraded and prov.backend == "vllm"
 
-    prov = mod.AdkEmbeddings()
-    assert asyncio.run(prov._try_ollama("http://localhost:11434")) is True
-    assert seen[-1] == ("http://localhost:11434/api/embeddings",
-                        {"model": "nomic-embed-text", "prompt": "ping"})
 
 
 @pytest.mark.parametrize("stale", [
@@ -331,7 +327,7 @@ def test_code_embed_space_graph_refuses_a_non_1024d_embedder(emb, tmp_path, capl
     assert _embedded(db) == [1024]
 
 
-def test_code_embed_space_legacy_graph_path_never_uses_ollama_nomic_or_the_hash(
+def test_code_embed_space_legacy_graph_path_never_uses_a_nomic_model_or_the_hash(
     emb, tmp_path, monkeypatch
 ):
     from adk.graph_memory import GraphMemory
@@ -345,11 +341,11 @@ def test_code_embed_space_legacy_graph_path_never_uses_ollama_nomic_or_the_hash(
     assert asyncio.run(g._embed("some text")) == []
     assert seen == []
 
-    emb.leave()  # nomic space: the legacy Ollama path is what it always was
+    emb.leave()  # nomic space: the legacy path is the offline feature hash
     monkeypatch.setenv("AITHER_GRAPH_EMBEDDER", "legacy")
     g = GraphMemory(agent_name="t", db_path=str(tmp_path / "n.db"))
-    assert len(asyncio.run(g._embed("some text"))) == 768
-    assert seen and seen[-1][0].endswith("/api/embeddings")
+    assert len(asyncio.run(g._embed("some text"))) == 384
+    assert seen == []
 
 
 def test_unknown_space_is_not_swallowed_by_the_graph(emb, tmp_path, monkeypatch):

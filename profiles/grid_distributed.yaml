@@ -17,7 +17,7 @@ models:
 
 recommended_models:
   - "nemotron-orchestrator-8b"   # Chat/orchestration on local GPU (vLLM TQ4)
-  - "deepseek-r1:8b"            # Reasoning on Mac Mini (Ollama Metal)
+  - "deepseek-r1:8b"            # Reasoning on Mac Mini (llama.cpp Metal)
   - "nomic-embed-text"          # Embeddings on CPU or leftover VRAM
   - "llama3.2:1b"               # PicoLM reflex on cluster nodes
 
@@ -45,12 +45,12 @@ vllm:
   attention_backend: TRITON_ATTN   # FlashInfer broken with TQ4
   tensor_parallel_size: 1
 
-ollama:
+local:
   local:
     gpu_memory_fraction: 0.0       # Don't compete with vLLM for VRAM
     cpu_only: true
-    models_to_pull: ["nomic-embed-text", "llama3.2:1b"]
-  # Mac reasoning now uses llama.cpp (not Ollama) for uniform API
+    models: ["nomic-embed-text", "llama3.2:1b"]
+  # Mac reasoning uses llama.cpp for a uniform OpenAI API
 
 cluster:
   backend: llamacpp
@@ -70,7 +70,7 @@ limits:
   max_concurrent: 6
   max_batch_size: 4
   context_pipeline_timeout_s: 25
-  ollama_max_loaded_models: 1
+  max_loaded_models: 1
 
 notes: >
   Multi-node grid profile for distributed inference.

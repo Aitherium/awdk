@@ -38,6 +38,11 @@ The platform's Workspace Shared-Prefix Directory (Nexus ``/kv-cache/register-pre
 ``/kv-cache/prefix-directory``) answers "which nodes hold prefix H warm". ``NexusPrefixDirectory``
 is a thin client for it: a holder registers each published chain head and releases it on
 eviction, so a router can send a session to the relay that already holds its prefix.
+
+Across nodes. ``adk.kvpool_transport`` serves resident blocks to other nodes and pulls them
+by chain-hash key over a pluggable transport: Homa (HomaModule, detected at runtime, never
+assumed) or TCP, falling back loudly. Blocks travel compressed (AitherKVCache 4-bit when
+installed, else int8). :func:`fetch_blocks` is the one-call client.
 """
 
 from __future__ import annotations
@@ -560,6 +565,22 @@ class NexusPrefixDirectory:
         self._later(self.register, blk.key.hex(), blk.index + 1, (blk.index + 1) * blk.tokens, True)
 
 
+# ---------------------------------------------------------------- cross-node block fetch
+
+
+def fetch_blocks(host: str, port: int, ns, keys: list[bytes], prefer: str | None = None,
+                 token: bytes | None = None, timeout: float = 10.0) -> list:
+    """Pull shared blocks from a peer serving ``adk.kvpool_transport.BlockStore``.
+
+    ``prefer`` is 'homa', 'tcp' or 'auto' (None reads ``ADK_KVPOOL_TRANSPORT``). Returns one
+    decoded ``[..., head_dim]`` array per key, None where the peer does not hold it.
+    """
+    from adk import kvpool_transport as tr  # noqa: PLC0415 -- numpy only when used
+
+    with tr.BlockClient(host, port, prefer=prefer, timeout=timeout) as c:
+        return c.fetch(ns, keys, token)
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -597,6 +618,7 @@ __all__ = [
     "SESSION",
     "attach",
     "chain_hashes",
+    "fetch_blocks",
     "model_fingerprint",
     "open_session",
     "publish",

@@ -303,7 +303,7 @@ class TunnelPlugin(SlashCommand):
         lines = ["**Tunnel registered with portal**"]
         lines.append(f"  Tunnel URL: `{tunnel_url}`")
         lines.append(f"\nPortal can now reach your local node remotely.")
-        lines.append(f"Configure inference routing: `/inference set --provider ollama --url {tunnel_url}/ollama`")
+        lines.append(f"Configure inference routing: `/inference set --provider llamacpp --url {tunnel_url}/llamacpp`")
         return "\n".join(lines)
 
     async def _help(self, args: List[str], ctx: Dict[str, Any]) -> str:

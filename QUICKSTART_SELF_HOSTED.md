@@ -22,7 +22,7 @@ enrollment). Already on PyPI.
 
 ### 2. Stand up inference — local LLM **or** a cloud key
 `adk onboard --quick` runs `adk quickstart-local`: it detects your hardware, picks a backend
-(**Ollama**, **llama.cpp**, or **vLLM**), pulls a model, serves it, and verifies it. Prefer a
+(**llama.cpp** or **vLLM**), pulls a model, serves it, and verifies it. Prefer a
 hosted model instead? Skip local inference and set a key:
 
 ```bash

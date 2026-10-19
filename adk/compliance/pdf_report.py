@@ -176,7 +176,7 @@ def generate_attestation_pdf(report: Dict[str, Any]) -> bytes:
         pdf.section_title("LLM Inference Summary")
         pdf.kv_row("Total Calls:", str(llm.get("total_calls", 0)))
         pdf.kv_row("Local vLLM:", str(llm.get("local_vllm_calls", 0)))
-        pdf.kv_row("Local Ollama:", str(llm.get("local_ollama_calls", 0)))
+        pdf.kv_row("Local llama.cpp:", str(llm.get("local_llamacpp_calls", 0)))
         pdf.kv_row("Cloud Calls:", str(llm.get("cloud_calls", 0)))
         pdf.kv_row("Failed Calls:", str(llm.get("failed_calls", 0)))
         models = llm.get("models_used", [])

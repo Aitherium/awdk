@@ -58,15 +58,12 @@ class TestProfileSelection:
 
 
 class TestRecommendedModels:
-    def test_cpu_only_gets_small_models(self):
+    def test_cpu_only_gets_the_orchestrator_and_embedder(self):
         models = _recommended_models("cpu_only")
-        assert "gemma4:4b" in models
-        assert "nomic-embed-text" in models
+        assert models == ["aither-orchestrator", "nomic-embed-text"]
 
-    def test_nvidia_high_gets_bigger_models(self):
-        models = _recommended_models("nvidia_high")
-        assert "nemotron-orchestrator-8b" in models
-        assert "deepseek-r1:14b" in models
+    def test_every_profile_serves_the_one_llamacpp_orchestrator(self):
+        assert _recommended_models("nvidia_high") == _recommended_models("cpu_only")
 
     def test_unknown_profile_defaults(self):
         models = _recommended_models("nonexistent")
@@ -172,35 +169,35 @@ class TestAgentSetup:
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch("adk.setup._detect_gpu") as mock_gpu, \
              patch("adk.setup._detect_ram") as mock_ram, \
-             patch("adk.setup._check_ollama") as mock_ollama, \
+             patch("adk.setup._check_llamacpp") as mock_llamacpp, \
              patch("adk.setup._check_vllm") as mock_vllm, \
              patch("adk.setup._check_docker") as mock_docker:
             mock_gpu.return_value = GPUInfo(vendor="nvidia", vram_mb=24000, name="RTX 4090")
             mock_ram.return_value = 64.0
-            mock_ollama.return_value = (True, True, ["llama3.2:3b"])
+            mock_llamacpp.return_value = (True, True, ["llama3.2:3b"])
             mock_vllm.return_value = VLLMInfo(running=False)
             mock_docker.return_value = True
 
             info = await setup.detect_hardware()
             assert info.gpu.vendor == "nvidia"
             assert info.ram_gb == 64.0
-            assert info.ollama_running is True
+            assert info.llamacpp_running is True
             assert info.docker_installed is True
             assert info.profile == "nvidia_high"
-            assert info.active_backend == "ollama"
+            assert info.active_backend == "llamacpp"
 
     @pytest.mark.asyncio
     async def test_detect_hardware_vllm_takes_priority(self, tmp_path):
-        """When both vLLM and Ollama are running, vLLM should be active backend."""
+        """When both vLLM and llama.cpp are running, vLLM should be active backend."""
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch("adk.setup._detect_gpu") as mock_gpu, \
              patch("adk.setup._detect_ram") as mock_ram, \
-             patch("adk.setup._check_ollama") as mock_ollama, \
+             patch("adk.setup._check_llamacpp") as mock_llamacpp, \
              patch("adk.setup._check_vllm") as mock_vllm, \
              patch("adk.setup._check_docker") as mock_docker:
             mock_gpu.return_value = GPUInfo(vendor="nvidia", vram_mb=24000)
             mock_ram.return_value = 64.0
-            mock_ollama.return_value = (True, True, ["llama3.2:3b"])
+            mock_llamacpp.return_value = (True, True, ["llama3.2:3b"])
             mock_vllm.return_value = VLLMInfo(running=True, ports=[8200], models=["nemotron-orchestrator"])
             mock_docker.return_value = True
 
@@ -208,17 +205,17 @@ class TestAgentSetup:
             assert info.active_backend == "vllm"
 
     @pytest.mark.asyncio
-    async def test_ensure_ollama_already_running(self, tmp_path):
+    async def test_ensure_llamacpp_already_running(self, tmp_path):
         setup = AgentSetup(data_dir=str(tmp_path))
-        setup._system = SystemInfo(ollama_installed=True, ollama_running=True)
-        result = await setup.ensure_ollama()
+        setup._system = SystemInfo(llamacpp_installed=True, llamacpp_running=True)
+        result = await setup.ensure_llamacpp()
         assert result is True
 
     @pytest.mark.asyncio
     async def test_pull_models_skips_existing(self, tmp_path):
         setup = AgentSetup(data_dir=str(tmp_path))
         setup._system = SystemInfo(
-            ollama_models=["llama3.2:3b", "nomic-embed-text"],
+            llamacpp_models=["llama3.2:3b", "nomic-embed-text"],
             profile="nvidia_mid",
         )
         with patch("adk.setup._run") as mock_run:
@@ -231,14 +228,23 @@ class TestAgentSetup:
             mock_run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_pull_models_pulls_missing(self, tmp_path):
+    async def test_pull_models_installs_the_orchestrator_via_llamacpp(self, tmp_path):
         setup = AgentSetup(data_dir=str(tmp_path))
-        setup._system = SystemInfo(ollama_models=["llama3.2:3b"], profile="nvidia_mid")
-        with patch("adk.setup._run") as mock_run:
-            mock_run.return_value = (0, "success", "")
-            pulled = await setup.pull_models(["llama3.2:3b", "deepseek-r1:8b"])
+        setup._system = SystemInfo(llamacpp_models=["llama3.2:3b"], profile="nvidia_mid")
+        with patch.object(setup, "ensure_llamacpp", AsyncMock(return_value=True)) as ens:
+            pulled = await setup.pull_models(["llama3.2:3b", "aither-orchestrator"])
             assert "llama3.2:3b" in pulled
-            assert "deepseek-r1:8b" in pulled
+            assert "aither-orchestrator" in pulled
+            ens.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_pull_models_skips_a_name_that_is_not_a_local_model(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        setup._system = SystemInfo(llamacpp_models=[], profile="nvidia_mid")
+        with patch("adk.setup._run") as mock_run:
+            pulled = await setup.pull_models(["deepseek-r1:8b"])
+            assert pulled == []
+            mock_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ensure_vllm_no_docker(self, tmp_path):
@@ -262,8 +268,8 @@ class TestAgentSetup:
             mock_detect.return_value = SystemInfo(
                 gpu=GPUInfo(vendor="nvidia", vram_mb=24000),
                 ram_gb=64.0,
-                ollama_running=True,
-                ollama_models=["nemotron-orchestrator-8b"],
+                llamacpp_running=True,
+                llamacpp_models=["nemotron-orchestrator-8b"],
                 vllm=VLLMInfo(running=False),
                 profile="nvidia_high",
             )
@@ -272,8 +278,8 @@ class TestAgentSetup:
 
             report = await setup.full_setup()
             assert report.ready is True
-            assert report.backend == "ollama"
-            assert report.ollama_ready is True
+            assert report.backend == "llamacpp"
+            assert report.llamacpp_ready is True
             assert report.profile == "nvidia_high"
 
     @pytest.mark.asyncio
@@ -282,7 +288,7 @@ class TestAgentSetup:
         with patch.object(setup, "detect_hardware") as mock_detect, \
              patch.object(setup, "pull_models") as mock_pull:
             mock_detect.return_value = SystemInfo(
-                ollama_running=True,
+                llamacpp_running=True,
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )
@@ -305,11 +311,12 @@ class TestAgentSetup:
 
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"models": [{"name": "llama3.2:3b"}]}
+            mock_resp.json.return_value = {"data": [{"id": "aither-orchestrator"}]}
             mock_client.get.return_value = mock_resp
 
             results = await setup.health_check()
-            assert results["ollama"] is True
+            assert results["llamacpp"] is True
+            assert results["models"] == ["aither-orchestrator"]
 
 
 # ---------------------------------------------------------------------------
@@ -317,53 +324,53 @@ class TestAgentSetup:
 # ---------------------------------------------------------------------------
 
 class TestVLLMSafety:
-    """Tests that ensure Ollama never starts when vLLM holds the GPU."""
+    """Tests that ensure llama.cpp never starts when vLLM holds the GPU."""
 
     @pytest.mark.asyncio
-    async def test_ensure_ollama_blocked_when_vllm_running(self, tmp_path):
-        """CRITICAL: Ollama must NOT start when vLLM is using GPU."""
+    async def test_ensure_llamacpp_blocked_when_vllm_running(self, tmp_path):
+        """CRITICAL: llama.cpp must NOT start when vLLM is using GPU."""
         setup = AgentSetup(data_dir=str(tmp_path))
         setup._system = SystemInfo(
-            ollama_installed=True,
-            ollama_running=False,
+            llamacpp_installed=True,
+            llamacpp_running=False,
             vllm=VLLMInfo(running=True, ports=[8200], models=["nemotron-orchestrator"]),
             gpu=GPUInfo(vendor="nvidia", vram_mb=24000),
         )
-        result = await setup.ensure_ollama()
+        result = await setup.ensure_llamacpp()
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_ensure_ollama_allowed_when_vllm_not_running(self, tmp_path):
+    async def test_ensure_llamacpp_allowed_when_vllm_not_running(self, tmp_path):
         setup = AgentSetup(data_dir=str(tmp_path))
         setup._system = SystemInfo(
-            ollama_installed=True,
-            ollama_running=True,
+            llamacpp_installed=True,
+            llamacpp_running=True,
             vllm=VLLMInfo(running=False),
         )
-        result = await setup.ensure_ollama()
+        result = await setup.ensure_llamacpp()
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_ensure_ollama_force_overrides_vllm_check(self, tmp_path):
+    async def test_ensure_llamacpp_force_overrides_vllm_check(self, tmp_path):
         setup = AgentSetup(data_dir=str(tmp_path))
         setup._system = SystemInfo(
-            ollama_installed=True,
-            ollama_running=True,
+            llamacpp_installed=True,
+            llamacpp_running=True,
             vllm=VLLMInfo(running=True, ports=[8200]),
         )
-        result = await setup.ensure_ollama(force=True)
-        assert result is True  # ollama_running=True, force=True
+        result = await setup.ensure_llamacpp(force=True)
+        assert result is True  # llamacpp_running=True, force=True
 
     @pytest.mark.asyncio
     async def test_full_setup_uses_vllm_when_running(self, tmp_path):
-        """full_setup should detect vLLM and use it instead of Ollama."""
+        """full_setup should detect vLLM and use it instead of llama.cpp."""
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch.object(setup, "detect_hardware") as mock_detect:
             mock_detect.return_value = SystemInfo(
                 gpu=GPUInfo(vendor="nvidia", vram_mb=24000),
                 ram_gb=64.0,
-                ollama_installed=True,
-                ollama_running=False,
+                llamacpp_installed=True,
+                llamacpp_running=False,
                 vllm=VLLMInfo(running=True, ports=[8200, 8201], models=["nvidia/Nemotron-Orchestrator-8B"]),
                 profile="nvidia_high",
             )
@@ -373,42 +380,42 @@ class TestVLLMSafety:
             assert report.ready is True
             assert report.backend == "vllm"
             assert report.vllm_ready is True
-            assert report.ollama_ready is False  # must NOT have started Ollama
+            assert report.llamacpp_ready is False  # must NOT have started llama.cpp
             assert "nvidia/Nemotron-Orchestrator-8B" in report.models_available
 
     @pytest.mark.asyncio
-    async def test_full_setup_uses_ollama_when_no_vllm(self, tmp_path):
+    async def test_full_setup_uses_llamacpp_when_no_vllm(self, tmp_path):
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama") as mock_ollama, \
+             patch.object(setup, "ensure_llamacpp") as mock_llamacpp, \
              patch.object(setup, "pull_models") as mock_pull:
             mock_detect.return_value = SystemInfo(
                 gpu=GPUInfo(vendor="nvidia", vram_mb=24000),
-                ollama_running=False,
+                llamacpp_running=False,
                 vllm=VLLMInfo(running=False),
                 profile="nvidia_high",
             )
             setup._system = mock_detect.return_value
-            mock_ollama.return_value = True
+            mock_llamacpp.return_value = True
             mock_pull.return_value = ["nemotron-orchestrator-8b"]
 
             report = await setup.full_setup()
             assert report.ready is True
-            assert report.backend == "ollama"
-            mock_ollama.assert_called_once()
+            assert report.backend == "llamacpp"
+            mock_llamacpp.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_full_setup_detects_cloud_api_keys(self, tmp_path):
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama") as mock_ollama, \
+             patch.object(setup, "ensure_llamacpp") as mock_llamacpp, \
              patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
             mock_detect.return_value = SystemInfo(
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )
             setup._system = mock_detect.return_value
-            mock_ollama.return_value = False  # no local backend
+            mock_llamacpp.return_value = False  # no local backend
 
             report = await setup.full_setup()
             assert report.ready is True
@@ -425,13 +432,13 @@ class TestVLLMSafety:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama") as mock_ollama:
+             patch.object(setup, "ensure_llamacpp") as mock_llamacpp:
             mock_detect.return_value = SystemInfo(
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )
             setup._system = mock_detect.return_value
-            mock_ollama.return_value = False
+            mock_llamacpp.return_value = False
 
             report = await setup.full_setup()
             assert report.ready is False
@@ -442,7 +449,7 @@ class TestAutoSetup:
     @pytest.mark.asyncio
     async def test_auto_setup_returns_report(self):
         with patch("adk.setup.AgentSetup.full_setup") as mock_full:
-            mock_full.return_value = SetupReport(ready=True, profile="nvidia_mid", backend="ollama")
+            mock_full.return_value = SetupReport(ready=True, profile="nvidia_mid", backend="llamacpp")
             report = await auto_setup()
             assert report.ready is True
 
@@ -576,7 +583,7 @@ class TestAitherZeroBridge:
             "backend": "vllm",
             "ready": True,
             "vllm_ready": True,
-            "ollama_ready": False,
+            "llamacpp_ready": False,
             "models_available": ["nvidia/Nemotron-Orchestrator-8B"],
             "errors": [],
             "gpu": {"vendor": "nvidia", "name": "RTX 5090", "vram_mb": 32768},
@@ -587,7 +594,7 @@ class TestAitherZeroBridge:
         assert report.ready is True
         assert report.backend == "vllm"
         assert report.vllm_ready is True
-        assert report.ollama_ready is False
+        assert report.llamacpp_ready is False
         assert report.profile == "nvidia_high"
         assert report.system.gpu.vendor == "nvidia"
         assert report.system.gpu.name == "RTX 5090"
@@ -611,9 +618,9 @@ class TestAitherZeroBridge:
             "backend": "",
             "ready": False,
             "vllm_ready": False,
-            "ollama_ready": False,
+            "llamacpp_ready": False,
             "models_available": [],
-            "errors": ["vLLM setup failed", "Ollama not installed"],
+            "errors": ["vLLM setup failed", "llama.cpp not installed"],
             "gpu": {"vendor": "nvidia", "name": "RTX 3060", "vram_mb": 12288},
             "docker_installed": False,
         }
@@ -630,7 +637,7 @@ class TestAitherZeroBridge:
             "backend": "vllm",
             "ready": True,
             "vllm_ready": True,
-            "ollama_ready": False,
+            "llamacpp_ready": False,
             "models_available": ["nvidia/Nemotron-Orchestrator-8B"],
             "errors": [],
             "gpu": {"vendor": "nvidia", "name": "RTX 5090", "vram_mb": 32768},
@@ -702,10 +709,10 @@ class TestFullSetupAitherZeroDelegation:
         with patch.object(setup, "_try_aitherzero", return_value=True), \
              patch.object(setup, "_run_aitherzero_setup", return_value=az_report), \
              patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "ensure_llamacpp", return_value=True), \
              patch.object(setup, "pull_models", return_value=["llama3.2:1b"]):
             mock_detect.return_value = SystemInfo(
-                ollama_running=False,
+                llamacpp_running=False,
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )
@@ -714,7 +721,7 @@ class TestFullSetupAitherZeroDelegation:
             # Should have fallen through to Python path
             mock_detect.assert_called_once()
             assert report.ready is True
-            assert report.backend == "ollama"
+            assert report.backend == "llamacpp"
 
     @pytest.mark.asyncio
     async def test_falls_back_when_aitherzero_returns_none(self, tmp_path):
@@ -723,10 +730,10 @@ class TestFullSetupAitherZeroDelegation:
         with patch.object(setup, "_try_aitherzero", return_value=True), \
              patch.object(setup, "_run_aitherzero_setup", return_value=None), \
              patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "ensure_llamacpp", return_value=True), \
              patch.object(setup, "pull_models", return_value=[]):
             mock_detect.return_value = SystemInfo(
-                ollama_running=False,
+                llamacpp_running=False,
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )
@@ -741,10 +748,10 @@ class TestFullSetupAitherZeroDelegation:
         with patch.object(setup, "_try_aitherzero", return_value=False), \
              patch.object(setup, "_run_aitherzero_setup") as mock_az_setup, \
              patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "ensure_llamacpp", return_value=True), \
              patch.object(setup, "pull_models", return_value=[]):
             mock_detect.return_value = SystemInfo(
-                ollama_running=False,
+                llamacpp_running=False,
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )
@@ -761,10 +768,10 @@ class TestFullSetupAitherZeroDelegation:
         with patch.dict(os.environ, {"AITHER_NO_PWSH": "1"}), \
              patch.object(setup, "_try_aitherzero") as mock_try, \
              patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "ensure_llamacpp", return_value=True), \
              patch.object(setup, "pull_models", return_value=[]):
             mock_detect.return_value = SystemInfo(
-                ollama_running=False,
+                llamacpp_running=False,
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )
@@ -778,10 +785,10 @@ class TestFullSetupAitherZeroDelegation:
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch.object(setup, "_try_aitherzero", side_effect=RuntimeError("boom")), \
              patch.object(setup, "detect_hardware") as mock_detect, \
-             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "ensure_llamacpp", return_value=True), \
              patch.object(setup, "pull_models", return_value=[]):
             mock_detect.return_value = SystemInfo(
-                ollama_running=False,
+                llamacpp_running=False,
                 vllm=VLLMInfo(running=False),
                 profile="cpu_only",
             )

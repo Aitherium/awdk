@@ -1,7 +1,7 @@
 """Deep Research Studio — one-command local server.
 
 Runs awdk's AitherAgent with the `deep-research` pack applied, the
-operator's own LLM key (Anthropic / OpenAI / Codex-OAuth / local Ollama), and a
+operator's own LLM key (Anthropic / OpenAI / Codex-OAuth / local llama.cpp), and a
 live "tokens used vs. saved" meter. No sign-in, no AitherOS stack required.
 
     python serve.py                 # auto-detects key from env / .env, opens browser
@@ -90,13 +90,14 @@ def write_env(updates: dict) -> None:
         os.environ[k] = str(v)
 
 
-def _ollama_reachable() -> bool:
-    host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+def _llamacpp_reachable() -> bool:
+    host = (os.getenv("AITHER_LLAMACPP_URL") or "http://127.0.0.1:8080").rstrip("/")
     if not host.startswith("http"):
         host = "http://" + host
+    host = host.removesuffix("/v1")
     try:
         import httpx
-        r = httpx.get(f"{host}/api/tags", timeout=2.0)
+        r = httpx.get(f"{host}/v1/models", timeout=2.0)
         return r.status_code == 200
     except Exception:  # noqa: BLE001
         return False
@@ -104,7 +105,7 @@ def _ollama_reachable() -> bool:
 
 def resolve_provider() -> tuple[str, str, str | None]:
     """Return (provider, api_key, model). Order: explicit -> Anthropic -> OpenAI
-    -> DeepSeek -> Ollama. DeepSeek/Groq/Together are OpenAI-compatible and handled
+    -> DeepSeek -> llama.cpp. DeepSeek/Groq/Together are OpenAI-compatible and handled
     natively by adk's LLMRouter (correct base_url + default model per provider)."""
     model = os.getenv("DEEP_RESEARCH_MODEL") or None
     explicit = (os.getenv("DEEP_RESEARCH_PROVIDER") or "").strip().lower()
@@ -121,8 +122,8 @@ def resolve_provider() -> tuple[str, str, str | None]:
         return "deepseek", deepseek_key, model
     if explicit in ("groq", "together"):
         return explicit, os.getenv(f"{explicit.upper()}_API_KEY", ""), model
-    if explicit == "ollama" or (not explicit and _ollama_reachable()):
-        return "ollama", "", model
+    if explicit == "llamacpp" or (not explicit and _llamacpp_reachable()):
+        return "llamacpp", "", model
     # Codex / ChatGPT OAuth (experimental) — if a saved token exists, use it as OpenAI bearer.
     try:
         from engine import codex_oauth
@@ -298,7 +299,7 @@ PROVIDERS = [
      "needs_key": True, "hint": "sk-..."},
     {"id": "deepseek", "label": "DeepSeek", "key_env": "DEEPSEEK_API_KEY",
      "needs_key": True, "hint": "sk-..."},
-    {"id": "ollama", "label": "Local Ollama (no key)", "key_env": "",
+    {"id": "llamacpp", "label": "Local llama.cpp (no key)", "key_env": "",
      "needs_key": False, "hint": "runs offline"},
 ]
 _KEY_ENV = {p["id"]: p["key_env"] for p in PROVIDERS}

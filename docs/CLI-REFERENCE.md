@@ -129,7 +129,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk run`](#adk-run) | Start the agent server |
 | [`adk sandbox`](#adk-sandbox) | Self-host AitherSandbox + link it to your portal (optional safe-testing) |
 | [`adk secret`](#adk-secret) | Manage secrets (list, get, set, pull, push, sync) |
-| [`adk setup`](#adk-setup) | Interactive GPU setup wizard (vLLM/Ollama) + optional AitherOS stack |
+| [`adk setup`](#adk-setup) | Interactive GPU setup wizard (vLLM/llama.cpp) + optional AitherOS stack |
 | [`adk setup-all`](#adk-setup-all) | Install/set up all AitherOS client products (adk + shell + node + connect) |
 | [`adk shell`](#adk-shell) | Launch AitherShell interactive terminal |
 | [`adk skills`](#adk-skills) | Manage learned skills |
@@ -139,7 +139,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk spend`](#adk-spend) | Cloud LLM spend: totals, per provider/model, top callers, DeepSeek balance |
 | [`adk ssh`](#adk-ssh) | Open a remote terminal into a prod/dev environment via the tunnel |
 | [`adk ssh-cert`](#adk-ssh-cert) | Fetch a short-lived SSH certificate from the AitherCert SSH CA (GitHub org SSH) |
-| [`adk stack`](#adk-stack) | Start the consumer stack (Room + Ollama) as native processes |
+| [`adk stack`](#adk-stack) | Start the consumer stack (Room + llama.cpp) as native processes |
 | [`adk start`](#adk-start) | Start chatting with your codebase (zero config) |
 | [`adk status`](#adk-status) | Show backend and service status |
 | [`adk storage`](#adk-storage) | Storage inventory — scan a drive, rank what fills it, diff, propose, apply |
@@ -540,7 +540,6 @@ Deploy AitherOS components or agents
 
 **Subcommands**
 
-- `adk deploy ollama` — Install Ollama + pull models for your GPU
 - `adk deploy vllm` — Deploy vLLM containers directly (use 'adk setup' for guided wizard)
 - `adk deploy node` — Deploy agent node (default: ADK-native lightweight; --genesis for full stack)
 - `adk deploy core` — Core services (Node, Pulse, Watch, Genesis, Veil)
@@ -629,7 +628,7 @@ Register this workstation with the control plane
 | `--invite` | str |  |  | Onboarding invite code (ABCDE-23456) or link token: join the organisation's device mesh with the invited role and enroll this device under it before registering the node |
 | `--yes` | str |  | `false` | With --invite: skip the confirmation that names the organisation (unattended runs) |
 | `--label` | str |  |  | Name for this device under --invite (default: hostname) |
-| `--inference-url` | str |  | `auto` | Local inference base URL to advertise (e.g. http://127.0.0.1:8080). 'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), 11434 (Ollama), 8120 (vLLM) in that order |
+| `--inference-url` | str |  | `auto` | Local inference base URL to advertise (e.g. http://127.0.0.1:8080). 'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), 8120 (vLLM) in that order |
 | `--node-class` | str |  |  | What this device is (default: detected from the hardware) |
 | `--no-autostart` | str |  | `false` | Do not install the per-user heartbeat autostart (python -m adk.node_beat); the machine then reads offline once this command exits |
 | `--no-link` | str |  | `false` | Do not hold the outbound reverse link to the tunnel. WireGuard stays the default where `wg` exists; without either transport the device is enrolled but not reachable from your browser |
@@ -792,6 +791,7 @@ Manage grid distributed nodes (add, remove, list, test, sync)
 - `adk grid ls` — List enrolled mesh nodes (GPU, memory, containers, status)
 - `adk grid activate` — Activate a Grid Pro/Enterprise license key
 - `adk grid deregister` — Remove an enrolled mesh node from the registry
+- `adk grid join` — Plan this node's role in a pooled model (rpc-vram / rpc-cpu / kvholder / local); --register POOL_ID records it (starts nothing)
 
 ## `adk harness`
 
@@ -1376,7 +1376,7 @@ Local inference quickstart (no cloud required)
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `--backend` | str |  | `auto` | Inference backend (auto = detect best fit) |
-| `--model` | str |  |  | Model name/ID (for Ollama; others auto-detected) |
+| `--model` | str |  |  | Model name/ID (auto-detected when omitted) |
 | `--port` | int |  | `8209` | Port for local inference endpoint (default: 8209) |
 | `--dry-run` | str |  | `false` | Show what would happen without making changes |
 | `--api-key` | str |  |  | AITHER_API_KEY |
@@ -1478,7 +1478,7 @@ Manage secrets (list, get, set, pull, push, sync)
 
 ## `adk setup`
 
-Interactive GPU setup wizard (vLLM/Ollama) + optional AitherOS stack
+Interactive GPU setup wizard (vLLM/llama.cpp) + optional AitherOS stack
 
 | option | type | required | default | description |
 |---|---|---|---|---|
@@ -1614,11 +1614,11 @@ Fetch a short-lived SSH certificate from the AitherCert SSH CA (GitHub org SSH)
 
 ## `adk stack`
 
-Start the consumer stack (Room + Ollama) as native processes
+Start the consumer stack (Room + llama.cpp) as native processes
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `<service>` | str |  | `default` | Service to start: default (Room+Ollama), qdrant (local Qdrant) |
+| `<service>` | str |  | `default` | Service to start: default (Room+llama.cpp), qdrant (local Qdrant) |
 | `--interval` | int |  | `10` | Health check interval in seconds (default: 10) |
 | `--no-sync` | str |  | `false` | Skip the license-driven pack sync before starting |
 
@@ -1629,8 +1629,8 @@ Start chatting with your codebase (zero config)
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `<path>` | str |  | `.` | Project directory (default: current) |
-| `--model` | str |  |  | Model: deepseek-flash, deepseek-pro, ollama, openrouter, or a model slug |
-| `--provider` | str |  |  | Provider: deepseek, openrouter, ollama, openai, anthropic |
+| `--model` | str |  |  | Model: deepseek-flash, deepseek-pro, local, openrouter, or a model slug |
+| `--provider` | str |  |  | Provider: deepseek, openrouter, local, openai, anthropic |
 | `--mcp` | str |  | `false` | Connect to AitherOS MCP gateway (1200+ tools) |
 
 ## `adk status`

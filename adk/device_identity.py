@@ -127,7 +127,11 @@ MACHINE_ID_VECTORS = [
 
 #: Who beats for the device when several facets run (B3). Higher wins at once;
 #: equal priority waits for the holder to miss LEASE_MISSED intervals.
-FACET_PRIORITY = {"awnode": 3, "daemon": 2, "node_beat": 2, "desk": 1}
+#: node_beat ranks BELOW the daemon: it is the bare keep-alive, while the daemon (and
+#: `adk rc`) know the harness and the reverse link. At equal rank a node_beat that
+#: started first kept the lease forever, so the device beat with no harness and the
+#: apps never offered it as a place to start an agent (spark, 2026-10-19).
+FACET_PRIORITY = {"awnode": 3, "daemon": 2, "node_beat": 1, "desk": 1}
 LEASE_MISSED = 3
 
 

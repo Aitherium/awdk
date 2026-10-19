@@ -175,7 +175,7 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
         var st=await api('llm/status');
         var provs=(st&&st.providers)||[];
         // Backend options: cloud providers (from status) + common local backends.
-        var localOpts=['llamacpp','vllm','ollama','lmstudio','genesis'];
+        var localOpts=['llamacpp','vllm','lmstudio','genesis'];
         var cloudIds=provs.map(function(p){return p.id;});
         var allBackends=localOpts.concat(cloudIds.filter(function(x){return localOpts.indexOf(x)<0;}));
         var active=(st&&st.active_backend)||'?';

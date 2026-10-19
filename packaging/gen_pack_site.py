@@ -135,7 +135,7 @@ FEATURES = [
      "Tools, memory and skills answer on the API the app already speaks, so its "
      "interface needs no changes."),
     ("Your own model",
-     "llama.cpp, ollama, vLLM and LM Studio are discovered automatically; "
+     "llama.cpp, vLLM and LM Studio are discovered automatically; "
      "<code>--setup-model</code> installs one sized to the machine."),
     ("Weights without an account",
      "Resumable, rate-capped and size-verified, so a dropped connection costs "

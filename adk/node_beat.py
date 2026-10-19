@@ -102,8 +102,10 @@ async def _main() -> int:
         except Exception:  # noqa: BLE001 - no session: the box beats as itself
             return ""
 
+    # Facet `node_beat`: it yields the device lease to the daemon / `adk rc`, which
+    # report the harness and the reverse link, and takes over only when they stop.
     out = enrollment.resume_heartbeat(_signed_in_token(), default_base_url=default_identity(),
-                                      token_provider=_signed_in_token)
+                                      token_provider=_signed_in_token, facet="node_beat")
     log.info("node beat: %s", out)
     if not out.get("started"):
         return 1

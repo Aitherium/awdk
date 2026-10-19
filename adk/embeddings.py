@@ -10,15 +10,14 @@ THE SPACE follows env ``AITHER_EMBED_SPACE`` (same switch and aliases as the pla
 ``aither-code-embed`` (``code-embed`` | ``ce1024`` | ``aither-code-embed-1024``) =
 ``aither-code-embed`` 1024-d on ``aither-vllm-code-embed:8229``, inputs cut to 1013
 chars (the llama.cpp lane 400s a whole batch on one over-long input), and a 768-d
-nomic answer is then REFUSED (never pinned, never returned): the nomic Ollama rung
-and the 384-d CPU/hash rungs are skipped, a retired-lane ``AITHER_EMBEDDINGS_URL`` is
+nomic answer is then REFUSED (never pinned, never returned): the 384-d CPU/hash
+rungs are skipped, a retired-lane ``AITHER_EMBEDDINGS_URL`` is
 replaced by the code-embed lane, and with no 1024-d backend the result is the "no
 backend" one (empty vectors). ``AITHER_EMBED_MODEL`` still overrides the id.
 
 Canonical model id: ``nomic-embed-text`` — the vLLM ``--served-model-name`` for
 nomic-ai/nomic-embed-text-v1.5 (768-dim). The fleet serves it on vLLM over the
-internal-TLS mesh (``aither-vllm-embeddings:8209``, https) and Ollama serves the
-same 768-d model under the same id. NB: requesting the HF root
+internal-TLS mesh (``aither-vllm-embeddings:8209``, https). NB: requesting the HF root
 ``nomic-embed-text-v1.5`` returns 404 — always use the served id. The ONLY
 dimension-incompatible rung is the
 degraded CPU fallback (all-MiniLM-L6-v2, 384-dim) — every returned batch is tagged
@@ -32,20 +31,20 @@ Resolution chain (first that works wins; resolved once per process, then cached)
                               | ``https://127.0.0.1:8150`` on the host. The route every
                               fleet LLM call takes (``AITHER_EMBED_MICROSCHEDULER=0``
                               skips it).
-  3. Local vLLM             — ``localhost:8209`` then ``:8120``, HTTPS then HTTP
-                              (internal-TLS mesh serves :8209 over https).
-  4. Local Ollama           — ``nomic-embed-text`` on ``:11434`` (768-d, dev box).
-  5. Gateway (metered)      — ``AITHER_GATEWAY_EMBEDDINGS_URL``, or — whenever
+  3. Local vLLM / llama.cpp — ``localhost:8209`` then ``:8120``, HTTPS then HTTP
+                              (internal-TLS mesh serves :8209 over https; a
+                              ``llama-server --embedding`` on those ports answers too).
+  4. Gateway (metered)      — ``AITHER_GATEWAY_EMBEDDINGS_URL``, or — whenever
                               ``AITHER_API_KEY`` is set — the managed v1 plane
                               (``AITHER_MCP_URL`` | ``https://mcp.aitherium.com``).
                               Sent with ``Authorization: Bearer <AITHER_API_KEY>``
                               (the gateway 401s an unauthenticated embed).
-  6. Auto-deploy local vLLM — if a GPU + Docker are present and nothing above is
+  5. Auto-deploy local vLLM — if a GPU + Docker are present and nothing above is
                               reachable, spin up the embeddings container on :8209
                               (opt in with ``AITHER_EMBED_AUTODEPLOY=1``; disabled by default
                               so resolution happens instantly offline).
-  7. CPU sentence-transformers (384-d, DEGRADED, dim-tagged) — offline last resort.
-  8. Feature-hash (384-d, DEGRADED) — always works, zero deps; keeps offline
+  6. CPU sentence-transformers (384-d, DEGRADED, dim-tagged) — offline last resort.
+  7. Feature-hash (384-d, DEGRADED) — always works, zero deps; keeps offline
                               semantic search alive when even ST is unavailable.
 
 Usage:
@@ -213,8 +212,7 @@ def _width_ok(vec) -> bool:
 
 
 _VLLM_GENERIC_PORT = 8120
-_OLLAMA_PORT = 11434
-_OLLAMA_EMBED_MODEL = "nomic-embed-text"  # Ollama's name for the same 768-d model
+_NOMIC_EMBED_MODEL = "nomic-embed-text"  # the served id of the 768-d nomic model
 
 
 def embed_lane_port() -> int:
@@ -227,10 +225,9 @@ def embed_lane_port() -> int:
 def installer_embed_model() -> str:
     """The embedder an installer pulls for the active space.
 
-    nomic: the Ollama name ``nomic-embed-text``. code-embed: the catalogue id
-    ``aither-code-embed`` -- a GGUF that ``adk models pull/use`` serves on :8229, NOT an
-    Ollama model (``ollama pull aither-code-embed`` has nothing to pull)."""
-    return SPACE_CODE_EMBED if _CE else _OLLAMA_EMBED_MODEL
+    nomic: the served id ``nomic-embed-text``. code-embed: the catalogue id
+    ``aither-code-embed`` -- a GGUF that ``adk models pull/use`` serves on :8229."""
+    return SPACE_CODE_EMBED if _CE else _NOMIC_EMBED_MODEL
 
 # The managed OpenAI-compatible v1 plane. gateway.aitherium.com answers 404 for
 # /v1/* (measured 2026-08-31, see adk.cli) — the v1 API lives on mcp.aitherium.com.
@@ -348,7 +345,7 @@ class AdkEmbeddings:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._resolved = False
-        self._backend: str = "unresolved"   # vllm | ollama | gateway | cpu | hash
+        self._backend: str = "unresolved"   # vllm | microscheduler | gateway | cpu | hash
         self._url: str = ""
         self._model: str = CANONICAL_MODEL
         self._dim: int = 0
@@ -440,18 +437,12 @@ class AdkEmbeddings:
             if await self._try_local_vllm(port):
                 return "vllm"
 
-        # 4. local Ollama (768-d, dev box) -- a nomic rung, not part of the code-embed space
-        if not (_CE and _is_nomic_model(_OLLAMA_EMBED_MODEL)) and await self._try_ollama(
-            f"http://localhost:{_OLLAMA_PORT}"
-        ):
-            return "ollama"
-
-        # 5. gateway (metered managed fallback)
+        # 4. gateway (metered managed fallback)
         gw, gw_headers = _gateway_rung()
         if gw and await self._try_openai_endpoint(gw, headers=gw_headers):
             return "gateway"
 
-        # 6. auto-deploy a local vLLM embeddings container (GPU + Docker)
+        # 5. auto-deploy a local vLLM embeddings container (GPU + Docker)
         # NOTE: opt-IN (disabled by default) so resolution is instant offline
         if _flag("AITHER_EMBED_AUTODEPLOY", False) and await self._maybe_autodeploy():
             if await self._try_openai_endpoint(f"http://localhost:{_VLLM_EMBED_PORT}"):
@@ -467,14 +458,14 @@ class AdkEmbeddings:
             self._model = CANONICAL_MODEL
             return "none"
 
-        # 7. CPU sentence-transformers (DEGRADED 384-d)
+        # 6. CPU sentence-transformers (DEGRADED 384-d)
         if _flag("AITHER_EMBED_ALLOW_CPU", True) and self._probe_sentence_transformers():
             self._dim = _DEGRADED_DIM
             self._degraded = True
             self._model = os.getenv("AITHER_EMBED_ST_MODEL", "all-MiniLM-L6-v2")
             return "cpu"
 
-        # 8. feature-hash (DEGRADED 384-d) — never fails
+        # 7. feature-hash (DEGRADED 384-d) — never fails
         self._dim = _DEGRADED_DIM
         self._degraded = True
         self._model = "feature-hash"
@@ -547,33 +538,6 @@ class AdkEmbeddings:
                 return True
         except Exception as exc:  # noqa: BLE001 — probe: any failure = not this rung
             logger.debug("openai embed probe %s failed: %s", base, exc)
-            return False
-
-    async def _try_ollama(self, base: str) -> bool:
-        try:
-            import httpx
-        except ImportError:
-            return False
-        base = base.rstrip("/")
-        try:
-            async with httpx.AsyncClient(verify=ssl_context(True), timeout=_PROBE_TIMEOUT) as c:
-                r = await c.post(
-                    f"{base}/api/embeddings",
-                    json={"model": _OLLAMA_EMBED_MODEL, "prompt": "ping"},
-                )
-                if r.status_code != 200:
-                    return False
-                vec = r.json().get("embedding") or []
-                if not vec or not _width_ok(vec):
-                    return False
-                self._url = base
-                self._headers = {}
-                self._model = _OLLAMA_EMBED_MODEL
-                self._dim = len(vec)
-                self._degraded = self._dim != CANONICAL_DIM
-                return True
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("ollama embed probe %s failed: %s", base, exc)
             return False
 
     def _probe_sentence_transformers(self) -> bool:
@@ -697,8 +661,7 @@ class AdkEmbeddings:
         if not texts:
             await self._resolve()
             return [], self._dim
-        if embed_breaker_open() and self._backend in ("vllm", "microscheduler", "gateway",
-                                                      "ollama"):
+        if embed_breaker_open() and self._backend in ("vllm", "microscheduler", "gateway"):
             return self._no_vectors(texts)
         await self._resolve()
         try:
@@ -708,8 +671,6 @@ class AdkEmbeddings:
                                                   EMBED_QUERY_DEADLINE_S)
                 else:
                     vecs = await self._embed_openai(texts)
-            elif self._backend == "ollama":
-                vecs = await self._embed_ollama(texts)
             elif self._backend == "cpu":
                 vecs = await self._embed_st(texts)
             elif self._backend == "none":
@@ -723,7 +684,7 @@ class AdkEmbeddings:
                 return vecs, self._dim
         except Exception as exc:  # noqa: BLE001 — degrade, don't crash the caller
             logger.warning("adk.embeddings backend=%s failed: %s", self._backend, exc)
-            if self._backend in ("vllm", "microscheduler", "gateway", "ollama"):
+            if self._backend in ("vllm", "microscheduler", "gateway"):
                 trip_embed_breaker(f"{type(exc).__name__}: {exc}"[:160])
 
         # Backend failed at call time (was reachable at probe). Re-resolve next
@@ -761,20 +722,6 @@ class AdkEmbeddings:
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}: {r.text[:120]}")
                 out.extend(d["embedding"] for d in r.json().get("data", []))
-        return out
-
-    async def _embed_ollama(self, texts: List[str]) -> Optional[List[List[float]]]:
-        import httpx
-        out: List[List[float]] = []
-        async with httpx.AsyncClient(verify=ssl_context(True), timeout=_HTTP_TIMEOUT) as c:
-            for t in texts:
-                r = await c.post(
-                    f"{self._url}/api/embeddings",
-                    json={"model": self._model, "prompt": t},
-                )
-                if r.status_code != 200:
-                    raise RuntimeError(f"HTTP {r.status_code}")
-                out.append(r.json().get("embedding") or [])
         return out
 
     def _st_executor(self):

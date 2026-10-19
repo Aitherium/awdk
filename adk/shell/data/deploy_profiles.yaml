@@ -104,19 +104,6 @@ profiles:
     containers_approx: 6
     compose_profiles: [personal-gpu]
 
-  personal-ollama:
-    description: "REMOVED — Ollama orchestrator; use `adk quickstart-local --backend llamacpp`"
-    layers: [core]
-    specialized: [genesis, veil, microscheduler]
-    infrastructure:
-      - redis
-    min_ram_gb: 16
-    min_disk_gb: 30
-    gpu_required: true
-    min_vram_gb: 6
-    containers_approx: 6
-    compose_profiles: [personal-ollama]
-
   creative-image:
     description: "Image generation node — Bonsai Image 4B (ternary FLUX.2 Klein, 4-step)"
     layers: []
@@ -131,7 +118,7 @@ profiles:
     compose_profiles: [creative-image]
 
   personal-cpu:
-    description: "REMOVED — Ollama orchestrator; use `adk quickstart-local --backend llamacpp`"
+    description: "REMOVED — no compose orchestrator on CPU; use `adk quickstart-local --backend llamacpp`"
     layers: [core]
     specialized: [genesis, veil, microscheduler]
     infrastructure:

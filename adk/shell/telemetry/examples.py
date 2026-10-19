@@ -252,7 +252,7 @@ async def execute_query_with_cost_tracking(query_text: str, pulse, metrics):
     model_costs = {
         "gpt-4": {"per_1k_tokens": 0.03},
         "gpt-3.5-turbo": {"per_1k_tokens": 0.002},
-        "ollama:neural": {"per_1k_tokens": 0.0},  # Local
+        "llamacpp:neural": {"per_1k_tokens": 0.0},  # Local
     }
     
     model = "gpt-4"

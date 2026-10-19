@@ -1,6 +1,6 @@
 # OpenAI and any OpenAI-compatible endpoint
 
-Covers OpenAI itself, Ollama, vLLM/llama.cpp servers, OpenRouter, and anything
+Covers OpenAI itself, vLLM/llama.cpp servers, OpenRouter, and anything
 else exposing `/v1/chat/completions`.
 
 ## Adding one to the bridge (this is how Claude Code reaches it)
@@ -44,14 +44,12 @@ The checker exists because two mistakes here are silent: a `model` that is not i
 wrong model, and a `context_window` larger than the model's real context produces
 context-length errors that look like failed turns.
 
-## Ollama
+## llama.cpp
 
-Declared in `claude_bridge.yaml` as `http://127.0.0.1:11434/v1`, left
-unreachable-by-default so `bridge/status` reports it honestly rather than hiding
-the option. Start Ollama, add an alias for your model, restart the bridge.
-
-Note: on this fleet, host port 11434 is a portproxy to the **OptiPlex** Ollama
-pool — that node is perma-offline, so a local Ollama is the only live path.
+Any `llama-server` exposes `/v1/chat/completions`; declare it as
+`http://127.0.0.1:8080/v1` (or the port you started it on) and add an alias for
+the model it serves. GGUF weights come from Aitherium's artifact store
+(`adk node bootstrap` / `adk setup llamacpp` fetch them for you).
 
 ## awdk
 

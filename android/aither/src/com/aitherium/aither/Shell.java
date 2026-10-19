@@ -607,10 +607,13 @@ final class Shell {
         h.setPadding(Ui.dp(c, 12), 0, 0, 0);
         head.addView(h);
         col.addView(head);
-        TextView sub = Ui.note(c, child ? "Tap one to open it. The bar at the bottom takes you back."
-                : "Aither, Family and You are in the bar below. Everything else is here.");
-        sub.setPadding(0, Ui.dp(c, 8), 0, Ui.dp(c, 16));
-        col.addView(sub);
+        if (child) { // a grown-up's grid needs no explainer line (2026-10-18 app audit)
+            TextView sub = Ui.note(c, "Tap one to open it. The bar at the bottom takes you back.");
+            sub.setPadding(0, Ui.dp(c, 8), 0, Ui.dp(c, 16));
+            col.addView(sub);
+        } else {
+            head.setPadding(0, 0, 0, Ui.dp(c, 16));
+        }
         String[][] apps = AppTabs.apps(child, owner, Flavor.STORE);
         if (child) { // a child's apps open on Learn: no Home grid, no search
             addTiles(c, col, apps);
@@ -690,8 +693,7 @@ final class Shell {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(0, 0, 0, Ui.dp(c, 12));
-        row.addView(entry(c, "Talk", "Speak with Aither", AppTabs.TALK_PATH), tileParams(c));
-        row.addView(entry(c, "Show me", "Camera + voice", AppTabs.SHOW_ME_PATH), tileParams(c));
+        for (String[] b : AppTabs.HOME_BUTTONS) row.addView(entry(c, b[0], b[1], b[2]), tileParams(c));
         return row;
     }
 

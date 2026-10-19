@@ -3,7 +3,7 @@ Direct LLM Client — standalone mode (no Genesis required)
 ==========================================================
 
 Lightweight OpenAI-compatible HTTP client for direct LLM inference.
-Works with Ollama, vLLM, LM Studio, OpenAI, or any OpenAI-compatible endpoint.
+Works with llama.cpp (llama-server), vLLM, LM Studio, OpenAI, or any OpenAI-compatible endpoint.
 
 Used as fallback when Genesis is unreachable, or when configured explicitly
 via ``llm_backend`` in ~/.aither/config.yaml.
@@ -25,26 +25,23 @@ class DirectLLMClient:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:11434",
+        base_url: str = "http://127.0.0.1:8080",
         api_key: str = "",
         model: str = "",
-        backend: str = "ollama",
+        backend: str = "llamacpp",
     ):
-        self.backend = backend
+        from adk.legacy_backend import migrate_backend_name, migrate_base_url
+
+        self.backend = migrate_backend_name(backend)
         self.api_key = api_key
         self.model = model
 
-        if backend == "ollama":
-            self.base_url = base_url.rstrip("/")
-            self._chat_endpoint = "/api/chat"
-            self._models_endpoint = "/api/tags"
-        else:
-            # OpenAI-compatible (vLLM, OpenAI, LM Studio, etc.)
-            self.base_url = base_url.rstrip("/")
-            if not self.base_url.endswith("/v1"):
-                self.base_url += "/v1"
-            self._chat_endpoint = "/chat/completions"
-            self._models_endpoint = "/models"
+        # Every backend speaks the OpenAI shape (llama-server, vLLM, OpenAI, LM Studio).
+        self.base_url = migrate_base_url(base_url).rstrip("/")
+        if not self.base_url.endswith("/v1"):
+            self.base_url += "/v1"
+        self._chat_endpoint = "/chat/completions"
+        self._models_endpoint = "/models"
 
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -67,12 +64,9 @@ class DirectLLMClient:
     async def health_check(self) -> bool:
         try:
             client = await self._get_client()
-            if self.backend == "ollama":
-                resp = await client.get(self.base_url, timeout=5.0)
-            else:
-                resp = await client.get(
-                    f"{self.base_url}{self._models_endpoint}", timeout=5.0
-                )
+            resp = await client.get(
+                f"{self.base_url}{self._models_endpoint}", timeout=5.0
+            )
             return resp.status_code == 200
         except Exception:
             return False
@@ -86,14 +80,9 @@ class DirectLLMClient:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                if self.backend == "ollama":
-                    models = data.get("models", [])
-                    if models:
-                        return models[0].get("name", "")
-                else:
-                    models = data.get("data", [])
-                    if models:
-                        return models[0].get("id", "")
+                models = data.get("data", [])
+                if models:
+                    return models[0].get("id", "")
         except Exception:
             pass
         return ""
@@ -110,73 +99,48 @@ class DirectLLMClient:
         if not use_model:
             use_model = await self.detect_model()
             if not use_model:
-                raise RuntimeError("No model available. Specify --model or pull one with 'ollama pull'.")
+                raise RuntimeError(
+                    "No model available. Specify --model, or start llama-server with a GGUF."
+                )
             self.model = use_model
 
         client = await self._get_client()
 
-        if self.backend == "ollama":
-            payload = {
-                "model": use_model,
-                "messages": [{"role": "user", "content": message}],
-                "stream": True,
-                "options": {"temperature": temperature},
-            }
-            if max_tokens:
-                payload["options"]["num_predict"] = max_tokens
+        # OpenAI-compatible streaming
+        payload = {
+            "model": use_model,
+            "messages": [{"role": "user", "content": message}],
+            "stream": True,
+            "temperature": temperature,
+        }
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
 
-            async with client.stream(
-                "POST", f"{self.base_url}{self._chat_endpoint}", json=payload
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        data = json.loads(line)
-                        content = data.get("message", {}).get("content", "")
-                        if content:
-                            yield content
-                        if data.get("done"):
-                            return
-                    except json.JSONDecodeError:
-                        continue
-        else:
-            # OpenAI-compatible streaming
-            payload = {
-                "model": use_model,
-                "messages": [{"role": "user", "content": message}],
-                "stream": True,
-                "temperature": temperature,
-            }
-            if max_tokens:
-                payload["max_tokens"] = max_tokens
-
-            async with client.stream(
-                "POST",
-                f"{self.base_url}{self._chat_endpoint}",
-                json=payload,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        return
-                    try:
-                        data = json.loads(data_str)
-                        delta = data.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except (json.JSONDecodeError, IndexError):
-                        continue
+        async with client.stream(
+            "POST",
+            f"{self.base_url}{self._chat_endpoint}",
+            json=payload,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    return
+                try:
+                    data = json.loads(data_str)
+                    delta = data.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content
+                except (json.JSONDecodeError, IndexError):
+                    continue
 
 
 async def auto_detect_backend() -> Optional[DirectLLMClient]:
     """Try to find a working LLM backend. Returns client or None."""
-    # Priority: env vars → vLLM → Ollama (explicit OLLAMA_HOST only)
+    # Priority: env vars → vLLM → llama.cpp (llama-server)
 
     vllm_url = os.environ.get("AITHER_VLLM_URL") or os.environ.get("VLLM_URL")
     if vllm_url:
@@ -212,18 +176,11 @@ async def auto_detect_backend() -> Optional[DirectLLMClient]:
             return client
         await client.close()
 
-    # Ollama only when asked for by name (OLLAMA_HOST set) — never a blind
-    # :11434 probe, which silently made a stray small model the shell's brain.
-    ollama_host = os.environ.get("OLLAMA_HOST", "")
-    if not ollama_host:
-        return None
-    if "0.0.0.0" in ollama_host:
-        ollama_host = ollama_host.replace("0.0.0.0", "localhost")
-    if not ollama_host.startswith("http"):
-        ollama_host = "http://" + ollama_host
-    client = DirectLLMClient(base_url=ollama_host, backend="ollama")
+    # A local llama-server (AITHER_LLAMACPP_URL, else its default :8080).
+    llamacpp_url = os.environ.get("AITHER_LLAMACPP_URL", "") or "http://127.0.0.1:8080"
+    client = DirectLLMClient(base_url=llamacpp_url, backend="llamacpp")
     if await client.health_check():
-        logger.info("Found Ollama at %s", ollama_host)
+        logger.info("Found llama-server at %s", llamacpp_url)
         return client
     await client.close()
 

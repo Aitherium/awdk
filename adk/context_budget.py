@@ -87,7 +87,7 @@ def context_limit_for(model: Any) -> int:
     """Best-effort context window (in tokens) for ``model``.
 
     An explicit ``ADK_CONTEXT_LIMIT`` env override wins — needed for self-hosted
-    vLLM/Ollama deployments where the served window is a launch flag
+    vLLM/llama.cpp deployments where the served window is a launch flag
     (``--max-model-len``) and is not inferable from the model name.
 
     ``model`` is annotated loosely on purpose. The only caller reaches it via

@@ -184,7 +184,7 @@ def resolve_recipe(
     Args:
         system_info: dict with keys: ram_gb, cpu_cores, gpu_vendor, gpu_vram_mb,
                      unified_memory, gpu_name
-        prefer_backend: "auto" (use resolution), or specific backend name (e.g., "ollama")
+        prefer_backend: "auto" (use resolution), or specific backend name (e.g., "llamacpp")
         recipe_id: explicit recipe ID to use (overrides resolution)
         ranking: measured recipe order from an engine tournament; None reads the
                  node's tournament file. A measured recipe sorts ahead of tier rank,
@@ -262,7 +262,7 @@ def resolve_recipe(
         # Prefer SELF-CONTAINED recipes over fleet-delegate ones on ties: a
         # delegate recipe needs fleet playbooks/scripts the public pack does not
         # ship, so it must never win by alphabetical accident (cpu-1bit-llamacpp
-        # was beating cpu-ollama for every big CPU box exactly this way).
+        # was beating cpu-llamacpp for every big CPU box exactly this way).
         needs_delegate = 1 if recipe.get("deployment", {}).get("delegate") else 0
         # Sort: desc score, desc tier rank, self-contained first, then ID
         return (-score, -tier_rank, needs_delegate, rid)
@@ -291,8 +291,8 @@ def resolve_recipe(
         measured_ids.update(c[0] for c in reordered)
 
     # prefer_backend filter: keep only recipes whose engine matches the requested
-    # backend. If nothing matches (e.g. prefer "ollama" on a box that scored no
-    # ollama recipe), fall back to the unfiltered ranking with a warning rather
+    # backend. If nothing matches (e.g. prefer "vllm" on a box that scored no
+    # vllm recipe), fall back to the unfiltered ranking with a warning rather
     # than failing — the preference is a tiebreaker, not a hard gate.
     prefer_warning = []
     if prefer_backend and prefer_backend != "auto":

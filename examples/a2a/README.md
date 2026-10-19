@@ -41,7 +41,7 @@ def add(a: float, b: float) -> str:
     "Add two numbers."
     return str(a + b)
 
-agent = AitherAgent("aither", tools=[get_global_registry()])   # BYO model (Ollama default)
+agent = AitherAgent("aither", tools=[get_global_registry()])   # BYO model (llama.cpp default)
 app = FastAPI()
 A2AServer(agent=agent, base_url="http://localhost:8080").mount(app)
 # uvicorn app  →  now any A2A client can hit /.well-known/agent-card.json + /a2a
@@ -58,7 +58,7 @@ curl -X POST http://localhost:8080/a2a -H 'content-type: application/json' -d '{
 
 ## Bring your own model
 
-Every example runs on a **local Ollama** by default (no keys, no caps). Point it at
+Every example runs on a **local llama.cpp** by default (no keys, no caps). Point it at
 anything else with an env key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, …) or `--backend`. Local + BYO backends are
 **never** metered — caps only apply to Aitherium's optional hosted gateway.

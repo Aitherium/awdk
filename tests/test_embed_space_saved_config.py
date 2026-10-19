@@ -74,17 +74,12 @@ def test_the_faculty_drops_wrong_width_vectors_in_the_code_embed_space(load, mon
     p = fac.EmbeddingProvider()
     tried = []
 
-    async def ollama(texts):
-        tried.append("ollama")
-        return [[0.1] * 768 for _ in texts]          # a leftover nomic model answered
-
     async def elysium(texts):
         tried.append("elysium")
         return [[0.2] * 1024 for _ in texts]
 
-    monkeypatch.setattr(p, "_embed_ollama", ollama)
     monkeypatch.setattr(p, "_embed_elysium", elysium)
     monkeypatch.setattr(p, "_try_load_sentence_transformers",
                         lambda: pytest.fail("the local nomic model must not load here"))
     out = asyncio.run(p.embed_batch(["a", "b"]))
-    assert tried == ["ollama", "elysium"] and all(len(v) == 1024 for v in out)
+    assert tried == ["elysium"] and all(len(v) == 1024 for v in out)

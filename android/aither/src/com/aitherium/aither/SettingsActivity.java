@@ -75,7 +75,7 @@ public class SettingsActivity extends Activity {
         LinearLayout acct = Ui.card(this);
         if (!lite) {
             row(acct, Ui.action(this, "My account", v -> startActivity(new Intent(Intent.ACTION_VIEW,
-                    Uri.parse(AppTabs.ORIGIN + "/profile")).setClass(this, MainActivity.class))),
+                    Uri.parse(AppTabs.ORIGIN + AppTabs.ACCOUNT_PATH)).setClass(this, MainActivity.class))),
                     "Your profile, sign-in and security, opened in Aither.");
             row(acct, Ui.action(this, "Link a device", v -> startActivity(new Intent(this, LinkActivity.class))),
                     "Sign in your watch, TV or laptop: scan its code with your camera, or type it here.");

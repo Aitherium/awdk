@@ -59,7 +59,6 @@ def node_detect_hardware(verbose: bool = False) -> dict:
             "gpu_vendor": sysinfo.gpu_vendor,
             "gpu_name": sysinfo.gpu_name,
             "gpu_vram_mb": sysinfo.gpu_vram_mb,
-            "ollama_installed": sysinfo.ollama_installed,
             "python_version": sysinfo.python_version,
         }
 
@@ -75,7 +74,7 @@ def node_detect_hardware(verbose: bool = False) -> dict:
         # Map recommendation backend to recipe ID
         # Use the REAL resolver for the recommendation — the coarse
         # recommend_setup tier map said "cuda-vllm-8gb" for a 32GB card
-        # (it only knows cloud/ollama/local-8b/local-3b tiers). Keep the
+        # (it only knows cloud/local-8b/local-3b tiers). Keep the
         # tier map only as a fallback if resolution errors.
         resolved = resolve_recipe(system_dict, prefer_backend="auto")
         if isinstance(resolved, dict) and resolved.get("recipe"):
@@ -103,10 +102,8 @@ def _map_recommendation_to_recipe(rec) -> str:
             return "cuda-vllm-24gb"
         return "cuda-vllm-8gb"
     elif rec.backend == "local-3b":
-        return "cpu-ollama"
-    elif rec.backend == "ollama":
-        return "metal-ollama" if "apple" in platform.system().lower() \
-               else "cpu-ollama"
+        return "metal-llamacpp" if "darwin" in platform.system().lower() \
+               else "cpu-llamacpp"
     else:
         return "cloud-api"
 
@@ -185,12 +182,59 @@ _ENGINE_FIX = (
 )
 
 
+#: Aitherium's artifact store. Recipe weights come from here FIRST; a public hub
+#: is only the fallback when the store cannot deliver a full, size-checked file.
+ARTIFACT_BASE_URL = "https://artifact.aitherium.com"
+
+
+def _awrtifact_weights(inference: dict) -> Optional[dict]:
+    """The recipe's awrtifact weights spec ``{release, name, bytes, hf_fallback}``,
+    or None when the recipe does not name one."""
+    w = (inference.get("weights") or {}).get("awrtifact") or {}
+    if not (w.get("release") and w.get("name") and int(w.get("bytes") or 0) > 0):
+        return None
+    return {
+        "release": str(w["release"]),
+        "name": str(w["name"]),
+        "bytes": int(w["bytes"]),
+        "hf_fallback": str((inference.get("weights") or {}).get("hf_fallback") or ""),
+    }
+
+
+def _fetch_then_serve_script(w: dict, serve_args: list, model_dir: str,
+                             server: str = "/app/llama-server") -> str:
+    """POSIX shell that serves the awrtifact GGUF, fetching it first when absent.
+
+    The size is asserted before llama-server ever sees the file: a short file is
+    a corrupt model, not a slow one. A failed or short fetch falls back to the
+    public hub (``-hf``) when the recipe names one, else exits non-zero.
+    """
+    model = f"{model_dir}/{w['name']}"
+    url = f"${{AITHER_ARTIFACT_URL:-{ARTIFACT_BASE_URL}}}/{w['release']}/{w['name']}"
+    args = shlex.join(serve_args)
+    fallback = (f"exec {server} -hf {shlex.quote(w['hf_fallback'])} {args}"
+                if w["hf_fallback"] else "exit 1")
+    return (
+        f'M={shlex.quote(model)}; EXPECT={w["bytes"]}; mkdir -p {shlex.quote(model_dir)}; '
+        'have=0; [ -s "$M" ] && have=$(stat -c %s "$M" 2>/dev/null || wc -c < "$M"); '
+        'if [ "$have" != "$EXPECT" ]; then '
+        f'echo "[weights] fetching {w["name"]} from awrtifact"; '
+        f'curl -fL --retry 5 --retry-delay 3 -C - -o "$M.part" "{url}" || true; '
+        'got=$(stat -c %s "$M.part" 2>/dev/null || wc -c < "$M.part" 2>/dev/null || echo 0); '
+        'if [ "$got" = "$EXPECT" ]; then mv -f "$M.part" "$M"; else '
+        'echo "[weights] awrtifact fetch incomplete ($got of $EXPECT bytes)"; '
+        f'{fallback}; fi; fi; '
+        f'exec {server} -m "$M" {args}'
+    )
+
+
 def _render_compose(recipe_id: str, recipe: dict) -> str:
     """Render a minimal, self-contained docker-compose YAML from recipe fields.
 
     Public-safe: image/args/ports all come from the recipe. Engines:
       vllm   -> command = model + serve_args (vllm/vllm-openai entrypoint)
-      ollama -> env vars from serve_args (KEY=VALUE strings), model pulled later
+      llamacpp -> command = serve_args (llama-server flags)
+      other  -> env vars from serve_args (KEY=VALUE strings)
     """
     inference = recipe.get("inference_config", {})
     deployment = recipe.get("deployment", {})
@@ -230,7 +274,7 @@ def _render_compose(recipe_id: str, recipe: dict) -> str:
         # rendered SILENT NONSENSE: the env filter requires "=" and no spaces, so
         # every flag ("--ctx-size 32768", "--reasoning-budget 256", …) was dropped,
         # `command` was omitted entirely, and the service inherited the vllm image
-        # default plus an /root/.ollama volume. Verified 2026-07-25 by rendering
+        # default plus an unrelated model volume. Verified 2026-07-25 by rendering
         # cpu-1bit-llamacpp: 0 of 7 serve_args survived.
         if not inference.get("image"):
             # Fail LOUD rather than emit a compose that names the wrong runtime.
@@ -241,15 +285,24 @@ def _render_compose(recipe_id: str, recipe: dict) -> str:
                 "inference_config.image (no safe default — Q1_0 needs the "
                 "PrismML fork), got empty"
             )
-        command_line = "    command: " + json.dumps(list(serve_args))
+        weights = _awrtifact_weights(inference)
+        if weights:
+            # Weights from awrtifact first (size-checked), the public hub only as
+            # the fallback — never a hub pull when our own artifact is reachable.
+            script = _fetch_then_serve_script(weights, list(serve_args), "/models")
+            command_line = ('    entrypoint: ["/bin/bash", "-c"]\n'
+                            # Compose interpolates `$VAR`; `$$` hands bash a literal `$`.
+                            "    command: " + json.dumps([script.replace("$", "$$")]))
+        else:
+            command_line = "    command: " + json.dumps(list(serve_args))
         env_lines = []
         volumes = "    volumes:\n      - node-bootstrap-llamacpp:/models\n"
-    else:  # ollama and other env-driven engines
+    else:  # env-driven engines
         command_line = ""
         env_lines = [f"      {a}" for a in inference.get("serve_args", []) or []
                      if isinstance(a, str) and "=" in a and " " not in a]
         env_lines = [ln.replace("=", ": ", 1) for ln in env_lines]
-        volumes = "    volumes:\n      - node-bootstrap-ollama:/root/.ollama\n"
+        volumes = "    volumes:\n      - node-bootstrap-models:/models\n"
     parts = [
         f"# Generated by adk node_bootstrap from recipe {recipe_id} — do not edit by hand.",
         "services:",
@@ -266,7 +319,7 @@ def _render_compose(recipe_id: str, recipe: dict) -> str:
     if gpu_block:
         parts.append(gpu_block.rstrip("\n"))
     parts.append(
-        "volumes:\n  node-bootstrap-hf-cache:\n  node-bootstrap-ollama:"
+        "volumes:\n  node-bootstrap-hf-cache:\n  node-bootstrap-models:"
         "\n  node-bootstrap-llamacpp:"
     )
     return "\n".join(parts) + "\n"
@@ -344,18 +397,26 @@ def node_plan_deployment(
             result["compose_yaml"] = _render_compose(recipe_id, recipe)
         elif target == "native":
             # e.g. Apple Silicon: Docker has no Metal GPU passthrough — the engine
-            # must run natively (brew-installed ollama). apply() pulls models if
-            # the binary is present; install itself stays a documented manual step.
-            models = inference.get("models", [])
-            pulls = [
-                f"ollama pull {m['source'].split('://', 1)[1]}"
-                for m in models
-                if str(m.get("source", "")).startswith("ollama://")
-            ]
-            result["native_commands"] = [
-                "# install (once): brew install ollama && brew services start ollama",
-                *pulls,
-            ]
+            # must run natively (brew-installed llama.cpp). apply() starts
+            # llama-server when the binary is present; installing it stays a
+            # documented manual step.
+            native_args: list = []
+            for arg in inference.get("serve_args", []) or []:
+                if isinstance(arg, str):
+                    native_args.extend(arg.split())
+            weights = _awrtifact_weights(inference)
+            if weights:
+                model_dir = str(Path.home() / ".aither" / "models")
+                result["native_commands"] = [
+                    "# install (once): brew install llama.cpp",
+                    _fetch_then_serve_script(weights, native_args, model_dir,
+                                             server="llama-server"),
+                ]
+            else:
+                result["native_commands"] = [
+                    "# install (once): brew install llama.cpp",
+                    shlex.join(["llama-server", *native_args]),
+                ]
         elif delegate:
             # Recipe defers to a proven fleet playbook/script (e.g. the 5090
             # dual-stack or the Bonsai systemd node). The public pack never
@@ -492,29 +553,37 @@ def _apply_local(recipe_id: str, plan: dict, target: str) -> dict:
                 "next": _verify_hint(recipe_id, "localhost", plan),
             }
         if target == "native":
-            # Native engine (e.g. ollama on Apple Silicon). Pull models only if
-            # the binary exists; installing system packages is out of scope.
-            rc, _ = _run(["ollama", "--version"], timeout=15)
+            # Native engine (llama.cpp on Apple Silicon). Start llama-server only
+            # if the binary exists; installing system packages is out of scope.
+            rc, _ = _run(["llama-server", "--version"], timeout=15)
             if rc != 0:
                 return {
-                    "error": "ollama binary not found",
-                    "fix": "install natively first: brew install ollama && "
-                           "brew services start ollama (Docker on macOS has no "
-                           "Metal GPU passthrough)",
+                    "error": "llama-server binary not found",
+                    "fix": "install natively first: brew install llama.cpp "
+                           "(Docker on macOS has no Metal GPU passthrough)",
                 }
-            pulled, failures = [], []
-            for cmd in plan.get("native_commands", []):
-                if not cmd.startswith("ollama pull "):
-                    continue
-                rc, out = _run(cmd.split(), timeout=3600)
-                (pulled if rc == 0 else failures).append(cmd.split()[-1])
-                if rc != 0:
-                    logger.warning("pull failed: %s: %s", cmd, out[-200:])
-            if not pulled:
-                return {"error": "no models pulled", "failed": failures,
-                        "fix": "check network and model tags"}
+            serve = [c for c in plan.get("native_commands", [])
+                     if c.startswith("llama-server ") or "exec llama-server " in c]
+            if not serve:
+                return {"error": "recipe has no llama-server command",
+                        "fix": "check the recipe's inference_config.serve_args"}
+            # A fetch-then-serve script (weights from awrtifact) runs under sh.
+            argv = (shlex.split(serve[0]) if serve[0].startswith("llama-server ")
+                    else ["/bin/sh", "-c", serve[0]])
+            try:
+                proc = subprocess.Popen(  # noqa: S603 - argv from the recipe
+                    argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                return {"error": f"llama-server failed to start: {e}",
+                        "fix": "run the command by hand to see its error",
+                        "command": serve[0]}
             return {"applied": True, "recipe_id": recipe_id, "mode": "native",
-                    "models_pulled": pulled, "failed": failures}
+                    "pid": proc.pid, "command": serve[0],
+                    "next": _verify_hint(recipe_id, "localhost", plan)}
         if target == "delegate":
             # Fleet playbooks/scripts are not shipped in the public wheel — report
             # the exact command instead of pretending to run it.
@@ -765,7 +834,7 @@ def node_register_backend(
     if not backend_type:
         return {
             "error": "backend_type required",
-            "fix": "specify backend_type (vllm, ollama, etc.)",
+            "fix": "specify backend_type (vllm, llamacpp, etc.)",
         }
 
     try:
@@ -920,12 +989,7 @@ def node_verify(
 # Per-engine protocol table. Every engine NOT listed here is treated as
 # OpenAI-compatible (vllm, llamacpp, llamacpp_remote, sglang, strata, ...):
 # that is the shape nearly every modern serving stack exposes.
-_ENGINE_PROTOCOLS = {
-    "ollama": {
-        "health_path": "/api/tags",
-        "completion_paths": ("/api/generate",),
-    },
-}
+_ENGINE_PROTOCOLS: dict = {}
 _OPENAI_PROTOCOL = {
     "health_path": "/health",
     "completion_paths": ("/v1/chat/completions", "/v1/completions"),
@@ -975,11 +1039,9 @@ def _health_path_for(backend_type: str, override=None) -> str:
 
 
 def _completion_text(path: str, body: dict) -> str:
-    """Pull generated text out of an ollama / chat / completions response."""
+    """Pull generated text out of a chat / completions response."""
     if not isinstance(body, dict):
         return ""
-    if "response" in body and isinstance(body.get("response"), str):
-        return body["response"].strip()
     choices = body.get("choices") or []
     if not choices or not isinstance(choices[0], dict):
         return ""
@@ -991,8 +1053,6 @@ def _completion_text(path: str, body: dict) -> str:
 
 
 def _completion_payload(path: str, model: str, prompt: str) -> dict:
-    if path.startswith("/api/"):  # ollama native
-        return {"model": model, "prompt": prompt, "stream": False}
     if path.endswith("/chat/completions"):
         return {
             "model": model,

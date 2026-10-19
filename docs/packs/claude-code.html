@@ -282,28 +282,28 @@ a:focus-visible, .jump a:focus-visible {
     <p class="eyebrow">aither-adk agent pack</p>
     <h1>Claude Code Studio</h1>
     <p class="lede">Claude Code — Software Development Agent Brain Pack</p>
-    <nav class="jump"><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.76/claude-code-3.8.76.tar.gz">Download</a></nav>
+    <nav class="jump"><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.79/claude-code-3.8.79.tar.gz">Download</a></nav>
   </header>
 
   <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">claude-code — install</span></div><pre class="term-body"><span class="c"># one command each; nothing else to configure</span>
-<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.76/claude-code-3.8.76.tar.gz
-<span class="p">$</span> tar xzf claude-code-3.8.76.tar.gz
+<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.79/claude-code-3.8.79.tar.gz
+<span class="p">$</span> tar xzf claude-code-3.8.79.tar.gz
 <span class="p">$</span> python claude-code/install.py
 <span class="o">installed claude-code -&gt; ~/.aither/packs/claude-code</span>
 <span class="o">verified: adk discovers &#x27;claude-code&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">claude-code — install</span></div><pre class="term-body"><span class="c"># PowerShell. curl.exe and tar ship with Windows 10 1803+</span>
-<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.76/claude-code-3.8.76.tar.gz
-<span class="p">$</span> tar -xzf claude-code-3.8.76.tar.gz
+<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.79/claude-code-3.8.79.tar.gz
+<span class="p">$</span> tar -xzf claude-code-3.8.79.tar.gz
 <span class="p">$</span> python claude-code\install.py
 <span class="o">installed claude-code -&gt; ~\.aither\packs\claude-code</span>
 <span class="o">verified: adk discovers &#x27;claude-code&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.76</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>8ad0d4103fc8036f…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.8.79</dd></div><div><dt>Size</dt><dd>5 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>6911e78a8c5da9d2…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
     <p class="sub">The app keeps its own interface. This runs underneath it.</p>
-    <dl class="feat"><div><dt>Web search, no account</dt><dd>DuckDuckGo through a maintained client. No key, no sign-up, nothing hosted.</dd></div><div><dt>An agent behind the chat box</dt><dd>Tools, memory and skills answer on the API the app already speaks, so its interface needs no changes.</dd></div><div><dt>Your own model</dt><dd>llama.cpp, ollama, vLLM and LM Studio are discovered automatically; <code>--setup-model</code> installs one sized to the machine.</dd></div><div><dt>Weights without an account</dt><dd>Resumable, rate-capped and size-verified, so a dropped connection costs minutes rather than the whole download.</dd></div></dl>
+    <dl class="feat"><div><dt>Web search, no account</dt><dd>DuckDuckGo through a maintained client. No key, no sign-up, nothing hosted.</dd></div><div><dt>An agent behind the chat box</dt><dd>Tools, memory and skills answer on the API the app already speaks, so its interface needs no changes.</dd></div><div><dt>Your own model</dt><dd>llama.cpp, vLLM and LM Studio are discovered automatically; <code>--setup-model</code> installs one sized to the machine.</dd></div><div><dt>Weights without an account</dt><dd>Resumable, rate-capped and size-verified, so a dropped connection costs minutes rather than the whole download.</dd></div></dl>
   </section>
 
   <section><h2>Skills</h2><p class="sub">Included in the download.</p><dl class="feat"><div><dt><code>debugging</code></dt><dd></dd></div><div><dt><code>feature-development</code></dt><dd></dd></div></dl></section>
@@ -313,13 +313,13 @@ integrates with version control.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>8ad0d4103fc8036ffc0c70197ccdd40ec3876e3fe5b266162c795a1aac76251a</code></p>
+    <p class="sub">sha256 <code>6911e78a8c5da9d27690caf412f095b0fc5e739aa4cbf62e9622d0084400df54</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
-<span class="p">$</span> sha256sum -c claude-code-3.8.76.sha256
-<span class="o">claude-code-3.8.76.tar.gz: OK</span>
+<span class="p">$</span> sha256sum -c claude-code-3.8.79.sha256
+<span class="o">claude-code-3.8.79.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;8AD0D4103FC8036FFC0C70197CCDD40EC3876E3FE5B266162C795A1AAC76251A&#x27;
-<span class="p">$</span> (Get-FileHash claude-code-3.8.76.tar.gz -Algorithm SHA256).Hash -eq $want
+<span class="p">$</span> $want = &#x27;6911E78A8C5DA9D27690CAF412F095B0FC5E739AA4CBF62E9622D0084400DF54&#x27;
+<span class="p">$</span> (Get-FileHash claude-code-3.8.79.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
   </section>
@@ -327,7 +327,7 @@ integrates with version control.</p></div></section>
   
 
   <footer>
-    Built from <code>v3.8.76</code> · adk 3.8.76 ·
+    Built from <code>v3.8.79</code> · adk 3.8.79 ·
     <a href="../packs.html">All packs</a> ·
     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a>
   <!-- aither-about:start GENERATED from the ecosystem registry built_on -->

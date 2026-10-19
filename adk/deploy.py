@@ -1,11 +1,9 @@
 """aither deploy — Component deployment for the AitherOS ecosystem.
 
-Deploy individual components (Ollama, vLLM, awnode, core stack, full stack)
+Deploy individual components (vLLM, awnode, core stack, full stack)
 or companion apps (Awconnect, Desk) from public GitHub releases.
 
 Usage (via CLI):
-    aither deploy ollama                   # Install + pull models for your GPU
-    aither deploy ollama --models qwen3:8b,phi4  # Pull specific models
     aither deploy vllm                     # Set up vLLM inference (delegates to setup)
     aither deploy node                     # awnode + Genesis via Docker
     aither deploy node --gpu --dashboard   # Node with GPU + Veil dashboard
@@ -45,7 +43,6 @@ from adk.setup_cli import (
     err,
     step,
     detect_gpu,
-    GPUInfo,
 )
 
 # ---------------------------------------------------------------------------
@@ -114,31 +111,11 @@ HEALTH_ENDPOINTS = {
     3000: "AitherVeil",
 }
 
-# Ollama model tiers keyed by VRAM range
-_OLLAMA_MODELS_BY_VRAM = {
-    "none": ["gemma4:4b", "nomic-embed-text"],
-    "low":  ["gemma4:4b", "nomic-embed-text"],           # <8GB
-    "mid":  ["nemotron-orchestrator-8b", "nomic-embed-text"],  # 8-12GB
-    "high": [                                              # 12-24GB
-        "nemotron-orchestrator-8b",
-        "deepseek-r1:14b",
-        "nomic-embed-text",
-    ],
-    "ultra": [                                             # 24GB+
-        "nemotron-orchestrator-8b",
-        "deepseek-r1:14b",
-        "gemma4:27b",
-        "nomic-embed-text",
-    ],
-}
-
-
-
 def _space_models(models: list[str]) -> list[str]:
     """``models`` with nomic swapped for the active space's embedder.
 
-    In the aither-code-embed space (:mod:`adk.embeddings`) ``ollama pull
-    nomic-embed-text`` pulls a model of the retired space; the install embeds through
+    In the aither-code-embed space (:mod:`adk.embeddings`) pulling
+    ``nomic-embed-text`` fetches a model of the retired space; the install embeds through
     the ``aither-code-embed`` GGUF instead. nomic space: unchanged."""
     from adk.setup import _embed_model  # an unknown space keeps the nomic pull
 
@@ -591,24 +568,6 @@ def _print_engine_hint(prefix: str = "  ") -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helper: VRAM tier selection
-# ---------------------------------------------------------------------------
-
-def _vram_tier(gpu: GPUInfo) -> str:
-    """Classify GPU VRAM into an Ollama model tier key."""
-    if gpu.vendor == "none":
-        return "none"
-    vram_gb = gpu.vram_mb / 1024 if gpu.vram_mb else 0
-    if vram_gb >= 24:
-        return "ultra"
-    if vram_gb >= 12:
-        return "high"
-    if vram_gb >= 8:
-        return "mid"
-    return "low"
-
-
-# ---------------------------------------------------------------------------
 # Helper: Platform detection
 # ---------------------------------------------------------------------------
 
@@ -623,212 +582,6 @@ def _platform_name() -> str:
 
 
 # ===========================================================================
-# Component: Ollama
-# ===========================================================================
-
-def deploy_ollama(dry_run: bool = False, models: Optional[list[str]] = None) -> int:
-    """Deploy Ollama with appropriate models for the detected GPU.
-
-    Args:
-        dry_run: If True, show what would happen without executing.
-        models: Explicit model list to pull. If None, auto-select by GPU VRAM.
-
-    Returns:
-        Exit code (0 = success, 1 = failure).
-    """
-    print()
-    print(bold("  Ollama Deployment"))
-    print(dim("  Local LLM inference with automatic GPU offloading"))
-    print()
-
-    if dry_run:
-        print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
-
-    total_steps = 4
-    plat = _platform_name()
-
-    # -- Step 1: Check installation -------------------------------------------
-    step(1, total_steps, "Checking Ollama installation")
-
-    ollama = shutil.which("ollama")
-    if not ollama:
-        warn("Ollama is not installed")
-        print()
-        if plat == "linux":
-            print(f"  Install with:")
-            print(f"    {cyan('curl -fsSL https://ollama.com/install.sh | sh')}")
-        elif plat == "macos":
-            print(f"  Install with:")
-            print(f"    {cyan('brew install ollama')}")
-        elif plat == "windows":
-            print(f"  Install with:")
-            print(f"    {cyan('winget install Ollama.Ollama')}")
-        print()
-        print(f"  Or download from: {cyan('https://ollama.com/download')}")
-        return 1
-
-    info(f"Ollama binary: {ollama}")
-
-    # -- Step 2: Detect GPU ---------------------------------------------------
-    step(2, total_steps, "Detecting GPU hardware")
-
-    gpu = detect_gpu()
-    vram_gb = gpu.vram_mb / 1024 if gpu.vram_mb else 0
-
-    if gpu.vendor == "nvidia":
-        info(f"GPU: {bold(gpu.name)} ({vram_gb:.0f} GB VRAM)")
-        if gpu.cuda_version:
-            info(f"CUDA: {gpu.cuda_version}")
-    elif gpu.vendor == "amd":
-        info(f"GPU: {bold(gpu.name)} (AMD ROCm)")
-    elif gpu.vendor == "apple":
-        info(f"GPU: {bold(gpu.name)} (unified memory: {vram_gb:.0f} GB)")
-    else:
-        warn("No GPU detected -- Ollama will use CPU inference (slow)")
-
-    tier = _vram_tier(gpu)
-    info(f"VRAM tier: {bold(tier)}")
-
-    # -- Step 3: Ensure Ollama is running ------------------------------------
-    step(3, total_steps, "Starting Ollama service")
-
-    running = _run(["ollama", "list"])
-    if running is not None:
-        info("Ollama is already running")
-    else:
-        warn("Ollama is not running -- starting...")
-        if not dry_run:
-            # Start ollama serve in background
-            if plat == "windows":
-                subprocess.Popen(
-                    ["ollama", "serve"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
-                )
-            else:
-                subprocess.Popen(
-                    ["ollama", "serve"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-            time.sleep(3)
-            # Verify it started
-            verify = _run(["ollama", "list"])
-            if verify is not None:
-                info("Ollama started successfully")
-            else:
-                warn("Ollama may still be starting -- continuing anyway")
-        else:
-            info("Would start: ollama serve (background)")
-
-    # Build set of already-installed models
-    existing_models: set[str] = set()
-    model_list_out = _run(["ollama", "list"])
-    if model_list_out:
-        for line in model_list_out.strip().split("\n")[1:]:  # skip header
-            parts = line.split()
-            if parts:
-                # Models appear as "name:tag" -- store both full and base
-                full_name = parts[0]
-                existing_models.add(full_name)
-                existing_models.add(full_name.split(":")[0])
-
-    # -- Step 4: Pull models --------------------------------------------------
-    step(4, total_steps, "Pulling models")
-
-    if models:
-        models_to_pull = list(models)
-        info(f"Using explicit model list: {', '.join(models_to_pull)}")
-    else:
-        models_to_pull = _space_models(
-            _OLLAMA_MODELS_BY_VRAM.get(tier, _OLLAMA_MODELS_BY_VRAM["none"]))
-        info(f"Auto-selected for {bold(tier)} tier: {', '.join(models_to_pull)}")
-
-    # Estimate resource usage
-    total_disk_gb = 0.0
-    size_estimates = {
-        "gemma4:4b": 2.5, "gemma4:27b": 16.0,
-        "nemotron-orchestrator-8b": 5.0, "deepseek-r1:14b": 9.0,
-        "deepseek-r1:7b": 4.5, "nomic-embed-text": 0.3, "aither-code-embed": 0.6,
-        "qwen3:8b": 5.0, "llama3.2:3b": 2.0,
-    }
-    for m in models_to_pull:
-        total_disk_gb += size_estimates.get(m, 4.0)
-
-    print()
-    info(f"Estimated disk usage: ~{total_disk_gb:.1f} GB")
-    if tier in ("mid", "high", "ultra"):
-        info(f"Estimated VRAM at runtime: models loaded on demand, one at a time")
-    else:
-        info(f"CPU inference: expect 5-20 tokens/sec depending on model size")
-    print()
-
-    pulled = 0
-    skipped = 0
-    failed = 0
-
-    for model in models_to_pull:
-        base = model.split(":")[0]
-        if base in existing_models or model in existing_models:
-            info(f"Already installed: {model}")
-            skipped += 1
-            continue
-
-        if dry_run:
-            info(f"Would pull: {bold(model)}")
-            pulled += 1
-            continue
-
-        info(f"Pulling: {bold(model)} ...")
-        if model == "aither-code-embed":
-            # a catalogue GGUF served by llama.cpp on :8229, not an Ollama model
-            from adk.setup import _pull_code_embed
-
-            if _pull_code_embed(model):
-                info(f"  {green('OK')}")
-                pulled += 1
-            else:
-                failed += 1
-            continue
-        try:
-            result = subprocess.run(
-                ["ollama", "pull", model],
-                timeout=1800,  # 30-minute timeout per model
-            )
-            if result.returncode == 0:
-                info(f"  {green('OK')}")
-                pulled += 1
-            else:
-                warn(f"  Pull returned exit code {result.returncode}")
-                failed += 1
-        except subprocess.TimeoutExpired:
-            warn(f"  Pull timed out for {model} (30 min limit)")
-            failed += 1
-        except Exception as exc:
-            warn(f"  Failed to pull {model}: {exc}")
-            failed += 1
-
-    # -- Summary --------------------------------------------------------------
-    print()
-    print(bold("  " + "-" * 60))
-    print()
-    info(f"Pulled: {pulled}  Skipped (already installed): {skipped}  Failed: {failed}")
-    if failed > 0:
-        warn("Some models failed to pull -- re-run to retry")
-    print()
-    info(f"Ollama API: {cyan('http://localhost:11434')}")
-    info(f"OpenAI-compatible: {cyan('http://localhost:11434/v1')}")
-    print()
-    info(f"Test it: {cyan('ollama run ' + models_to_pull[0])}")
-    print()
-    if not dry_run:
-        info(f"{green(bold('Ollama is ready!'))}")
-    return 1 if failed > 0 and pulled == 0 else 0
-
-
-# ===========================================================================
 # Component: vLLM
 # ===========================================================================
 
@@ -840,7 +593,7 @@ def deploy_vllm(dry_run: bool = False, tier: Optional[str] = None, hf_token: str
 
     Args:
         dry_run: If True, show what would happen without executing.
-        tier: Force a specific vLLM tier (nano/lite/standard/full/ollama).
+        tier: Force a specific tier (nano/lite/standard/full/llamacpp).
         hf_token: HuggingFace token for gated model access.
 
     Returns:
@@ -945,7 +698,7 @@ def deploy_adk_node(
     federate: bool = False,
     portal_token: Optional[str] = None,
 ) -> int:
-    """Deploy ADK-native node: ADK server + Ollama + optional profiles.
+    """Deploy ADK-native node: ADK server + llama.cpp + optional profiles.
 
     No Genesis, no Redis, no PostgreSQL, no MicroScheduler. The ADK server
     IS the brain — ReAct loop, tools, fleet, forge all run in-process.
@@ -961,7 +714,7 @@ def deploy_adk_node(
     """
     print()
     print(bold("  ADK Node Deployment"))
-    print(dim("  ADK server (8080) + Ollama — lightweight, no Genesis"))
+    print(dim("  ADK server (8080) + llama.cpp — lightweight, no Genesis"))
     print()
 
     # Auth gate
@@ -1021,7 +774,7 @@ def deploy_adk_node(
         info("Profile: federate (AitherFederate bridge to api.aitherium.com on :8094)")
 
     if not profiles:
-        info("Profile: default (ADK server + Ollama)")
+        info("Profile: default (ADK server + llama.cpp)")
 
     # Resource estimates
     ram_mb = 768 + (1024 if gpu else 0) + (512 if memory else 0) + (768 if dashboard else 0) + (512 if federate else 0)
@@ -1102,7 +855,7 @@ def deploy_adk_node(
     print(bold("  " + "-" * 60))
     print()
     info(f"ADK server:  {cyan('http://localhost:8080')}")
-    info(f"Ollama:      {cyan('http://localhost:11434')}")
+    info(f"llama.cpp:   {cyan('http://localhost:8099/v1')}")
     if gpu:
         info(f"vLLM:        {cyan('http://localhost:8120')}")
     if memory:
@@ -1948,13 +1701,13 @@ def _code_embed_active() -> bool:
 def _embedding_env_lines() -> list[str]:
     """The overlay's EMBEDDING_* env for the active space.
 
-    nomic: Ollama's ``nomic-embed-text`` (unchanged). aither-code-embed: the overlay's
+    nomic: ``nomic-embed-text`` through the stack's MicroScheduler. aither-code-embed: the overlay's
     own ``code-embed`` service (OpenAI shape) and the space itself, so the app never
     writes 768-d vectors into a 1024-d index."""
     if not _code_embed_active():
         return [
-            '      EMBEDDING_PROVIDER: "ollama"',
-            '      EMBEDDING_URL: "http://ollama:11434"',
+            '      EMBEDDING_PROVIDER: "openai"',
+            '      EMBEDDING_URL: "http://microscheduler:8150/v1"',
             '      EMBEDDING_MODEL: "nomic-embed-text"',
         ]
     from adk import embeddings
@@ -1975,8 +1728,8 @@ def _code_embed_service_lines() -> list[str]:
     0.0.0.0 would publish an unauthenticated server to the LAN), so from a container on a
     native Linux engine ``host.docker.internal`` -> the bridge IP finds nothing listening.
     Here llama-server binds 0.0.0.0 INSIDE the container and publishes no port: only the
-    ``sovereign-network`` peers reach it, as the nomic path reaches the ``ollama`` service.
-    The GGUF is the one ``adk models pull aither-code-embed`` / ``adk deploy ollama`` put
+    ``sovereign-network`` peers reach it, as the nomic path reaches ``microscheduler``.
+    The GGUF is the one ``adk models pull aither-code-embed`` put
     in the Bonsai models dir, mounted read-only."""
     from adk import embeddings
     from adk.models import catalogue, serve
@@ -2059,7 +1812,7 @@ def _generate_app_overlay(
         f'      {prefix}_ADK_URL: "http://adk-server:8080"',
         f'      {prefix}_QDRANT_URL: "http://qdrant:6333"',
         f'      {prefix}_QDRANT_COLLECTION: "{slug}_{tenant}"',
-        f'      OLLAMA_URL: "http://ollama:11434"',
+        f'      AITHER_LLAMACPP_URL: "http://llamacpp:8080"',
     ])
     env_lines.extend(_embedding_env_lines())
     code_embed = _code_embed_active()
@@ -2151,7 +1904,7 @@ def _generate_sovereign_config(
     Users who want full customization run setup-sovereign.py separately.
     """
     tls_mode = "tunnel" if tunnel else "none"
-    llm_backend = "vllm" if gpu else "ollama"
+    llm_backend = "vllm" if gpu else "llamacpp"
     federation = "true" if sync else "false"
 
     lines = [
@@ -2203,8 +1956,8 @@ def _generate_sovereign_config(
         "",
         "llm:",
         f"  backend: {llm_backend}",
-        f"  model: {'aither-orchestrator' if gpu else 'gemma4:4b'}",
-        "  ollama_url: http://ollama:11434",
+        "  model: aither-orchestrator",
+        "  llamacpp_url: http://llamacpp:8080",
         f"  vllm_url: {'http://vllm:8120' if gpu else ''}",
         "",
     ]
@@ -2621,7 +2374,7 @@ def deploy_sovereign(
     info(f"Workspace:       {cyan('http://localhost:3000')}")
     info(f"ADK Server:      {cyan('http://localhost:8080')}")
     info(f"MicroScheduler:  {cyan('http://localhost:8150')}")
-    info(f"Ollama:          {cyan('http://localhost:11434')}")
+    info(f"llama.cpp:       {cyan('http://localhost:8099/v1')}")
     if gpu:
         info(f"vLLM:            {cyan('http://localhost:8120')}")
     info(f"Identity:        {cyan('http://localhost:8100')}")
@@ -2806,7 +2559,7 @@ def deploy_stop(component: str) -> int:
     """Stop a deployed AitherOS component.
 
     Args:
-        component: One of "ollama", "node", "core", "full", "vllm", "all".
+        component: One of "node", "core", "full", "vllm", "all".
 
     Returns:
         Exit code (0 = success, 1 = failure).
@@ -2815,26 +2568,7 @@ def deploy_stop(component: str) -> int:
     print(bold(f"  Stopping: {component}"))
     print()
 
-    if component == "ollama":
-        # Try graceful stop, then kill
-        info("Stopping Ollama...")
-        result = _run(["ollama", "stop"])
-        if result is not None:
-            info("Ollama stopped")
-            return 0
-
-        # Fallback: find and kill the process
-        plat = _platform_name()
-        if plat == "windows":
-            _run(["taskkill", "/F", "/IM", "ollama.exe"])
-            # Also stop the app if running
-            _run(["taskkill", "/F", "/IM", "ollama app.exe"])
-        else:
-            _run(["pkill", "-f", "ollama serve"])
-        info("Ollama process terminated")
-        return 0
-
-    elif component in ("node", "core"):
+    if component in ("node", "core"):
         # Try ADK compose first, then Genesis compose
         adk_compose = AITHER_DIR / "docker-compose.node-adk.yml"
         genesis_compose = AITHER_DIR / "docker-compose.node.yml"
@@ -2916,10 +2650,6 @@ def deploy_stop(component: str) -> int:
                 else:
                     exit_code = 1
 
-        # Stop Ollama
-        if shutil.which("ollama"):
-            deploy_stop("ollama")
-
         print()
         if exit_code == 0:
             info(f"{green(bold('All components stopped'))}")
@@ -2930,7 +2660,7 @@ def deploy_stop(component: str) -> int:
     else:
         err(f"Unknown component: {component}")
         print()
-        print(f"  Valid components: ollama, vllm, node, core, full, all")
+        print(f"  Valid components: vllm, node, core, full, all")
         return 1
 
 
@@ -3202,7 +2932,7 @@ def cmd_deploy_tenant_agent(args) -> int:
 # evidence filed off.
 #
 # It was also the only customer-shaped entry in a family of generic platform
-# capabilities (ollama, vllm, node, core, sovereign, grid, addons, …). Nothing
+# capabilities (vllm, node, core, sovereign, grid, addons, …). Nothing
 # internal is lost: that product's setup script still lives under
 # `AitherOS/scripts/` and can be run directly, which is where product-specific
 # deployment belongs — in the repo, not in the published SDK.
@@ -3391,7 +3121,6 @@ def deploy_grid(
 
     info(f"GPU: {gpu.name} ({vram_gb:.0f}GB VRAM)")
 
-    # -- Auto-discover Mac Ollama on LAN if --mac-host not set ------------------
     # Auto-discover llama.cpp nodes on LAN if --mac-host not set
     if not mac_host and not dry_run:
         discovered = _discover_llamacpp_lan()
@@ -3692,9 +3421,8 @@ def cmd_deploy_component(args) -> int:
         print()
         print(f"  Components:")
         print(f"    {bold('sovereign')}  Complete self-hosted stack (workspace + agents + memory + auth)")
-        print(f"    {bold('ollama')}     Install Ollama + pull models for your GPU")
         print(f"    {bold('vllm')}       Deploy vLLM inference containers (NVIDIA GPU)")
-        print(f"    {bold('node')}       ADK-native node (lightweight: ADK server + Ollama)")
+        print(f"    {bold('node')}       ADK-native node (lightweight: ADK server + llama.cpp)")
         print(f"    {bold('node --genesis')}  Full node (Genesis + Redis + PostgreSQL + 14 services)")
         print(f"    {bold('core')}       Core services (Node, Pulse, Watch, Genesis, Veil)")
         print(f"    {bold('full')}       Full AitherOS stack (~31 containers)")
@@ -3709,8 +3437,6 @@ def cmd_deploy_component(args) -> int:
         print(f"    {dim('aither deploy sovereign')}")
         print(f"    {dim('aither deploy sovereign --app demo --gpu')}")
         print(f"    {dim('aither deploy sovereign --app assistant --gpu')}")
-        print(f"    {dim('aither deploy ollama')}")
-        print(f"    {dim('aither deploy ollama --models qwen3:8b,phi4')}")
         print(f"    {dim('aither deploy grid --mac-host 192.168.1.100')}")
         print(f"    {dim('aither deploy node')}")
         print(f"    {dim('aither deploy node --gpu --dashboard')}")
@@ -3790,13 +3516,6 @@ def cmd_deploy_component(args) -> int:
             cluster_nodes=cluster_nodes, hf_token=hf_token,
             skip_health=skip_health,
         )
-
-    elif component == "ollama":
-        models = None
-        models_str = getattr(args, "models", None)
-        if models_str:
-            models = [m.strip() for m in models_str.split(",") if m.strip()]
-        return deploy_ollama(dry_run=dry_run, models=models)
 
     elif component == "vllm":
         tier = getattr(args, "tier", None)
@@ -3897,7 +3616,7 @@ def cmd_deploy_component(args) -> int:
     elif component == "stop":
         stop_target = getattr(args, "stop_target", None)
         if not stop_target:
-            err("Specify what to stop: ollama, vllm, node, core, full, sovereign, addons, all")
+            err("Specify what to stop: vllm, node, core, full, sovereign, addons, all")
             return 1
         if stop_target == "addons":
             compose_file = AITHER_DIR / "docker-compose.addons.yml"

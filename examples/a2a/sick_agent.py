@@ -4,7 +4,7 @@ This is the pattern for a genuinely useful agent you can drop into any A2A stack
   • real @tool functions the model can call (typed args, auto-discovered)
   • persistent memory (agent.remember / recalled automatically in later turns)
   • served over A2A so ANY client can discover + drive it
-  • BYO model — local Ollama by default, or any API key / --backend
+  • BYO model — local llama.cpp by default, or any API key / --backend
 
 Run it as a server:
     python sick_agent.py serve            # A2A server on :8080

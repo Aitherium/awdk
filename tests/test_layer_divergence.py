@@ -19,14 +19,6 @@ MEASUREMENT SCOPE:
 - system message handling
 - tool role handling (Anthropic-only)
 
-NOT COMPARED (see comments in test bodies):
-- Ollama backends: Layer A (adk/core/backends/ollama.py) vs Layer B
-  (adk/llm/ollama.py) cannot be compared directly because they wire
-  differently — Layer A accepts messages with string content only;
-  Layer B's LLMRouter dispatches through a shared Message type that
-  supports multimodal (list[dict]) content. Ollama streaming format
-  (line-delimited JSON, not SSE) is identical in both layers.
-
 REGRESSION GUARDS:
 - Streaming format (SSE vs JSONL)
 - Timeout values (120s hardcoded in both)

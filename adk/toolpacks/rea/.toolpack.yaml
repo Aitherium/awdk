@@ -1,6 +1,7 @@
 id: rea
 name: REA — Reverse Engineer Anything
-version: 0.1.0
+version: 0.2.0
+rea_version: "6.7.0"  # pinned rea-agents upstream; must match lib+awdk tools.py and upstreams.yaml
 description: >-
   Inspect a binary, JS/Electron app or site with the pinned rea CLI and close a
   reconstruction only when every obligation has a verifier at least as strong as the

@@ -1,6 +1,6 @@
 # Aither ADK (Agent Development Kit)
 
-> Build AI agent fleets with any LLM backend. Local-first with vLLM/Ollama, cloud via Elysium. One `pip install`, one line to connect.
+> Build AI agent fleets with any LLM backend. Local-first with vLLM/llama.cpp, cloud via Elysium. One `pip install`, one line to connect.
 
 ## Install
 
@@ -15,7 +15,7 @@ import asyncio
 from adk import AitherAgent
 
 async def main():
-    agent = AitherAgent("my-agent")  # Auto-detects vLLM/Ollama
+    agent = AitherAgent("my-agent")  # Auto-detects vLLM/llama.cpp
     response = await agent.chat("Hello!")
     print(response.content)
 
@@ -51,7 +51,7 @@ Exposes OpenAI-compatible endpoints:
 
 ## Features
 
-- **Multi-backend LLM**: vLLM (GPU), Ollama (CPU/Mac), OpenAI, Anthropic, Elysium cloud
+- **Multi-backend LLM**: vLLM (GPU), llama.cpp (CPU/Mac), OpenAI, Anthropic, Elysium cloud
 - **@tool decorator**: Register Python functions as agent tools
 - **16 agent identities**: aither, lyra, demiurge, hydra, athena, apollo, etc.
 - **Fleet mode**: Multi-agent orchestration with inter-agent delegation

@@ -3,14 +3,14 @@ name: Node Bootstrap — Hardware Detection, Recipe Matching & Deployment
 version: 1.0.0
 description: >-
   Hardware-aware inference node bootstrap. Detects system specs, resolves deployment
-  recipes (vLLM, Ollama, llama.cpp, cloud-api), renders deployment plans, applies
+  recipes (vLLM, llama.cpp, cloud-api), renders deployment plans, applies
   deployment (Docker Compose or systemd), enrolls with the control plane, registers
   backends, and verifies inference endpoints. All tools are fail-soft dict-returners.
 category: infrastructure
 tier: free
 author: Aitherium
 icon: server
-tags: [node, bootstrap, inference, deployment, vllm, ollama, hardware, edge]
+tags: [node, bootstrap, inference, deployment, vllm, llamacpp, hardware, edge]
 
 mcp_tools:
   - "node_*"
@@ -37,7 +37,7 @@ skills:
   - node-bootstrap
 
 persona_fragments:
-  - "Node bootstrap: you have node_* tools for hardware-aware inference deployment. node_detect_hardware probes CPU/RAM/GPU; node_resolve_recipe matches recipes (vLLM, Ollama, llama.cpp, cloud API) to hardware; node_plan_deployment renders the deployment steps without side effects; node_apply executes the plan (docker compose, systemd, or remote SSH); node_enroll registers the node with the control plane; node_register_backend posts the backend to Genesis; node_verify checks endpoint health + inference coherence. All tools return dicts (never raise). Missing env vars or credentials => {\"error\": ..., \"fix\": ...}, not anonymous fallback or verify=False."
+  - "Node bootstrap: you have node_* tools for hardware-aware inference deployment. node_detect_hardware probes CPU/RAM/GPU; node_resolve_recipe matches recipes (vLLM, llama.cpp, cloud API) to hardware; node_plan_deployment renders the deployment steps without side effects; node_apply executes the plan (docker compose, systemd, or remote SSH); node_enroll registers the node with the control plane; node_register_backend posts the backend to Genesis; node_verify checks endpoint health + inference coherence. All tools return dicts (never raise). Missing env vars or credentials => {\"error\": ..., \"fix\": ...}, not anonymous fallback or verify=False."
   - "node_detect_hardware: returns {system_info: {...hardware...}, recommendation: {...setup advice...}, recommended_recipe: <id or cloud-api>}. Fully local, no network."
   - "node_resolve_recipe: runs detection internally when needed, then resolves the best recipe by hardware match. Returns {recipe: {...YAML...}, match_score, rationale, warnings}. Explicit recipe_id wins; else automatic scoring by GPU vendor/VRAM, unified memory, RAM, cores; ties break by tier rank."
   - "node_plan_deployment: pure (no side effects). Returns {steps: [...], compose_template/systemd_unit/delegate, env_dict, ports, download_size_mb, est_duration_min}. Pass to node_apply with dry_run=True to see commands without executing."

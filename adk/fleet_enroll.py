@@ -784,8 +784,14 @@ async def enroll_on_boot(
                   and not auth.get("access_token"))
         if paired:
             api_key = str(node_auth["bearer_token"])
+        # A machine paired with a code IS an identity-spine node, whether or not its
+        # record carries `mode` (records written before pairing saved it do not), and
+        # whether or not a person has signed in on it since. Without this, a paired box
+        # whose owner later ran `adk login` fell into the legacy hub loop: no reverse
+        # link, `reach: none`, while `adk rc` printed "Holding the link".
+        rich_node = node_auth.get("mode") == "rich" or node_auth.get("enrolled_via") == "pairing-code"
         if enable_heartbeat:
-            if node_auth.get("mode") == "rich" or paired:
+            if rich_node or paired:
                 # The identity spine's heartbeat, re-probing the url that was
                 # persisted at registration — not a fresh ladder walk.
                 from adk.enrollment import heartbeat_loop as _rich_heartbeat

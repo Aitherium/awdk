@@ -84,12 +84,33 @@ public class AppTabsCheck {
             }
         }
 
-        // the Home grid per phone: no Media Forge (it stays on the desktop), no Shop on Play
+        // ONE images tile per person (2026-10-18 app audit): the owner's Media Forge, everyone
+        // else's Image Studio; never both, never neither
         eq("member grid", ids(AppTabs.apps(false, false, false)).contains("mediaforge"), false);
-        eq("owner grid", ids(AppTabs.apps(false, true, false)).contains("mediaforge"), false);
-        // a customer makes images in Image Studio (credits), offered to members and the owner
+        eq("owner grid", ids(AppTabs.apps(false, true, false)).contains("mediaforge"), true);
         eq("member image studio", ids(AppTabs.apps(false, false, false)).contains("image-studio"), true);
-        eq("owner image studio", ids(AppTabs.apps(false, true, false)).contains("image-studio"), true);
+        eq("owner image studio", ids(AppTabs.apps(false, true, false)).contains("image-studio"), false);
+        for (boolean owner : new boolean[] {false, true}) {
+            java.util.List<String> g = ids(AppTabs.apps(false, owner, false));
+            eq("one images tile, owner=" + owner,
+                    (g.contains("mediaforge") ? 1 : 0) + (g.contains("image-studio") ? 1 : 0), 1);
+        }
+        // no tile repeats a tab, by id or by label (Learn, Family, Talk to Aither, This phone)
+        for (String[] app : AppTabs.ADULT_APPS) {
+            for (String gone : new String[] {"learn", "family", "aither", "settings", "account"}) {
+                if (app[0].equals(gone)) { System.out.println("FAIL tile repeats a tab: " + gone); bad++; }
+            }
+            for (String label : new String[] {"Talk to Aither", "This phone", "Learn", "Family", "My account"}) {
+                if (app[1].equalsIgnoreCase(label)) { System.out.println("FAIL tile repeats a tab: " + label); bad++; }
+            }
+        }
+        // Home's big buttons: the Aither tab is the chat, so no Talk button above the grid
+        for (String[] b : AppTabs.HOME_BUTTONS) {
+            if (b[2].startsWith("/chat")) { System.out.println("FAIL a Home button repeats the Aither tab: " + b[0]); bad++; }
+        }
+        eq("home buttons", AppTabs.HOME_BUTTONS.length, 1);
+        // My account opens the live settings page, never the retired /profile
+        eq("account path", AppTabs.ACCOUNT_PATH, "/workspace/settings?tab=profile");
         eq("play image studio", ids(AppTabs.apps(false, false, true)).contains("image-studio"), true);
         eq("child image studio", ids(AppTabs.apps(true, true, false)).contains("image-studio"), false);
         route(false, "/?app=image-studio", "window https://app.aitherium.com/?app=image-studio");

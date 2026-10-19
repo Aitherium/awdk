@@ -47,12 +47,12 @@ from adk.llm import LLMRouter
 llm = LLMRouter(provider="anthropic",  api_key="sk-ant-...")     # Claude
 llm = LLMRouter(provider="openai",     api_key="sk-...")         # OpenAI
 llm = LLMRouter(provider="deepseek",   api_key="sk-...")         # DeepSeek (OpenAI-compat)
-llm = LLMRouter(provider="ollama")                                # local, no key
+llm = LLMRouter(provider="llamacpp")                              # local, no key
 agent = AitherAgent("aither", llm=llm)
 ```
 
 Providers handled natively: `anthropic`, `openai`, `deepseek`, `groq`, `together`,
-`vllm`, `lmstudio`, `llamacpp`, `ollama`, `gateway`, `picolm`. The OpenAI-compatible ones
+`vllm`, `lmstudio`, `llamacpp`, `gateway`, `picolm`. The OpenAI-compatible ones
 get the correct `base_url` + default model automatically.
 
 ### ✅ Self-hosted / BYO-key is uncapped by default
@@ -61,7 +61,7 @@ You do **not** need to disable anything. `AitherAgent` caps tokens and reasoning
 effort on **exactly one** backend — Aitherium's metered cloud gateway
 (`provider="gateway"`), where Aitherium pays for the inference. Every other backend
 you wire up here — `anthropic` / `openai` / `deepseek` / `groq` BYO keys, local
-`ollama` / `vllm` / `llamacpp` / `lmstudio`, or any custom OpenAI-compatible
+`vllm` / `llamacpp` / `lmstudio`, or any custom OpenAI-compatible
 endpoint — is **your** inference and is never capped or effort-limited. Enforcement
 is opt-in by provenance and **fail-open**: an unrecognized backend is treated as
 self-hosted (uncapped), never bricked.
@@ -176,7 +176,7 @@ Two tiers, by design:
 `chat()` auto-loads the short-term window and injects the **top-3** graph hits (truncated to
 200 chars). That is enough for normal chat — but under a long, noisy session it can surface
 *partial* memory, and a weak model will then **fabricate** the missing fields. Embeddings
-fall back to feature-hashing when Ollama isn't present, which weakens semantic ranking.
+fall back to feature-hashing when no embedder is reachable, which weakens semantic ranking.
 
 **To make recall reliable and hallucination-free (RAG grounding — this is NOT a fallback,
 it's how an agent uses long-term memory):**
@@ -296,7 +296,7 @@ globals → it treats `request` as a required **query param** → every call 422
 
 `adk/templates/deep-research/` — shipped inside the package, so it is already on your disk
 after `pip install awdk` — is a complete, verified reference: a sign-in-free
-deep-research analyst pack (BYO Anthropic/OpenAI/DeepSeek/Ollama key) that searches → reads
+deep-research analyst pack (BYO Anthropic/OpenAI/DeepSeek key or local llama.cpp) that searches → reads
 → cites → writes PDF/DOCX/MD reports, with a live token used/saved meter. It demonstrates
 every section here: the pack layout (§2), RAG-grounded never-forget memory (§3, proven
 across a restart), default-deny tools with arg coercion (§4), the `LedgerRouter` (§5), and

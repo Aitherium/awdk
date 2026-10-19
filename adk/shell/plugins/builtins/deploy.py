@@ -110,7 +110,7 @@ class DeployPlugin(SlashCommand):
                 profile_name = "personal-gpu"
                 print(f"  Detected {gpu_name} ({vram_gb:.0f}GB) -> using vLLM (best performance)")
             elif gpu_name and vram_gb >= 6:
-                profile_name = "personal-ollama"
+                profile_name = "personal-cpu"
                 print(f"  Detected {gpu_name} ({vram_gb:.0f}GB) -> under 8GB: no compose "
                       "orchestrator for this card (llama.cpp path)")
             else:

@@ -488,7 +488,7 @@ class LocalEngine(Engine):
     and refused to chat. Everything needed already shipped in adk — it just was
     not wired up.
 
-    The backend is DISCOVERED, not configured: llama.cpp, ollama, vLLM and LM
+    The backend is DISCOVERED, not configured: llama.cpp, vLLM and LM
     Studio all speak the OpenAI-compatible API that GobboNet itself speaks, so
     finding one is a port scan rather than an integration. Pass `backend=` to
     pin a specific URL instead.
@@ -543,7 +543,7 @@ class _DefaultEngine(Engine):
 
     This is the answer to GobboNet's account problem, and it is why the module
     is runnable rather than being only a library. GobboNet's web search asks the
-    user for an Ollama account and an API key, which contradicts the product's
+    user for a hosted search account and an API key, which contradicts the product's
     own "No account, no sign-up, no email".
 
     adk ships `web_search` — DuckDuckGo through a maintained client, no key, no

@@ -360,15 +360,6 @@ class _WizardApp:
         ("orchestrator", "Orchestrator (recommended)",
          "A small fast model for everyday chatting, ~5GB.",
          ["python", "setup", "llamacpp", "--non-interactive"]),
-        ("gemma4-12b", "gemma4-12b",
-         "A mid-size model, good quality, ~8GB.",
-         ["ollama", "pull", "gemma4:12b"]),
-        ("qwen3.6-27b", "qwen3.6-27b",
-         "A larger, smarter model, ~16GB.",
-         ["ollama", "pull", "qwen3.6:27b"]),
-        ("deepseek-r1-14b", "deepseek-r1-14b",
-         "Great at step-by-step reasoning, ~9GB.",
-         ["ollama", "pull", "deepseek-r1:14b"]),
     ]
 
     def _build_brain(self) -> None:

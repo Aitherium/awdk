@@ -4,7 +4,7 @@
 # Applied by awdk (adk.pack_discovery). Turns a base AitherAgent into a
 # senior research analyst: plan -> search -> read -> cross-check -> synthesize
 # -> cite -> write report. Runs sign-in-free with the operator's own LLM key
-# (Anthropic / OpenAI / Codex-OAuth / local Ollama). Real-time memory +
+# (Anthropic / OpenAI / Codex-OAuth / local llama.cpp). Real-time memory +
 # knowledge graph + a live "tokens used vs. saved" meter.
 
 app_name: Deep Research Studio

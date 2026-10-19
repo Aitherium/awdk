@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     api_key: str = ""
     port: int = {{ port }}
 
-    # LLM Provider: portal, aitheros, ollama, deepseek, openai, anthropic, gemini, custom
+    # LLM Provider: portal, aitheros, llamacpp, deepseek, openai, anthropic, gemini, custom
     llm_provider: str = "portal"
     llm_fallback: str = ""
 
@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     aitheros_url: str = "http://localhost:8150"
     aitheros_model: str = "auto"
 
-    # Ollama
-    ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1:8b"
+    # llama.cpp (local llama-server, OpenAI-compatible)
+    llamacpp_url: str = "http://127.0.0.1:8080"
+    llamacpp_model: str = "default"
 
     # DeepSeek
     deepseek_api_key: str = ""

@@ -47,7 +47,7 @@ logger = logging.getLogger("adk.metering")
 
 MODEL_PRICING: Dict[str, Dict[str, float]] = {
     # Local models (free / electricity only)
-    "ollama": {"input": 0.0, "output": 0.0},
+    "llamacpp": {"input": 0.0, "output": 0.0},
     "vllm": {"input": 0.0, "output": 0.0},
     "local": {"input": 0.0, "output": 0.0},
     # Cloud models (per 1K tokens in USD)
@@ -72,7 +72,7 @@ def is_metered_backend(backend_type: str) -> bool:
     backend is the user's own inference and is NEVER capped:
 
       - BYO API keys: anthropic / openai / deepseek / groq / together / …
-      - local runtimes: ollama / vllm / llamacpp / lmstudio
+      - local runtimes: vllm / llamacpp / lmstudio
       - any unknown / custom OpenAI-compatible endpoint
 
     Enforcement is therefore opt-in by provenance and FAIL-OPEN: an unrecognized
@@ -146,7 +146,7 @@ class AgentMeter:
     The _backend_type attribute (set by agent.py) indicates the LLM provenance:
       - "gateway": Aitherium metered cloud (cap applies)
       - "anthropic", "openai", "deepseek": BYO API keys (no cap)
-      - "ollama", "vllm", "local": local/self-hosted (no cap)
+      - "llamacpp", "vllm", "local": local/self-hosted (no cap)
     """
 
     def __init__(

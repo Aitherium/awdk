@@ -22,6 +22,10 @@ from typing import Any
 
 logger = logging.getLogger("adk.commands.join")
 
+# Public edge for backend registration; gateway.aitherium.com serves Genesis.
+# AITHER_GENESIS_URL overrides it for on-fleet or self-hosted use.
+_DEFAULT_GENESIS_URL = "https://gateway.aitherium.com"
+
 
 async def _github_device_flow_login(
     identity_url: str, client_name: str = "adk-join"
@@ -90,7 +94,7 @@ async def _github_device_flow_login(
         status = poll_data.get("status", "")
 
         if status == "complete":
-            print("    ✓ Authenticated!")
+            print("    [ok] Authenticated!")
             return {
                 "access_token": poll_data.get("access_token", ""),
                 "token_type": poll_data.get("token_type", "bearer"),
@@ -162,7 +166,7 @@ def _print_success_summary(
 ) -> None:
     """Print the success summary with the node's enrollment details."""
     print()
-    print("    ✓ Community node onboarded!")
+    print("    [ok] Community node onboarded!")
     print()
     print(f"      Node ID:         {node_id}")
     print(f"      Mesh IP:         {mesh_ip}")
@@ -172,6 +176,57 @@ def _print_success_summary(
     print("    Next: models are live on AitherNet. Community can route inference")
     print("    to your node. Earnings accrue in your tenant account.")
     print()
+
+
+def _serving_spec(recipe: dict, model_override: str | None = None) -> dict[str, Any]:
+    """What a resolved recipe serves: id, port, backend type and model names.
+
+    Pure. ``model_override`` (``adk join --model``) replaces the recipe's model
+    list. A recipe with no local port (the cloud-api fallback) yields port 0.
+    """
+    if not isinstance(recipe, dict):
+        recipe = {}
+    inference = recipe.get("inference_config") or {}
+    deployment = recipe.get("deployment") or {}
+    backend_cfg = recipe.get("backend_config") or {}
+    try:
+        port = int(deployment.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if model_override:
+        models = [model_override]
+    else:
+        models = [
+            str(m.get("served_name") or m.get("name") or "")
+            for m in inference.get("models") or []
+            if isinstance(m, dict)
+        ]
+        models = [m for m in models if m]
+    return {
+        "recipe_id": str(recipe.get("id") or ""),
+        "port": port,
+        "backend_type": str(
+            backend_cfg.get("backend_type") or inference.get("engine") or ""
+        ),
+        "models": models,
+    }
+
+
+def _backend_registration(
+    serving: dict[str, Any], mesh_ip: str, access_token: str
+) -> dict[str, Any]:
+    """Keyword arguments for node_register_backend after a mesh join.
+
+    The backend is reachable on the node's overlay IP at the recipe's port; the
+    caller's own bearer authenticates the register (Genesis authorizes it).
+    """
+    return {
+        "genesis_url": os.getenv("AITHER_GENESIS_URL", _DEFAULT_GENESIS_URL),
+        "base_url": f"http://{mesh_ip}:{serving['port']}",
+        "backend_type": serving["backend_type"],
+        "models": list(serving["models"]),
+        "token": access_token,
+    }
 
 
 async def join_mesh(
@@ -269,12 +324,18 @@ async def join_mesh(
             return 1
 
         # ─ Resolve Recipe
+        # The node_bootstrap tools take keywords that differ from what this
+        # chain once passed: node_resolve_recipe(prefer_backend, recipe_id),
+        # node_apply(recipe_id, ...), node_verify(base_url, ...). The old calls
+        # (a hardware dict as prefer_backend, model_override=, use_docker=, an
+        # apply dict as base_url) raised TypeError or posted garbage, and the
+        # broad excepts below printed it as an ordinary step failure, so
+        # `adk join` never got past step 3. Every call here is by keyword and
+        # tests/test_join_call_shapes.py binds each one to the real signature.
         print("    [3/10] Resolving inference recipe...")
         try:
             from adk.toolpacks.node_bootstrap.tools import node_resolve_recipe
-            recipe_result = node_resolve_recipe(
-                hw_result, prefer_backend="auto", model_override=model
-            )
+            recipe_result = node_resolve_recipe(prefer_backend="auto")
             if recipe_result.get("error"):
                 print(
                     f"    [x] Recipe resolution failed: "
@@ -285,17 +346,30 @@ async def join_mesh(
             print(f"    [x] Recipe resolution failed: {e}")
             return 1
 
+        serving = _serving_spec(recipe_result.get("recipe") or {}, model)
+        if not serving["recipe_id"] or not serving["port"]:
+            print(
+                "    [x] Resolved recipe serves nothing locally "
+                f"({serving['recipe_id'] or 'no recipe'}): nothing to share"
+            )
+            return 1
+
         # ─ Apply Recipe (Serve)
         print("    [4/10] Applying recipe (serving)...")
         try:
             from adk.toolpacks.node_bootstrap.tools import node_apply
-            apply_result = node_apply(
-                recipe_result, dry_run=False, use_docker=True
-            )
+            apply_result = node_apply(recipe_id=serving["recipe_id"], dry_run=False)
             if apply_result.get("error"):
                 print(
                     f"    [x] Recipe application failed: "
                     f"{apply_result.get('error')}"
+                )
+                return 1
+            if not apply_result.get("applied"):
+                # A delegate recipe is reported, not run: no engine started.
+                print(
+                    "    [x] Recipe was not applied: "
+                    f"{apply_result.get('fix') or apply_result.get('mode', 'unknown')}"
                 )
                 return 1
         except Exception as e:  # noqa: BLE001
@@ -306,11 +380,24 @@ async def join_mesh(
         print("    [5/10] Verifying deployment...")
         try:
             from adk.toolpacks.node_bootstrap.tools import node_verify
-            verify_result = node_verify(apply_result)
+            verify_result = node_verify(
+                base_url=f"http://localhost:{serving['port']}",
+                backend_type=serving["backend_type"],
+                model=serving["models"][0] if serving["models"] else "",
+                recipe_id=serving["recipe_id"],
+            )
             if verify_result.get("error"):
                 print(
                     f"    [x] Verification failed: "
                     f"{verify_result.get('error')}"
+                )
+                return 1
+            if verify_result.get("status") != "healthy":
+                print(
+                    "    [x] Verification failed: backend is "
+                    f"{verify_result.get('status', 'unknown')} (health="
+                    f"{verify_result.get('health')}, coherent="
+                    f"{verify_result.get('coherent')})"
                 )
                 return 1
         except Exception as e:  # noqa: BLE001
@@ -384,8 +471,14 @@ async def join_mesh(
         print("    [9/10] Registering backend for routing...")
         try:
             from adk.toolpacks.node_bootstrap.tools import node_register_backend
+            # node_register_backend(genesis_url, base_url, backend_type,
+            # models, preferred, token, name). This passed (node_id, mesh_ip,
+            # recipe_result) positionally until 2026-10-19: the node id became
+            # the Genesis URL, the overlay IP the backend URL, and the recipe
+            # dict the backend type, with no token, so step 9 could never
+            # register anything.
             backend_result = node_register_backend(
-                node_id, mesh_ip, recipe_result
+                **_backend_registration(serving, mesh_ip, access_token)
             )
             if backend_result.get("error"):
                 print(
@@ -399,15 +492,7 @@ async def join_mesh(
 
         # ─ Success Summary
         print("    [10/10] Finalizing...")
-        models = (
-            recipe_result.get("models", [])
-            or recipe_result.get("local_model", [])
-            or []
-        )
-        if isinstance(models, str):
-            models = [models]
-
-        _print_success_summary(node_id, mesh_ip, models, tenant_id)
+        _print_success_summary(node_id, mesh_ip, serving["models"], tenant_id)
         return 0
 
     except Exception as e:  # noqa: BLE001

@@ -2,7 +2,7 @@
 
     adk home init [--name NAME]                 create ~/.aither/agent-home
     adk home persona [show|path|set FILE TEXT]  view / edit the persona files
-    adk home model --local bonsai|bonsai2|llamacpp|ollama|awnode | --byo deepseek|openai|anthropic
+    adk home model --local bonsai|bonsai2|llamacpp|awnode | --byo deepseek|openai|anthropic
     adk home model --local bonsai2 [--quant ..] [--backend ..] [--data-dir D] [--stop]
                                                 Bonsai 2 27B on our shipped PrismML build
     adk home voice --local aither               install the Aither voice (verified, resumable)

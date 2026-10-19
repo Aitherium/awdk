@@ -730,24 +730,11 @@ class LLMFitClient:
         )
         return config
 
-    async def recommended_ollama_models(self, limit: int = 5) -> list[str]:
-        """Get Ollama-compatible model names recommended for this hardware.
-
-        Returns model names in Ollama format (e.g. 'deepseek-r1:14b'),
-        useful for auto-pulling during setup.
-        """
+    async def recommended_local_models(self, limit: int = 5) -> list[str]:
+        """Short local model names (no ``org/`` prefix) recommended for this hardware."""
         models = await self.top_models(min_fit="good", limit=limit)
-        # Filter for models that have Ollama-compatible names
-        ollama_names = []
-        for m in models:
-            name = m.name.lower()
-            # llmfit uses HuggingFace names — convert common patterns to Ollama
-            if "/" in name:
-                # e.g. "meta-llama/Llama-3.2-3B" → approximate
-                continue
-            # Already Ollama format (e.g. from Ollama provider detection)
-            ollama_names.append(m.name)
-        return ollama_names
+        # llmfit uses HuggingFace names for most entries; keep the short local ids.
+        return [m.name for m in models if "/" not in m.name]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

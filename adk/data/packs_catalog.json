@@ -1070,7 +1070,6 @@
         "apple-silicon",
         "llama-cpp",
         "vllm",
-        "ollama",
         "edge"
       ]
     },

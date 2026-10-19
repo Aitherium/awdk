@@ -2,7 +2,7 @@
 """Federation Demo — External agent connecting to a running AitherOS instance.
 
 This demonstrates the full federation stack:
-1. Self-setup: detect hardware, ensure Ollama, pull models
+1. Self-setup: detect hardware, ensure llama.cpp, pull models
 2. Register with AitherIdentity (authentication)
 3. Join AitherMesh (node network)
 4. Subscribe to Flux events (event routing)
@@ -65,24 +65,24 @@ async def phase_1_self_setup(skip: bool = False):
     if info.gpu.cuda_version:
         print(f"  CUDA:    {info.gpu.cuda_version}")
     print(f"  Profile: {info.profile}")
-    print(f"  Ollama:  {'running' if info.ollama_running else 'installed' if info.ollama_installed else 'not found'}")
+    print(f"  llama.cpp:{'running' if info.llamacpp_running else 'installed' if info.llamacpp_installed else 'not found'}")
     print(f"  Docker:  {'available' if info.docker_installed else 'not found'}")
 
-    if info.ollama_models:
-        print(f"  Models:  {', '.join(info.ollama_models[:5])}")
+    if info.llamacpp_models:
+        print(f"  Models:  {', '.join(info.llamacpp_models[:5])}")
 
-    if not info.ollama_running:
-        print("\n  Ensuring Ollama is ready...")
-        ok = await setup.ensure_ollama()
+    if not info.llamacpp_running:
+        print("\n  Ensuring llama.cpp is ready...")
+        ok = await setup.ensure_llamacpp()
         if ok:
-            print("  Ollama is running!")
+            print("  llama.cpp is running!")
         else:
-            print("  WARNING: Ollama not available — chat will need cloud LLM")
+            print("  WARNING: llama.cpp not available — chat will need cloud LLM")
 
     # Pull a small model if nothing is available
-    if not info.ollama_models:
+    if not info.llamacpp_models:
         print("\n  Pulling a starter model...")
-        pulled = await setup.pull_models(["llama3.2:1b"])
+        pulled = await setup.pull_models(["aither-orchestrator"])
         if pulled:
             print(f"  Pulled: {', '.join(pulled)}")
 
@@ -100,7 +100,7 @@ async def phase_2_register(fed: FederationClient, args):
             mesh_key=args.mesh_key,
             capabilities={
                 "skills": ["text_generation", "code_analysis"],
-                "backends": ["ollama"],
+                "backends": ["llamacpp"],
             },
         )
     else:

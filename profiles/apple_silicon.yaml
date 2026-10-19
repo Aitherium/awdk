@@ -24,6 +24,6 @@ limits:
   max_concurrent: 1
 
 notes: >
-  Apple Silicon profile. Ollama uses Metal for GPU acceleration.
+  Apple Silicon profile. llama.cpp uses Metal for GPU acceleration.
   M1 Pro/Max/Ultra and M2/M3/M4 variants with more unified memory
   can handle larger models — adjust manually if you have 32+ GB RAM.

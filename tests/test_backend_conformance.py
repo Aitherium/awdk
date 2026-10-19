@@ -36,9 +36,9 @@ from typing import Any
 import pytest
 
 from adk.core.backends.anthropic import AnthropicBackend
-from adk.core.backends.ollama import OllamaBackend
 from adk.core.backends.openai_compat import (
     DeepSeekBackend,
+    LlamaCppBackend,
     MoonshotBackend,
     OpenAIBackend,
     VLLMBackend,
@@ -60,7 +60,7 @@ from adk.reasoning.speculative import SpeculativeBackend
 # checked against, the real set of implementations.
 _BACKENDS: list[tuple[type, dict[str, Any]]] = [
     (AnthropicBackend, {"api_key": "test-key"}),
-    (OllamaBackend, {}),
+    (LlamaCppBackend, {}),
     (_OpenAICompatBackend, {"base_url": "http://x", "model": "m", "api_key": "k"}),
     (OpenAIBackend, {"api_key": "test-key"}),
     (VLLMBackend, {"base_url": "http://x"}),
@@ -69,8 +69,8 @@ _BACKENDS: list[tuple[type, dict[str, Any]]] = [
     (
         SpeculativeBackend,
         {
-            "draft": OllamaBackend(model="draft-m"),
-            "verifier": OllamaBackend(model="verify-m"),
+            "draft": LlamaCppBackend(model="draft-m"),
+            "verifier": LlamaCppBackend(model="verify-m"),
         },
     ),
 ]

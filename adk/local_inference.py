@@ -51,7 +51,7 @@ logger = logging.getLogger("adk.local_inference")
 #   8889  selfhost-bonsai skill
 #   8081  install-bonsai.sh --port 8081 (the port it suggests when 8080 is taken)
 #   8000  bare vllm / adk server
-#   11434 Ollama (serves /v1/models since 0.1.x; also GobboNet's default)
+#   11434 GobboNet's default (any OpenAI-compatible server there)
 #   1234  LM Studio's local server (OpenAI-compatible; added 2026-09-21 from the
 #         Personal-AI-Router intake -- it was the one desktop engine no ladder here probed)
 #   8199  the awnix image's own local model server (base / ai-full variants)

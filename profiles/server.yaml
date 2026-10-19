@@ -55,10 +55,10 @@ vllm:
       gpu_memory_utilization: 0.90
       max_model_len: 32768
 
-ollama:
+local:
   gpu_memory_fraction: 0.90
   num_parallel: 8
-  models_to_pull:
+  models:
     - llama3.3:70b
     - deepseek-r1:70b
     - llava:34b
@@ -119,11 +119,11 @@ resource_limits:
   max_concurrent_requests: 32
   max_batch_size: 16
   context_pipeline_timeout_s: 30
-  ollama_max_loaded_models: 5
+  max_loaded_models: 5
 
 notes: >
   Server profile runs all services and the full 4-worker vLLM configuration.
   GPUs 0-1 share orchestrator and reasoning models via tensor parallelism
   (time-sliced by MicroScheduler priority queue). GPU 2 is dedicated to
-  vision. GPU 3 handles coding. Ollama is available as overflow for models
+  vision. GPU 3 handles coding. llama.cpp is available as overflow for models
   not loaded in vLLM. VRAM preemption is enabled for ComfyUI workloads.

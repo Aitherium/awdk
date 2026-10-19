@@ -199,7 +199,7 @@ async def main():
         async with httpx.AsyncClient(timeout=5.0) as c:
             r = await c.post(f"{GATEWAY}/v1/telemetry", headers=headers, json={
                 "agent_name": "lifecycle-test",
-                "backend_type": "ollama",
+                "backend_type": "llamacpp",
                 "model_family": "llama3",
                 "tool_count": 5,
                 "uptime_seconds": 42.0,
@@ -220,7 +220,7 @@ async def main():
                 "os_info": "Windows 11",
                 "python_version": "3.12",
                 "adk_version": "0.1.0",
-                "backend_type": "ollama",
+                "backend_type": "llamacpp",
             })
             data = r.json()
             bug_id = data.get("bug_id", "")

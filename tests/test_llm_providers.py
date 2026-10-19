@@ -7,7 +7,6 @@ import respx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from adk.llm.base import Message, LLMResponse, ToolCall, messages_to_dicts, LLMProvider
-from adk.llm.ollama import OllamaProvider
 from adk.llm.openai_compat import OpenAIProvider
 from adk.llm.anthropic import AnthropicProvider
 from adk.llm import LLMRouter
@@ -49,108 +48,6 @@ class TestLLMResponse:
         r = LLMResponse(content="", tool_calls=[tc])
         assert len(r.tool_calls) == 1
         assert r.tool_calls[0].name == "search"
-
-
-# ─── Ollama ───
-
-class TestOllamaProvider:
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_chat(self):
-        respx.post("http://localhost:11434/api/chat").mock(
-            return_value=httpx.Response(200, json={
-                "message": {"role": "assistant", "content": "Hello there!"},
-                "model": "llama3.2",
-                "eval_count": 10,
-                "prompt_eval_count": 5,
-            })
-        )
-        provider = OllamaProvider()
-        resp = await provider.chat([Message(role="user", content="hi")])
-        assert resp.content == "Hello there!"
-        assert resp.model == "llama3.2"
-        assert resp.tokens_used == 15
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_list_models(self):
-        respx.get("http://localhost:11434/api/tags").mock(
-            return_value=httpx.Response(200, json={
-                "models": [{"name": "llama3.2"}, {"name": "deepseek-r1:14b"}]
-            })
-        )
-        provider = OllamaProvider()
-        models = await provider.list_models()
-        assert "llama3.2" in models
-        assert len(models) == 2
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_chat_with_tools(self):
-        respx.post("http://localhost:11434/api/chat").mock(
-            return_value=httpx.Response(200, json={
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{"function": {"name": "search", "arguments": {"q": "test"}}}],
-                },
-                "model": "llama3.2",
-            })
-        )
-        provider = OllamaProvider()
-        resp = await provider.chat(
-            [Message(role="user", content="search for test")],
-            tools=[{"type": "function", "function": {"name": "search"}}],
-        )
-        assert len(resp.tool_calls) == 1
-        assert resp.tool_calls[0].name == "search"
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_health_check_healthy(self):
-        respx.get("http://localhost:11434/api/tags").mock(
-            return_value=httpx.Response(200, json={"models": [{"name": "llama3.2"}]})
-        )
-        provider = OllamaProvider()
-        assert await provider.health_check() is True
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_health_check_unhealthy(self):
-        respx.get("http://localhost:11434/api/tags").mock(side_effect=httpx.ConnectError("refused"))
-        provider = OllamaProvider()
-        assert await provider.health_check() is False
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_health_check_non_200(self):
-        """health_check returns False on non-200 status (e.g. 500)."""
-        respx.get("http://localhost:11434/api/tags").mock(
-            return_value=httpx.Response(500, json={"error": "internal"})
-        )
-        provider = OllamaProvider()
-        assert await provider.health_check() is False
-
-    @pytest.mark.asyncio
-    async def test_health_check_uses_fast_timeout(self):
-        """health_check uses a 5s timeout, not the default 120s."""
-        provider = OllamaProvider(timeout=300.0)  # Deliberately large default
-        with patch("adk.llm.ollama.httpx.AsyncClient") as MockClient:
-            mock_instance = AsyncMock()
-            mock_instance.get = AsyncMock(
-                return_value=MagicMock(status_code=200)
-            )
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            await provider.health_check()
-            # Verify the client was created with 5s, not 300s
-            MockClient.assert_called_once()
-            call_kwargs = MockClient.call_args
-            assert call_kwargs.kwargs.get("timeout") == 5.0 or call_kwargs[1].get("timeout") == 5.0
-
-    def test_custom_host(self):
-        provider = OllamaProvider(host="http://myhost:11434")
-        assert provider.host == "http://myhost:11434"
 
 
 # ─── OpenAI-compatible ───
@@ -489,8 +386,8 @@ class TestAnthropicProvider:
 
 class TestLLMRouter:
     def test_explicit_provider(self):
-        router = LLMRouter(provider="ollama")
-        assert router.provider_name == "ollama"
+        router = LLMRouter(provider="llamacpp")
+        assert router.provider_name == "llamacpp"
 
     def test_model_for_effort(self):
         router = LLMRouter(provider="openai", api_key="sk-test")
@@ -500,7 +397,7 @@ class TestLLMRouter:
 
     def test_desktop_spine_uses_configured_default_not_empty(self):
         # "" let MicroScheduler auto-route to a keyless cloud provider -> empty completions.
-        router = LLMRouter(provider="ollama")
+        router = LLMRouter(provider="llamacpp")
         router._provider_name = "desktop"
         router._model = None
         router._remote_provider = type("P", (), {"default_model": "aither-orchestrator"})()
@@ -508,39 +405,26 @@ class TestLLMRouter:
             assert router.model_for_effort(effort) == "aither-orchestrator"
 
     def test_model_override(self):
-        router = LLMRouter(provider="ollama", model="custom-model")
+        router = LLMRouter(provider="llamacpp", model="custom-model")
         assert router.model_for_effort(5) == "custom-model"
 
     @respx.mock
     @pytest.mark.asyncio
     async def test_chat_delegates(self):
-        respx.post("http://localhost:11434/api/chat").mock(
+        respx.post("http://127.0.0.1:8080/v1/chat/completions").mock(
             return_value=httpx.Response(200, json={
-                "message": {"content": "hi"},
-                "model": "llama3.2",
+                "choices": [{"message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+                "model": "default",
             })
         )
-        router = LLMRouter(provider="ollama")
+        router = LLMRouter(provider="llamacpp")
         resp = await router.chat([Message(role="user", content="hi")])
         assert resp.content == "hi"
 
     def test_unknown_provider_raises(self):
         with pytest.raises(ValueError, match="Unknown provider"):
             LLMRouter(provider="nonexistent")
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_auto_detect_never_picks_ollama(self, monkeypatch):
-        # A live Ollama on :11434 must not become the brain by auto-detect.
-        tags = respx.get("http://localhost:11434/api/tags").mock(
-            return_value=httpx.Response(200, json={"models": [{"name": "llama3.2"}]})
-        )
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
-        router = LLMRouter()
-        await router.get_provider()
-        assert router.provider_name != "ollama"
-        assert router._local_provider is None
-        assert not tags.called
 
     @respx.mock
     @pytest.mark.asyncio

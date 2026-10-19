@@ -626,7 +626,7 @@ After playbook, forkd node has:
     "gpus": [],
     "gpu_count": 0,
     "total_vram_mb": 0,
-    "services": ["forkd", "vllm", "ollama"]
+    "services": ["forkd", "vllm", "llamacpp"]
   },
   "labels": {
     "role": "tier-2-compute",

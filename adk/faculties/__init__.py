@@ -7,7 +7,7 @@ standalone use. No AitherOS services required.
 
 Provides:
   - CodeGraph: AST-based Python code indexer with call graph + semantic search
-  - EmbeddingProvider: Pluggable embedding backends (sentence-transformers/Ollama/Elysium/feature-hash)
+  - EmbeddingProvider: Pluggable embedding backends (sentence-transformers/MicroScheduler/Elysium/feature-hash)
   - BaseFacultyGraph: Abstract base with pickle persistence + HMAC integrity
 
 For persistent agent memory, use :class:`adk.graph_memory.GraphMemory`.

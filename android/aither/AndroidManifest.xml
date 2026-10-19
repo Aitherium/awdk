@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="33"
-    android:versionName="0.3.30">
+    android:versionCode="37"
+    android:versionName="0.3.34">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
 
@@ -323,6 +323,12 @@
 
         <service
             android:name=".HeartbeatJob"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- the quiet retry of a self-update (unmetered, battery not low) -->
+        <service
+            android:name=".UpdateJob"
             android:exported="true"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 

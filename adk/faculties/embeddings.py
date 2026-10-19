@@ -4,9 +4,10 @@ EmbeddingProvider — Pluggable Embedding Backends for ADK
 
 Provides embedding vectors with automatic backend detection:
   1. sentence-transformers (local GPU/CPU, best quality)
-  2. Ollama /api/embeddings (local, no extra deps)
-  3. Elysium gateway.aitherium.com/v1/embeddings (cloud, needs API key)
-  4. Feature hashing (zero deps, worst quality, always works)
+  2. Elysium gateway.aitherium.com/v1/embeddings (cloud, needs API key)
+  3. Feature hashing (zero deps, worst quality, always works)
+
+For the MicroScheduler / vLLM / llama.cpp ladder use :mod:`adk.embeddings`.
 
 Usage:
     from adk.faculties.embeddings import get_embedding_provider
@@ -39,12 +40,8 @@ _EMBEDDING_DIM = _SPACE_DIM
 # in the code-embed space it is 384-d on purpose (adk.embeddings' degraded width), so a
 # 1024-d store refuses it instead of filing garbage next to real vectors.
 _FEATURE_HASH_DIM = 384 if _CODE_EMBED_SPACE else 768
-_SERVED_MODEL = _SPACE_MODEL    # the id an OpenAI/Ollama server knows the model by
+_SERVED_MODEL = _SPACE_MODEL    # the id an OpenAI-compatible server knows the model by
 _MODEL_NAME = os.getenv("AITHER_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
-_OLLAMA_URL_RAW = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-_OLLAMA_URL = _OLLAMA_URL_RAW.replace("0.0.0.0", "localhost") if "0.0.0.0" in _OLLAMA_URL_RAW else _OLLAMA_URL_RAW
-if not _OLLAMA_URL.startswith("http"):
-    _OLLAMA_URL = "http://" + _OLLAMA_URL
 _ELYSIUM_URL = os.getenv("AITHER_ELYSIUM_URL", "https://gateway.aitherium.com")
 
 
@@ -56,7 +53,6 @@ class EmbeddingProvider:
         self._backend: Optional[str] = None
         self._st_model = None  # sentence-transformers model
         self._lock: Optional[asyncio.Lock] = None
-        self._ollama_available: Optional[bool] = None
         self._elysium_available: Optional[bool] = None
         self.stats: Dict[str, Any] = {
             "embed_calls": 0,
@@ -107,38 +103,6 @@ class EmbeddingProvider:
             )
             return [v.tolist() for v in vecs]
         return await asyncio.to_thread(_encode)
-
-    async def _embed_ollama(self, texts: List[str]) -> List[Optional[List[float]]]:
-        """Embed via Ollama /api/embeddings."""
-        if self._ollama_available is False:
-            return [None] * len(texts)
-        try:
-            import httpx
-            results = []
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                for text in texts:
-                    resp = await client.post(
-                        f"{_OLLAMA_URL}/api/embeddings",
-                        json={"model": _SERVED_MODEL, "prompt": text},
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        results.append(data.get("embedding"))
-                        if self._ollama_available is None:
-                            self._ollama_available = True
-                            self._backend = "ollama"
-                            self.stats["backend"] = "ollama"
-                            logger.info("Using Ollama embedding backend")
-                    else:
-                        results.append(None)
-                        if self._ollama_available is None:
-                            self._ollama_available = False
-            return results
-        except Exception as e:
-            if self._ollama_available is None:
-                logger.debug("Ollama embeddings not available: %s", e)
-                self._ollama_available = False
-            return [None] * len(texts)
 
     async def _embed_elysium(self, texts: List[str]) -> List[Optional[List[float]]]:
         """Embed via Elysium cloud /v1/embeddings (OpenAI-compatible)."""
@@ -216,14 +180,14 @@ class EmbeddingProvider:
                 if self._st_model is not None or self._try_load_sentence_transformers():
                     return await self._embed_st(texts)
 
-        # 2. Ollama, 3. Elysium -- a vector of the wrong width is no vector (code-embed space)
-        for rung in (self._embed_ollama, self._embed_elysium):
+        # 2. Elysium -- a vector of the wrong width is no vector (code-embed space)
+        for rung in (self._embed_elysium,):
             results = [r if r is None or not _CODE_EMBED_SPACE or len(r) == _EMBEDDING_DIM
                        else None for r in await rung(texts)]
             if any(r is not None for r in results):
                 return results
 
-        # 4. Feature hashing (always works)
+        # 3. Feature hashing (always works)
         if self._backend != "feature_hash":
             self._backend = "feature_hash"
             self.stats["backend"] = "feature_hash"

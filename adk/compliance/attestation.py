@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from adk.legacy_backend import is_legacy
+
 logger = logging.getLogger("adk.compliance.attestation")
 
 
@@ -35,7 +37,7 @@ class LLMCallSummary:
     """Summary of LLM calls in the attestation window."""
     total_calls: int = 0
     local_vllm_calls: int = 0
-    local_ollama_calls: int = 0
+    local_llamacpp_calls: int = 0
     cloud_calls: int = 0
     failed_calls: int = 0
     models_used: List[str] = field(default_factory=list)
@@ -45,7 +47,7 @@ class LLMCallSummary:
         return {
             "total_calls": self.total_calls,
             "local_vllm_calls": self.local_vllm_calls,
-            "local_ollama_calls": self.local_ollama_calls,
+            "local_llamacpp_calls": self.local_llamacpp_calls,
             "cloud_calls": self.cloud_calls,
             "failed_calls": self.failed_calls,
             "models_used": self.models_used,
@@ -146,8 +148,11 @@ def _collect_llm_summary(
             )
             if backend in ("local_vllm", "vllm"):
                 summary.local_vllm_calls += 1
-            elif backend in ("local_ollama", "ollama"):
-                summary.local_ollama_calls += 1
+            elif backend in ("local_llamacpp", "llamacpp", "picolm") or is_legacy(
+                backend.removeprefix("local_")
+            ):
+                # Older logs name the retired local server; it was llama.cpp's slot.
+                summary.local_llamacpp_calls += 1
             elif backend.startswith("cloud_") or backend in ("openai", "anthropic", "gateway"):
                 summary.cloud_calls += 1
             if entry.get("failed"):

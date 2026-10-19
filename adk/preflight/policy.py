@@ -15,7 +15,7 @@ The OTHER binders named in the full design are DEFERRED in Phase 0, on purpose:
     is no adk chokepoint that enforces an egress allowlist yet, so binding it
     now would be a promise the runtime does not keep.
   * ``safety_level``     - deferred: local OpenAI-compatible endpoints (vLLM /
-    Ollama / DGX) ignore any server-side safety tier, so this is prompt-only and
+    llama.cpp / DGX) ignore any server-side safety tier, so this is prompt-only and
     belongs to a later prompt-composition phase, not to preflight.
   * ``rules``            - deferred here (handled as a prompt append by the
     orchestrator, not a hard binder): rules are advisory prompt text, not an

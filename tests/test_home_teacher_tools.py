@@ -624,7 +624,7 @@ class _Chat:
 
 
 @pytest.mark.parametrize("provider,base_url,local", [
-    ("bonsai", "", True), ("bonsai2", "", True), ("ollama", "", True), ("awnode", "", True),
+    ("bonsai", "", True), ("bonsai2", "", True), ("awnode", "", True),
     ("llamacpp", "http://192.0.2.7:8080/v1", False),
     ("bonsai", "https://bonsai.example.com/v1", False),
     ("openai", "", False), ("deepseek", "", False), ("anthropic", "", False),

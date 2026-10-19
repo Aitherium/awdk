@@ -92,24 +92,23 @@ def pick_backend(
     Args:
         accel: AccelInfo-like object with attributes:
                kind (cuda|vulkan|metal|cpu), vram_gb, name
-        prefer: "auto", "llamacpp", "ollama", "vllm", or "bonsai"
+        prefer: "auto", "llamacpp", "vllm", or "bonsai"
         docker_available_override: explicitly pass docker availability
                                    (for testing); None = auto-detect
 
     Returns:
-        "bonsai" | "ollama" | "vllm" | "llamacpp"
+        "bonsai" | "vllm" | "llamacpp"
 
     Logic (when prefer="auto"), first match wins:
       1. Bonsai already running or downloaded (host state) → bonsai
-      2. Ollama installed → ollama
-      3. NVIDIA CUDA + >=16GB VRAM + Docker available → vllm
-      4. CPU-only or <6GB VRAM, with Docker → bonsai
-      5. Otherwise → llamacpp (pure-stdlib, no Docker needed)
+      2. NVIDIA CUDA + >=16GB VRAM + Docker available → vllm
+      3. CPU-only or <6GB VRAM, with Docker → bonsai
+      4. Otherwise → llamacpp (pure-stdlib, no Docker needed)
 
     Explicit prefer always wins.
     """
     # Explicit preference
-    if prefer in ("llamacpp", "ollama", "vllm", "bonsai"):
+    if prefer in ("llamacpp", "vllm", "bonsai"):
         return prefer
 
     # Auto-detection
@@ -125,13 +124,7 @@ def pick_backend(
     if bonsai_available():
         return "bonsai"
 
-    # Ollama installed → Ollama (the simple, portable default — "use the ollama")
-    from adk.ollama_setup import is_installed as ollama_is_installed
-
-    if ollama_is_installed():
-        return "ollama"
-
-    # No Ollama: CUDA with sufficient VRAM + Docker → vLLM (best throughput)
+    # CUDA with sufficient VRAM + Docker → vLLM (best throughput)
     if accel_kind == "cuda" and vram_gb >= 16 and docker_ok:
         return "vllm"
 

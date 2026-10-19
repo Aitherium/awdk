@@ -45,16 +45,6 @@ def _control_plane() -> str:
     from adk.control_plane import control_plane_url
     return control_plane_url()
 
-def _fix_ollama_host(raw: str) -> str:
-    """Rewrite Ollama's bind address (0.0.0.0) to connectable localhost."""
-    if not raw:
-        return "http://localhost:11434"
-    if "0.0.0.0" in raw:
-        raw = raw.replace("0.0.0.0", "localhost")
-    if not raw.startswith("http"):
-        raw = "http://" + raw
-    return raw
-
 _AGENT_TEMPLATE = '''\
 """My AitherADK agent."""
 
@@ -86,7 +76,7 @@ _CONFIG_TEMPLATE = """\
 identity: {name}
 port: 8080
 
-# LLM backend: auto, ollama, openai, anthropic, gateway
+# LLM backend: auto, llamacpp, vllm, openai, anthropic, gateway
 llm_backend: auto
 
 # Uncomment to set a specific model
@@ -732,16 +722,17 @@ def _sync_entitled_packs_quiet() -> None:
 
 
 def cmd_stack(args):
-    """Start the consumer stack (Room + Ollama) as native processes.
+    """Start the consumer stack (Room + local llama.cpp) as native processes.
 
-    Supervises AitherRoom (:8350) and Ollama (:11434) as foreground processes
-    with health checks, crash restarts, and graceful shutdown on Ctrl+C.
+    Supervises AitherRoom (:8350) and, when `adk setup llamacpp` installed it, the
+    local llama-server, as foreground processes with health checks, crash
+    restarts, and graceful shutdown on Ctrl+C.
 
     (Formerly ``adk up``; that name now brings up a connected agent — see cmd_up.
     This behaviour lives under ``adk stack``.)
 
     Services:
-    - default: Room + Ollama (default)
+    - default: Room + llama.cpp (default)
     - qdrant: Local Qdrant for graph memory (requires Docker)
     """
     # Handle "adk stack qdrant" for Qdrant provisioning
@@ -824,20 +815,27 @@ def cmd_stack(args):
             "AITHER_ROOM_LAUNCH_TARGET to a dev module path."
         )
 
-    # Ollama (if installed)
-    if os.path.exists(os.path.expanduser("~/.ollama")):
-        ollama_spec = ProcessSpec(
-            name="Ollama",
-            argv=["ollama", "serve"],
-            port=11434,
-            health_url="http://127.0.0.1:11434/api/tags",
-            description="Local model serving",
-        )
-        specs.append(ollama_spec)
+    # Local llama.cpp server (if `adk setup llamacpp` installed one)
+    from adk import local_model_server as _lms
+    _local = _lms.find_local_model_server()
+    if _local is not None:
+        _base = _local["inference_url"].rstrip("/")
+        _root = _base[: -len("/v1")] if _base.endswith("/v1") else _base
+        try:
+            _port = int(_root.rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            _port = 0
+        specs.append(ProcessSpec(
+            name="llama.cpp",
+            argv=list(_local["argv"]),
+            port=_port,
+            health_url=f"{_root}/health",
+            description="Local model serving (llama-server)",
+        ))
 
     if not specs:
         print("Error: No services available to start.")
-        print("Ensure Ollama is installed and Room is available.")
+        print("Ensure Room is available; run 'adk setup llamacpp' for local models.")
         return 1
 
     # Start supervision
@@ -3302,23 +3300,23 @@ def cmd_connect(args):
             except Exception:
                 pass
 
-        # Ollama (fallback — serializes requests, no true parallelism)
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get("http://localhost:11434/api/tags")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    models = [m["name"] for m in data.get("models", [])]
-                    backends_found.append(("ollama", models))
-                    print(f"  [OK] Ollama — {len(models)} model(s): {', '.join(models[:5])}")
-        except Exception:
-            if not backends_found:
-                print("  [--] Ollama — not detected")
+        # llama.cpp (llama-server; `adk setup llamacpp` default port 8200)
+        for port in [8200, 8080]:
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    resp = await client.get(f"http://localhost:{port}/v1/models")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        models = [m["id"] for m in data.get("data", [])]
+                        backends_found.append(("llamacpp", models))
+                        print(f"  [OK] llama.cpp (:{port}) — {', '.join(models[:3])}")
+            except Exception:
+                pass
 
         if not backends_found:
             print("  [--] No local LLM backends found")
             print("       Run 'aither setup' to auto-configure vLLM (recommended)")
-            print("       Or install Ollama as fallback: https://ollama.com")
+            print("       Or a native llama.cpp server: adk setup llamacpp")
 
         # ── 2. Cloud acceleration ──────────────────────────────────
         print()
@@ -3520,9 +3518,9 @@ def cmd_connect(args):
             print("    aither init my-agent       # Create an agent")
             print("    cd my-agent && python agent.py")
         else:
-            print("  NO BACKEND — install Ollama or connect to Elysium")
+            print("  NO BACKEND — run a local llama.cpp server or connect to Elysium")
             print()
-            print("  Option A (local):  Install Ollama at https://ollama.com")
+            print("  Option A (local):  adk setup llamacpp")
             print("  Option B (cloud):  aither connect --api-key aither_sk_live_...")
             print("  No account?        aither register")
 
@@ -3632,7 +3630,7 @@ async def _stream_to_agent(ref, message: str) -> None:
     on ITS OWN inference backend (that's the whole point)."""
     import sys
     if ref.chat_protocol == "openai":
-        # Raw OpenAI-compatible inference server (llama.cpp / ollama / vllm).
+        # Raw OpenAI-compatible inference server (llama.cpp / vllm).
         from adk.llm.base import Message
         from adk.llm.openai_compat import OpenAIProvider
         base = ref.invoke_url.rstrip("/")
@@ -4527,11 +4525,11 @@ def cmd_onboard(args):
         else:
             print("  [--] No API key — run 'aither register' for cloud access")
 
-        # Ollama
-        ollama_bin = shutil.which("ollama")
-        if ollama_bin:
-            products.append("ollama")
-            print("  [OK] Ollama — installed")
+        # llama.cpp
+        llamacpp_bin = shutil.which("llama-server")
+        if llamacpp_bin:
+            products.append("llamacpp")
+            print("  [OK] llama.cpp — installed")
 
         # vLLM (check via import or docker)
         try:
@@ -4611,9 +4609,9 @@ def cmd_onboard(args):
             print("     -> aither register")
             step_num += 1
 
-        if not ollama_bin and not gpu_name:
+        if not llamacpp_bin and not gpu_name:
             print(f"  {step_num}. Set up inference backend")
-            print("     -> Install Ollama: https://ollama.com")
+            print("     -> Local llama.cpp: adk setup llamacpp")
             print("     -> Or use cloud: aither register")
             step_num += 1
 
@@ -4945,7 +4943,7 @@ def cmd_enroll(args) -> int:
             print(f"  Inference: {inf_url} did not answer /v1/models (not ready)")
         else:
             print("  Inference: none found (not ready) — start llama-server/awnode/"
-                  "Ollama/vLLM and re-run with --force, or pass --inference-url")
+                  "vLLM and re-run with --force, or pass --inference-url")
         print()
         print("Fleet Status:")
         print(f"  Workspace ID: {result.get('workspace_id', 'N/A')}")
@@ -6777,7 +6775,7 @@ def cmd_backend(args):
             # Show available providers
             print()
             print("Available:")
-            for name in ("ollama", "vllm", "llamacpp", "bonsai-local", "bonsai", "openai",
+            for name in ("vllm", "llamacpp", "bonsai-local", "bonsai", "openai",
                          "anthropic", "deepseek", "moonshot", "groq", "together",
                          "gateway", "lmstudio", "genesis", "freellmapi", "picolm"):
                 print(f"  - {name}")
@@ -6880,8 +6878,7 @@ def cmd_backend(args):
                            or cfg_dict.get("setup_backend") or "unknown")
         inference_url = cfg_dict.get("inference_url", "not configured")
         inference_model = (cfg_dict.get("default_model")
-                           or cfg_dict.get("inference_model")
-                           or cfg_dict.get("ollama_model") or "not configured")
+                           or cfg_dict.get("inference_model") or "not configured")
 
         print("\n  Backend Status")
         print("  " + "=" * 50)
@@ -6896,7 +6893,7 @@ def cmd_backend(args):
                 import httpx
                 async with httpx.AsyncClient(timeout=3.0) as client:
                     # All three backends are OpenAI-compatible — /v1/models is
-                    # the uniform liveness probe (Ollama/vLLM/llama.cpp serve it).
+                    # the uniform liveness probe (vLLM/llama.cpp serve it).
                     base = inference_url.rstrip("/")
                     probe = base + "/models" if base.endswith("/v1") else base + "/v1/models"
                     r = await client.get(probe)
@@ -6914,10 +6911,10 @@ def cmd_backend(args):
         return 0
 
     elif sub == "switch":
-        """Switch to a different inference backend (ollama, llamacpp, vllm)."""
+        """Switch to a different inference backend (llamacpp, vllm)."""
         target = getattr(args, "target_backend", None)
-        if not target or target not in ("ollama", "llamacpp", "vllm"):
-            print("Usage: adk backend switch <ollama|llamacpp|vllm>")
+        if not target or target not in ("llamacpp", "vllm"):
+            print("Usage: adk backend switch <llamacpp|vllm>")
             return 1
 
         print()
@@ -6935,20 +6932,7 @@ def cmd_backend(args):
         # Install/ensure the target backend
         print(f"  [1/3] Preparing {target} backend...")
 
-        if target == "ollama":
-            from adk.ollama_setup import ensure_installed, ensure_running
-
-            if not ensure_installed():
-                print("  ERROR: Failed to install Ollama", file=sys.stderr)
-                return 1
-            if not ensure_running():
-                print("  ERROR: Failed to start Ollama", file=sys.stderr)
-                return 1
-            endpoint = "http://localhost:11434/v1"
-            # Preserve the model if it was ollama before, else use default
-            model_name = cfg_dict.get("ollama_model", "gemma4:e2b")
-
-        elif target == "llamacpp":
+        if target == "llamacpp":
             from adk import llamacpp_setup
 
             result = llamacpp_setup.install(quant=None, port=8209, service=True)
@@ -7007,17 +6991,6 @@ def cmd_backend(args):
                     file=sys.stderr,
                 )
                 return 1
-        elif target == "ollama":
-            from adk.ollama_setup import smoke_test as ollama_smoke_test
-
-            ok = ollama_smoke_test(model_name)
-            if not ok:
-                print(
-                    "  ERROR: Smoke test failed - the endpoint did not respond. "
-                    "Check logs and re-run.",
-                    file=sys.stderr,
-                )
-                return 1
 
         print(f"  Endpoint ready: {endpoint}")
 
@@ -7029,9 +7002,6 @@ def cmd_backend(args):
             "inference_url": endpoint,
             "inference_model": model_name,
         })
-        if target == "ollama":
-            save_saved_config({"ollama_model": model_name})
-
         print()
         print("=" * 60)
         print("  Backend Switched Successfully")
@@ -8830,6 +8800,9 @@ def cmd_grid(args) -> int:
     import asyncio
 
     sub = getattr(args, "grid_command", None)
+    if sub == "join":
+        from adk.pool_role import run as _pool_role_run
+        return _pool_role_run(args)
     saved = load_saved_config()
 
     # Grid config lives under a "grid_nodes" key in ~/.aither/config.json
@@ -10548,18 +10521,11 @@ def cmd_quickstart_local(args):
     """
     One-command local inference quickstart.
 
-    Detects hardware → picks backend (llamacpp/ollama/vllm) →
+    Detects hardware → picks backend (llamacpp/vllm/bonsai) →
     installs & verifies → launches agent.
     """
     from adk import llamacpp_setup
     from adk.local_backends import pick_backend, docker_available
-    from adk.ollama_setup import (
-        DEFAULT_OLLAMA_MODEL,
-        ensure_running,
-        pull,
-        register_config as ollama_register_config,
-        smoke_test as ollama_smoke_test,
-    )
 
     print()
     print("  AitherADK Local Inference Quickstart")
@@ -10595,8 +10561,8 @@ def cmd_quickstart_local(args):
     print(f"  Backend: {backend}")
     if backend == "vllm":
         print("    (NVIDIA CUDA + Docker: optimal throughput)")
-    elif backend == "ollama":
-        print("    (Ollama installed: convenient & portable)")
+    elif backend == "bonsai":
+        print("    (Bonsai: 1-bit, runs anywhere)")
     else:
         print("    (llama.cpp: pure stdlib, no dependencies)")
 
@@ -10619,28 +10585,6 @@ def cmd_quickstart_local(args):
             return 1
         endpoint = f"http://localhost:{result.port}/v1"
         model_name = result.quant
-
-    elif backend == "ollama":
-        if not ensure_running():
-            print(
-                "  ERROR: Could not start Ollama. "
-                "Install from https://ollama.ai",
-                file=sys.stderr,
-            )
-            return 1
-
-        # NB: args.model exists but defaults to None, so getattr's fallback never
-        # fires — use `or` to apply the default when the flag was omitted.
-        model = getattr(args, "model", None) or DEFAULT_OLLAMA_MODEL
-        if getattr(args, "dry_run", False):
-            print(f"  [DRY] Would pull model: {model}")
-        else:
-            if not pull(model):
-                print(f"  ERROR: Failed to pull model {model}", file=sys.stderr)
-                return 1
-        ollama_register_config(model)
-        endpoint = "http://localhost:11434/v1"
-        model_name = model
 
     elif backend == "vllm":
         # Use setup_cli's cmd_setup for Docker-based vLLM
@@ -10714,10 +10658,8 @@ def cmd_quickstart_local(args):
                     break
                 time.sleep(2)
             ok = llamacpp_setup.smoke_test(port=verify_port)
-        elif backend == "bonsai":
+        else:  # bonsai
             ok = llamacpp_setup.smoke_test(port=int(endpoint.rsplit(":", 1)[1].split("/")[0]))
-        else:  # ollama
-            ok = ollama_smoke_test(model)
         if not ok:
             print(
                 "  ERROR: Smoke test failed — the endpoint did not return a valid "
@@ -10821,7 +10763,6 @@ def cmd_status(args):
         checks = {
             "Genesis": os.environ.get("AITHER_URL", "http://localhost:8001"),
             "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8209")),
-            "Ollama": _fix_ollama_host(os.environ.get("OLLAMA_HOST", "")),
             "awnode": "http://localhost:8090",
             "Gateway": os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com"),
         }
@@ -10878,7 +10819,7 @@ def cmd_status(args):
         for name, url in checks.items():
             try:
                 async with httpx.AsyncClient(timeout=3.0) as c:
-                    hp = "/api/tags" if name == "Ollama" else "/health"
+                    hp = "/health"
                     if name == "Qdrant":
                         hp = "/healthz"
                     r = await c.get(f"{url.rstrip('/')}{hp}")
@@ -11210,7 +11151,8 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
         "deepseek-pro": ("deepseek", "deepseek-flash"),
         "deepseek": ("deepseek", "deepseek-flash"),
         "openrouter": ("openrouter", "deepseek/deepseek-v4-flash"),
-        "ollama": ("ollama", "llama3.2:latest"),
+        "local": ("local", ""),
+        "llamacpp": ("local", ""),
     }
 
     if model and model in shortcuts:
@@ -11233,10 +11175,13 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
             "model": model or "deepseek/deepseek-v4-flash",
             "display": f"OpenRouter ({model or 'deepseek/deepseek-v4-flash'})",
         },
-        "ollama": {
-            "provider": "ollama",
-            "model": model or "llama3.2:latest",
-            "display": f"Ollama ({model or 'llama3.2:latest'})",
+        "local": {
+            # `adk setup llamacpp` serves an OpenAI-compatible llama-server here.
+            "provider": "openai",
+            "base_url": "http://localhost:8200/v1",
+            "api_key": "not-needed",
+            "model": model or "aither-orchestrator",
+            "display": f"llama.cpp ({model or 'aither-orchestrator'})",
         },
         "openai": {
             "provider": "openai",
@@ -11253,18 +11198,16 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
     }
 
     info = configs.get(provider, configs["deepseek"])
-    if not info.get("api_key") and provider not in ("ollama",):
+    if not info.get("api_key") and provider not in ("local",):
         info["display"] += " [NO KEY — run: adk keys set " + provider + "]"
     return info
 
 
 def _detect_llm_backend():
     """Detect available LLM backend. Returns dict with provider info."""
-    import shutil
-
     # 0. What the user configured (adk backend set / install-bonsai.sh --with-adk)
     # wins over anything sniffed: until 2026-09-12 `adk start` ignored saved
-    # config and grabbed Ollama or the cloud key instead of the Bonsai the user
+    # config and grabbed the cloud key instead of the Bonsai the user
     # had just installed, while printing "LLM: None detected!" for it.
     try:
         from adk.config import load_saved_config
@@ -11308,41 +11251,6 @@ def _detect_llm_backend():
             }
     except Exception:
         pass
-
-    # 1. Check for Ollama
-    ollama_bin = shutil.which("ollama")
-    if ollama_bin:
-        try:
-            import httpx
-            resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
-            if resp.status_code == 200:
-                models = resp.json().get("models", [])
-                model_names = [m["name"] for m in models]
-                # Pick best available model
-                preferred = [
-                    "llama3.2:latest", "llama3.2:3b", "llama3.1:8b",
-                    "mistral:latest", "qwen2.5:7b",
-                ]
-                chosen = None
-                for p in preferred:
-                    if p in model_names:
-                        chosen = p
-                        break
-                if not chosen and model_names:
-                    chosen = model_names[0]
-                if chosen:
-                    return {
-                        "provider": "ollama",
-                        "model": chosen,
-                        "display": f"Ollama ({chosen})",
-                    }
-                else:
-                    return {
-                        "provider": "ollama",
-                        "display": "Ollama (no models pulled — run: ollama pull llama3.2)",
-                    }
-        except Exception:
-            pass
 
     # 2. Check for vLLM
     try:
@@ -11431,7 +11339,7 @@ def _detect_llm_backend():
         }
 
     return {
-        "display": "None detected! Install Ollama (ollama.com) or set AITHER_API_KEY",
+        "display": "None detected! Run 'adk setup llamacpp' or set AITHER_API_KEY",
     }
 
 
@@ -13799,6 +13707,13 @@ def _register_grid_parser(sub):
     grid_rm_mesh_p = grid_sub.add_parser(
         "deregister", help="Remove an enrolled mesh node from the registry")
     grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
+    # One-command pool join, step 1: probe this node and plan its pool role.
+    grid_join_p = grid_sub.add_parser(
+        "join",
+        help="Plan this node's role in a pooled model (rpc-vram / rpc-cpu / kvholder / local); "
+             "--register POOL_ID records it (starts nothing)")
+    from adk.pool_role import add_arguments as _pool_role_args
+    _pool_role_args(grid_join_p)
 
 
 def _register_commands(sub):
@@ -13809,8 +13724,8 @@ def _register_commands(sub):
     # adk start — the main entry point for everyone
     start_p = sub.add_parser("start", help="Start chatting with your codebase (zero config)")
     start_p.add_argument("path", nargs="?", default=".", help="Project directory (default: current)")
-    start_p.add_argument("--model", help="Model: deepseek-flash, deepseek-pro, ollama, openrouter, or a model slug")
-    start_p.add_argument("--provider", help="Provider: deepseek, openrouter, ollama, openai, anthropic")
+    start_p.add_argument("--model", help="Model: deepseek-flash, deepseek-pro, local, openrouter, or a model slug")
+    start_p.add_argument("--provider", help="Provider: deepseek, openrouter, local, openai, anthropic")
     start_p.add_argument("--mcp", action="store_true", help="Connect to AitherOS MCP gateway (1200+ tools)")
 
     # aither init
@@ -13959,8 +13874,7 @@ def _register_commands(sub):
     sb_up.add_argument("--portal", default=_control_plane(), help="Control-plane base URL")
     # BYOK. A stranger arrives with OpenAI credits; without these the container
     # started with no llm env at all and could only use what the image baked.
-    sb_up.add_argument("--backend", choices=["openai", "anthropic", "deepseek", "ollama",
-                                             "gateway"],
+    sb_up.add_argument("--backend", choices=["openai", "anthropic", "deepseek", "gateway"],
                        help="LLM backend for the sandbox, e.g. --backend openai")
     sb_up.add_argument("--base-url", dest="base_url",
                        help="OpenAI-compatible base URL (default: the backend's own)")
@@ -13991,10 +13905,10 @@ def _register_commands(sub):
     reregister_p.add_argument("--portal", default=_control_plane(),
                               help="Portal URL (default: veil.aitherium.com)")
 
-    # adk stack — supervise the consumer stack (Room + Ollama); was `adk up`
-    stack_p = sub.add_parser("stack", help="Start the consumer stack (Room + Ollama) as native processes")
+    # adk stack — supervise the consumer stack (Room + llama.cpp); was `adk up`
+    stack_p = sub.add_parser("stack", help="Start the consumer stack (Room + llama.cpp) as native processes")
     stack_p.add_argument("service", nargs="?", default="default",
-                         help="Service to start: default (Room+Ollama), qdrant (local Qdrant)")
+                         help="Service to start: default (Room+llama.cpp), qdrant (local Qdrant)")
     stack_p.add_argument("--interval", type=int, default=10,
                          help="Health check interval in seconds (default: 10)")
     stack_p.add_argument("--no-sync", action="store_true",
@@ -14492,15 +14406,15 @@ def _register_commands(sub):
     setup_all_p.add_argument("--yes", "--non-interactive", dest="yes", action="store_true",
                              help="Non-interactive")
 
-    setup_p = sub.add_parser("setup", help="Interactive GPU setup wizard (vLLM/Ollama) + optional AitherOS stack")
+    setup_p = sub.add_parser("setup", help="Interactive GPU setup wizard (vLLM/llama.cpp) + optional AitherOS stack")
     setup_p.add_argument("shortcut", nargs="?", default=None,
                          help="Quick setup: 'nemotron' (--tier lite), 'llamacpp' / 'local' / 'endpoint' (native local orchestrator, no Docker)")
     setup_p.add_argument("--mode", choices=["auto", "cloud", "hybrid"],
                          default="auto",
                          help="Setup mode: auto (detect GPU), cloud (cloud-only, no GPU), hybrid (local + cloud reasoning)")
-    setup_p.add_argument("--tier", choices=["nano", "lite", "standard", "standard-tq4", "full", "hybrid", "hybrid-tq4", "ollama", "llamacpp"],
+    setup_p.add_argument("--tier", choices=["nano", "lite", "standard", "standard-tq4", "full", "hybrid", "hybrid-tq4", "llamacpp"],
                          help="Force a specific tier (default: auto-detect from GPU). 'llamacpp' = native local Nemotron-Orchestrator-8B for endpoints (Windows/macOS/Linux, no Docker)")
-    setup_p.add_argument("--backend", choices=["vllm", "ollama", "llamacpp"], default=None,
+    setup_p.add_argument("--backend", choices=["vllm", "llamacpp"], default=None,
                          help="Backend engine override (default inferred from --tier)")
     setup_p.add_argument("--llamacpp-quant", default=None,
                          help="llama.cpp GGUF quant (e.g. Q4_K_M, Q5_K_M, Q8_0). Default: auto-pick from VRAM/RAM")
@@ -14609,18 +14523,13 @@ def _register_commands(sub):
                       choices=["default", "basic", "advanced", "custom"],
                       help="Base template (default: default)")
     ca_p.add_argument("--llm-provider", dest="llm_provider", default="aitheros",
-                      choices=["aitheros", "ollama", "portal", "deepseek", "openai", "anthropic", "gemini"],
+                      choices=["aitheros", "portal", "deepseek", "openai", "anthropic", "gemini"],
                       help="LLM provider (default: aitheros)")
     ca_p.add_argument("--force", action="store_true", help="Overwrite existing directory")
 
     # aither deploy — component deployment OR agent deployment
     deploy_p = sub.add_parser("deploy", help="Deploy AitherOS components or agents")
     deploy_sub = deploy_p.add_subparsers(dest="component")
-
-    # aither deploy ollama
-    d_ollama = deploy_sub.add_parser("ollama", help="Install Ollama + pull models for your GPU")
-    d_ollama.add_argument("--models", help="Comma-separated model list (default: auto-select by GPU)")
-    d_ollama.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
     # aither deploy vllm
     d_vllm = deploy_sub.add_parser("vllm", help="Deploy vLLM containers directly (use 'adk setup' for guided wizard)")
@@ -14717,7 +14626,7 @@ def _register_commands(sub):
         "grid",
         help="Deploy grid distributed stack (GPU + Mac + cluster)",
     )
-    d_grid.add_argument("--mac-host", help="Mac Mini IP for Ollama reasoning")
+    d_grid.add_argument("--mac-host", help="Mac Mini IP for llama.cpp reasoning")
     d_grid.add_argument("--cluster-nodes", help="JSON array of cluster node IPs")
     d_grid.add_argument("--hf-token", default="", help="HuggingFace token for gated models")
     d_grid.add_argument("--skip-health", action="store_true",
@@ -14727,7 +14636,7 @@ def _register_commands(sub):
     # aither deploy stop <component>
     d_stop = deploy_sub.add_parser("stop", help="Stop a running deployment")
     d_stop.add_argument("stop_target", nargs="?",
-                        help="Component to stop: ollama, vllm, node, core, full, all")
+                        help="Component to stop: vllm, node, core, full, all")
 
     # aither deploy agent — download + configure + start a tenant agent, OR upload to gateway
     d_agent = deploy_sub.add_parser("agent", help="Deploy a tenant agent to this machine (or upload to gateway)")
@@ -14843,7 +14752,7 @@ def _register_commands(sub):
         "--inference-url", default="auto",
         help="Local inference base URL to advertise (e.g. http://127.0.0.1:8080). "
              "'auto' probes $BONSAI_PORT/8080, 8099 (llama-server), 8090 (awnode), "
-             "11434 (Ollama), 8120 (vLLM) in that order")
+             "8120 (vLLM) in that order")
     enroll_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
         default=None,
@@ -15061,9 +14970,9 @@ def _register_commands(sub):
     backend_sub = backend_p.add_subparsers(dest="backend_command")
     backend_sub.add_parser("list", help="Show detected and configured backends")
     backend_guide_p = backend_sub.add_parser("guide", help="Step-by-step setup guide for a backend (no arg = menu)")
-    backend_guide_p.add_argument("provider", nargs="?", help="Backend or model name (e.g. moonshot, ollama, kimi-k3, gemma4)")
+    backend_guide_p.add_argument("provider", nargs="?", help="Backend or model name (e.g. moonshot, llamacpp, kimi-k3, gemma4)")
     backend_set_p = backend_sub.add_parser("set", help="Set default backend")
-    backend_set_p.add_argument("provider", help="Provider: ollama, vllm, openai, anthropic, deepseek, moonshot, groq, together, gateway")
+    backend_set_p.add_argument("provider", help="Provider: llamacpp, vllm, openai, anthropic, deepseek, moonshot, groq, together, gateway")
     backend_set_p.add_argument("--api-key", help="API key for the provider")
     backend_set_p.add_argument("--base-url", help="Custom base URL")
     backend_set_p.add_argument("--model", help="Default model")
@@ -15091,7 +15000,7 @@ def _register_commands(sub):
     backend_reason_p.add_argument("--model", help="Reasoning model")
     backend_sub.add_parser("test", help="Test current backend with a simple prompt")
     backend_switch_p = backend_sub.add_parser("switch", help="Switch to a different inference backend")
-    backend_switch_p.add_argument("target_backend", choices=["ollama", "llamacpp", "vllm"],
+    backend_switch_p.add_argument("target_backend", choices=["llamacpp", "vllm"],
                                   help="Target backend to switch to")
     backend_use_p = backend_sub.add_parser(
         "use", help="Switch the RUNNING agent live to a preset (no restart)")
@@ -15631,13 +15540,13 @@ def _register_commands(sub):
     )
     quickstart_local_p.add_argument(
         "--backend",
-        choices=["auto", "llamacpp", "ollama", "vllm"],
+        choices=["auto", "llamacpp", "vllm", "bonsai"],
         default="auto",
         help="Inference backend (auto = detect best fit)"
     )
     quickstart_local_p.add_argument(
         "--model",
-        help="Model name/ID (for Ollama; others auto-detected)"
+        help="Model name/ID (auto-detected when omitted)"
     )
     quickstart_local_p.add_argument(
         "--port",
@@ -16677,7 +16586,7 @@ def _cmd_acp_serve(args) -> int:
         # failed loudly at startup. That is the wrong place: `initialize` and
         # `authenticate` need no model, and an ACP client — including the ACP
         # registry's CI verifier, which handshakes on a machine with no fleet,
-        # no Ollama and no API key — sees the process exit before it can read
+        # no local model server and no API key — sees the process exit before it can read
         # the `authMethods` it is there to check. The failure surfaces as
         # "timeout waiting for initialize", i.e. as a protocol bug.
         #

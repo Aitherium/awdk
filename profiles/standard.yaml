@@ -29,10 +29,10 @@ vllm:
       model: aither-orchestrator
       gpu_memory_utilization: 0.45
 
-ollama:
+local:
   gpu_memory_fraction: 0.50
   num_parallel: 2
-  models_to_pull:
+  models:
     - nemotron-orchestrator-8b
     - deepseek-r1:14b
     - llava:7b
@@ -65,10 +65,10 @@ resource_limits:
   max_concurrent_requests: 4
   max_batch_size: 4
   context_pipeline_timeout_s: 15
-  ollama_max_loaded_models: 2
+  max_loaded_models: 2
 
 notes: >
   Standard profile splits VRAM between one vLLM worker (orchestrator) and
-  Ollama for on-demand reasoning/vision. The reasoning model is swapped in
+  llama.cpp for on-demand reasoning/vision. The reasoning model is swapped in
   on effort >= 7 requests. Vision model loaded on demand and evicts the
   reasoning model temporarily.

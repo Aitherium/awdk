@@ -38,15 +38,6 @@ def test_cmd_doctor_runs():
     assert result == 0
 
 
-def test_check_ollama_not_installed():
-    from adk.doctor import check_ollama
-
-    with patch("shutil.which", return_value=None), patch("builtins.print"):
-        ok, models = check_ollama()
-    assert ok is False
-    assert models == []
-
-
 def test_check_docker_not_installed():
     from adk.doctor import check_docker
 

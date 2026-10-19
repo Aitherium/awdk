@@ -14,7 +14,7 @@ Run:
       "jsonrpc":"2.0","id":1,"method":"message/send",
       "params":{"message":{"role":"user","parts":[{"type":"text","text":"hi"}]}}}'
 
-By default the agent talks to a local Ollama; set a BYO key (ANTHROPIC_API_KEY,
+By default the agent talks to a local llama.cpp; set a BYO key (ANTHROPIC_API_KEY,
 OPENAI_API_KEY, DEEPSEEK_API_KEY, …) or --backend to use any other model.
 """
 import os
@@ -33,7 +33,7 @@ def add(a: float, b: float) -> str:
 
 
 def build_app() -> FastAPI:
-    # BYO model: local Ollama by default; any API key / --backend also works.
+    # BYO model: local llama.cpp by default; any API key / --backend also works.
     agent = AitherAgent("aither", tools=[get_global_registry()])
 
     app = FastAPI(title="my-a2a-agent")

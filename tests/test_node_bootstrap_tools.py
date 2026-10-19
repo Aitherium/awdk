@@ -28,7 +28,6 @@ class TestDetectHardware:
                 gpu_vendor="none",
                 gpu_name="",
                 gpu_vram_mb=0,
-                ollama_installed=False,
                 python_version="3.10.0",
             )
             with patch("adk.hardware_probe.recommend_setup") as mock_rec:
@@ -68,7 +67,6 @@ class TestDetectHardware:
                 gpu_vendor="none",
                 gpu_name="",
                 gpu_vram_mb=0,
-                ollama_installed=False,
                 python_version="3.10.0",
             )
             with patch("adk.hardware_probe.recommend_setup"):
@@ -146,7 +144,7 @@ class TestPlanDeployment:
 
     def test_plan_deployment_returns_dict(self):
         """Must return dict with steps, env, ports, sizes."""
-        result = tools.node_plan_deployment(recipe_id="cpu-ollama")
+        result = tools.node_plan_deployment(recipe_id="cpu-llamacpp")
 
         assert isinstance(result, dict)
         if "error" not in result:
@@ -193,7 +191,7 @@ class TestApplyDeployment:
     def test_apply_dry_run_no_subprocess(self):
         """dry_run=True shows commands without calling subprocess."""
         result = tools.node_apply(
-            recipe_id="cpu-ollama",
+            recipe_id="cpu-llamacpp",
             dry_run=True,
         )
 
@@ -211,7 +209,7 @@ class TestApplyDeployment:
         # For now, just verify the error path exists
         with patch("adk.toolpacks.node_bootstrap.tools.node_plan_deployment"):
             result = tools.node_apply(
-                recipe_id="cpu-ollama",
+                recipe_id="cpu-llamacpp",
                 node_ip="",
                 dry_run=False,
             )
@@ -237,7 +235,7 @@ class TestApplyDeployment:
         with patch("adk.toolpacks.node_bootstrap.tools.node_plan_deployment") as mock:
             mock.side_effect = RuntimeError("simulated error")
 
-            result = tools.node_apply(recipe_id="cpu-ollama")
+            result = tools.node_apply(recipe_id="cpu-llamacpp")
 
             assert isinstance(result, dict)
             assert "error" in result
@@ -473,7 +471,7 @@ class TestRenderComposeServeArgs:
     env-driven `else` whose filter requires ("=" in a and " " not in a). Every
     flag-style arg ("--ctx-size 32768", "--reasoning-budget 256", ...) matched
     nothing, `command` was omitted entirely, and the service silently inherited
-    the vllm image default plus an /root/.ollama volume. Rendering the real
+    the vllm image default plus an unrelated model volume. Rendering the real
     cpu-1bit-llamacpp recipe produced 0 of 7 serve_args and named the WRONG
     runtime — a plausible-looking compose file that could never work.
     """
@@ -508,12 +506,12 @@ class TestRenderComposeServeArgs:
             "--reasoning-budget", "256",
         ], argv
 
-    def test_llamacpp_does_not_inherit_vllm_image_or_ollama_volume(self):
+    def test_llamacpp_does_not_inherit_vllm_image_or_foreign_volume(self):
         """The silent-wrong-runtime half of the bug."""
         out = tools._render_compose("cpu-1bit-llamacpp", self._llamacpp_recipe())
         assert "prism-ml/llamacpp-fork:latest" in out
         assert "vllm/vllm-openai" not in out
-        assert "/root/.ollama" not in out
+        assert "node-bootstrap-llamacpp:/models" in out
 
     def test_llamacpp_without_image_fails_loud(self):
         """No safe public default exists (Q1_0 needs the PrismML fork) — raise
@@ -537,20 +535,20 @@ class TestRenderComposeServeArgs:
         argv = json.loads(out.split("command: ")[1].split("\n")[0])
         assert argv == ["--model", "org/model", "--max-model-len", "4096"], argv
 
-    def test_ollama_stays_env_driven_with_no_command(self):
+    def test_env_driven_engine_has_no_command(self):
         """KEY=VALUE serve_args become env vars, not a command line."""
         recipe = {
             "inference_config": {
-                "engine": "ollama",
-                "image": "ollama/ollama:latest",
+                "engine": "custom",
+                "image": "example/server:1",
                 "models": [],
-                "serve_args": ["OLLAMA_HOST=0.0.0.0"],
+                "serve_args": ["SERVER_HOST=0.0.0.0"],
             },
-            "deployment": {"port": 11434},
+            "deployment": {"port": 9000},
         }
-        out = tools._render_compose("o", recipe)
+        out = tools._render_compose("c", recipe)
         assert "command:" not in out
-        assert "OLLAMA_HOST: 0.0.0.0" in out
+        assert "SERVER_HOST: 0.0.0.0" in out
 
     def test_every_shipped_recipe_renders_or_fails_loud(self):
         """No shipped recipe may render a compose that drops its own flags."""
@@ -587,7 +585,7 @@ def _resp(status=200, body=None):
 
 
 class TestVerifyOpenAICompatibleEngines:
-    """Every non-ollama engine speaks the OpenAI shape (chat first, then completions)."""
+    """Every engine speaks the OpenAI shape (chat first, then completions)."""
 
     @pytest.mark.parametrize(
         "engine", ["llamacpp", "llamacpp_remote", "strata", "dgpp", "sglang", "vllm"]
@@ -623,17 +621,6 @@ class TestVerifyOpenAICompatibleEngines:
 
     @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
     @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
-    def test_ollama_keeps_native_path(self, mock_post, mock_get):
-        mock_get.return_value = _resp(200)
-        mock_post.return_value = _resp(200, {"response": "ML learns patterns from data."})
-        result = tools.node_verify(base_url="http://node:11434", backend_type="ollama")
-        assert result["status"] == "healthy", result
-        assert mock_get.call_args.args[0] == "http://node:11434/api/tags"
-        assert mock_post.call_args.args[0] == "http://node:11434/api/generate"
-        assert mock_post.call_args.kwargs["json"]["stream"] is False
-
-    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
-    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
     def test_all_paths_failing_is_degraded(self, mock_post, mock_get):
         mock_get.return_value = _resp(200)
         mock_post.return_value = _resp(500)
@@ -642,42 +629,24 @@ class TestVerifyOpenAICompatibleEngines:
         assert mock_post.call_count == 2
 
 
-class TestVerifyOllamaRemote:
+class TestRemoteProtocolAlias:
     """A ``<engine>_remote`` backend type speaks its engine's protocol."""
 
     def test_protocol_alias(self):
-        assert tools._engine_protocol("ollama_remote")["health_path"] == "/api/tags"
-        assert tools._engine_protocol("OLLAMA_REMOTE")["completion_paths"] == ("/api/generate",)
         assert tools._engine_protocol("llamacpp_remote")["health_path"] == "/health"
-
-    @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
-    @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
-    def test_ollama_remote_without_recipe_is_healthy(self, mock_post, mock_get):
-        def get(url, **_):
-            return _resp(200 if url.endswith("/api/tags") else 404)
-
-        def post(url, **_):
-            if url.endswith("/api/generate"):
-                return _resp(200, {"response": "ML learns patterns from data."})
-            return _resp(404)
-
-        mock_get.side_effect = get
-        mock_post.side_effect = post
-        result = tools.node_verify(base_url="http://h:11434", backend_type="ollama_remote")
-        assert result["status"] == "healthy", result
-        assert mock_get.call_args.args[0] == "http://h:11434/api/tags"
-        assert mock_post.call_args.args[0] == "http://h:11434/api/generate"
+        assert tools._engine_protocol("VLLM_REMOTE")["completion_paths"] == (
+            "/v1/chat/completions", "/v1/completions")
 
 
 class TestApplyNextHint:
     """The ``next`` hint after an apply carries the recipe so verify reads its paths."""
 
     def test_hint_carries_recipe_and_backend_type(self):
-        plan = {"port": 11434, "env": {"AITHER_BACKEND_TYPE": "ollama_remote"}}
-        hint = tools._verify_hint("cpu-ollama", "localhost", plan)
+        plan = {"port": 8080, "env": {"AITHER_BACKEND_TYPE": "llamacpp_remote"}}
+        hint = tools._verify_hint("cpu-llamacpp", "localhost", plan)
         assert hint == (
-            "node_verify(base_url='http://localhost:11434', recipe_id='cpu-ollama', "
-            "backend_type='ollama_remote')"
+            "node_verify(base_url='http://localhost:8080', recipe_id='cpu-llamacpp', "
+            "backend_type='llamacpp_remote')"
         )
 
     def test_hint_without_backend_type(self):
@@ -688,14 +657,14 @@ class TestApplyNextHint:
     def test_local_compose_apply_returns_recipe_hint(self, _mock_run, tmp_path, monkeypatch):
         monkeypatch.setattr(tools, "_BOOTSTRAP_DIR", tmp_path)
         plan = {
-            "port": 11434,
-            "env": {"AITHER_BACKEND_TYPE": "ollama_remote"},
+            "port": 8080,
+            "env": {"AITHER_BACKEND_TYPE": "llamacpp_remote"},
             "compose_yaml": "services: {}\n",
         }
-        result = tools._apply_local("cpu-ollama", plan, "docker-compose")
+        result = tools._apply_local("cpu-llamacpp", plan, "docker-compose")
         assert result["applied"] is True, result
-        assert "recipe_id='cpu-ollama'" in result["next"]
-        assert "backend_type='ollama_remote'" in result["next"]
+        assert "recipe_id='cpu-llamacpp'" in result["next"]
+        assert "backend_type='llamacpp_remote'" in result["next"]
 
 
 class TestVerifyRecipeDeclaredPaths:
@@ -705,7 +674,7 @@ class TestVerifyRecipeDeclaredPaths:
         assert tools._health_path_for("vllm", {"health_path": "/v1/models"}) == "/v1/models"
         assert tools._health_path_for("vllm", "v1/models") == "/v1/models"
         # an empty declaration (e.g. a cloud recipe) falls back to the engine default
-        assert tools._health_path_for("ollama", {"health_path": ""}) == "/api/tags"
+        assert tools._health_path_for("sglang", {"health_path": ""}) == "/health"
         assert tools._health_path_for("llamacpp") == "/health"
 
     @patch("adk.toolpacks.node_bootstrap.tools.get_recipe")
@@ -734,17 +703,17 @@ class TestVerifyRecipeDeclaredPaths:
     @patch("adk.toolpacks.node_bootstrap.tools.httpx.post")
     def test_real_recipe_health_path_is_read(self, mock_post, mock_get):
         mock_get.return_value = _resp(503)
-        tools.node_verify(base_url="http://node:11434", recipe_id="cpu-ollama")
-        assert mock_get.call_args.args[0] == "http://node:11434/api/tags"
+        tools.node_verify(base_url="http://node:8080", recipe_id="cpu-llamacpp")
+        assert mock_get.call_args.args[0] == "http://node:8080/health"
         mock_post.assert_not_called()
 
     @patch("adk.toolpacks.node_bootstrap.tools.httpx.get")
     def test_explicit_args_beat_recipe(self, mock_get):
         mock_get.return_value = _resp(503)
         tools.node_verify(
-            base_url="http://node:11434", recipe_id="cpu-ollama", health_path="/ready"
+            base_url="http://node:8080", recipe_id="cpu-llamacpp", health_path="/ready"
         )
-        assert mock_get.call_args.args[0] == "http://node:11434/ready"
+        assert mock_get.call_args.args[0] == "http://node:8080/ready"
 
 
 class TestRegisterBackendName:
@@ -788,3 +757,35 @@ class TestRegisterBackendName:
     def test_name_is_sanitized(self):
         name = tools.backend_registration_name("not a url", "a b/c d")
         assert name and " " not in name
+
+
+class TestAwrtifactWeightsFirst:
+    """Recipe weights come from Aitherium's artifact store first, the hub only as fallback."""
+
+    def test_cpu_llamacpp_compose_fetches_from_awrtifact_then_serves(self):
+        plan = tools.node_plan_deployment(recipe_id="cpu-llamacpp")
+        compose = plan["compose_yaml"]
+        assert 'entrypoint: ["/bin/bash", "-c"]' in compose
+        assert ("artifact.aitherium.com}/fleet-orchestrator-v18-q4/"
+                "aither-orchestrator-v18-Q4_K_M.gguf") in compose
+        assert "EXPECT=5027783520" in compose
+        # compose interpolation is escaped so bash sees its own variables
+        assert "$$M" in compose and '"$M"' not in compose
+        # the hub is only reached from the incomplete-fetch branch
+        fetch = compose.index("artifact.aitherium.com")
+        assert compose.index(" -hf ") > fetch
+        assert compose.rstrip().endswith("node-bootstrap-llamacpp:")
+
+    def test_metal_llamacpp_native_command_fetches_then_execs(self):
+        plan = tools.node_plan_deployment(recipe_id="metal-llamacpp")
+        script = plan["native_commands"][-1]
+        assert "fleet-orchestrator-v18-q4/aither-orchestrator-v18-Q4_K_M.gguf" in script
+        assert script.rstrip().split(";")[-1].strip().startswith("exec llama-server -m")
+
+    def test_recipe_without_weights_keeps_plain_serve_args(self):
+        recipe = {"inference_config": {"engine": "llamacpp", "image": "img",
+                                       "serve_args": ["--port 8080"]},
+                  "deployment": {"port": 8080}}
+        compose = tools._render_compose("x", recipe)
+        assert 'command: ["--port", "8080"]' in compose
+        assert "entrypoint" not in compose

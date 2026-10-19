@@ -1,7 +1,7 @@
 """Codex / ChatGPT OAuth (EXPERIMENTAL, fast-follow).
 
 The default, fully-tested auth paths are API keys (Anthropic / OpenAI) and local
-Ollama. This module scaffolds "sign in with your ChatGPT/Codex account" using the
+llama.cpp. This module scaffolds "sign in with your ChatGPT/Codex account" using the
 RFC-8628 device-authorization flow, mirroring adk/auth.py's existing device-code
 pattern. The token it obtains is fed to the OpenAI-compatible provider as a bearer.
 
@@ -78,7 +78,7 @@ def login_device_flow(timeout: float = 300.0) -> Credentials:
         raise RuntimeError(
             "Codex OAuth not configured. Set CODEX_OAUTH_CLIENT_ID (and "
             "CODEX_OAUTH_BASE if not the default). For the demo, use an API key "
-            "(ANTHROPIC_API_KEY / OPENAI_API_KEY) or local Ollama instead."
+            "(ANTHROPIC_API_KEY / OPENAI_API_KEY) or local llama.cpp instead."
         )
     with httpx.Client(timeout=20.0) as client:
         resp = client.post(

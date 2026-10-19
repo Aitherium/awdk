@@ -2,15 +2,13 @@
 Model Marketplace Plugin for AitherShell
 ==========================================
 
-Browse, search, download, and deploy models from HuggingFace, CivitAI,
-and the local Ollama library.
+Browse, search, download, and deploy models from HuggingFace and CivitAI.
 
 Usage:
     /models                           — Show installed models
     /models search <query>            — Search all registries
     /models search --hf <query>       — Search HuggingFace only
     /models search --civitai <query>  — Search CivitAI only
-    /models search --ollama <query>   — Search Ollama library
     /models download <id>             — Download/pull a model
     /models download <id> --source hf — Specify source registry
     /models deploy <id>               — Deploy model to cloud GPU
@@ -103,15 +101,13 @@ class MarketplacePlugin(SlashCommand):
                 source = "huggingface"
             elif args[i] in ("--civitai", "--cai"):
                 source = "civitai"
-            elif args[i] in ("--ollama", "--local"):
-                source = "ollama"
             else:
                 query_parts.append(args[i])
             i += 1
 
         query = " ".join(query_parts) if query_parts else ""
         if not query:
-            return "Usage: `/models search <query>` — add `--hf`, `--civitai`, or `--ollama` to filter"
+            return "Usage: `/models search <query>` — add `--hf` or `--civitai` to filter"
 
         body: Dict[str, Any] = {"query": query, "per_page": 10}
         if source:
@@ -304,7 +300,6 @@ class MarketplacePlugin(SlashCommand):
 | `/models` | List installed models |
 | `/models search <query>` | Search all registries |
 | `/models search --hf <q>` | Search HuggingFace only |
-| `/models search --ollama <q>` | Search Ollama library |
 | `/models download <id>` | Download / pull a model |
 | `/models deploy <id>` | Deploy to cloud GPU |
 | `/models recommend` | Hardware-aware recommendations |

@@ -2,7 +2,7 @@
 """AitherADK Installer — cross-platform, auto-detecting setup for the Agent Development Kit.
 
 Detects OS, GPU hardware, VRAM, and CUDA version to select the best hardware profile.
-Installs awdk, checks for Ollama, and pulls recommended models.
+Installs awdk and (with --with-local-orchestrator) llama.cpp + the orchestrator GGUF.
 
 Usage:
     python install.py
@@ -329,7 +329,7 @@ def load_profile(name: str) -> HardwareProfile:
 
     Handles two profile formats:
       - Simple format: ``recommended_models`` list at top level
-      - Rich format: ``ollama.models_to_pull`` nested under ``ollama:``
+      - Rich format: ``local.models`` nested under ``local:``
 
     Both are normalized into the same HardwareProfile dataclass.
     """
@@ -347,13 +347,13 @@ def load_profile(name: str) -> HardwareProfile:
     if isinstance(data.get("models"), dict):
         profile.models = data["models"]
 
-    # Recommended models: try top-level list first, then ollama.models_to_pull
+    # Recommended models: try top-level list first, then local.models
     if isinstance(data.get("recommended_models"), list):
         profile.recommended_models = data["recommended_models"]
-    elif isinstance(data.get("ollama"), dict):
-        ollama_section = data["ollama"]
-        if isinstance(ollama_section.get("models_to_pull"), list):
-            profile.recommended_models = ollama_section["models_to_pull"]
+    elif isinstance(data.get("local"), dict):
+        local_section = data["local"]
+        if isinstance(local_section.get("models"), list):
+            profile.recommended_models = local_section["models"]
 
     # Limits: try top-level, then resource_limits
     limits_src = data.get("limits") or data.get("resource_limits")
@@ -704,54 +704,19 @@ def select_profile(gpu: GPUInfo, ram_gb: float = 0.0) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Ollama
+# llama.cpp
 # ---------------------------------------------------------------------------
 
-def check_ollama() -> tuple[bool, str]:
-    """Check if Ollama is installed and reachable.
+def check_llamacpp() -> tuple[bool, str]:
+    """Check whether llama.cpp's ``llama-server`` is on PATH.
 
     Returns:
         (is_installed, version_or_message)
     """
-    ollama_path = shutil.which("ollama")
-    if not ollama_path:
-        return False, "not found in PATH"
-
-    version_output = _run_cmd(["ollama", "--version"])
-    if version_output:
-        return True, version_output
-    return True, "installed (version unknown)"
-
-
-def ollama_list_models() -> list[str]:
-    """List currently pulled Ollama models."""
-    output = _run_cmd(["ollama", "list"])
-    if not output:
-        return []
-    models = []
-    for line in output.splitlines()[1:]:  # Skip header
-        parts = line.split()
-        if parts:
-            models.append(parts[0])
-    return models
-
-
-def ollama_pull_model(model: str, dry_run: bool = False) -> bool:
-    """Pull an Ollama model. Returns True on success."""
-    if dry_run:
-        info(f"Would pull: {bold(model)}")
-        return True
-
-    info(f"Pulling {bold(model)} ...")
-    try:
-        result = subprocess.run(
-            ["ollama", "pull", model],
-            timeout=600,  # 10 minute timeout per model
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        error(f"Failed to pull {model}: {exc}")
-        return False
+    if not shutil.which("llama-server"):
+        return False, "not found in PATH (installed by --with-local-orchestrator)"
+    version_output = _run_cmd(["llama-server", "--version"])
+    return True, version_output or "installed (version unknown)"
 
 
 # ---------------------------------------------------------------------------
@@ -803,39 +768,24 @@ def install_adk(dry_run: bool = False) -> bool:
 # Health check
 # ---------------------------------------------------------------------------
 
-def run_health_check(dry_run: bool = False) -> bool:
-    """Run a quick health check: verify Ollama can list models."""
+def run_health_check(port: int, dry_run: bool = False) -> bool:
+    """Run a quick health check: the local llama-server lists its models."""
+    url = f"http://127.0.0.1:{port}/v1/models"
     if dry_run:
-        info("Would run health check (ollama list)")
+        info(f"Would run health check ({url})")
         return True
+    import json
+    import urllib.request
 
-    models = ollama_list_models()
-    if models:
-        info(f"Ollama has {len(models)} model(s) available:")
-        for m in models[:10]:
-            detail(m)
-        if len(models) > 10:
-            detail(f"... and {len(models) - 10} more")
-        return True
-    else:
-        warn("No Ollama models found — you may need to pull one manually")
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+    except Exception:  # noqa: BLE001 -- nothing serving yet is reported, not raised
+        warn(f"No llama-server answering at {url}")
         return False
-
-
-# ---------------------------------------------------------------------------
-# Ollama install suggestions
-# ---------------------------------------------------------------------------
-
-OLLAMA_INSTALL_INSTRUCTIONS = {
-    "Windows": textwrap.dedent("""\
-        Download from: https://ollama.com/download/windows
-        Or via winget:  winget install Ollama.Ollama"""),
-    "macOS": textwrap.dedent("""\
-        Download from: https://ollama.com/download/mac
-        Or via brew:   brew install ollama"""),
-    "Linux": textwrap.dedent("""\
-        curl -fsSL https://ollama.com/install.sh | sh"""),
-}
+    models = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
+    info(f"llama.cpp serves {len(models)} model(s): {', '.join(models[:5])}")
+    return bool(models)
 
 
 # ---------------------------------------------------------------------------
@@ -943,7 +893,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-models",
         action="store_true",
-        help="Skip Ollama model pulling",
+        help="Skip local model setup",
     )
     parser.add_argument(
         "--with-local-orchestrator",
@@ -1043,44 +993,22 @@ def main() -> int:
         error("Failed to install awdk")
         return 1
 
-    # --- Step 6: Check Ollama ---
-    step(6, TOTAL_STEPS, "Checking Ollama")
-    ollama_ok, ollama_info = check_ollama()
-    if ollama_ok:
-        info(f"Ollama: {ollama_info}")
+    # --- Step 6: Check llama.cpp ---
+    step(6, TOTAL_STEPS, "Checking llama.cpp")
+    llamacpp_ok, llamacpp_info = check_llamacpp()
+    if llamacpp_ok:
+        info(f"llama.cpp: {llamacpp_info}")
     else:
-        warn("Ollama is not installed")
-        instructions = OLLAMA_INSTALL_INSTRUCTIONS.get(os_name, "")
-        if instructions:
-            print()
-            for line in instructions.splitlines():
-                detail(line)
-            print()
-
-        if not skip_models:
-            warn("Skipping model pulls since Ollama is not installed")
-            skip_models = True
-
-    # Pull models
-    if not skip_models and ollama_ok and profile.recommended_models:
-        existing = set(ollama_list_models())
-        to_pull = [m for m in profile.recommended_models if m not in existing]
-
-        if to_pull:
-            info(f"Pulling {len(to_pull)} model(s) for profile {bold(profile_name)} ...")
-            for model in to_pull:
-                ollama_pull_model(model, dry_run=dry_run)
-        else:
-            info("All recommended models are already pulled")
-    elif skip_models:
-        info("Skipping model pulls (--skip-models)")
+        info(f"llama.cpp: {llamacpp_info}")
+    if skip_models:
+        info("Skipping local model setup (--skip-models)")
 
     # --- Step 7: Health check ---
     step(7, TOTAL_STEPS, "Running health check")
-    if ollama_ok:
-        run_health_check(dry_run=dry_run)
+    if llamacpp_ok and not skip_models:
+        run_health_check(getattr(args, "orchestrator_port", 8209), dry_run=dry_run)
     else:
-        warn("Skipping health check (Ollama not available)")
+        info("Skipping health check (no local llama-server yet)")
 
     # --- Summary ---
     sys_info = SystemInfo(

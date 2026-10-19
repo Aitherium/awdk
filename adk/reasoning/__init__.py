@@ -4,7 +4,7 @@ OpenClaw and Hermes are great personal agents. AitherOS goes further:
 
 * **Local orchestrator by default** — cheap, fast, no token cost. Most turns
   go to a mid-sized local model (Qwen, Mistral, DeepSeek-R1:8b, etc.) running
-  through Genesis / vLLM / Ollama.
+  through Genesis / vLLM / llama.cpp.
 * **Frontier reasoning on demand** — when a task is hard or the user asks for
   it, escalate to the strongest model the operator has configured (GPT-5,
   Claude Opus, DeepSeek-R1:70b, o3, NVIDIA Nemotron Ultra, etc.).
@@ -14,7 +14,7 @@ OpenClaw and Hermes are great personal agents. AitherOS goes further:
 
 The router and planner here are **transport-agnostic**: they speak to
 :class:`adk.core.model.ModelBackend` instances, so the same code paths
-work for Ollama on a laptop and a managed cluster behind ``MicroScheduler``.
+work for llama.cpp on a laptop and a managed cluster behind ``MicroScheduler``.
 
 Public API::
 

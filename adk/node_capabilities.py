@@ -75,7 +75,7 @@ class HostFacts:
     data_dir: str = ""
     disk_free_gib: float = 0.0
     embedder: str = ""          # installed embedder package name, "" when none
-    llm_runtime: str = ""       # "llama-server" | "ollama" | inference kind | ""
+    llm_runtime: str = ""       # "llama-server" | inference kind | ""
     llm_backend: bool = False   # an LLM is reachable for agent loops
     numpy: bool = False
     mcp_server_enabled: bool = False
@@ -176,8 +176,6 @@ def _llama_server(data_dir: Path) -> str:
         for name in ("llama-server.exe", "llama-server"):
             if next(root.rglob(name), None) is not None:
                 return "llama-server"
-    if shutil.which("ollama"):
-        return "ollama"
     return ""
 
 

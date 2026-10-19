@@ -8,8 +8,8 @@ Usage:
 
     setup = AgentSetup()
     info = await setup.detect_hardware()
-    await setup.ensure_ollama()
-    await setup.pull_models(["llama3.2:3b", "nomic-embed-text"])
+    await setup.ensure_llamacpp()
+    await setup.pull_models(["aither-orchestrator", "nomic-embed-text"])
     await setup.ensure_vllm(gpu_count=1)
     report = await setup.full_setup()  # does everything
 """
@@ -63,14 +63,14 @@ class SystemInfo:
     python_version: str = ""
     ram_gb: float = 0.0
     gpu: GPUInfo = field(default_factory=GPUInfo)
-    ollama_installed: bool = False
-    ollama_running: bool = False
-    ollama_models: list[str] = field(default_factory=list)
+    llamacpp_installed: bool = False
+    llamacpp_running: bool = False
+    llamacpp_models: list[str] = field(default_factory=list)
     vllm: VLLMInfo = field(default_factory=VLLMInfo)
     docker_installed: bool = False
     profile: str = "cpu_only"
     # Which inference backend is active (detected at setup time)
-    active_backend: str = ""  # "vllm", "ollama", "openai", ""
+    active_backend: str = ""  # "vllm", "llamacpp", "openai", ""
 
 
 @dataclass
@@ -78,9 +78,9 @@ class SetupReport:
     """Result of a full_setup() call."""
     system: SystemInfo = field(default_factory=SystemInfo)
     profile: str = "cpu_only"
-    ollama_ready: bool = False
+    llamacpp_ready: bool = False
     vllm_ready: bool = False
-    backend: str = ""  # "vllm", "ollama", "openai"
+    backend: str = ""  # "vllm", "llamacpp", "openai"
     models_pulled: list[str] = field(default_factory=list)
     models_available: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -242,23 +242,31 @@ async def _detect_ram() -> float:
     return 0.0
 
 
-async def _check_ollama() -> tuple[bool, bool, list[str]]:
-    """Check Ollama: (installed, running, models)."""
-    installed = shutil.which("ollama") is not None
-    if not installed:
-        return False, False, []
+async def _check_llamacpp() -> tuple[bool, bool, list[str]]:
+    """Check llama.cpp: (installed, running, served model ids).
 
-    # Check if running
-    rc, out, _ = await _run(["ollama", "list"])
-    if rc != 0:
-        return True, False, []
+    Installed = ``llama-server`` on PATH or the binary ``adk.llamacpp_setup``
+    unpacked under ``~/.aither/llamacpp``. Running = an OpenAI ``/v1/models``
+    answer on the orchestrator port (8200) or llama-server's default (8080).
+    """
+    installed = shutil.which("llama-server") is not None or any(
+        (Path.home() / ".aither" / "llamacpp").glob("**/llama-server*")
+    )
+    import urllib.request
 
-    models = []
-    for line in out.strip().splitlines()[1:]:  # skip header
-        parts = line.split()
-        if parts:
-            models.append(parts[0])
-    return True, True, models
+    def _probe(port: int) -> list[str] | None:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=3) as r:
+                data = json.loads(r.read())
+        except Exception:  # noqa: BLE001 -- nothing answering is the common case
+            return None
+        return [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
+
+    for port in (8200, 8080):
+        models = await asyncio.to_thread(_probe, port)
+        if models is not None:
+            return True, True, [m for m in models if m]
+    return installed, False, []
 
 
 async def _check_vllm() -> VLLMInfo:
@@ -334,7 +342,7 @@ def _select_profile(gpu: GPUInfo, ram_gb: float) -> str:
     return "minimal"
 
 
-_NOMIC_OLLAMA = "nomic-embed-text"
+_NOMIC_EMBED = "nomic-embed-text"
 
 
 def _active_embeddings():
@@ -354,9 +362,9 @@ def _active_embeddings():
 
 def _embed_model() -> str:
     """The embedder the active space pulls (:mod:`adk.embeddings` is the authority):
-    ``nomic-embed-text`` via Ollama, or the ``aither-code-embed`` catalogue GGUF."""
+    ``nomic-embed-text``, or the ``aither-code-embed`` catalogue GGUF."""
     mod = _active_embeddings()
-    return mod.installer_embed_model() if mod else _NOMIC_OLLAMA
+    return mod.installer_embed_model() if mod else _NOMIC_EMBED
 
 
 def _pull_code_embed(model_id: str) -> bool:
@@ -387,43 +395,28 @@ def _pull_code_embed(model_id: str) -> bool:
     return True
 
 
-def _recommended_models(profile: str) -> list[str]:
-    """Return recommended Ollama models for a profile.
+#: The model every llama.cpp install serves: the Aitherium orchestrator GGUF
+#: (``adk.llamacpp_setup`` fetches it from Aitherium's weights store).
+ORCHESTRATOR_MODEL = "aither-orchestrator"
 
-    Static fallback — prefer ``_recommended_models_llmfit()`` when the llmfit
-    sidecar is reachable.
+
+def _recommended_models(profile: str) -> list[str]:
+    """Models a local llama.cpp install provides for a profile.
+
+    llama-server serves one GGUF, so every profile gets the orchestrator plus the
+    active space's embedder. Static fallback for ``_recommended_models_llmfit()``.
     """
-    models = {
-        "cpu_only": ["gemma4:4b", "nomic-embed-text"],
-        "minimal": ["gemma4:4b", "nomic-embed-text"],
-        "nvidia_low": ["gemma4:4b", "nomic-embed-text"],
-        "nvidia_mid": ["nemotron-orchestrator-8b", "deepseek-r1:8b", "nomic-embed-text"],
-        "nvidia_high": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "gemma4:27b"],
-        "nvidia_ultra": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
-        "apple_silicon": ["gemma4:4b", "deepseek-r1:8b", "nomic-embed-text"],
-        "amd_low": ["gemma4:4b", "nomic-embed-text"],
-        "amd": ["nemotron-orchestrator-8b", "deepseek-r1:8b", "nomic-embed-text"],
-        "amd_high": [
-            "nemotron-orchestrator-8b", "deepseek-r1:14b",
-            "nomic-embed-text", "gemma4:27b",
-        ],
-        "standard": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "gemma4:27b"],
-        "workstation": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
-        "server": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
-    }
-    embed = _embed_model()
-    return [embed if m == _NOMIC_OLLAMA else m
-            for m in models.get(profile, models["cpu_only"])]
+    return [ORCHESTRATOR_MODEL, _embed_model()]
 
 
 async def _recommended_models_llmfit() -> list[str] | None:
-    """Query llmfit for hardware-scored Ollama model recommendations (OPTIONAL).
+    """Query llmfit for hardware-scored local model recommendations (OPTIONAL).
 
     NOTE: llmfit is now optional. Primary model selection uses OdsResolver
     (deterministic, offline). This function provides optional refinement
     via llmfit if available.
 
-    Returns a curated list of model names suitable for ``ollama pull``, or
+    Returns a curated list of short local model names, or
     ``None`` only if model selection genuinely failed (missing/corrupt catalog),
     in which case the caller falls back to the static list. A merely-absent
     llmfit binary is NOT a failure — ODS answers offline.
@@ -459,7 +452,7 @@ async def _recommended_models_llmfit() -> list[str] | None:
         if not rec or not rec.get("model"):
             continue
         model_name = rec["model"]
-        # llmfit may return HuggingFace-style names — skip those for Ollama
+        # llmfit may return HuggingFace-style names — keep the short local ids
         if "/" in model_name:
             continue
         if model_name not in seen:
@@ -586,7 +579,7 @@ class AgentSetup:
         return SetupReport(
             system=system,
             profile=data.get("profile", "cpu_only"),
-            ollama_ready=data.get("ollama_ready", False),
+            llamacpp_ready=data.get("llamacpp_ready", False),
             vllm_ready=data.get("vllm_ready", False),
             backend=data.get("backend", ""),
             models_available=data.get("models_available", []),
@@ -597,20 +590,20 @@ class AgentSetup:
     async def detect_hardware(self) -> SystemInfo:
         """Detect system hardware: GPU, RAM, OS, installed backends.
 
-        Detects both Ollama and vLLM to avoid conflicts. If vLLM is already
-        running and using GPU, Ollama model loading would cause VRAM crashes.
+        Detects both llama.cpp and vLLM to avoid conflicts. If vLLM is already
+        running and using GPU, a second model server would cause VRAM crashes.
 
         Also queries the llmfit sidecar for cross-validated hardware data
         (it reads CUDA/Metal/ROCm directly and often has better VRAM numbers).
         """
-        gpu, ram, ollama_check, vllm_info, docker = await asyncio.gather(
+        gpu, ram, llamacpp_check, vllm_info, docker = await asyncio.gather(
             _detect_gpu(),
             _detect_ram(),
-            _check_ollama(),
+            _check_llamacpp(),
             _check_vllm(),
             _check_docker(),
         )
-        ollama_installed, ollama_running, ollama_models = ollama_check
+        llamacpp_installed, llamacpp_running, llamacpp_models = llamacpp_check
 
         # ── Cross-validate GPU data with llmfit if available ──────────────
         llmfit_hw: dict | None = None
@@ -651,8 +644,8 @@ class AgentSetup:
         active_backend = ""
         if vllm_info.running:
             active_backend = "vllm"
-        elif ollama_running:
-            active_backend = "ollama"
+        elif llamacpp_running:
+            active_backend = "llamacpp"
 
         info = SystemInfo(
             os_name=platform.system(),
@@ -661,9 +654,9 @@ class AgentSetup:
             python_version=platform.python_version(),
             ram_gb=round(ram, 1),
             gpu=gpu,
-            ollama_installed=ollama_installed,
-            ollama_running=ollama_running,
-            ollama_models=ollama_models,
+            llamacpp_installed=llamacpp_installed,
+            llamacpp_running=llamacpp_running,
+            llamacpp_models=llamacpp_models,
             vllm=vllm_info,
             docker_installed=docker,
             profile=_select_profile(gpu, ram),
@@ -698,7 +691,7 @@ class AgentSetup:
         logger.info("Installing llmfit for hardware-aware model selection...")
 
         if system in ("Linux", "Darwin"):
-            # Official install script (same pattern as Ollama)
+            # Official install script
             rc, _, err = await _run(
                 ["bash", "-c",
                  "curl -fsSL https://raw.githubusercontent.com/AlexsJones/llmfit/main/install.sh | bash"],
@@ -756,27 +749,24 @@ class AgentSetup:
         logger.warning("Unsupported platform for llmfit auto-install: %s", system)
         return False
 
-    async def ensure_ollama(self, auto_install: bool = True, force: bool = False) -> bool:
-        """Ensure Ollama is installed and running.
+    async def ensure_llamacpp(self, auto_install: bool = True, force: bool = False) -> bool:
+        """Ensure a local llama-server (llama.cpp) is serving the orchestrator.
 
-        SAFETY: Will NOT start Ollama if vLLM is already running on GPU.
-        Starting Ollama would load models into VRAM and crash vLLM.
+        SAFETY: will NOT start a second model server while vLLM holds the GPU.
         Use force=True to override (only if you know what you're doing).
 
-        On Linux, auto-installs via curl if not present.
-        On macOS, suggests brew install.
-        On Windows, suggests manual download.
-        Returns True if Ollama is ready.
+        Installs through :func:`adk.llamacpp_setup.install`: the llama.cpp release
+        binary for this machine plus the orchestrator GGUF from Aitherium's weights
+        store, run as a background service. Returns True if llama.cpp is ready.
         """
         if not self._system:
             await self.detect_hardware()
         assert self._system is not None
 
-        # CRITICAL: Don't start Ollama if vLLM is already using GPU
-        if self._system.vllm.running and not self._system.ollama_running and not force:
+        if self._system.vllm.running and not self._system.llamacpp_running and not force:
             logger.warning(
-                "SKIPPING Ollama — vLLM is already running on ports %s. "
-                "Starting Ollama would load models into VRAM and crash vLLM. "
+                "SKIPPING llama.cpp — vLLM is already running on ports %s. "
+                "A second model server would load into VRAM and crash vLLM. "
                 "Use the vLLM OpenAI-compatible API instead: "
                 "AITHER_LLM_BACKEND=openai OPENAI_BASE_URL=http://localhost:%d/v1",
                 self._system.vllm.ports,
@@ -784,71 +774,41 @@ class AgentSetup:
             )
             return False
 
-        if self._system.ollama_running:
-            logger.info("Ollama already running")
+        if self._system.llamacpp_running:
+            logger.info("llama.cpp already running")
             return True
 
-        if not self._system.ollama_installed and auto_install:
-            system = platform.system()
-            if system == "Linux":
-                logger.info("Installing Ollama via curl...")
-                rc, _, err = await _run(
-                    ["bash", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
-                    timeout=120.0,
-                )
-                if rc != 0:
-                    logger.error(f"Ollama install failed: {err}")
-                    return False
-                logger.info("Ollama installed")
-            elif system == "Darwin":
-                if shutil.which("brew"):
-                    logger.info("Installing Ollama via brew...")
-                    rc, _, err = await _run(["brew", "install", "ollama"], timeout=120.0)
-                    if rc != 0:
-                        logger.error(f"brew install ollama failed: {err}")
-                        return False
-                else:
-                    logger.warning("Install Ollama: brew install ollama (or https://ollama.com)")
-                    return False
-            else:
-                logger.warning("Install Ollama from https://ollama.com/download")
-                return False
+        if not auto_install:
+            logger.info("llama.cpp not running (auto_install=False)")
+            return False
 
-        # Try to start Ollama serve in background
-        if not self._system.ollama_running:
-            logger.info("Starting Ollama serve...")
-            try:
-                proc = subprocess.Popen(
-                    ["ollama", "serve"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                await asyncio.sleep(3)  # give it time to start
-                rc, _, _ = await _run(["ollama", "list"])
-                if rc == 0:
-                    logger.info("Ollama serve started")
-                    return True
-                logger.warning("Ollama serve started but not responding yet")
-                return False
-            except Exception as e:
-                logger.error(f"Failed to start Ollama: {e}")
-                return False
-
+        try:
+            from adk import llamacpp_setup
+        except ImportError as e:  # pragma: no cover -- ships with adk
+            logger.error(f"llama.cpp installer unavailable: {e}")
+            return False
+        result = await asyncio.to_thread(llamacpp_setup.install, service=True)
+        if not result.success:
+            logger.error(f"llama.cpp install failed: {result.error}")
+            return False
+        self._system.llamacpp_installed = True
+        self._system.llamacpp_running = True
+        self._system.llamacpp_models = [ORCHESTRATOR_MODEL]
+        logger.info(f"llama.cpp serving {ORCHESTRATOR_MODEL} on :{result.port}")
         return True
 
     async def pull_models(self, models: list[str] | None = None) -> list[str]:
-        """Pull Ollama models. Returns list of successfully pulled models.
+        """Fetch local models for llama.cpp. Returns the models now available.
 
-        If no models specified, queries llmfit for hardware-scored recommendations
-        first, then falls back to static profile-based recommendations.
+        The orchestrator comes with :meth:`ensure_llamacpp`; the code-embed GGUF is
+        fetched from the catalogue and served on the embed lane. A name that is not
+        a local llama.cpp model is reported and skipped.
         """
         if not self._system:
             await self.detect_hardware()
         assert self._system is not None
 
         if models is None:
-            # Try llmfit first — hardware-scored recommendations
             try:
                 llmfit_models = await _recommended_models_llmfit()
                 if llmfit_models:
@@ -856,36 +816,31 @@ class AgentSetup:
                     logger.info("Using llmfit-recommended models: %s", models)
             except Exception as exc:
                 logger.debug("llmfit model recommendation failed: %s", exc)
-
-            # Fall back to static profile
             if models is None:
                 models = _recommended_models(self._system.profile)
 
-        # Skip already-installed models
-        existing = set(self._system.ollama_models)
+        existing = set(self._system.llamacpp_models)
         to_pull = [m for m in models if m not in existing]
-
         if not to_pull:
-            logger.info(f"All {len(models)} models already installed")
+            logger.info(f"All {len(models)} models already available")
             return models
 
         pulled = []
         embed = _embed_model()
-        code_embed = embed if embed != _NOMIC_OLLAMA else ""
+        code_embed = embed if embed != _NOMIC_EMBED else ""
         for model in to_pull:
-            logger.info(f"Pulling {model}...")
             if model == code_embed:
-                # a catalogue GGUF served by llama.cpp, not an Ollama model
+                logger.info(f"Fetching {model}...")
                 if await asyncio.to_thread(_pull_code_embed, model):
                     pulled.append(model)
-                continue
-            rc, out, err = await _run(["ollama", "pull", model], timeout=600.0)
-            if rc == 0:
-                pulled.append(model)
-                logger.info(f"Pulled {model}")
+            elif model == ORCHESTRATOR_MODEL:
+                if await self.ensure_llamacpp():
+                    pulled.append(model)
             else:
-                logger.error(f"Failed to pull {model}: {err}")
-
+                logger.warning(
+                    f"{model}: not a local llama.cpp model here; serve its GGUF with "
+                    "`adk models pull/use` or point AITHER_LLM_BASE_URL at a server"
+                )
         return [m for m in models if m in existing] + pulled
 
     async def ensure_vllm(
@@ -992,17 +947,19 @@ class AgentSetup:
         """Run a quick health check of the inference stack."""
         import httpx
 
-        results: dict = {"ollama": False, "vllm": False, "models": []}
+        results: dict = {"llamacpp": False, "vllm": False, "models": []}
 
-        # Ollama
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get("http://localhost:11434/api/tags")
-                if resp.status_code == 200:
-                    results["ollama"] = True
-                    results["models"] = [m["name"] for m in resp.json().get("models", [])]
-        except Exception:
-            pass
+        # llama.cpp (orchestrator port, then llama-server's default)
+        for port in (8200, 8080):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"http://localhost:{port}/v1/models")
+                    if resp.status_code == 200:
+                        results["llamacpp"] = True
+                        results["models"] = [m.get("id", "") for m in resp.json().get("data", [])]
+                        break
+            except Exception:
+                pass
 
         # vLLM (check common ports)
         for port in [8200, 8201, 8202, 8203]:
@@ -1020,7 +977,7 @@ class AgentSetup:
     async def full_setup(
         self,
         models: list[str] | None = None,
-        install_ollama: bool = True,
+        install_llamacpp: bool = True,
         vllm_port: int = 8200,
     ) -> SetupReport:
         """Full automated setup: detect hardware, configure GPU-optimized inference.
@@ -1028,12 +985,12 @@ class AgentSetup:
         PRIORITY ORDER:
         1. vLLM already running → use it
         2. NVIDIA GPU + Docker → start vLLM containers (PRIMARY path)
-        3. Ollama already running → use it (AMD, Apple Silicon, or no Docker)
-        4. Start Ollama as fallback (non-NVIDIA or Docker unavailable)
+        3. llama.cpp already running → use it (AMD, Apple Silicon, or no Docker)
+        4. Install llama.cpp as fallback (non-NVIDIA or Docker unavailable)
         5. Cloud API keys
 
         vLLM is the primary backend because it uses GPU memory efficiently with
-        paged attention, continuous batching, and tensor parallelism. Ollama is
+        paged attention, continuous batching, and tensor parallelism. llama.cpp is
         the fallback for hardware/platforms where vLLM containers can't run.
 
         Usage:
@@ -1079,7 +1036,7 @@ class AgentSetup:
         except Exception as exc:
             logger.debug("llmfit auto-install failed (non-fatal): %s", exc)
 
-        # Step 2: Choose backend — vLLM first, Ollama fallback
+        # Step 2: Choose backend — vLLM first, llama.cpp fallback
         if info.vllm.running:
             # vLLM is already serving — use it
             report.vllm_ready = True
@@ -1112,40 +1069,29 @@ class AgentSetup:
             except Exception as e:
                 report.errors.append(f"vLLM setup failed: {e}")
 
-            # If vLLM failed, fall through to Ollama
+            # If vLLM failed, fall through to llama.cpp
             if not report.vllm_ready:
-                logger.warning("vLLM setup failed — falling back to Ollama")
+                logger.warning("vLLM setup failed — falling back to llama.cpp")
 
-        # Ollama fallback — AMD, Apple Silicon, no Docker, or vLLM failed
+        # llama.cpp fallback — AMD, Apple Silicon, no Docker, or vLLM failed
         if not report.backend:
-            if info.ollama_running:
-                report.ollama_ready = True
-                report.backend = "ollama"
-                report.models_available = info.ollama_models
+            try:
+                ok = (info.llamacpp_running
+                      or await self.ensure_llamacpp(auto_install=install_llamacpp))
+                report.llamacpp_ready = bool(ok)
+                if ok:
+                    report.backend = "llamacpp"
+                    report.models_available = list(info.llamacpp_models)
+            except Exception as e:
+                report.errors.append(f"llama.cpp setup failed: {e}")
 
+            if report.llamacpp_ready:
                 try:
                     pulled = await self.pull_models(models)
                     report.models_pulled = pulled
                     report.models_available = list(set(report.models_available + pulled))
                 except Exception as e:
                     report.errors.append(f"Model pull failed: {e}")
-
-            else:
-                try:
-                    ollama_ok = await self.ensure_ollama(auto_install=install_ollama)
-                    report.ollama_ready = ollama_ok
-                    if ollama_ok:
-                        report.backend = "ollama"
-                except Exception as e:
-                    report.errors.append(f"Ollama setup failed: {e}")
-
-                if report.ollama_ready:
-                    try:
-                        pulled = await self.pull_models(models)
-                        report.models_pulled = pulled
-                        report.models_available = pulled
-                    except Exception as e:
-                        report.errors.append(f"Model pull failed: {e}")
 
         # Cloud API keys as last resort
         if not report.backend:

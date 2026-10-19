@@ -14,7 +14,7 @@ hardware_requirements:
   unified_memory: false
   notes: >-
     Mainline llama.cpp cannot load Q1_0 GGUF — requires PrismML-Eng/llama.cpp
-    fork. OptiPlex CPU pool alongside Ollama shelf.
+    fork. OptiPlex CPU pool.
 
 inference_config:
   engine: llamacpp

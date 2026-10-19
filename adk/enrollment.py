@@ -16,8 +16,8 @@ over by the federation path, and except when identity answered 5xx on every retr
 (``identity_unavailable``), which fails loudly instead of "enrolling" a machine into
 a list no owner sees.
 
-Inference detection is :func:`probe_inference`. It used to look only at Ollama
-(:11434) and vLLM (:8120), so a phone running llama-server on :8099 or a laptop
+Inference detection is :func:`probe_inference`. It used to look only at
+:11434 and vLLM (:8120), so a phone running llama-server on :8099 or a laptop
 running awnode on :8090 enrolled as ``inference_ready: false`` and the browser's
 ``remote`` rung had nothing to chat with. The probe now walks a fixed ladder and
 the URL it settles on is persisted so every heartbeat re-probes the SAME server.
@@ -74,7 +74,7 @@ _WORKSPACE_FILE = _AITHER_DIR / "workspace.json"
 NODE_CLASSES: Tuple[str, ...] = ("phone", "laptop", "desktop", "deck", "spark", "sovereign")
 
 #: What answered the inference probe. ``none`` means nothing did.
-INFERENCE_KINDS: Tuple[str, ...] = ("llama-server", "awnode", "ollama", "vllm", "none")
+INFERENCE_KINDS: Tuple[str, ...] = ("llama-server", "awnode", "vllm", "none")
 
 #: Per-request budget for a local probe. A cold box answers "refused" in
 #: microseconds; the timeout only matters for a port something else is squatting.
@@ -104,9 +104,8 @@ def default_candidates(host: str = "127.0.0.1") -> List[Candidate]:
     1. ``$BONSAI_PORT`` (default 8080) — ``phone.sh`` runs llama-server here.
     2. 8099 — llama-server on a laptop (``adk quickstart-local``).
     3. 8090 — awnode; proven by ``/health`` AND ``/v1/models``.
-    4. 11434 — Ollama, proven by its own ``/api/tags``.
-    5. 8120 — vLLM.
-    6. 1234 — LM Studio's local server, proven by ``/v1/models`` (added
+    4. 8120 — vLLM.
+    5. 1234 — LM Studio's local server, proven by ``/v1/models`` (added
        2026-09-21 from the Personal-AI-Router intake: it was the one desktop
        engine no ladder here probed, so a laptop running only LM Studio
        enrolled as ``inference_ready: false``).
@@ -118,7 +117,6 @@ def default_candidates(host: str = "127.0.0.1") -> List[Candidate]:
         Candidate(f"http://{host}:{bonsai_port}", "llama-server"),
         Candidate(f"http://{host}:8099", "llama-server"),
         Candidate(f"http://{host}:8090", "awnode"),
-        Candidate(f"http://{host}:11434", "ollama"),
         Candidate(f"http://{host}:8120", "vllm"),
         Candidate(f"http://{host}:1234", "lmstudio"),
     ]
@@ -166,19 +164,6 @@ def _openai_models(base: str) -> Tuple[bool, List[str]]:
     return True, models
 
 
-def _ollama_models(base: str) -> Tuple[bool, List[str]]:
-    """``GET {base}/api/tags`` — Ollama's own listing. Returns ``(ok, names)``."""
-    status, data = _get_json(f"{base}/api/tags")
-    if status != 200 or not isinstance(data, dict) or "models" not in data:
-        return False, []
-    models: List[str] = []
-    for m in data.get("models", []) or []:
-        name = (m.get("name") or m.get("model")) if isinstance(m, dict) else None
-        if name:
-            models.append(str(name))
-    return True, models
-
-
 def _dedup(models: List[str]) -> List[str]:
     seen: set = set()
     return [m for m in models if not (m in seen or seen.add(m))]
@@ -186,9 +171,6 @@ def _dedup(models: List[str]) -> List[str]:
 
 def _probe_candidate(c: Candidate) -> Optional[InferenceProbe]:
     """Probe one rung with the check that proves ITS kind, or return None."""
-    if c.kind == "ollama":
-        ok, models = _ollama_models(c.url)
-        return InferenceProbe(_dedup(models), c.url, "ollama", True) if ok else None
     if c.kind == "awnode":
         status, _ = _get_json(f"{c.url}/health")
         if status != 200:
@@ -202,13 +184,10 @@ def _probe_candidate(c: Candidate) -> Optional[InferenceProbe]:
 def _fingerprint(base: str) -> Optional[str]:
     """Name the server behind an EXPLICIT url that already answered ``/v1/models``.
 
-    Ollama has ``/api/tags``; awnode's ``/health`` says ``"service": "awnode"``;
+    awnode's ``/health`` says ``"service": "awnode"``;
     llama-server has ``/props``; vLLM has ``/version``. None of these is
     OpenAI-standard, which is why they identify the implementation.
     """
-    status, data = _get_json(f"{base}/api/tags")
-    if status == 200 and isinstance(data, dict) and "models" in data:
-        return "ollama"
     status, data = _get_json(f"{base}/health")
     if status == 200 and data is not None and "awnode" in json.dumps(data).lower():
         return "awnode"
@@ -443,7 +422,6 @@ def build_registration(
         "capabilities": lending["capabilities"],
         "capability_detail": lending["capability_detail"],
         # Legacy booleans the older identity model still reads.
-        "ollama_available": probe.inference_kind == "ollama",
         "vllm_available": probe.inference_kind == "vllm",
         "inference_ready": probe.ready,
         # The fields the portal's device list and the browser's remote rung need.
@@ -687,6 +665,7 @@ def resume_heartbeat(
     default_base_url: str,
     token_provider: Optional[Callable[[], str]] = None,
     interval: int = 60,
+    facet: str = "daemon",
 ) -> Dict[str, Any]:
     """Resume the heartbeat from the stored node record (``node_auth.json``).
 
@@ -732,7 +711,7 @@ def resume_heartbeat(
             str(node_auth.get("enroll_base") or default_base_url), device_token, node_id,
             interval=interval, inference_url=node_auth.get("inference_url") or None,
             node_class=resolve_stored(node_auth.get("node_class"), node_auth.get("node_class_source")), device=True,
-            beat_immediately=True,
+            beat_immediately=True, facet=facet,
         )
         if not started:
             return {"started": False, "reason": "no event loop", "node_id": node_id}
@@ -753,6 +732,7 @@ def resume_heartbeat(
         node_class=resolve_stored(node_auth.get("node_class"), node_auth.get("node_class_source")),
         token_provider=token_provider,
         beat_immediately=True,
+        facet=facet,
         **({"device_fallback_token": fallback} if fallback else {}),
     )
     if not started:

@@ -24,6 +24,6 @@ limits:
   max_concurrent: 1
 
 notes: >
-  AMD ROCm profile. Ollama supports ROCm for compatible GPUs.
+  AMD ROCm profile. llama.cpp supports ROCm/Vulkan for compatible GPUs.
   Performance varies by card — RX 7900 XTX performs well,
   older cards may need smaller models.

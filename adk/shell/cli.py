@@ -215,7 +215,7 @@ async def _cmd_query(
     """Execute a single query.
 
     Tries Genesis first. If Genesis is unreachable, falls back to direct
-    LLM inference (Ollama, vLLM, OpenAI) for standalone mode.
+    LLM inference (llama.cpp, vLLM, OpenAI) for standalone mode.
     """
     # Check if user explicitly configured a direct LLM backend
     llm_backend = getattr(config, "llm_backend", None)
@@ -296,9 +296,13 @@ async def _cmd_query_direct(
     llm_backend = getattr(config, "llm_backend", None)
     llm_url = getattr(config, "llm_url", None)
 
+    from adk.legacy_backend import migrate_backend_name
+
+    llm_backend = migrate_backend_name(llm_backend, "shell llm_backend")
     if llm_backend and llm_backend not in ("auto", "genesis", ""):
-        backend_type = "ollama" if llm_backend == "ollama" else "openai"
-        url = llm_url or ("http://localhost:11434" if backend_type == "ollama" else "http://localhost:8199")
+        backend_type = "llamacpp" if llm_backend == "llamacpp" else "openai"
+        url = llm_url or (
+            "http://127.0.0.1:8080" if backend_type == "llamacpp" else "http://localhost:8199")
         llm = DirectLLMClient(
             base_url=url,
             model=config.model or "",
@@ -309,7 +313,7 @@ async def _cmd_query_direct(
         llm = await auto_detect_backend()
 
     if not llm:
-        msg = "No LLM backend found. Install Ollama, start vLLM, or set OPENAI_API_KEY."
+        msg = "No LLM backend found. Start llama-server or vLLM, or set OPENAI_API_KEY."
         if output_format == "json":
             print(json.dumps({"status": "error", "error": msg}, indent=2))
         else:
@@ -388,7 +392,7 @@ Plugins:  {PLUGINS_DIR}
 
 LLM backends (edit {CONFIG_FILE} to change):
   genesis   AitherOS orchestrator (default — full pipeline)
-  ollama    Direct Ollama (standalone, no AitherOS needed)
+  llamacpp  Direct llama.cpp / llama-server (standalone, no AitherOS needed)
   vllm      Direct vLLM (standalone)
   openai    Any OpenAI-compatible API
   auto      Try genesis, fall back to local LLM
@@ -910,10 +914,10 @@ def entitlement(refresh, strict, output_json):
 @click.option("--skip-mcp", is_flag=True, help="Skip Claude Code MCP config")
 @click.option("--skip-llm", is_flag=True, help="Skip the optional local-LLM install step")
 @click.option("--skip-framework", is_flag=True, help="Skip the optional Hermes/OpenClaw step")
-@click.option("--install-llm", is_flag=True, help="In --auto mode: install local LLM (vLLM/Ollama)")
-@click.option("--llm-backend", type=click.Choice(["vllm", "ollama"]), default="vllm",
+@click.option("--install-llm", is_flag=True, help="In --auto mode: install local LLM (vLLM/llama.cpp)")
+@click.option("--llm-backend", type=click.Choice(["vllm", "llamacpp"]), default="vllm",
               show_default=True, help="Local LLM backend when --install-llm")
-@click.option("--llm-model", default=None, help="Model id (e.g. meta-llama/Meta-Llama-3.1-8B-Instruct or llama3.1:8b)")
+@click.option("--llm-model", default=None, help="Model id (HF id for vLLM, or a GGUF for llama.cpp)")
 @click.option("--llm-port", default=8080, show_default=True, type=int, help="Local LLM port")
 @click.option("--install-framework", type=click.Choice(["hermes", "openclaw"]), default=None,
               help="In --auto mode: clone & install an agent framework")
@@ -932,14 +936,14 @@ def setup(email, password, auto_mode, skip_gpu, skip_deploy, skip_mcp, skip_llm,
 
     Walks a human (or an autonomous agent) through portal registration,
     hardware detection, AitherOS connection, optional local-LLM install
-    (vLLM/Ollama), optional Hermes/OpenClaw framework deploy, and Claude
+    (vLLM/llama.cpp), optional Hermes/OpenClaw framework deploy, and Claude
     Code MCP config.
 
     \b
     Interactive:    aither setup
     Plan only:      aither setup --plan --json
     Agent (full):   aither setup --auto --json --email $EMAIL --password $PASS \\
-                                  --install-llm --llm-backend ollama --llm-model llama3.1:8b \\
+                                  --install-llm --llm-backend llamacpp \\
                                   --install-framework hermes
     Minimal auto:   aither setup --auto --email $EMAIL --password $PASS --json
     """
@@ -1644,7 +1648,7 @@ def inference(ctx):
 
     \b
     aither inference                              # Show current config
-    aither inference set ollama                    # Use local Ollama
+    aither inference set llamacpp                  # Use local llama-server
     aither inference set vllm http://gpu:8000      # Use custom vLLM
     aither inference set openai --key sk-...       # Use OpenAI
     aither inference map reasoning deepseek-r1:14b # Route reasoning locally
@@ -1657,7 +1661,7 @@ def inference(ctx):
 
 
 @inference.command("set")
-@click.argument("provider", default="ollama")
+@click.argument("provider", default="llamacpp")
 @click.argument("url", required=False)
 @click.option("--key", help="API key (stored in vault)")
 @click.option("--json", "output_json", is_flag=True, help="JSON output")
@@ -2176,7 +2180,7 @@ async def _inference_show():
         resp = await c.get("/auth/me/inference-config")
     if resp.status_code != 200 or not resp.json().get("config"):
         print("No custom inference configured — using platform defaults.")
-        print("\nSet up: aither inference set ollama")
+        print("\nSet up: aither inference set llamacpp")
         return
     config = resp.json()["config"]
     print(f"Provider:  {config.get('provider', '?')}")
@@ -2191,7 +2195,10 @@ async def _inference_show():
 
 async def _inference_set(provider, url, key, output_json):
     httpx, base, headers = await _get_inference_deps()
-    defaults = {"ollama": "http://localhost:11434", "vllm": "http://localhost:8000",
+    from adk.legacy_backend import migrate_backend_name
+
+    provider = migrate_backend_name(provider, "inference provider")
+    defaults = {"llamacpp": "http://127.0.0.1:8080", "vllm": "http://localhost:8000",
                 "openai": "https://api.openai.com/v1", "anthropic": "https://api.anthropic.com"}
     if not url:
         url = defaults.get(provider)
@@ -2219,7 +2226,7 @@ async def _inference_map_cmd(category, model):
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=15) as c:
         resp = await c.get("/auth/me/inference-config")
     if resp.status_code != 200 or not resp.json().get("config"):
-        print("No backend configured. Run: aither inference set ollama", file=sys.stderr)
+        print("No backend configured. Run: aither inference set llamacpp", file=sys.stderr)
         sys.exit(1)
     config = resp.json()["config"]
     mappings = config.get("model_mapping", {})
@@ -2241,18 +2248,13 @@ async def _inference_test():
         print("No backend configured.", file=sys.stderr)
         sys.exit(1)
     config = resp.json()["config"]
-    provider = config.get("provider", "?")
+    from adk.legacy_backend import migrate_backend_name
+
+    provider = migrate_backend_name(config.get("provider", "?"), "inference provider")
     url = config.get("base_url", "")
     print(f"Testing {provider} at {url}...")
     try:
-        if provider == "ollama":
-            async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get(f"{url}/api/tags")
-            models = r.json().get("models", [])
-            print(f"Connected! {len(models)} model(s):")
-            for m in models[:10]:
-                print(f"  {m.get('name', '?')} ({m.get('size', 0) / (1024**3):.1f}GB)")
-        elif provider in ("vllm", "custom"):
+        if provider in ("vllm", "custom", "llamacpp"):
             async with httpx.AsyncClient(timeout=10) as c:
                 r = await c.get(f"{url}/v1/models")
             for m in r.json().get("data", []):
@@ -2277,15 +2279,12 @@ async def _inference_models():
         print("No backend configured.", file=sys.stderr)
         sys.exit(1)
     config = resp.json()["config"]
-    provider = config.get("provider")
+    from adk.legacy_backend import migrate_backend_name
+
+    provider = migrate_backend_name(config.get("provider"), "inference provider")
     url = config.get("base_url")
     try:
-        if provider == "ollama":
-            async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get(f"{url}/api/tags")
-            for m in r.json().get("models", []):
-                print(f"  {m.get('name', '?')} ({m.get('size', 0) / (1024**3):.1f}GB)")
-        elif provider in ("vllm", "custom"):
+        if provider in ("vllm", "custom", "llamacpp"):
             async with httpx.AsyncClient(timeout=10) as c:
                 r = await c.get(f"{url}/v1/models")
             for m in r.json().get("data", []):
@@ -3334,12 +3333,12 @@ def install_remove(framework, purge):
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def llm(ctx):
-    """Manage a local LLM server (vLLM / Ollama) for offline agent inference.
+    """Manage a local LLM server (vLLM / llama.cpp) for offline agent inference.
 
     \b
-    aither llm detect                                # probe GPU/pip/ollama
+    aither llm detect                                # probe GPU/pip/llama-server
     aither llm install --backend vllm --model X      # set up local vLLM
-    aither llm install --backend ollama --model llama3.1:8b
+    aither llm install --backend llamacpp --model <model.gguf>
     aither llm start                                  # background daemon
     aither llm status
     aither llm stop
@@ -3351,17 +3350,17 @@ def llm(ctx):
 
 @llm.command("detect")
 def llm_detect():
-    """Probe the host for GPU / CUDA / pip / ollama prerequisites."""
+    """Probe the host for GPU / CUDA / pip / llama-server prerequisites."""
     _adk_module_proxy("local_llm", ["detect"])
 
 
 @llm.command("install")
-@click.option("--backend", type=click.Choice(["vllm", "ollama"]), default="vllm")
-@click.option("--model", default=None, help="Model name (HF id for vLLM, tag for Ollama)")
+@click.option("--backend", type=click.Choice(["vllm", "llamacpp"]), default="vllm")
+@click.option("--model", default=None, help="Model (HF id for vLLM, GGUF for llama.cpp)")
 @click.option("--port", type=int, default=8080)
 @click.option("--force", is_flag=True, help="Reinstall even if already configured")
 def llm_install(backend, model, port, force):
-    """Install vLLM (in a dedicated venv) or pull an Ollama model."""
+    """Install vLLM (in a dedicated venv) or llama.cpp with a GGUF."""
     args = ["install", "--backend", backend, "--port", str(port)]
     if model:
         args += ["--model", model]

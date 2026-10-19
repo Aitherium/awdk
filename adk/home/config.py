@@ -40,10 +40,19 @@ def home_dir() -> Path:
 @dataclass
 class ModelConfig:
     mode: str = "local"          # local | byo
-    provider: str = "bonsai"     # bonsai | llamacpp | ollama | deepseek | openai | anthropic
+    provider: str = "bonsai"     # bonsai | llamacpp | deepseek | openai | anthropic
     model: str = ""
     base_url: str = ""
     api_key_env: str = ""        # name of the env var holding a BYO key
+
+    def __post_init__(self) -> None:
+        from adk.legacy_backend import is_legacy, migrate_backend_name, migrate_base_url
+
+        if is_legacy(self.provider):
+            # A home saved before the local model server was retired: llama.cpp.
+            self.provider = migrate_backend_name(self.provider, "agent home config")
+            self.base_url = migrate_base_url(self.base_url)
+            self.model = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

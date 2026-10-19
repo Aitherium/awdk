@@ -177,7 +177,7 @@ def _run_status(monkeypatch, capsys, up_port):
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     monkeypatch.setattr(agent_daemon, "read_status", lambda: None)
     monkeypatch.setattr(local_inference, "discover_local_endpoint", _no_local)
-    for k in ("AITHER_URL", "AITHER_VLLM_URL", "VLLM_URL", "OLLAMA_HOST",
+    for k in ("AITHER_URL", "AITHER_VLLM_URL", "VLLM_URL", "AITHER_LLAMACPP_URL",
               "AITHER_GATEWAY_URL", "AITHER_FLEET_QDRANT_URL", "AITHER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     assert cli.cmd_status(type("A", (), {"json": False})()) == 0
@@ -209,7 +209,7 @@ def test_setup_nomic_space_lists_are_unchanged(space):
     space()
     from adk import setup
 
-    assert setup._recommended_models("cpu_only") == ["gemma4:4b", "nomic-embed-text"]
+    assert setup._recommended_models("cpu_only") == ["aither-orchestrator", "nomic-embed-text"]
 
 
 def test_setup_code_embed_space_swaps_the_embedder(space):
@@ -220,7 +220,7 @@ def test_setup_code_embed_space_swaps_the_embedder(space):
     assert "aither-code-embed" in models and "nomic-embed-text" not in models
 
 
-def test_setup_pull_routes_code_embed_to_the_catalogue_not_ollama(space, monkeypatch):
+def test_setup_pull_routes_code_embed_to_the_catalogue(space, monkeypatch):
     space("aither-code-embed")
     from adk import setup
 
@@ -233,11 +233,11 @@ def test_setup_pull_routes_code_embed_to_the_catalogue_not_ollama(space, monkeyp
     monkeypatch.setattr(setup, "_run", _run)
     monkeypatch.setattr(setup, "_pull_code_embed", lambda m: ran.append(("gguf", m)) or True)
     s = setup.AgentSetup()
-    s._system = type("S", (), {"ollama_models": []})()
-    pulled = asyncio.run(s.pull_models(["gemma4:4b", "aither-code-embed"]))
+    s._system = type("S", (), {"llamacpp_models": ["aither-orchestrator"]})()
+    pulled = asyncio.run(s.pull_models(["aither-orchestrator", "aither-code-embed"]))
     assert ("gguf", "aither-code-embed") in ran
-    assert ["ollama", "pull", "aither-code-embed"] not in ran
-    assert pulled == ["gemma4:4b", "aither-code-embed"]
+    assert not [c for c in ran if isinstance(c, list)]
+    assert pulled == ["aither-orchestrator", "aither-code-embed"]
 
 
 def test_deploy_model_list_follows_the_space(space):
@@ -306,14 +306,14 @@ def test_unknown_space_keeps_the_nomic_install_paths(space, monkeypatch):
 
     from adk import deploy, setup, setup_cli
 
-    assert setup._recommended_models("cpu_only") == ["gemma4:4b", "nomic-embed-text"]
+    assert setup._recommended_models("cpu_only") == ["aither-orchestrator", "nomic-embed-text"]
     assert deploy._space_models(["nomic-embed-text"]) == ["nomic-embed-text"]
     assert 'EMBEDDING_MODEL: "nomic-embed-text"' in deploy._generate_app_overlay(
         "app", {"slug": "app"})
     assert setup_cli._code_embed_model() == ""
 
 
-# ── adk setup (setup_cli): the Ollama and vLLM paths `adk setup` really runs ──
+# ── adk setup (setup_cli): the llama.cpp and vLLM paths `adk setup` really runs ──
 
 
 def _gpu(vendor="none", vram_mb=0):
@@ -322,39 +322,40 @@ def _gpu(vendor="none", vram_mb=0):
     return GPUInfo(vendor=vendor, name="test", vram_mb=vram_mb)
 
 
-def _run_setup_ollama(monkeypatch, gpu):
-    from adk import setup_cli
+def _run_setup_llamacpp(monkeypatch, gpu):
+    from types import SimpleNamespace
+
+    from adk import llamacpp_setup, setup_cli
 
     ran: list = []
-    monkeypatch.setattr(setup_cli.shutil, "which", lambda n: "/usr/bin/ollama")
-    monkeypatch.setattr(setup_cli, "_run", lambda cmd, timeout=10: "NAME" + chr(10))
-    monkeypatch.setattr(setup_cli.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
-    monkeypatch.setattr(setup_cli, "_save_config", lambda *a, **k: None)
+    monkeypatch.setattr(llamacpp_setup, "install",
+                        lambda **kw: ran.append(("install", kw))
+                        or SimpleNamespace(success=True, port=8200, error=""))
+    monkeypatch.setattr(llamacpp_setup, "smoke_test", lambda port: True)
     monkeypatch.setattr(setup_cli, "_serve_code_embed",
                         lambda m, dry_run: ran.append(("gguf", m)))
-    assert setup_cli.setup_ollama(gpu) == 0
+    assert setup_cli.setup_llamacpp(gpu) == 0
     return ran
 
 
-_GPUS = [("none", 0), ("amd", 1024)]  # every model fits / the low-VRAM fallback
+_GPUS = [("none", 0), ("amd", 1024)]
 
 
 @pytest.mark.parametrize("vendor,vram", _GPUS, ids=["cpu", "low-vram"])
-def test_setup_cli_ollama_nomic_space_pulls_nomic(space, monkeypatch, vendor, vram):
+def test_setup_cli_llamacpp_nomic_space_installs_only_the_orchestrator(
+        space, monkeypatch, vendor, vram):
     space()
-    ran = _run_setup_ollama(monkeypatch, _gpu(vendor, vram))
-    assert ["ollama", "pull", "nomic-embed-text"] in ran
-    assert not [r for r in ran if r[0] == "gguf"]
+    ran = _run_setup_llamacpp(monkeypatch, _gpu(vendor, vram))
+    assert [r[0] for r in ran] == ["install"]
 
 
 @pytest.mark.parametrize("vendor,vram", _GPUS, ids=["cpu", "low-vram"])
-def test_setup_cli_ollama_code_embed_space_never_pulls_nomic(
+def test_setup_cli_llamacpp_code_embed_space_serves_the_code_embed_gguf(
         space, monkeypatch, vendor, vram):
     space("aither-code-embed")
-    ran = _run_setup_ollama(monkeypatch, _gpu(vendor, vram))
+    ran = _run_setup_llamacpp(monkeypatch, _gpu(vendor, vram))
     assert ("gguf", "aither-code-embed") in ran
-    assert not [r for r in ran if "nomic-embed-text" in r]
-    assert ["ollama", "pull", "aither-code-embed"] not in ran
+    assert not [r for r in ran if "nomic-embed-text" in str(r)]
 
 
 def test_setup_cli_vllm_compose_follows_the_space(space, monkeypatch):

@@ -54,7 +54,7 @@ def adk_info() -> str:
         f"ADK Version: {__version__}\n"
         f"LLM Backend: {config.llm_backend}\n"
         f"Model: {config.model or '(auto-detect)'}\n"
-        f"Ollama Host: {config.ollama_host}\n"
+        f"LLM base URL: {config.llm_base_url}\n"
         f"Server Port: {config.server_port}\n"
         f"Data Dir: {config.data_dir}\n"
     )

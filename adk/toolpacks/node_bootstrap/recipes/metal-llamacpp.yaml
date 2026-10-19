@@ -1,0 +1,75 @@
+id: metal-llamacpp
+name: Apple Metal llama.cpp
+tier: gpu-apple
+description: >-
+  Apple Silicon with Metal acceleration via native llama.cpp (llama-server).
+  Serves the Aitherium orchestrator (8B, Q4_K_M GGUF, weights fetched from
+  artifact.aitherium.com) on MacBook Air, MacBook Pro, or Mac mini with an
+  OpenAI-compatible API.
+
+hardware_requirements:
+  min_ram_gb: 16
+  min_cpu_cores: 8
+  gpu_vendor: apple
+  min_vram_gb: 0
+  unified_memory: true
+  notes: >-
+    Apple Silicon (M1/M2/M3/M4) with 16GB+ unified memory. Metal acceleration
+    is native to llama.cpp on macOS (brew install llama.cpp). Docker on macOS
+    has no Metal GPU passthrough, so this recipe runs natively.
+
+inference_config:
+  engine: llamacpp
+  models:
+    - name: aither-orchestrator-v18
+      source: awrtifact://fleet-orchestrator-v18-q4/aither-orchestrator-v18-Q4_K_M.gguf
+      size_gb: 5.0
+      quantization: Q4_K_M
+      context_window: 32768
+      served_name: aither-orchestrator
+  # Weights from Aitherium's artifact store first; the hub model only as fallback.
+  weights:
+    awrtifact:
+      release: fleet-orchestrator-v18-q4
+      name: aither-orchestrator-v18-Q4_K_M.gguf
+      bytes: 5027783520
+    hf_fallback: bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M
+  serve_args:
+    - --host 127.0.0.1
+    - --port 8080
+    - --alias aither-orchestrator
+    - --ctx-size 32768
+    - --n-gpu-layers 999
+  image: ''  # native install (brew install llama.cpp); Docker would silently fall back to CPU
+  platform_traps:
+    - metal-acceleration
+    - macos-native
+
+deployment:
+  target: native
+  compose_template: ''  # native: Docker on macOS has no Metal GPU passthrough
+  delegate: ""
+  port: 8080
+
+backend_config:
+  backend_type: llamacpp_remote
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 30
+  completion:
+    model: aither-orchestrator
+    prompt: "What are the benefits of functional programming?"
+    min_tokens: 20
+    timeout_s: 180
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp_remote
+    category: reasoning
+    context_window: 32768
+    vram_gb: 16
+    speed: 20
+    quality: 8
+  ms_env_var: ""

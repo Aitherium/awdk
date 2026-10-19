@@ -8,7 +8,7 @@ A self-contained web analyzer powered by awdk. Point it at any website, and it w
 - **Social links** — LinkedIn, Twitter, Facebook, etc.
 - **Integration hints** — CRM, chat, form, ecommerce providers detected
 
-Runs locally on your machine with your own LLM key (Anthropic/OpenAI/DeepSeek/Ollama). No sign-in, no cloud required.
+Runs locally on your machine with your own LLM key (Anthropic/OpenAI/DeepSeek/llama.cpp). No sign-in, no cloud required.
 
 ## Quick Start
 
@@ -178,7 +178,7 @@ Validate and write a SiteSpec JSON object.
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `SITE_INGEST_PROVIDER` | LLM provider | `anthropic`, `openai`, `deepseek`, `ollama` |
+| `SITE_INGEST_PROVIDER` | LLM provider | `anthropic`, `openai`, `deepseek`, `llamacpp` |
 | `SITE_INGEST_MODEL` | Specific model | `claude-opus-4-1`, `gpt-4`, `deepseek-r1` |
 | `ANTHROPIC_API_KEY` | Anthropic key | `sk-ant-...` |
 | `OPENAI_API_KEY` | OpenAI key | `sk-...` |
@@ -193,15 +193,15 @@ Validate and write a SiteSpec JSON object.
 python serve.py --port 9000 --host 0.0.0.0
 ```
 
-### Using Local Ollama
+### Using local llama.cpp
 
 ```bash
-# Install & start Ollama (see https://ollama.ai)
-ollama pull mistral  # or any model
+# Serve a GGUF with llama-server (or let `adk node bootstrap` set it up)
+llama-server -m model.gguf --port 8080
 
 # In another terminal:
 python serve.py
-# When prompted, select "Ollama" provider
+# When prompted, select the "llama.cpp" provider
 ```
 
 ## Tests

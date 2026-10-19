@@ -3,18 +3,18 @@
 The pack served a UI and keyless search and then refused to chat, which is a
 strange thing to hand someone: a chat client with no model behind it. Everything
 needed to fix that already shipped in adk — `llamacpp_setup` installs llama.cpp
-and a fitting GGUF, `ollama_setup` drives ollama, `adk.models.fit` says what the
+and a fitting GGUF, `adk.models.fit` says what the
 machine can actually run, and `adk.models.mirror` fetches weights without a
 HuggingFace account. None of it was wired to the pack.
 
 This connects them. Everything here speaks the OpenAI-compatible API, which is
-the one thing llama.cpp, ollama, vLLM, LM Studio and GobboNet itself all agree
+the one thing llama.cpp, vLLM, LM Studio and GobboNet itself all agree
 on, so "support a backend" means "know its port" rather than "write an adapter".
 
 TWO TRAPS THIS HANDLES, both of which look like the model being broken:
 
 1. **Do not proxy to yourself.** This pack's own server answers on GobboNet's
-   default port (11434), which is also ollama's. If discovery finds "a server"
+   default port (11434). If discovery finds "a server"
    on the port we are serving, forwarding to it is an infinite loop that
    presents as a hang, not an error. Our own port is excluded by construction.
 
@@ -39,7 +39,6 @@ from typing import Iterator, Optional
 #: llama.cpp first because that is what `adk gobbonet --setup-model` installs.
 KNOWN_BACKENDS = [
     (8200, "llama.cpp (adk)"),
-    (11434, "ollama"),
     (8000, "vLLM"),
     (1234, "LM Studio"),
     (5000, "text-generation-webui"),
@@ -134,7 +133,7 @@ def setup_hint() -> str:
         "\n"
         "Already running something? Point the pack at it:\n"
         "\n"
-        "  adk gobbonet --backend http://127.0.0.1:11434    (ollama)\n"
+        "  adk gobbonet --backend http://127.0.0.1:8080     (llama-server)\n"
         "  adk gobbonet --backend http://127.0.0.1:8000     (vLLM)\n"
         "\n"
         "Any OpenAI-compatible server works — that is the API GobboNet already speaks."

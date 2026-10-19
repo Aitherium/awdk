@@ -203,7 +203,6 @@ that order.
 |---|---|
 | `--local bonsai` | a Bonsai llama-server on `:8080` (`curl -fsSL https://aitherium.com/install-bonsai.sh \| sh`) |
 | `--local llamacpp` | any `llama-server -m model.gguf --port 8080` |
-| `--local ollama` | Ollama on `:11434` (`ollama pull gemma4:4b`) |
 | `--byo deepseek` | `DEEPSEEK_API_KEY` in your environment |
 | `--byo openai` | `OPENAI_API_KEY` |
 | `--byo anthropic` | `ANTHROPIC_API_KEY` |

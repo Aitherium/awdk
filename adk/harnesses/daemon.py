@@ -321,6 +321,72 @@ OWNER_PRINCIPAL = Principal(id="owner", plan="owner", entitlements=frozenset({"*
 #: phone app needs the session list, one session's stream and input, the pending
 #: decision cards, and the fleet status tile. It must NEVER get the daemon's ROOT
 #: token, which can spawn a coding agent with filesystem access on this machine.
+# ── what a picker may offer (the Agents app's Start, 2026-10-19) ──
+#
+# ``detect()`` reports a RELAY harness (Transport.HTTP_STREAM: aither, group) as
+# installed unconditionally -- "availability is a service question answered by the
+# caller". A remote picker has no other way to ask, so it offered Aither on a box with
+# no Genesis route and the first turn died "ConnectError: Connection refused"
+# (measured on spark). /sessions/startable answers the caller's question instead:
+# what can THIS machine start right now. It lives under /sessions on purpose: it is
+# read-only, and it is exactly what the link's existing /sessions scope (tunnel,
+# proxy and scoped token alike) already lets the owner do the write half of.
+
+_RELAY_PROBE_TTL = 120.0
+_relay_probes: dict = {}
+_relay_probe_lock = threading.Lock()
+
+
+def _relay_base(harness_id: str) -> str:
+    """Where a relay harness dials: `awdk` this host's own loop, the rest Genesis
+    (the same choice ``SessionManager.create_session`` makes)."""
+    from adk.harnesses.agents import ADK_URL, GENESIS_URL
+
+    return ADK_URL if harness_id == "awdk" else GENESIS_URL
+
+
+def _relay_reachable(base_url: str, now: Optional[float] = None) -> bool:
+    """Does ``base_url``/health answer from this box? Cached per URL."""
+    now = time.time() if now is None else now
+    hit = _relay_probes.get(base_url)
+    if hit and now - hit[0] < _RELAY_PROBE_TTL:
+        return bool(hit[1])
+    if not _relay_probe_lock.acquire(blocking=False):
+        return bool(hit[1]) if hit else False
+    try:
+        import urllib.request
+
+        ok = False
+        try:
+            with urllib.request.urlopen(f"{base_url.rstrip('/')}/health", timeout=2) as resp:
+                ok = 200 <= int(getattr(resp, "status", 0) or 0) < 500
+        except Exception as e:  # noqa: BLE001 -- unreachable IS the answer
+            logging.getLogger("adk.harnesses.daemon").debug("relay probe %s: %s", base_url, e)
+        _relay_probes[base_url] = (now, ok)
+        return ok
+    finally:
+        _relay_probe_lock.release()
+
+
+def startable_harnesses(rows: list, *, may_drive, relay_ok) -> list:
+    """The harnesses a picker should offer: installed, drivable by this caller, and --
+    for a relay harness -- with its relay answering (``relay_ok(harness_id)``).
+    ``[{id, label}]`` in registry order."""
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict) or not r.get("installed"):
+            continue
+        hid = str(r.get("id") or "")
+        if not hid:
+            continue
+        if r.get("transport") == "http-stream" and not relay_ok(hid):
+            continue
+        if not may_drive(r):
+            continue
+        out.append({"id": hid, "label": str(r.get("label") or hid)})
+    return out
+
+
 SCOPED_LINK_PATHS = (
     "/sessions", "/decisions", "/desk/fleet/status",
     # The OS IDE on an enrolled device (2026-10-10). Method-pinned, and the routes
@@ -1735,6 +1801,21 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             if session_id in (row.get("id"), row.get("harness_session_id")):
                 return row
         raise HTTPException(status_code=404, detail=f"no session {session_id!r} in the directory")
+
+    @app.get("/sessions/startable")
+    def sessions_startable(principal: Principal = Depends(auth)) -> dict[str, Any]:
+        """What this machine can start right now (see ``startable_harnesses``).
+
+        Registered before ``/sessions/{session_id}`` so the static path wins."""
+        rows = mgr.harnesses()
+        return {
+            "harnesses": startable_harnesses(
+                rows,
+                may_drive=lambda r: not r.get("requires_entitlement")
+                or principal.has(r["requires_entitlement"]),
+                relay_ok=lambda hid: _relay_reachable(_relay_base(hid)),
+            ),
+        }
 
     @app.get("/sessions/unified/stream", dependencies=[Depends(auth)])
     async def unified_stream(

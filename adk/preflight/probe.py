@@ -206,7 +206,7 @@ class LivenessProbe:
             sh.model = desc.get("model", "")
             sh.base_url = desc.get("url", "")
             degraded = bool(desc.get("degraded"))
-            if backend in ("vllm", "ollama"):
+            if backend in ("vllm", "llamacpp", "local"):
                 sh.source = _source_for_url(sh.base_url) or SOURCE_LOCAL
                 sh.source = sh.source if sh.source != SOURCE_NONE else SOURCE_LOCAL
             elif backend == "gateway":
@@ -462,7 +462,7 @@ def _entitlements() -> dict:
 
 
 def _machine_info() -> dict:
-    """Best-effort OS/RAM/GPU + ollama presence. Never blocks; degrades to a
+    """Best-effort OS/RAM/GPU + llama-server presence. Never blocks; degrades to a
     minimal platform.* dict if the richer probes are unavailable."""
     info: dict = {
         "os": f"{platform.system()} {platform.release()}",
@@ -491,6 +491,6 @@ def _machine_info() -> dict:
         info["gpu"] = "apple"
     else:
         info["gpu"] = "unknown"
-    # Ollama present?
-    info["ollama"] = "yes" if shutil.which("ollama") else "no"
+    # llama.cpp server present?
+    info["llama_server"] = "yes" if shutil.which("llama-server") else "no"
     return info

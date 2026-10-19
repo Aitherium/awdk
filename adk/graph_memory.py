@@ -88,11 +88,10 @@ _REL_TO_UNIFIED_EDGE: dict[str, str] = {
     "uses": "related", "depends_on": "related", "connects_to": "related",
 }
 
-# Legacy raw-Ollama path only (AITHER_GRAPH_EMBEDDER=legacy). 384 is the feature-hash
+# Legacy path only (AITHER_GRAPH_EMBEDDER=legacy: feature-hash). 384 is the feature-hash
 # fallback width, NOT a model's: nomic-embed-text is 768-d and aither-code-embed 1024-d
 # (the active space lives in adk.embeddings).
 _EMBED_DIM = 384
-_OLLAMA_URL = "http://localhost:11434"
 _EMBED_MODEL = "nomic-embed-text"
 
 # Stopwords for keyword extraction
@@ -360,7 +359,7 @@ def _record_fleet_sync_status(target: str, pushed: int, failed: int,
 class GraphMemory:
     """Local knowledge graph with embedding-based search.
 
-    SQLite-backed, Ollama-optional, zero external dependencies.
+    SQLite-backed, model-optional, zero external dependencies.
     """
 
     def __init__(
@@ -368,7 +367,6 @@ class GraphMemory:
         db_path: str | Path | None = None,
         agent_name: str = "default",
         embed_model: str = _EMBED_MODEL,
-        ollama_url: str = "",
         embedder: Optional[Any] = None,
         tenant_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
@@ -376,16 +374,15 @@ class GraphMemory:
         auto_sync: Optional[bool] = None,
     ):
         # Optional injected async embedder `async (text) -> vector`. When set it
-        # takes priority over the built-in Ollama path — this is how an app/agent
-        # routes graph embeddings through ITS model (e.g. the appliance's vLLM
-        # nomic-embed), instead of assuming a local Ollama. Falls back to
-        # Ollama/feature-hash only if the injected embedder is absent or fails.
+        # takes priority — this is how an app/agent routes graph embeddings through
+        # ITS model (e.g. the appliance's vLLM nomic-embed). Falls back to
+        # feature-hash only if the injected embedder is absent or fails.
         #
         # When NO embedder is injected, default to the canonical adk.embeddings
-        # provider (self-resolving: local vLLM → Ollama → gateway → auto-deploy →
+        # provider (self-resolving: MicroScheduler → local vLLM/llama.cpp → gateway → auto-deploy →
         # CPU/hash), so every agent shares ONE portable embedding space (the active
         # space: 768-d nomic / 1024-d aither-code-embed).
-        # Opt out with AITHER_GRAPH_EMBEDDER=legacy to keep the raw Ollama→hash path.
+        # Opt out with AITHER_GRAPH_EMBEDDER=legacy to keep the feature-hash path.
         self._embedder = embedder
         if self._embedder is None and os.getenv(
             "AITHER_GRAPH_EMBEDDER", "adk"
@@ -394,10 +391,10 @@ class GraphMemory:
                 from adk.embeddings import get_default_embedder
                 self._embedder = get_default_embedder()
             except ValueError:
-                # An unknown AITHER_EMBED_SPACE: falling back to Ollama nomic here
+                # An unknown AITHER_EMBED_SPACE: falling back to a nomic guess here
                 # would be the silent wrong-space guess the switch refuses to make.
                 raise
-            except Exception as exc:  # noqa: BLE001 — degrade to legacy Ollama/hash
+            except Exception as exc:  # noqa: BLE001 — degrade to the feature-hash path
                 logger.debug("adk.embeddings default embedder unavailable: %s", exc)
                 self._embedder = None
         # Dimension guard — the index is pinned to the dim of the FIRST embedding
@@ -418,13 +415,6 @@ class GraphMemory:
         self._db_path = str(db_path)
         self._agent = agent_name
         self._embed_model = embed_model
-        _raw = ollama_url or os.getenv("OLLAMA_HOST", _OLLAMA_URL)
-        if "0.0.0.0" in _raw:
-            _raw = _raw.replace("0.0.0.0", "localhost")
-        if not _raw.startswith("http"):
-            _raw = "http://" + _raw
-        self._ollama_url = _raw.rstrip("/")
-        self._ollama_available: bool | None = None  # Lazy detect
 
         # ── Fleet / per-tenant dataplane sync ───────────────────────────────
         # Replicate the local graph to a per-tenant dataplane (Qdrant/Nexus) so
@@ -2272,20 +2262,18 @@ class GraphMemory:
             "edge_relations": dict(relations),
             "agent": self._agent,
             "db_path": self._db_path,
-            "ollama_available": self._ollama_available,
         }
 
     # ─── Embeddings ─────────────────────────────────────────────────────
 
     async def _embed(self, text: str) -> list[float]:
         """Get an embedding. Priority: injected embedder (the app's model — e.g.
-        the appliance/fleet vLLM nomic-embed) → Ollama → feature-hash.
+        the appliance/fleet vLLM nomic-embed) → feature-hash.
 
         DIMENSION SAFETY: when an embedder was INJECTED, a failure returns [] (skip
         this node's embedding) rather than falling back to a DIFFERENT-dimension
         model. Mixing dims in one index (e.g. 768-d vLLM with 384-d hash) silently
-        poisons cosine similarity — never do it. The legacy Ollama→hash path is
-        unchanged only when no embedder is injected."""
+        poisons cosine similarity — never do it."""
         if self._embedder is not None:
             try:
                 vec = await self._embedder(text)
@@ -2293,37 +2281,10 @@ class GraphMemory:
             except Exception as exc:
                 logger.debug("injected embedder failed (skip embed, not mixing dims): %s", exc)
                 return []
-        strict = _strict_space_dim()
-        if strict is not None and (
-            self._ollama_available is False or str(self._embed_model).startswith("nomic")
-        ):
-            # Code-embed space: neither the nomic Ollama model nor the 384-d hash
-            # belongs in a 1024-d index. No vector; search stays keyword-only.
+        if _strict_space_dim() is not None:
+            # Code-embed space: the 384-d hash does not belong in a 1024-d index.
+            # No vector; search stays keyword-only.
             return []
-        if self._ollama_available is False:
-            return self._guard_dim(_fallback_embed(text))
-
-        try:
-            import httpx
-            async with httpx.AsyncClient(verify=ssl_context(True), timeout=5.0) as client:
-                resp = await client.post(
-                    f"{self._ollama_url}/api/embeddings",
-                    json={"model": self._embed_model, "prompt": text},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    embedding = data.get("embedding", [])
-                    if embedding:
-                        self._ollama_available = True
-                        return self._guard_dim(embedding)
-        except Exception:
-            pass
-
-        if strict is not None:
-            return []
-        if self._ollama_available is None:
-            self._ollama_available = False
-            logger.info("Ollama embeddings unavailable — using feature hashing fallback")
         return self._guard_dim(_fallback_embed(text))
 
     def _guard_dim(self, vec: list[float]) -> list[float]:

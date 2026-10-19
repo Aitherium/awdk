@@ -26,8 +26,14 @@ doctor (a checker: exit 0 clean, 1 violation, 2 could-not-judge)
             against the shipped key list alone; the installed binary is consulted
             only for a hint, never to excuse a key (every common word is in it).
     CCD006  voice enabled but no claude.ai login or no audio capture device (warn only)
+    CCD007  a PreToolUse/PostToolUse hook in shell form that is ONE program call
+            (optionally behind `cd "$CLAUDE_PROJECT_DIR" &&` or a `bash -c '...'`
+            wrapper): exec form ("command" + "args") runs it with no shell. On
+            Windows the shell form costs Git's bash launcher, bash and a console
+            host on every tool call (4 processes vs 1-2, measured 2026-10-18).
+            Exec-form hooks are timed by CCD004 as exec form, args expanded.
 
-    ``--self-test`` builds fixtures that must trip CCD001-CCD005 and a clean one that
+    ``--self-test`` builds fixtures that must trip CCD001-CCD005 and CCD007 and a clean one that
     must not, proving the checker can still fail.
 
 Nothing here is machine-specific: every path is derived from the home directory, the
@@ -236,8 +242,10 @@ def check_automode(scopes: list[Scope], rep: Report) -> None:
             )
 
 
-def iter_command_hooks(data: dict) -> Iterable[tuple[str, str, str]]:
-    """Yield (event, matcher, command) for every command hook in a settings object."""
+def iter_hook_specs(data: dict) -> Iterable[tuple[str, str, str, list[str] | None]]:
+    """Yield (event, matcher, command, args) for every command hook. ``args`` is None
+    for a shell-form hook and the argv tail for an exec-form one (command + args, run
+    with no shell)."""
     hooks = data.get("hooks")
     if not isinstance(hooks, dict):
         return
@@ -254,7 +262,16 @@ def iter_command_hooks(data: dict) -> Iterable[tuple[str, str, str]]:
                     and h.get("type", "command") == "command"
                     and h.get("command")
                 ):
-                    yield event, matcher, str(h["command"]).strip()
+                    args = h.get("args")
+                    yield (event, matcher, str(h["command"]).strip(),
+                           [str(a) for a in args] if isinstance(args, list) else None)
+
+
+def iter_command_hooks(data: dict) -> Iterable[tuple[str, str, str]]:
+    """Yield (event, matcher, command line) for every command hook in a settings
+    object; an exec-form hook's args are part of the line."""
+    for event, matcher, command, args in iter_hook_specs(data):
+        yield event, matcher, " ".join([command] + (args or []))
 
 
 def check_duplicate_hooks(scopes: list[Scope], rep: Report) -> None:
@@ -348,8 +365,18 @@ def _hook_shell(command: str) -> list[str] | str:
     return command
 
 
+def _exec_argv(command: str, args: list[str], cwd: Path) -> list[str]:
+    """An exec-form hook's argv as Claude Code runs it: no shell, with
+    ${CLAUDE_PROJECT_DIR} expanded in the args."""
+    return [command] + [
+        a.replace("${CLAUDE_PROJECT_DIR}", str(cwd)).replace("$CLAUDE_PROJECT_DIR", str(cwd))
+        for a in args
+    ]
+
+
 def time_hook(
-    command: str, event: str, cwd: Path, runs: int = TIMING_RUNS
+    command: str, event: str, cwd: Path, runs: int = TIMING_RUNS,
+    args: list[str] | None = None,
 ) -> tuple[float | None, str]:
     """Median wall ms of `command` fed a harmless Bash payload; (None, why) if unrunnable."""
     payload: dict[str, Any] = {
@@ -363,7 +390,7 @@ def time_hook(
     if event == "PostToolUse":
         payload["tool_response"] = {"stdout": "ccd-doctor\n", "stderr": "", "interrupted": False}
     data = json.dumps(payload).encode()
-    argv = _hook_shell(command)
+    argv = _hook_shell(command) if args is None else _exec_argv(command, args, cwd)
     samples: list[float] = []
     # ignore_cleanup_errors: a hook can leave a child holding a file in the sandbox
     # (Windows refuses the delete); that must not turn a measurement into a traceback.
@@ -424,12 +451,13 @@ def check_hook_latency(scopes: list[Scope], cwd: Path, budget_ms: int, rep: Repo
     for sc in scopes:
         if not sc.data:
             continue
-        for event, matcher, cmd in iter_command_hooks(sc.data):
+        for event, matcher, command, args in iter_hook_specs(sc.data):
             if event not in HOT_EVENTS or not _matcher_hits_bash(matcher):
                 continue
+            cmd = " ".join([command] + (args or []))
             key = (event, cmd)
             if key not in measured:
-                measured[key] = time_hook(cmd, event, cwd)
+                measured[key] = time_hook(command, event, cwd, args=args)
             ms, why = measured[key]
             label = f"{sc.name} {event}[{matcher or '*'}]: {cmd[:100]}"
             if ms is None:
@@ -441,6 +469,42 @@ def check_hook_latency(scopes: list[Scope], cwd: Path, budget_ms: int, rep: Repo
                 )
             else:
                 rep.notes.append(f"CCD004: {ms:.0f} ms ok  {label}")
+
+
+#: A leading `cd "$CLAUDE_PROJECT_DIR" &&` (exec form already runs in the project).
+_CD_PROJECT = re.compile(r'^cd\s+"?\$\{?CLAUDE_PROJECT_DIR\}?"?\s*&&\s*')
+#: Anything that genuinely needs a shell: pipes, lists, redirects, substitution.
+_SHELL_SYNTAX = re.compile(r"[|&;<>`]|\$\(")
+
+
+def shell_form_could_be_exec(command: str) -> bool:
+    """True when a shell-form hook is ONE program call that exec form could run.
+
+    On Windows a shell-form hook starts Git's bash launcher, the real bash and a
+    console host before the program: 4 processes where exec form starts 1-2
+    (measured 2026-10-18, 24 processes per Bash tool call)."""
+    rest = _CD_PROJECT.sub("", command.strip())
+    if rest.startswith(("bash -c ", "sh -c ")):
+        inner = rest.split(None, 2)[2].strip()
+        if len(inner) > 1 and inner[0] == inner[-1] and inner[0] in "'\"":
+            rest = _CD_PROJECT.sub("", inner[1:-1].strip())
+    # Quoted text is an argument, not shell syntax: `python -c "a; b"` is one call.
+    bare = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "''", rest)
+    return bool(rest) and not _SHELL_SYNTAX.search(bare)
+
+
+def check_shell_form(scopes: list[Scope], rep: Report) -> None:
+    for sc in scopes:
+        if not sc.data:
+            continue
+        for event, matcher, command, args in iter_hook_specs(sc.data):
+            if event in HOT_EVENTS and args is None and shell_form_could_be_exec(command):
+                rep.add(
+                    "CCD007",
+                    f"{sc.name} {event}[{matcher or '*'}] runs one program through a shell "
+                    f"(4 processes per call on Windows); use exec form "
+                    f'"command" + "args": {command[:100]}',
+                )
 
 
 def _claude_binary() -> Path | None:
@@ -641,6 +705,7 @@ def run_doctor(
     check_automode(scopes, rep)
     check_duplicate_hooks(scopes, rep)
     check_mcpjson(scopes, cwd, project, rep)
+    check_shell_form(scopes, rep)
     if timing:
         check_hook_latency(scopes, project, budget_ms, rep)
     else:
@@ -726,7 +791,7 @@ def self_test() -> int:
             home, proj, budget_ms=300, managed=nomanaged, use_binary=False, probe_devices=False
         )
         codes = {f.code for f in rep.findings}
-        wanted = ["CCD001", "CCD002", "CCD003", "CCD004", "CCD005"]
+        wanted = ["CCD001", "CCD002", "CCD003", "CCD004", "CCD005", "CCD007"]
         if sys.platform != "darwin":  # macOS keeps the login in the keychain
             wanted.append("CCD006")
         for want in wanted:
@@ -738,16 +803,18 @@ def self_test() -> int:
             failures.append("allowlisted custom key reported by CCD005")
         if rep.exit_code != 1:
             failures.append(f"dirty fixture exit {rep.exit_code}, want 1")
-        # --- clean fixture: nothing but the warn-only voice check may appear
+        # --- clean fixture: nothing but the warn-only voice check may appear. Its
+        # hooks are exec form (CCD007 quiet) and a shell-form hook that needs a
+        # shell (a pipe) is not CCD007's business either.
+        exec_fast = {"type": "command", "command": sys.executable, "args": ["-c", "pass"]}
+        needs_shell = {"type": "command", "command": f"echo x | {fast}"}
         _write(
             home / ".claude" / "settings.json",
             {
                 "autoMode": {"allow": []},
                 "aitherLane": "x",
                 "hooks": {
-                    "PreToolUse": [
-                        {"matcher": "Bash", "hooks": [{"type": "command", "command": fast}]}
-                    ]
+                    "PreToolUse": [{"matcher": "Bash", "hooks": [exec_fast, needs_shell]}]
                 },
             },
         )
@@ -761,6 +828,27 @@ def self_test() -> int:
                 "clean fixture not clean: "
                 + "; ".join(f"{f.code} {f.message}" for f in rep.findings)
             )
+        # --- CCD004 times an exec-form hook by its ARGS: a bare `python` fed the
+        # JSON payload on stdin exits in milliseconds, so a slow exec hook that
+        # passes the budget means the args were dropped.
+        exec_slow = {"type": "command", "command": sys.executable,
+                     "args": ["-c", "import time; time.sleep(0.6)"]}
+        _write(home / ".claude" / "settings.json", {
+            "aitherLane": "x",
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [exec_slow]}]}})
+        rep = run_doctor(
+            home, proj, budget_ms=300, managed=nomanaged, use_binary=False, probe_devices=False
+        )
+        if not any(f.code == "CCD004" for f in rep.findings):
+            failures.append("CCD004 did not time an exec-form hook by its args")
+        if any(f.code == "CCD007" for f in rep.findings):
+            failures.append("CCD007 fired on an exec-form hook")
+        for cmd, want in (('cd "$CLAUDE_PROJECT_DIR" && python x.py', True),
+                          ("bash -c 'cd \"$CLAUDE_PROJECT_DIR\" && pwsh -File a.ps1'", True),
+                          ("awsettings push || true", False),
+                          ('python3 "${CLAUDE_PLUGIN_ROOT}/h.py" a 2>/dev/null', False)):
+            if shell_form_could_be_exec(cmd) is not want:
+                failures.append(f"shell_form_could_be_exec({cmd!r}) != {want}")
         # --- a dead key is reported even when the installed binary mentions it
         fake_bin = root / "fake-claude-binary"
         fake_bin.write_bytes(b"x" * 64 + b"mcpServers:{}apiKey:''" + b"x" * 64)
@@ -782,7 +870,7 @@ def self_test() -> int:
         print(f"SELF-TEST FAIL: {f}")
     print(
         "claude doctor self-test: "
-        + ("PASS (8 arms)" if not failures else f"FAIL ({len(failures)})")
+        + ("PASS (11 arms)" if not failures else f"FAIL ({len(failures)})")
     )
     return 0 if not failures else 1
 

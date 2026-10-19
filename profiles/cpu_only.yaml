@@ -33,12 +33,12 @@ vllm:
   tensor_parallel_size: 0
   workers: []
 
-ollama:
+local:
   gpu_memory_fraction: 0.0
   cpu_only: true
   num_parallel: 1
   num_thread: 4  # adjust to core count
-  models_to_pull:
+  models:
     - nomic-embed-text
 
 services:
@@ -70,7 +70,7 @@ resource_limits:
   max_concurrent_requests: 4
   max_batch_size: 2
   context_pipeline_timeout_s: 30
-  ollama_max_loaded_models: 1
+  max_loaded_models: 1
 
 notes: >
   CPU-only profile requires cloud API keys configured in AitherSecrets.

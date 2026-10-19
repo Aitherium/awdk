@@ -128,8 +128,7 @@ def _local_node_id() -> str:
 
 
 def _fmt_inference(node: Dict[str, Any]) -> str:
-    kind = node.get("inference_kind") or ("ollama" if node.get("ollama_available")
-                                          else "vllm" if node.get("vllm_available") else "-")
+    kind = node.get("inference_kind") or ("vllm" if node.get("vllm_available") else "-")
     ready = "ready" if node.get("inference_ready") else "not-ready"
     models = node.get("available_models") or []
     first = f" {models[0]}" if models else ""

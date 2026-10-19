@@ -19,6 +19,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from adk.legacy_backend import (
+    legacy_env_base_url,
+    migrate_backend_name,
+    migrate_config_dict,
+)
+
 logger = logging.getLogger("adk.config")
 
 
@@ -137,7 +143,9 @@ def load_saved_config(config_path: Path | None = None) -> dict[str, Any]:
         for k, v in _active_profile_creds().items():
             cfg.setdefault(k, v)
 
-    return cfg
+    # Configs written before the local model server was retired name it as a
+    # backend; map them to llama.cpp (persisted on the next save).
+    return dict(migrate_config_dict(cfg)) if isinstance(cfg, dict) else cfg
 
 
 def save_saved_config(data: dict[str, Any], config_path: Path | None = None) -> Path:
@@ -179,28 +187,6 @@ def save_saved_config(data: dict[str, Any], config_path: Path | None = None) -> 
     return path
 
 
-def _sanitize_ollama_host(raw: str) -> str:
-    """Convert Ollama's bind address (``0.0.0.0:11434``) to a connectable URL.
-
-    Ollama sets ``OLLAMA_HOST`` to its *listen* address which often contains
-    ``0.0.0.0`` — a valid bind address but not a valid connection target on
-    Windows/macOS.  Rewrite to ``localhost`` so HTTP clients can connect.
-    """
-    if not raw:
-        return "http://localhost:11434"
-    # Strip protocol if present
-    if raw.startswith("http://") or raw.startswith("https://"):
-        host_part = raw.split("://", 1)[1]
-        scheme = raw.split("://", 1)[0]
-    else:
-        host_part = raw
-        scheme = "http"
-    # Replace 0.0.0.0 with localhost
-    if host_part.startswith("0.0.0.0"):
-        host_part = "localhost" + host_part[7:]
-    return f"{scheme}://{host_part}"
-
-
 @dataclass
 class Config:
     """ADK configuration, populated from environment variables with sensible defaults.
@@ -210,16 +196,13 @@ class Config:
     always override profile values.
     """
 
-    # LLM backend: "ollama", "openai", "anthropic", "auto"
+    # LLM backend: "llamacpp", "vllm", "openai", "anthropic", "auto", ...
     llm_backend: str = field(default_factory=lambda: os.getenv("AITHER_LLM_BACKEND", "auto"))
 
     # Model selection (env vars override profile)
     model: str = field(default_factory=lambda: os.getenv("AITHER_MODEL", ""))
     small_model: str = field(default_factory=lambda: os.getenv("AITHER_SMALL_MODEL", ""))
     large_model: str = field(default_factory=lambda: os.getenv("AITHER_LARGE_MODEL", ""))
-
-    # Ollama — sanitize OLLAMA_HOST which Ollama sets to a bind address (0.0.0.0:11434)
-    ollama_host: str = field(default_factory=lambda: _sanitize_ollama_host(os.getenv("OLLAMA_HOST", "")))
 
     # Generic base URL for a self-hosted OpenAI-compatible backend (llamacpp /
     # llama-server, a local vLLM, LM Studio, …). Lets a self-hosted operator point
@@ -434,6 +417,8 @@ class Config:
         if not config.model and saved.get("default_model"):
             config.model = saved["default_model"]
 
+        config.migrate_legacy_backends()
+
         # Cloud mode from setup --mode cloud/hybrid
         if saved.get("cloud_mode") and config.llm_backend == "auto":
             config.cloud_mode = saved["cloud_mode"]
@@ -594,6 +579,7 @@ class Config:
         # Also accept "backend:" as alias in config.yaml
         if self.llm_backend == "auto" and data.get("backend"):
             self.llm_backend = data["backend"]
+        self.migrate_legacy_backends()
         if not self.model and data.get("model"):
             self.model = data["model"]
         if self.server_port == 8080 and data.get("port"):
@@ -604,6 +590,20 @@ class Config:
             if isinstance(_packs, list):
                 self.required_packs = _packs
 
+    def __post_init__(self) -> None:
+        self.migrate_legacy_backends()
+
+    def migrate_legacy_backends(self) -> None:
+        """Map a retired backend name (env, saved or project config) to llama.cpp."""
+        old = self.llm_backend
+        self.llm_backend = migrate_backend_name(self.llm_backend, "AITHER_LLM_BACKEND")
+        self.reasoning_backend = migrate_backend_name(self.reasoning_backend)
+        self.perception_backend = migrate_backend_name(self.perception_backend)
+        self.cluster_backend = migrate_backend_name(self.cluster_backend)
+        if old != self.llm_backend and not self.llm_base_url:
+            from adk.legacy_backend import LLAMACPP_DEFAULT_URL
+            self.llm_base_url = legacy_env_base_url() or LLAMACPP_DEFAULT_URL
+
     @property
     def backend(self) -> str:
         """Alias for ``llm_backend`` -- matches config.yaml key ``backend:``."""
@@ -611,7 +611,7 @@ class Config:
 
     @backend.setter
     def backend(self, value: str) -> None:
-        self.llm_backend = value
+        self.llm_backend = migrate_backend_name(value)
 
     def get_api_key(self) -> str:
         """Return the best available API key for the configured backend."""

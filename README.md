@@ -18,7 +18,7 @@
 
 **3 lines of code. Any backend. Local or cloud. Zero lock-in.**
 
-Aither ADK is a Python SDK + CLI for building AI agents that run on **your** hardware — a single helpful agent or a coordinated fleet that delegates work to each other. Agents get tools, persistent knowledge-graph memory, safety filtering, and effort-based model routing out of the box. Swap the LLM backend at runtime — your GPU, Ollama, llama.cpp, or any cloud API — **same code, same agents.**
+Aither ADK is a Python SDK + CLI for building AI agents that run on **your** hardware — a single helpful agent or a coordinated fleet that delegates work to each other. Agents get tools, persistent knowledge-graph memory, safety filtering, and effort-based model routing out of the box. Swap the LLM backend at runtime — your GPU, llama.cpp, or any cloud API — **same code, same agents.**
 
 ```bash
 pip install awdk
@@ -44,7 +44,7 @@ $s = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 |---|---|---|
 | **Nothing — not even Python** | one-line installer (below) | isolated env + first-run wizard |
 | **No GPU, no API key** | `adk bonsai-local` | [Bonsai](#bonsai-an-agent-on-literally-anything) running **free, offline, on CPU** — pulls ~300MB image, serves on :8090 |
-| **A GPU (6 GB+)** | `adk quickstart` | auto-detected vLLM/Ollama, models pulled, ready to chat |
+| **A GPU (6 GB+)** | `adk quickstart` | auto-detected vLLM/llama.cpp, models pulled, ready to chat |
 | **Just an API key** | `adk quickstart --cloud` | cloud inference (Anthropic / OpenAI / DeepSeek) |
 | **A whole LAN of machines** | `adk deploy grid` | [multi-machine effort-routed inference](#grid-inference-across-multiple-machines) |
 
@@ -94,7 +94,7 @@ adk doctor         # something wrong? this names it
 Everything in the ADK hangs off five ideas:
 
 1. **Agent** — `AitherAgent("aither")`. One object: `await agent.chat("...")` is the whole API. It has a persona, tools, and memory.
-2. **Backend** — where inference runs. Local (vLLM / Ollama / llama.cpp / Bonsai) or cloud (Anthropic / OpenAI / DeepSeek / Aitherium gateway). Switchable at runtime, mid-session.
+2. **Backend** — where inference runs. Local (vLLM / llama.cpp / Bonsai) or cloud (Anthropic / OpenAI / DeepSeek / Aitherium gateway). Switchable at runtime, mid-session.
 3. **Effort routing** — every call carries a 1–10 effort level; cheap calls go to small fast models, hard calls go to the big reasoning model. Automatically. You never pick a model per call again.
 4. **Memory** — a local SQLite knowledge graph that auto-ingests entities and relations from every conversation. Hybrid keyword + semantic search. No external services.
 5. **Fleet** — multiple agents that can call each other via the built-in `ask_agent` tool. One YAML file, one `adk-serve` command, and you have an orchestrator delegating to specialists.
@@ -330,7 +330,7 @@ import asyncio
 from adk import AitherAgent
 
 async def main():
-    agent = AitherAgent("aither")              # auto-detects vLLM/Ollama on localhost
+    agent = AitherAgent("aither")              # auto-detects vLLM/llama.cpp on localhost
     response = await agent.chat("Hello! What can you help me with?")
     print(response.content)
 
@@ -393,7 +393,7 @@ you already use. The same CLI is installed as `aither-hearth`.
 
 ```bash
 adk home init --name pip                  # ~/.aither/agent-home: persona, model, memory
-adk home model --byo anthropic            # or --local ollama | llamacpp | bonsai
+adk home model --byo anthropic            # or --local llamacpp | bonsai
 adk home model --check
 adk home signin                           # Sign in with Aitherium
 export HEARTH_TELEGRAM_TOKEN=...          # a Telegram bot token from @BotFather
@@ -540,7 +540,7 @@ The backbone of the ADK: it runs your agents on whatever you have, and routes ea
 
 1. **NVIDIA + Docker** — starts vLLM (paged attention, continuous batching, tensor parallelism)
 2. **NVIDIA DGX Spark** — auto-detected on the LAN, registered as a remote inference node
-3. **AMD / Apple Silicon / no Docker** — falls back to Ollama
+3. **AMD / Apple Silicon / no Docker** — falls back to llama.cpp (orchestrator GGUF from Aitherium's weights store)
 4. **No GPU** — Bonsai locally, or cloud APIs (Aitherium gateway, or OpenAI/Anthropic/DeepSeek direct)
 
 ```python
@@ -564,7 +564,7 @@ adk setup --reasoning-api anthropic   # hybrid — local orchestration, cloud re
 from adk import AitherAgent
 from adk.llm import LLMRouter
 
-agent = AitherAgent("atlas")                                   # Ollama (auto-detected)
+agent = AitherAgent("atlas")                                   # auto-detected local backend
 agent = AitherAgent("atlas", llm=LLMRouter(provider="openai",    api_key="sk-..."))
 agent = AitherAgent("atlas", llm=LLMRouter(provider="anthropic", api_key="sk-ant-..."))
 
@@ -595,11 +595,11 @@ adk backend test                     # verify the current backend works
 
 Aither picks the model by task complexity, so cheap calls stay cheap and hard calls get the big model:
 
-| Effort | vLLM (primary) | Ollama (fallback) | OpenAI | Anthropic | Use case |
+| Effort | vLLM (primary) | llama.cpp (fallback) | OpenAI | Anthropic | Use case |
 |--------|----------------|-------------------|--------|-----------|----------|
-| 1–3 (small) | `Llama-3.2-3B` | `llama3.2:3b` | `gpt-4o-mini` | `claude-haiku` | Quick lookups, simple Q&A |
-| 4–6 (medium) | `Nemotron-Orchestrator-8B` | `nemotron-orchestrator-8b` | `gpt-4o` | `claude-sonnet` | Most tasks, orchestration |
-| 7–10 (large) | `deepseek-r1:14b` | `deepseek-r1:14b` | `o1` | `claude-opus` | Complex reasoning, code review |
+| 1–3 (small) | `Llama-3.2-3B` | `aither-orchestrator` | `gpt-4o-mini` | `claude-haiku` | Quick lookups, simple Q&A |
+| 4–6 (medium) | `Nemotron-Orchestrator-8B` | `aither-orchestrator` | `gpt-4o` | `claude-sonnet` | Most tasks, orchestration |
+| 7–10 (large) | `deepseek-r1:14b` | `aither-orchestrator` | `o1` | `claude-opus` | Complex reasoning, code review |
 
 ### Hardware profiles
 
@@ -615,7 +615,7 @@ TQ4 (TurboQuant 4-bit) runs on GPUs as small as 6 GB. Bonsai 1-bit runs on **any
 | `standard` | 20–24 GB | Nemotron-8B | DeepSeek-R1 14B | both, full quality |
 | `full` | 24 GB+ | Nemotron-8B | DeepSeek-R1 14B | + Nomic embeddings |
 | `hybrid` | 10–16 GB + cloud | Nemotron-8B | Cloud (Anthropic/OpenAI) | local + cloud reasoning |
-| `apple_silicon` | M1–M4 | Ollama nemotron-8b | Ollama deepseek-r1:8b | — |
+| `apple_silicon` | M1–M4 | Orchestrator 8B (llama.cpp Metal) | — | — |
 | `cpu_only` | none | Cloud gateway | Cloud | cloud only |
 | `grid_distributed` | 6 GB+ NVIDIA + Mac + mini PCs | Nemotron-8B TQ4 (vLLM) | DeepSeek-R1 (Mac llama.cpp) | + Qwen2.5-32B (CPU cluster) |
 
@@ -682,7 +682,7 @@ response = await agent.chat("What's 42 * 17?")    # calls calculate
 
 ### Knowledge-graph memory
 
-Every agent ships with a local knowledge graph — SQLite-backed, embedding-aware, zero external deps. Ollama embeddings when available, feature-hashing fallback offline.
+Every agent ships with a local knowledge graph — SQLite-backed, embedding-aware, zero external deps. MicroScheduler / vLLM / llama.cpp embeddings when available, feature-hashing fallback offline.
 
 ```python
 agent = AitherAgent("atlas")
@@ -936,11 +936,10 @@ adk run                        # start the agent server
 adk doctor                     # check system health (Python, GPU, LLM, keys)
 
 # Inference & backends
-adk setup                      # interactive GPU setup wizard (vLLM/Ollama)
+adk setup                      # interactive GPU setup wizard (vLLM/llama.cpp)
 adk setup --tier nano          # force a tier (bonsai, nano, standard, full, …)
 adk bonsai-local               # serve Bonsai-27B locally on :8090 (no GPU needed)
 adk backend list|set|set-reasoning|test
-adk deploy ollama              # install Ollama + pull models
 adk deploy vllm                # deploy vLLM containers
 adk deploy grid                # multi-machine grid inference
 
@@ -998,10 +997,10 @@ Auth is **optional** — needed only for cloud inference, cross-machine fleet sy
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AITHER_LLM_BACKEND` | `auto` | `ollama`, `openai`, `anthropic`, `auto` |
+| `AITHER_LLM_BACKEND` | `auto` | `llamacpp`, `vllm`, `openai`, `anthropic`, `auto` (an older retired local-server value is read as `llamacpp`) |
 | `AITHER_MODEL` | (auto) | Default model name |
-| `AITHER_PREFER_LOCAL` | `false` | Try Ollama before the cloud gateway |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `AITHER_PREFER_LOCAL` | `false` | Try local llama.cpp before the cloud gateway |
+| `AITHER_LLAMACPP_URL` | `http://127.0.0.1:8080` | llama-server URL |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | | Provider keys |
 | `AITHER_API_KEY` | | Aitherium cloud key (prefer `adk login`) |
 | `AITHER_PORT` / `AITHER_HOST` | `8080` / `0.0.0.0` | Server bind |

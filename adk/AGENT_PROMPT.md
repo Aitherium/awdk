@@ -9,7 +9,7 @@ Do NOT deviate from these instructions -- they encode solutions to real failure 
 
 - The CLI command is `adk`, NOT `aither`. The `aither` command is a separate REPL.
 - The pip package is `awdk`. Install: `pip install awdk`
-- Auto-detection works. `LLMRouter()` with no args finds vLLM, Ollama, or cloud backends.
+- Auto-detection works. `LLMRouter()` with no args finds vLLM, llama.cpp, or cloud backends.
 - All config lives in `~/.aither/` -- never set env vars manually unless told to.
 
 ## Step 1: Install
@@ -30,7 +30,7 @@ adk status
 
 Read the output carefully:
 - **vLLM UP on :8200** -> You already have inference. DO NOT run `adk setup`. Go to Step 4.
-- **Ollama UP** -> You have inference. Go to Step 4.
+- **llama.cpp UP** -> You have inference. Go to Step 4.
 - **Genesis UP on :8001** -> Full AitherOS is running. Go to Step 4.
 - **Everything DOWN** -> You need inference. Go to Step 3.
 
@@ -43,7 +43,7 @@ adk setup
 This is an interactive wizard. It auto-detects your GPU and recommends a tier.
 
 - NVIDIA GPU with 8GB+ VRAM -> vLLM containers (parallel inference, recommended)
-- AMD/Apple/No GPU -> Ollama (serialized, but works everywhere)
+- AMD/Apple/No GPU -> llama.cpp (serialized, but works everywhere)
 - First run downloads 16-30GB of model weights. Takes 10-15 minutes. Be patient.
 - For CI/automation: `adk setup --non-interactive`
 - For dry run: `adk setup --dry-run`
@@ -52,7 +52,7 @@ This is an interactive wizard. It auto-detects your GPU and recommends a tier.
 It will start a competing container that fights for VRAM and crash with OOM.
 v1.1.2+ detects this and offers "connect to existing" automatically.
 
-After setup completes, verify: `adk status` should show vLLM or Ollama as UP.
+After setup completes, verify: `adk status` should show vLLM or llama.cpp as UP.
 
 ## Step 4: Authenticate
 
@@ -101,7 +101,7 @@ asyncio.run(main())
 The LLMRouter auto-detects backends in this priority order:
 1. vLLM on port 8200 (highest priority -- continuous batching)
 2. Desktop AitherOS MicroScheduler
-3. Ollama on port 11434
+3. A local llama-server (install-bonsai :8080, quickstart :8099)
 4. Aitherium Gateway (cloud, needs auth)
 5. OpenAI/Anthropic API keys (if set)
 

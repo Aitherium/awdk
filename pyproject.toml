@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.76"
+version = "3.8.79"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -32,7 +32,7 @@ requires-python = ">=3.10"
 authors = [
     { name = "Aitherium", email = "hello@aitherium.com" },
 ]
-keywords = ["ai", "agents", "llm", "aither", "ollama", "openai", "anthropic", "vllm", "fleet", "multi-agent"]
+keywords = ["ai", "agents", "llm", "aither", "llama.cpp", "openai", "anthropic", "vllm", "fleet", "multi-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -424,7 +424,7 @@ filterwarnings = [
 # deliberately KEPT so regressions surface.
 line-length = 100
 target-version = "py312"
-extend-exclude = ["examples", "install.py", "install.ps1", "setup-vllm.py", "packaging", "scripts"]
+extend-exclude = ["examples", "install.py", "install.ps1", "packaging", "scripts"]
 
 [tool.ruff.lint]
 # N (pep8-naming) intentionally NOT selected: the SDK uses camelCase wire-format

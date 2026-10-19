@@ -35,7 +35,7 @@ _DEFAULT_PORTS: dict[str, int] = {
     "Evolution": 8133,
     "Reasoning": 8093,
     "A2A": 8127,
-    "Ollama": 11434,
+    "LlamaCpp": 8080,
 }
 
 
@@ -69,22 +69,9 @@ def get_service_url(name: str, default_port: int | None = None) -> str:
     return f"http://{host}:{get_port(name, default_port)}"
 
 
-def ollama_url() -> str:
-    """Resolve the Ollama base URL from env, defaulting to ``http://localhost:11434``.
-
-    Ollama sets ``OLLAMA_HOST`` to its *bind* address (often ``0.0.0.0:11434``),
-    which is not a valid connection target on Windows/macOS — rewrite to localhost.
-    """
-    raw = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_HOST") or ""
-    if not raw:
-        return "http://localhost:11434"
-    if raw.startswith(("http://", "https://")):
-        scheme, host_part = raw.split("://", 1)
-    else:
-        scheme, host_part = "http", raw
-    if host_part.startswith("0.0.0.0"):
-        host_part = "localhost" + host_part[len("0.0.0.0"):]
-    return f"{scheme}://{host_part}"
+def llamacpp_url() -> str:
+    """Resolve the local llama-server base URL (``AITHER_LLAMACPP_URL``, default :8080)."""
+    return (os.getenv("AITHER_LLAMACPP_URL") or "http://127.0.0.1:8080").rstrip("/")
 
 
-__all__ = ["get_port", "get_service_url", "ollama_url"]
+__all__ = ["get_port", "get_service_url", "llamacpp_url"]

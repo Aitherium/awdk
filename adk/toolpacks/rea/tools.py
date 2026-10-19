@@ -6,8 +6,9 @@ import os
 import shutil
 import subprocess
 
-REA_VERSION = "6.4.0"  # pinned; upgrade deliberately
-_AUTHORITY = ["static", "runtime", "process", "packaged-process"]  # weakest -> strongest
+from .ledger import close_ledger
+
+REA_VERSION = "6.7.0"  # pinned; keep in lockstep with lib/agents/packs/rea + upstreams.yaml
 
 _DEFAULT_CLASSES = ("owned", "licensed", "interop")
 _ALL_CLASSES = ("owned", "licensed", "interop", "any")
@@ -85,25 +86,11 @@ def rea_analyze_javascript(path: str, target_class: str = "", timeout: int = 300
 
 
 def rea_ledger_close(obligations: list) -> dict:
-    """Fail-closed closure verdict.
+    """Fail-closed closure verdict, identical to lib/agents/packs/rea (RA004 parity).
 
-    Each obligation: {id, required(bool, default True), original_authority,
-    verifier_authority, verifier_passed(bool)}. An obligation closes only when a
-    verifier passed AND its authority is >= the original's. Unknown authority, a
-    missing verifier or an empty list never closes.
+    An obligation closes only when it is required, a verifier passed, AND the
+    verifier's authority satisfies the required authority under the upstream
+    acceptance map (NOT a single linear order). Unknown authority, a missing
+    verifier or an empty list never closes. See ledger.close_ledger for the schema.
     """
-    if not isinstance(obligations, list) or not obligations:
-        return {"status": "unknown", "open": [], "closed": [],
-                "reason": "no obligations: absence of evidence is not closure"}
-    closed, open_ = [], []
-    for o in obligations:
-        oid = str((o or {}).get("id", "?"))
-        if not (o or {}).get("required", True):
-            continue
-        _oa = o.get("original_authority")
-        orig = _AUTHORITY.index(_oa) if _oa in _AUTHORITY else None
-        _va = o.get("verifier_authority")
-        ver = _AUTHORITY.index(_va) if _va in _AUTHORITY else None
-        ok = bool(o.get("verifier_passed")) and orig is not None and ver is not None and ver >= orig
-        (closed if ok else open_).append(oid)
-    return {"status": "closed" if not open_ else "open", "open": open_, "closed": closed}
+    return close_ledger(obligations)

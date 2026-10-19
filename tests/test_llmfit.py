@@ -42,7 +42,7 @@ class TestModelFit:
     def test_from_json_full(self):
         data = {
             "name": "deepseek-r1:14b",
-            "provider": "ollama",
+            "provider": "llamacpp",
             "params_b": 14.0,
             "context_length": 16384,
             "use_case": "reasoning",
@@ -62,7 +62,7 @@ class TestModelFit:
         }
         m = ModelFit.from_json(data)
         assert m.name == "deepseek-r1:14b"
-        assert m.provider == "ollama"
+        assert m.provider == "llamacpp"
         assert m.params_b == 14.0
         assert m.context_length == 16384
         assert m.score == 0.87
@@ -350,7 +350,7 @@ class TestLLMFitClientRecommendConfig:
                     "models": [{
                         **model,
                         "fit_level": "perfect",
-                        "provider": "ollama",
+                        "provider": "llamacpp",
                         "params_b": 14.0,
                         "best_quant": "Q4_K_M",
                         "score_components": {},
@@ -420,9 +420,9 @@ class TestLLMFitClientRecommendConfig:
         assert config["embedding"]["model"] == "nomic-embed-text"
 
 
-class TestLLMFitClientOllamaModels:
+class TestLLMFitClientLocalModels:
     @pytest.mark.asyncio
-    async def test_recommended_ollama_models(self):
+    async def test_recommended_local_models(self):
         client = LLMFitClient(base_url="http://localhost:8793")
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -441,7 +441,7 @@ class TestLLMFitClientOllamaModels:
         mock_httpx_client.get = AsyncMock(return_value=mock_resp)
         client._client = mock_httpx_client
 
-        names = await client.recommended_ollama_models()
+        names = await client.recommended_local_models()
         assert "deepseek-r1:14b" in names
         assert "llama3.2:3b" in names
         # HF-style names should be excluded
@@ -560,7 +560,7 @@ class TestSetupIntegration:
         mock_config = {
             "hardware": {},
             "fast": {"model": "meta-llama/Llama-3.2-3B"},  # HF name
-            "balanced": {"model": "nemotron-orchestrator-8b"},  # Ollama name
+            "balanced": {"model": "nemotron-orchestrator-8b"},  # short local id
             "reasoning": None,
             "coding": None,
         }
@@ -583,11 +583,7 @@ class TestSetupIntegration:
         from adk.setup import _recommended_models
 
         models = _recommended_models("nvidia_high")
-        assert "nemotron-orchestrator-8b" in models
-        assert "nomic-embed-text" in models
-
-        models = _recommended_models("cpu_only")
-        assert "gemma4:4b" in models
+        assert models == ["aither-orchestrator", "nomic-embed-text"]
 
         models = _recommended_models("unknown_profile")
         assert models == _recommended_models("cpu_only")
@@ -790,13 +786,13 @@ class TestHardwareScoredProviderScope:
 
     def test_local_providers_do_get_the_hardware_scored_pick(self):
         """POSITIVE half — the feature must not be scoped into inertness."""
-        llm_mod, router = self._fresh_router(provider="ollama")
+        llm_mod, router = self._fresh_router(provider="llamacpp")
         picked = router.model_for_effort(1)
-        static_default = llm_mod._EFFORT_MODELS["ollama"]["small"]
-        assert picked, "ollama resolved nothing"
+        static_default = llm_mod._EFFORT_MODELS["llamacpp"]["small"]
+        assert picked, "llamacpp resolved nothing"
         # It must be a REAL resolver answer, not the static table.
         assert picked != static_default, (
-            "ollama fell back to the static default — the resolver is inert again"
+            "llamacpp fell back to the static default — the resolver is inert again"
         )
 
     def test_scope_set_contains_only_local_providers(self):
@@ -806,4 +802,4 @@ class TestHardwareScoredProviderScope:
         assert "anthropic" not in llm_mod._HARDWARE_SCORED_PROVIDERS
         # "dual" is deliberately excluded: only its small tier is local.
         assert "dual" not in llm_mod._HARDWARE_SCORED_PROVIDERS
-        assert "ollama" in llm_mod._HARDWARE_SCORED_PROVIDERS
+        assert "llamacpp" in llm_mod._HARDWARE_SCORED_PROVIDERS

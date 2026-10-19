@@ -4,6 +4,25 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.79] - 2026-10-19
+
+### Removed
+- The last of the retired local model server: its LLM provider and core backend classes, setup fallbacks (`adk.setup`, `adk setup`, the first-run wizard, `install.py`), the node compose files' sidecar, embedding rungs, the doctor check and the standalone `setup-vllm.py` wizard (superseded by `adk setup`). Every one of those paths now uses llama.cpp (`llama-server`).
+
+### Changed
+- Configs written by older releases keep working: a saved config, env var (`AITHER_LLM_BACKEND`, `AITHER_BACKEND`), agent-home config, model spec or `--tier` that names the retired backend loads as `llamacpp` (llama-server at `http://127.0.0.1:8080/v1`) with a one-line notice; the saved config is rewritten on the next save.
+- Node bootstrap `cpu-llamacpp` and `metal-llamacpp` serve the Aitherium orchestrator GGUF fetched from Aitherium's artifact store first (size-checked); a public hub model is only the fallback. The node compose files fetch the same GGUF.
+- `adk.core.backends.LlamaCppBackend` (model spec `llamacpp:<model>`, `AITHER_LLAMACPP_URL`).
+
+## [3.8.78] - 2026-10-19
+
+### Removed
+- The pull-based local model server is gone from awdk (owner decision 2026-10-18). Local models run on llama.cpp; fleet inference goes through MicroScheduler.
+  - `adk backend switch`, `adk quickstart-local`, `adk setup --backend/--tier` and `adk start --provider` no longer offer it; auto-detect picks Bonsai, then vLLM (CUDA 16 GB+ with Docker), then llama.cpp.
+  - `aither deploy` drops that component and its `stop` target.
+  - Node bootstrap recipes `cpu-llamacpp` (any CPU box, `ghcr.io/ggml-org/llama.cpp:server`, OpenAI-compatible on :8080, `/health`) and `metal-llamacpp` (Apple Silicon, native `brew install llama.cpp`) replace the two recipes that pulled models through it; `node_verify` speaks only the OpenAI shape.
+  - Hardware probe no longer reports that server's install state; Apple Silicon recommends a local 8B/3B on llama.cpp (Metal).
+
 ## [3.8.76] - 2026-10-18
 
 ### Fixed

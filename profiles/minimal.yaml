@@ -18,16 +18,16 @@ models:
   embedding: nomic-embed-text
 
 vllm:
-  enabled: false  # not enough VRAM to run vLLM alongside Ollama
+  enabled: false  # not enough VRAM to run vLLM alongside llama.cpp
   gpu_memory_utilization: 0.0
   max_model_len: 0
   tensor_parallel_size: 1
   workers: []
 
-ollama:
+local:
   gpu_memory_fraction: 0.85
   num_parallel: 1
-  models_to_pull:
+  models:
     - llama3.2:3b
     - nomic-embed-text
 
@@ -52,7 +52,7 @@ resource_limits:
   max_concurrent_requests: 2
   max_batch_size: 1
   context_pipeline_timeout_s: 10
-  ollama_max_loaded_models: 1
+  max_loaded_models: 1
 
 notes: >
   Minimal profile keeps only essential services running. No local reasoning

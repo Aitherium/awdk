@@ -4,7 +4,6 @@ Detects:
   - RAM (total system memory)
   - CPU cores
   - GPU (reuses setup_cli GPU detection)
-  - Ollama installation status
   - Disks: every mounted volume with its size, free space and filesystem
     (stdlib only; the storage plane's `awstorage files scan` indexes them)
 
@@ -34,7 +33,6 @@ class SystemInfo:
     gpu_vendor: str = "none"  # nvidia, amd, apple, none
     gpu_name: str = ""
     gpu_vram_mb: int = 0
-    ollama_installed: bool = False
     python_version: str = ""
     # [{"mount": "C:/", "device": ..., "fs": "NTFS", "total_bytes": ..., "free_bytes": ...}]
     disks: list = field(default_factory=list)
@@ -120,11 +118,6 @@ def _detect_gpu() -> tuple[str, str, int]:
     except Exception as e:
         logger.debug("GPU detection failed: %s", e)
         return "none", "", 0
-
-
-def _detect_ollama() -> bool:
-    """Check if Ollama is installed and available."""
-    return bool(shutil.which("ollama"))
 
 
 # Pseudo / virtual filesystems: not disks, and statvfs on some of them hangs or lies.
@@ -224,7 +217,6 @@ def detect_system() -> SystemInfo:
     ram = _detect_ram()
     cores = _detect_cpu_cores()
     gpu_vendor, gpu_name, gpu_vram = _detect_gpu()
-    ollama = _detect_ollama()
 
     return SystemInfo(
         ram_gb=ram,
@@ -232,7 +224,6 @@ def detect_system() -> SystemInfo:
         gpu_vendor=gpu_vendor,
         gpu_name=gpu_name,
         gpu_vram_mb=gpu_vram,
-        ollama_installed=ollama,
         python_version=platform.python_version(),
         disks=detect_disks(),
     )
@@ -243,7 +234,7 @@ class Recommendation:
     """Wizard recommendation based on hardware."""
 
     local_model: Optional[str] = None  # Model name to run locally, or None
-    backend: str = "cloud"  # cloud, ollama, local-8b, local-3b
+    backend: str = "cloud"  # cloud, local-8b, local-3b
     local_model_gb: float = 0.0  # Disk space needed
     local_vram_gb: float = 0.0  # VRAM needed
     rationale: str = ""
@@ -259,9 +250,9 @@ def recommend_setup(system: SystemInfo) -> Recommendation:
 
     Logic:
       - NVIDIA GPU >= 8GB VRAM → local 8B model
-      - Apple Silicon >= 16GB RAM → local 8-14B via Ollama
+      - Apple Silicon >= 16GB RAM → local 7-8B via llama.cpp (Metal)
       - CPU-only >= 16GB RAM → local 3B model + suggest cloud key
-      - Below that → cloud-key only, Ollama optional
+      - Below that → cloud-key only
 
     Returns Recommendation with setup steps.
     """
@@ -305,21 +296,21 @@ def recommend_setup(system: SystemInfo) -> Recommendation:
     # Apple Silicon path
     if system.gpu_vendor == "apple":
         if system.ram_gb >= 16:
-            rec.backend = "ollama"
+            rec.backend = "local-8b"
             rec.local_model = "nemotron-orchestrator-8b"
             rec.local_model_gb = 16.0
             rec.rationale = (
                 f"Apple Silicon detected ({system.gpu_name}, {system.ram_gb:.0f}GB RAM). "
-                "Ollama will use Metal acceleration for smooth local inference."
+                "llama.cpp will use Metal acceleration for smooth local inference."
             )
             return rec
         elif system.ram_gb >= 8:
-            rec.backend = "ollama"
+            rec.backend = "local-3b"
             rec.local_model = "qwen2:3b"
             rec.local_model_gb = 4.0
             rec.rationale = (
                 f"Apple Silicon detected ({system.gpu_name}, {system.ram_gb:.0f}GB RAM). "
-                "Running small Ollama model; cloud key suggested for reasoning."
+                "Running a small llama.cpp model; cloud key suggested for reasoning."
             )
             rec.warnings.append("Memory limited; cloud API key recommended")
             return rec

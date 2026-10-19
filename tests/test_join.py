@@ -77,7 +77,7 @@ async def test_hardware_detection_failure_aborts(capsys):
             assert "[x]" in captured.out
             assert "Hardware detection failed" in captured.out
             # Verify no partial success claim
-            assert "✓ Community node onboarded!" not in captured.out
+            assert "[ok] Community node onboarded!" not in captured.out
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_recipe_resolution_failure_aborts(capsys):
                 assert "[x]" in captured.out
                 assert "Recipe resolution failed" in captured.out
                 # Verify no partial success claim
-                assert "✓ Community node onboarded!" not in captured.out
+                assert "[ok] Community node onboarded!" not in captured.out
 
 
 @pytest.mark.asyncio
@@ -133,15 +133,22 @@ async def test_mesh_key_unavailable_fails_gracefully(capsys):
         ):
             with patch(
                 "adk.toolpacks.node_bootstrap.tools.node_resolve_recipe",
-                return_value={"recipe": "cuda-vllm-8gb", "models": ["model1"]}
+                # The shapes the real tools return: a recipe DICT, an apply
+                # that really started the engine, a healthy verify.
+                return_value={"recipe": {
+                    "id": "cuda-vllm-8gb",
+                    "deployment": {"port": 8000},
+                    "inference_config": {"engine": "vllm",
+                                         "models": [{"name": "model1"}]},
+                }}
             ):
                 with patch(
                     "adk.toolpacks.node_bootstrap.tools.node_apply",
-                    return_value={"status": "applied"}
+                    return_value={"applied": True}
                 ):
                     with patch(
                         "adk.toolpacks.node_bootstrap.tools.node_verify",
-                        return_value={"status": "verified"}
+                        return_value={"status": "healthy"}
                     ):
                         with patch(
                             "adk.enrollment.rich_enroll",
@@ -178,6 +185,12 @@ async def test_secret_values_never_logged(capsys):
             "username": "testuser",
             "user_id": "user123",
         }
+    ), patch(
+        # Hermetic: without this the REAL node tools run (hardware probe, and
+        # past it `docker compose up`). The full success chain's no-leak check
+        # lives in test_join_call_shapes.py.
+        "adk.toolpacks.node_bootstrap.tools.node_detect_hardware",
+        return_value={"error": "probe stubbed"},
     ):
         result = await join_mesh(dry_run=False)
         captured = capsys.readouterr()
@@ -229,7 +242,7 @@ def test_success_summary_printed(capsys):
     )
     captured = capsys.readouterr()
 
-    assert "✓ Community node onboarded!" in captured.out
+    assert "[ok] Community node onboarded!" in captured.out
     assert "Node ID:         node-abc123" in captured.out
     assert "Mesh IP:         10.77.1.42" in captured.out
     assert "Models:          qwen-8b, mistral-7b" in captured.out

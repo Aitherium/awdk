@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from adk.legacy_backend import LEGACY_PROFILES
+
 logger = logging.getLogger(__name__)
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
@@ -35,13 +37,12 @@ GHCR_TOKEN_FILE = AITHER_DIR / "ghcr-token.json"
 
 # ─── Removed orchestrator backends ────────────────────────────────────────────
 
-#: Profiles whose only orchestrator backend was an Ollama pull of an upstream Q4
-#: tag. Ollama is no longer an orchestrator backend: the default local orchestrator
-#: is the v18 Q8_0 GGUF, served by llama.cpp. These profiles fail loudly instead of
-#: booting a stack whose model pull silently failed.
-REMOVED_OLLAMA_PROFILES = ("personal-ollama", "personal-cpu")
+#: Profiles whose only orchestrator backend was a pull-based local model server.
+#: The default local orchestrator is the v18 Q8_0 GGUF, served by llama.cpp. These
+#: profiles fail loudly instead of booting a stack whose model pull silently failed.
+REMOVED_ORCHESTRATOR_PROFILES = ("personal-cpu", *LEGACY_PROFILES)
 LLAMACPP_ORCHESTRATOR_HINT = (
-    "Ollama is no longer an orchestrator backend. Install the local orchestrator "
+    "That local model server is no longer an orchestrator backend. Install the local orchestrator "
     "(v18 Q8_0 GGUF via llama.cpp) with `adk quickstart-local --backend llamacpp` "
     "or `python -m adk.llamacpp_setup install`."
 )
@@ -575,6 +576,10 @@ class Deployer:
                 progress_callback(phase, detail)
 
         # 1. Resolve profile
+        if profile_name in REMOVED_ORCHESTRATOR_PROFILES:
+            result["status"] = "failed"
+            result["errors"].append(f"Profile '{profile_name}': {LLAMACPP_ORCHESTRATOR_HINT}")
+            return result
         try:
             profile = self.get_profile(profile_name)
         except ValueError as e:
@@ -583,10 +588,6 @@ class Deployer:
             return result
 
         result["profile"] = profile.name
-        if profile.name in REMOVED_OLLAMA_PROFILES:
-            result["status"] = "failed"
-            result["errors"].append(f"Profile '{profile.name}': {LLAMACPP_ORCHESTRATOR_HINT}")
-            return result
         _progress("profile", f"{profile.name}: {profile.description}")
 
         # 2. Prerequisites

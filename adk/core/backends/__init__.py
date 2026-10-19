@@ -1,7 +1,7 @@
 """Concrete model backends.
 
-* :class:`OllamaBackend`
 * :class:`OpenAIBackend`, :class:`VLLMBackend`, :class:`DeepSeekBackend`
+* :class:`LlamaCppBackend` (local llama-server)
 * :class:`AnthropicBackend`
 
 All backends are thin async wrappers over ``httpx``. They lazy-import
@@ -9,9 +9,9 @@ All backends are thin async wrappers over ``httpx``. They lazy-import
 """
 
 from adk.core.backends.anthropic import AnthropicBackend
-from adk.core.backends.ollama import OllamaBackend
 from adk.core.backends.openai_compat import (
     DeepSeekBackend,
+    LlamaCppBackend,
     OpenAIBackend,
     VLLMBackend,
 )
@@ -19,7 +19,7 @@ from adk.core.backends.openai_compat import (
 __all__ = [
     "AnthropicBackend",
     "DeepSeekBackend",
-    "OllamaBackend",
+    "LlamaCppBackend",
     "OpenAIBackend",
     "VLLMBackend",
 ]

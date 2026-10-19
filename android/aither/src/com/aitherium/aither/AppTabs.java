@@ -23,6 +23,13 @@ final class AppTabs {
      *  live camera with voice (/talk; a child is never shown it without a guardian's switch). */
     static final String TALK_PATH = "/chat?mode=talk";
     static final String SHOW_ME_PATH = "/talk?mode=show";
+    /** Home's big button(s) above the grid: label, line, path. Only what no tab already
+     *  does: Talk left (2026-10-18 app audit): the Aither tab IS the chat. */
+    static final String[][] HOME_BUTTONS = {
+        {"Show me", "Camera + voice", SHOW_ME_PATH},
+    };
+    /** You > My account: the workspace settings profile tab (/profile is retired). */
+    static final String ACCOUNT_PATH = "/workspace/settings?tab=profile";
 
     /** id, label, root path ("" = native), icon (Shell.iconRes: the app's glyph
      *  res/drawable/ic_app_*, "gear" = settings, "mark" = the Aither mark).
@@ -59,10 +66,10 @@ final class AppTabs {
         {"household", "Household", "Members, invites and family devices", "/family", "family", "family", "Home"},
         {"sprite", "Sprite", "Hatch it. Teach it.", "/?app=sprite", "sprite", "", "Home"},
         {"academy", "Classroom", "Teach a class, or link a child to theirs", "/classroom/", "academy", "", "Home"},
-        {"agents", "My agents", "Your agents, their packs and skills", "/?app=agent-life", "agents", "", "Agents"},
-        // awsh sessions on every machine of yours: read, answer, start (the Agents window's Running tab)
-        {"running", "Running agents", "See, answer and start agents on your computers", "/?app=agents", "agents", "", "Agents"},
+        {"agents", "Agents", "What is running, what waits on you, your agents", "/?app=agents", "agents", "", "Agents"},
+        // ONE images tile per person: the owner's Media Forge, everyone else's Image Studio
         {"image-studio", "Image Studio", "Make and edit images with your credits", "/?app=image-studio", "mediaforge", "", "Make"},
+        {"mediaforge", "Media Forge", "Make images, video and audio", "/?app=mediaforge", "mediaforge", "", "Make"},
         {"spaces", "Spaces", "Friends, agents and rooms", "/spaces/", "spaces", "", "Community"},
         {"avatar", "Avatar", "Your avatars, and the one your Sprite wears", "/?app=avatar", "avatar", "", "You"},
         {"control", "Control", "Your devices, lending and models", "/?app=control", "phone", "", "Fleet"},
@@ -87,7 +94,9 @@ final class AppTabs {
      *  else too: app-gating.ts rbac system:admin). Empty since Media Forge left the phone
      *  (2026-10-16): a phone makes images in Image Studio; Media Forge stays on the
      *  desktop (AitherOS), where the owner's operator tools live. */
-    static final String[] OWNER_APPS = {};
+    static final String[] OWNER_APPS = {"mediaforge"};
+    /** What the owner's own tool replaces on the owner's phone (one tile per job). */
+    static final String[] NOT_FOR_OWNER = {"image-studio"};
     /** Apps the Play build leaves out: Shop checks out through Stripe, which Play forbids
      *  for digital goods (Purchases). */
     static final String[] NOT_IN_STORE = {"shop"};
@@ -127,6 +136,7 @@ final class AppTabs {
         java.util.List<String[]> out = new java.util.ArrayList<>();
         for (String[] app : apps(child)) {
             if (!owner && has(OWNER_APPS, app[0])) continue;
+            if (owner && has(NOT_FOR_OWNER, app[0])) continue;
             if (store && has(NOT_IN_STORE, app[0])) continue;
             out.add(app);
         }
