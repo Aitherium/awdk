@@ -4,6 +4,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.76] - 2026-10-18
+
+### Fixed
+- The public GitHub release ships again: a bundled skill doc no longer names a private-repo path, which had stopped the 3.8.74 mirror.
+- Release manifests (Homebrew formula, MCP server.json) carry the package version again; 3.8.75 was tagged but never published because they disagreed.
+
 ### Security
 - The FreeLLMAPI unified key is only sent to a loopback URL (`127.0.0.1`, `::1`, `localhost`). A non-loopback URL -- which can arrive from another machine through settings sync -- is ignored, with a status line saying why, unless `allow_remote` is set on this machine (`adk free-cloud enable --allow-remote`, or `ADK_FREELLMAPI_ALLOW_REMOTE=1`). `allow_remote` is never read from, or written to, the synced settings.
 
