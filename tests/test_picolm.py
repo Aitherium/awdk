@@ -411,9 +411,8 @@ class TestRouterIntegration:
         }, clear=False):
             from adk.llm import LLMRouter
             router = LLMRouter()
-            # Mock out vLLM/Ollama so they fail
+            # Mock out vLLM so it fails
             router._try_vllm = AsyncMock(return_value=None)
-            router._try_ollama = AsyncMock(return_value=None)
             # Clear any API keys
             with patch.dict(os.environ, {
                 "AITHER_API_KEY": "",
