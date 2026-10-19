@@ -6,8 +6,8 @@ description: "Make, list and retire agent git worktrees through `awgit wt` — n
 
 # Worktrees — awgit owns the lifecycle
 
-Raw `git worktree add` makes a tree nobody tracks, so nobody retires it: a drive fills
-under hundreds of forgotten agent worktrees. Use these instead.
+Raw `git worktree add` makes a tree nobody tracks, so nobody retires it: on 2026-10-18 D:
+was at 5.6 GB free under hundreds of forgotten agent worktrees. Use these instead.
 
 ```bash
 awgit wt new <name> --sparse <dirs...> --purpose "<why>"   # under the first configured root,
@@ -30,11 +30,11 @@ What `done` and the reaper guarantee:
 - **Secret-shaped files never enter a ref.** A tree holding one is kept; a harness COPY of
   a file the main tree has canonically (a copied `.env`) is dropped with the tree.
 - Each retirement is a ledger line (`~/.aither/awgit/data/worktrees/reaped.jsonl`) and an
-  memory fact (`worktree-reaped:<name>`) when a recorder is configured.
+  `awm` fact (`worktree-reaped:<name>`, scope `aitherium:awgit-reaper:AitherOS-Fresh`).
 
 **The reaper** is the awrise job `worktree-reap` (hourly): `awgit wt reap --scheduled`
 adopts unregistered trees, then retires trees idle 48 h (6 h when that tree's DRIVE is
 under its floor, default 50 GB) with no live awgit session, active lease or pin, and no
 file edited inside the threshold. Roots and thresholds: `~/.aither/awgit/worktrees.json`
 (`$AWGIT_WT_SETTINGS`). Plan without removing: `awgit wt reap --scheduled --dry-run`.
-A lifecycle check asserts these rules.
+Gate: a worktree-lifecycle checker (rules WTL001-003) runs in CI and fails when these invariants break.
