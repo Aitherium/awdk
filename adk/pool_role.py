@@ -913,7 +913,9 @@ def register_plan(plan: RolePlan, pool_id: str, registry_url: str, *, node_id: s
         return 2
     from urllib.parse import quote
 
-    url = f"{registry_url.rstrip('/')}/pools/{quote(pool_id, safe='')}/backends"
+    base = registry_url.rstrip("/")
+    quoted_id = quote(pool_id, safe="")
+    url = f"{base}/pools/{quoted_id}/backends"
     try:
         status, text = (send or _post_json)(
             url, registration_payload(plan, node_id),
