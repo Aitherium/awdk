@@ -4538,6 +4538,20 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     from adk.decisions.secure_prompt import start_reconcile_sweep
 
     start_reconcile_sweep()
+    # Claude Code's http hooks fail OPEN when hookd is down (every guard silently
+    # skipped), so this daemon keeps it up: one probe a minute, a start when it is deaf.
+    from adk.harnesses import hookd
+
+    def _keep_hookd() -> None:
+        while True:
+            try:
+                hookd.ensure(hookd.PORT, 6)
+            except Exception as exc:  # noqa: BLE001 - retried next minute
+                logging.getLogger("adk.harnesses.daemon").warning("hookd ensure: %s", exc)
+            time.sleep(60)
+
+    if os.name == "nt" and os.environ.get("AITHER_HOOKD", "1") != "0":
+        threading.Thread(target=_keep_hookd, name="hookd-keeper", daemon=True).start()
     self_update.start("harness-daemon", _no_live_session,
                       health_url=f"http://127.0.0.1:{bind_port}/health")
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
