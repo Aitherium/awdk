@@ -4,6 +4,16 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.80] - 2026-10-20
+
+### Added
+- `adk claude hookd`: run Claude Code's Python hooks inside resident workers instead of starting a process per hook. `convert --write` folds each event's command hooks into one `type: http` hook (a backup is kept; `revert` restores it), and `serve`/`ensure`/`health` run the runner. Measured on Windows: 55 processes per tool call down to 24.
+- `adk claude doctor` CCD008: hooks routed to hookd while it is not answering (they are skipped silently), and command hooks that could run in-process.
+- The harness daemon and the awsh plugin keep hookd running when the settings route hooks to it.
+
+### Fixed
+- hookd finds a project's `.claude/hooks` from a session that moved into a subdirectory (`CLAUDE_PROJECT_DIR` follows the session's current directory).
+
 ## [3.8.79] - 2026-10-19
 
 ### Removed

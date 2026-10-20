@@ -35,6 +35,7 @@ import json
 import multiprocessing as mp
 import os
 import queue
+import re
 import runpy
 import sys
 import threading
@@ -54,10 +55,13 @@ MAX_JOBS = 500  # a worker is recycled after this many jobs (module state, memor
 
 
 def allowed_roots(project_dir: str) -> list:
-    """~/.claude/hooks, <project>/.claude/hooks, and each line of ROOTS_FILE."""
+    """~/.claude/hooks, <project>/.claude/hooks (the nearest ancestor that has one, see
+    `_find_up`), and each line of ROOTS_FILE."""
     roots = [HOME / ".claude" / "hooks"]
     if project_dir:
-        roots.append(Path(project_dir) / ".claude" / "hooks")
+        start = Path(project_dir)
+        roots.append(next((d / ".claude" / "hooks" for d in (start, *start.resolve().parents)
+                           if (d / ".claude" / "hooks").is_dir()), start / ".claude" / "hooks"))
     try:
         roots += [Path(x.strip()) for x in ROOTS_FILE.read_text(encoding="utf-8").splitlines()
                   if x.strip() and not x.startswith("#")]
@@ -260,12 +264,22 @@ def parse_specs(query: str, project_dir: str) -> list:
             continue
         p = Path(parts[0].replace("$HOME", str(HOME)))
         if not p.is_absolute():
-            p = Path(project_dir or ".") / p
+            p = _find_up(Path(project_dir or "."), p)
         p = p.resolve()
         if not any(_under(p, r) for r in allowed_roots(project_dir)):
             raise PermissionError("hook outside allowed roots: %s" % p)
         specs.append((str(p), parts[1:]))
     return specs
+
+
+def _find_up(start: Path, rel: Path) -> Path:
+    """`rel` under `start` or its nearest ancestor that has it. Claude Code sets
+    CLAUDE_PROJECT_DIR to the session's CURRENT directory, so a session that moved into a
+    subdirectory would otherwise miss every `.claude/hooks/...` hook of the repo above it."""
+    for d in (start, *start.resolve().parents):
+        if (d / rel).is_file():
+            return d / rel
+    return start / rel
 
 
 def _under(p: Path, root: Path) -> bool:
@@ -487,6 +501,134 @@ def ensure(port: int, workers: int) -> int:
     return 1
 
 
+# ---------------------------------------------------------------- convert
+
+# Events whose http hooks were proven live (block honoured, context delivered). SessionStart
+# accepts only command hooks; the rest stay commands until each is proven.
+FOLD_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop")
+BACKUP_SUFFIX = ".hookd-bak"
+_PY = re.compile(r"(^|[\\/])python[w0-9.]*(\.exe)?$", re.I)
+_SHELL_PY = re.compile(r"""^bash -c '(?:cd "\$CLAUDE_PROJECT_DIR" && )?python[0-9.]*(?: -[SI])* """
+                       r"""((?:\$CLAUDE_PROJECT_DIR/)?\.claude/hooks/[\w.\-]+\.py)"""
+                       r"""((?: --?[\w\-]+)*)'$""")
+
+
+def _console_scripts() -> dict:
+    """console-script name -> `ep:<module>:<func>`, for allowlisted packages only."""
+    from importlib.metadata import entry_points
+
+    try:
+        eps = entry_points(group="console_scripts")
+    except TypeError:  # 3.9: entry_points() takes no group
+        eps = entry_points().get("console_scripts", [])
+    mods = allowed_modules()
+    return {ep.name: "ep:" + ep.value for ep in eps
+            if ep.value.split(":")[0].split(".")[0] in mods}
+
+
+def hook_spec(h: dict, project_dir: str, scripts: dict):
+    """The `h=` spec that runs command hook `h` in-process, or None when it must stay a command
+    (a shell construct, pwsh, async, or a target hookd would refuse)."""
+    if not isinstance(h, dict) or h.get("type") != "command" or h.get("async"):
+        return None
+    cmd, args = str(h.get("command", "")), [str(a) for a in h.get("args") or []]
+    target, rest = None, []
+    m = _SHELL_PY.match(cmd)
+    if m and not args:
+        target, rest = m.group(1).replace("$CLAUDE_PROJECT_DIR/", ""), m.group(2).split()
+    elif args and _PY.search(cmd):
+        args = [a for a in args if a not in ("-S", "-I", "-u")]
+        if args[:1] == ["-m"] and len(args) > 1:
+            if args[1].split(".")[0] not in allowed_modules():
+                return None
+            return "|".join(["-m:" + args[1], *args[2:]])
+        if not args or not args[0].endswith(".py"):
+            return None
+        target, rest = args[0].replace("${CLAUDE_PROJECT_DIR}/", ""), args[1:]
+    else:
+        word = cmd.removesuffix(" || true").split()
+        if word and word[0] in scripts and not any(c in cmd.removesuffix(" || true")
+                                                    for c in "|&;<>$`"):
+            return "|".join([scripts[word[0]], *word[1:], *args])
+        return None
+    try:
+        parse_specs(urllib.parse.urlencode({"h": target}), project_dir)
+    except PermissionError:
+        return None
+    return "|".join([target.replace("\\", "/"), *rest])
+
+
+def convert_hooks(hooks: dict, project_dir: str, port: int = PORT):
+    """Fold every in-process-able command hook into one http hook per (event, matcher).
+
+    Returns (new_hooks, folded_count). Pure; hooks that must stay commands keep their group."""
+    scripts = _console_scripts()
+    out, n = {}, 0
+    for event, groups in hooks.items():
+        if event not in FOLD_EVENTS or not isinstance(groups, list):
+            out[event] = groups
+            continue
+        folded: dict = {}
+        new_groups = []
+        for g in groups:
+            keep = []
+            key = "" if g.get("matcher") in (None, "", "*") else g["matcher"]
+            for h in g.get("hooks", []):
+                spec = hook_spec(h, project_dir, scripts)
+                if spec is None:
+                    keep.append(h)
+                    continue
+                f = folded.setdefault(key, {"specs": [], "t": 0})
+                f["specs"].append(spec)
+                f["t"] = max(f["t"], int(h.get("timeout", 60)))
+                n += 1
+            if keep:
+                new_groups.append({**g, "hooks": keep})
+        for key, f in folded.items():
+            q = urllib.parse.urlencode([("t", f["t"])] + [("h", s) for s in f["specs"]])
+            grp = {"hooks": [{"type": "http", "url": "http://127.0.0.1:%d/run?%s" % (port, q),
+                              "timeout": f["t"] + 10,
+                              "headers": {"X-Hookd": "1", "X-Project-Dir": "$CLAUDE_PROJECT_DIR"},
+                              "allowedEnvVars": ["CLAUDE_PROJECT_DIR"]}]}
+            if key:
+                grp["matcher"] = key
+            new_groups.append(grp)
+        out[event] = new_groups
+    return out, n
+
+
+def default_settings_paths(cwd: str = "") -> list:
+    paths = [HOME / ".claude" / "settings.json"]
+    proj = Path(cwd or os.getcwd()) / ".claude" / "settings.json"
+    if proj.is_file() and proj.resolve() != paths[0].resolve():
+        paths.append(proj)
+    return [p for p in paths if p.is_file()]
+
+
+def convert_file(path: Path, write: bool) -> int:
+    """Convert one settings file (backup first, kept from the FIRST conversion). Returns folded."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    root = path.parent.parent
+    project = str(root) if path.parent.name == ".claude" and root != HOME else ""
+    data["hooks"], n = convert_hooks(data.get("hooks") or {}, project)
+    if write and n:
+        bak = path.with_name(path.name + BACKUP_SUFFIX)
+        if not bak.exists():
+            bak.write_bytes(path.read_bytes())
+        tmp = path.with_name(path.name + ".hookd-tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    return n
+
+
+def revert_file(path: Path) -> bool:
+    bak = path.with_name(path.name + BACKUP_SUFFIX)
+    if not bak.is_file():
+        return False
+    os.replace(bak, path)
+    return True
+
+
 # ---------------------------------------------------------------- self-test
 
 
@@ -546,6 +688,33 @@ def _self_test() -> int:
         second = pool.run({"path": str(hook), "args": ["A"], "stdin": b'{"x": "ok"}'}, 10)
         check("watchdog Timer does not kill the worker", first["code"] == 0
               and second["code"] == 0 and pool.spawned == 1)
+    with tempfile.TemporaryDirectory() as d:
+        hooks_dir = Path(d) / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "g.py").write_text("", encoding="utf-8")
+        sh = "bash -c 'cd \"$CLAUDE_PROJECT_DIR\" && python -S .claude/hooks/g.py --stop'"
+        hooks = {"Stop": [{"hooks": [{"type": "command", "command": sh, "timeout": 9}]},
+                          {"matcher": "*", "hooks": [
+                              {"type": "command", "command": "python",
+                               "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/g.py"]},
+                              {"type": "command", "command": "pwsh -File x.ps1"}]}],
+                 "SessionStart": [{"hooks": [{"type": "command", "command": sh}]}],
+                 "PreToolUse": [{"matcher": "Bash", "hooks": [
+                     {"type": "command", "command": "python", "args": ["C:/evil/x.py"]},
+                     {"type": "command", "command": "python", "args": ["a.py"], "async": True}]}]}
+        out, n = convert_hooks(hooks, d)
+        urls = [h["url"] for g in out["Stop"] for h in g["hooks"] if h["type"] == "http"]
+        check("convert folds shell + exec forms into one http hook", n == 2 and len(urls) == 1
+              and "g.py%7C--stop" in urls[0] and "t=60" in urls[0])
+        check("convert keeps pwsh, SessionStart, outside-root and async as commands",
+              out["SessionStart"] == hooks["SessionStart"] and out["PreToolUse"] == hooks[
+                  "PreToolUse"] and any(h.get("command") == "pwsh -File x.ps1"
+                                        for g in out["Stop"] for h in g["hooks"]))
+        sub = Path(d) / "pkg" / "deep"
+        sub.mkdir(parents=True)
+        specs = parse_specs("h=.claude/hooks/g.py", str(sub))
+        check("relative hook found from a subdirectory",
+              specs and Path(specs[0][0]) == (hooks_dir / "g.py").resolve())
     for f in fails:
         print("FAIL", f)
     print("self-test: %d checks failed" % len(fails) if fails else "self-test: ok")
@@ -562,6 +731,12 @@ def main(argv=None) -> int:
         p.add_argument("--workers", type=int, default=6)
     p = sub.add_parser("health")
     p.add_argument("--port", type=int, default=PORT)
+    for name, why in (("convert", "fold command hooks into hookd http hooks"),
+                      ("revert", "restore the settings saved by the first convert")):
+        p = sub.add_parser(name, help=why)
+        p.add_argument("settings", nargs="*", help="default: user + ./.claude settings.json")
+        if name == "convert":
+            p.add_argument("--write", action="store_true", help="apply (default: dry run)")
     a = ap.parse_args(argv)
     if a.self_test:
         return _self_test()
@@ -573,6 +748,21 @@ def main(argv=None) -> int:
         h = health(a.port)
         print(json.dumps(h) if h else "hookd: not answering on :%d" % a.port)
         return 0 if h else 1
+    if a.cmd in ("convert", "revert"):
+        paths = [Path(x) for x in a.settings] or default_settings_paths()
+        if not paths:
+            print("hookd: no settings.json found")
+            return 2
+        for path in paths:
+            if a.cmd == "revert":
+                print("%s: %s" % (path, "restored" if revert_file(path) else "no backup"))
+                continue
+            n = convert_file(path, a.write)
+            print("%s: %d hook(s) %s" % (path, n, "folded" if a.write else "foldable (dry run)"))
+        if a.cmd == "convert" and a.write and ensure(PORT, 6):
+            print("hookd: converted but NOT answering on :%d -- those hooks are skipped" % PORT)
+            return 1
+        return 0
     ap.print_help()
     return 2
 

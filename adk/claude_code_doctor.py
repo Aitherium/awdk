@@ -507,6 +507,35 @@ def check_shell_form(scopes: list[Scope], rep: Report) -> None:
                 )
 
 
+def check_hookd(scopes: list[Scope], rep: Report, probe: bool = True) -> None:
+    """CCD008: http hooks aimed at hookd fail OPEN when it is down -- every guard among them
+    is skipped with no error. A down hookd is a violation; foldable command hooks a warning."""
+    from adk.harnesses import hookd
+
+    routed, foldable = 0, 0
+    scripts = hookd._console_scripts()
+    for sc in scopes:
+        if sc.name not in ("user", "project"):  # what `hookd convert` rewrites; local is synced
+            continue
+        hooks = (sc.data or {}).get("hooks") or {}
+        project = "" if sc.name == "user" else str(sc.path.parent.parent)
+        for event, groups in hooks.items():
+            for g in groups if isinstance(groups, list) else []:
+                for h in g.get("hooks", []) if isinstance(g, dict) else []:
+                    if not isinstance(h, dict):
+                        continue
+                    if h.get("type") == "http" and "/run?" in str(h.get("url", "")):
+                        routed += 1
+                    elif event in hookd.FOLD_EVENTS and hookd.hook_spec(h, project, scripts):
+                        foldable += 1
+    if routed and probe and not hookd.health(hookd.PORT):
+        rep.add("CCD008", f"{routed} hook(s) route through hookd and it is not answering on "
+                f":{hookd.PORT} -- they are skipped silently; run `adk claude hookd ensure`")
+    if foldable:
+        rep.add("CCD008", f"{foldable} command hook(s) could run in-process (no spawn per call): "
+                "`adk claude hookd convert --write`", "warning")
+
+
 def _claude_binary() -> Path | None:
     exe = shutil.which("claude")
     if not exe:
@@ -706,6 +735,7 @@ def run_doctor(
     check_duplicate_hooks(scopes, rep)
     check_mcpjson(scopes, cwd, project, rep)
     check_shell_form(scopes, rep)
+    check_hookd(scopes, rep, probe=probe_devices)
     if timing:
         check_hook_latency(scopes, project, budget_ms, rep)
     else:

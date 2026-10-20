@@ -106,6 +106,34 @@ export type Run = {
 }
 
 /**
+ * Claude Code's http hooks fail OPEN: when hookd (awdk's resident hook runner) is down,
+ * every hook routed through it is skipped without a word. A session whose settings route
+ * hooks through it starts it when it is not answering. Never throws.
+ *
+ * @param $ the engine interface
+ * @returns what it found or did, for the debug log
+ */
+export async function keepHookd($: EngineInterface): Promise<string> {
+  try {
+    const hooks = JSON.stringify(((await $.settings.read()) as { hooks?: unknown }).hooks ?? {})
+    const port = /127\.0\.0\.1:(\d+)\/run\?/.exec(hooks)?.[1]
+    if (!port) return 'hookd: not routed'
+    try {
+      if ((await $.http.fetch(`http://127.0.0.1:${port}/health`)).ok) return 'hookd: up'
+    } catch {
+      // not answering: start it below
+    }
+    const r = await $.process.run(
+      ['python', '-m', 'adk.harnesses.hookd', 'ensure', '--port', port],
+      { timeoutMs: 20000 },
+    )
+    return r.exitCode === 0 ? 'hookd: started' : `hookd: ensure exited ${r.exitCode}`
+  } catch (err) {
+    return `hookd: ${String(err).slice(0, 200)}`
+  }
+}
+
+/**
  * Registers the `aw` subagent type.
  *
  * The spawn runs as it always does, so the engine starts a real subagent loop
@@ -132,6 +160,7 @@ export function register(on: On) {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    void keepHookd($).then((said) => $.ui.log(said, { to: 'debug' }))
     try {
       ;({ tool: progressTool } = await $.tool.register({
         name: PROGRESS_TOOL,

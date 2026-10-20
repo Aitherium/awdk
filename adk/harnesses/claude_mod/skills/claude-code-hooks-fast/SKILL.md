@@ -76,7 +76,48 @@ command and all its descendants ever start, without admin rights:
 catching bad arguments and crashes. awsettings ships this as `--never-fail`, so
 its push hook (which runs after every tool call) needs no shell.
 
-## 5. Screenshots: paste, or let a hook announce them
+## 5. Zero processes: run Python hooks in a resident runner (hookd)
+
+Exec form still starts the interpreter on every call. awdk's **hookd** starts nothing: it
+runs your Python hooks inside long-lived workers. Claude Code sends each event as an HTTP
+POST (a `type: http` hook), hookd runs the hooks on that event one after another with the
+event JSON on stdin, and the results come back with the same meaning as command hooks: exit 2
+blocks, JSON output passes through, and plain output becomes context on UserPromptSubmit.
+
+```bash
+adk claude hookd convert            # dry run: how many hooks would fold, per file
+adk claude hookd convert --write    # rewrite user + project settings.json (backup kept)
+adk claude hookd revert             # restore the backup
+adk claude hookd health
+adk claude doctor                   # CCD008: hookd down while hooks route to it
+```
+
+> Measured on the same workstation, 2026-10-20: one tool call went from **55 processes to
+> 24**, and Python starts from 23 to 4 across seven calls. 31 real hooks produced the same
+> output through hookd as they did as commands.
+
+What `convert` folds, and what it leaves alone:
+- It folds Python scripts (shell or exec form), `python -m <module>`, and console scripts
+  whose package is allowlisted, on PreToolUse, PostToolUse, UserPromptSubmit and Stop. Each
+  (event, matcher) pair becomes one http hook.
+- It keeps as commands: PowerShell hooks, anything that needs a shell (pipes, `&&`), async
+  hooks, and SessionStart, which accepts no http hooks.
+- Only scripts under `~/.claude/hooks`, the project's `.claude/hooks`, or a directory listed
+  in `~/.aither/hookd/roots.txt` will run. Modules must be listed in `modules.txt`. The
+  `X-Hookd` header forces a CORS preflight, so a web page cannot drive the runner.
+
+**An http hook fails OPEN.** If hookd is down, every hook routed to it is skipped with no
+error, and that includes guards. Three things restart it: a SessionStart `hookd ensure`, the
+awsh plugin at session start, and the awdk harness daemon, which checks once a minute.
+
+Traps found while proving it:
+- A hook that arms `threading.Timer(n, os._exit)` as a watchdog kills a shared worker
+  later. hookd cancels timers left behind by a job and contains `os._exit`.
+- `CLAUDE_PROJECT_DIR` is the session's *current* directory. A session that moved into a
+  subdirectory misses `.claude/hooks/...`, and the command form misses it too. hookd looks
+  in parent directories.
+
+## 6. Screenshots: paste, or let a hook announce them
 
 - **Paste:** in the Claude Code prompt on Windows, an image pastes with **Alt+V**.
   Ctrl+V belongs to the terminal and pastes text only.

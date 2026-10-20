@@ -14371,6 +14371,10 @@ def _register_commands(sub):
     add_arguments_doctor(
         claude_sub.add_parser("doctor", help="Audit Claude Code settings/hooks/MCP (CCD001-006)")
     )
+    cl_hookd_p = claude_sub.add_parser(
+        "hookd", help="Run hooks in-process, no spawn per hook: serve|ensure|health|convert|revert"
+    )
+    cl_hookd_p.add_argument("hookd_args", nargs=argparse.REMAINDER)
 
     # adk agent-prompt
     ap_p = sub.add_parser("agent-prompt", help="Print the setup prompt for AI coding agents")

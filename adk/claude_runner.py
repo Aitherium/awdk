@@ -2113,7 +2113,11 @@ def cmd_claude(args: Any) -> int:
             from adk import claude_code_doctor
 
             return getattr(claude_code_doctor, f"cmd_{sub}")(args)
-        print("Usage: adk claude [serve|spawn|runs|kill|setup|doctor]")
+        if sub == "hookd":
+            from adk.harnesses import hookd
+
+            return hookd.main(list(getattr(args, "hookd_args", []) or []))
+        print("Usage: adk claude [serve|spawn|runs|kill|setup|doctor|hookd]")
         return 1
     except (RunnerError, ScopeError) as e:
         print(f"Error: {e}", file=sys.stderr)
