@@ -61,15 +61,19 @@ public class GeminiFunctionsCheck {
         eq("unknown app", GeminiFunctions.appUrl("settings", false), null);
         eq("url as app", GeminiFunctions.appUrl("https://evil.example/", false), null);
         // where the app shell takes each one (AppTabs.route): the app itself, never Home by accident
-        eq("route adult learn", AppTabs.route(GeminiFunctions.appUrl("learn", false), false), "tab family"); // Learn is the Family tab (2026-10-16)
-        eq("route adult family", AppTabs.route(GeminiFunctions.appUrl("family", false), false), "tab family");
+        // a grown-up's phone is the OS (0.4.0): each app opens as its OS window
+        eq("route adult learn", AppTabs.route(GeminiFunctions.appUrl("learn", false), false),
+                "tab os " + AppTabs.OS_HOME + "&app=learn");
+        eq("route adult family", AppTabs.route(GeminiFunctions.appUrl("family", false), false),
+                "tab os " + AppTabs.OS_HOME + "&app=family");
         eq("route adult hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", false), false),
-                "window " + AppTabs.ORIGIN + "/?app=hearth");
+                "tab os " + AppTabs.OS_HOME + "&app=hearth");
         eq("route child learn", AppTabs.route(GeminiFunctions.appUrl("learn", true), true), "tab learn");
         eq("route child hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", true), true), "tab learn " + AppTabs.ORIGIN + "/hearth"); // one child tab, the classroom
-        // the Hearth draft survives the shell: it opens as a window on the full link
+        // the Hearth draft survives the shell: the OS opens Hearth with the full draft
         String draft = GeminiFunctions.hearthUrl("water the plants", false);
-        eq("route hearth draft", AppTabs.route(draft, false), "window " + draft);
+        eq("route hearth draft", AppTabs.route(draft, false),
+                "tab os " + AppTabs.OS_HOME + "&app=hearth&ask=water%20the%20plants");
         // askHearth: a draft in Hearth's box, never on a child's phone, clipped, encoded
         eq("hearth draft", GeminiFunctions.hearthUrl("turn off the porch light", false),
                 AppTabs.ORIGIN + "/?app=hearth&ask=turn%20off%20the%20porch%20light");

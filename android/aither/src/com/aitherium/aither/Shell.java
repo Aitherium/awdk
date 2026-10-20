@@ -19,18 +19,22 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The app's own frame around AitherOS, so the phone gets an app and not a website:
+ * The app's frame around AitherOS, by who uses this phone.
  *
- *   - a native bottom bar of tabs by who uses this phone (AppTabs.tabs); each web tab is
- *     its own WebView, kept alive with its own back stack; tapping the active tab takes it
- *     back to its root;
- *   - a native Home grid of the apps this account can use (AppTabs.apps);
- *   - a native top bar over web content: back, title, refresh (and, on a child's phone,
- *     a gear for a grown-up: a grown-up's bar has its own "You" tab, so no second gear);
- *   - a full-screen window (back, title, refresh, close) for an app that has no tab.
+ * A grown-up's phone IS the AitherOS desktop (0.4.0): ONE full-screen WebView on the OS
+ * ({@link AppTabs#OS_HOME}), edge to edge, with no native bar, tabs, Home grid or window.
+ * The OS draws its own home screen, dock and windows; Android back asks it first
+ * (AppTabs.OS_BACK_JS); every link, notification and shortcut loads into that one WebView
+ * (AppTabs.osUrl); the phone's safe areas are handed to the page (AppTabs.insetsJs).
+ *
+ * A child's phone keeps its native frame, unchanged:
+ *   - a bottom bar of ONE tab, the classroom (AppTabs.CHILD_TABS), whose long-press opens
+ *     this phone's settings for a grown-up;
+ *   - a top bar over the page: back, title, refresh and a gear for a grown-up;
+ *   - a full-screen window (back, title, refresh, close) for a page outside the tab.
  *
  * The WebViews themselves come from the Host (MainActivity), which owns their settings,
- * the JS bridge and the link rules, so every tab behaves exactly as the one WebView did.
+ * the JS bridges and the link rules, so every WebView behaves the same.
  */
 final class Shell {
     interface Host {
@@ -42,12 +46,14 @@ final class Shell {
 
         /** Leave the app (back on the home tab). */
         void exit();
+
+        /** The phone's role changed: edge to edge (the OS) or the native frame (a child). */
+        void modeChanged(boolean child);
     }
 
     private final Activity a;
     private final Host host;
     private boolean child;
-    private boolean owner;
     private String current = "";
 
     private final Map<String, WebView> webs = new HashMap<>();
@@ -57,6 +63,9 @@ final class Shell {
     private final FrameLayout root;
     private final FrameLayout content;
     private final LinearLayout nav;
+    private final LinearLayout bar;
+    private final View barRule;
+    private final View navRule;
     private final TextView title;
     private final ImageView back;
     private final ImageView refresh;
@@ -65,7 +74,7 @@ final class Shell {
     private TextView signInLine;
     private TextView signInGo;
     private boolean signingIn;
-    private View home;
+    private boolean signedOut;
 
     private final LinearLayout windowBox;
     private final FrameLayout windowContent;
@@ -73,17 +82,23 @@ final class Shell {
     private WebView window;
     private String windowLabel = "";
 
-    Shell(Activity a, boolean child, boolean owner, Host host) {
+    /** A grown-up's one WebView: the OS. */
+    private WebView os;
+    /** The phone's safe areas in CSS px (top, right, bottom, left), for the OS page. */
+    private int[] insets = {0, 0, 0, 0};
+    /** A Back is waiting on the OS's answer: a second press does not ask twice. */
+    private boolean backPending;
+
+    Shell(Activity a, boolean child, Host host) {
         this.a = a;
         this.host = host;
         this.child = child;
-        this.owner = owner;
         root = new FrameLayout(a);
         root.setBackgroundColor(Ui.BG);
 
         LinearLayout main = new LinearLayout(a);
         main.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout bar = Ui.bar(a);
+        bar = Ui.bar(a);
         back = Ui.icon(a, R.drawable.ic_nav_back, "Back", v -> up());
         title = Ui.barTitle(a);
         refresh = Ui.icon(a, R.drawable.ic_nav_refresh, "Refresh", v -> {
@@ -97,13 +112,15 @@ final class Shell {
         bar.addView(refresh);
         bar.addView(gear);
         main.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(a, 56)));
-        main.addView(Ui.rule(a));
+        barRule = Ui.rule(a);
+        main.addView(barRule);
         signInBar = signInBar();
         signInBar.setVisibility(View.GONE);
         main.addView(signInBar);
         content = new FrameLayout(a);
         main.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        main.addView(Ui.rule(a));
+        navRule = Ui.rule(a);
+        main.addView(navRule);
         nav = new LinearLayout(a);
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setBackgroundColor(Ui.BG);
@@ -131,14 +148,59 @@ final class Shell {
         root.addView(windowBox, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         buildTabs();
+        applyMode();
     }
 
     View view() { return root; }
 
     boolean child() { return child; }
 
-    /** Open an aitherium.com link where it belongs (null = the home tab). */
+    /** The native frame is a child's only: a grown-up's screen is the OS, edge to edge. */
+    private void applyMode() {
+        int frame = child ? View.VISIBLE : View.GONE;
+        bar.setVisibility(frame);
+        barRule.setVisibility(frame);
+        navRule.setVisibility(frame);
+        nav.setVisibility(frame);
+        signInBar.setVisibility(child && signedOut ? View.VISIBLE : View.GONE);
+        host.modeChanged(child);
+    }
+
+    /** Put the OS on screen, loading `url` in it ("" = the OS home when it is new). */
+    private void showOs(String url) {
+        current = AppTabs.OS;
+        if (os == null) {
+            os = host.newWeb();
+            content.addView(os, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            os.loadUrl(url.isEmpty() ? AppTabs.OS_HOME : url);
+        } else if (!url.isEmpty()) {
+            os.loadUrl(url);
+        }
+    }
+
+    /** The phone's safe areas changed (CSS px): the OS page gets them now and on every load. */
+    void insets(int top, int right, int bottom, int left) {
+        int[] next = {top, right, bottom, left};
+        if (java.util.Arrays.equals(next, insets)) return;
+        insets = next;
+        if (os != null) pushInsets(os);
+    }
+
+    private void pushInsets(WebView w) {
+        if (!MainActivity.ours(android.net.Uri.parse(String.valueOf(w.getUrl())))) return;
+        w.evaluateJavascript(AppTabs.insetsJs(insets[0], insets[1], insets[2], insets[3]),
+                v -> android.util.Log.i("AitherInsets", String.valueOf(v)));
+    }
+
+    /** Open an aitherium.com link where it belongs (null = the home tab). A grown-up's
+     *  link always loads into the one WebView, the OS (AppTabs.osUrl). */
     void open(String url) {
+        if (!child) {
+            closeWindow();
+            showOs(url == null || url.isEmpty() ? "" : AppTabs.route(url, false).url);
+            return;
+        }
         if (url == null || url.isEmpty()) {
             select(AppTabs.homeTab(child));
             return;
@@ -157,10 +219,10 @@ final class Shell {
     }
 
     /** A tapped link in one of the app's pages that belongs somewhere else in the app
-     *  (AppTabs.Nav.ROUTE): another tab, Home, or a full-screen window over the tabs. */
+     *  (AppTabs.Nav.ROUTE): on a grown-up's phone, the OS URL for it in the one WebView. */
     void openFromLink(String url) {
         AppTabs.Route r = AppTabs.linkRoute(url);
-        if (r.window) {
+        if (r.window && child) {
             openWindow(r.url, "");
             return;
         }
@@ -170,21 +232,13 @@ final class Shell {
     /** The tab a WebView belongs to, "" for the window (or one this shell does not hold). */
     String tabOf(WebView v) {
         if (v == window) return "";
+        if (v != null && v == os) return AppTabs.OS;
         for (Map.Entry<String, WebView> e : webs.entrySet()) if (e.getValue() == v) return e.getKey();
         return "";
     }
 
-    /** The account became, or stopped being, the platform owner: the Home grid follows. */
-    void setOwner(boolean o) {
-        if (o == owner) return;
-        owner = o;
-        if (home == null) return;
-        content.removeView(home);
-        home = null;
-        if (AppTabs.HOME.equals(current)) show(AppTabs.HOME, "");
-    }
-
-    /** The phone's role changed (a child signed in, or an adult): new tabs, back to home. */
+    /** The phone's role changed (a child signed in, or an adult): the OS for a grown-up, the
+     *  classroom tab for a child, each from its start. */
     void setChild(boolean c) {
         if (c == child) return;
         child = c;
@@ -195,17 +249,22 @@ final class Shell {
         }
         webs.clear();
         clearOnLoad.clear();
-        if (home != null) content.removeView(home);
-        home = null;
+        if (os != null) {
+            content.removeView(os);
+            os.destroy();
+            os = null;
+        }
         current = "";
         gear.setVisibility(child ? View.VISIBLE : View.GONE);
         buildTabs();
+        applyMode();
         select(AppTabs.homeTab(child));
     }
 
     /** The WebView on screen, or the last web tab, or none (for reading the page's storage). */
     WebView anyWeb() {
         if (window != null) return window;
+        if (os != null) return os;
         WebView w = webs.get(current);
         if (w != null) return w;
         for (WebView x : webs.values()) return x;
@@ -214,12 +273,14 @@ final class Shell {
 
     /** The WebView the person is looking at, or none on a native screen. */
     WebView current() {
-        return window != null ? window : webs.get(current);
+        if (window != null) return window;
+        return os != null ? os : webs.get(current);
     }
 
     void reloadAll() {
         for (WebView w : webs.values()) w.reload();
         if (window != null) window.reload();
+        if (os != null) os.reload();
     }
 
     // ---- signing in: one place, every tab follows (Session)
@@ -250,9 +311,11 @@ final class Shell {
                 : "Signed out. Sign in");
     }
 
+    /** A child's phone shows the bar; a grown-up's OS shows its own phone sign-in. */
     void signedOut(boolean out) {
+        signedOut = out;
         signInWords(signInBar);
-        signInBar.setVisibility(out ? View.VISIBLE : View.GONE);
+        signInBar.setVisibility(out && child ? View.VISIBLE : View.GONE);
     }
 
     /** The sign-in page in a window over the tabs; it comes back to the page on screen.
@@ -279,19 +342,34 @@ final class Shell {
             }
         }
         if (window != null) window.reload();
+        if (os != null) {
+            if (AppTabs.isSignIn(os.getUrl())) {
+                clearOnLoad.add(os);
+                os.loadUrl(AppTabs.OS_HOME);
+            } else {
+                os.reload();
+            }
+        }
     }
 
     /** Is any page in the app on the sign-in page (where it lands with no session)? */
     boolean onSignIn() {
         if (window != null && AppTabs.isSignIn(window.getUrl())) return true;
+        if (os != null && AppTabs.isSignIn(os.getUrl())) return true;
         for (WebView w : webs.values()) if (AppTabs.isSignIn(w.getUrl())) return true;
         return false;
     }
 
     /**
      * A page loaded or its history moved (MainActivity's WebViewClient tells us): forget the
-     * history behind a tab that was sent to its root, and refresh the bars.
+     * history behind a tab that was sent to its root, and refresh the bars. A finished load
+     * on the OS hands the page the phone's safe areas again (a new document forgets them).
      */
+    void pageFinished(WebView v) {
+        pageChanged(v);
+        if (v == os) pushInsets(v);
+    }
+
     void pageChanged(WebView v) {
         if (clearOnLoad.remove(v)) v.clearHistory();
         if (v == window && windowLabel.isEmpty()) windowTitle.setText(AppTabs.barTitle("", false, v.getTitle()));
@@ -318,6 +396,15 @@ final class Shell {
             windowContent.addView(window, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
             if (url.startsWith("http")) window.loadUrl(url);
+            return true;
+        }
+        if (dead == os) {
+            content.removeView(dead);
+            clearOnLoad.remove(dead);
+            dead.destroy();
+            os = null;
+            backPending = false;
+            showOs(url.startsWith("http") ? url : "");
             return true;
         }
         for (Map.Entry<String, WebView> e : webs.entrySet()) {
@@ -349,8 +436,13 @@ final class Shell {
 
     // ---- back
 
-    /** Android back. Returns false when the app should leave (the caller moves to back). */
+    /** Android back: the OS answers first on a grown-up's phone; a child's frame walks its
+     *  window, page history, tab root, Home, then leaves (AppTabs.back). */
     void back() {
+        if (!child) {
+            osBack();
+            return;
+        }
         WebView w = webs.get(current);
         AppTabs.Back b = AppTabs.back(window != null, window != null && window.canGoBack(),
                 w != null && w.canGoBack(), atRoot(), current.equals(AppTabs.homeTab(child)));
@@ -363,6 +455,49 @@ final class Shell {
             default: host.exit();
         }
         updateBar();
+    }
+
+    /**
+     * Back on the OS: ask window.aitherOs.back() (AppTabs.OS_BACK_JS). `true` = it closed or
+     * went back in something. Anything else, or no answer in OS_BACK_TIMEOUT_MS, is decided by
+     * AppTabs.osBack: leave from the OS, else the page's own history or the OS home.
+     */
+    private void osBack() {
+        WebView w = os;
+        if (w == null) {
+            host.exit();
+            return;
+        }
+        if (backPending) return;
+        backPending = true;
+        final boolean[] answered = {false};
+        Runnable late = () -> {
+            if (answered[0]) return;
+            answered[0] = true;
+            backPending = false;
+            afterOsBack(w, null);
+        };
+        root.postDelayed(late, AppTabs.OS_BACK_TIMEOUT_MS);
+        w.evaluateJavascript(AppTabs.OS_BACK_JS, v -> {
+            if (answered[0]) return;
+            answered[0] = true;
+            backPending = false;
+            root.removeCallbacks(late);
+            afterOsBack(w, v);
+        });
+    }
+
+    private void afterOsBack(WebView w, String result) {
+        if (w != os) return; // the WebView was replaced (renderer gone) while asking
+        switch (AppTabs.osBack(result, w.getUrl(), w.canGoBack())) {
+            case HANDLED: break;
+            case WEB_BACK: w.goBack(); break;
+            case OS_HOME:
+                clearOnLoad.add(w);
+                w.loadUrl(AppTabs.OS_HOME);
+                break;
+            default: host.exit();
+        }
     }
 
     /** The top bar's back arrow: the same as Android back, except it never leaves the app. */
@@ -456,27 +591,6 @@ final class Shell {
         }
     }
 
-    /** A Home tile's glyph colour: apply_aither_icon.py SHORTCUT_ACCENT (amber for the household's own
-     *  apps, cyan for the tools), so a tile matches its launcher shortcut. */
-    static int accent(String icon) {
-        switch (icon) {
-            case "learn": case "family": case "hearth": case "sprite": case "academy":
-            case "space": case "quests": case "room":
-                return 0xFFD4872B;
-            default:
-                return 0xFF5EC9CC;
-        }
-    }
-
-    /** The rounded brand-navy chip a Home tile's glyph sits on (the shortcut tiles' ground). */
-    private static android.graphics.drawable.Drawable chip(Context c) {
-        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable(
-                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
-                new int[] {0xFF10243B, 0xFF02060D});
-        g.setCornerRadius(Ui.dp(c, 12));
-        return g;
-    }
-
     private void paintNav(View item, String icon, boolean on) {
         ImageView i = item.findViewWithTag("icon");
         TextView l = item.findViewWithTag("label");
@@ -490,6 +604,11 @@ final class Shell {
 
     /** A tap on a tab: Settings opens its screen; the active web tab goes to its root. */
     void select(String id) {
+        if (!child) { // a grown-up has no tabs: the one surface is the OS
+            closeWindow();
+            showOs("");
+            return;
+        }
         if (AppTabs.SETTINGS.equals(id)) {
             host.openSettings();
             return;
@@ -502,8 +621,12 @@ final class Shell {
         show(id, "");
     }
 
-    /** Put tab `id` on screen; load `url` in it ("" = its root when it is new). */
+    /** Put a child's tab `id` on screen; load `url` in it ("" = its root when it is new). */
     private void show(String id, String url) {
+        if (!child) {
+            showOs(url);
+            return;
+        }
         String[] t = AppTabs.tab(child, id);
         if (t == null) t = AppTabs.tab(child, AppTabs.homeTab(child));
         id = t[0];
@@ -511,14 +634,7 @@ final class Shell {
         for (Map.Entry<String, WebView> e : webs.entrySet()) {
             e.getValue().setVisibility(e.getKey().equals(current) ? View.VISIBLE : View.GONE);
         }
-        if (home != null) home.setVisibility(AppTabs.HOME.equals(id) ? View.VISIBLE : View.GONE);
-        if (AppTabs.HOME.equals(id)) {
-            if (home == null) {
-                home = homeGrid();
-                content.addView(home, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT));
-            }
-        } else if (!AppTabs.isNative(t)) {
+        if (!AppTabs.isNative(t)) {
             WebView w = webs.get(id);
             if (w == null) {
                 w = host.newWeb();
@@ -580,191 +696,5 @@ final class Shell {
         window = null;
         windowBox.setVisibility(View.GONE);
         updateBar();
-    }
-
-
-    // ---- Home
-
-    /** Home: for a grown-up, Talk / Show me, a search box and every app that is not a tab,
-     *  under its bead-space cluster -- the one "All" list (AppTabs.ADULT_APPS); for a child,
-     *  their grid. Each tile opens in its tab, in a window, or the settings screen. */
-    private View homeGrid() {
-        Context c = a;
-        ScrollView scroll = new ScrollView(c);
-        scroll.setFillViewport(true);
-        LinearLayout col = new LinearLayout(c);
-        col.setOrientation(LinearLayout.VERTICAL);
-        int pad = Ui.dp(c, 16);
-        col.setPadding(pad, pad, pad, pad);
-        LinearLayout head = new LinearLayout(c);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView mark = new ImageView(c);
-        mark.setImageResource(R.drawable.aither_mark);
-        mark.setContentDescription("Aither");
-        head.addView(mark, new LinearLayout.LayoutParams(Ui.dp(c, 48), Ui.dp(c, 48)));
-        TextView h = Ui.title(c, child ? "Your apps" : "Everything else");
-        h.setPadding(Ui.dp(c, 12), 0, 0, 0);
-        head.addView(h);
-        col.addView(head);
-        if (child) { // a grown-up's grid needs no explainer line (2026-10-18 app audit)
-            TextView sub = Ui.note(c, "Tap one to open it. The bar at the bottom takes you back.");
-            sub.setPadding(0, Ui.dp(c, 8), 0, Ui.dp(c, 16));
-            col.addView(sub);
-        } else {
-            head.setPadding(0, 0, 0, Ui.dp(c, 16));
-        }
-        String[][] apps = AppTabs.apps(child, owner, Flavor.STORE);
-        if (child) { // a child's apps open on Learn: no Home grid, no search
-            addTiles(c, col, apps);
-            scroll.addView(col);
-            return scroll;
-        }
-        col.addView(entryButtons(c));
-        android.widget.EditText find = new android.widget.EditText(c);
-        find.setHint("Search apps");
-        find.setSingleLine(true);
-        find.setTextColor(Ui.INK);
-        find.setHintTextColor(Ui.DIM);
-        find.setTextSize(16);
-        find.setBackground(Ui.round(c, Ui.CARD, Ui.RADIUS, Ui.LINE));
-        find.setPadding(Ui.dp(c, 14), Ui.dp(c, 12), Ui.dp(c, 14), Ui.dp(c, 12));
-        find.setContentDescription("Search apps");
-        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        fp.setMargins(Ui.dp(c, 5), 0, Ui.dp(c, 5), Ui.dp(c, 8));
-        col.addView(find, fp);
-        LinearLayout list = new LinearLayout(c);
-        list.setOrientation(LinearLayout.VERTICAL);
-        col.addView(list);
-        fillClusters(c, list, apps, "");
-        find.addTextChangedListener(new android.text.TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence q, int st, int n, int after) {}
-            @Override public void onTextChanged(CharSequence q, int st, int before, int n) {}
-            @Override public void afterTextChanged(android.text.Editable q) {
-                fillClusters(c, list, apps, q.toString());
-            }
-        });
-        scroll.addView(col);
-        return scroll;
-    }
-
-    /** The apps matching `q`, under a heading per cluster (AppTabs.CLUSTERS order). */
-    private void fillClusters(Context c, LinearLayout list, String[][] apps, String q) {
-        list.removeAllViews();
-        String[][] hits = AppTabs.search(apps, q);
-        if (hits.length == 0) {
-            list.addView(Ui.note(c, "Nothing called that. Ask Aither instead: the bar's Aither tab."));
-            return;
-        }
-        for (String cluster : AppTabs.CLUSTERS) {
-            java.util.List<String[]> in = new java.util.ArrayList<>();
-            for (String[] app : hits) if (app.length > 6 && cluster.equals(app[6])) in.add(app);
-            if (in.isEmpty()) continue;
-            TextView label = Ui.text(c, cluster.toUpperCase(java.util.Locale.ROOT), 12, Ui.DIM);
-            label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-            label.setPadding(Ui.dp(c, 6), Ui.dp(c, 12), 0, Ui.dp(c, 4));
-            list.addView(label);
-            addTiles(c, list, in.toArray(new String[0][]));
-        }
-    }
-
-    private void addTiles(Context c, LinearLayout col, String[][] apps) {
-        int perRow = c.getResources().getConfiguration().screenWidthDp >= 600 ? 4 : 3;
-        LinearLayout row = null;
-        for (int i = 0; i < apps.length; i++) {
-            if (i % perRow == 0) {
-                row = new LinearLayout(c);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                col.addView(row);
-            }
-            row.addView(tile(apps[i]), tileParams(c));
-        }
-        if (row != null) {
-            for (int k = apps.length % perRow; k != 0 && k < perRow; k++) {
-                row.addView(new View(c), tileParams(c)); // keep the last row's tiles the same width
-            }
-        }
-    }
-
-    /** The two things people came for, as big named buttons above the grid: Talk (the voice
-     *  conversation in Aither's chat) and Show me (the live camera with voice). */
-    private View entryButtons(Context c) {
-        LinearLayout row = new LinearLayout(c);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, 0, 0, Ui.dp(c, 12));
-        for (String[] b : AppTabs.HOME_BUTTONS) row.addView(entry(c, b[0], b[1], b[2]), tileParams(c));
-        return row;
-    }
-
-    private View entry(Context c, String label, String line, String path) {
-        LinearLayout b = new LinearLayout(c);
-        b.setOrientation(LinearLayout.VERTICAL);
-        b.setGravity(Gravity.CENTER);
-        b.setMinimumHeight(Ui.dp(c, 96));
-        b.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(Ui.PRESS), Ui.round(c, 0x1A2AD7D7, Ui.RADIUS, Ui.ACCENT), null));
-        b.setContentDescription(label + ". " + line);
-        TextView name = Ui.text(c, label, 20, Ui.INK);
-        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        name.setGravity(Gravity.CENTER);
-        b.addView(name);
-        TextView sub = Ui.text(c, line, 13, Ui.DIM);
-        sub.setGravity(Gravity.CENTER);
-        b.addView(sub);
-        b.setOnClickListener(v -> show("aither", AppTabs.ORIGIN + path));
-        return b;
-    }
-
-    private static LinearLayout.LayoutParams tileParams(Context c) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        int m = Ui.dp(c, 5);
-        p.setMargins(m, m, m, m);
-        return p;
-    }
-
-    private View tile(String[] app) {
-        Context c = a;
-        LinearLayout t = new LinearLayout(c);
-        t.setOrientation(LinearLayout.VERTICAL);
-        t.setGravity(Gravity.CENTER_HORIZONTAL);
-        t.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(Ui.PRESS), Ui.round(c, Ui.CARD, Ui.RADIUS, Ui.LINE), null));
-        int p = Ui.dp(c, 10);
-        t.setPadding(p, Ui.dp(c, 14), p, Ui.dp(c, 12));
-        t.setMinimumHeight(Ui.dp(c, 132));
-        t.setContentDescription(app[1] + ". " + app[2]);
-        ImageView icon = new ImageView(c);
-        icon.setImageResource(iconRes(app[4]));
-        icon.setBackground(chip(c));
-        int inset = Ui.dp(c, vector(app[4]) ? 13 : 5);
-        icon.setPadding(inset, inset, inset, inset);
-        if (vector(app[4])) icon.setImageTintList(android.content.res.ColorStateList.valueOf(accent(app[4])));
-        t.addView(icon, new LinearLayout.LayoutParams(Ui.dp(c, 52), Ui.dp(c, 52)));
-        TextView name = Ui.text(c, app[1], 14, Ui.INK);
-        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        name.setGravity(Gravity.CENTER);
-        name.setPadding(0, Ui.dp(c, 8), 0, Ui.dp(c, 2));
-        t.addView(name);
-        TextView line = Ui.text(c, app[2], 12, Ui.DIM);
-        line.setGravity(Gravity.CENTER);
-        line.setMaxLines(2);
-        line.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        t.addView(line);
-        t.setOnClickListener(v -> openApp(app));
-        return t;
-    }
-
-    private void openApp(String[] app) {
-        String tab = app[5];
-        if (AppTabs.SETTINGS.equals(tab)) {
-            host.openSettings();
-        } else if (!tab.isEmpty()) {
-            String root = AppTabs.rootUrl(child, tab);
-            String url = AppTabs.ORIGIN + app[3];
-            show(tab, url.equals(root) ? "" : url);
-        } else {
-            openWindow(AppTabs.ORIGIN + app[3], app[1]);
-        }
     }
 }

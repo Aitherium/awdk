@@ -132,6 +132,13 @@ final class FamilyNotices {
 
         Bridge(Activity a) { act = a; }
 
+        /** The OS's "You -> This phone": this phone's own settings screen (updates,
+         *  notifications, voice), which no web page can reach otherwise. */
+        @JavascriptInterface
+        public void openNativeSettings() {
+            act.runOnUiThread(() -> act.startActivity(new android.content.Intent(act, SettingsActivity.class)));
+        }
+
         /** True while a phone call (ringing, cellular, VoIP) is going on: pages never listen then. */
         @JavascriptInterface
         public boolean inCall() {

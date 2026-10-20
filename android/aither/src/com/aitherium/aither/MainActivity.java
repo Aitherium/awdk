@@ -12,8 +12,9 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 /**
- * Aither on Android: AitherOS itself (the aitherium.com app) inside a native frame (Shell:
- * bottom tabs by role, a Home grid of apps, top bars, Settings one tap away), plus this phone's
+ * Aither on Android: AitherOS itself (the aitherium.com app). On a grown-up's phone it IS
+ * the AitherOS desktop, one full-screen WebView edge to edge (Shell); a child's phone keeps
+ * its one-tab classroom frame. Plus this phone's
  * extras running beside it: the model on this phone (LlmService, 127.0.0.1:8486), lending
  * memory (HolderService) and the household check-in (HeartbeatJob). One app, one icon.
  *
@@ -25,11 +26,19 @@ import android.webkit.WebViewClient;
 public class MainActivity extends Activity implements Shell.Host {
     static final String HOME = "https://app.aitherium.com/";
     /** The page hides its own install cards for this (localapp); one app, one icon. The Play
-     *  build adds " Play": the page then offers no purchase (Play's payments policy). */
-    static final String UA_TOKEN = " AitherAndroid/" + Config.VERSION + (Flavor.STORE ? " Play" : "");
+     *  build adds " Play": the page then offers no purchase (Play's payments policy). A
+     *  grown-up's phone adds " AitherOS": the page is the phone OS (host android-os) and
+     *  draws its own chrome. A child's phone never says AitherOS (AppTabs.uaToken). */
+    static final String UA_TOKEN = AppTabs.uaToken(Config.VERSION, Flavor.STORE, true);
+    static final String UA_TOKEN_CHILD = AppTabs.uaToken(Config.VERSION, Flavor.STORE, false);
 
-    /** The native frame: bottom tabs (one WebView each), Home grid, top bars (Shell). */
+    /** The frame: the OS for a grown-up, the one-tab classroom for a child (Shell). */
     private Shell shell;
+    /** The theme's bar colours, restored when a phone becomes a child's (the OS draws under
+     *  transparent bars; the classroom frame keeps the theme's). */
+    private int themeStatusBar;
+    private int themeNavBar;
+    private boolean themeSaved;
     /** Every page WebView, so a call can tell each of them to stop listening (Calls). */
     private final java.util.List<java.lang.ref.WeakReference<WebView>> webs = new java.util.ArrayList<>();
     private Object callWatch;
@@ -46,10 +55,10 @@ public class MainActivity extends Activity implements Shell.Host {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != 0) {
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
-        shell = new Shell(this, cfg.childDevice(), cfg.platformOwner(), this);
+        shell = new Shell(this, cfg.childDevice(), this);
         PageTools.attach(shell);
         setContentView(shell.view());
-        Edge.fit(shell.view());
+        Edge.fitShell(shell.view(), shell);
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             // Android 13+ with predictive back (default from target 36) never calls onBackPressed
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -90,7 +99,7 @@ public class MainActivity extends Activity implements Shell.Host {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
-        s.setUserAgentString(s.getUserAgentString() + UA_TOKEN);
+        s.setUserAgentString(s.getUserAgentString() + (cfg.childDevice() ? UA_TOKEN_CHILD : UA_TOKEN));
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true); // api.aitherium.com
         // window.AitherApp: the page reads and asks for the app's notification permission
@@ -194,7 +203,7 @@ public class MainActivity extends Activity implements Shell.Host {
             @Override
             public void onPageFinished(WebView v, String url) {
                 PageTools.inject(v, url); // again: onPageStarted can land before the new document
-                shell.pageChanged(v);
+                shell.pageFinished(v); // the OS gets this phone's safe areas again
                 if (!ours(Uri.parse(url))) return;
                 CookieManager.getInstance().flush();
                 readHousehold(false);
@@ -295,6 +304,29 @@ public class MainActivity extends Activity implements Shell.Host {
     @Override
     public void exit() {
         moveTaskToBack(true); // what Android does for a launcher activity's last back
+    }
+
+    /**
+     * Edge to edge for the OS: transparent status and navigation bars, the window drawn
+     * under them (the page reads the safe areas). A child's classroom frame keeps the
+     * theme's bars and fits inside them, as before 0.4.0. Called from the Shell's
+     * constructor too, before `shell` is set: touches only the window.
+     */
+    @Override
+    public void modeChanged(boolean child) {
+        if (android.os.Build.VERSION.SDK_INT < 30) return; // edge to edge needs Android 11+
+        android.view.Window w = getWindow();
+        if (!themeSaved) {
+            themeStatusBar = w.getStatusBarColor();
+            themeNavBar = w.getNavigationBarColor();
+            themeSaved = true;
+        }
+        w.setDecorFitsSystemWindows(child);
+        w.setStatusBarColor(child ? themeStatusBar : android.graphics.Color.TRANSPARENT);
+        w.setNavigationBarColor(child ? themeNavBar : android.graphics.Color.TRANSPARENT);
+        w.setNavigationBarContrastEnforced(child);
+        w.setStatusBarContrastEnforced(child);
+        w.getDecorView().requestApplyInsets();
     }
 
     /**
@@ -408,8 +440,7 @@ public class MainActivity extends Activity implements Shell.Host {
         shell.signedOut(false);
         Boolean owner = Session.owner;
         if (owner != null && owner != cfg.platformOwner()) {
-            cfg.set("platform_owner", owner.booleanValue());
-            shell.setOwner(owner);
+            cfg.set("platform_owner", owner.booleanValue()); // the OS gates its own apps
         }
         long sinceReload = System.currentTimeMillis() - lastSignedIn;
         // a page that stays on the sign-in page with a good session is reloaded once, not in a loop
@@ -462,7 +493,7 @@ public class MainActivity extends Activity implements Shell.Host {
     }
 
     private void back() {
-        shell.back(); // window -> page history -> tab root -> Home -> exit (AppTabs.back)
+        shell.back(); // the OS answers first (AppTabs.osBack); a child: AppTabs.back
     }
 
     @Override
