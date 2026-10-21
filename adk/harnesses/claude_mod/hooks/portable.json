@@ -1,19 +1,113 @@
 {
-  "description": "Portable brick hooks: the awrelay inbox (via hookgate), awm recall, awvoice reply and session-focus (cross-session focus records). Each is a silent no-op when its brick is not installed; session-focus also stands down when the project settings already declare it.",
+  "description": "Portable brick hooks: the awrelay inbox (via hookgate), awm recall, awvoice reply and session-focus (cross-session focus records). Each is a silent no-op when its brick is not installed; session-focus also stands down when the project settings already declare it. awgit-ensure installs awgit's commit guards (stale-revert, mass-delete) into a repo before the session's first git commit there, and into the session's own repo at start; a silent no-op without awgit.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "-S",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/awgit_ensure.py",
+              "pre-bash"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
-      {"hooks": [{"type": "command", "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" relay-inbox 2>/dev/null || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" relay-inbox 2>/dev/null || true", "timeout": 15}]}
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" relay-inbox 2>/dev/null || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" relay-inbox 2>/dev/null || true",
+            "timeout": 15
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      {"hooks": [{"type": "command", "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awm-recall 2>/dev/null || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awm-recall 2>/dev/null || true", "timeout": 10}]},
-      {"hooks": [{"type": "command", "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py", "--deliver", "--plugin"], "timeout": 10}]}
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awm-recall 2>/dev/null || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awm-recall 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py",
+              "--deliver",
+              "--plugin"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
     ],
     "Stop": [
-      {"hooks": [{"type": "command", "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awvoice-reply 2>/dev/null || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awvoice-reply 2>/dev/null || true", "timeout": 10}]},
-      {"hooks": [{"type": "command", "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py", "--stop", "--plugin"], "timeout": 10}]}
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awvoice-reply 2>/dev/null || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/portable_hook.py\" awvoice-reply 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py",
+              "--stop",
+              "--plugin"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
     ],
     "SessionStart": [
-      {"hooks": [{"type": "command", "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py", "--start", "--plugin"], "timeout": 10}]}
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-focus.py",
+              "--start",
+              "--plugin"
+            ],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "-S",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/awgit_ensure.py",
+              "session-start"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

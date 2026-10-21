@@ -89,7 +89,33 @@ Broad pathspecs sweep more than you intended. A directory pathspec like
 `tests/` will happily collect three other people's new test files. Confirm only your
 files landed — after the fact, not on faith.
 
-### 6. Commit early, in small groups
+### 6. Private index ⇒ `git read-tree HEAD` immediately before the commit
+
+When several agents share one tree, each usually commits through its own index
+(`GIT_INDEX_FILE=<private file> git add … && git commit …`) so nobody sweeps anyone
+else's staged files. That index is a **snapshot of the HEAD it was read from**. If a
+peer commits after you read it, your next commit records the old blobs for every
+file the peer touched — it silently **reverts their whole commit**. That happened: a
+commit from a stale private index deleted all 22 files of a peer's commit, and
+nothing in the diff looked unusual to the agent that made it.
+
+The rule, every time, with nothing in between:
+
+```bash
+export GIT_INDEX_FILE=/tmp/my-agent.index
+git read-tree HEAD                  # refresh from the CURRENT HEAD, right now
+git add -- <only your paths>
+git commit -m "msg"
+git show --stat HEAD                # only your paths? no deletions you didn't make?
+```
+
+awgit's `vcs-stale-revert-guard` pre-commit hook refuses a commit whose staged
+content equals the state *before* a recent commit (override for a deliberate
+revert: `AITHER_ALLOW_REVERT=1`). The awsh plugin installs it automatically
+(`awgit hooks ensure`) before your first commit in a repo — but the hook is the
+backstop, not the method. Read the tree, then commit.
+
+### 7. Commit early, in small groups
 
 Uncommitted work in a shared tree is **not durable**. Someone else's routine hygiene
 can eat it. Don't let a large edit sit unstaged while you keep going.
@@ -158,6 +184,8 @@ compound `a && git push`.
 - `git merge` / `rebase` / `pull` in the shared tree (do it in your own worktree)
 - `git add -A` / `git add .` / bare `git commit`
 - chained `git push`
+- a commit from a private `GIT_INDEX_FILE` you did not `git read-tree HEAD` into
+  immediately before
 
 ## The one-line version
 

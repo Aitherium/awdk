@@ -491,6 +491,9 @@ def shell_exec(command: str, timeout: int = 30) -> str:
     for pat in _BLOCKED_PATTERNS:
         if pat in cmd_lower:
             return json.dumps({"error": f"Blocked: dangerous pattern '{pat}'"})
+    if "git" in cmd_lower and "commit" in cmd_lower:
+        from adk.git_guards import ensure_for_command
+        ensure_for_command(command, os.getcwd())  # awgit commit guards; fail-soft inside
 
     try:
         # On Unix, avoid shell=True to prevent injection. On Windows, PowerShell
@@ -1108,6 +1111,8 @@ def git_add(files: str, path: str = ".") -> str:
 
 def git_commit(message: str, path: str = ".") -> str:
     """Create a commit with the given message."""
+    from adk.git_guards import ensure_repo
+    ensure_repo(path)  # awgit commit guards (stale-revert, mass-delete); fail-soft inside
     try:
         r = subprocess.run(
             ["git", "commit", "-m", message],

@@ -88,6 +88,26 @@ your hunks (`git apply --cached` a filtered patch), **then commit WITHOUT the pa
 — and read `git diff --cached --stat` as a checkpoint first, because dropping the
 pathspec re-exposes the other hazard. Verify with `git show --stat` after either.
 
+### Shared tree ⇒ private index ⇒ `git read-tree HEAD` ⇒ `git show --stat HEAD`
+
+The third form — committing through a private `GIT_INDEX_FILE` — avoids both hazards
+above, and adds one of its own: the index is a snapshot of the HEAD it was read from.
+Commit from it after a peer has committed and you silently revert the peer's commit.
+So refresh it **immediately** before every commit, and check what landed:
+
+```bash
+GIT_INDEX_FILE=$IDX git read-tree HEAD
+GIT_INDEX_FILE=$IDX git add -- <only your paths>
+GIT_INDEX_FILE=$IDX git commit -m "msg"
+git show --stat HEAD     # only your paths; no deletions or reverts you didn't make
+```
+
+The guards that backstop this — `vcs-stale-revert-guard` (staged content equal to the
+state before a recent commit; `AITHER_ALLOW_REVERT=1` for a deliberate revert) and
+`vcs-mass-delete-guard` — are installed by `awgit hooks ensure`, which the awsh plugin
+runs before your first commit in each repo. In a repo where agents do not take leases
+the lease gate is report-only; `git config awgit.leases enforce` opts a repo in.
+
 ## Seeing the whole picture — `awgit graph`
 
 ```bash
