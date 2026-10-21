@@ -16302,7 +16302,8 @@ def _register_commands(sub):
     _register_inference(sub)
 
     # adk wm — world model management (status, inspect, train, reset)
-    wm_p = sub.add_parser("wm", help="World model management (status, inspect, train, reset)")
+    wm_p = sub.add_parser(
+        "wm", help="World model management (status, inspect, train, reset, dream)")
     wm_sub = wm_p.add_subparsers(dest="wm_command")
 
     wm_sub.add_parser("status", help="List all agents with checkpoints")
@@ -16316,6 +16317,18 @@ def _register_commands(sub):
     wm_reset_p = wm_sub.add_parser("reset", help="Delete checkpoint + transitions")
     wm_reset_p.add_argument("agent", help="Agent ID (e.g., agent.aither)")
     wm_reset_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+
+    wm_dream_p = wm_sub.add_parser(
+        "dream", help="What a fleet world model imagines next (cns | prospector | arc)")
+    wm_dream_p.add_argument("source", nargs="?", default="cns",
+                            choices=["cns", "prospector", "arc"])
+    wm_dream_p.add_argument("--modality", choices=["telemetry", "steps"], default="telemetry",
+                            help="cns only: which decoded modality")
+    wm_dream_p.add_argument("--steps", type=int, default=6, help="imagined steps (cns, arc)")
+    wm_dream_p.add_argument("--rows", type=int, default=16, help="prospector: features shown")
+    wm_dream_p.add_argument("--action", type=int, default=1, help="arc: action to imagine")
+    wm_dream_p.add_argument("--open", action="store_true", help="open the viewer page")
+    wm_dream_p.add_argument("--json", action="store_true", help="raw JSON")
 
     # adk graph — provenance graph CLI: status, drain, claim, ground, context, leaves, runs, show, purge
     graph_p = sub.add_parser("graph", help="Provenance graph management (status, drain, claim, ground, context, leaves, lineage, runs, show, purge)")
@@ -17584,13 +17597,17 @@ def main():
         elif wm_cmd == "reset":
             from adk.commands.wm import cmd_wm_reset
             sys.exit(cmd_wm_reset(args))
+        elif wm_cmd == "dream":
+            from adk.commands.wm_dream import cmd_wm_dream
+            sys.exit(cmd_wm_dream(args))
         else:
-            print("Usage: adk wm [status|inspect|train|reset]")
+            print("Usage: adk wm [status|inspect|train|reset|dream]")
             print()
             print("  status    List all agents with checkpoints")
             print("  inspect   Show learned effects for an agent")
             print("  train     Force a bootstrap/refit now")
             print("  reset     Delete checkpoint + transitions")
+            print("  dream     What CNS / the Prospector / ARC imagines next")
             sys.exit(1)
     elif args.command == "train":
         sys.exit(_cmd_train(args))

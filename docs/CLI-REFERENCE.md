@@ -379,6 +379,7 @@ Run scoped headless Claude Code subagents (serve/spawn/runs/kill)
 - `adk claude kill` — Cancel a run
 - `adk claude setup` — Install the awsh plugin + apply the awsettings preset
 - `adk claude doctor` — Audit Claude Code settings/hooks/MCP (CCD001-006)
+- `adk claude hookd` — Run hooks in-process, no spawn per hook: serve\|ensure\|health\|convert\|revert
 
 ## `adk claude-account`
 
