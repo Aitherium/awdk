@@ -114,6 +114,41 @@ def _project_dir() -> Path:
     return Path(raw) if raw else Path.cwd()
 
 
+def serve_empty(brick: str, why: str, stdin=None, stdout=None) -> int:
+    """Answer MCP with no tools until the client hangs up.
+
+    Exiting at once is what the client shows as CONNECTION_CLOSED: measured 2026-10-21,
+    Claude Code listed all four plugin bricks as "Failed to connect" in a project whose
+    .mcp.json already served them through the hub, which is the healthy case. An empty
+    server reads as connected, and ``why`` rides along as its instructions.
+    """
+    inp = stdin if stdin is not None else sys.stdin
+    out = stdout if stdout is not None else sys.stdout
+    empty = {"tools/list": {"tools": []}, "prompts/list": {"prompts": []},
+             "resources/list": {"resources": []}, "ping": {}}
+    for line in inp:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(msg, dict) or "id" not in msg:
+            continue  # a notification: nothing to answer
+        method = msg.get("method")
+        if method == "initialize":
+            ver = (msg.get("params") or {}).get("protocolVersion") or "2025-06-18"
+            result = {"protocolVersion": ver, "capabilities": {"tools": {}},
+                      "serverInfo": {"name": brick, "version": "off"}, "instructions": why}
+            reply = {"jsonrpc": "2.0", "id": msg["id"], "result": result}
+        elif method in empty:
+            reply = {"jsonrpc": "2.0", "id": msg["id"], "result": empty[method]}
+        else:
+            reply = {"jsonrpc": "2.0", "id": msg["id"],
+                     "error": {"code": -32601, "message": f"{brick} is off here: {why}"}}
+        out.write(json.dumps(reply) + "\n")
+        out.flush()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
@@ -121,18 +156,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     brick, extra = args[0], args[1:]
     if skipped(brick):
-        print(f"brick_mcp: {brick} skipped by {SKIP_ENV}", file=sys.stderr)
-        return 0
+        why = f"{brick} skipped by {SKIP_ENV}"
+        print(f"brick_mcp: {why}", file=sys.stderr)
+        return serve_empty(brick, why)
     already = mcp_already_declared(brick, _project_dir())
     if already is not None:
-        print(f"brick_mcp: {brick} is already served by {already}; "
-              "the plugin copy stays off", file=sys.stderr)
-        return 0
+        why = f"{brick} is already served by {already}; the plugin copy stays off"
+        print(f"brick_mcp: {why}", file=sys.stderr)
+        return serve_empty(brick, why)
     exe = resolve(brick)
     if exe is None:
+        why = f"{brick} is not installed (pip install {brick} to enable it)"
         print(f"brick_mcp: {brick} is not installed; skipping its MCP server "
               f"(pip install {brick} to enable it)", file=sys.stderr)
-        return 0
+        return serve_empty(brick, why)
     cmd = [exe, "mcp", *extra]
     if _EXEC_IN_PLACE:
         os.execv(exe, cmd)  # never returns

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -162,7 +163,7 @@ def test_brick_mcp_missing_brick_exits_zero_with_one_stderr_line(tmp_path):
     env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)}
     env.pop("AW_PLUGIN_SKIP", None)
     r = subprocess.run([sys.executable, "-m", "adk.harnesses.brick_mcp", MISSING],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       input="", capture_output=True, text=True, encoding="utf-8", errors="replace",
                        cwd=AWDK, env=env)
     assert r.returncode == 0
     assert r.stdout == ""
@@ -227,7 +228,30 @@ def test_brick_mcp_stays_off_when_the_project_already_serves_it(monkeypatch, tmp
     monkeypatch.setattr(brick_mcp.shutil, "which", lambda n: f"/bin/{n}")
     monkeypatch.setattr(brick_mcp.subprocess, "call", lambda *a, **k: pytest.fail("ran"))
     monkeypatch.setattr(brick_mcp.os, "execv", lambda *a: pytest.fail("ran"))
+    monkeypatch.setattr(brick_mcp.sys, "stdin", io.StringIO(""))
     assert brick_mcp.main(["awfind"]) == 0
+
+
+def test_brick_mcp_served_elsewhere_answers_as_an_empty_server():
+    """Exiting at once reads as CONNECTION_CLOSED; an empty server reads as connected."""
+    from adk.harnesses import brick_mcp
+
+    reqs = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18", "capabilities": {}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "x"}},
+    ]
+    out = io.StringIO()
+    inp = io.StringIO("".join(json.dumps(r) + "\n" for r in reqs) + "not json\n")
+    assert brick_mcp.serve_empty("awfind", "served by the hub", inp, out) == 0
+    replies = [json.loads(ln) for ln in out.getvalue().splitlines()]
+    assert [r["id"] for r in replies] == [1, 2, 3]
+    assert replies[0]["result"]["protocolVersion"] == "2025-06-18"
+    assert replies[0]["result"]["instructions"] == "served by the hub"
+    assert replies[1]["result"] == {"tools": []}
+    assert replies[2]["error"]["code"] == -32601
 
 
 def test_brick_mcp_skip_env_and_unrelated_config(monkeypatch, tmp_path):
