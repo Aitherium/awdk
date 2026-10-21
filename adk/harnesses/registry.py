@@ -382,6 +382,38 @@ def _opencode_format_argv() -> list[str]:
     return [] if fmt == "default" else ["--format", "json"]
 
 
+def _openclaw_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """``openclaw agent --local -m <prompt>`` (read from OpenClaw 2026.7.1 ``agent --help``).
+
+    ``--local`` runs the embedded agent in this process tree; without it the turn goes
+    through OpenClaw's Gateway daemon, which most boxes are not running. Set
+    AITHER_HARNESS_OPENCLAW_GATEWAY=1 to route through the Gateway instead.
+    """
+    gateway = (os.environ.get("AITHER_HARNESS_OPENCLAW_GATEWAY") or "").strip().lower()
+    argv = [spec.binary, "agent"]
+    if gateway not in ("1", "true", "yes", "on"):
+        argv.append("--local")
+    if launch.model:
+        argv += ["--model", launch.model]
+    # `agent` refuses to run without a session selector ("Pass --to, --session-key,
+    # --session-id, or --agent"): give every turn the same session so it keeps context.
+    session = (launch.resume_session_id
+               or os.environ.get("AITHER_HARNESS_OPENCLAW_SESSION") or "aither-harness")
+    argv += ["--session-id", session]
+    return [*argv, "--message", launch.prompt]
+
+
+def _hermes_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """``hermes chat -q <prompt>``: one non-interactive query (Nous Research hermes-agent).
+
+    Bare ``hermes`` opens its interactive TUI, which a one-shot turn cannot drive.
+    """
+    argv = [spec.binary, "chat"]
+    if launch.model:
+        argv += ["--model", launch.model]
+    return [*argv, "-q", launch.prompt]
+
+
 # Harnesses declared but not installed on every box. Declaring them means
 # `harness list` tells you what AitherShell COULD drive and how to get it,
 # instead of silently pretending the world is Claude-only.
@@ -430,6 +462,37 @@ for _late in (
         adapter="opencode",
         build_argv=lambda spec, launch: [spec.binary, "run", *_opencode_format_argv(),
                                          launch.prompt],
+    ),
+    HarnessSpec(
+        id="openclaw",
+        prompt_carries_context=True,
+        label="OpenClaw",
+        description="OpenClaw — local-first personal assistant (one agent turn per process)",
+        transport=Transport.ONESHOT_PER_TURN,
+        binary="openclaw",
+        version_argv=["--version"],
+        # OpenClaw 2026.7 refuses Node 25 below 25.9 (and 23, 24 below 24.15); point
+        # AITHER_HARNESS_OPENCLAW_BIN at a wrapper on a supported Node if the PATH one is old.
+        install_hint="npm install -g openclaw@latest (needs Node >=22.22.3, >=24.15 or >=25.9)",
+        adapter="text",
+        build_argv=_openclaw_argv,
+    ),
+    HarnessSpec(
+        id="hermes",
+        prompt_carries_context=True,
+        label="Hermes Agent",
+        description="Nous Research Hermes agent — one non-interactive query per turn",
+        transport=Transport.ONESHOT_PER_TURN,
+        binary="hermes",
+        version_argv=["--version"],
+        # Upstream installs through its own script (it bundles uv, Python 3.11 and Node),
+        # not a package manager -- so AitherShell names it rather than running it.
+        install_hint=(
+            "iex (irm https://hermes-agent.nousresearch.com/install.ps1) on Windows, "
+            "or curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
+        ),
+        adapter="text",
+        build_argv=_hermes_argv,
     ),
     HarnessSpec(
         id="harness2",
