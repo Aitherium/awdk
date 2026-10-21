@@ -176,6 +176,7 @@ def test_brick_mcp_runs_the_brick_mcp_subcommand(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.delenv("AW_PLUGIN_SKIP", raising=False)
     monkeypatch.setattr(brick_mcp.shutil, "which", lambda n: f"/bin/{n}")
+    monkeypatch.setattr(brick_mcp, "_tool_bin_dirs", lambda env=None: [])
     # The module flags, never the global os.name: patching that makes every Path()
     # a WindowsPath on Linux and crashes pytest itself (payload suite, 2026-10-14).
     monkeypatch.setattr(brick_mcp, "_EXEC_IN_PLACE", False)
@@ -190,6 +191,25 @@ def test_brick_mcp_runs_the_brick_mcp_subcommand(monkeypatch, tmp_path):
     assert kw["stdin"] is sys.stdin and kw["stdout"] is sys.stdout
     assert kw["stderr"] is sys.stderr
     assert brick_mcp.resolve("../evil") is None
+
+
+def test_brick_mcp_prefers_an_isolated_tool_install(monkeypatch, tmp_path):
+    """awgraph/awrelay need mcp>=2, awdk pins mcp<2: the shared-PATH copy never answers."""
+    from adk.harnesses import brick_mcp
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    monkeypatch.setattr(brick_mcp, "_WINDOWS", False)
+    monkeypatch.setattr(brick_mcp.shutil, "which", lambda n: f"/shared/{n}")
+    env = {"UV_TOOL_BIN_DIR": str(tools)}
+    monkeypatch.setattr(brick_mcp.Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
+    # Not installed there: PATH still answers.
+    assert brick_mcp.resolve("awgraph", env) == "/shared/awgraph"
+    exe = tools / "awgraph"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    assert brick_mcp.resolve("awgraph", env) == str(exe)
+    assert brick_mcp.resolve("../evil", env) is None
 
 
 @pytest.mark.parametrize("cfg", [

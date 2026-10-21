@@ -46,10 +46,29 @@ _EXEC_IN_PLACE = os.name == "posix"
 _WINDOWS = os.name == "nt"
 
 
-def resolve(brick: str) -> str | None:
-    """The brick's executable, or None when it is not installed (or not a brick name)."""
+def _tool_bin_dirs(env: Optional[dict] = None) -> list[Path]:
+    """Where ``uv tool`` / ``pipx`` put isolated executables, overrides first."""
+    e = env if env is not None else os.environ
+    dirs = [e.get("UV_TOOL_BIN_DIR"), e.get("PIPX_BIN_DIR")]
+    return [Path(d) for d in dirs if d] + [Path.home() / ".local" / "bin"]
+
+
+def resolve(brick: str, env: Optional[dict] = None) -> str | None:
+    """The brick's executable, or None when it is not installed (or not a brick name).
+
+    An isolated tool install wins over PATH. Measured 2026-10-21: awgraph and awrelay
+    need ``mcp>=2`` while awdk, repowise and headroom pin ``mcp<2``, so in one shared
+    interpreter the bricks import a 1.x SDK and never answer ``initialize`` (Claude
+    Code: CONNECTION_CLOSED every session). ``uv tool install "awgraph[mcp]"`` gives
+    the brick its own env, but the shared Scripts dir sits earlier on PATH.
+    """
     if not _NAME.match(brick or ""):
         return None
+    for d in _tool_bin_dirs(env):
+        for name in (f"{brick}.exe", brick) if _WINDOWS else (brick,):
+            p = d / name
+            if p.is_file() and (_WINDOWS or os.access(p, os.X_OK)):
+                return str(p)
     return shutil.which(brick)
 
 

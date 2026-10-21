@@ -158,7 +158,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk wallet`](#adk-wallet) | Your Aitherium wallet: balance, bought/earned/spent, how to buy |
 | [`adk whoami`](#adk-whoami) | Show current auth status, config and entitlement tier |
 | [`adk wizard`](#adk-wizard) | First-run wizard — hardware detection, setup recommendations, auth token |
-| [`adk wm`](#adk-wm) | World model management (status, inspect, train, reset) |
+| [`adk wm`](#adk-wm) | World model management (status, inspect, train, reset, dream) |
 | [`adk workflow`](#adk-workflow) | Claude Code Workflow runs mirrored as expeditions |
 | [`adk workspace`](#adk-workspace) | Manage dev workspaces on AitherOS tunnel |
 | [`adk x-session`](#adk-x-session) | Bootstrap the autonomous X poster's logged-in session |
@@ -1824,7 +1824,7 @@ First-run wizard — hardware detection, setup recommendations, auth token
 
 ## `adk wm`
 
-World model management (status, inspect, train, reset)
+World model management (status, inspect, train, reset, dream)
 
 **Subcommands**
 
@@ -1832,6 +1832,7 @@ World model management (status, inspect, train, reset)
 - `adk wm inspect` — Show learned effects for an agent
 - `adk wm train` — Force a bootstrap/refit now
 - `adk wm reset` — Delete checkpoint + transitions
+- `adk wm dream` — What a fleet world model imagines next (cns \| prospector \| arc)
 
 ## `adk workflow`
 
