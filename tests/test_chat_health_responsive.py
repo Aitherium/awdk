@@ -64,8 +64,10 @@ def cpu_rung(monkeypatch):
     async def _no(*_a, **_k):
         return False
 
+    # raising=False: a rung that a release retires (the local server went in 3.8.79)
+    # must not turn every test here into an AttributeError at setup.
     for rung in ("_try_local_vllm", "_try_ollama", "_try_openai_endpoint"):
-        monkeypatch.setattr(emb.AdkEmbeddings, rung, _no)
+        monkeypatch.setattr(emb.AdkEmbeddings, rung, _no, raising=False)
     # The fixed code's seams (absent on the old code, hence raising=False): run the
     # worker in a thread pool instead of spawning a real child that imports torch.
     pool = ThreadPoolExecutor(max_workers=1)

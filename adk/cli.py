@@ -14148,6 +14148,15 @@ def _register_commands(sub):
     lookout_p.add_argument("lookout_args", nargs=argparse.REMAINDER,
                               help="run | judge | ledger")
 
+    # adk discover -- one ranked answer to "what tools, skills, packs do I have for X?"
+    discover_p = sub.add_parser(
+        "discover",
+        help="Find tools, skills, packs and agents for a task (build | query | check)",
+        add_help=False,
+    )
+    discover_p.add_argument("discover_args", nargs=argparse.REMAINDER,
+                            help="build | query \"<task>\" | check | --self-test")
+
     # adk mobile — Android/iOS end-to-end tests (Maestro) that keep a proof dir.
     mobile_p = sub.add_parser(
         "mobile",
@@ -17118,6 +17127,7 @@ _PASSTHROUGH_VERBS = {
     "mobile": ("adk.mobile", "main"),
     "link": ("adk.link", "main"),
     "autoupdate": ("adk.self_update", "main"),
+    "discover": ("adk.discovery.cli", "main"),
 }
 
 
@@ -17291,6 +17301,9 @@ def main():
     elif args.command in ("lookout", "mothership"):
         from adk.lookout import main as lookout_main
         sys.exit(lookout_main(args.lookout_args))
+    elif args.command == "discover":
+        from adk.discovery.cli import main as discover_main
+        sys.exit(discover_main(args.discover_args))
     elif args.command == "mobile":
         from adk.mobile import main as mobile_main
         sys.exit(mobile_main(args.mobile_args))

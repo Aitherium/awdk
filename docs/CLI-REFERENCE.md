@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**140 commands.**
+**141 commands.**
 
 | command | what it does |
 |---|---|
@@ -58,6 +58,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk desk`](#adk-desk) | Interact with awdesk bridge: send commands, view history |
 | [`adk devices`](#adk-devices) | List, add, inspect and remove the devices enrolled in your workspace |
 | [`adk disconnect`](#adk-disconnect) | Disconnect from desktop AitherOS mesh |
+| [`adk discover`](#adk-discover) | Find tools, skills, packs and agents for a task (build \| query \| check) |
 | [`adk doc`](#adk-doc) | Manage encrypted documents (upload, list, download, delete) |
 | [`adk doctor`](#adk-doctor) | Check system health (Python, GPU, LLM backends, API keys) |
 | [`adk down`](#adk-down) | Stop the agent + tunnel and remove its autostart |
@@ -581,6 +582,14 @@ List, add, inspect and remove the devices enrolled in your workspace
 ## `adk disconnect`
 
 Disconnect from desktop AitherOS mesh
+
+## `adk discover`
+
+Find tools, skills, packs and agents for a task (build | query | check)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<discover_args>` | str |  |  | build \| query "<task>" \| check \| --self-test |
 
 ## `adk doc`
 
