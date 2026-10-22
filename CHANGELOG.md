@@ -4,6 +4,15 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.82] - 2026-10-22
+
+### Added
+- `adk discover`: a local discovery index of tools, skills, packs and agents (`adk discover build`, `adk discover query "<task>"`), read by the Claude Code SessionStart card.
+
+### Fixed
+- Media Forge callers (the gobbonet illustrate pack, the mediaforge toolpacks, the daemon) send the fleet's internal key through one helper, `adk.mediaforge_auth.mediaforge_headers()`, so they keep working when Media Forge stops accepting uncredentialed fleet calls.
+- The hades harness entry no longer names two monorepo-only paths.
+
 ## [3.8.81] - 2026-10-21
 
 ### Fixed
