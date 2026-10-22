@@ -1055,6 +1055,12 @@ async def _run_delivered_commands(
                 log.warning("command %s result refused: HTTP %s", res["id"], r.status_code)
     except Exception as e:  # noqa: BLE001 -- control never breaks liveness
         log.warning("node commands not run: %s: %s", e.__class__.__name__, e)
+    # An `upgrade` off systemd armed a self-restart; the results are posted now, so
+    # move onto the new code (on success this process is replaced and does not return).
+    try:
+        node_commands.perform_pending_restart()
+    except Exception as e:  # noqa: BLE001 -- a failed restart keeps the old code beating
+        log.warning("restart after upgrade failed: %s: %s", e.__class__.__name__, e)
 
 
 def _persist_device_cert(register_response: Dict[str, Any]) -> Dict[str, Any]:

@@ -4,6 +4,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.87] - 2026-10-22
+
+### Fixed
+- The `upgrade` node command now restarts the heartbeat onto the new code on hosts without a systemd user unit: on Windows a hidden detached helper relaunches the same command line (the `AitherNodeBeat` Run-key beat or the daemon) after the old process exits; under launchd `launchctl kickstart -k`; elsewhere `os.execv`. The restart runs only after the upgrade result is posted, and `restart.mechanism` names it. Before, Windows kept running the old awdk until the next sign-in.
+- A signed command whose verb this awdk does not know is answered `ok: false` ("unknown verb on this awdk <version>; upgrade first") instead of being left delivered with no result. Forged, expired, replayed or misaddressed commands are still answered with nothing.
+
 ## [3.8.86] - 2026-10-22
 
 ### Fixed

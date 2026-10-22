@@ -179,6 +179,21 @@ def _remember_seen(cmd_id: str) -> None:
         log.warning("could not record command %s as run: %s", cmd_id, exc)
 
 
+def _unknown_verb_refusal(verb: Any) -> str:
+    """verify()'s reason for a verb this awdk does not know. verify() returns it only
+    AFTER the signature, device, expiry and replay checks passed, so a command refused
+    with exactly this reason came from the control plane and is answered (run_commands)."""
+    return f"verb {str(verb)[:40]!r} is not allowed on this device"
+
+
+def _awdk_version() -> str:
+    try:
+        from adk import __version__
+        return str(__version__)
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 def verify(cmd: Any, key_hex: str, node_id: str, *, now: Optional[float] = None,
            seen: Optional[List[str]] = None) -> str:
     """'' when this device may run ``cmd``; otherwise the reason it may not."""
@@ -202,7 +217,7 @@ def verify(cmd: Any, key_hex: str, node_id: str, *, now: Optional[float] = None,
         return "already run"
     verb = cmd.get("verb")
     if verb not in VERBS:
-        return f"verb {str(verb)[:40]!r} is not allowed on this device"
+        return _unknown_verb_refusal(verb)
     args = cmd.get("args") or {}
     if not isinstance(args, dict):
         return "bad args"
@@ -458,8 +473,9 @@ def _upgrade(args: Dict[str, str]) -> Dict[str, Any]:
     When this process runs in a systemd user unit (``adk pair`` installs
     ``aither-node-beat.service``), a transient ``systemd-run --user`` timer restarts
     that unit RESTART_DELAY_S later -- after this result has been reported. Anywhere
-    else (the Windows Run key, a hand-started process) nothing restarts it: the new
-    code is installed and runs from the next start, and the result says so.
+    else (the Windows Run key / logon task, launchd, nohup) :func:`_plan_restart` arms
+    a self-restart that the beat loop carries out once the result is posted
+    (:func:`perform_pending_restart`); ``restart.mechanism`` says which.
     """
     import subprocess
 
@@ -488,11 +504,168 @@ def _upgrade(args: Dict[str, str]) -> Dict[str, Any]:
         out["ok"] = False
         return out
     unit = _own_user_unit()
-    out["restart"] = (_schedule_restart(unit) if unit else
-                      {"mechanism": "none",
-                       "detail": "not in a systemd user unit; new code runs from the next start"})
+    out["restart"] = _schedule_restart(unit) if unit else _plan_restart()
     out["ok"] = True
     return out
+
+
+# ── restart onto new code where there is no systemd user unit ──────────────────
+#
+# Measured 2026-10-22 on a Windows laptop: `upgrade` installed 3.8.84 over 3.8.81 and
+# said "new code runs from the next start" -- the heartbeat kept running 3.8.81 and
+# every newer verb sat "delivered". Off systemd (the Windows Run key / logon task,
+# macOS launchd, SteamOS without user units, nohup) the process restarts ITSELF, and
+# only after the beat loop has posted the upgrade's result (perform_pending_restart).
+# Everything below is stdlib-only: it runs in a process whose adk on disk was just
+# replaced, so it must not import any adk module it has not imported already.
+
+#: The restart _upgrade chose; carried out by perform_pending_restart().
+_PENDING_RESTART: Dict[str, Any] = {}
+
+#: Windows: no console, not in our console group, survives our exit.
+_WIN_DETACHED = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
+
+#: Runs detached on Windows with ``-I`` (stdlib only): waits for the old process to
+#: exit (its node_beat lock goes with it), then starts the same command line hidden.
+_RELAUNCH_HELPER = r"""
+import json, subprocess, sys, time
+spec = json.loads(sys.argv[1])
+pid = int(spec["pid"])
+if sys.platform == "win32":
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if h:
+        k32.WaitForSingleObject(h, 120000)
+        k32.CloseHandle(h)
+else:
+    import os
+    end = time.time() + 120
+    while time.time() < end:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+        time.sleep(0.5)
+time.sleep(1.0)
+log = open(spec["log"], "ab")
+subprocess.Popen(spec["argv"], cwd=spec["cwd"], stdin=subprocess.DEVNULL, stdout=log,
+                 stderr=log, creationflags=int(spec["flags"]), close_fds=True)
+"""
+
+
+def _relaunch_argv() -> List[str]:
+    """This process's own command line (``-m adk.node_beat`` from the Run key, the
+    daemon's argv from its logon task), with the current interpreter."""
+    orig = list(getattr(sys, "orig_argv", []) or [])
+    if len(orig) > 1:
+        return [sys.executable, *orig[1:]]
+    return [sys.executable, *sys.argv]
+
+
+def _host_kind() -> str:
+    """``windows`` | ``darwin`` | ``posix`` -- one seam, so tests can pick the host."""
+    if os.name == "nt":
+        return "windows"
+    return "darwin" if sys.platform == "darwin" else "posix"
+
+
+def _launchd_label() -> str:
+    """The launchd job this process runs as (launchd sets XPC_SERVICE_NAME), else ''.
+    A Terminal session has '0' or an ``application.*`` name: not a job to kickstart."""
+    label = (os.environ.get("XPC_SERVICE_NAME") or "").strip()
+    if not label or label == "0" or label.startswith("application."):
+        return ""
+    return label if re.match(r"^[A-Za-z0-9._-]{1,200}$", label) else ""
+
+
+def _plan_restart() -> Dict[str, Any]:
+    """Choose how this process restarts onto the code just installed, and arm it.
+
+    Windows: a hidden detached helper relaunches this same command line once this
+    process has exited. macOS under launchd: ``launchctl kickstart -k``. Anything else
+    (nohup, a hand-started beat, Linux without user units): ``os.execv`` in place.
+    Nothing happens until perform_pending_restart() runs, after the result is posted.
+    """
+    argv = _relaunch_argv()
+    kind = _host_kind()
+    if kind == "windows":
+        plan: Dict[str, Any] = {"mechanism": "detached-relaunch", "argv": argv}
+    elif kind == "darwin" and _launchd_label():
+        plan = {"mechanism": "launchctl-kickstart", "label": _launchd_label()}
+    else:
+        plan = {"mechanism": "execv", "argv": argv}
+    _PENDING_RESTART.clear()
+    _PENDING_RESTART.update(plan)
+    return {**plan, "scheduled": True, "when": "after this result is reported"}
+
+
+def _flush_logs() -> None:
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:  # noqa: BLE001,S110 - best effort before the process goes
+            pass
+
+
+def _restart_log_path() -> Path:
+    logs = _aither_dir() / "logs"
+    try:
+        logs.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return logs / "node-upgrade-restart.log"
+
+
+def perform_pending_restart() -> Dict[str, Any]:
+    """Carry out the restart an ``upgrade`` armed; ``{}`` when none is pending.
+
+    Call it AFTER the command results were posted. On success this process exits (or
+    is replaced) and the call does not return; it returns only what went wrong.
+    """
+    import subprocess
+
+    plan = dict(_PENDING_RESTART)
+    _PENDING_RESTART.clear()
+    if not plan:
+        return {}
+    mech = plan.get("mechanism")
+    log.warning("restarting onto the upgraded awdk via %s", mech)
+    if mech == "detached-relaunch":
+        spec = {"pid": os.getpid(), "argv": plan["argv"], "cwd": os.getcwd(),
+                "log": str(_restart_log_path()), "flags": _WIN_DETACHED}
+        try:
+            subprocess.Popen([sys.executable, "-I", "-c", _RELAUNCH_HELPER, json.dumps(spec)],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, creationflags=_WIN_DETACHED,
+                             close_fds=True)
+        except OSError as exc:
+            # No helper means no relaunch: keep running the old code rather than exit.
+            log.warning("relaunch helper did not start (%s); still on the old code", exc)
+            return {"mechanism": mech, "error": type(exc).__name__}
+        _flush_logs()
+        os._exit(0)
+    if mech == "launchctl-kickstart":
+        target = f"gui/{os.getuid()}/{plan['label']}"  # type: ignore[attr-defined]
+        try:
+            proc = subprocess.run(["launchctl", "kickstart", "-k", target],
+                                  capture_output=True, text=True, timeout=30, check=False,
+                                  start_new_session=True)
+            if proc.returncode == 0:
+                return {"mechanism": mech, "target": target}  # launchd is replacing us
+            log.warning("launchctl kickstart %s rc=%s; re-executing in place", target,
+                        proc.returncode)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.warning("launchctl kickstart failed (%s); re-executing in place", exc)
+        plan = {"mechanism": "execv", "argv": _relaunch_argv()}
+    argv = list(plan.get("argv") or _relaunch_argv())
+    _flush_logs()
+    try:
+        os.execv(argv[0], argv)
+    except OSError as exc:
+        log.warning("re-exec failed (%s); still on the old code", exc)
+        return {"mechanism": "execv", "error": type(exc).__name__}
+    return {}  # pragma: no cover - execv does not return
 
 
 def _advertise_inference(args: Dict[str, str]) -> Dict[str, Any]:
@@ -1115,11 +1288,26 @@ def run_commands(cmds: Any, node_id: str, key_hex: str,
                  ) -> List[Dict[str, Any]]:
     """Run every command this device accepts; return one signed result per command
     it RAN. A refused command runs nothing and reports nothing (a forged command
-    must not get a signed answer out of this device); the refusal is logged."""
+    must not get a signed answer out of this device); the refusal is logged. The one
+    exception: an AUTHENTIC command whose verb this awdk does not know is answered
+    ``ok: False`` ("unknown verb ... upgrade first") so it never sits delivered."""
     table = handlers or _HANDLERS
     results: List[Dict[str, Any]] = []
     for cmd in cmds if isinstance(cmds, list) else []:
         why = verify(cmd, key_hex, node_id)
+        if why and why == _unknown_verb_refusal(cmd.get("verb")):
+            # Authentic (signed for THIS device, live, not replayed) but newer than this
+            # awdk. Answer it: silence left it "delivered" forever (2026-10-22, a Windows
+            # laptop on 3.8.81 sent mesh-lend-on). Runs nothing.
+            _remember_seen(str(cmd["id"]))
+            version = _awdk_version()
+            log.warning("node command %s refused: unknown verb %r on awdk %s",
+                        str(cmd["id"])[:40], str(cmd.get("verb"))[:40], version)
+            text = json.dumps({"ok": False, "verb": str(cmd.get("verb"))[:40], "awdk": version,
+                               "error": f"unknown verb on this awdk {version}; upgrade first"})
+            results.append(sign_result(key_hex, {"id": cmd["id"], "node_id": node_id,
+                                                 "ok": False, "output": text}))
+            continue
         if why:
             log.warning("node command %s refused: %s",
                         str(cmd.get("id") if isinstance(cmd, dict) else "?")[:40], why)

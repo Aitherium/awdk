@@ -27,7 +27,10 @@ def _home(tmp_path, monkeypatch):
     from adk import node_beat
     monkeypatch.setattr(node_beat, "install_autostart",
                         lambda: {"autostart": "test-disabled"})
+    # Never let an armed upgrade restart re-exec / kill the test process.
+    getattr(node_commands, "_PENDING_RESTART", {}).clear()
     yield tmp_path
+    getattr(node_commands, "_PENDING_RESTART", {}).clear()
 
 
 def _cmd(**over):
@@ -58,7 +61,7 @@ def test_a_signed_command_for_this_device_runs_once_and_answers_signed():
     (lambda: {**_cmd(), "args": {"via": "tunnel"}}, "bad signature"),
     (lambda: _cmd(node_id="other"), "addressed to another device"),
     (lambda: _cmd(expires_at=int(time.time()) - 1), "expired"),
-    (lambda: _cmd(verb="shell", args={}), "not allowed on this device"),
+    (lambda: {**_cmd(verb="shell", args={}), "sig": "0" * 64}, "bad signature"),
     (lambda: _cmd(args={"via": "http://x"}), "not allowed for lend-on"),
     (lambda: _cmd(args={"cmd": "lan"}), "not allowed for lend-on"),
     (lambda: {k: v for k, v in _cmd().items() if k != "sig"}, "bad signature"),
@@ -542,15 +545,152 @@ def test_a_failed_or_mismatched_install_restarts_nothing(monkeypatch):
         assert not any("systemd-run" in c[0][0] for c in calls)
 
 
-def test_outside_a_user_unit_the_upgrade_says_nothing_restarts(monkeypatch):
+def test_outside_a_user_unit_the_upgrade_arms_a_self_restart(monkeypatch):
+    """Windows laptop 2026-10-22: 3.8.81 -> 3.8.84 installed, restart "none", and the
+    beat ran 3.8.81 for good. Off systemd the upgrade now arms a restart (nothing runs
+    yet: the result has not been posted)."""
     import subprocess
 
     calls = []
     monkeypatch.setattr(subprocess, "run", _fake_run(calls))
     monkeypatch.setattr(node_commands, "_own_user_unit", lambda: "")
-    out = node_commands._upgrade({"version": "3.8.59"})
-    assert out["ok"] is True and out["restart"]["mechanism"] == "none"
-    assert len(calls) == 2
+    for kind, mech in (("windows", "detached-relaunch"), ("posix", "execv")):
+        monkeypatch.setattr(node_commands, "_host_kind", lambda kind=kind: kind, raising=False)
+        out = node_commands._upgrade({"version": "3.8.59"})
+        assert out["ok"] is True and out["restart"]["mechanism"] == mech, out
+        assert out["restart"]["scheduled"] is True
+        assert node_commands._PENDING_RESTART["mechanism"] == mech
+    assert len(calls) == 4  # pip + version probe, twice; nothing restarted inline
+
+
+class _Exited(Exception):
+    pass
+
+
+def test_windows_upgrade_relaunches_hidden_after_the_result_is_posted(monkeypatch):
+    """Non-systemd Windows: the beat posts the upgrade result FIRST, then a hidden
+    detached helper is spawned to relaunch this command line, then the old process
+    exits. Never a console window; never execv on Windows."""
+    import json as _json
+    import os
+    import subprocess
+    import sys
+
+    events = []
+    node_commands.save_key(NODE, KEY)
+    monkeypatch.setattr(subprocess, "run", _fake_run([]))
+    monkeypatch.setattr(node_commands, "_own_user_unit", lambda: "")
+    monkeypatch.setattr(node_commands, "_host_kind", lambda: "windows", raising=False)
+
+    class _Popen:
+        def __init__(self, argv, **kw):
+            events.append(("spawn", argv, kw))
+            self.pid = 4242
+
+    def _exit(code):
+        events.append(("exit", code))
+        raise _Exited()
+
+    monkeypatch.setattr(subprocess, "Popen", _Popen)
+    monkeypatch.setattr(os, "_exit", _exit)
+    monkeypatch.setattr(os, "execv", lambda *a: events.append(("execv", a)))
+
+    class _RecClient(_Client):
+        async def post(self, url, json=None, headers=None):
+            events.append(("post", url))
+            return await super().post(url, json=json, headers=headers)
+
+    client = _RecClient([_cmd(verb="upgrade", args={"version": "3.8.59"})])
+    monkeypatch.setattr(enrollment, "build_registration", lambda node_id, **kw: {
+        "node_id": node_id, "inference_ready": False, "available_models": [],
+        "gpu_vram_mb": 0, "inference_url": "", "inference_kind": "none"})
+    asyncio.run(enrollment._heartbeat_beats(
+        client, "https://idp.test", {"Authorization": "Bearer t"}, NODE, interval=0,
+        inference_url=None, node_class="deck", max_beats=1, reach_provider=None,
+        harness_provider=None, beat_immediately=True))
+
+    result_url = f"https://idp.test/v1/nodes/{NODE}/commands/cmd_1/result"
+    kinds = [e[0] for e in events]
+    assert ("post", result_url) in events, events
+    assert "spawn" in kinds and "exit" in kinds, events
+    assert events.index(("post", result_url)) < kinds.index("spawn") < kinds.index("exit")
+    assert "execv" not in kinds
+    _, argv, kw = events[kinds.index("spawn")]
+    assert argv[:3] == [sys.executable, "-I", "-c"]
+    spec = _json.loads(argv[4])
+    assert spec["argv"][0] == sys.executable and spec["pid"] == os.getpid()
+    no_window, detached = 0x08000000, 0x00000008
+    for flags in (kw["creationflags"], spec["flags"]):
+        assert flags & no_window and flags & detached
+    posted = [j for u, j in client.posts if u == result_url][-1]
+    out = _json.loads(posted["output"])
+    assert posted["ok"] is True and out["restart"]["mechanism"] == "detached-relaunch"
+
+
+def test_posix_without_a_unit_re_execs_after_the_result_is_posted(monkeypatch):
+    import os
+
+    events = []
+    monkeypatch.setattr(os, "execv", lambda path, argv: events.append(("execv", path, argv)))
+    node_commands._PENDING_RESTART.update({"mechanism": "execv", "argv": ["/py", "-m", "x"]})
+    assert node_commands.perform_pending_restart() == {}
+    assert events == [("execv", "/py", ["/py", "-m", "x"])]
+    assert node_commands.perform_pending_restart() == {}  # disarmed after one use
+    assert len(events) == 1
+
+
+def test_macos_launchd_job_is_kickstarted(monkeypatch):
+    import os
+    import subprocess
+
+    monkeypatch.setattr(node_commands, "_host_kind", lambda: "darwin", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "com.aitherium.agent")
+    monkeypatch.setattr(os, "getuid", lambda: 501, raising=False)
+    plan = node_commands._plan_restart()
+    assert plan["mechanism"] == "launchctl-kickstart" and plan["label"] == "com.aitherium.agent"
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv) or
+                        type("P", (), {"returncode": 0})())
+    out = node_commands.perform_pending_restart()
+    assert calls == [["launchctl", "kickstart", "-k", "gui/501/com.aitherium.agent"]]
+    assert out["mechanism"] == "launchctl-kickstart"
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")  # a Terminal session is not a job
+    assert node_commands._plan_restart()["mechanism"] == "execv"
+
+
+def test_no_upgrade_means_no_restart(monkeypatch):
+    import os
+
+    monkeypatch.setattr(os, "execv", lambda *a: pytest.fail("restarted without an upgrade"))
+    assert node_commands.perform_pending_restart() == {}
+
+
+def test_an_authentic_unknown_verb_is_answered_failed_not_left_delivered():
+    """mesh-lend-on sat "delivered" 30+ min on a 3.8.81 laptop (2026-10-22)."""
+    from adk import __version__
+
+    ran = []
+    cmd = _cmd(verb="verb-from-the-future", args={"x": "1"})
+    results = node_commands.run_commands([cmd], NODE, KEY, handlers=_handlers(ran))
+    assert len(results) == 1, "an authentic unknown verb must be answered"
+    (res,) = results
+    assert ran == []
+    assert res["ok"] is False and res["id"] == "cmd_1"
+    out = json.loads(res["output"])
+    assert out["error"] == f"unknown verb on this awdk {__version__}; upgrade first"
+    assert res["sig"] == node_commands.sign(
+        KEY, node_commands.canonical(res, node_commands.RESULT_FIELDS))
+    # answered once; a replay is refused silently like any replay
+    assert node_commands.run_commands([cmd], NODE, KEY, handlers=_handlers(ran)) == []
+
+
+def test_an_unknown_verb_from_a_beat_gets_its_failure_posted(monkeypatch):
+    node_commands.save_key(NODE, KEY)
+    client, ran = _Client([_cmd(verb="mesh-lend-sideways", args={})]), []
+    _beat_once(client, monkeypatch, ran)
+    url, body = client.posts[-1]
+    assert url == f"https://idp.test/v1/nodes/{NODE}/commands/cmd_1/result"
+    assert body["ok"] is False and "upgrade first" in body["output"] and ran == []
 
 
 def test_own_user_unit_reads_the_cgroup(monkeypatch, tmp_path):

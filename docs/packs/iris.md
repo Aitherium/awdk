@@ -1,12 +1,12 @@
 # Iris Visual Artisan
 
-`iris` · version `3.8.86` · 8.2 KB
+`iris` · version `3.8.87` · 8.2 KB
 
-**[Download iris-3.8.86.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.86/iris-3.8.86.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.86/iris-3.8.86.sha256)
+**[Download iris-3.8.87.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.87/iris-3.8.87.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.87/iris-3.8.87.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.86/iris-3.8.86.tar.gz
-tar xzf iris-3.8.86.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.87/iris-3.8.87.tar.gz
+tar xzf iris-3.8.87.tar.gz
 python iris/install.py
 ```
 
@@ -42,5 +42,5 @@ skills/image-generation.md
 
 ---
 
-sha256 `8f362a8db7c0748d00bc7457c91f9c0dbef2595f68b9b04044de569af1637b19`  
-Built from `v3.8.86` (adk 3.8.86). [All packs](../packs.md)
+sha256 `f8073da5d33cd179d1d24be201ee8bfbd7da5edeaef191801b93cda80c2dcb5c`  
+Built from `v3.8.87` (adk 3.8.87). [All packs](../packs.md)
