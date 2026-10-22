@@ -35,6 +35,16 @@ _CONFIRM_PATH = "/api/node-pairing/confirm"
 #: `adk pair` with no --portal could never succeed.
 IDENTITY_CONFIRM_PATH = "/v1/nodes/pairing/confirm"
 
+#: `adk pair` exit code for "the platform was briefly unavailable; mint a fresh code
+#: and try again" (BSD EX_TEMPFAIL). Measured 2026-10-21: Identity answered 503 while
+#: its Directory restarted and the installer read the plain exit 1 as final. The
+#: retry cannot live here: Identity leaves a code SPENT on any 5xx (the write may
+#: have begun -- identity_nodes.pairing_confirm), so only the caller that can mint a
+#: new code (the installers, the portal) can retry. 1 stays "refused / bad code".
+EXIT_TRANSIENT = 75
+#: Statuses that mean "the platform is restarting", never "no".
+TRANSIENT_STATUSES = (500, 502, 503, 504)
+
 
 async def pair_with_code(code: str, portal_url: str,
                          node_class: str = "",
@@ -71,7 +81,9 @@ async def pair_with_code(code: str, portal_url: str,
             detail = resp.text[:200]
             # 400 is overwhelmingly "expired" in practice — say the useful thing.
             hint = " (codes live 5 minutes — mint a fresh one on the portal)" if resp.status_code == 400 else ""
-            return {"paired": False, "error": f"HTTP {resp.status_code}: {detail}{hint}"}
+            return {"paired": False, "error": f"HTTP {resp.status_code}: {detail}{hint}",
+                    "http_status": resp.status_code,
+                    "transient": resp.status_code in TRANSIENT_STATUSES}
 
         data = resp.json()
         tenant_id = data.get("tenant_id", "")
@@ -117,7 +129,20 @@ async def pair_with_code(code: str, portal_url: str,
         }
     except Exception as e:  # noqa: BLE001 — CLI surface; the message IS the product
         log.warning("Pairing failed: %s", e)
-        return {"paired": False, "error": str(e)}
+        return {"paired": False, "error": str(e) or type(e).__name__,
+                "transient": _is_transport_error(e)}
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    """True for a connection/timeout failure (the platform never answered)."""
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.TransportError):
+            return True
+    except ImportError:  # pragma: no cover - httpx is a core dependency
+        pass
+    return isinstance(exc, (ConnectionError, TimeoutError))
 
 
 def cmd_pair(args: Any) -> int:
@@ -164,6 +189,10 @@ def cmd_pair(args: Any) -> int:
 
     if not result.get("paired"):
         print(f"  ✗ Pairing failed: {result.get('error', 'unknown error')}")
+        if result.get("transient"):
+            print("    The platform was briefly unavailable; this code is spent. "
+                  "Mint a fresh code and run `adk pair` again in a minute.")
+            return EXIT_TRANSIENT
         return 1
 
     print(f"  ✓ Paired as node {result['node_id']} (tenant {result.get('tenant_id') or '?'})")
