@@ -55,6 +55,12 @@ def _popen(*codes):
 
 
 def _run_ok(cmd, **kw):
+    # `systemctl --user show -p MainPID --value` answers the pid alone: a Linux runner
+    # with systemctl takes the systemd hand-over path in cmd_lend, and int() of the
+    # --help text below made it LendError (rc 2). Everything else gets the help text
+    # the binary probe looks for.
+    if list(cmd[:2]) == ["systemctl", "--user"] and "show" in cmd:
+        return SimpleNamespace(returncode=0, stdout="4242\n", stderr="")
     return SimpleNamespace(returncode=0, stdout="4242\n  -d, --device <dev1,dev2,...>", stderr="")
 
 

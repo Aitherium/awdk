@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.84] - 2026-10-22
+
+### Added
+- Node commands `mesh-lend-on` (one argument, `gb`: a whole number 1-256) and `mesh-lend-off`: the device's owner can start and stop `adk mesh lend` from the control plane, signed and verified like every other node command. `collect-diagnostics` now reports the mesh lend status.
+
 ## [3.8.83] - 2026-10-22
 
 ### Added

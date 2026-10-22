@@ -37,7 +37,7 @@ log = logging.getLogger("adk.node_commands")
 
 __all__ = ["VERBS", "VERSION_RE", "SIGNED_FIELDS", "RESULT_FIELDS", "canonical", "sign", "verify",
            "load_key", "save_key", "run_commands", "sign_result", "load_appliances",
-           "appliance_names"]
+           "appliance_names", "MESH_LEND_GB_RE"]
 
 #: verb -> {argument: allowed values}. Keep in step with identity_node_commands.VERBS;
 #: a verb the server adds is refused here until this copy learns it.
@@ -68,6 +68,13 @@ VERBS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "appliance-status": {},
     "appliance-logs": {},
     "appliance-redeploy": {},
+    # Lend this machine's RAM to the pooled model over the mesh (adk.mesh_lend, the
+    # same code as `adk mesh lend --gb N`). The ONLY argument is ``gb``, a decimal
+    # integer 1..256 (MESH_LEND_GB_RE); port, pool and registry are this host's own
+    # defaults/environment, never the server's.
+    "mesh-lend-on": {},
+    # Stop lending and remove the logon hook (`adk mesh lend --stop`). No argument.
+    "mesh-lend-off": {},
 }
 #: Companion packages `upgrade-component` may install. Closed: a package not named
 #: here is refused here and in identity_node_commands.UPGRADE_COMPONENTS.
@@ -82,12 +89,17 @@ _HOST_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
 #: An exact release: three dot-separated integers, nothing else (no specifier, no
 #: extra pip argument). Same rule as identity_node_commands.UPGRADE_VERSION_RE.
 VERSION_RE = re.compile(r"\A[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}\Z")
+#: The GB `mesh-lend-on` may lend: a decimal integer 1..256, nothing else (no sign,
+#: no fraction, no leading zero, no whitespace). Same rule as
+#: identity_node_commands.MESH_LEND_GB_RE.
+MESH_LEND_GB_RE = re.compile(r"\A(?:[1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-6])\Z")
 #: verb -> {argument: check}. An open-ended argument whose FORM is checked.
 _FORM_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "upgrade": {"version": lambda v: bool(VERSION_RE.match(v))},
     "advertise-inference": {"url": lambda v: _valid_inference_arg(v)},
     "upgrade-component": {"component": lambda v: v in COMPONENTS,
                           "version": lambda v: bool(VERSION_RE.match(v))},
+    "mesh-lend-on": {"gb": lambda v: bool(MESH_LEND_GB_RE.match(v))},
 }
 #: verb -> {argument: check}. A form-checked argument the verb MAY carry. An older
 #: server never sends it, so the required set in _FORM_ARGS is unchanged.
@@ -240,6 +252,7 @@ def _diagnostics(_args: Dict[str, str]) -> Dict[str, Any]:
             out[name] = getattr(__import__(mod, fromlist=[attr]), attr)()
         except Exception as exc:  # noqa: BLE001 - one section failing is reported, not fatal
             out[name] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    out["mesh_lend"] = _mesh_lend_status()
     try:
         from adk import self_update
         out["code"] = {"running_root": str(self_update.RUNNING_ROOT),
@@ -263,6 +276,69 @@ def _lend_on(args: Dict[str, str]) -> Dict[str, Any]:
 def _lend_off(_args: Dict[str, str]) -> Dict[str, Any]:
     from adk import lend_routes
     return lend_routes.stop()
+
+
+def _mesh_lend_args(**over: Any) -> Any:
+    """The argparse namespace ``adk mesh lend`` would build with no flags: this host's
+    default port/threads, pool and registry from its OWN environment. Only the
+    fields named in ``over`` (gb, status/stop/json) come from the verb."""
+    import argparse
+
+    from adk import mesh_lend
+    ns = argparse.Namespace(gb=None, port=mesh_lend.DEFAULT_PORT, threads=0, status=False,
+                            stop=False, json=False, pool="", registry_url="", coordinator="")
+    for k, v in over.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def _captured(fn: Callable[..., int], ns: Any) -> Tuple[int, str]:
+    """Run one ``adk.mesh_lend`` command function; return (exit code, what it printed)."""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        rc = int(fn(ns))
+    return rc, _tail_text(buf.getvalue(), 2000)
+
+
+def _mesh_lend_status() -> Dict[str, Any]:
+    """``adk mesh lend --status --json`` as a dict (never raises)."""
+    try:
+        from adk import mesh_lend
+        rc, text = _captured(mesh_lend.cmd_status, _mesh_lend_args(status=True, json=True))
+        try:
+            out = json.loads(text)
+        except ValueError:
+            out = {"raw": text}
+        if not isinstance(out, dict):
+            out = {"raw": text}
+        out["rc"] = rc
+        return out
+    except Exception as exc:  # noqa: BLE001 - one section failing is reported, not fatal
+        return {"error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+def _mesh_lend_on(args: Dict[str, str]) -> Dict[str, Any]:
+    """``adk mesh lend --gb <gb>``. ``gb`` is re-checked here (verify() already did)
+    and becomes an int before it reaches mesh_lend, so nothing the server sent is
+    ever placed in an argv as text."""
+    gb = str(args.get("gb") or "")
+    if not MESH_LEND_GB_RE.match(gb):
+        return {"ok": False, "error": "gb must be a whole number of GB from 1 to 256"}
+    from adk import mesh_lend
+    rc, text = _captured(mesh_lend.cmd_lend, _mesh_lend_args(gb=int(gb)))
+    # 0 lending + announced (or no registry); 1 lending, registry refused; 2 not lending.
+    return {"ok": rc in (0, 1), "rc": rc, "gb": int(gb), "output": text,
+            "status": _mesh_lend_status()}
+
+
+def _mesh_lend_off(_args: Dict[str, str]) -> Dict[str, Any]:
+    """``adk mesh lend --stop``: stop the server and remove the logon hook."""
+    from adk import mesh_lend
+    rc, text = _captured(mesh_lend.cmd_stop, _mesh_lend_args(stop=True))
+    return {"ok": rc == 0, "rc": rc, "output": text, "status": _mesh_lend_status()}
 
 
 def _restartable() -> List[str]:
@@ -1029,6 +1105,8 @@ _HANDLERS: Dict[str, Callable[[Dict[str, str]], Any]] = {
     "appliance-status": _appliance_status,
     "appliance-logs": _appliance_logs,
     "appliance-redeploy": _appliance_redeploy,
+    "mesh-lend-on": _mesh_lend_on,
+    "mesh-lend-off": _mesh_lend_off,
 }
 
 

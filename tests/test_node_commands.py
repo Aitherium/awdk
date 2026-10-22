@@ -754,3 +754,82 @@ def test_advertise_inference_refuses_a_bad_probe_url(args):
     why = node_commands.verify(_cmd(verb="advertise-inference", args=args), KEY, NODE,
                                seen=[])
     assert why, args
+
+
+# ── mesh-lend-on / mesh-lend-off: adk mesh lend, by signed command ──────────
+
+
+def test_mesh_lend_on_with_a_whole_gb_verifies():
+    assert node_commands.verify(_cmd(verb="mesh-lend-on", args={"gb": "24"}), KEY, NODE,
+                                seen=[]) == ""
+    for gb in ("1", "9", "10", "99", "100", "199", "249", "256"):
+        assert node_commands.verify(_cmd(verb="mesh-lend-on", args={"gb": gb}), KEY, NODE,
+                                    seen=[]) == "", gb
+    assert node_commands.verify(_cmd(verb="mesh-lend-off", args={}), KEY, NODE, seen=[]) == ""
+
+
+@pytest.mark.parametrize("args", [
+    {"gb": "0"}, {"gb": "300"}, {"gb": "257"}, {"gb": "24; rm -rf /"}, {"gb": "024"},
+    {"gb": "-1"}, {"gb": "+24"}, {"gb": "24.5"}, {"gb": " 24"}, {"gb": "24\n"},
+    {"gb": "２４"}, {"gb": ""}, {"gb": 24}, {"gb": None}, {},
+    {"gb": "24", "pool": "x"}, {"gb": "24", "registry_url": "https://evil"},
+    {"gb": "24", "port": "22"},
+])
+def test_mesh_lend_on_refuses_anything_but_one_whole_gb(args):
+    ran = []
+    cmd = _cmd(verb="mesh-lend-on", args=args)
+    assert node_commands.verify(cmd, KEY, NODE, seen=[]) != "", args
+    assert node_commands.run_commands([cmd], NODE, KEY, handlers=_handlers(ran)) == []
+    assert ran == []
+
+
+@pytest.mark.parametrize("args", [{"gb": "24"}, {"via": "lan"}, {"x": ""}])
+def test_mesh_lend_off_takes_no_argument(args):
+    assert node_commands.verify(_cmd(verb="mesh-lend-off", args=args), KEY, NODE,
+                                seen=[]) != ""
+
+
+def test_mesh_lend_on_calls_mesh_lend_with_the_hosts_own_defaults(monkeypatch):
+    from adk import mesh_lend
+    seen = []
+
+    def lend(ns):
+        seen.append(vars(ns).copy())
+        print("lending 24576 MB on 100.64.0.51:50052")
+        return 0
+    monkeypatch.setattr(mesh_lend, "cmd_lend", lend)
+    monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
+    (res,) = node_commands.run_commands(
+        [_cmd(verb="mesh-lend-on", args={"gb": "24"})], NODE, KEY)
+    assert res["ok"] is True
+    out = json.loads(res["output"])
+    assert out["gb"] == 24 and "lending 24576 MB" in out["output"]
+    assert out["status"]["lending"] is False
+    (ns,) = seen
+    assert ns["gb"] == 24 and isinstance(ns["gb"], int)
+    assert (ns["port"], ns["pool"], ns["registry_url"], ns["coordinator"]) == (
+        mesh_lend.DEFAULT_PORT, "", "", "")
+    assert ns["status"] is False and ns["stop"] is False
+
+
+def test_mesh_lend_on_handler_rechecks_gb_and_a_failed_lend_is_not_ok(monkeypatch):
+    from adk import mesh_lend
+    monkeypatch.setattr(mesh_lend, "cmd_lend", lambda ns: (_ for _ in ()).throw(
+        AssertionError("must not run")))
+    assert node_commands._mesh_lend_on({"gb": "24; rm"})["ok"] is False
+    monkeypatch.setattr(mesh_lend, "cmd_lend", lambda ns: 2)
+    monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
+    out = node_commands._mesh_lend_on({"gb": "24"})
+    assert out["ok"] is False and out["rc"] == 2
+
+
+def test_mesh_lend_off_stops_and_diagnostics_show_the_lend(monkeypatch):
+    from adk import mesh_lend
+    stopped = []
+    monkeypatch.setattr(mesh_lend, "cmd_stop", lambda ns: stopped.append(ns.stop) or 0)
+    monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
+    (res,) = node_commands.run_commands(
+        [_cmd(verb="mesh-lend-off", args={})], NODE, KEY)
+    assert res["ok"] is True and stopped == [True]
+    diag = node_commands._diagnostics({})
+    assert diag["mesh_lend"]["lending"] is False and diag["mesh_lend"]["rc"] == 0
