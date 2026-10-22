@@ -58,6 +58,17 @@ def cases(tamper: bool) -> list:
         (cmd(verb="shell"), "REFUSE verb not allowed on this device"),
         (cmd(verb="lend-on", args={"via": "anywhere"}), "REFUSE argument not allowed for lend-on"),
         (cmd(issued_at=NOW + 0.5), "REFUSE not canonical: a fraction has no canonical form"),
+        # mesh-lend-on: gb is decimal TEXT 1..256 (Identity normalises a number to text)
+        (cmd(verb="mesh-lend-on", args={"gb": "8"}), "RUN"),
+        (cmd(verb="mesh-lend-on", args={"gb": "256"}), "RUN"),
+        (cmd(verb="mesh-lend-on", args={"gb": "257"}), "REFUSE argument not allowed for mesh-lend-on"),
+        (cmd(verb="mesh-lend-on", args={"gb": "08"}), "REFUSE argument not allowed for mesh-lend-on"),
+        (cmd(verb="mesh-lend-on", args={"gb": 8}), "REFUSE argument not allowed for mesh-lend-on"),
+        (cmd(verb="mesh-lend-on", args={"gb": "8", "host": "0.0.0.0"}),
+         "REFUSE argument not allowed for mesh-lend-on"),
+        (cmd(verb="mesh-lend-on", args={}), "REFUSE argument missing for mesh-lend-on"),
+        (cmd(verb="mesh-lend-off"), "RUN"),
+        (cmd(verb="mesh-lend-off", args={"gb": "8"}), "REFUSE argument not allowed for mesh-lend-off"),
     ]
     out = []
     for c, want in rows:
@@ -73,14 +84,40 @@ def cases(tamper: bool) -> list:
 def android_jar() -> Path | None:
     sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or str(
         Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk")
-    jar = Path(sdk) / "platforms" / "android-35" / "android.jar"
-    return jar if jar.exists() else None
+    # the platform the app builds against (build.py API) first: the app uses API 36 classes
+    for api in ("36", "35"):
+        jar = Path(sdk) / "platforms" / f"android-{api}" / "android.jar"
+        if jar.exists():
+            return jar
+    return None
+
+
+def r_java(out: Path, jar: Path) -> list:
+    """R.java for the app's resources (Shortcuts names R.mipmap.*), made the way build.py
+    makes it; [] when the SDK's aapt2 is not there (the compile then says so)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("aither_android_build", HERE / "build.py")
+    b = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(b)
+    bt = b.sdk() / "build-tools" / b.TOOLS
+    try:
+        aapt2 = b.tool(bt, "aapt2")
+    except SystemExit:
+        return []
+    flat, apk = out / "res.zip", out / "r.apk"
+    for cmd in ([aapt2, "compile", "--dir", str(HERE / "res"), "-o", str(flat)],
+                [aapt2, "link", str(flat), "--manifest", str(HERE / "AndroidManifest.xml"),
+                 "-I", str(jar), "--java", str(out / "rgen"), "-o", str(apk)]):
+        if subprocess.run(cmd, capture_output=True).returncode != 0:
+            return []
+    return [str(p) for p in (out / "rgen").rglob("*.java")]
 
 
 def run(json_jar: Path, tamper: bool) -> int:
     jar = android_jar()
     if not shutil.which("javac") or not jar or not json_jar.exists():
-        print("check_commands: needs javac, the android-35 platform and --json-jar", file=sys.stderr)
+        print("check_commands: needs javac, the android-36 platform and --json-jar", file=sys.stderr)
         return 2
     rows = cases(tamper)
     with tempfile.TemporaryDirectory() as tmp:
@@ -92,6 +129,7 @@ def run(json_jar: Path, tamper: bool) -> int:
                 str(SRC / "Commands.java")]
         # Commands references the rest of the app; compile it all, run only the pure parts.
         srcs += [str(p) for p in SRC.glob("*.java") if str(p) not in srcs]
+        srcs += r_java(t, jar)
         r = subprocess.run(["javac", "-encoding", "UTF-8", "-nowarn", "-cp", cp_build, "-d",
                             str(t / "cls"), *srcs], capture_output=True, text=True)
         if r.returncode != 0:

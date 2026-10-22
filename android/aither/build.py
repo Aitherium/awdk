@@ -297,6 +297,57 @@ def bundle(
     return aab
 
 
+MESH_LEND_JAVA = HERE / "src" / "com" / "aitherium" / "aither" / "MeshLend.java"
+RPC_BASE = "https://github.com/Aitherium/aitherkvcache/releases/download/"
+
+
+def rpc_builds() -> tuple[str, list[tuple[str, str, int, str]]]:
+    """(release, [(lib name, asset, size, sha256)]) from MeshLend.java -- the one table the
+    app checks at run time, so build and phone can never disagree about a byte."""
+    src = MESH_LEND_JAVA.read_text(encoding="utf-8")
+    rel = re.search(r'RELEASE = "([A-Za-z0-9._-]+)"', src)
+    rows = re.findall(
+        r'\{"(lib[a-z0-9_]+\.so)", "([A-Za-z0-9._-]+)", "([0-9]+)",\s*"([0-9a-f]{64})"\}', src)
+    if not rel or not rows:
+        raise SystemExit("build: MeshLend.RELEASE/BUILDS not found")
+    return rel.group(1), [(n, a, int(z), h) for n, a, z, h in rows]
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def rpc_servers(fetch=None) -> list[tuple[Path, str]]:
+    """The pinned ggml RPC servers (mesh-lend-on), fetched once into jniLibs/arm64-v8a/ and
+    checked by size + SHA-256 every build. A mismatch deletes the file and fails the build:
+    nothing unverified is ever packed. Returns [(file, lib/arm64-v8a/<name>)]."""
+    import urllib.request
+
+    def _get(url: str, dest: Path) -> None:
+        req = urllib.request.Request(url, headers={"User-Agent": "aither-android-build/1"})
+        with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+
+    rel, rows = rpc_builds()
+    get = fetch or _get
+    out = []
+    lib = HERE / "jniLibs" / "arm64-v8a"
+    lib.mkdir(parents=True, exist_ok=True)
+    for name, asset, size, sha in rows:
+        f = lib / name
+        if not (f.exists() and f.stat().st_size == size and _sha256(f) == sha):
+            part = f.with_suffix(".part")
+            get(f"{RPC_BASE}{rel}/{asset}", part)
+            if part.stat().st_size != size or _sha256(part) != sha:
+                part.unlink()
+                raise SystemExit(f"build: {asset} from {rel} does not match its pin; refused")
+            os.replace(part, f)
+        out.append((f, f"lib/arm64-v8a/{name}"))
+    return out
+
+
 def build(
     out: Path,
     keystore: str = "",
@@ -408,6 +459,15 @@ def build(
         return bundle(out, out / "proto.apk", engine, keystore, storepass_file)
     with zipfile.ZipFile(base, "a", zipfile.ZIP_DEFLATED) as z:
         z.write(out / "dex" / "classes.dex", "classes.dex")
+        # mesh-lend-on: the RPC server is exec'd from nativeLibraryDir (W^X forbids exec of a
+        # downloaded file), so it ships here, pinned; a release without it is refused
+        try:
+            for f, arc in rpc_servers():
+                z.write(f, arc)
+        except (OSError, SystemExit) as exc:
+            if keystore:
+                raise SystemExit(f"build: release refused: mesh-lend RPC server: {exc}")
+            print(f"build: no mesh-lend RPC server ({exc})", file=sys.stderr)
         if (
             engine.exists()
         ):  # llama-server: Android runs app code only from the native-lib dir

@@ -36,6 +36,9 @@ final class Commands {
     static final String[] RESULT = {"id", "node_id", "ok", "output"};
     static final int SEEN_MAX = 200;
 
+    /** Marks an argument whose value is checked by a rule ({@link #argOk}), not a list. */
+    static final List<String> OPEN = new ArrayList<>();
+
     /** verb -> argument -> allowed values. Everything else is refused. */
     static final Map<String, Map<String, List<String>>> VERBS = new HashMap<>();
 
@@ -51,6 +54,18 @@ final class Commands {
         VERBS.put("update-model", none);
         VERBS.put("check-update", none);
         VERBS.put("update", none); // the adk name for the same thing: check, then prompt
+        // Lend RAM to the pooled model over the mesh (MeshLend, MeshLendService). gb is the
+        // one open-ended argument: a decimal "1".."256" checked by MeshLend.gbOk, not a list.
+        Map<String, List<String>> gb = new HashMap<>();
+        gb.put("gb", OPEN);
+        VERBS.put("mesh-lend-on", gb);
+        VERBS.put("mesh-lend-off", none);
+    }
+
+    /** Is {@code v} an allowed value of {@code verb}'s argument {@code k}? */
+    static boolean argOk(String verb, String k, Object v, List<String> vals) {
+        if (vals == OPEN) return "mesh-lend-on".equals(verb) && "gb".equals(k) && MeshLend.gbOk(v);
+        return vals.contains(String.valueOf(v));
     }
 
     private final Context ctx;
@@ -88,9 +103,13 @@ final class Commands {
         for (java.util.Iterator<String> it = args.keys(); it.hasNext(); ) {
             String k = it.next();
             List<String> vals = allowed.get(k);
-            if (vals == null || !vals.contains(String.valueOf(args.opt(k)))) {
+            if (vals == null || !argOk(verb, k, args.opt(k), vals)) {
                 return "argument not allowed for " + verb;
             }
+        }
+        for (Map.Entry<String, List<String>> e : allowed.entrySet()) {
+            // an open argument is required: mesh-lend-on without gb lends nothing
+            if (e.getValue() == OPEN && !args.has(e.getKey())) return "argument missing for " + verb;
         }
         return "";
     }
@@ -126,7 +145,8 @@ final class Commands {
                 ok = false;
                 out.put("refused", why);
             } else {
-                ok = run(cmd.getString("verb"), out);
+                JSONObject args = cmd.optJSONObject("args");
+                ok = run(cmd.getString("verb"), args == null ? new JSONObject() : args, out);
             }
         } catch (Exception e) {
             ok = false;
@@ -152,7 +172,7 @@ final class Commands {
 
     // ------------------------------------------------------------ the verbs
 
-    private boolean run(String verb, JSONObject out) throws Exception {
+    private boolean run(String verb, JSONObject args, JSONObject out) throws Exception {
         switch (verb) {
             case "collect-diagnostics":
                 diagnostics(out);
@@ -161,6 +181,12 @@ final class Commands {
                 return lend(true, out);
             case "lend-off":
                 return lend(false, out);
+            case "mesh-lend-on":
+                // refuse() checked gb; parsed to an int here, so no server text reaches an argv
+                return MeshLendService.start(ctx, Integer.parseInt(args.getString("gb")), out);
+            case "mesh-lend-off":
+                MeshLendService.stop(ctx, out);
+                return true;
             case "refresh-app":
                 // the WebView is the activity's: it clears its cache the next time it is shown
                 cfg.set("refresh_app", true);
@@ -200,7 +226,8 @@ final class Commands {
                 .put("model_ready", node.modelReady())
                 .put("household_checkin", HeartbeatJob.last)
                 .put("profile_kind", cfg.profileKind())
-                .put("update_state", Updater.last);
+                .put("update_state", Updater.last)
+                .put("mesh_lend", MeshLendService.report(new JSONObject().put("state", MeshLendService.state)));
         // who installed this app and owns its updates, and the last installer status code
         JSONObject upd = new JSONObject();
         Updater.diagnostics(ctx, upd);
