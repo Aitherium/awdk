@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.85] - 2026-10-22
+
+### Added
+- `adk bonsai-local` runs natively with no container engine, for every supported size: Bonsai 1 (1.7B, 4B, 8B, 27B) and Bonsai 2 27B (PTQ1_0 for CPU/Vulkan, PQ2_0 for CUDA/Metal, on the PrismML llama.cpp build). `--auto` (default) picks the largest size that fits; downloads are sha256-checked; the server starts at sign-in; setup ends with a chat plus tool-call smoke test. `--status --json`, `--stop`, `--remove [--purge]`; `--container` keeps the old path.
+
 ## [3.8.84] - 2026-10-22
 
 ### Added
