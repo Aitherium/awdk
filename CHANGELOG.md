@@ -4,6 +4,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.81] - 2026-10-21
+
+### Fixed
+- `adk mesh join` needs no manual steps on a fresh laptop: it installs Tailscale itself (winget, Homebrew cask, or the install script as root), finds a just-installed client that is not on the shell's PATH yet, and no longer requires WireGuard's `wg` tool (the key pair is generated in Python).
+- `adk mesh join` brings the tunnel up even when the mesh registry is slow to answer; the registry record is re-made by the next join.
+
 ## [3.8.80] - 2026-10-20
 
 ### Added

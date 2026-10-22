@@ -31,6 +31,22 @@ _BASE = os.getenv(
     "http://aitheros-media-forge:8200" if _DOCKER else "http://localhost:8200",
 ).rstrip("/")
 
+
+def _mf_headers() -> dict:
+    """X-Internal-Key for media-forge's default-deny read gate, from the ONE helper of the tree
+    this copy runs in: the fleet's lib.integration.mediaforge_ops (env, vault, host key file) or,
+    in an awdk install, adk.mediaforge_auth (env, host key file). Imported by NAME so the awdk copy
+    carries no monorepo import and both copies stay identical (the parity gate). With no key
+    the call still goes out uncredentialed and the helper logs it once."""
+    import importlib
+    for mod in ("lib.integration.mediaforge_ops", "adk.mediaforge_auth"):
+        try:
+            return importlib.import_module(mod).mediaforge_headers()
+        except Exception:  # noqa: BLE001 - the other tree's helper is the fallback
+            continue
+    return {}
+
+
 _T_FAST = 60      # probes / knowledge lookup
 _T_OP = 300       # a color transform: upload + CPU OCIO + fetch — seconds, not minutes
 
@@ -39,7 +55,7 @@ def _post(path: str, body: dict, timeout: int, tries: int = 3) -> dict:
     """POST with GateBusy backoff. media-forge signals errors as 200 + ok:false."""
     for attempt in range(tries):
         try:
-            r = requests.post(f"{_BASE}{path}", json=body, timeout=timeout)
+            r = requests.post(f"{_BASE}{path}", json=body, timeout=timeout, headers=_mf_headers())
             r.raise_for_status()
             data = r.json()
         except requests.Timeout:

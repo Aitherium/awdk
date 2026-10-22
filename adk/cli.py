@@ -7937,6 +7937,22 @@ def _mesh_join_signed_in(args) -> int:
     st = _mesh.overlay_status(hs_url)
     if st["joined"]:
         return _joined(st)
+    if st["code"] == "tailscale_missing" and not getattr(args, "no_install_client", False):
+        # The join installs its own client, as the installers do: telling a signed-in
+        # user to go install Tailscale by hand was the step people stopped at.
+        print("  Installing the mesh client (Tailscale)...")
+        ok, detail = _mesh.install_tailscale()
+        print(f"  Tailscale: {detail}")
+        if ok:
+            # A fresh install's service takes a few seconds to answer `status`.
+            settle = _time.monotonic() + 30
+            st = _mesh.overlay_status(hs_url)
+            while st["code"] in ("tailscale_missing", "tailscale_unreachable") \
+                    and _time.monotonic() < settle:
+                _time.sleep(2)
+                st = _mesh.overlay_status(hs_url)
+            if st["joined"]:
+                return _joined(st)
     if st["code"] == "tailscale_missing":
         return _mesh_join_fail(
             f"Tailscale is not installed ({_mesh.TAILSCALE_INSTALL_URL}).",
@@ -7986,11 +8002,24 @@ def _mesh_join_signed_in(args) -> int:
         bearer = str(enroll.get("bearer_token") or "")
         if not bearer:
             return 2, "Identity returned no node capability token; the Conductor cannot admit this node"
-        result = await _mesh.join(
-            conductor, node_id, role="worker", headscale=True, headscale_auth_key=mesh_key,
-            psk=bearer, tenant_id=str(enroll.get("tenant_id") or ""), node_class=node_class,
-            headscale_url=hs_url, wireguard_fallback=False,
-        )
+        try:
+            result = await _mesh.join(
+                conductor, node_id, role="worker", headscale=True,
+                headscale_auth_key=mesh_key, psk=bearer,
+                tenant_id=str(enroll.get("tenant_id") or ""), node_class=node_class,
+                headscale_url=hs_url, wireguard_fallback=False,
+            )
+        except (RuntimeError, httpx.HTTPError) as exc:
+            # The tunnel needs only Identity's Headscale key; the Conductor's onboard
+            # adds the mesh registry record. When the Conductor is slow or one of its
+            # backends is down (2026-10-21: a 45 s WireGuard-provision hang turned
+            # every laptop join into a ReadTimeout), still bring the tunnel up; the
+            # record is re-made by the next `adk mesh join`.
+            print(f"  Mesh registry did not answer ({exc.__class__.__name__}); "
+                  "joining the tunnel directly.")
+            out = await asyncio.to_thread(
+                _mesh._tailscale_up, hs_url, mesh_key, f"aither-{node_id}")
+            result = {"overlay_ip": "", "tailscale_output": out}
         _update_node_record(overlay_ip=str(result.get("overlay_ip") or ""))
         return 0, str(result.get("tailscale_output") or "")
 
@@ -15167,6 +15196,9 @@ def _register_commands(sub):
     mesh_join_p.add_argument(
         "--node-class", default=None,
         help="Node class to register as (default: laptop)")
+    mesh_join_p.add_argument(
+        "--no-install-client", action="store_true",
+        help="Do not install Tailscale when it is missing (fail instead)")
     mesh_join_p.add_argument(
         "--conductor", default=os.getenv("AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com"),
         help="Conductor URL (default: $AITHER_CONDUCTOR_URL or conductor.aitherium.com)")

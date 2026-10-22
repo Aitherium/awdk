@@ -184,9 +184,42 @@ class TestAdkMeshJoin:
 
     def test_missing_tailscale_names_the_install(self, signed_in, monkeypatch, capsys):
         monkeypatch.setattr(mesh, "_tailscale", lambda: None)
+        # The join now installs the client itself; this is the case where that fails.
+        monkeypatch.setattr(mesh, "install_tailscale", lambda: (False, "no winget"))
         assert cli.cmd_mesh(_args()) == 3
         assert signed_in.joins == []
         assert "install Tailscale" in capsys.readouterr().err
+
+    def test_conductor_timeout_still_brings_the_tunnel_up(self, signed_in, monkeypatch, capsys):
+        """A slow Conductor (its WireGuard backend down) must not keep a laptop off
+        the tailnet: Identity's Headscale key is enough for the tunnel."""
+        states = iter([{"BackendState": "Stopped", "Self": {}}, ON_MESH])
+        current = {"st": next(states)}
+        monkeypatch.setattr(mesh, "_tailscale", lambda: "/usr/bin/tailscale")
+
+        def _run(cmd, **kw):
+            if cmd[1:] == ["status", "--json"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps(current["st"]),
+                                       stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(HS), stderr="")
+
+        monkeypatch.setattr(mesh.subprocess, "run", _run)
+
+        async def _join(*a, **kw):
+            raise httpx.ReadTimeout("conductor took 45 s")
+
+        ups = []
+
+        def _up(url, key, host):
+            ups.append((url, key, host))
+            current["st"] = next(states)
+            return "Success."
+
+        monkeypatch.setattr(mesh, "join", _join)
+        monkeypatch.setattr(mesh, "_tailscale_up", _up)
+        assert cli.cmd_mesh(_args()) == 0
+        assert ups == [("https://hs.aitherium.com", "hskey", "aither-paired-node")]
+        assert "Joined your mesh: 100.64.0.7" in capsys.readouterr().out
 
     def test_already_joined_is_idempotent(self, signed_in, monkeypatch):
         _ts(monkeypatch, ON_MESH, HS)

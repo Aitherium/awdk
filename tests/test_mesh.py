@@ -126,6 +126,7 @@ class TestHeadscaleTailscaleUp:
         assert "Connected." in output
         assert "[notice] some notice" in output
 
+    @patch("adk.mesh._TAILSCALE_KNOWN_PATHS", ())  # _tailscale() also checks these
     @patch("shutil.which")
     def test_tailscale_up_binary_not_found(self, mock_which):
         """RuntimeError raised when tailscale binary not found."""

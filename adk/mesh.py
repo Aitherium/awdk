@@ -63,12 +63,30 @@ def _is_windows() -> bool:
 
 
 def generate_keypair() -> tuple[str, str]:
-    """Return (private_key, public_key). Requires the ``wg`` tool."""
+    """Return (private_key, public_key) as WireGuard base64 keys.
+
+    Uses ``wg`` when present, else X25519 from ``cryptography`` -- the same
+    Curve25519 key WireGuard uses (wg clamps the scalar on use). A Headscale join
+    needs this key only for the Conductor's onboard record, so a laptop without
+    WireGuard installed must not be stopped here (measured 2026-10-21).
+    """
     wg = _wg()
     if not wg:
-        raise RuntimeError(
-            "WireGuard 'wg' tool not found. Install wireguard-tools "
-            "(apt install wireguard-tools) or WireGuard for Windows.")
+        try:
+            import base64
+
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        except ImportError as exc:
+            raise RuntimeError(
+                "WireGuard 'wg' tool not found and the 'cryptography' package is missing; "
+                "install either (pip install cryptography).") from exc
+        key = X25519PrivateKey.generate()
+        raw = serialization.Encoding.Raw
+        priv_b = key.private_bytes(raw, serialization.PrivateFormat.Raw,
+                                   serialization.NoEncryption())
+        pub_b = key.public_key().public_bytes(raw, serialization.PublicFormat.Raw)
+        return base64.b64encode(priv_b).decode(), base64.b64encode(pub_b).decode()
     priv = subprocess.run([wg, "genkey"], capture_output=True, text=True,
                           check=True).stdout.strip()
     pub = subprocess.run([wg, "pubkey"], input=priv, capture_output=True,
@@ -328,9 +346,64 @@ def has_handshake(iface: str = DEFAULT_IFACE) -> bool:
 # Headscale transport (NAT-friendly alternative to raw WireGuard)
 # ─────────────────────────────────────────────────────────────────────────────
 
+#: Where the official packages put the CLI. A fresh install is not on the PATH of the
+#: shell that ran it, so `adk mesh join` would install Tailscale and then not find it.
+_TAILSCALE_KNOWN_PATHS = (
+    r"C:\Program Files\Tailscale\tailscale.exe",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    "/usr/bin/tailscale",
+    "/usr/local/bin/tailscale",
+)
+
+
 def _tailscale() -> str | None:
-    """Find the tailscale binary."""
-    return shutil.which("tailscale") or shutil.which("tailscale.exe")
+    """Find the tailscale binary: PATH first, then the official install locations."""
+    found = shutil.which("tailscale") or shutil.which("tailscale.exe")
+    if found:
+        return found
+    return next((p for p in _TAILSCALE_KNOWN_PATHS if os.path.isfile(p)), None)
+
+
+def install_tailscale(run=subprocess.run) -> tuple[bool, str]:
+    """Install the Tailscale client the way each platform's package manager does it.
+
+    Windows: winget (silent; it raises its own UAC prompt). macOS: Homebrew cask.
+    Linux: Tailscale's install script, only when root or passwordless sudo is
+    available (it needs root and a TTY prompt would hang an installer). Returns
+    ``(installed, detail)``; ``installed`` is judged by finding the binary after,
+    never by an exit code alone. ``run`` is injectable for tests.
+    """
+    if _tailscale():
+        return True, "already installed"
+    system = platform.system()
+    if system == "Windows":
+        if not shutil.which("winget"):
+            return False, f"winget is not available; install Tailscale from {TAILSCALE_INSTALL_URL}"
+        argv = ["winget", "install", "--id", "Tailscale.Tailscale", "-e", "--silent",
+                "--accept-package-agreements", "--accept-source-agreements"]
+    elif system == "Darwin":
+        if not shutil.which("brew"):
+            return False, ("Homebrew is not available; install Tailscale from "
+                           f"{TAILSCALE_INSTALL_URL}")
+        argv = ["brew", "install", "--cask", "tailscale"]
+    elif system == "Linux":
+        script = "curl -fsSL https://tailscale.com/install.sh | sh"
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            argv = ["sh", "-c", script]
+        elif (shutil.which("sudo")
+              and run(["sudo", "-n", "true"], capture_output=True).returncode == 0):
+            argv = ["sudo", "sh", "-c", script]
+        else:
+            return False, f"installing Tailscale needs root; run: {script}"
+    else:
+        return False, f"no automatic Tailscale install for {system}; see {TAILSCALE_INSTALL_URL}"
+    try:
+        r = run(argv)
+    except OSError as exc:
+        return False, f"{argv[0]} could not start: {exc}"
+    if _tailscale():
+        return True, "installed"
+    return False, f"{argv[0]} exited {getattr(r, 'returncode', '?')} and Tailscale is still missing"
 
 
 def _tailscale_up(

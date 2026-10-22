@@ -51,6 +51,22 @@ _BASE = os.getenv(
     "http://aitheros-media-forge:8200" if _DOCKER else "http://localhost:8200",
 ).rstrip("/")
 
+
+def _mf_headers() -> dict:
+    """X-Internal-Key for media-forge's default-deny read gate, from the ONE helper of the tree
+    this copy runs in: the fleet's lib.integration.mediaforge_ops (env, vault, host key file) or,
+    in an awdk install, adk.mediaforge_auth (env, host key file). Imported by NAME so the awdk copy
+    carries no monorepo import and both copies stay identical (the parity gate). With no key
+    the call still goes out uncredentialed and the helper logs it once."""
+    import importlib
+    for mod in ("lib.integration.mediaforge_ops", "adk.mediaforge_auth"):
+        try:
+            return importlib.import_module(mod).mediaforge_headers()
+        except Exception:  # noqa: BLE001 - the other tree's helper is the fallback
+            continue
+    return {}
+
+
 _T_DISPATCH = 60     # the route returns a JOB; it must not block on the render
 _T_POLL = 30
 
@@ -160,7 +176,7 @@ def _err(msg: str, **extra) -> dict:
 
 def _post(path: str, body: dict) -> dict:
     try:
-        r = requests.post(f"{_BASE}{path}", json=body, timeout=_T_DISPATCH)
+        r = requests.post(f"{_BASE}{path}", json=body, timeout=_T_DISPATCH, headers=_mf_headers())
         r.raise_for_status()
         data = r.json()
     except requests.Timeout:
@@ -323,7 +339,7 @@ def mediaforge_3d_status(job_id: str = "") -> dict:
         return refused
     path = f"/api/jobs/{job_id}" if job_id else "/api/jobs"
     try:
-        r = requests.get(f"{_BASE}{path}", timeout=_T_POLL)
+        r = requests.get(f"{_BASE}{path}", timeout=_T_POLL, headers=_mf_headers())
         r.raise_for_status()
         data = r.json()
     except requests.RequestException as e:
@@ -345,7 +361,7 @@ def mediaforge_3d_backends() -> dict:
     if refused is not None:
         return refused
     try:
-        r = requests.get(f"{_BASE}/api/studio/models3d", timeout=_T_POLL)
+        r = requests.get(f"{_BASE}/api/studio/models3d", timeout=_T_POLL, headers=_mf_headers())
         if r.status_code == 404:
             # media-forge does not publish a 3D capability probe. Say so, rather than
             # inferring readiness from a 404 — "the probe is missing" and "no backend"
@@ -372,7 +388,7 @@ def mediaforge_avatar_bases() -> dict:
     if refused is not None:
         return refused
     try:
-        r = requests.get(f"{_BASE}/api/studio/avatar_bases", timeout=_T_POLL)
+        r = requests.get(f"{_BASE}/api/studio/avatar_bases", timeout=_T_POLL, headers=_mf_headers())
         r.raise_for_status()
         return r.json()
     except requests.RequestException as e:

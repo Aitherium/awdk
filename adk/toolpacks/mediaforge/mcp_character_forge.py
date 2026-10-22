@@ -38,6 +38,22 @@ _BASE = os.getenv(
     "http://aitheros-media-forge:8200" if _DOCKER else "http://localhost:8200",
 ).rstrip("/")
 
+
+def _mf_headers() -> dict:
+    """X-Internal-Key for media-forge's default-deny read gate, from the ONE helper of the tree
+    this copy runs in: the fleet's lib.integration.mediaforge_ops (env, vault, host key file) or,
+    in an awdk install, adk.mediaforge_auth (env, host key file). Imported by NAME so the awdk copy
+    carries no monorepo import and both copies stay identical (the parity gate). With no key
+    the call still goes out uncredentialed and the helper logs it once."""
+    import importlib
+    for mod in ("lib.integration.mediaforge_ops", "adk.mediaforge_auth"):
+        try:
+            return importlib.import_module(mod).mediaforge_headers()
+        except Exception:  # noqa: BLE001 - the other tree's helper is the fallback
+            continue
+    return {}
+
+
 _T_FAST = 60        # metadata / job queries
 _T_HEAVY = 2400     # WAN i2v — minutes on a contended GPU; 300s is NOT enough
 _T_TRAIN = 120      # train LAUNCH returns fast (the job itself is tracked/background)
@@ -107,7 +123,7 @@ def _post(path: str, body: dict, timeout: int, tries: int = 3) -> dict:
     """POST with GateBusy backoff. media-forge signals errors as 200 + ok:false."""
     for attempt in range(tries):
         try:
-            r = requests.post(f"{_BASE}{path}", json=body, timeout=timeout)
+            r = requests.post(f"{_BASE}{path}", json=body, timeout=timeout, headers=_mf_headers())
             r.raise_for_status()
             data = r.json()
         except requests.Timeout:
@@ -154,7 +170,7 @@ def mediaforge_status() -> dict:
     if refused is not None:
         return refused
     try:
-        r = requests.get(f"{_BASE}/api/jobs", timeout=_T_FAST)
+        r = requests.get(f"{_BASE}/api/jobs", timeout=_T_FAST, headers=_mf_headers())
         r.raise_for_status()
         d = r.json()
     except requests.RequestException as e:
@@ -173,7 +189,7 @@ def mediaforge_list_characters() -> dict:
     if refused is not None:
         return refused
     try:
-        r = requests.get(f"{_BASE}/api/characters", timeout=_T_FAST)
+        r = requests.get(f"{_BASE}/api/characters", timeout=_T_FAST, headers=_mf_headers())
         r.raise_for_status()
         return r.json()
     except requests.RequestException as e:
@@ -306,7 +322,7 @@ def mediaforge_list_ops(group: str = "") -> dict:
     group  optional filter (e.g. "image", "video", "color", "audio", "3d").
     Returns {ops: [{name, group, label, summary, params: [names], cost}], count, groups}."""
     try:
-        r = requests.get(f"{_BASE}/ops", timeout=_T_FAST)
+        r = requests.get(f"{_BASE}/ops", timeout=_T_FAST, headers=_mf_headers())
         r.raise_for_status()
         data = r.json()
     except (requests.RequestException, ValueError) as e:
@@ -362,7 +378,8 @@ def mediaforge_run_op(name: str, params: dict[str, object] | None = None) -> dic
     body = {k: v for k, v in body.items()
             if not (isinstance(k, str) and k.strip().lower() in _TRUST_KEYS)}
     try:
-        probe = requests.post(f"{_BASE}/op/{name}", json=body, timeout=_T_HEAVY)
+        probe = requests.post(f"{_BASE}/op/{name}", json=body, timeout=_T_HEAVY,
+                              headers=_mf_headers())
     except requests.Timeout:
         return {"error": f"timed out after {_T_HEAVY}s running op {name!r}"}
     except requests.RequestException as e:

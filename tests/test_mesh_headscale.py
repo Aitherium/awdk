@@ -33,7 +33,9 @@ class TestHeadscaleTransport:
 
     def test_tailscale_binary_not_found(self):
         """Verify _tailscale() returns None when tailscale is not installed."""
-        with patch("shutil.which") as mock_which:
+        # Hide the official install locations too: _tailscale() also looks there.
+        with patch("shutil.which") as mock_which, \
+                patch("adk.mesh._TAILSCALE_KNOWN_PATHS", ()):
             mock_which.return_value = None
             result = _tailscale()
             assert result is None

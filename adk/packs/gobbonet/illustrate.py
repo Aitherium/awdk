@@ -67,6 +67,8 @@ _MAX_COUNT = 4
 
 #: The curated op is synchronous and a GPU render is minutes on a shared card.
 _TIMEOUT_S = 900.0
+#: Hosts that are THIS machine -- the only Media Forge that receives the internal key.
+_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 
 #: The consent record the Studio tab's remote lane writes (adk.local_routes).
 _CONSENT_FILE = "studio-remote.json"
@@ -153,6 +155,12 @@ class StudioLane:
         headers = {"content-type": "application/json"}
         if self.key:
             headers["authorization"] = f"Bearer {self.key}"
+        if (urlsplit(self.base).hostname or "") in _LOOPBACK:
+            # Only a Media Forge on THIS machine gets the internal key: a consented remote base
+            # is someone else's host, and the fleet key must never leave for it.
+            from adk.mediaforge_auth import mediaforge_headers
+
+            headers = mediaforge_headers(headers)
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 r = client.post(f"{self.base}/op/{name}", json=params, headers=headers)

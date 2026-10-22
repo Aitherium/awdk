@@ -5424,8 +5424,11 @@ def create_app(
 
         body = {"prompt": prompt, "style": style, "count": 1, "width": width,
                 "height": height, "preset": preset, "timeout": int(budget)}
+        from adk.mediaforge_auth import mediaforge_headers  # the engine is default-deny
+
         try:
-            async with httpx.AsyncClient(verify=ssl_context(True), timeout=30.0) as client:
+            async with httpx.AsyncClient(verify=ssl_context(True), timeout=30.0,
+                                         headers=mediaforge_headers()) as client:
                 # The dispatch itself can outlive its own HTTP call on this route --
                 # media-forge runs the job inside the request. A read timeout here is
                 # therefore NOT a failure; the job is already tracked, and the poll

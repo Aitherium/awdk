@@ -121,6 +121,14 @@ class HarnessSpec:
     #: arrangement that gets renamed; "may this caller drive Atlas" is what the
     #: daemon actually has to decide, and it survives the renames.
     requires_entitlement: str = ""
+    #: An agent sandbox (the operator's agent_sandbox tool) this harness runs inside.
+    #: When its container is up, the harness binary is ``wsl`` (``podman`` on a Linux
+    #: fleet host) and ``build_argv`` execs into the container; when it is down the
+    #: harness falls back to ``binary`` on this host, or is not installed.
+    sandbox: str = ""
+    #: Install locations to try when ``binary`` is not on PATH (an installer that edits
+    #: the user PATH does not reach processes started before it ran).
+    fallback_paths: list[str] = field(default_factory=list)
 
     def translate(self, obj: Any) -> list[HarnessEvent]:
         return ADAPTERS[self.adapter](obj)
@@ -137,6 +145,7 @@ class HarnessSpec:
             "description": self.description,
             "transport": self.transport.value,
             "binary": self.binary,
+            "sandbox": self.sandbox,
             "install_hint": self.install_hint,
             "supports_model_binding": self.supports_model_binding,
             "supports_resume": self.supports_resume,
@@ -400,7 +409,82 @@ def _openclaw_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
     session = (launch.resume_session_id
                or os.environ.get("AITHER_HARNESS_OPENCLAW_SESSION") or "aither-harness")
     argv += ["--session-id", session]
-    return [*argv, "--message", launch.prompt]
+    argv = [*argv, "--message", launch.prompt]
+    if uses_sandbox(spec):
+        # The sandbox's OpenClaw is configured for the fleet model; --model would fight it.
+        if "--model" in argv:
+            i = argv.index("--model")
+            del argv[i:i + 2]
+        return sandbox_exec_argv(spec.sandbox, "openclaw", *argv[1:])
+    return argv
+
+
+_SANDBOX_SEEN: dict[str, tuple[float, bool]] = {}
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
+def _sandbox_prefix() -> list[str]:
+    """argv that reaches the fleet's podman: through WSL on Windows, directly on Linux."""
+    if sys.platform == "win32" or shutil.which("wsl"):
+        distro = os.environ.get("AITHER_FLEET_DISTRO", "awnix")
+        return ["wsl", "-d", distro, "-u", "root", "podman"]
+    return ["podman"]
+
+
+def sandbox_container(name: str) -> str:
+    """The agent container agent_sandbox.py names for sandbox ``name``."""
+    return f"sbx-{name}-{name}"
+
+
+def sandbox_up(name: str, ttl: float = 30.0) -> bool:
+    """Whether sandbox ``name``'s agent container is running (cached for ``ttl`` seconds)."""
+    import time
+
+    now = time.monotonic()
+    hit = _SANDBOX_SEEN.get(name)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    prefix = _sandbox_prefix()
+    up = False
+    if shutil.which(prefix[0]):
+        try:
+            proc = subprocess.run(
+                [*prefix, "container", "inspect", "-f", "{{.State.Running}}",
+                 sandbox_container(name)],
+                capture_output=True, timeout=15, creationflags=_NO_WINDOW)
+            up = proc.returncode == 0 and proc.stdout.strip() == b"true"
+        except (OSError, subprocess.SubprocessError):
+            up = False
+    _SANDBOX_SEEN[name] = (now, up)
+    return up
+
+
+def uses_sandbox(spec: HarnessSpec) -> bool:
+    """Whether this launch goes into the spec's sandbox. An explicit
+    AITHER_HARNESS_<ID>_BIN override wins, so resolve_binary and build_argv agree."""
+    return bool(spec.sandbox) and not os.environ.get(
+        f"AITHER_HARNESS_{spec.id.upper()}_BIN") and sandbox_up(spec.sandbox)
+
+
+def sandbox_exec_argv(name: str, *argv: str) -> list[str]:
+    """argv that runs ``argv`` inside sandbox ``name`` with /work as the cwd."""
+    return [*_sandbox_prefix(), "exec", "-i", "-w", "/work", sandbox_container(name), *argv]
+
+
+def _hades_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """``hades turn <prompt>`` inside the hades agent sandbox (Landlock cage on).
+
+    Hades is Linux-only, so it only ever runs in its sandbox. The guarded policy asks a
+    person before the shell runs; set AITHER_HARNESS_HADES_POLICY=open to let the cage
+    alone bound it.
+    """
+    session = (launch.resume_session_id
+               or os.environ.get("AITHER_HARNESS_HADES_SESSION") or "aither-harness")
+    policy = os.environ.get("AITHER_HARNESS_HADES_POLICY") or "guarded"
+    return sandbox_exec_argv(
+        spec.sandbox, "hades", "turn", "--session", session, launch.prompt,
+        "--model", launch.model or "bonsai-27b", "--root", "/work",
+        "--policy", policy, "--cage", "on")
 
 
 def _hermes_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
@@ -476,6 +560,22 @@ for _late in (
         install_hint="npm install -g openclaw@latest (needs Node >=22.22.3, >=24.15 or >=25.9)",
         adapter="text",
         build_argv=_openclaw_argv,
+        # Preferred when up: `agent_sandbox.py up openclaw` (internal network only).
+        sandbox="openclaw",
+    ),
+    HarnessSpec(
+        id="hades",
+        prompt_carries_context=True,
+        label="Hades",
+        description="Hades (GuideboardLabs) — governed Rust agent, one caged turn per process, "
+                    "run inside its awnix sandbox",
+        transport=Transport.ONESHOT_PER_TURN,
+        binary="",
+        install_hint=("start the hades sandbox: agent_sandbox.py up hades "
+                      "--binary /opt/aither-sandbox/hades/bin/hades"),
+        adapter="text",
+        build_argv=_hades_argv,
+        sandbox="hades",
     ),
     HarnessSpec(
         id="hermes",
@@ -493,6 +593,10 @@ for _late in (
         ),
         adapter="text",
         build_argv=_hermes_argv,
+        fallback_paths=[
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "hermes", "bin", "hermes.exe"),
+            os.path.expanduser("~/.local/bin/hermes"),
+        ],
     ),
     HarnessSpec(
         id="harness2",
@@ -566,14 +670,18 @@ def resolve_binary(spec: HarnessSpec) -> Optional[str]:
     On Windows an npm-installed CLI resolves to its ``.cmd`` shim; when that shim
     names a real ``.exe`` next to it, answer the ``.exe`` (see ``exe_from_cmd_shim``).
     """
-    if not spec.binary:
-        return None
     override = os.environ.get(f"AITHER_HARNESS_{spec.id.upper()}_BIN")
     if override:
         return override if os.path.exists(override) else shutil.which(override)
+    if uses_sandbox(spec):
+        return shutil.which(_sandbox_prefix()[0])
+    if not spec.binary:
+        return None
     found = shutil.which(spec.binary)
     if found and sys.platform == "win32" and found.lower().endswith(".cmd"):
         return exe_from_cmd_shim(found) or found
+    if not found:
+        found = next((p for p in spec.fallback_paths if p and os.path.isfile(p)), None)
     return found
 
 

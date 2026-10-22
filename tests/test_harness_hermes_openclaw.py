@@ -8,6 +8,12 @@ from adk.harnesses import registry
 from adk.harnesses.registry import LaunchSpec, Transport
 
 
+@pytest.fixture(autouse=True)
+def _no_sandbox(monkeypatch):
+    # The host-binary paths below; the sandbox paths live in test_harness_sandbox.py.
+    monkeypatch.setattr(registry, "sandbox_up", lambda name, ttl=30.0: False)
+
+
 @pytest.mark.parametrize("hid", ["hermes", "openclaw"])
 def test_registered_as_one_shot_harnesses_that_carry_context(hid):
     spec = registry.get(hid)
@@ -46,6 +52,8 @@ def test_detect_reports_missing_with_the_install_hint(monkeypatch):
     for hid in ("hermes", "openclaw"):
         monkeypatch.delenv(f"AITHER_HARNESS_{hid.upper()}_BIN", raising=False)
     monkeypatch.setattr(registry.shutil, "which", lambda name: None)
+    # The real install dirs may hold a hermes (this box's does); this test is "nowhere".
+    monkeypatch.setattr(registry.get("hermes"), "fallback_paths", [])
     rows = {r["id"]: r for r in registry.detect()}
     for hid in ("hermes", "openclaw"):
         assert rows[hid]["installed"] is False
