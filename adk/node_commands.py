@@ -292,29 +292,25 @@ def _mesh_lend_args(**over: Any) -> Any:
     return ns
 
 
-def _captured(fn: Callable[..., int], ns: Any) -> Tuple[int, str]:
-    """Run one ``adk.mesh_lend`` command function; return (exit code, what it printed)."""
-    import contextlib
-    import io
+def _collected(fn: Callable[..., int], ns: Any, **kw: Any) -> Tuple[int, str]:
+    """Run one ``adk.mesh_lend`` command function with its ``say`` sink pointed at a
+    list; return (exit code, the lines it reported). The process's own stdout/stderr
+    are never swapped, so nothing another thread prints can end up in the result."""
+    lines: List[str] = []
 
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-        rc = int(fn(ns))
-    return rc, _tail_text(buf.getvalue(), 2000)
+    def say(text: str, is_error: bool = False) -> None:
+        lines.append(("error: " if is_error else "") + str(text))
+
+    rc = int(fn(ns, say=say, **kw))
+    return rc, _tail_text("\n".join(lines), 2000)
 
 
 def _mesh_lend_status() -> Dict[str, Any]:
     """``adk mesh lend --status --json`` as a dict (never raises)."""
     try:
         from adk import mesh_lend
-        rc, text = _captured(mesh_lend.cmd_status, _mesh_lend_args(status=True, json=True))
-        try:
-            out = json.loads(text)
-        except ValueError:
-            out = {"raw": text}
-        if not isinstance(out, dict):
-            out = {"raw": text}
-        out["rc"] = rc
+        out = dict(mesh_lend.status_dict())
+        out["rc"] = 0 if (not mesh_lend.read_state() or out.get("lending")) else 1
         return out
     except Exception as exc:  # noqa: BLE001 - one section failing is reported, not fatal
         return {"error": f"{type(exc).__name__}: {exc}"[:200]}
@@ -328,7 +324,7 @@ def _mesh_lend_on(args: Dict[str, str]) -> Dict[str, Any]:
     if not MESH_LEND_GB_RE.match(gb):
         return {"ok": False, "error": "gb must be a whole number of GB from 1 to 256"}
     from adk import mesh_lend
-    rc, text = _captured(mesh_lend.cmd_lend, _mesh_lend_args(gb=int(gb)))
+    rc, text = _collected(mesh_lend.cmd_lend, _mesh_lend_args(gb=int(gb)))
     # 0 lending + announced (or no registry); 1 lending, registry refused; 2 not lending.
     return {"ok": rc in (0, 1), "rc": rc, "gb": int(gb), "output": text,
             "status": _mesh_lend_status()}
@@ -337,7 +333,7 @@ def _mesh_lend_on(args: Dict[str, str]) -> Dict[str, Any]:
 def _mesh_lend_off(_args: Dict[str, str]) -> Dict[str, Any]:
     """``adk mesh lend --stop``: stop the server and remove the logon hook."""
     from adk import mesh_lend
-    rc, text = _captured(mesh_lend.cmd_stop, _mesh_lend_args(stop=True))
+    rc, text = _collected(mesh_lend.cmd_stop, _mesh_lend_args(stop=True))
     return {"ok": rc == 0, "rc": rc, "output": text, "status": _mesh_lend_status()}
 
 

@@ -559,7 +559,8 @@ def start_server(variants: tuple[Variant, ...], dest: Path, host: str, port: int
 
 def announce(state: dict, *, pool: str, registry_url: str, coordinator: str,
              send: Optional[Callable[..., tuple[int, str]]] = None,
-             bearer: Optional[str] = None) -> tuple[int, str]:
+             bearer: Optional[str] = None,
+             say: Optional[Callable[[str, bool], None]] = None) -> tuple[int, str]:
     """Record the offer in the pool registry. Returns (exit code, one-line verdict).
 
     Uses the registry route ``adk grid join --register`` uses, with an rpc-cpu
@@ -597,7 +598,8 @@ def announce(state: dict, *, pool: str, registry_url: str, coordinator: str,
         reasons=[] if rtt is not None else ["coordinator RTT not measured"],
         backends=[backend], tuning=[], caps=caps)
     code = pool_role.register_plan(plan, pool, registry_url,
-                                   node_id=socket.gethostname(), bearer=bearer, send=send)
+                                   node_id=socket.gethostname(), bearer=bearer, send=send,
+                                   say=say)
     if code == 0:
         return 0, f"announced to pool {pool}: {state['ip']}:{state['port']} {state['lend_mb']} MB"
     return 1, f"lending, but the pool registry did not record it (exit {code}; reason above)"
@@ -640,28 +642,43 @@ def _overlay() -> dict:
     return overlay_status()
 
 
-def cmd_status(args: argparse.Namespace) -> int:
+def _say_print(text: str, is_error: bool = False) -> None:
+    print(text, file=sys.stderr if is_error else sys.stdout)
+
+
+def status_dict() -> dict:
+    """What ``--status --json`` prints, as data: the state file plus whether the
+    server is alive and listening. ``{"lending": False}`` with no state file."""
     st = read_state()
     if not st:
-        out: dict[str, Any] = {"lending": False}
-    else:
-        alive = _pid_alive(int(st.get("pid") or 0))
-        out = dict(st, lending=alive,
-                   listening=alive and _listening(st.get("bind") or st.get("ip") or "",
-                                                  int(st.get("port") or 0)))
+        return {"lending": False}
+    alive = _pid_alive(int(st.get("pid") or 0))
+    return dict(st, lending=alive,
+                listening=alive and _listening(st.get("bind") or st.get("ip") or "",
+                                               int(st.get("port") or 0)))
+
+
+def cmd_status(args: argparse.Namespace, *,
+               say: Optional[Callable[[str, bool], None]] = None) -> int:
+    say = say or _say_print
+    st = read_state()
+    out = status_dict()
     if getattr(args, "json", False):
-        print(json.dumps(out, indent=2, sort_keys=True))
+        say(json.dumps(out, indent=2, sort_keys=True), False)
     elif not out["lending"]:
-        print("not lending" + (" (state file present, server not running)" if st else ""))
+        say("not lending" + (" (state file present, server not running)" if st else ""),
+            False)
     else:
-        print(f"lending {out['lend_mb']} MB on {out['ip']}:{out['port']} "
-              f"(pid {out['pid']}, {out['variant']}, "
-              f"{'listening' if out['listening'] else 'NOT listening'}, "
-              f"after reboot: {out.get('persist')})")
+        say(f"lending {out['lend_mb']} MB on {out['ip']}:{out['port']} "
+            f"(pid {out['pid']}, {out['variant']}, "
+            f"{'listening' if out['listening'] else 'NOT listening'}, "
+            f"after reboot: {out.get('persist')})", False)
     return 0 if (not st or out["lending"]) else 1
 
 
-def cmd_stop(args: argparse.Namespace, run: Callable[..., Any] = _run) -> int:
+def cmd_stop(args: argparse.Namespace, run: Callable[..., Any] = _run, *,
+             say: Optional[Callable[[str, bool], None]] = None) -> int:
+    say = say or _say_print
     st = read_state() or {}
     pid = int(st.get("pid") or 0)
     stopped = False
@@ -673,12 +690,12 @@ def cmd_stop(args: argparse.Namespace, run: Callable[..., Any] = _run) -> int:
                 os.kill(pid, signal.SIGTERM)
             stopped = True
         except (OSError, subprocess.SubprocessError) as exc:
-            print(f"could not stop pid {pid}: {exc}", file=sys.stderr)
+            say(f"could not stop pid {pid}: {exc}", True)
             return 2
     removed = remove_persistence(run=run)
     state_path().unlink(missing_ok=True)
-    print(f"stopped{' pid ' + str(pid) if stopped else ' (nothing running)'}; "
-          f"removed: {', '.join(removed) or 'no logon hook'}")
+    say(f"stopped{' pid ' + str(pid) if stopped else ' (nothing running)'}; "
+        f"removed: {', '.join(removed) or 'no logon hook'}", False)
     return 0
 
 
@@ -688,15 +705,20 @@ def cmd_lend(args: argparse.Namespace, *, overlay: Optional[dict] = None,
              run: Callable[..., Any] = _run,
              free_mb: Optional[int] = None,
              send: Optional[Callable[..., tuple[int, str]]] = None,
-             sleep: Callable[[float], None] = time.sleep) -> int:
+             sleep: Callable[[float], None] = time.sleep,
+             say: Optional[Callable[[str, bool], None]] = None) -> int:
+    """``adk mesh lend``. ``say(text, is_error)`` receives every line it reports
+    (default: stdout / stderr), so a caller can collect them without touching the
+    process's streams."""
+    say = say or _say_print
     if getattr(args, "status", False):
-        return cmd_status(args)
+        return cmd_status(args, say=say)
     if getattr(args, "stop", False):
-        return cmd_stop(args, run=run)
+        return cmd_stop(args, run=run, say=say)
     ov = overlay if overlay is not None else _overlay()
     if not ov.get("joined"):
-        print(f"not on the mesh: {ov.get('detail') or ov.get('code') or 'unknown'}. "
-              "Run: adk mesh join", file=sys.stderr)
+        say(f"not on the mesh: {ov.get('detail') or ov.get('code') or 'unknown'}. "
+            "Run: adk mesh join", True)
         return 2
     try:
         variants = select_variants()
@@ -704,8 +726,8 @@ def cmd_lend(args: argparse.Namespace, *, overlay: Optional[dict] = None,
         ip = str(ov.get("tailnet_ip") or "")
         prior = read_state()
         if prior and _pid_alive(int(prior.get("pid") or 0)) and prior.get("port") == args.port:
-            print(f"already lending {prior['lend_mb']} MB on {prior['ip']}:{prior['port']} "
-                  f"(pid {prior['pid']})")
+            say(f"already lending {prior['lend_mb']} MB on {prior['ip']}:{prior['port']} "
+                f"(pid {prior['pid']})", False)
             state = prior
         else:
             lend_mb = compute_lend_mb(free_ram_mb() if free_mb is None else free_mb, args.gb)
@@ -731,15 +753,15 @@ def cmd_lend(args: argparse.Namespace, *, overlay: Optional[dict] = None,
             else:
                 pid = int(proc.pid)
             if not _allow_firewall(exe, args.port, run=run):
-                print("note: no inbound firewall rule (needs an elevated shell once); "
-                      "the coordinator may not reach this machine", file=sys.stderr)
+                say("note: no inbound firewall rule (needs an elevated shell once); "
+                    "the coordinator may not reach this machine", True)
             state = make_state(pid, args.port, ip, host, lend_mb, variant, exe, threads,
                                persist)
             write_state(state)
-            print(f"lending {lend_mb} MB on {ip}:{args.port} (pid {pid}, {variant.key}, "
-                  f"bound {host}, after reboot: {persist})")
+            say(f"lending {lend_mb} MB on {ip}:{args.port} (pid {pid}, {variant.key}, "
+                f"bound {host}, after reboot: {persist})", False)
     except LendError as exc:
-        print(f"could not lend: {exc}", file=sys.stderr)
+        say(f"could not lend: {exc}", True)
         return 2
     code, verdict = announce(
         state,
@@ -748,8 +770,8 @@ def cmd_lend(args: argparse.Namespace, *, overlay: Optional[dict] = None,
                       or os.environ.get("ADK_POOL_REGISTRY_URL", "")),
         coordinator=(getattr(args, "coordinator", "")
                      or os.environ.get("ADK_POOL_COORDINATOR", "")),
-        send=send)
-    print(verdict, file=sys.stderr if code else sys.stdout)
+        send=send, say=say)
+    say(verdict, bool(code))
     return code
 
 

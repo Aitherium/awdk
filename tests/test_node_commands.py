@@ -793,9 +793,9 @@ def test_mesh_lend_on_calls_mesh_lend_with_the_hosts_own_defaults(monkeypatch):
     from adk import mesh_lend
     seen = []
 
-    def lend(ns):
+    def lend(ns, say=print):
         seen.append(vars(ns).copy())
-        print("lending 24576 MB on 100.64.0.51:50052")
+        say("lending 24576 MB on 100.64.0.51:50052")
         return 0
     monkeypatch.setattr(mesh_lend, "cmd_lend", lend)
     monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
@@ -814,10 +814,10 @@ def test_mesh_lend_on_calls_mesh_lend_with_the_hosts_own_defaults(monkeypatch):
 
 def test_mesh_lend_on_handler_rechecks_gb_and_a_failed_lend_is_not_ok(monkeypatch):
     from adk import mesh_lend
-    monkeypatch.setattr(mesh_lend, "cmd_lend", lambda ns: (_ for _ in ()).throw(
+    monkeypatch.setattr(mesh_lend, "cmd_lend", lambda ns, say=None: (_ for _ in ()).throw(
         AssertionError("must not run")))
     assert node_commands._mesh_lend_on({"gb": "24; rm"})["ok"] is False
-    monkeypatch.setattr(mesh_lend, "cmd_lend", lambda ns: 2)
+    monkeypatch.setattr(mesh_lend, "cmd_lend", lambda ns, say=None: 2)
     monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
     out = node_commands._mesh_lend_on({"gb": "24"})
     assert out["ok"] is False and out["rc"] == 2
@@ -826,10 +826,59 @@ def test_mesh_lend_on_handler_rechecks_gb_and_a_failed_lend_is_not_ok(monkeypatc
 def test_mesh_lend_off_stops_and_diagnostics_show_the_lend(monkeypatch):
     from adk import mesh_lend
     stopped = []
-    monkeypatch.setattr(mesh_lend, "cmd_stop", lambda ns: stopped.append(ns.stop) or 0)
+    monkeypatch.setattr(mesh_lend, "cmd_stop", lambda ns, say=None: stopped.append(ns.stop) or 0)
     monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
     (res,) = node_commands.run_commands(
         [_cmd(verb="mesh-lend-off", args={})], NODE, KEY)
     assert res["ok"] is True and stopped == [True]
     diag = node_commands._diagnostics({})
     assert diag["mesh_lend"]["lending"] is False and diag["mesh_lend"]["rc"] == 0
+
+
+def test_mesh_lend_handlers_never_swap_the_process_streams(monkeypatch):
+    """What another thread prints while a lend runs must not land in the signed result:
+    the handler collects mesh_lend's own lines through its ``say`` sink and leaves
+    sys.stdout / sys.stderr alone."""
+    import sys
+
+    from adk import mesh_lend
+    streams = (sys.stdout, sys.stderr)
+
+    def lend(ns, say=None):
+        assert (sys.stdout, sys.stderr) == streams, "the handler swapped a process stream"
+        print("another thread's secret line")
+        say("lending 24576 MB", False)
+        say("not announced", True)
+        return 0
+
+    def stop(ns, say=None):
+        assert (sys.stdout, sys.stderr) == streams, "the handler swapped a process stream"
+        say("stopped", False)
+        return 0
+    monkeypatch.setattr(mesh_lend, "cmd_lend", lend)
+    monkeypatch.setattr(mesh_lend, "cmd_stop", stop)
+    monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
+    on = node_commands._mesh_lend_on({"gb": "24"})
+    assert on["ok"] is True, on
+    assert "lending 24576 MB" in on["output"] and "error: not announced" in on["output"]
+    assert "secret" not in on["output"]
+    off = node_commands._mesh_lend_off({})
+    assert off["ok"] is True and off["output"] == "stopped"
+
+
+def test_mesh_lend_reports_through_say_not_print(monkeypatch, capsys):
+    """adk.mesh_lend's command functions report every line through ``say`` when given
+    one -- nothing reaches the process's stdout/stderr."""
+    from adk import mesh_lend
+    monkeypatch.setattr(mesh_lend, "read_state", lambda: None)
+    lines = []
+    assert mesh_lend.cmd_status(node_commands._mesh_lend_args(status=True, json=True),
+                                say=lambda t, e=False: lines.append(t)) == 0
+    assert json.loads(lines[0]) == {"lending": False}
+    lines.clear()
+    rc = mesh_lend.cmd_lend(node_commands._mesh_lend_args(gb=24),
+                            overlay={"joined": False, "code": "not_running"},
+                            say=lambda t, e=False: lines.append((t, e)))
+    assert rc == 2 and lines and lines[0][1] is True and "not on the mesh" in lines[0][0]
+    assert capsys.readouterr() == ("", "")
+    assert mesh_lend.status_dict() == {"lending": False}

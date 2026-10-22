@@ -883,22 +883,29 @@ def _post_json(url: str, body: dict[str, Any], headers: dict[str, str],
     return resp.status_code, resp.text
 
 
+def _say_print(text: str, is_error: bool = False) -> None:
+    print(text, file=sys.stderr if is_error else sys.stdout)
+
+
 def register_plan(plan: RolePlan, pool_id: str, registry_url: str, *, node_id: str = "",
                   bearer: Optional[str] = None,
-                  send: Optional[Callable[..., tuple[int, str]]] = None) -> int:
+                  send: Optional[Callable[..., tuple[int, str]]] = None,
+                  say: Optional[Callable[[str, bool], None]] = None) -> int:
     """Record the plan's rpc roles in the pool registry. Returns an exit code.
 
     0 registered, 1 nothing to register (the plan holds no rpc role), 2 could not
     register (no URL, no credential, transport error, or the registry refused).
-    Registration is a record: it starts no process and adopts nothing.
+    Registration is a record: it starts no process and adopts nothing. ``say(text,
+    is_error)`` receives every line it reports (default: stdout / stderr).
     """
+    say = say or _say_print
     rpc = [b for b in plan.backends if b.role in REGISTERABLE_ROLES]
     if not rpc:
-        print(f"nothing to register: admission {plan.admission}, roles "
-              f"{plan.roles or ['none']} hold no rpc backend", file=sys.stderr)
+        say(f"nothing to register: admission {plan.admission}, roles "
+            f"{plan.roles or ['none']} hold no rpc backend", True)
         return 1
     if not registry_url:
-        print("--register needs --registry-url or $ADK_POOL_REGISTRY_URL", file=sys.stderr)
+        say("--register needs --registry-url or $ADK_POOL_REGISTRY_URL", True)
         return 2
     if bearer is None:
         try:
@@ -906,10 +913,10 @@ def register_plan(plan: RolePlan, pool_id: str, registry_url: str, *, node_id: s
 
             bearer = resolve_bearer()
         except Exception as exc:  # noqa: BLE001 - no credential is a refusal, not a crash
-            print(f"could not resolve a credential: {exc}", file=sys.stderr)
+            say(f"could not resolve a credential: {exc}", True)
             bearer = ""
     if not bearer:
-        print("no credential: run `adk login` or set AITHER_NODE_TOKEN", file=sys.stderr)
+        say("no credential: run `adk login` or set AITHER_NODE_TOKEN", True)
         return 2
     from urllib.parse import quote
 
@@ -921,25 +928,25 @@ def register_plan(plan: RolePlan, pool_id: str, registry_url: str, *, node_id: s
             url, registration_payload(plan, node_id),
             {"Authorization": f"Bearer {bearer}"})
     except Exception as exc:  # noqa: BLE001 - network failure = could not judge
-        print(f"registry unreachable at {url}: {exc}", file=sys.stderr)
+        say(f"registry unreachable at {url}: {exc}", True)
         return 2
     if status != 200:
-        print(f"registry refused ({status}): {text[:300]}", file=sys.stderr)
+        say(f"registry refused ({status}): {text[:300]}", True)
         return 2
     try:
         got = json.loads(text)
     except ValueError:
-        print(f"registry answered 200 with no JSON: {text[:200]}", file=sys.stderr)
+        say(f"registry answered 200 with no JSON: {text[:200]}", True)
         return 2
     registered = got.get("registered") or []
     if not registered:
-        print(f"registry recorded nothing: {got.get('refused') or got}", file=sys.stderr)
+        say(f"registry recorded nothing: {got.get('refused') or got}", True)
         return 2
     for hp in registered:
-        print(f"  registered  {hp} in pool {pool_id} (status=registered; adoption is the "
-              "coordinator's decision)")
+        say(f"  registered  {hp} in pool {pool_id} (status=registered; adoption is the "
+            "coordinator's decision)", False)
     for r in got.get("refused") or []:
-        print(f"  refused     {r}", file=sys.stderr)
+        say(f"  refused     {r}", True)
     return 0
 
 

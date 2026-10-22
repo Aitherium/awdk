@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.86] - 2026-10-22
+
+### Fixed
+- The `mesh-lend-on` / `mesh-lend-off` node commands no longer redirect the whole process's stdout/stderr while `adk mesh lend` runs; its lines are collected through a sink, so nothing another thread prints can end up in the command result. `adk.mesh_lend` gains `status_dict()` and an optional `say` callback on its command functions; `adk.pool_role.register_plan` takes the same `say`.
+
 ## [3.8.85] - 2026-10-22
 
 ### Added
