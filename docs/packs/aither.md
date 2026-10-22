@@ -1,12 +1,12 @@
 # Aither System Orchestrator
 
-`aither` · version `3.8.82` · 9.9 KB
+`aither` · version `3.8.83` · 9.9 KB
 
-**[Download aither-3.8.82.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.82/aither-3.8.82.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.82/aither-3.8.82.sha256)
+**[Download aither-3.8.83.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.83/aither-3.8.83.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.83/aither-3.8.83.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.82/aither-3.8.82.tar.gz
-tar xzf aither-3.8.82.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.83/aither-3.8.83.tar.gz
+tar xzf aither-3.8.83.tar.gz
 python aither/install.py
 ```
 
@@ -46,5 +46,5 @@ skills/memory-recall.md
 
 ---
 
-sha256 `ff8393fcd9a1efe1bac5a6224f1e4e2c53f6e19e272d68ab3765d37c15e177f9`  
-Built from `v3.8.82` (adk 3.8.82). [All packs](../packs.md)
+sha256 `71aacc54ad5e48259a59b035c76b482465eacddf13f4976a09030f907c3fb02b`  
+Built from `v3.8.83` (adk 3.8.83). [All packs](../packs.md)

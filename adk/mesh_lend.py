@@ -57,7 +57,7 @@ logger = logging.getLogger("adk.mesh_lend")
 
 #: The published builds. Changing a byte of any of them means a new release tag
 #: and new pins here; the download is verified against these and nothing else.
-RELEASE = "v41-lend-rpc-20261021"
+RELEASE = "v41-lend-rpc-20261022"
 RELEASE_BASE = ("https://github.com/Aitherium/aitherkvcache/releases/download/"
                 + RELEASE + "/")
 
@@ -102,43 +102,64 @@ class Variant:
         return next(a.sha256 for a in self.files if a.save_as == self.exe)
 
 
-_WIN_EXE = Asset("ggml-rpc-server-windows-x64.exe", 2802176,
-                 "c579157eca6494be240a60e9bcf590794cdd2056bcf51252f795cafc6c509da0",
-                 "ggml-rpc-server.exe")
-_WIN_DLLS = (
-    Asset("libc++.dll", 2002944,
-          "9779d03d9bdb4bed763a5b18d0aa5b9002ce5dad6d0adc2d496e783a3f336e3f", "libc++.dll"),
-    Asset("libunwind.dll", 185856,
-          "5de310284e361c8d10a92e0a18f8b17d2d5a0de1d091d9e3c0b92d86f9f6c7c2", "libunwind.dll"),
-    Asset("libwinpthread-1.dll", 280576,
-          "f50ee7828d41ce02eb8bf3ec1d59dedfd66126a753782ae2d7489a56d84f7816",
-          "libwinpthread-1.dll"),
-)
+#: Every published asset of RELEASE: name -> (size, sha256). Nothing outside this table is
+#: ever downloaded, and a test pins that every variant file is in it and vice versa.
+PINS: dict[str, tuple[int, str]] = {
+    "ggml-rpc-server-windows-x64-v3.exe":
+        (2313216, "4ed5b4b32bc7ad1bb469ae1fa9eef8b3e88fed1cb5d252913b69ac812462a656"),
+    "ggml-rpc-server-windows-x64-v2.exe":
+        (1821184, "bbf2c83a6f876d721ece1b0c7248e3a49befac2b495332b692989268464584a5"),
+    "libc++.dll":
+        (2002944, "9779d03d9bdb4bed763a5b18d0aa5b9002ce5dad6d0adc2d496e783a3f336e3f"),
+    "libunwind.dll":
+        (185856, "5de310284e361c8d10a92e0a18f8b17d2d5a0de1d091d9e3c0b92d86f9f6c7c2"),
+    "libwinpthread-1.dll":
+        (280576, "f50ee7828d41ce02eb8bf3ec1d59dedfd66126a753782ae2d7489a56d84f7816"),
+    "ggml-rpc-server-linux-x86_64-znver2":
+        (2383304, "3c196b71a3cefb738320801afc567874344b12c8dc4f86d219c068b0c95b4daf"),
+    "ggml-rpc-server-linux-x86_64-v2":
+        (2052280, "0fa1510b89c71412e82e53e9ec85c43dfa20cc04ab26d83b56c1940dec4b64a9"),
+    "ggml-rpc-server-linux-arm64-v82":
+        (1868104, "bf2605dc6f9488f2186cb227ee7ccba712308e1b04b399a6c03d8699d4aa551d"),
+    "ggml-rpc-server-linux-arm64-v8a":
+        (1847888, "413c18aa23ae280e2e897daad93f5ba4a0c2726fb24388fdb06b5c01cf42b0f6"),
+}
 
-#: (os, arch) -> builds, fastest first. The next one is tried on an illegal instruction.
+
+def _asset(name: str, save_as: str) -> Asset:
+    size, sha = PINS[name]
+    return Asset(name, size, sha, save_as)
+
+
+_WIN_DLLS = tuple(_asset(n, n) for n in ("libc++.dll", "libunwind.dll", "libwinpthread-1.dll"))
+
+
+def _one(key: str, name: str, save_as: str) -> Variant:
+    return Variant(key, (_asset(name, save_as),), save_as)
+
+
+#: (os, arch) -> builds, fastest first. The next one is tried when the first fails its
+#: ``-h`` probe or dies on an illegal instruction.
 VARIANTS: dict[tuple[str, str], tuple[Variant, ...]] = {
     ("windows", "x86_64"): (
-        Variant("windows-x64", (_WIN_EXE,) + _WIN_DLLS, "ggml-rpc-server.exe"),
+        Variant("windows-x64-v3",
+                (_asset("ggml-rpc-server-windows-x64-v3.exe", "ggml-rpc-server-v3.exe"),)
+                + _WIN_DLLS, "ggml-rpc-server-v3.exe"),
+        Variant("windows-x64-v2",
+                (_asset("ggml-rpc-server-windows-x64-v2.exe", "ggml-rpc-server-v2.exe"),)
+                + _WIN_DLLS, "ggml-rpc-server-v2.exe"),
     ),
     ("linux", "x86_64"): (
-        Variant("linux-x86_64-znver2", (Asset(
-            "ggml-rpc-server-linux-x86_64-znver2", 2383912,
-            "4b3478e2b84c28b26b35212388a2119bc98ea4253b7689b18a71863caef4e09e",
-            "ggml-rpc-server-znver2"),), "ggml-rpc-server-znver2"),
-        Variant("linux-x86_64-v2", (Asset(
-            "ggml-rpc-server-linux-x86_64-v2", 2052824,
-            "49c3550e65f5533d5c3589ff083496ab73ccccc0ddb1dee3810b9861f1ec526c",
-            "ggml-rpc-server-x86-64-v2"),), "ggml-rpc-server-x86-64-v2"),
+        _one("linux-x86_64-znver2", "ggml-rpc-server-linux-x86_64-znver2",
+             "ggml-rpc-server-znver2"),
+        _one("linux-x86_64-v2", "ggml-rpc-server-linux-x86_64-v2",
+             "ggml-rpc-server-x86-64-v2"),
     ),
     ("linux", "aarch64"): (
-        Variant("linux-arm64-v8.2", (Asset(
-            "ggml-rpc-server-linux-arm64-v82", 1868640,
-            "4a9b1115d65e022914f61f616f5f594d583101b108e1fa873565e26afe215972",
-            "ggml-rpc-server-arm64-v82"),), "ggml-rpc-server-arm64-v82"),
-        Variant("linux-arm64-v8a", (Asset(
-            "ggml-rpc-server-linux-arm64-v8a", 1848424,
-            "6a6b263c86b34e21faa56fb8114f61405979a5ad57306c3d073a58ac6c473ed3",
-            "ggml-rpc-server-arm64-v8a"),), "ggml-rpc-server-arm64-v8a"),
+        _one("linux-arm64-v8.2", "ggml-rpc-server-linux-arm64-v82",
+             "ggml-rpc-server-arm64-v82"),
+        _one("linux-arm64-v8a", "ggml-rpc-server-linux-arm64-v8a",
+             "ggml-rpc-server-arm64-v8a"),
     ),
 }
 
@@ -485,15 +506,40 @@ def _allow_firewall(exe: Path, port: int, run: Callable[..., Any] = _run) -> boo
         return False
 
 
+def probe_binary(exe: Path,
+                 run: Optional[Callable[..., Any]] = None) -> tuple[bool, str]:
+    """Does ``exe -h`` run on this CPU and print the RPC server's usage?"""
+    try:
+        r = (run or _run)([str(exe), "-h"], timeout=20)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"-h probe could not run ({exc.__class__.__name__})"
+    if r.returncode in _SIGILL_CODES:
+        return False, "illegal instruction (CPU lacks this build's ISA level)"
+    if "--device" not in (r.stdout or "") + (r.stderr or ""):
+        return False, f"-h probe exited {r.returncode} without the usage text"
+    return True, ""
+
+
 def start_server(variants: tuple[Variant, ...], dest: Path, host: str, port: int,
                  threads: int, *, fetch: Callable[[str, Path], None] = _http_get,
                  popen: Callable[..., Any] = subprocess.Popen,
                  settle_s: float = 2.0,
-                 sleep: Callable[[float], None] = time.sleep) -> tuple[Variant, Any, list[str]]:
-    """Download + start the fastest build that runs here. Returns (variant, proc, argv)."""
+                 sleep: Callable[[float], None] = time.sleep,
+                 probe: Optional[Callable[[Path], tuple[bool, str]]] = None,
+                 ) -> tuple[Variant, Any, list[str]]:
+    """Download + start the fastest build that runs here. Returns (variant, proc, argv).
+
+    A build is skipped for the next one when its ``-h`` probe fails or it dies on an
+    illegal instruction at start (a CPU without the build's ISA level).
+    """
     last = ""
+    check = probe or probe_binary
     for variant in variants:
         exe = fetch_variant(variant, dest, fetch=fetch)
+        ok, why = check(exe)
+        if not ok:
+            last = f"{variant.key}: {why}"
+            continue
         argv = server_argv(exe, host, port, threads)
         proc = spawn_detached(argv, dest / "rpc-server.log", popen=popen)
         sleep(settle_s)
@@ -665,7 +711,8 @@ def cmd_lend(args: argparse.Namespace, *, overlay: Optional[dict] = None,
             lend_mb = compute_lend_mb(free_ram_mb() if free_mb is None else free_mb, args.gb)
             threads = int(getattr(args, "threads", 0) or default_threads())
             variant, proc, argv = start_server(variants, lend_dir(), host, args.port,
-                                               threads, fetch=fetch, popen=popen, sleep=sleep)
+                                               threads, fetch=fetch, popen=popen, sleep=sleep,
+                                               probe=lambda exe: probe_binary(exe, run=run))
             exe = Path(argv[0])
             persist = install_persistence(args, argv, run=run)
             if persist == "systemd":

@@ -55,7 +55,7 @@ def _popen(*codes):
 
 
 def _run_ok(cmd, **kw):
-    return SimpleNamespace(returncode=0, stdout="4242\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="4242\n  -d, --device <dev1,dev2,...>", stderr="")
 
 
 def _args(**kw):
@@ -81,7 +81,7 @@ def _home(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("system,machine,first", [
-    ("Windows", "AMD64", "windows-x64"),
+    ("Windows", "AMD64", "windows-x64-v3"),
     ("Linux", "x86_64", "linux-x86_64-znver2"),
     ("Linux", "aarch64", "linux-arm64-v8.2"),
     ("linux", "arm64", "linux-arm64-v8.2"),
@@ -98,7 +98,7 @@ def test_linux_x86_has_v2_fallback_after_znver2():
 def test_windows_ships_runtime_dlls_next_to_exe():
     v = ml.select_variants("Windows", "AMD64")[0]
     names = {a.save_as for a in v.files}
-    assert {"ggml-rpc-server.exe", "libc++.dll", "libunwind.dll",
+    assert {"ggml-rpc-server-v3.exe", "libc++.dll", "libunwind.dll",
             "libwinpthread-1.dll"} <= names
 
 
@@ -107,11 +107,22 @@ def test_unsupported_platform_refuses():
         ml.select_variants("Darwin", "arm64")
 
 
-def test_every_pin_is_a_sha256():
+def test_windows_has_v2_fallback_after_v3():
+    keys = [v.key for v in ml.select_variants("Windows", "AMD64")]
+    assert keys == ["windows-x64-v3", "windows-x64-v2"]
+
+
+def test_pins_table_covers_every_asset_and_nothing_else():
+    used = set()
     for variants in ml.VARIANTS.values():
         for v in variants:
+            assert v.exe in {a.save_as for a in v.files}
             for a in v.files:
-                assert len(a.sha256) == 64 and int(a.sha256, 16) >= 0 and a.size > 0
+                assert ml.PINS[a.name] == (a.size, a.sha256)
+                used.add(a.name)
+    assert used == set(ml.PINS)
+    for size, sha in ml.PINS.values():
+        assert size > 0 and len(sha) == 64 and int(sha, 16) >= 0
 
 
 # ── download verification ───────────────────────────────────────────────────
@@ -190,7 +201,8 @@ def test_sigill_falls_back_to_next_build(tmp_path):
     v1, v2 = _variant("fast", "rpc-fast"), _variant("base", "rpc-base")
     p = _popen(-4, None)
     v, _proc, argv = ml.start_server((v1, v2), tmp_path, "100.64.0.9", 50052, 4,
-                                     fetch=_fetch(), popen=p, sleep=lambda s: None)
+                                     fetch=_fetch(), popen=p, sleep=lambda s: None,
+                                     probe=lambda e: (True, ""))
     assert v.key == "base" and argv[0].endswith("rpc-base")
     assert argv[1:] == ["-H", "100.64.0.9", "-p", "50052", "-d", "CPU", "-t", "4"]
 
@@ -198,7 +210,8 @@ def test_sigill_falls_back_to_next_build(tmp_path):
 def test_other_early_exit_is_an_error(tmp_path):
     with pytest.raises(ml.LendError, match="exited with 1"):
         ml.start_server((_variant(),), tmp_path, "100.64.0.9", 50052, 4,
-                        fetch=_fetch(), popen=_popen(1), sleep=lambda s: None)
+                        fetch=_fetch(), popen=_popen(1), sleep=lambda s: None,
+                        probe=lambda e: (True, ""))
 
 
 # ── the command ─────────────────────────────────────────────────────────────
@@ -265,3 +278,41 @@ def test_lend_is_in_the_admin_cli_manifest():
     lend = next(s for s in mesh["subcommands"] if s["name"] == "lend")
     flags = {f for a in lend["args"] for f in a["flags"]}
     assert {"--gb", "--port", "--stop", "--status"} <= flags
+
+
+def test_failed_probe_falls_back_v3_to_v2(tmp_path):
+    v3, v2 = _variant("windows-x64-v3", "rpc-v3.exe"), _variant("windows-x64-v2", "rpc-v2.exe")
+    p = _popen(None)
+
+    def probe(exe):
+        return (False, "illegal instruction") if exe.name == "rpc-v3.exe" else (True, "")
+    v, _proc, argv = ml.start_server((v3, v2), tmp_path, "100.64.0.9", 50052, 4,
+                                     fetch=_fetch(), popen=p, sleep=lambda s: None, probe=probe)
+    assert v.key == "windows-x64-v2" and len(p.seen) == 1  # v3 never started
+
+
+def test_windows_illegal_instruction_exit_falls_back(tmp_path):
+    v3, v2 = _variant("windows-x64-v3", "rpc-v3.exe"), _variant("windows-x64-v2", "rpc-v2.exe")
+    v, _proc, _argv = ml.start_server((v3, v2), tmp_path, "100.64.0.9", 50052, 4,
+                                      fetch=_fetch(), popen=_popen(0xC000001D, None),
+                                      sleep=lambda s: None, probe=lambda e: (True, ""))
+    assert v.key == "windows-x64-v2"
+
+
+@pytest.mark.parametrize("rc,out,ok", [
+    (0, "  -d, --device <dev1,dev2,...>  comma-separated list of devices", True),
+    (0xC000001D, "", False),
+    (1, "error while loading", False),
+])
+def test_probe_binary_judges_usage_and_sigill(tmp_path, rc, out, ok):
+    def run(cmd, **kw):
+        assert cmd[1:] == ["-h"]
+        return SimpleNamespace(returncode=rc, stdout=out, stderr="")
+    assert ml.probe_binary(tmp_path / "x.exe", run=run)[0] is ok
+
+
+def test_no_build_runs_refuses(tmp_path):
+    with pytest.raises(ml.LendError, match="no build runs"):
+        ml.start_server((_variant("a", "a"), _variant("b", "b")), tmp_path, "100.64.0.9",
+                        50052, 4, fetch=_fetch(), popen=_popen(), sleep=lambda s: None,
+                        probe=lambda e: (False, "nope"))

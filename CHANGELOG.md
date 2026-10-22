@@ -4,6 +4,11 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.83] - 2026-10-22
+
+### Added
+- adk mesh lend: lend this machine's RAM to the model pool over the mesh. `adk mesh lend [--gb N] [--port 50052] [--status] [--stop]` downloads a pinned, sha256-verified RPC server for Windows x64, Linux x86_64 or Linux arm64, starts it detached on the mesh address, brings it back after sign-in, and announces the offer to the pool registry. The default lend is half of free RAM and always leaves 4 GB free.
+
 ## [3.8.82] - 2026-10-22
 
 ### Added
