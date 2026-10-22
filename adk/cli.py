@@ -1819,6 +1819,12 @@ BONSAI_LOCAL_MODELS: dict[str, dict[str, str]] = {
 }
 
 
+#: `--model` choices: the native sizes (adk.bonsai_native.BONSAI_SIZES) plus the
+#: container-only entries above. "" = --auto (native) / bonsai2-27b (--container).
+BONSAI_LOCAL_MODEL_CHOICES = ("", "bonsai-1.7b", "bonsai-4b", "bonsai-8b", "bonsai-27b",
+                              "bonsai2-27b", "ling-tiny-8b")
+
+
 def _bonsai_local_gguf_path(spec: dict[str, str]) -> str:
     """Where a mounted (not baked) model's GGUF lives on this machine."""
     override = os.environ.get("AITHER_BONSAI_GGUF", "")
@@ -1897,8 +1903,114 @@ def _bonsai_local_fetch_gguf(spec: dict[str, str], path: str) -> bool:
     return True
 
 
+def _bonsai_local_save_backend(port: int, model: str) -> None:
+    """Make bonsai-local THE configured backend, so `adk start`, `adk up`, the SDK and
+    awsh use it without a flag. The old hint, `adk --backend bonsai-local`, was not a
+    real flag (2026-09-12)."""
+    try:
+        save_saved_config({
+            "default_backend": "bonsai-local",
+            "inference_url": f"http://127.0.0.1:{port}/v1",
+            "default_model": model,
+        })
+        print(f"  [+] Configured as your backend: bonsai-local http://127.0.0.1:{port}/v1")
+        print("      adk status / adk start / awsh now use it. Undo: adk backend set gateway")
+    except Exception as e:  # noqa: BLE001 — the server is up either way
+        print(f"  [!] Could not save backend config ({e}); run: "
+              f"adk backend set bonsai-local --base-url http://127.0.0.1:{port}/v1")
+
+
+def _bonsai_local_print_status(report: dict) -> None:
+    hw = report["hardware"]
+    print(f"  This computer: {hw['os']}/{hw['arch']}, {hw['kind']} ({hw['gpu']}), "
+          f"GPU memory {hw['vram_gb']} GB, RAM {hw['ram_gb']} GB")
+    for row in report["sizes"]:
+        mark = "*" if row["id"] == report["recommended"] else " "
+        where = row["placement"].upper() if row["fits"] else "does not fit"
+        print(f"  {mark} {row['id']:<12} {row['quant']:<7} "
+              f"{row['disk_bytes'] / 1e9:5.2f} GB  {where:<13} {row['reason']}")
+    print("  * = what --auto picks")
+    if report["installed"]:
+        state = "running" if report["running"] else "NOT running"
+        print(f"  Installed: {report['model']} ({report['quant']}, {report['placement']}) "
+              f"-- {state} on {report['endpoint']}")
+    else:
+        print("  Installed: nothing yet. Run: adk bonsai-local --auto")
+
+
 def cmd_bonsai_local(args) -> int:
-    """One command: run Bonsai 2 27B locally on :8090, reachable as `--backend bonsai-local`.
+    """`adk bonsai-local`: every Bonsai size, natively (default) or in a container.
+
+    Native (adk.bonsai_native): the pinned PrismML llama.cpp fork + the chosen GGUF from
+    weights.aitherium.com, sha256-checked, autostarted at sign-in, smoke-tested with a
+    chat answer AND a tool call. `--container` keeps the Docker path
+    (_cmd_bonsai_local_container).
+    """
+    import json as _json
+
+    if getattr(args, "container", False):
+        return _cmd_bonsai_local_container(args)
+    from adk import bonsai_native as bn
+
+    as_json = getattr(args, "json", False)
+    if getattr(args, "status", False):
+        report = bn.status_report()
+        if as_json:
+            print(_json.dumps(report))
+        else:
+            _bonsai_local_print_status(report)
+        return 0
+    if getattr(args, "remove", False):
+        had = bn.remove(purge=getattr(args, "purge", False))
+        if as_json:
+            print(_json.dumps({"ok": True, "removed": had}))
+        else:
+            print("  [+] Local model removed." if had else "  [=] Nothing was installed.")
+        return 0
+    if getattr(args, "stop", False):
+        autostarts = bool((bn.read_state() or {}).get("autostart"))
+        stopped = bn.stop()
+        if as_json:
+            print(_json.dumps({"ok": True, "stopped": stopped}))
+        elif stopped:
+            print("  [+] Stopped." + (" It starts again at your next sign-in "
+                                      "(adk bonsai-local --remove stops that)."
+                                      if autostarts else ""))
+        else:
+            print("  [=] No native bonsai-local is installed (a container: add --container).")
+        return 0
+
+    model = getattr(args, "model", "") or ""
+    if model and model not in bn.BONSAI_SIZES:
+        print(f"  [!] {model} runs in a container only; add --container.")
+        return 1
+    port = int(getattr(args, "port", 0) or BONSAI_LOCAL_PORT)
+    outcome = bn.install(
+        model=model, auto=getattr(args, "auto", False) or not model, port=port,
+        backend=getattr(args, "backend", "") or "", quant=getattr(args, "quant", "") or "",
+        autostart=not getattr(args, "no_autostart", False),
+        smoke=not getattr(args, "no_smoke", False),
+        dry_run=getattr(args, "dry_run", False))
+    if as_json:
+        print(_json.dumps({"ok": outcome.ok, "model": outcome.model, "port": outcome.port,
+                           "error": outcome.error, "smoke": outcome.smoke}))
+    if not outcome.ok:
+        if not as_json:
+            print(f"  [!] {outcome.error}")
+        return 1
+    if getattr(args, "dry_run", False):
+        return 0
+    when = ("it starts by itself when you sign in" if not getattr(args, "no_autostart", False)
+            else "started for this session only (--no-autostart)")
+    print(f"  [+] {outcome.model} live on http://127.0.0.1:{port}/v1 (model name "
+          f"{bn.SERVED_NAME}); {when}.")
+    if not getattr(args, "no_configure", False):
+        _bonsai_local_save_backend(port, outcome.model)
+    return 0
+
+
+def _cmd_bonsai_local_container(args) -> int:
+    """`adk bonsai-local --container`: Bonsai 2 27B in a container on :8090.
 
     NOT the `local` preset: that one targets AitherVLLMSwap on :8201, a fleet service.
     This docstring used to claim otherwise, which is why the pairing looked wired.
@@ -1918,6 +2030,9 @@ def cmd_bonsai_local(args) -> int:
 
     model = getattr(args, "model", "") or os.environ.get("AITHER_BONSAI_MODEL", "bonsai2-27b")
     spec = BONSAI_LOCAL_MODELS.get(model)
+    if spec is None and model in ("bonsai-1.7b", "bonsai-4b", "bonsai-8b"):
+        print(f"  [!] {model} runs natively only; drop --container.")
+        return 1
     if spec is None:
         print(f"  [!] Unknown --model {model!r}; choose one of: "
               + ", ".join(sorted(BONSAI_LOCAL_MODELS)))
@@ -2030,20 +2145,7 @@ def cmd_bonsai_local(args) -> int:
     if healthy:
         print(f"  [+] {spec['label']} live on http://localhost:{port} — open aitherium.com; "
               "it'll chat on your hardware.")
-        # Persist it as THE configured backend so `adk start`, `adk up`, the SDK
-        # and awsh use it without a flag. The old hint, `adk --backend
-        # bonsai-local`, was not a real flag (2026-09-12).
-        try:
-            save_saved_config({
-                "default_backend": "bonsai-local",
-                "inference_url": f"http://127.0.0.1:{port}/v1",
-                "default_model": model,
-            })
-            print(f"  [+] Configured as your backend: bonsai-local http://127.0.0.1:{port}/v1")
-            print("      adk status / adk start / awsh now use it. Undo: adk backend set gateway")
-        except Exception as e:  # noqa: BLE001 — the server is up either way
-            print(f"  [!] Could not save backend config ({e}); run: "
-                  f"adk backend set bonsai-local --base-url http://127.0.0.1:{port}/v1")
+        _bonsai_local_save_backend(port, model)
         return 0
     print(f"  [!] Container started but :{port}/health didn't come up in time. "
           f"Check `docker logs {name}`.")
@@ -10661,6 +10763,7 @@ def cmd_quickstart_local(args):
             port = getattr(args, "port", None) or BONSAI_LOCAL_PORT
             dry_run = getattr(args, "dry_run", False)
             stop = False
+            container = True  # this branch is the Docker one; see pick_backend
         rc = cmd_bonsai_local(_BArgs())
         if rc != 0:
             print("  ERROR: adk bonsai-local failed (see above). Without the Docker image, "
@@ -13878,17 +13981,41 @@ def _register_commands(sub):
 
     bonsai_p = sub.add_parser(
         "bonsai-local",
-        help="Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; "
-             "aitherium.com then chats locally")
+        help="Run a Bonsai model on your own computer (:8090), natively — any size, "
+             "GPU or CPU, no container needed")
     bonsai_p.add_argument("--port", type=int, default=BONSAI_LOCAL_PORT,
-                          help=f"Host port to serve on (default: {BONSAI_LOCAL_PORT})")
-    bonsai_p.add_argument("--model", choices=sorted(BONSAI_LOCAL_MODELS), default="bonsai2-27b",
-                          help="bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork "
-                               ">= prism-b10685), bonsai-27b (the previous generation) or "
-                               "ling-tiny-8b (CPU fallback, weaker than Bonsai; 4.8 GB "
-                               "GGUF downloaded once)")
+                          help=f"Port to serve on, loopback only (default: {BONSAI_LOCAL_PORT})")
+    bonsai_p.add_argument("--model", default="", choices=list(BONSAI_LOCAL_MODEL_CHOICES),
+                          help="bonsai-1.7b | bonsai-4b | bonsai-8b | bonsai-27b (Bonsai 1, "
+                               "Q1_0) | bonsai2-27b (PQ2_0 on CUDA/Metal, PTQ1_0 on "
+                               "CPU/Vulkan). Omitted = --auto. ling-tiny-8b: --container only")
+    bonsai_p.add_argument("--auto", action="store_true",
+                          help="Pick the largest size that fits this computer's GPU memory "
+                               "(or RAM when nothing fits the GPU); the default")
+    bonsai_p.add_argument("--backend", choices=["cpu", "cuda", "vulkan", "metal"], default="",
+                          help="Force the llama.cpp build instead of detecting it")
+    bonsai_p.add_argument("--quant", choices=["Q1_0", "PQ2_0", "PTQ1_0"], default="",
+                          help="Force the weight file (Bonsai 2: PQ2_0 or PTQ1_0)")
+    bonsai_p.add_argument("--status", action="store_true",
+                          help="What fits here, what is installed and whether it answers")
+    bonsai_p.add_argument("--json", action="store_true",
+                          help="Machine-readable output (the Desk app reads this)")
+    bonsai_p.add_argument("--remove", action="store_true",
+                          help="Stop the local model and remove its autostart")
+    bonsai_p.add_argument("--purge", action="store_true",
+                          help="With --remove: also delete the downloaded weights and server")
+    bonsai_p.add_argument("--no-autostart", action="store_true",
+                          help="Start it now only; do not start it at sign-in")
+    bonsai_p.add_argument("--no-smoke", action="store_true",
+                          help="Skip the chat + tool-call check after it starts")
+    bonsai_p.add_argument("--no-configure", action="store_true",
+                          help="Do not make bonsai-local your default adk backend")
+    bonsai_p.add_argument("--container", action="store_true",
+                          help="Run the Docker image instead (bonsai2-27b, bonsai-27b or "
+                               "ling-tiny-8b); the pre-native path")
     bonsai_p.add_argument("--dry-run", action="store_true", help="Show what would run without starting anything")
-    bonsai_p.add_argument("--stop", action="store_true", help="Stop and remove the local Bonsai container")
+    bonsai_p.add_argument("--stop", action="store_true",
+                          help="Stop the local model (with --container: remove the container)")
 
     # adk down — stop the agent started by `adk up`
     # adk sandbox — self-host AitherSandbox and link it to your portal (optional)

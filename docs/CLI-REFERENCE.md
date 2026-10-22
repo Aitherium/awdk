@@ -37,7 +37,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
 | [`adk balance`](#adk-balance) | Your Aitherium wallet: balance, bought/earned/spent, how to buy |
 | [`adk bonsai`](#adk-bonsai) | Small on-device Bonsai model (llama.cpp, CPU; phone-friendly) |
-| [`adk bonsai-local`](#adk-bonsai-local) | Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally |
+| [`adk bonsai-local`](#adk-bonsai-local) | Run a Bonsai model on your own computer (:8090), natively — any size, GPU or CPU, no container needed |
 | [`adk bricks`](#adk-bricks) | Aither World bricks and the awnix OS — list, outdated, upgrade (tested, auto-rollback), rollback |
 | [`adk briefs`](#adk-briefs) | List and read executive briefs |
 | [`adk chat`](#adk-chat) | Chat with a mesh agent by name (adk chat <agent> [msg]) |
@@ -333,14 +333,25 @@ Small on-device Bonsai model (llama.cpp, CPU; phone-friendly)
 
 ## `adk bonsai-local`
 
-Run Bonsai 2 27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally
+Run a Bonsai model on your own computer (:8090), natively — any size, GPU or CPU, no container needed
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `--port` | int |  | `8090` | Host port to serve on (default: 8090) |
-| `--model` | str |  | `bonsai2-27b` | bonsai2-27b (default; PQ2_0/PTQ1_0, needs the PrismML fork >= prism-b10685), bonsai-27b (the previous generation) or ling-tiny-8b (CPU fallback, weaker than Bonsai; 4.8 GB GGUF downloaded once) |
+| `--port` | int |  | `8090` | Port to serve on, loopback only (default: 8090) |
+| `--model` | str |  |  | bonsai-1.7b \| bonsai-4b \| bonsai-8b \| bonsai-27b (Bonsai 1, Q1_0) \| bonsai2-27b (PQ2_0 on CUDA/Metal, PTQ1_0 on CPU/Vulkan). Omitted = --auto. ling-tiny-8b: --container only |
+| `--auto` | str |  | `false` | Pick the largest size that fits this computer's GPU memory (or RAM when nothing fits the GPU); the default |
+| `--backend` | str |  |  | Force the llama.cpp build instead of detecting it |
+| `--quant` | str |  |  | Force the weight file (Bonsai 2: PQ2_0 or PTQ1_0) |
+| `--status` | str |  | `false` | What fits here, what is installed and whether it answers |
+| `--json` | str |  | `false` | Machine-readable output (the Desk app reads this) |
+| `--remove` | str |  | `false` | Stop the local model and remove its autostart |
+| `--purge` | str |  | `false` | With --remove: also delete the downloaded weights and server |
+| `--no-autostart` | str |  | `false` | Start it now only; do not start it at sign-in |
+| `--no-smoke` | str |  | `false` | Skip the chat + tool-call check after it starts |
+| `--no-configure` | str |  | `false` | Do not make bonsai-local your default adk backend |
+| `--container` | str |  | `false` | Run the Docker image instead (bonsai2-27b, bonsai-27b or ling-tiny-8b); the pre-native path |
 | `--dry-run` | str |  | `false` | Show what would run without starting anything |
-| `--stop` | str |  | `false` | Stop and remove the local Bonsai container |
+| `--stop` | str |  | `false` | Stop the local model (with --container: remove the container) |
 
 ## `adk bricks`
 

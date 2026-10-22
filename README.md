@@ -43,7 +43,7 @@ $s = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 | You have… | Run this | You get |
 |---|---|---|
 | **Nothing — not even Python** | one-line installer (below) | isolated env + first-run wizard |
-| **No GPU, no API key** | `adk bonsai-local` | [Bonsai](#bonsai-an-agent-on-literally-anything) running **free, offline, on CPU** — pulls ~300MB image, serves on :8090 |
+| **No GPU, no API key** | `adk bonsai-local` | [Bonsai](#bonsai-an-agent-on-literally-anything) running **free, offline, on CPU or GPU** — native, no container; picks the size that fits, serves on :8090 |
 | **A GPU (6 GB+)** | `adk quickstart` | auto-detected vLLM/llama.cpp, models pulled, ready to chat |
 | **Just an API key** | `adk quickstart --cloud` | cloud inference (Anthropic / OpenAI / DeepSeek) |
 | **A whole LAN of machines** | `adk deploy grid` | [multi-machine effort-routed inference](#grid-inference-across-multiple-machines) |
@@ -429,8 +429,9 @@ sessions and more than one agent at a time. Full guide: [docs/agent-home.md](doc
 Bonsai is Aitherium's family of ultra-compact models built to make agents *sovereign by default* — they run on hardware everyone already owns. The 1-bit Bonsai-27B runs on a plain CPU with 4 GB of RAM; Bonsai-4B runs in 2 GB (Android via Termux, Raspberry Pi Zero). Agents on Bonsai get the **full harness** — tool calling, memory, safety, fleets — not a demo mode.
 
 ```bash
-adk bonsai-local                # one command: Docker pulls the image + serves Bonsai-27B on :8090
-adk --backend bonsai-local      # point your agents at it
+adk bonsai-local --status       # what fits this machine (1.7B, 4B, 8B, 27B, Bonsai 2 27B)
+adk bonsai-local                # native, no Docker: the largest size that fits, served on :8090
+adk bonsai-local --model bonsai-8b   # or pick one; --container keeps the Docker image path
 ```
 
 Why this matters, concretely:
@@ -551,7 +552,7 @@ report = await auto_setup()    # detects GPU, starts vLLM, ready to go
 ### Pick a tier for your VRAM
 
 ```bash
-adk bonsai-local               # no GPU   — Bonsai-27B 1-bit on CPU (Docker pull + local serve)
+adk bonsai-local               # any box  — native Bonsai, the largest size that fits
 adk setup --tier nano          # 6–8 GB   — Nemotron-8B TQ4 (4-bit)
 adk setup --tier standard-tq4  # 12–16 GB — orchestrator + reasoning, both 4-bit
 adk setup --tier full          # 24 GB+   — orchestrator + reasoning + embeddings
@@ -938,7 +939,7 @@ adk doctor                     # check system health (Python, GPU, LLM, keys)
 # Inference & backends
 adk setup                      # interactive GPU setup wizard (vLLM/llama.cpp)
 adk setup --tier nano          # force a tier (bonsai, nano, standard, full, …)
-adk bonsai-local               # serve Bonsai-27B locally on :8090 (no GPU needed)
+adk bonsai-local               # serve Bonsai natively on :8090 (no GPU, no Docker needed)
 adk backend list|set|set-reasoning|test
 adk deploy vllm                # deploy vLLM containers
 adk deploy grid                # multi-machine grid inference

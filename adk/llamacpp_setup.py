@@ -888,12 +888,16 @@ def install_service(binary: Path, model: Path, port: int, accel: AccelInfo,
     return False
 
 
-def _install_systemd_user(cmd: list[str], dry_run: bool) -> bool:
+def _install_systemd_user(cmd: list[str], dry_run: bool,
+                          unit_name: str = "aither-orchestrator.service",
+                          description: str = "AitherOS Local Orchestrator "
+                                             "(llama.cpp + AitherOrchestrator)",
+                          log_stem: str = "orchestrator") -> bool:
     unit_dir = Path.home() / ".config" / "systemd" / "user"
-    unit_path = unit_dir / "aither-orchestrator.service"
+    unit_path = unit_dir / unit_name
     exec_start = " ".join(f'"{c}"' if " " in c else c for c in cmd)
     unit = f"""[Unit]
-Description=AitherOS Local Orchestrator (llama.cpp + AitherOrchestrator)
+Description={description}
 After=network.target
 
 [Service]
@@ -901,8 +905,8 @@ Type=simple
 ExecStart={exec_start}
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:{LOG_DIR}/orchestrator.log
-StandardError=append:{LOG_DIR}/orchestrator.err
+StandardOutput=append:{LOG_DIR}/{log_stem}.log
+StandardError=append:{LOG_DIR}/{log_stem}.err
 
 [Install]
 WantedBy=default.target
@@ -915,29 +919,30 @@ WantedBy=default.target
     unit_path.write_text(unit)
     print(f"  Wrote: {unit_path}")
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
-    subprocess.run(["systemctl", "--user", "enable", "--now", "aither-orchestrator.service"], check=False)
+    subprocess.run(["systemctl", "--user", "enable", "--now", unit_name], check=False)
     print("  Service enabled + started (systemctl --user)")
     return True
 
 
-def _install_launchd(cmd: list[str], dry_run: bool) -> bool:
+def _install_launchd(cmd: list[str], dry_run: bool, label: str = "com.aitherium.orchestrator",
+                    log_stem: str = "orchestrator") -> bool:
     plist_dir = Path.home() / "Library" / "LaunchAgents"
-    plist_path = plist_dir / "com.aitherium.orchestrator.plist"
+    plist_path = plist_dir / f"{label}.plist"
     args_xml = "\n".join(f"        <string>{c}</string>" for c in cmd)
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.aitherium.orchestrator</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
 {args_xml}
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>{LOG_DIR}/orchestrator.log</string>
-    <key>StandardErrorPath</key><string>{LOG_DIR}/orchestrator.err</string>
+    <key>StandardOutPath</key><string>{LOG_DIR}/{log_stem}.log</string>
+    <key>StandardErrorPath</key><string>{LOG_DIR}/{log_stem}.err</string>
 </dict>
 </plist>
 """
@@ -1003,11 +1008,15 @@ def hidden_task_run(shim: Path, payload: Path) -> str:
     return value
 
 
-def _install_windows_task(cmd: list[str], dry_run: bool) -> bool:
+def _install_windows_task(cmd: list[str], dry_run: bool, task_name: str = "AitherOrchestrator",
+                          wrapper_dir: Optional[Path] = None,
+                          log_stem: str = "orchestrator") -> bool:
     # Build a wrapper .cmd so we can capture logs cleanly
-    wrapper = LLAMACPP_DIR / "aither-orchestrator.cmd"
-    shim = LLAMACPP_DIR / "run-hidden.vbs"
-    log_out = LOG_DIR / "orchestrator.log"
+    wrapper_dir = wrapper_dir or LLAMACPP_DIR
+    wrapper = wrapper_dir / ("aither-orchestrator.cmd" if task_name == "AitherOrchestrator"
+                             else f"{task_name}.cmd")
+    shim = wrapper_dir / "run-hidden.vbs"
+    log_out = LOG_DIR / f"{log_stem}.log"
     cmd_line = " ".join(f'"{c}"' if " " in c else c for c in cmd)
     wrapper_content = f"@echo off\r\ncd /d \"%~dp0\"\r\n{cmd_line} 1>>\"{log_out}\" 2>&1\r\n"
 
@@ -1033,17 +1042,19 @@ def _install_windows_task(cmd: list[str], dry_run: bool) -> bool:
     if dry_run:
         print(f"  [DRY] Would write wrapper: {wrapper}")
         print(f"  [DRY] Would write hidden-launch shim: {shim}")
-        print("  [DRY] schtasks /create /tn AitherOrchestrator /sc onlogon ...")
+        print(f"  [DRY] schtasks /create /tn {task_name} /sc onlogon ...")
         print(f"  [DRY]   /tr {task_run}")
         return True
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     wrapper.write_text(wrapper_content)
-    write_hidden_launch_shim(LLAMACPP_DIR)
+    write_hidden_launch_shim(wrapper_dir)
     print(f"  Wrote wrapper: {wrapper}")
     print(f"  Wrote hidden-launch shim: {shim}")
     # Create scheduled task — runs at user logon, restart on failure
     rc = subprocess.run([
         "schtasks", "/create", "/f",
-        "/tn", "AitherOrchestrator",
+        "/tn", task_name,
         "/tr", task_run,
         "/sc", "onlogon",
         "/rl", "limited",
@@ -1058,7 +1069,7 @@ def _install_windows_task(cmd: list[str], dry_run: bool) -> bool:
         return True
     print("  Task scheduled (runs at user logon, no visible window)")
     # Start now too
-    subprocess.run(["schtasks", "/run", "/tn", "AitherOrchestrator"],
+    subprocess.run(["schtasks", "/run", "/tn", task_name],
                    capture_output=True, text=True, encoding="utf-8", errors="replace")
     return True
 

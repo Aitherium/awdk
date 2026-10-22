@@ -11,6 +11,7 @@ This module is the one place that knows the installed layouts and the exact
 arguments each installer serves with, so `adk onboard --quick` and the Desk app's
 "Start on this PC" button start the SAME server the installer did:
 
+  bonsai-local     adk bonsai-local    ~/.aither/bonsai-local.json (its exact argv)
   bonsai-selfhost  install-bonsai.ps1  %LOCALAPPDATA%\\Aitherium\\bonsai\\{bin,models}
                    install-bonsai.sh   ~/.aitherium/bonsai/{bin,models}
   llamacpp         adk quickstart-local / llamacpp_setup: ~/.aither/llamacpp + the
@@ -138,10 +139,46 @@ def _llamacpp_spec(home: Path) -> Optional[Dict[str, Any]]:
     }
 
 
+def _bonsai_local_spec(home: Path) -> Optional[Dict[str, Any]]:
+    """The server `adk bonsai-local` installed natively (adk.bonsai_native's state file).
+
+    It records the exact argv it serves with, so this starts the same server its
+    autostart does -- after checking the binary and weights are still on disk."""
+    try:
+        state = json.loads((home / ".aither" / "bonsai-local.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    argv = state.get("argv")
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+        return None
+    if not (Path(argv[0]).is_file() and Path(str(state.get("weights", ""))).is_file()):
+        return None
+    try:
+        port = int(state.get("port") or 8090)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "found": True, "kind": "bonsai-local", "argv": argv,
+        "cwd": str(state.get("cwd") or Path(argv[0]).parent), "port": port,
+        "model": "bonsai-local", "weights": Path(str(state["weights"])).name,
+        "health": f"http://127.0.0.1:{port}/health",
+        "inference_url": f"http://127.0.0.1:{port}/v1",
+        "log": str(home / ".aither" / "logs" / "bonsai-local.log"),
+    }
+
+
 def find_local_model_server(env: Optional[Dict[str, str]] = None, platform: str = sys.platform,
                             home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """The installed local model server, or None. Never downloads, never starts anything."""
+    """The installed local model server, or None. Never downloads, never starts anything.
+
+    `adk bonsai-local` (the Desk's Local AI screen) first: it is the one the person chose
+    most recently through us; then install-bonsai's; then quickstart-local's llama.cpp."""
     home = Path.home() if home is None else home
+    spec = _bonsai_local_spec(home)
+    if spec is not None:
+        return spec
     spec = _selfhost_spec(selfhost_root(env, platform, home), platform)
     if spec is not None:
         return spec
