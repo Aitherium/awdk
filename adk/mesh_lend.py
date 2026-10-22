@@ -77,6 +77,24 @@ DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 #: Exit status of a process killed by an illegal instruction.
 _SIGILL_CODES = frozenset({-4, 132, 0xC000001D, -1073741795})
+#: STATUS_DLL_NOT_FOUND: Windows could not load a DLL the exe imports.
+_DLL_NOT_FOUND_CODES = frozenset({0xC0000135, -1073741515})
+#: A Windows launch failure (OSError.winerror) -> what it means. Measured 2026-10-22: the
+#: owner's laptop reported "-h probe could not run (OSError)" for the SAME pinned exes
+#: that run on the desktop, and the lend called it "no build runs on this CPU".
+_WINERROR_MEANING: dict[int, str] = {
+    2: "file not found (removed after download?)",
+    3: "folder not found",
+    5: "access denied",
+    126: "a DLL it needs is missing (libc++.dll, libunwind.dll, libwinpthread-1.dll "
+         "must sit next to the exe)",
+    193: "not a valid Windows program (corrupt or wrong architecture)",
+    225: "Microsoft Defender blocked it as a virus or potentially unwanted program",
+    1260: "a Group Policy / Software Restriction Policy blocked it",
+    4551: "Smart App Control / Windows Defender Application Control blocked it",
+}
+#: Blocks only the machine's owner can lift; the lend never adds an exclusion itself.
+_BLOCKED_BY_POLICY = frozenset({225, 1260, 4551})
 
 
 class LendError(RuntimeError):
@@ -352,10 +370,11 @@ def _listening(host: str, port: int, timeout: float = 2.0) -> bool:
 # ── process + persistence ───────────────────────────────────────────────────
 
 
-def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], timeout: float = 30.0,
+         cwd: Optional[str] = None) -> subprocess.CompletedProcess:
     """A short helper child: never a console window on Windows."""
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=timeout,
+                          errors="replace", timeout=timeout, cwd=cwd,
                           stdin=subprocess.DEVNULL,
                           creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0)
 
@@ -506,18 +525,76 @@ def _allow_firewall(exe: Path, port: int, run: Callable[..., Any] = _run) -> boo
         return False
 
 
+#: probe_binary's reason for a build this CPU cannot execute; the ONLY reason that
+#: makes start_server say "no build runs on this CPU".
+_ISA_REASON = "illegal instruction (CPU lacks this build's ISA level)"
+
+
+def describe_launch_error(exc: BaseException, exe: Path | str) -> str:
+    """Say exactly why Windows (or any OS) would not start ``exe``: the exception, its
+    winerror/errno and what that code means. A Defender / Smart App Control block names
+    the path and how the machine's owner can allow it -- this module never adds an
+    exclusion itself."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"-h probe timed out after {exc.timeout:g} s ({exe})"
+    winerror = getattr(exc, "winerror", None)
+    errno_ = getattr(exc, "errno", None)
+    detail = str(getattr(exc, "strerror", "") or exc).strip()
+    code = f"WinError {winerror}" if winerror is not None else (
+        f"errno {errno_}" if errno_ is not None else "")
+    head = f"{exc.__class__.__name__}" + (f" [{code}]" if code else "")
+    if detail:
+        head += f": {detail}"
+    meaning = _WINERROR_MEANING.get(int(winerror)) if winerror is not None else ""
+    msg = f"could not launch {exe}: {head}"
+    if meaning:
+        msg += f" -- {meaning}"
+    if winerror is not None and int(winerror) in _BLOCKED_BY_POLICY:
+        if int(winerror) == 225:
+            msg += (". To lend, the machine's owner allows this file in Windows Security > "
+                    "Virus & threat protection > Protection history (Allow on device), "
+                    "then re-runs `adk mesh lend`.")
+        elif int(winerror) == 4551:
+            msg += (". Smart App Control cannot allow single files; the owner can turn it "
+                    "off in Windows Security > App & browser control > Smart App Control, "
+                    "or this machine cannot lend.")
+        else:
+            msg += ". An administrator must allow this path in the machine's policy."
+    return msg
+
+
 def probe_binary(exe: Path,
                  run: Optional[Callable[..., Any]] = None) -> tuple[bool, str]:
-    """Does ``exe -h`` run on this CPU and print the RPC server's usage?"""
+    """Does ``exe -h`` run on this CPU and print the RPC server's usage?
+
+    Runs with cwd = the exe's folder (where its DLLs are). A launch failure is
+    reported with its exact cause (describe_launch_error), never as a CPU mismatch.
+    """
     try:
-        r = (run or _run)([str(exe), "-h"], timeout=20)
+        r = (run or _run)([str(exe), "-h"], timeout=20, cwd=str(Path(exe).parent))
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"-h probe could not run ({exc.__class__.__name__})"
+        return False, describe_launch_error(exc, exe)
     if r.returncode in _SIGILL_CODES:
-        return False, "illegal instruction (CPU lacks this build's ISA level)"
+        return False, _ISA_REASON
+    if r.returncode in _DLL_NOT_FOUND_CODES:
+        return False, (f"{exe} exited 0x{r.returncode & 0xFFFFFFFF:08X} (STATUS_DLL_NOT_FOUND): "
+                       f"a DLL it needs is missing from {Path(exe).parent}")
     if "--device" not in (r.stdout or "") + (r.stderr or ""):
         return False, f"-h probe exited {r.returncode} without the usage text"
     return True, ""
+
+
+def missing_files(variant: Variant, dest: Path) -> list[str]:
+    """Files of ``variant`` that are not in ``dest`` at their pinned size. Run AFTER the
+    download: antivirus can quarantine a DLL between the download and the launch."""
+    out = []
+    for asset in variant.files:
+        try:
+            if (dest / asset.save_as).stat().st_size != asset.size:
+                out.append(asset.save_as)
+        except OSError:
+            out.append(asset.save_as)
+    return out
 
 
 def start_server(variants: tuple[Variant, ...], dest: Path, host: str, port: int,
@@ -532,13 +609,21 @@ def start_server(variants: tuple[Variant, ...], dest: Path, host: str, port: int
     A build is skipped for the next one when its ``-h`` probe fails or it dies on an
     illegal instruction at start (a CPU without the build's ISA level).
     """
-    last = ""
+    reasons: list[str] = []
+    cpu_only = True  # every failure so far is an ISA mismatch
     check = probe or probe_binary
     for variant in variants:
         exe = fetch_variant(variant, dest, fetch=fetch)
+        gone = missing_files(variant, dest)
+        if gone:
+            reasons.append(f"{variant.key}: {', '.join(gone)} missing from {dest} right after "
+                           "download (quarantined by antivirus?)")
+            cpu_only = False
+            continue
         ok, why = check(exe)
         if not ok:
-            last = f"{variant.key}: {why}"
+            reasons.append(f"{variant.key}: {why}")
+            cpu_only = cpu_only and why == _ISA_REASON
             continue
         argv = server_argv(exe, host, port, threads)
         proc = spawn_detached(argv, dest / "rpc-server.log", popen=popen)
@@ -547,11 +632,13 @@ def start_server(variants: tuple[Variant, ...], dest: Path, host: str, port: int
         if code is None:
             return variant, proc, argv
         if code in _SIGILL_CODES:
-            last = f"{variant.key} needs CPU features this machine lacks"
+            reasons.append(f"{variant.key} needs CPU features this machine lacks")
             continue
         raise LendError(f"{variant.key} exited with {code} at start; see "
                         f"{dest / 'rpc-server.log'}")
-    raise LendError(f"no build runs on this CPU ({last})")
+    if reasons and cpu_only:
+        raise LendError(f"no build runs on this CPU ({'; '.join(reasons)})")
+    raise LendError(f"no build could start here ({'; '.join(reasons) or 'no builds'})")
 
 
 # ── announce ────────────────────────────────────────────────────────────────

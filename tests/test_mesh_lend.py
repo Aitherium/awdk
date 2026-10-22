@@ -318,7 +318,85 @@ def test_probe_binary_judges_usage_and_sigill(tmp_path, rc, out, ok):
 
 
 def test_no_build_runs_refuses(tmp_path):
-    with pytest.raises(ml.LendError, match="no build runs"):
+    with pytest.raises(ml.LendError, match="no build runs on this CPU"):
         ml.start_server((_variant("a", "a"), _variant("b", "b")), tmp_path, "100.64.0.9",
                         50052, 4, fetch=_fetch(), popen=_popen(), sleep=lambda s: None,
-                        probe=lambda e: (False, "nope"))
+                        probe=lambda e: (False, ml._ISA_REASON))
+
+
+def test_a_launch_failure_is_not_called_a_cpu_mismatch(tmp_path):
+    """Owner's laptop 2026-10-22: "no build runs on this CPU (windows-x64-v2: -h probe
+    could not run (OSError))" for exes that run on the desktop."""
+    with pytest.raises(ml.LendError) as ei:
+        ml.start_server((_variant("a", "a"), _variant("b", "b")), tmp_path, "100.64.0.9",
+                        50052, 4, fetch=_fetch(), popen=_popen(), sleep=lambda s: None,
+                        probe=lambda e: (False, "could not launch x: OSError [WinError 225]"))
+    assert "CPU" not in str(ei.value) and "WinError 225" in str(ei.value)
+    assert "no build could start here" in str(ei.value)
+
+
+def _oserror(winerror, text):
+    exc = OSError(22, text)
+    exc.winerror = winerror
+    return exc
+
+
+@pytest.mark.parametrize("winerror,needle", [
+    (225, "Defender blocked it"),
+    (4551, "Smart App Control"),
+    (2, "file not found"),
+    (126, "DLL it needs is missing"),
+    (5, "access denied"),
+])
+def test_probe_launch_errors_say_exactly_why(tmp_path, winerror, needle):
+    exe = tmp_path / "ggml-rpc-server-v2.exe"
+
+    def run(cmd, **kw):
+        raise _oserror(winerror, "The operation did not complete")
+    ok, why = ml.probe_binary(exe, run=run)
+    assert ok is False
+    assert f"WinError {winerror}" in why and needle in why and str(exe) in why
+    assert "CPU" not in why and why != ml._ISA_REASON
+    if winerror in (225, 4551):
+        assert "owner" in why  # actionable, names who can allow it
+
+
+def test_probe_runs_in_the_exe_folder_and_reads_dll_not_found(tmp_path):
+    exe = tmp_path / "lend" / "ggml-rpc-server-v3.exe"
+    seen = {}
+
+    def run(cmd, **kw):
+        seen.update(kw)
+        return SimpleNamespace(returncode=0xC0000135, stdout="", stderr="")
+    ok, why = ml.probe_binary(exe, run=run)
+    assert seen["cwd"] == str(exe.parent)
+    assert ok is False and "STATUS_DLL_NOT_FOUND" in why and "C0000135" in why
+
+
+def test_a_dll_quarantined_after_download_is_reported_not_probed(tmp_path, monkeypatch):
+    v = ml.Variant("windows-x64-v2", (ml.Asset("asset-a", len(GOOD), GOOD_SHA, "rpc.exe"),
+                                      ml.Asset("asset-b", len(GOOD), GOOD_SHA, "libc++.dll")),
+                   "rpc.exe")
+
+    def fetch_then_quarantine(url, dest):
+        dest.write_bytes(GOOD)
+
+    real_fetch_variant = ml.fetch_variant
+
+    def fv(variant, dest_dir, fetch):
+        exe = real_fetch_variant(variant, dest_dir, fetch=fetch)
+        (dest_dir / "libc++.dll").unlink()  # Defender took it
+        return exe
+    monkeypatch.setattr(ml, "fetch_variant", fv)
+    probed = []
+    with pytest.raises(ml.LendError, match=r"libc\+\+\.dll missing"):
+        ml.start_server((v,), tmp_path, "100.64.0.9", 50052, 4, fetch=fetch_then_quarantine,
+                        popen=_popen(), sleep=lambda s: None,
+                        probe=lambda e: probed.append(e) or (True, ""))
+    assert probed == []
+
+
+def test_timeout_is_described():
+    import subprocess
+    why = ml.describe_launch_error(subprocess.TimeoutExpired(["x"], 20), "x.exe")
+    assert "timed out after 20 s" in why

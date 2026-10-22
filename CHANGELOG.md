@@ -4,6 +4,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.88] - 2026-10-22
+
+### Fixed
+- `adk mesh lend` (and the `mesh-lend-on` node command) no longer reports a launch failure as "no build runs on this CPU". A build that will not start says exactly why: the exception, its WinError/errno and what that means (225 Microsoft Defender block, 4551 Smart App Control/WDAC block, 126 missing DLL, 2 missing file, 5 access denied, STATUS_DLL_NOT_FOUND exit), with the exe path; a Defender or Smart App Control block says how the machine's owner can allow it (the lend never adds an exclusion). "No build runs on this CPU" is kept for illegal-instruction failures only. Every build's reason is listed, not just the last.
+- The `-h` probe runs in the exe's own folder, and a build whose files (e.g. `libc++.dll`) vanished between download and launch (antivirus quarantine) is reported as such instead of probed.
+
 ## [3.8.87] - 2026-10-22
 
 ### Fixed
