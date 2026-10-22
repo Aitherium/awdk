@@ -805,6 +805,29 @@ EXAMPLES:
 # ─── Module-level function for enrollment auto-sync ───
 
 
+#: Portal hosts that serve the web app, not the marketplace API: on them
+#: /v1/marketplace/* and /v1/packs/* redirect to the login page (307), which the
+#: sync reported as "Could not fetch entitlements" on every fresh install.
+_PORTAL_ONLY_HOSTS = frozenset({"api.aitherium.com", "app.aitherium.com", "aitherium.com"})
+_MARKETPLACE_URL = "https://gateway.aitherium.com"
+
+
+def marketplace_base_url(base_url: str) -> str:
+    """Where the marketplace API lives for ``base_url``.
+
+    ``ADK_MARKETPLACE_URL`` wins; a portal-only host maps to the API gateway; any
+    other host (a tenant's own deployment, a local portal) is used as given.
+    """
+    override = os.environ.get("ADK_MARKETPLACE_URL", "").strip()
+    if override:
+        return override.rstrip("/")
+    from urllib.parse import urlparse
+    host = (urlparse(base_url or "").hostname or "").lower()
+    if host in _PORTAL_ONLY_HOSTS:
+        return _MARKETPLACE_URL
+    return (base_url or _MARKETPLACE_URL).rstrip("/")
+
+
 async def sync_entitled_packs(
     auth_token: str,
     tenant_id: Optional[str] = None,
@@ -826,6 +849,7 @@ async def sync_entitled_packs(
     """
     import logging
     log = logging.getLogger("adk.packs")
+    base_url = marketplace_base_url(base_url)
 
     def _packs_dir() -> Path:
         """The local pack install root (matches agent auto-discovery)."""
