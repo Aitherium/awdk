@@ -479,7 +479,8 @@ def overlay_status(headscale_url: str | None = None, timeout: float = 10.0) -> d
     address, and (when tailscale says) its control server is the mesh's Headscale.
 
     Returns ``{"joined", "code", "detail", "backend_state", "tailnet_ip",
-    "hostname", "control_url"}``; ``code`` is ``ok``, ``tailscale_missing``,
+    "hostname", "control_url", "tun"}`` (``tun`` only once tailscale answered);
+    ``code`` is ``ok``, ``tailscale_missing``,
     ``tailscale_unreachable``, ``not_running``, ``no_tailnet_ip`` or
     ``other_tailnet``. Never raises.
     """
@@ -504,6 +505,8 @@ def overlay_status(headscale_url: str | None = None, timeout: float = 10.0) -> d
         return out
     me = st.get("Self") or {}
     out["backend_state"] = str(st.get("BackendState") or "")
+    # False = userspace networking: tailnet connections arrive on loopback.
+    out["tun"] = bool(st.get("TUN", True))
     out["hostname"] = str(me.get("HostName") or "")
     out["tailnet_ip"] = next(
         (str(ip) for ip in (me.get("TailscaleIPs") or []) if _in_tailnet(str(ip))), "")

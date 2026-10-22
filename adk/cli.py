@@ -8070,6 +8070,9 @@ def cmd_mesh(args) -> int:
         return _mesh_join_signed_in(args)
     if sub == "status":
         return _mesh_status(args)
+    if sub == "lend":
+        from adk.mesh_lend import cmd_lend
+        return cmd_lend(args)
 
     if sub == "onboard":
         async def _onboard():
@@ -15220,6 +15223,11 @@ def _register_commands(sub):
     mesh_status_p.add_argument(
         "--headscale-url", default=os.getenv("AITHER_HEADSCALE_URL", "https://hs.aitherium.com"),
         help="Headscale control server the device should be on")
+    # adk mesh lend -- lend spare RAM to the pooled model as a ggml RPC server
+    mesh_lend_p = mesh_sub.add_parser(
+        "lend", help="Lend this machine's spare RAM to the mesh's pooled model (one command)")
+    from adk.mesh_lend import add_arguments as _lend_args
+    _lend_args(mesh_lend_p)
     mesh_onboard_p = mesh_sub.add_parser(
         "onboard", help="Onboard this node into AitherMesh overlay (operator path; a signed-in "
                         "laptop uses 'adk mesh join')")
