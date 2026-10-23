@@ -36,7 +36,7 @@ serve:
        --tool-call-parser hermes or downstream agent loops get no tool schemas."
     - "40K context at gpu-util 0.40 assumes it is NOT co-resident with another big
        model. On a shared 5090 (with ComfyUI/gemma4) drop gpu-util to ~0.32 and
-       max-model-len to 16384 — the fleet's aither-vllm-tq values."
+       max-model-len to 16384 — values proven on a shared 32 GB card."
 
 verify:
   health_timeout_s: 180
