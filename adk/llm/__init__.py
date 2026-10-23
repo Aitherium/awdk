@@ -79,6 +79,14 @@ _EFFORT_MODELS = {
         "medium": "deepseek-chat",
         "large": "deepseek-reasoner",
     },
+    "openrouter": {
+        "small": "deepseek/deepseek-v4-flash",
+        "medium": "deepseek/deepseek-v4-flash",
+        "large": "deepseek/deepseek-v4.1-flash",
+        # Optional 4th tier, honoured only for effort 9-10 and only by providers
+        # that define it (model_for_effort falls back to "large" otherwise).
+        "max": "deepseek/deepseek-v4-pro",
+    },
     "moonshot": {
         "small": "kimi-k3",
         "medium": "kimi-k3",
@@ -151,6 +159,31 @@ _DEFAULT_CTK_BY_MODEL = {
 # llmfit-derived model cache (populated lazily)
 _llmfit_models: dict[str, str] | None = None
 _llmfit_checked: bool = False
+
+# OpenRouter attribution headers — sent on OpenRouter requests ONLY (its
+# dashboard/rankings key off them; every other provider ignores the pair).
+_OPENROUTER_HEADERS = {
+    "HTTP-Referer": "https://aitherium.com",
+    "X-OpenRouter-Title": "AitherOS",
+}
+
+
+def _openrouter_provider(**kwargs) -> "LLMProvider":
+    """An OpenAIProvider that adds OpenRouter's attribution headers.
+
+    OpenAIProvider builds its header dict in ``_headers()`` and takes no
+    per-provider header argument, so the one provider that needs an extra pair
+    gets a thin subclass rather than a change to the shared client.
+    """
+    from .openai_compat import OpenAIProvider
+
+    class OpenRouterProvider(OpenAIProvider):
+        def _headers(self) -> dict[str, str]:
+            headers = super()._headers()
+            headers.update(_OPENROUTER_HEADERS)
+            return headers
+
+    return OpenRouterProvider(**kwargs)
 
 
 class LLMRouter:
@@ -225,6 +258,7 @@ class LLMRouter:
     _COMPAT_URLS: dict[str, str] = {
         "openai": "https://api.openai.com/v1",
         "deepseek": "https://api.deepseek.com/v1",
+        "openrouter": "https://openrouter.ai/api/v1",
         "moonshot": "https://api.moonshot.ai/v1",
         "groq": "https://api.groq.com/openai/v1",
         "together": "https://api.together.xyz/v1",
@@ -246,6 +280,7 @@ class LLMRouter:
     _COMPAT_MODELS: dict[str, str] = {
         "openai": "gpt-4o-mini",
         "deepseek": "deepseek-chat",
+        "openrouter": "deepseek/deepseek-v4.1-flash",
         "moonshot": "kimi-k3",
         "groq": "llama-3.3-70b-versatile",
         "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
@@ -270,11 +305,16 @@ class LLMRouter:
                 ctk_by_model=_DEFAULT_CTK_BY_MODEL,
             )
         elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together",
-                      "deepseek", "moonshot", "genesis", "bonsai-local", "bonsai",
-                      "freellmapi"):
+                      "deepseek", "openrouter", "moonshot", "genesis", "bonsai-local",
+                      "bonsai", "freellmapi"):
             from .openai_compat import OpenAIProvider
             default_url = self._COMPAT_URLS.get(name, "https://api.openai.com/v1")
             default_model = self._COMPAT_MODELS.get(name, "gpt-4o-mini")
+            # `LLMRouter(provider="openrouter")` is constructed with no key in the
+            # common path, so read the documented env var here instead of sending
+            # an empty bearer and 401-ing on the first call.
+            if name == "openrouter" and not api_key:
+                api_key = os.getenv("OPENROUTER_API_KEY", "")
             # Self-hosted endpoints (genesis/vllm/llamacpp/lmstudio) may be served
             # over https with the internal AitherNet CA — trust it via tls_verify().
             # Public providers (openai/groq/together/deepseek) keep system trust
@@ -284,7 +324,11 @@ class LLMRouter:
             if name in ("genesis", "vllm", "llamacpp", "lmstudio", "bonsai-local", "bonsai"):
                 from .._tls import tls_verify
                 verify = tls_verify()
-            return OpenAIProvider(
+            # OpenRouter alone carries the attribution headers (its dashboard
+            # counts app requests by them); every other provider gets the plain
+            # client.
+            factory = _openrouter_provider if name == "openrouter" else OpenAIProvider
+            return factory(
                 base_url=base_url or default_url,
                 api_key=api_key or "",
                 default_model=self._model or default_model,
@@ -338,8 +382,9 @@ class LLMRouter:
             raise ValueError(
                 f"Unknown provider: {name}. "
                 "Use 'gateway', 'openai', 'anthropic', 'gemini', 'deepseek', "
-                "'moonshot', 'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', "
-                "'genesis', 'bonsai-local', 'bonsai', 'freellmapi', 'picolm', or 'acp'."
+                "'openrouter', 'moonshot', 'groq', 'together', 'vllm', 'lmstudio', "
+                "'llamacpp', 'genesis', 'bonsai-local', 'bonsai', 'freellmapi', "
+                "'picolm', or 'acp'."
             )
 
     async def _try_local_selfhost(self) -> LLMProvider | None:
@@ -683,6 +728,8 @@ class LLMRouter:
                 api_key = cfg.openai_api_key
             elif backend == "deepseek":
                 api_key = cfg.deepseek_api_key
+            elif backend == "openrouter":
+                api_key = cfg.openrouter_api_key
             elif backend == "moonshot":
                 api_key = cfg.moonshot_api_key
             elif backend == "gateway":
@@ -847,6 +894,7 @@ class LLMRouter:
         if explicit and explicit not in ("auto", "gateway"):
             key_for = {
                 "deepseek": getattr(self._config, "deepseek_api_key", ""),
+                "openrouter": getattr(self._config, "openrouter_api_key", ""),
                 "moonshot": getattr(self._config, "moonshot_api_key", ""),
                 "openai": getattr(self._config, "openai_api_key", ""),
                 "anthropic": getattr(self._config, "anthropic_api_key", ""),
@@ -1275,6 +1323,10 @@ class LLMRouter:
         # model: sending "" made MicroScheduler auto-route to a cloud provider with no key,
         # and every agent chat came back as an empty completion (measured 2026-09-30).
         models = _EFFORT_MODELS.get(self._provider_name, {})
+        # Optional "max" tier: a provider's own top-end model for effort 9-10.
+        # Absent for almost every provider, so the three-tier shape still rules.
+        if tier == "large" and effort >= 9 and models.get("max"):
+            return models["max"]
         return models.get(tier) or self._model or self._provider_default_model()
 
     def _provider_default_model(self) -> str:

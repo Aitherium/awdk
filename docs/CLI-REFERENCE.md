@@ -1855,6 +1855,7 @@ World model management (status, inspect, train, reset, dream)
 - `adk wm train` — Force a bootstrap/refit now
 - `adk wm reset` — Delete checkpoint + transitions
 - `adk wm dream` — What a fleet world model imagines next (cns \| prospector \| arc)
+- `adk wm system` — The world model of AitherOS itself (CNS): status, surprise, forecast, whatif, episodes, check, pulse
 
 ## `adk workflow`
 

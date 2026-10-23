@@ -45,6 +45,18 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
             "Test:       adk ask \"hello\" --backend deepseek",
         ],
     },
+    "openrouter": {
+        "label": "OpenRouter (one key, many models — deepseek/deepseek-v4.1-flash)",
+        "kind": "cloud",
+        "key_env": "OPENROUTER_API_KEY",
+        "key_url": "https://openrouter.ai/keys",
+        "steps": [
+            "Create an API key: https://openrouter.ai/keys",
+            "Configure:  adk keys set openrouter sk-or-...   (stores + vault-syncs)",
+            "Or:         export OPENROUTER_API_KEY=sk-or-...",
+            "Test:       adk ask \"hello\" --backend openrouter",
+        ],
+    },
     "anthropic": {
         "label": "Anthropic Claude",
         "kind": "cloud",
