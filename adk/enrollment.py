@@ -404,6 +404,12 @@ def build_registration(
         py_version = platform.python_version()
 
     probe = probe_inference(inference_url)
+    worker = _worker_advert()
+    if worker:
+        # `adk mesh worker on`: while it runs, THIS is what the node serves -- the
+        # fleet's worker lane reads llama-worker + its tailnet URL (the key never travels)
+        probe = InferenceProbe(list(worker["available_models"]), worker["inference_url"],
+                               worker["inference_kind"], bool(worker["inference_ready"]))
     lending = _lending_fields(sysinfo, probe)
 
     return {
@@ -433,6 +439,16 @@ def build_registration(
         # what it signs while it stays enrolled. Absent without awseal.
         **_identity_fields(),
     }
+
+
+def _worker_advert() -> Optional[Dict[str, Any]]:
+    """What a running ``adk mesh worker`` advertises, or None (never raises)."""
+    try:
+        from adk import mesh_worker
+        return mesh_worker.advertised()
+    except Exception as e:  # noqa: BLE001 -- a worker probe never blocks a beat
+        log.debug("mesh worker advert unavailable: %s", e)
+        return None
 
 
 def _lending_fields(sysinfo: Any, probe: InferenceProbe) -> Dict[str, Any]:

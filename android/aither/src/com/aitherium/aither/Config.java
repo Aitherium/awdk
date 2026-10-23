@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.4.1";
+    static final String VERSION = "0.4.2";
 
     private final SharedPreferences p;
 
@@ -132,6 +132,14 @@ final class Config {
     /** "owner" | "child" | "" (not known yet), from the family registry's heartbeat. */
     String profileKind() { return p.getString("profile_kind", ""); }
     String familyDevice() { return p.getString("family_device", ""); }
+    // ---- "Help my fleet" (WorkerService / Worker): off unless the owner turns it on
+    boolean workerOn() { return p.getBoolean("worker_on", false); }
+    /** Parallel jobs, 1..4 (Worker.parallel clamps whatever is stored). */
+    int workerParallel() { return Worker.parallel(p.getInt("worker_parallel", 1)); }
+    /** Serve only while charging AND on Wi-Fi. On by default. */
+    boolean workerGuard() { return p.getBoolean("worker_guard", true); }
+    /** The owner's GPU wish. This build's engine is CPU-only (no Vulkan), so it is kept, not used. */
+    boolean workerGpu() { return p.getBoolean("worker_gpu", false); }
     /** Family Shield: "off" | "filtered" | "allowlist", as the household last said. */
     String shieldMode() { return p.getString("shield_mode", "off"); }
     /** The ETag of the last household policy this phone read. */

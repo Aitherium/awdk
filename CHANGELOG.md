@@ -4,6 +4,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.89] - 2026-10-22
+
+### Added
+- `adk mesh worker on|off|status [--model M] [--parallel N]`: serve a small model (Bonsai 1.7B; Bonsai 8B on a Steam Deck, Vulkan) to your fleet as a parallel worker. llama-server binds only the tailnet address, requires an API key derived from this device's command key (passed as an owner-only `--api-key-file`, never on the command line), runs `-np N` slots, and comes back after a reboot. While it runs the heartbeat advertises it as `inference_kind: llama-worker`; a rotated command key withdraws it until `on` is run again.
+- Signed node commands `worker-on` (optional `parallel` 1-4, `model` from a closed list) and `worker-off`, validated here as well as on the server; `collect-diagnostics` reports `mesh_worker` (never the key).
+
 ## [3.8.88] - 2026-10-22
 
 ### Fixed

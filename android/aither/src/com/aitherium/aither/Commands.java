@@ -60,11 +60,19 @@ final class Commands {
         gb.put("gb", OPEN);
         VERBS.put("mesh-lend-on", gb);
         VERBS.put("mesh-lend-off", none);
+        // "Help my fleet" (WorkerService): both arguments optional, closed lists checked by
+        // Worker.argOk; this phone serves only its own model, so another model is refused.
+        Map<String, List<String>> worker = new HashMap<>();
+        worker.put("parallel", Worker.PARALLEL);
+        worker.put("model", Worker.MODELS);
+        VERBS.put("worker-on", worker);
+        VERBS.put("worker-off", none);
     }
 
     /** Is {@code v} an allowed value of {@code verb}'s argument {@code k}? */
     static boolean argOk(String verb, String k, Object v, List<String> vals) {
         if (vals == OPEN) return "mesh-lend-on".equals(verb) && "gb".equals(k) && MeshLend.gbOk(v);
+        if ("worker-on".equals(verb)) return Worker.argOk(k, v); // strings only, never a number
         return vals.contains(String.valueOf(v));
     }
 
@@ -187,6 +195,13 @@ final class Commands {
             case "mesh-lend-off":
                 MeshLendService.stop(ctx, out);
                 return true;
+            case "worker-on":
+                return workerOn(args, out);
+            case "worker-off":
+                cfg.set("worker_on", false);
+                WorkerService.sync(ctx);
+                WorkerService.report(out.put("state", "worker turned off"));
+                return true;
             case "refresh-app":
                 // the WebView is the activity's: it clears its cache the next time it is shown
                 cfg.set("refresh_app", true);
@@ -227,11 +242,32 @@ final class Commands {
                 .put("household_checkin", HeartbeatJob.last)
                 .put("profile_kind", cfg.profileKind())
                 .put("update_state", Updater.last)
-                .put("mesh_lend", MeshLendService.report(new JSONObject().put("state", MeshLendService.state)));
+                .put("mesh_lend", MeshLendService.report(new JSONObject().put("state", MeshLendService.state)))
+                .put("worker", WorkerService.report(new JSONObject()));
         // who installed this app and owns its updates, and the last installer status code
         JSONObject upd = new JSONObject();
         Updater.diagnostics(ctx, upd);
         out.put("update", upd);
+    }
+
+    /** worker-on: refuse() checked the arguments; this phone serves only its own model. */
+    private boolean workerOn(JSONObject args, JSONObject out) throws Exception {
+        String model = args.optString("model", Worker.PHONE_MODEL);
+        if (!Worker.PHONE_MODEL.equals(model)) {
+            out.put("state", "this phone serves only " + Worker.PHONE_MODEL);
+            return false;
+        }
+        if (cfg.childDevice()) {
+            out.put("state", "never on a child's phone");
+            return false;
+        }
+        if (args.has("parallel")) cfg.set("worker_parallel", Integer.parseInt(args.getString("parallel")));
+        cfg.set("worker_on", true);
+        WorkerService.sync(ctx);
+        WorkerService.report(out.put("state", "worker turned on (" + cfg.workerParallel()
+                + " parallel jobs; it serves once the phone's own conditions hold)"));
+        out.put("state_now", WorkerService.state);
+        return true;
     }
 
     private boolean lend(boolean on, JSONObject out) throws Exception {

@@ -180,6 +180,18 @@ final class NodeLink {
                             ? new JSONArray().put(LlmService.MODEL_ID) : new JSONArray())
                     .put("inference_kind", cfg.llmEnabled() ? "llama-server" : "none")
                     .put("reach_kind", "none");
+            String worker = WorkerService.url;
+            if (WorkerService.serving && !worker.isEmpty()) {
+                // "Help my fleet": the fleet may send this phone small jobs at its tailnet
+                // address; the server's key is derived from this phone's command key and is
+                // never sent (Identity's worker-keys route derives the same one)
+                beat.put("inference_url", worker).put("inference_kind", Worker.KIND)
+                        .put("inference_ready", true)
+                        .put("available_models", new JSONArray().put(Worker.PHONE_MODEL));
+            } else if (cfg.workerOn()) {
+                // paused (unplugged, off Wi-Fi, ...): withdraw the address it advertised
+                beat.put("inference_url", "");
+            }
             // the family storage pool: what this phone lends (only once it was ever offered)
             StorageShare.addTo(ctx, beat);
             Resp r = call("POST", idp + "/v1/nodes/device/heartbeat", bearer(), null, beat.toString());

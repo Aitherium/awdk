@@ -14,6 +14,7 @@ public class BootReceiver extends BroadcastReceiver {
         HeartbeatJob.schedule(c);
         if (cfg.enabled()) c.startForegroundService(new Intent(c, HolderService.class));
         if (cfg.llmEnabled()) c.startForegroundService(new Intent(c, LlmService.class));
+        if (cfg.workerOn()) WorkerService.sync(c); // "Help my fleet", when the owner left it on
         ShieldVpnService.sync(c); // Family Shield, when the household turned it on (arms its watch)
         DutyService.sync(c); // on duty for approvals, when this phone's guardian left it on
     }

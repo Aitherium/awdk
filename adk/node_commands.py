@@ -37,7 +37,7 @@ log = logging.getLogger("adk.node_commands")
 
 __all__ = ["VERBS", "VERSION_RE", "SIGNED_FIELDS", "RESULT_FIELDS", "canonical", "sign", "verify",
            "load_key", "save_key", "run_commands", "sign_result", "load_appliances",
-           "appliance_names", "MESH_LEND_GB_RE"]
+           "appliance_names", "MESH_LEND_GB_RE", "WORKER_PARALLEL", "WORKER_MODELS"]
 
 #: verb -> {argument: allowed values}. Keep in step with identity_node_commands.VERBS;
 #: a verb the server adds is refused here until this copy learns it.
@@ -75,6 +75,13 @@ VERBS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "mesh-lend-on": {},
     # Stop lending and remove the logon hook (`adk mesh lend --stop`). No argument.
     "mesh-lend-off": {},
+    # Serve whole small jobs for the fleet (adk.mesh_worker, the same code as
+    # `adk mesh worker on`): a small model on the tailnet address behind an API key
+    # derived from this device's command key. Both arguments optional and closed:
+    # ``parallel`` (WORKER_PARALLEL) and ``model`` (WORKER_MODELS); port is this host's.
+    "worker-on": {},
+    # Stop serving and remove the logon hook (`adk mesh worker off`). No argument.
+    "worker-off": {},
 }
 #: Companion packages `upgrade-component` may install. Closed: a package not named
 #: here is refused here and in identity_node_commands.UPGRADE_COMPONENTS.
@@ -93,6 +100,10 @@ VERSION_RE = re.compile(r"\A[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}\Z")
 #: no fraction, no leading zero, no whitespace). Same rule as
 #: identity_node_commands.MESH_LEND_GB_RE.
 MESH_LEND_GB_RE = re.compile(r"\A(?:[1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-6])\Z")
+#: `worker-on`'s closed argument values. Same tuples as identity_node_commands and
+#: adk.mesh_worker.WORKER_MODELS (a test pins that).
+WORKER_PARALLEL: Tuple[str, ...] = ("1", "2", "3", "4")
+WORKER_MODELS: Tuple[str, ...] = ("bonsai-1.7b", "bonsai-4b", "bonsai-8b")
 #: verb -> {argument: check}. An open-ended argument whose FORM is checked.
 _FORM_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "upgrade": {"version": lambda v: bool(VERSION_RE.match(v))},
@@ -100,11 +111,15 @@ _FORM_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "upgrade-component": {"component": lambda v: v in COMPONENTS,
                           "version": lambda v: bool(VERSION_RE.match(v))},
     "mesh-lend-on": {"gb": lambda v: bool(MESH_LEND_GB_RE.match(v))},
+    # no required argument; both are optional (below)
+    "worker-on": {},
 }
 #: verb -> {argument: check}. A form-checked argument the verb MAY carry. An older
 #: server never sends it, so the required set in _FORM_ARGS is unchanged.
 _OPTIONAL_FORM_ARGS: Dict[str, Dict[str, Callable[[str], bool]]] = {
     "advertise-inference": {"probe_url": lambda v: _valid_inference_arg(v)},
+    "worker-on": {"parallel": lambda v: v in WORKER_PARALLEL,
+                  "model": lambda v: v in WORKER_MODELS},
 }
 UPGRADE_TIMEOUT_S = 600
 #: Seconds between the upgrade result and the restart, so the result is reported first.
@@ -268,6 +283,7 @@ def _diagnostics(_args: Dict[str, str]) -> Dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - one section failing is reported, not fatal
             out[name] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
     out["mesh_lend"] = _mesh_lend_status()
+    out["mesh_worker"] = _worker_status()
     try:
         from adk import self_update
         out["code"] = {"running_root": str(self_update.RUNNING_ROOT),
@@ -350,6 +366,54 @@ def _mesh_lend_off(_args: Dict[str, str]) -> Dict[str, Any]:
     from adk import mesh_lend
     rc, text = _collected(mesh_lend.cmd_stop, _mesh_lend_args(stop=True))
     return {"ok": rc == 0, "rc": rc, "output": text, "status": _mesh_lend_status()}
+
+
+def _worker_args(**over: Any) -> Any:
+    """The namespace ``adk mesh worker`` would build with no flags: this host's default
+    port, the model its hardware picks. Only ``worker_action``, ``parallel`` and
+    ``model`` come from the verb (already checked against the closed lists)."""
+    import argparse
+
+    from adk import mesh_worker
+    ns = argparse.Namespace(worker_action="status", model="", parallel=1,
+                            port=mesh_worker.DEFAULT_PORT, json=False)
+    for k, v in over.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def _worker_status() -> Dict[str, Any]:
+    """``adk mesh worker status --json`` as a dict (never raises; never the key)."""
+    try:
+        from adk import mesh_worker
+        out = dict(mesh_worker.status_dict())
+        out["rc"] = 0 if (not mesh_worker.read_state() or out.get("serving")) else 1
+        return out
+    except Exception as exc:  # noqa: BLE001 - one section failing is reported, not fatal
+        return {"error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+def _worker_on(args: Dict[str, str]) -> Dict[str, Any]:
+    """``adk mesh worker on [--parallel N] [--model M]``. Both arguments are re-checked
+    against the closed lists and ``parallel`` becomes an int before it reaches
+    mesh_worker, so nothing the server sent is placed in an argv as free text."""
+    parallel = str(args.get("parallel") or "1")
+    model = str(args.get("model") or "")
+    if parallel not in WORKER_PARALLEL or (model and model not in WORKER_MODELS):
+        return {"ok": False, "error": "parallel must be 1-4 and model one of "
+                                      + ", ".join(WORKER_MODELS)}
+    from adk import mesh_worker
+    rc, text = _collected(mesh_worker.cmd_on,
+                          _worker_args(worker_action="on", parallel=int(parallel), model=model))
+    # 0 serving; 1 started but not healthy yet; 2 refused
+    return {"ok": rc in (0, 1), "rc": rc, "output": text, "status": _worker_status()}
+
+
+def _worker_off(_args: Dict[str, str]) -> Dict[str, Any]:
+    """``adk mesh worker off``: stop the server and remove the logon hook."""
+    from adk import mesh_worker
+    rc, text = _collected(mesh_worker.cmd_off, _worker_args(worker_action="off"))
+    return {"ok": rc == 0, "rc": rc, "output": text, "status": _worker_status()}
 
 
 def _restartable() -> List[str]:
@@ -1276,6 +1340,8 @@ _HANDLERS: Dict[str, Callable[[Dict[str, str]], Any]] = {
     "appliance-redeploy": _appliance_redeploy,
     "mesh-lend-on": _mesh_lend_on,
     "mesh-lend-off": _mesh_lend_off,
+    "worker-on": _worker_on,
+    "worker-off": _worker_off,
 }
 
 

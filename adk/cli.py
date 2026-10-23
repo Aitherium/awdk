@@ -8175,6 +8175,9 @@ def cmd_mesh(args) -> int:
     if sub == "lend":
         from adk.mesh_lend import cmd_lend
         return cmd_lend(args)
+    if sub == "worker":
+        from adk.mesh_worker import cmd_worker
+        return cmd_worker(args)
 
     if sub == "onboard":
         async def _onboard():
@@ -15355,6 +15358,12 @@ def _register_commands(sub):
         "lend", help="Lend this machine's spare RAM to the mesh's pooled model (one command)")
     from adk.mesh_lend import add_arguments as _lend_args
     _lend_args(mesh_lend_p)
+    # adk mesh worker -- serve a small model to the fleet as a parallel worker
+    mesh_worker_p = mesh_sub.add_parser(
+        "worker", help="Serve a small model to your fleet as a parallel worker "
+                       "(on | off | status; tailnet only, keyed)")
+    from adk.mesh_worker import add_arguments as _worker_args
+    _worker_args(mesh_worker_p)
     mesh_onboard_p = mesh_sub.add_parser(
         "onboard", help="Onboard this node into AitherMesh overlay (operator path; a signed-in "
                         "laptop uses 'adk mesh join')")

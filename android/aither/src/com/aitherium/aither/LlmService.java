@@ -233,8 +233,9 @@ public class LlmService extends Service implements LocalProxy.Backend {
         update();
     }
 
-    /** Fetch the model once; keep it only if its SHA-256 is the pinned one. */
-    private String download(File model) {
+    /** Fetch the model once; keep it only if its SHA-256 is the pinned one (WorkerService too). */
+    static synchronized String download(File model) {
+        if (model.exists() && model.length() == MODEL_BYTES) return ""; // the other caller fetched it
         File part = new File(model.getPath() + ".part");
         model.getParentFile().mkdirs();
         try {

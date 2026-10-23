@@ -24,6 +24,7 @@ public class SettingsActivity extends Activity {
     private TextView localStatus;
     private TextView nodeStatus;
     private TextView alertsStatus;
+    private TextView workerStatus;
     private Switch alerts;
     private TextView connected;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -153,6 +154,32 @@ public class SettingsActivity extends Activity {
                     "Never use mobile data for lending.");
             ai.addView(status);
             col.addView(ai);
+
+            // ---- Help my fleet (WorkerService): this phone takes whole small jobs in parallel
+            col.addView(Ui.section(this, "Help my fleet"));
+            LinearLayout fleet = Ui.card(this);
+            row(fleet, workerToggle("Help my fleet: run small jobs", "worker_on", cfg.workerOn()),
+                    "Bonsai 1.7B on this phone answers small jobs for your AitherOS fleet "
+                    + "(tagging, sorting, short summaries), next to your other devices. Reachable "
+                    + "only over your private mesh (Tailscale), only with this phone's own key. The fleet "
+                    + "uses it once the workspace owner has made this phone a worker (worker-on).");
+            TextView par = Ui.action(this, parallelLabel(), null);
+            par.setOnClickListener(v -> {
+                cfg.set("worker_parallel", cfg.workerParallel() % Worker.MAX_PARALLEL + 1);
+                par.setText(parallelLabel());
+                WorkerService.sync(this);
+            });
+            row(fleet, par, "Tap to change (1 to 4). More jobs at once use more memory and battery.");
+            row(fleet, workerToggle("Only when charging and on Wi-Fi", "worker_guard", cfg.workerGuard()),
+                    "On by default. The model stops the moment the phone is unplugged or leaves Wi-Fi.");
+            Switch gpu = Ui.style(new Switch(this));
+            gpu.setText("Use the GPU");
+            gpu.setChecked(false);
+            gpu.setEnabled(false);
+            row(fleet, gpu, "Not available yet: this version's on-phone engine runs on the CPU only.");
+            workerStatus = dim();
+            fleet.addView(workerStatus);
+            col.addView(fleet);
         }
 
         // ---- Family
@@ -418,6 +445,22 @@ public class SettingsActivity extends Activity {
         }, "aither-storage-share").start();
     }
 
+    private String parallelLabel() {
+        return "Parallel jobs: " + cfg.workerParallel();
+    }
+
+    /** A "Help my fleet" switch: store it, then let the service follow it. */
+    private View workerToggle(String label, String key, boolean on) {
+        Switch s = Ui.style(new Switch(this));
+        s.setText(label);
+        s.setChecked(on);
+        s.setOnCheckedChangeListener((v, checked) -> {
+            cfg.set(key, checked);
+            WorkerService.sync(this);
+        });
+        return s;
+    }
+
     private View toggle(String label, String key, boolean on) {
         Switch s = Ui.style(new Switch(this));
         s.setText(label);
@@ -462,6 +505,9 @@ public class SettingsActivity extends Activity {
             alertsStatus.setText(!cfg.approvalsOnDuty() ? "Off · each check-in · " + Notices.last
                     : !FamilyNotices.allowed(SettingsActivity.this) ? "Notifications are off for Aither: tap the switch"
                     : "On · " + DutyService.state);
+            if (workerStatus != null) {
+                workerStatus.setText("Fleet worker: " + (cfg.workerOn() ? WorkerService.state : "off"));
+            }
             NodeLink n = new NodeLink(SettingsActivity.this);
             nodeStatus.setText("Version " + Config.VERSION
                     + "\nWorkspace node: " + (n.linked() ? n.nodeId() : "-") + " · " + NodeLink.last
