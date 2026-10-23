@@ -16515,6 +16515,22 @@ def _register_commands(sub):
     wm_dream_p.add_argument("--open", action="store_true", help="open the viewer page")
     wm_dream_p.add_argument("--json", action="store_true", help="raw JSON")
 
+    wm_sys_p = wm_sub.add_parser(
+        "system", help="The world model of AitherOS itself (CNS): status, surprise, forecast,"
+                       " whatif, episodes, check, pulse")
+    wm_sys_sub = wm_sys_p.add_subparsers(dest="system_command")
+    wm_sys_sub.add_parser("status", help="Model, held-out eval, explorer coverage")
+    wm_sys_s = wm_sys_sub.add_parser("surprise", help="Surprise now (one object or the top)")
+    wm_sys_s.add_argument("object_id", nargs="?", help="e.g. svc:genesis")
+    wm_sys_sub.add_parser("forecast", help="Objects glowing warn/alert")
+    wm_sys_w = wm_sys_sub.add_parser("whatif", help="Learned cascade if OBJECT goes down")
+    wm_sys_w.add_argument("object_id", help="e.g. svc:redis")
+    wm_sys_sub.add_parser("episodes", help="Recent exploration episodes")
+    wm_sys_c = wm_sys_sub.add_parser("check", help="Owner precedents a planned action matches")
+    wm_sys_c.add_argument("action", help="the action, e.g. 'podman network prune'")
+    wm_sys_sub.add_parser("pulse", help="The anonymous public pulse")
+    wm_sys_p.add_argument("--json", action="store_true", help="raw JSON")
+
     # adk graph — provenance graph CLI: status, drain, claim, ground, context, leaves, runs, show, purge
     graph_p = sub.add_parser("graph", help="Provenance graph management (status, drain, claim, ground, context, leaves, lineage, runs, show, purge)")
     graph_sub = graph_p.add_subparsers(dest="graph_command")
@@ -17789,6 +17805,9 @@ def main():
         elif wm_cmd == "dream":
             from adk.commands.wm_dream import cmd_wm_dream
             sys.exit(cmd_wm_dream(args))
+        elif wm_cmd == "system":
+            from adk.commands.wm_system import cmd_wm_system
+            sys.exit(cmd_wm_system(args))
         else:
             print("Usage: adk wm [status|inspect|train|reset|dream]")
             print()
