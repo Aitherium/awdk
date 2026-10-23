@@ -18,7 +18,8 @@ Design:
     - ``consolidate(llm)`` clusters unconsolidated episodic/fact nodes
       (embedding + keyword), drafts/updates articles via the INJECTED llm
       callable (str -> str or messages -> str; sync or async — no hard model
-      dependency), cites source node ids, marks contradicted sources
+      dependency) — each decision an explicit ADD / UPDATE / DELETE / NONE
+      event (:data:`CONSOLIDATION_EVENTS`) — cites source node ids, marks contradicted sources
       superseded, then DEMOTES consolidated sources to a fast-decay tier via
       :meth:`GraphMemory.promote` (represented knowledge doesn't need raw
       copies — the sweep collects them).
@@ -142,9 +143,10 @@ _DRAFT_SYSTEM = (
     "evidence into ONE curated, encyclopedic markdown article. Merge "
     "duplicates, prefer newer evidence over older on conflict, link related "
     "concepts with [[wikilinks]], and cite evidence inline as (src: <node-id>). "
-    "Respond ONLY with JSON: {\"title\": \"...\", \"markdown\": \"...\", "
-    "\"contradicted_sources\": [\"<node-id>\", ...]} where contradicted_sources "
-    "lists ids of evidence the consolidated knowledge now supersedes."
+    "Respond ONLY with JSON: {\"event\": \"ADD\", \"title\": \"...\", "
+    "\"markdown\": \"...\", \"contradicted_sources\": [\"<node-id>\", ...]} "
+    "where contradicted_sources lists ids of evidence the consolidated "
+    "knowledge now supersedes (DELETE them)."
 )
 
 _UPDATE_SYSTEM = (
@@ -152,9 +154,19 @@ _UPDATE_SYSTEM = (
     "the NEW EVIDENCE: merge it in naturally, keep what is still true, replace "
     "what is contradicted, keep the title stable unless it is clearly wrong, "
     "keep/extend the [[wikilinks]], cite new evidence inline as "
-    "(src: <node-id>). Respond ONLY with JSON: {\"title\": \"...\", "
+    "(src: <node-id>). Decide ONE event: UPDATE when the evidence changes or "
+    "extends the article, NONE when the article already says everything the "
+    "evidence says (then omit title and markdown). Evidence the article now "
+    "contradicts is DELETED by listing it in contradicted_sources. Respond "
+    "ONLY with JSON: {\"event\": \"UPDATE\" | \"NONE\", \"title\": \"...\", "
     "\"markdown\": \"...\", \"contradicted_sources\": [\"<node-id>\", ...]}."
 )
+
+#: The consolidation decision vocabulary (a memory-reconciliation contract):
+#: ADD = draft a new article, UPDATE = revise the matched one, DELETE = a
+#: source listed in ``contradicted_sources`` (superseded), NONE = the matched
+#: article already represents the evidence — no new revision is written.
+CONSOLIDATION_EVENTS = ("ADD", "UPDATE", "DELETE", "NONE")
 
 _LINT_SYSTEM = (
     "You audit a personal knowledge wiki. Given the article index, report "
@@ -272,8 +284,13 @@ class MemoryWiki:
           only marked consolidated. Contradicted sources are marked
           superseded by the article.
 
+        The llm answers with an ``event`` from :data:`CONSOLIDATION_EVENTS`.
+        ``NONE`` on an update writes no revision: the sources are recorded on
+        the article and consumed as represented (``articles_unchanged``). A
+        reply with no ``event`` keeps the pre-contract behaviour.
+
         Returns ``{examined, clusters, articles_created, articles_updated,
-        sources_consolidated, sources_demoted, skipped}``.
+        articles_unchanged, sources_consolidated, sources_demoted, skipped}``.
         """
         now = now if now is not None else time.time()
         budget = 5 if budget is None else max(1, int(budget))
@@ -282,6 +299,7 @@ class MemoryWiki:
         stats: Dict[str, Any] = {
             "examined": len(candidates), "clusters": 0,
             "articles_created": [], "articles_updated": [],
+            "articles_unchanged": [],
             "sources_consolidated": 0, "sources_demoted": 0, "skipped": 0,
         }
         if not candidates:
@@ -313,6 +331,20 @@ class MemoryWiki:
                     f"NEW EVIDENCE:\n{evidence}",
                 )
             parsed = _parse_json_block(raw)
+            event = str(parsed.get("event", "") or "").strip().upper()
+            if event == "NONE":
+                if target is None:
+                    stats["skipped"] += 1
+                    continue  # nothing to represent it — the evidence stays raw
+                source_ids = [r[0] for r in cluster["rows"]]
+                prior = list((target.metadata or {}).get("sources", []) or [])
+                merged = list(dict.fromkeys(prior + source_ids))[-200:]
+                self._merge_node_metadata(target.id, {"sources": merged})
+                stats["articles_unchanged"].append(target.label)
+                stats["sources_consolidated"] += len(source_ids)
+                stats["sources_demoted"] += self._consume_sources(cluster["rows"], target.id)
+                done += 1
+                continue
             markdown = str(parsed.get("markdown", "") or "").strip()
             title = str(parsed.get("title", "") or "").strip()
             contradicted = [

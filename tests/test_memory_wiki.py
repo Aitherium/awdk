@@ -447,3 +447,53 @@ async def test_default_off_zero_behavior_change(graph):
     # plain graph search is unaffected by the wiki module's existence
     res = await graph.search("seagate fish traders", limit=5)
     assert res
+
+
+# ─── explicit ADD / UPDATE / DELETE / NONE contract ─────────────────────────
+
+
+async def test_consolidate_none_event_writes_no_revision(graph):
+    """NONE = the article already represents the evidence: no new revision,
+    the evidence is recorded as a source and consumed. Before the contract a
+    NONE reply had no markdown, so the raw JSON text became the article."""
+    from adk.memory_wiki import CONSOLIDATION_EVENTS
+
+    assert CONSOLIDATION_EVENTS == ("ADD", "UPDATE", "DELETE", "NONE")
+    await _seed(graph)
+    wiki = MemoryWiki(graph)
+    await wiki.consolidate(_str_llm(json.dumps({
+        "event": "ADD", "title": "Seagate Harbour",
+        "markdown": "# Seagate Harbour\nTaxed fish traders.",
+        "contradicted_sources": [],
+    })))
+    before = _article_rows(graph)
+    assert len(before) == 1
+
+    dup = await graph.add_node(
+        label="Seagate Harbour", node_type="fact",
+        content="Seagate harbour taxes its fish traders", tier="persistent",
+    )
+
+    def respond(prompt):
+        assert '"NONE"' in prompt  # the update prompt names the NONE outcome
+        return json.dumps({"event": "NONE"})
+
+    stats = await wiki.consolidate(_str_llm(respond))
+    assert stats["articles_unchanged"] == ["Seagate Harbour"]
+    assert stats["articles_updated"] == []
+    after = _article_rows(graph)
+    assert len(after) == 1
+    assert after[0][2] == before[0][2]  # article text untouched — not the JSON reply
+    md = json.loads(after[0][4])
+    assert md["revision"] == 1
+    assert dup.id in md["sources"]
+    assert json.loads(_node_row(graph, dup.id)[2])["consolidated_into"] == after[0][0]
+
+
+async def test_consolidate_none_event_without_article_leaves_evidence_raw(graph):
+    ids, _lone = await _seed(graph)
+    stats = await MemoryWiki(graph).consolidate(_str_llm(json.dumps({"event": "NONE"})))
+    assert stats["articles_created"] == [] and stats["skipped"] >= 1
+    assert _article_rows(graph) == []
+    for nid in ids:
+        assert _node_row(graph, nid)[1] == "persistent"
