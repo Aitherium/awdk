@@ -297,15 +297,31 @@ def sidecar_path(doc_path: str | Path) -> Path:
     return Path(doc_path).with_suffix(SIDECAR_SUFFIX)
 
 
-def save_index(root: Node, path: str | Path, *, source: str = "", sha256: str = "") -> Path:
-    """Write the tree as JSON: ``{version, source, sha256, tree}``."""
+def save_index(
+    root: Node,
+    path: str | Path,
+    *,
+    source: str = "",
+    sha256: str = "",
+    summarized: bool = False,
+    markdown: str | None = None,
+) -> Path:
+    """Write the tree as JSON: ``{version, source, sha256, summarized, tree[, markdown]}``.
+
+    ``summarized`` records whether the summaries came from a model (an index built offline
+    is rebuilt once a model is available). ``markdown`` is stored only for converted
+    documents (PDF/DOCX/...), so a reuse never has to run the converter again.
+    """
     out = Path(path)
-    payload = {
+    payload: dict[str, Any] = {
         "version": INDEX_VERSION,
         "source": source,
         "sha256": sha256,
+        "summarized": bool(summarized),
         "tree": root.to_dict(),
     }
+    if markdown is not None:
+        payload["markdown"] = markdown
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return out
 
@@ -443,6 +459,23 @@ async def _router_pick(
     return picks
 
 
+def _with_lexical_anchor(
+    picks: list[_Candidate], query: str, parent: Node, lines: list[str],
+) -> list[_Candidate]:
+    """Append the level's best lexical choice when the model did not pick it, scored
+    below every model pick."""
+    best = _lexical_pick(query, parent, lines, 1)
+    if not best or best[0].score <= 0.0:
+        return picks
+    anchor = best[0]
+    if any(p.node is anchor.node and p.terminal == anchor.terminal for p in picks):
+        return picks
+    floor = min((p.score for p in picks), default=1.0)
+    anchor.score = round(floor / 2, 4)
+    anchor.why = f"lexical anchor under {parent.title}"
+    return [*picks, anchor]
+
+
 def _path_titles(root: Node, target: Node) -> list[str]:
     def walk(node: Node, trail: list[str]) -> list[str] | None:
         trail = trail + [node.title]
@@ -466,6 +499,7 @@ async def tree_search(
     model: str | None = None,
     top_k: int = 3,
     beam: int = 3,
+    lexical_anchor: bool = True,
 ) -> list[dict[str, Any]]:
     """Descend from the root keeping ``beam`` sections per level; return ``top_k`` sections.
 
@@ -473,6 +507,9 @@ async def tree_search(
     under the heading), so an answer written above the first subsection is reachable. With a
     router, each level asks the model to rank the choices by title+summary; when the reply
     does not parse (or ``router=None``) the level is ranked by lexical overlap instead.
+    ``lexical_anchor`` (router mode) also keeps the best lexical choice of each level on the
+    frontier, ranked below the model's picks, so one wrong pick near the root cannot hide
+    a section whose text plainly matches the query.
     Each hit: ``{node_id, title, path, start_line, end_line, text, score, why}`` where
     ``text`` is the section's own text (subsections excluded).
     """
@@ -491,11 +528,14 @@ async def tree_search(
             picks = None
             if router is not None:
                 picks = await _router_pick(router, query, cand.node, lines, beam, model)
+                if picks is not None and lexical_anchor:
+                    picks = _with_lexical_anchor(picks, query, cand.node, lines)
             if picks is None:
                 picks = _lexical_pick(query, cand.node, lines, beam)
             next_frontier.extend(picks)
         next_frontier.sort(key=lambda c: c.score, reverse=True)
-        frontier = next_frontier[:max(beam, top_k)]
+        anchors = 1 if router is not None and lexical_anchor else 0
+        frontier = next_frontier[:max(beam, top_k) + anchors]
 
     hits.sort(key=lambda c: c.score, reverse=True)
     return [
@@ -526,13 +566,90 @@ def _looks_like_path(value: str) -> bool:
         return False
 
 
-def _read_markdown(path_or_markdown: str | Path) -> tuple[str, Path | None]:
+def _is_document(path: Path) -> bool:
+    """A binary document (PDF/DOCX/PPTX/XLSX) that goes through ``adk.docconvert``."""
+    from adk.docconvert import DOCUMENT_EXTENSIONS
+
+    return path.suffix.lstrip(".").lower() in DOCUMENT_EXTENSIONS
+
+
+def _convert(path: Path) -> str:
+    from adk.docconvert import convert_document
+
+    text = convert_document(path)
+    if text is None:
+        raise ValueError(
+            f"cannot convert {path.name}: install 'awdk[docs]' for PDF/DOCX/PPTX/XLSX"
+        )
+    return text
+
+
+def _source_digest(path: Path) -> str:
+    """Sidecar key for a converted document: its BYTES, so reuse skips the converter."""
+    return "bytes:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _reusable(data: dict[str, Any], digest: str, want_summaries: bool) -> bool:
+    if data.get("sha256") != digest or int(data.get("version", 0)) != INDEX_VERSION:
+        return False
+    if not want_summaries:
+        return True
+    if "summarized" in data:
+        return bool(data["summarized"])
+    # sidecars written before the flag existed: summaries present means a model wrote them
+    return any(n.summary for n in Node.from_dict(data["tree"]).walk())
+
+
+async def index_document_text(
+    path_or_markdown: str | Path,
+    *,
+    router: Any = None,
+    model: str | None = None,
+    force: bool = False,
+    min_node_chars: int = 200,
+) -> tuple[Node, str]:
+    """Like :func:`index_document`, also returning the Markdown the tree's line numbers
+    refer to (for a PDF/DOCX that is the converted text, cached in the sidecar)."""
+    path: Path | None = None
     if isinstance(path_or_markdown, Path):
-        return path_or_markdown.read_text(encoding="utf-8"), path_or_markdown
-    if _looks_like_path(path_or_markdown):
-        p = Path(path_or_markdown)
-        return p.read_text(encoding="utf-8"), p
-    return path_or_markdown, None
+        path = path_or_markdown
+    elif _looks_like_path(path_or_markdown):
+        path = Path(path_or_markdown)
+    document = path is not None and _is_document(path)
+    markdown: str | None = None
+    if path is None:
+        markdown = str(path_or_markdown)
+        digest = sha256_text(markdown)
+    elif document:
+        digest = _source_digest(path)
+    else:
+        markdown = path.read_text(encoding="utf-8")
+        digest = sha256_text(markdown)
+
+    if path is not None and not force:
+        side = sidecar_path(path)
+        if side.is_file():
+            try:
+                data = _read_sidecar(side)
+                if _reusable(data, digest, want_summaries=router is not None):
+                    text = markdown if markdown is not None else data.get("markdown")
+                    if isinstance(text, str):
+                        return Node.from_dict(data["tree"]), text
+            except (ValueError, KeyError, OSError) as exc:
+                logger.warning("ignoring unreadable page index %s: %s", side, exc)
+
+    if markdown is None:
+        assert path is not None
+        markdown = _convert(path)
+    root = build_tree(markdown, min_node_chars=min_node_chars)
+    if router is not None:
+        await summarize_tree(root, markdown, router=router, model=model)
+    if path is not None:
+        save_index(
+            root, sidecar_path(path), source=str(path), sha256=digest,
+            summarized=router is not None, markdown=markdown if document else None,
+        )
+    return root, markdown
 
 
 async def index_document(
@@ -547,25 +664,15 @@ async def index_document(
 
     Given a path, a fresh build is summarized (only when ``router`` is given) and saved beside
     the source; given a markdown string nothing is persisted. ``force=True`` ignores the sidecar.
+    A sidecar built offline (no model) is rebuilt the first time a ``router`` is supplied, so
+    its excerpt summaries never stand in for model summaries. A PDF/DOCX/PPTX/XLSX path is
+    converted through ``adk.docconvert`` (``awdk[docs]``) and the sidecar keeps the converted
+    text keyed by the file's bytes, so a reuse does not convert again.
     """
-    markdown, path = _read_markdown(path_or_markdown)
-    digest = sha256_text(markdown)
-
-    if path is not None and not force:
-        side = sidecar_path(path)
-        if side.is_file():
-            try:
-                data = _read_sidecar(side)
-                if data.get("sha256") == digest and int(data.get("version", 0)) == INDEX_VERSION:
-                    return Node.from_dict(data["tree"])
-            except (ValueError, KeyError, OSError) as exc:
-                logger.warning("ignoring unreadable page index %s: %s", side, exc)
-
-    root = build_tree(markdown, min_node_chars=min_node_chars)
-    if router is not None:
-        await summarize_tree(root, markdown, router=router, model=model)
-    if path is not None:
-        save_index(root, sidecar_path(path), source=str(path), sha256=digest)
+    root, _ = await index_document_text(
+        path_or_markdown, router=router, model=model, force=force,
+        min_node_chars=min_node_chars,
+    )
     return root
 
 
@@ -583,18 +690,19 @@ async def doc_tree_search(path: str, query: str, top_k: int = 3) -> str:
     """Search a long Markdown document by descending its heading tree (no vector store).
 
     Args:
-        path: Path to a .md file. The tree index is cached beside it as <doc>.pageindex.json.
+        path: Path to a .md file, or a PDF/DOCX/PPTX/XLSX (converted with awdk[docs]).
+            The tree index is cached beside it as <doc>.pageindex.json.
         query: The question to route to the most relevant sections.
         top_k: How many sections to return.
     """
-    try:
-        markdown, doc = _read_markdown(path)
-    except (OSError, UnicodeDecodeError) as exc:
-        return json.dumps({"error": f"cannot read {path}: {exc}"})
-    if doc is None:
+    if not _looks_like_path(path):
         return json.dumps({"error": f"not a file: {path}"})
+    doc = Path(path)
     router = _lazy_router()
-    root = await index_document(doc, router=router)
+    try:
+        root, markdown = await index_document_text(doc, router=router)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return json.dumps({"error": f"cannot read {path}: {exc}"})
     hits = await tree_search(root, markdown, query, router=router, top_k=top_k)
     return json.dumps(
         {
@@ -619,5 +727,6 @@ __all__ = [
     "tree_search",
     "lexical_score",
     "index_document",
+    "index_document_text",
     "doc_tree_search",
 ]

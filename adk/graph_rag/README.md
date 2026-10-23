@@ -183,6 +183,24 @@ cd awdk && python -m pytest tests/test_graph_rag.py -q
 
 ---
 
+## Long single documents: `page_index.py` (vectorless tree index)
+
+`doc_tree_search(path, query)` (builtin tool, `documents` group) builds a heading tree of a
+Markdown file, or of a PDF/DOCX/PPTX/XLSX converted through `adk.docconvert` with
+`awdk[docs]`. It summarizes every node with the configured model and answers by
+descending the tree. Each level asks the model to pick sections and keeps the level's
+best lexical match as an anchor, so one wrong pick near the root cannot hide a section
+whose text plainly matches. With no model it is lexical end to end. The tree is cached in
+`<doc>.pageindex.json`, keyed by sha256. An offline-built sidecar is re-summarized the
+first time a model is available, and a converted document keeps its text in the sidecar
+so it is not converted again.
+
+Measured 2026-10-23 on 25 hand-written questions over 4 awdk docs (hit = a returned
+section is the one that answers): with a model (bonsai-27b) and the anchor, hit@1 was
+0.96. Lexical only, hit@1 was 0.72. Ranked 2 KB windows scored 0.68 at hit@1 and 1.00 at
+hit@3. Without the anchor, the model mode scored 0.56. The tree returned 1.2 K chars per
+top-3 where the windows returned 5.9 K.
+
 ## Performance notes
 
 - JSON persistence stores embeddings as float arrays — at 1536-dim this is ~25 KB

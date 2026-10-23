@@ -317,3 +317,106 @@ async def test_doc_tree_search_tool_answers_lexically(tmp_path, monkeypatch):
 async def test_doc_tree_search_tool_reports_missing_file(tmp_path):
     out = json.loads(await doc_tree_search(str(tmp_path / "nope.md"), "x"))
     assert "error" in out
+
+
+# ---------------------------------------------------------------------------
+# sidecar: an offline build never stands in for model summaries
+# ---------------------------------------------------------------------------
+
+async def test_offline_sidecar_is_resummarized_once_a_router_exists(tmp_path):
+    doc = tmp_path / "spec.md"
+    doc.write_text(_section("Intro", 1) + _section("Retries", 1), encoding="utf-8")
+
+    offline = await index_document(doc)  # no model: no summaries, flag says so
+    assert json.loads(sidecar_path(doc).read_text())["summarized"] is False
+    assert all(not n.summary for n in offline.walk())
+
+    router = _CountingRouter()
+    online = await index_document(doc, router=router)
+    assert router.calls == len(list(online.walk()))
+    assert online.children[1].summary == "Summary of Retries."
+    assert json.loads(sidecar_path(doc).read_text())["summarized"] is True
+
+    again = _CountingRouter()
+    reused = await index_document(doc, router=again)  # summarized sidecar: zero model calls
+    assert again.calls == 0 and reused.children[1].summary == "Summary of Retries."
+
+
+async def test_legacy_sidecar_without_flag_reused_only_if_it_has_summaries(tmp_path):
+    doc = tmp_path / "old.md"
+    md = _section("Intro", 1)
+    doc.write_text(md, encoding="utf-8")
+    root = await index_document(doc)
+    data = json.loads(sidecar_path(doc).read_text())
+    data.pop("summarized")
+    sidecar_path(doc).write_text(json.dumps(data), encoding="utf-8")
+    router = _CountingRouter()
+    await index_document(doc, router=router)
+    assert router.calls == len(list(root.walk()))  # empty summaries -> rebuilt
+
+
+# ---------------------------------------------------------------------------
+# converted documents (PDF/DOCX/...) through adk.docconvert
+# ---------------------------------------------------------------------------
+
+async def test_doc_tree_search_converts_a_pdf_once_and_caches_the_text(tmp_path, monkeypatch):
+    import adk.docconvert as dc
+    import adk.graph_rag.page_index as pi
+
+    monkeypatch.setattr(pi, "_lazy_router", lambda: None)
+    calls: list[str] = []
+
+    def fake_convert(path):
+        calls.append(str(path))
+        return _synthetic_manual("CONTROL-PDF-4242")
+
+    monkeypatch.setattr(dc, "convert_document", fake_convert)
+    pdf = tmp_path / "manual.pdf"
+    pdf.write_bytes(b"%PDF-1.7 fake bytes")
+
+    out = json.loads(await doc_tree_search(str(pdf), "CONTROL-PDF-4242", top_k=1))
+    assert "CONTROL-PDF-4242" in out["hits"][0]["text"]
+    assert out["hits"][0]["path"] == ["document", "Chapter 23"]
+    side = json.loads(sidecar_path(pdf).read_text())
+    assert side["sha256"].startswith("bytes:") and "CONTROL-PDF-4242" in side["markdown"]
+
+    again = json.loads(await doc_tree_search(str(pdf), "CONTROL-PDF-4242", top_k=1))
+    assert again["hits"][0]["node_id"] == out["hits"][0]["node_id"]
+    assert len(calls) == 1  # the sidecar served the second call without converting
+
+    pdf.write_bytes(b"%PDF-1.7 changed bytes")
+    await doc_tree_search(str(pdf), "CONTROL-PDF-4242", top_k=1)
+    assert len(calls) == 2  # new bytes, new conversion
+
+
+async def test_doc_tree_search_without_a_converter_names_the_extra(tmp_path, monkeypatch):
+    import adk.docconvert as dc
+    import adk.graph_rag.page_index as pi
+
+    monkeypatch.setattr(pi, "_lazy_router", lambda: None)
+    monkeypatch.setattr(dc, "convert_document", lambda path: None)
+    docx = tmp_path / "memo.docx"
+    docx.write_bytes(b"PK fake")
+    out = json.loads(await doc_tree_search(str(docx), "anything"))
+    assert "awdk[docs]" in out["error"]
+
+
+async def test_lexical_anchor_keeps_a_plainly_matching_section_after_a_wrong_pick():
+    md = (
+        _section("Alpha", 1, "the retry backoff is exponential " + FILLER)
+        + _section("Beta", 1)
+        + _section("Beta.one", 2)
+        + _section("Beta.two", 2)
+    )
+    root = build_tree(md)
+    query = "what is the retry backoff"
+    wrong = _PickRouter({"Beta", "Beta.one"})  # the model steers away from Alpha
+    hits = await tree_search(root, md, query, router=wrong, top_k=3, beam=1)
+    titles = [h["title"] for h in hits]
+    assert "Alpha" in titles
+    alpha = hits[titles.index("Alpha")]
+    assert alpha["why"].startswith("lexical anchor")
+    assert hits[0]["why"].startswith("router pick")  # the model's pick still ranks first
+    off = await tree_search(root, md, query, router=_PickRouter({"Beta", "Beta.one"}),
+                            top_k=3, beam=1, lexical_anchor=False)
+    assert "Alpha" not in [h["title"] for h in off]
