@@ -127,6 +127,26 @@ agent = AitherAgent("researcher",
                     system_prompt=sysp, builtin_tools=False)   # default-deny tools
 ```
 
+### Run a brain pack as an OO agent
+
+`adk.oo_bridge` turns any `brain_pack.yaml` into an `OOAgent` with no hand rewrite: the
+pack's `system_prompt` becomes the class docstring (the instructions), its `identity`
+the class name, and its `tools:` list a **default-deny** whitelist over a `ToolRegistry`
+(a pack with no `tools:` key gets no tools). Whitelisted names the registry lacks are
+logged and kept on `agent.missing_tools`.
+
+```python
+from adk.oo_bridge import RouterBackend, oo_agent_from_brain_pack, oo_class_from_brain_pack
+
+agent = oo_agent_from_brain_pack("my-pack/", model=RouterBackend(router), registry=registry)
+
+Hera = oo_class_from_brain_pack("my-pack/")      # or subclass it and add typed methods
+class Growth(Hera):
+    async def plan_campaign(self, goal: str) -> Plan:
+        """Plan a campaign toward the goal."""
+        ...                                         # body `...` = the LLM answers, typed
+```
+
 ### Switch tool packs on and off in a live agent
 
 A tool pack can be mounted on a running agent and taken off again. Unloading

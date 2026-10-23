@@ -28,11 +28,14 @@ grants a clearance level that covers it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from adk.core.logging import get_logger
 from adk.core.model import Message as CoreMessage
 from adk.core.model import ModelResponse
+from adk.core.oo import OOAgent
 from adk.core.tool import Tool
 
 _log = get_logger("oo_bridge")
@@ -117,16 +120,35 @@ class RegistryTool(Tool):
         }
 
 
-def tools_from_registry(registry: Any, *, clearance: int = 0) -> list[Tool]:
+def tools_from_registry(
+    registry: Any,
+    *,
+    clearance: int = 0,
+    allow: Iterable[str] | None = None,
+) -> list[Tool]:
     """Bridge a :class:`ToolRegistry` into core Tools an OOAgent can use.
 
     Fail-closed on clearance: a tool whose ``required_clearance`` exceeds
     the granted ``clearance`` is skipped (and logged), never silently
     exposed. The default grants level 0 — public tools only.
+
+    Args:
+        registry: An ``adk.tools.ToolRegistry`` (anything with ``list_tools()``).
+        clearance: Granted clearance level (default 0 = public tools only).
+        allow: Optional name whitelist. ``None`` bridges every tool the
+            clearance permits; an iterable (even an empty one) bridges ONLY
+            the named tools — the default-deny contract of a brain pack's
+            ``tools:`` list.
+
+    Returns:
+        The bridged tools, in registry order.
     """
+    allowed = None if allow is None else frozenset(allow)
     bridged: list[Tool] = []
     skipped: list[str] = []
     for tool_def in registry.list_tools():
+        if allowed is not None and tool_def.name not in allowed:
+            continue
         if getattr(tool_def, "required_clearance", 0) > clearance:
             skipped.append(tool_def.name)
             continue
@@ -139,8 +161,193 @@ def tools_from_registry(registry: Any, *, clearance: int = 0) -> list[Tool]:
     return bridged
 
 
+# ── brain packs → OOAgent shells ──────────────────────────────────────────────
+# A brain pack (``brain_pack.yaml``: ``identity`` + ``system_prompt`` + a
+# ``tools:`` whitelist) is how most production identities are declared today.
+# These functions give every such pack a generated OOAgent class, so a pack
+# agent runs on the OO model with no hand rewrite; a hand-written subclass of
+# the generated class can then add typed ``...`` methods one at a time.
+
+BRAIN_PACK_FILENAME = "brain_pack.yaml"
+
+
+def load_brain_pack(pack: str | Path | Mapping[str, Any]) -> dict[str, Any]:
+    """Return a brain pack as a dict.
+
+    Args:
+        pack: A mapping (returned as a copy), a ``brain_pack.yaml`` path, or a
+            directory that contains one.
+
+    Returns:
+        The parsed pack.
+
+    Raises:
+        FileNotFoundError: The path (or ``<dir>/brain_pack.yaml``) is absent.
+        ValueError: The file is not a YAML mapping.
+    """
+    if isinstance(pack, Mapping):
+        return dict(pack)
+    path = Path(pack)
+    if path.is_dir():
+        path = path / BRAIN_PACK_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(f"no brain pack at {path}")
+    import yaml
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"{path}: a brain pack must be a YAML mapping, got {type(data).__name__}"
+        )
+    return data
+
+
+def _pack_identity(spec: Mapping[str, Any]) -> str:
+    for key in ("identity", "id", "name", "app_name"):
+        value = spec.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "brain-pack"
+
+
+def _class_name(identity: str) -> str:
+    parts = "".join(c if c.isalnum() else " " for c in identity).split()
+    name = "".join(p[:1].upper() + p[1:] for p in parts) or "BrainPack"
+    if name[0].isdigit():
+        name = "Pack" + name
+    return name + "Agent"
+
+
+def brain_pack_tool_whitelist(spec: Mapping[str, Any]) -> tuple[str, ...]:
+    """The pack's ``tools:`` list as names — DEFAULT-DENY.
+
+    A list (even ``[]``) is the whitelist. A pack with no ``tools:`` key gets
+    the empty whitelist too: a pack that names no tools is granted none, the
+    contract the managed-agent compiler already enforces. Entries may be
+    plain names or ``{name: ...}`` mappings.
+
+    Raises:
+        ValueError: ``tools`` is present but not a list.
+    """
+    raw = spec.get("tools")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(f"brain pack 'tools' must be a list, got {type(raw).__name__}")
+    names: list[str] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            name = entry
+        elif isinstance(entry, Mapping):
+            name = str(entry.get("name") or entry.get("id") or "")
+        else:
+            name = ""
+        name = name.strip()
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def oo_class_from_brain_pack(
+    pack: str | Path | Mapping[str, Any],
+    *,
+    base: type[OOAgent] = OOAgent,
+) -> type[OOAgent]:
+    """Generate an :class:`OOAgent` subclass from a brain pack.
+
+    The pack's ``system_prompt`` becomes the class docstring (= the agent's
+    instructions), its identity becomes the class name, and the class carries
+    ``brain_pack`` (the parsed spec), ``brain_pack_identity`` and
+    ``tool_whitelist``. Subclass the result to add typed agentic methods::
+
+        Hera = oo_class_from_brain_pack("my-pack/")
+
+        class Growth(Hera):
+            async def plan_campaign(self, goal: str) -> Plan:
+                ...
+
+    Args:
+        pack: Mapping, ``brain_pack.yaml`` path, or a directory holding one.
+        base: The OOAgent subclass to derive from.
+
+    Returns:
+        The generated class.
+
+    Raises:
+        ValueError: ``system_prompt`` is not a string or ``tools`` not a list.
+    """
+    spec = load_brain_pack(pack)
+    identity = _pack_identity(spec)
+    prompt = spec.get("system_prompt") or ""
+    if not isinstance(prompt, str):
+        raise ValueError("brain pack 'system_prompt' must be a string")
+    attrs: dict[str, Any] = {
+        "__doc__": prompt.strip() or f"You are {identity}.",
+        "__module__": __name__,
+        "brain_pack": spec,
+        "brain_pack_identity": identity,
+        "tool_whitelist": brain_pack_tool_whitelist(spec),
+    }
+    return type(_class_name(identity), (base,), attrs)
+
+
+def oo_agent_from_brain_pack(
+    pack: str | Path | Mapping[str, Any],
+    *,
+    model: Any,
+    registry: Any = None,
+    clearance: int = 0,
+    name: str | None = None,
+    base: type[OOAgent] = OOAgent,
+    **kwargs: Any,
+) -> OOAgent:
+    """Instantiate a brain pack as a running :class:`OOAgent`.
+
+    Registry tools are bridged through :func:`tools_from_registry` with the
+    pack's ``tools:`` list as the whitelist and ``clearance`` fail-closed.
+    Whitelisted names the registry does not have are logged and recorded on
+    the instance as ``missing_tools`` — a pack advertising a tool nobody
+    registered is reported, never silently shrunk.
+
+    Args:
+        pack: Mapping, ``brain_pack.yaml`` path, or a directory holding one.
+        model: A core ``ModelBackend`` (wrap a production router with
+            :class:`RouterBackend`).
+        registry: Optional ``ToolRegistry`` to bridge tools from.
+        clearance: Granted clearance level for registry tools.
+        name: Agent name (defaults to the pack identity).
+        base: The OOAgent subclass to derive from.
+        **kwargs: Forwarded to the agent constructor.
+
+    Returns:
+        The constructed agent.
+    """
+    cls: Any = oo_class_from_brain_pack(pack, base=base)
+    whitelist: tuple[str, ...] = cls.tool_whitelist
+    tools: list[Tool] = []
+    if registry is not None:
+        tools = tools_from_registry(registry, clearance=clearance, allow=whitelist)
+        known = {t.name for t in registry.list_tools()}
+        missing = [n for n in whitelist if n not in known]
+    else:
+        missing = list(whitelist)
+    if missing:
+        _log.warning(
+            "oo_bridge.brain_pack.tools_missing",
+            extra={"identity": cls.brain_pack_identity, "names": missing[:20]},
+        )
+    agent = cls(model=model, name=name or cls.brain_pack_identity, tools=tools, **kwargs)
+    agent.missing_tools = missing
+    return agent
+
+
 __all__ = [
+    "BRAIN_PACK_FILENAME",
     "RegistryTool",
     "RouterBackend",
+    "brain_pack_tool_whitelist",
+    "load_brain_pack",
+    "oo_agent_from_brain_pack",
+    "oo_class_from_brain_pack",
     "tools_from_registry",
 ]
