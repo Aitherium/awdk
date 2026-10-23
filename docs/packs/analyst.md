@@ -41,5 +41,5 @@ skills/structured-inference.md
 
 ---
 
-sha256 `c272338af135eeaacbbbb5a0258d2fdb0e4ed81b1c448801681803a6ee9abf71`  
+sha256 `635a65b79aba8c896d91f0fc625dc9852e83f792393e480da0bc79141c839764`  
 Built from `v3.8.90` (adk 3.8.90). [All packs](../packs.md)

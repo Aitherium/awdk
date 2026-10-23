@@ -19,8 +19,19 @@ Usage::
     from adk.patterns import get_pattern, run_pattern
     p = get_pattern("summarize")
     text = await run_pattern("summarize", open("notes.md").read())
+    text = await run_pattern("translate", doc, variables={"lang_code": "fr"})
 
-CLI: ``adk patterns list | show <name> | run <name> [--in FILE] | import <path>``.
+Template variables: ``{{name}}`` in ``system.md``/``user.md`` is replaced by the value
+given for ``name`` (``variables=`` / ``--var name=value``), Fabric's ``-v=#name:value``.
+Placeholders with no value given are left as written, because patterns also quote
+other tools' template syntax verbatim (nuclei's ``{{Hostname}}``, Vue's ``{{ x }}``).
+
+A pattern name is one directory name: no path separators, no ``.``/``..``. Anything
+else is refused before the filesystem is touched, so ``import --overwrite`` can never
+delete outside the destination.
+
+CLI: ``adk patterns list | show <name> | run <name> [--in FILE] [--var k=v]... |
+import <path>``.
 """
 
 from __future__ import annotations
@@ -28,6 +39,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -42,6 +54,24 @@ PROVENANCE_FILE = "PROVENANCE.txt"
 ENV_DIRS = "AITHER_PATTERN_DIRS"
 
 _BUNDLED = Path(__file__).parent / "packs" / "aither" / "patterns"
+_VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
+
+
+def validate_name(name: str) -> str:
+    """Return ``name`` if it is a single, plain directory name; raise otherwise.
+
+    Raises:
+        ValueError: empty, ``.``/``..``, or containing a path separator, a drive
+            colon or a NUL -- anything that could resolve outside a search directory.
+    """
+    if (
+        not isinstance(name, str)
+        or not name
+        or name in (".", "..")
+        or any(c in name for c in ("/", "\\", ":", "\0"))
+    ):
+        raise ValueError(f"invalid pattern name {name!r}: must be one plain directory name")
+    return name
 
 
 @dataclass
@@ -132,7 +162,9 @@ def get_pattern(name: str) -> Pattern:
     Raises:
         KeyError: no search directory holds ``<name>/system.md``; the message
             lists the directories that were searched.
+        ValueError: ``name`` is not a plain directory name (see :func:`validate_name`).
     """
+    validate_name(name)
     dirs = pattern_dirs()
     for source in dirs:
         p = _load(source / name, source)
@@ -145,13 +177,28 @@ def get_pattern(name: str) -> Pattern:
 # ── running ─────────────────────────────────────────────────────────────────
 
 
-def build_messages(pattern: Pattern, input_text: str) -> list[Any]:
-    """The two-message conversation a pattern runs as."""
+def render(text: str, variables: dict[str, str] | None) -> str:
+    """Replace ``{{name}}`` for every name in ``variables``; leave the rest verbatim."""
+    if not variables:
+        return text
+
+    def sub(m: re.Match[str]) -> str:
+        key = m.group(1)
+        return str(variables[key]) if key in variables else m.group(0)
+
+    return _VAR_RE.sub(sub, text)
+
+
+def build_messages(
+    pattern: Pattern, input_text: str, variables: dict[str, str] | None = None
+) -> list[Any]:
+    """The two-message conversation a pattern runs as (variables rendered first)."""
     from adk.llm import Message
 
-    user = (pattern.user + "\n\n" if pattern.user.strip() else "") + input_text
+    user_md = render(pattern.user, variables)
+    user = (user_md + "\n\n" if user_md.strip() else "") + input_text
     return [
-        Message(role="system", content=pattern.system),
+        Message(role="system", content=render(pattern.system, variables)),
         Message(role="user", content=user),
     ]
 
@@ -162,6 +209,7 @@ async def run_pattern(
     *,
     model: str | None = None,
     router: Any = None,
+    variables: dict[str, str] | None = None,
 ) -> str:
     """Apply a pattern to ``input_text`` and return the model's text.
 
@@ -171,16 +219,18 @@ async def run_pattern(
         model: Optional model override passed to the router.
         router: Anything with ``async chat(messages, model=...)`` returning an
             object with ``.content``. Defaults to ``adk.llm.LLMRouter()``.
+        variables: ``{{name}}`` substitutions for the pattern's text.
 
     Raises:
         KeyError: unknown pattern.
+        ValueError: ``name`` is not a plain directory name.
     """
     pattern = get_pattern(name)
     if router is None:
         from adk.llm import LLMRouter
 
         router = LLMRouter()
-    response = await router.chat(build_messages(pattern, input_text), model=model)
+    response = await router.chat(build_messages(pattern, input_text, variables), model=model)
     return getattr(response, "content", "") or ""
 
 
@@ -227,6 +277,8 @@ def import_patterns(
         FileExistsError: a pattern already exists in dest and ``overwrite``
             is false. Nothing is written for that name; earlier names in the
             same call stay imported.
+        ValueError: a requested name is not a plain directory name; nothing is
+            imported.
     """
     src = Path(src).expanduser()
     if not src.is_dir():
@@ -238,6 +290,8 @@ def import_patterns(
         names = sorted(
             c.name for c in root.iterdir() if c.is_dir() and (c / SYSTEM_FILE).is_file()
         )
+    for name in names:  # all-or-nothing on a bad name: refuse before writing anything
+        validate_name(name)
 
     imported: list[str] = []
     for name in names:
@@ -283,6 +337,10 @@ def add_patterns_parser(sub: Any) -> None:
     run.add_argument("name")
     run.add_argument("--in", dest="input_file", metavar="FILE", help="Read input from FILE")
     run.add_argument("--model", metavar="M", help="Model override for the router")
+    run.add_argument(
+        "--var", dest="variables", action="append", default=[], metavar="NAME=VALUE",
+        help="Replace {{NAME}} in the pattern (repeatable)",
+    )
 
     imp = ps.add_parser("import", help="Copy patterns from a directory or a Fabric clone")
     imp.add_argument("path")
@@ -308,7 +366,7 @@ def cmd_patterns(args: argparse.Namespace) -> int:
     if sub == "show":
         try:
             p = get_pattern(args.name)
-        except KeyError as e:
+        except (KeyError, ValueError) as e:
             print(e.args[0], file=sys.stderr)
             return 1
         print(p.system, end="" if p.system.endswith("\n") else "\n")
@@ -326,9 +384,18 @@ def cmd_patterns(args: argparse.Namespace) -> int:
         if not text.strip():
             print("no input: pass --in FILE or pipe text on stdin", file=sys.stderr)
             return 2
+        variables: dict[str, str] = {}
+        for item in getattr(args, "variables", None) or []:
+            key, sep, value = item.partition("=")
+            if not sep or not key.strip():
+                print(f"--var expects NAME=VALUE, got {item!r}", file=sys.stderr)
+                return 2
+            variables[key.strip()] = value
         try:
-            out = asyncio.run(run_pattern(args.name, text, model=args.model))
-        except KeyError as e:
+            out = asyncio.run(
+                run_pattern(args.name, text, model=args.model, variables=variables or None)
+            )
+        except (KeyError, ValueError) as e:
             print(e.args[0], file=sys.stderr)
             return 1
         print(out, end="" if out.endswith("\n") else "\n")
@@ -339,7 +406,7 @@ def cmd_patterns(args: argparse.Namespace) -> int:
         dest = Path(args.dest) if args.dest else None
         try:
             done = import_patterns(Path(args.path), dest, names=names, overwrite=args.overwrite)
-        except (FileNotFoundError, FileExistsError) as e:
+        except (FileNotFoundError, FileExistsError, ValueError) as e:
             print(str(e), file=sys.stderr)
             return 1
         target = dest or user_pattern_dir()
@@ -358,7 +425,9 @@ __all__ = [
     "list_patterns",
     "get_pattern",
     "build_messages",
+    "render",
     "run_pattern",
+    "validate_name",
     "import_patterns",
     "add_patterns_parser",
     "cmd_patterns",

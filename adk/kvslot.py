@@ -246,6 +246,54 @@ class SlotStore:
             return None
         return m
 
+    def export_artifact(
+        self, model_fp: bytes, key: bytes, binding: Any, out: os.PathLike | str
+    ) -> Path:
+        """Pack a stored snapshot into a portable ``adk.kvartifact`` file for another node.
+
+        ``binding`` is the :class:`adk.kvartifact.KVBinding` of the server that wrote it;
+        the importing node refuses the file unless its own binding matches field for field.
+
+        Raises:
+            KeyError: no verified snapshot under ``(model_fp, key)``.
+        """
+        from .kvartifact import pack
+
+        m = self.meta(model_fp, key)
+        blob, _ = self.paths(model_fp, key)
+        if m is None or _sha256(blob) != m.sha256:
+            raise KeyError(f"no verified snapshot for key {key.hex()[:16]}")
+        pack(blob, out, binding=binding, key=m.key, tokens=m.tokens,
+             scope_fp=m.model_fp, source=m.source, meta={"created": m.created})
+        return Path(out)
+
+    def import_artifact(
+        self, path: os.PathLike | str, model_fp: bytes, binding: Any
+    ) -> SlotMeta:
+        """Verify an artifact against THIS node's binding and scope, then store it.
+
+        Fail closed, in order: header format, binding (every field), scope (the artifact
+        must carry this store's ``model_fp`` -- the scoped chain seed), payload sha256.
+        Unlike :meth:`fetch` (a miss on any doubt), a refused import RAISES
+        :class:`adk.kvartifact.KVArtifactError`: someone handed this node a file that is
+        not valid here, and that must be visible.
+        """
+        from .kvartifact import FormatError, unpack
+
+        side = Path(path)
+        tmp = self.root / f".import-{os.getpid()}-{side.name}.slot"
+        try:
+            header = unpack(side, tmp, binding, scope_fp=model_fp.hex())
+            try:
+                key = bytes.fromhex(header.key)
+            except ValueError as exc:
+                raise FormatError(f"artifact key is not hex: {header.key!r}") from exc
+            return self.put(model_fp, key, tmp, header.tokens, source=header.source,
+                            extra={"binding_digest": header.binding_digest,
+                                   "imported_from": str(side)})
+        finally:
+            tmp.unlink(missing_ok=True)
+
     def entries(self) -> list:
         out = []
         for side in sorted(self.root.glob("*/*.json")):

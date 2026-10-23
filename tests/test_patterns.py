@@ -267,3 +267,86 @@ def test_cmd_patterns_import(home: Path, tmp_path: Path, capsys):
     # second import without --overwrite is refused with exit 1
     assert pm.cmd_patterns(_parse(["patterns", "import", str(clone), "--names", "alpha"])) == 1
     assert "already exists" in capsys.readouterr().err
+
+
+# ── names cannot leave the search / destination directory ───────────────────
+
+BAD_NAMES = ["", ".", "..", "../outside", "a/b", "a" + chr(92) + "b", "C:evil", "nul" + chr(0)]
+
+
+@pytest.mark.parametrize("bad", BAD_NAMES)
+def test_get_pattern_refuses_path_like_names(home: Path, tmp_path: Path, monkeypatch, bad):
+    # a real pattern one level ABOVE the search dir: "../outside" must not reach it
+    search = tmp_path / "search"
+    search.mkdir()
+    _mk(tmp_path, "outside", "OUTSIDE SYSTEM")
+    monkeypatch.setenv(pm.ENV_DIRS, str(search))
+    with pytest.raises(ValueError, match="invalid pattern name"):
+        pm.get_pattern(bad)
+
+
+def test_import_overwrite_cannot_delete_outside_dest(home: Path, tmp_path: Path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("precious", encoding="utf-8")
+    src = tmp_path / "src"
+    _mk(src, "ok", "OK SYSTEM")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with pytest.raises(ValueError, match="invalid pattern name"):
+        pm.import_patterns(src, dest, names=["ok", "../victim"], overwrite=True)
+    assert (victim / "keep.txt").read_text(encoding="utf-8") == "precious"
+    assert not (dest / "ok").exists()  # refused up front: nothing imported
+
+
+def test_cmd_show_and_import_report_bad_names(home: Path, tmp_path: Path, capsys):
+    assert pm.cmd_patterns(_parse(["patterns", "show", "../x"])) == 1
+    assert "invalid pattern name" in capsys.readouterr().err
+    clone = _fabric_clone(tmp_path)
+    argv = ["patterns", "import", str(clone), "--names", "../x"]
+    assert pm.cmd_patterns(_parse(argv)) == 1
+    assert "invalid pattern name" in capsys.readouterr().err
+
+
+# ── template variables (Fabric's -v=#name:value) ────────────────────────────
+
+
+def test_render_replaces_given_names_and_leaves_the_rest():
+    text = "Translate to {{lang_code}}. Keep {{Hostname}} and {{ frontmatter.title }}."
+    out = pm.render(text, {"lang_code": "fr"})
+    assert out == "Translate to fr. Keep {{Hostname}} and {{ frontmatter.title }}."
+    assert pm.render(text, None) == text
+    assert pm.render("{{ lang_code }}", {"lang_code": "de"}) == "de"
+
+
+async def test_run_pattern_renders_variables_in_system_and_user(
+    home: Path, tmp_path: Path, monkeypatch
+):
+    d = tmp_path / "pats"
+    _mk(d, "translate", "Translate into {{lang_code}}.", user="Audience: {{who}}")
+    monkeypatch.setenv(pm.ENV_DIRS, str(d))
+    router = _FakeRouter()
+    await pm.run_pattern("translate", "hello", router=router,
+                         variables={"lang_code": "fr", "who": "kids"})
+    (messages, _), = router.calls
+    assert messages[0].content == "Translate into fr."
+    assert messages[1].content == "Audience: kids\n\nhello"
+
+
+def test_cmd_run_var_flag(home: Path, tmp_path: Path, monkeypatch, capsys):
+    import io
+
+    import adk.llm
+
+    d = tmp_path / "pats"
+    _mk(d, "translate", "Translate into {{lang_code}}.")
+    monkeypatch.setenv(pm.ENV_DIRS, str(d))
+    router = _FakeRouter()
+    monkeypatch.setattr(adk.llm, "LLMRouter", lambda *a, **k: router)
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello"))
+    argv = ["patterns", "run", "translate", "--var", "lang_code=fr"]
+    assert pm.cmd_patterns(_parse(argv)) == 0
+    assert router.calls[-1][0][0].content == "Translate into fr."
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello"))
+    assert pm.cmd_patterns(_parse(["patterns", "run", "translate", "--var", "oops"])) == 2
+

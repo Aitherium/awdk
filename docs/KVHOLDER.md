@@ -348,6 +348,26 @@ references) on the holders until a `CONFIG` on the same session id resets it. A 
 that joins the relay while a pooled session is loaded gets that session's `CONFIG` on
 first use. It never receives shared blocks that were published before it joined.
 
+## Portable snapshots: a KV cache you can ship and trust
+
+A llama-server slot snapshot (`adk.kvslot`) is valid only on the serve configuration that
+wrote it: weights, build, KV cache type, RoPE settings, layer split. `adk.kvartifact`
+packs one into a single file that carries that binding (`KVBinding`, field by field), the
+sharing-scope fingerprint and the payload sha256, and refuses it on any other node before
+a byte reaches the server:
+
+```python
+from adk.kvartifact import KVBinding
+b = KVBinding.from_llama_props(server.props(), cache_type_k="q8_0", split="rpc:dgx,5090")
+art = store_a.export_artifact(fp, key, b, "prefix.awkv")   # node A
+store_b.import_artifact("prefix.awkv", fp, b_on_node_b)     # node B: raises on any mismatch
+```
+
+`python -m adk.kvartifact verify prefix.awkv --binding b.json` exits 0 valid, 1 refused
+(naming the field: `cache_type_k: 'f16' != 'q8_0'`), 2 unreadable. A 20.8 MB snapshot
+packs in 125 ms and verifies + unpacks in 104 ms. A binding refusal takes 0.7 ms and
+reads no payload byte. The header costs 531 bytes.
+
 ## Mesh: holders that find the relay themselves
 
 On a LAN or a mesh overlay, a holder needs no URL and no token copied to it. The model's
