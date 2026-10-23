@@ -4,6 +4,18 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.91] - 2026-10-23
+
+### Added
+- `adk.core.turboquant_store.TurboQuantVectorStore` (extra `awdk[turbovec]`) is a quantized `VectorStore` over turbovec (TurboQuant, MIT). In a measurement on 20k x 768-d vectors, the 4-bit index took 8.8 MB against 61.4 MB of float32 (7.0x less) at recall@10 0.91. `search(..., allow_ids=[...])` restricts results inside the index scan. An allowlist that names nothing the store holds returns `[]`. `InMemoryVectorStore.search` and `VectorMemory.search` take the same `allow_ids`. (#13961)
+- `adk.kvartifact` packs a KV cache into a portable file that is sha256-verified and bound to the serve configuration. `KVBinding` covers model, weights, build, KV cache type, n_ctx, rope and split. `pack`/`verify`/`unpack` fail closed: they refuse a mismatched binding or scope before reading any payload, and nothing lands on failure. `SlotStore.export_artifact`/`import_artifact` ship a prefix snapshot between nodes. `python -m adk.kvartifact inspect|verify` exposes the same checks. (#13986)
+- `adk patterns run --var NAME=VALUE` and `run_pattern(variables=)` render `{{NAME}}` in a pattern, the same as Fabric's `-v`. Placeholders without a value are left verbatim. (#13975)
+- `doc_tree_search` reads PDF/DOCX/PPTX/XLSX through `adk.docconvert`. The converted text is cached in the sidecar, keyed by the file's bytes. In router mode, each level of the descent keeps its best lexical match below the model's picks. On 25 questions over the awdk docs this raised hit@1 from 0.56 to 0.96. (#13985)
+
+### Fixed
+- `adk patterns` refuses a path-like name such as `../x`. Before this, `show`/`run` could read a `system.md` outside the pattern dirs, and `import --overwrite` could delete a directory outside the destination. (#13975)
+- A page index first built with no model is now re-summarized once a model is available. Before, its excerpt summaries were reused forever. (#13985)
+
 ## [3.8.90] - 2026-10-22
 
 ### Added
