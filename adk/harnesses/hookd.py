@@ -272,6 +272,27 @@ def parse_specs(query: str, project_dir: str) -> list:
     return specs
 
 
+_MSYS_DRIVE = re.compile(r"^/([A-Za-z])(?=/|$)")
+
+
+def _native(path: str) -> str:
+    """`/c/x` -> `C:/x` on Windows. Git Bash hands Claude Code its cwd in that form, and
+    `Path("/c/x")` there is `C:\\c\\x`: no `.claude/hooks` above it, so every hook 403s."""
+    if os.name == "nt":
+        return _MSYS_DRIVE.sub(lambda m: m.group(1).upper() + ":", path)
+    return path
+
+
+def project_candidates(header: str, cwd: str) -> list:
+    """X-Project-Dir first, then the payload cwd; uninterpolated `$...` and blanks dropped."""
+    out = []
+    for d in (header, cwd):
+        d = _native(d or "")
+        if d and not d.startswith("$") and d not in out:
+            out.append(d)
+    return out
+
+
 def _find_up(start: Path, rel: Path) -> Path:
     """`rel` under `start` or its nearest ancestor that has it. Claude Code sets
     CLAUDE_PROJECT_DIR to the session's CURRENT directory, so a session that moved into a
@@ -415,20 +436,27 @@ def make_handler(pool: Pool, stats: _Stats):
             except ValueError:
                 event_json = {}
             event = event_json.get("hook_event_name", "")
-            project = self.headers.get("X-Project-Dir") or event_json.get("cwd") or ""
-            if project.startswith("$"):  # header left uninterpolated
-                project = event_json.get("cwd") or ""
+            candidates = project_candidates(self.headers.get("X-Project-Dir") or "",
+                                            event_json.get("cwd") or "")
+            project, specs, refused = (candidates or [""])[0], None, None
+            # The header is the session's CURRENT dir; when that refuses (a cd out of the
+            # repo), the payload cwd gets its own chance before the request is a 403.
+            for cand in candidates or [""]:
+                try:
+                    specs = parse_specs(url.query, cand)
+                    project = cand
+                    break
+                except PermissionError as exc:
+                    refused = refused or exc
+            if specs is None:
+                self._send(403, {"error": str(refused)})
+                return
             env = {"CLAUDE_PROJECT_DIR": project}
             # The payload is authoritative: a header interpolates Claude's env, which a
             # nested `claude -p` inherits from its parent session (measured 2026-10-20).
             sid = event_json.get("session_id") or ""
             if sid:
                 env["CLAUDE_CODE_SESSION_ID"] = sid
-            try:
-                specs = parse_specs(url.query, project)
-            except PermissionError as exc:
-                self._send(403, {"error": str(exc)})
-                return
             timeout = float(urllib.parse.parse_qs(url.query).get("t", [DEFAULT_TIMEOUT])[0])
             results: list = [None] * len(specs)
 
@@ -715,6 +743,11 @@ def _self_test() -> int:
         specs = parse_specs("h=.claude/hooks/g.py", str(sub))
         check("relative hook found from a subdirectory",
               specs and Path(specs[0][0]) == (hooks_dir / "g.py").resolve())
+        cands = project_candidates("$CLAUDE_PROJECT_DIR", str(sub))
+        check("uninterpolated header falls to the payload cwd", cands == [str(sub)])
+        if os.name == "nt":
+            check("msys /c/ path is native", _native("/c/x/y") == "C:/x/y"
+                  and _native("/cx/y") == "/cx/y")
     for f in fails:
         print("FAIL", f)
     print("self-test: %d checks failed" % len(fails) if fails else "self-test: ok")

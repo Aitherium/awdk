@@ -1171,6 +1171,7 @@ AitherMesh overlay operations (onboard, list peers)
 - `adk mesh join` — Join this signed-in device to your mesh (Headscale/Tailscale, NAT-friendly)
 - `adk mesh status` — Is this device on your mesh right now (reads tailscale itself)
 - `adk mesh lend` — Lend this machine's spare RAM to the mesh's pooled model (one command)
+- `adk mesh worker` — Serve a small model to your fleet as a parallel worker (on \| off \| status; tailnet only, keyed)
 - `adk mesh onboard` — Onboard this node into AitherMesh overlay (operator path; a signed-in laptop uses 'adk mesh join')
 - `adk mesh ls` — List peer agents in the mesh and their A2A services
 - `adk mesh provide` — Become a community inference provider (advertise → consent → await operator trust)
