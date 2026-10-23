@@ -31,6 +31,10 @@ from typing import Iterable
 #: file needs no edits to work here.
 ARGUMENTS_TOKEN = "$ARGUMENTS"
 
+#: A skill's ``context:`` frontmatter: ``inline`` (its text joins the session)
+#: or ``fork`` (it is meant to run as a separate sub-agent with its own context).
+SKILL_CONTEXTS = ("inline", "fork")
+
 
 @dataclass(frozen=True)
 class LocalSkill:
@@ -41,6 +45,9 @@ class LocalSkill:
     path: Path
     description: str
     root: Path
+    context: str = "inline"  # one of SKILL_CONTEXTS
+    when_to_use: str = ""
+    argument_hint: str = ""
 
     def describe(self) -> dict[str, str]:
         return {
@@ -48,6 +55,9 @@ class LocalSkill:
             "kind": self.kind,
             "description": self.description,
             "path": str(self.path),
+            "context": self.context,
+            "when_to_use": self.when_to_use,
+            "argument_hint": self.argument_hint,
         }
 
 
@@ -83,6 +93,18 @@ def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return meta, body
 
 
+def _context_of(meta: dict[str, str]) -> str:
+    """``fork`` only when the frontmatter says so; anything else is ``inline``."""
+    return "fork" if meta.get("context", "").strip().lower() == "fork" else "inline"
+
+
+def _meta_first(meta: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        if meta.get(key):
+            return meta[key]
+    return ""
+
+
 def _describe_from(text: str) -> str:
     meta, body = split_frontmatter(text)
     if meta.get("description"):
@@ -111,18 +133,12 @@ def discover(
             name = skill_md.parent.name
             if name in found:
                 continue
-            found[name] = LocalSkill(
-                name=name, kind="skill", path=skill_md,
-                description=_safe_describe(skill_md), root=root,
-            )
+            found[name] = _load(name, "skill", skill_md, root)
         for cmd_md in sorted((root / "commands").glob("*.md")):
             name = cmd_md.stem
             if name in found:
                 continue
-            found[name] = LocalSkill(
-                name=name, kind="command", path=cmd_md,
-                description=_safe_describe(cmd_md), root=root,
-            )
+            found[name] = _load(name, "command", cmd_md, root)
     return found
 
 
@@ -148,19 +164,43 @@ def _safe_describe(path: Path) -> str:
         return ""
 
 
+def _load(name: str, kind: str, path: Path, root: Path) -> LocalSkill:
+    """One skill with the frontmatter fields every front door can act on."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    meta, _ = split_frontmatter(text)
+    return LocalSkill(
+        name=name, kind=kind, path=path, description=_describe_from(text), root=root,
+        context=_context_of(meta),
+        when_to_use=_meta_first(meta, "when_to_use", "when-to-use"),
+        argument_hint=_meta_first(meta, "argument-hint", "argument_hint"),
+    )
+
+
 def render(skill: LocalSkill, arguments: str = "") -> str:
     """The text a session is handed: frontmatter stripped, arguments substituted.
 
     The frontmatter (``allowed-tools``, ``model``, …) means something only to
     Claude Code and is dropped; the body is the procedure and travels intact.
     A one-line header names the source so the model (and a transcript reader)
-    can tell where the instructions came from.
+    can tell where the instructions came from. A ``context: fork`` skill was
+    written to run as its own sub-agent; when it is handed to a session
+    anyway, a note says so, so the model delegates it instead of silently
+    running a fork-only procedure inside the conversation.
     """
     text = skill.path.read_text(encoding="utf-8", errors="replace")
     _, body = split_frontmatter(text)
     body = body.replace(ARGUMENTS_TOKEN, arguments or "")
     label = "Skill" if skill.kind == "skill" else "Command"
-    return f"# {label}: {skill.name}\n\n{body.strip()}\n"
+    note = ""
+    if skill.context == "fork":
+        note = (
+            "> This skill declares `context: fork`: run it as a separate sub-agent "
+            "or delegated task with its own context, then use its result.\n\n"
+        )
+    return f"# {label}: {skill.name}\n\n{note}{body.strip()}\n"
 
 
 def resolve(
@@ -183,6 +223,7 @@ def resolve(
 __all__ = [
     "ARGUMENTS_TOKEN",
     "LocalSkill",
+    "SKILL_CONTEXTS",
     "collisions",
     "default_roots",
     "discover",
