@@ -10,9 +10,10 @@ The convenience class :class:`VectorMemory` glues them together behind the
 existing :class:`~adk.core.memory.Memory` protocol so any agent can
 swap ``InMemoryStore`` for vector retrieval without code changes.
 
-Zero hard dependencies. Pure stdlib. If you want a production-grade store
-(FAISS, Qdrant, pgvector) implement :class:`VectorStore` against it; the
-:class:`Memory` surface stays identical.
+Zero hard dependencies. Pure stdlib. For a large corpus in little RAM,
+:class:`adk.core.turboquant_store.TurboQuantVectorStore` (``awdk[turbovec]``) is a
+drop-in quantized backend; for anything else (FAISS, Qdrant, pgvector) implement
+:class:`VectorStore` against it. The :class:`Memory` surface stays identical.
 """
 
 from __future__ import annotations
@@ -127,11 +128,22 @@ class InMemoryVectorStore(VectorStore):
             raise ValueError(f"dim mismatch: got {len(vector)}, want {self._dim}")
         self._entries[id_] = _Entry(id=id_, vector=list(vector), payload=dict(payload))
 
-    async def search(self, vector: list[float], *, k: int = 10) -> list[VectorHit]:
+    async def search(
+        self,
+        vector: list[float],
+        *,
+        k: int = 10,
+        allow_ids: Iterable[str] | None = None,
+    ) -> list[VectorHit]:
+        """Top-``k`` by cosine. ``allow_ids`` restricts the candidates; an allowlist that
+        names nothing held returns ``[]`` (fail closed, never "no filter")."""
         if k <= 0:
             return []
+        entries: Iterable[_Entry] = self._entries.values()
+        if allow_ids is not None:
+            entries = [self._entries[i] for i in set(allow_ids) if i in self._entries]
         scored: list[VectorHit] = []
-        for entry in self._entries.values():
+        for entry in entries:
             score = _cosine(vector, entry.vector)
             scored.append(VectorHit(id=entry.id, score=score, payload=entry.payload))
         scored.sort(key=lambda h: h.score, reverse=True)
@@ -236,9 +248,17 @@ class VectorMemory(Memory):
             return None
         return _hit_to_record(hit)
 
-    async def search(self, query: str, *, limit: int = 10) -> list[MemoryRecord]:
+    async def search(
+        self, query: str, *, limit: int = 10, allow_ids: Iterable[str] | None = None
+    ) -> list[MemoryRecord]:
+        """Nearest records to ``query``; ``allow_ids`` scopes the search (store must
+        support it -- both bundled stores do)."""
         vec = await self._embedder.embed(query)
-        hits = await self._store.search(vec, k=limit)
+        if allow_ids is None:
+            hits = await self._store.search(vec, k=limit)
+        else:
+            search: Any = self._store.search
+            hits = await search(vec, k=limit, allow_ids=allow_ids)
         return [_hit_to_record(h) for h in hits]
 
     async def recent(self, *, limit: int = 10) -> list[MemoryRecord]:

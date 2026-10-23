@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from adk.core.vector_memory import InMemoryVectorStore
+from adk.core.vector_memory import InMemoryVectorStore, VectorStore
 from adk.graph_retriever import GraphEdge, GraphNode, GraphRetriever, Subgraph
 from adk.graph_rag.config import (
     DEFAULT_K_HOPS,
@@ -44,7 +44,7 @@ class CorpusGraphRetriever(GraphRetriever):
         embedder: Any,
         *,
         floor: float = RELEVANCE_FLOOR,
-        vector_store: InMemoryVectorStore | None = None,
+        vector_store: VectorStore | None = None,
     ) -> None:
         self.store = store
         self.embedder = embedder

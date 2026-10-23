@@ -699,6 +699,7 @@ stats = await agent.graph_stats()        # {"nodes": …, "edges": …}
 - **Hybrid search** — keyword inverted index + semantic cosine similarity, weighted by query type
 - **Entity & relation extraction** — services, file paths, code identifiers; "X uses/depends on/contains Y" triples
 - **BFS traversal** — `get_related("entity", depth=2)` for multi-hop exploration
+- **Quantized vector store** — `pip install 'awdk[turbovec]'`, then `VectorMemory(embed, store=TurboQuantVectorStore())` (`adk.core.turboquant_store`): TurboQuant 4-bit codes, 20k x 768-d in 8.8 MB vs 61.4 MB float32 (7.0x; 13.6x at `bit_width=2`), recall@10 0.91 vs exact cosine; `search(..., allow_ids=[...])` scopes the scan inside the index and an empty allowlist returns nothing
 
 ### Context neurons
 

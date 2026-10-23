@@ -223,6 +223,10 @@ scrape = ["scrapling[fetchers]>=0.4", "markdownify>=1.0"]
 # The general reasoning loop (adk.reasoning.solve) runs on numpy arrays for grid
 # domains; `import adk.reasoning` itself never needs it.
 reason = ["numpy>=1.24.0"]
+# Embedded TurboQuant vector index (MIT, PyO3 abi3 wheels) behind
+# adk.core.turboquant_store.TurboQuantVectorStore: ~7x less RAM than float32 at 4 bits,
+# id-allowlist filtered search in the index scan. Imported lazily; core never needs it.
+turbovec = ["turbovec>=0.8", "numpy>=1.20"]
 # ARC-AGI-3: the bundled arc-brainpack pack registers/streams transitions with only
 # core deps (httpx); PLAYING ARC (arc_contribute, `adk contribute play`, and the
 # offline eval in adk.evalharness.arc_agi3) needs the real game client. The engine
