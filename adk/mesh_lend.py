@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -70,6 +71,7 @@ RUN_VALUE = "AwdkMeshLend"
 UNIT_NAME = "awdk-mesh-lend.service"
 FIREWALL_RULE = "awdk mesh lend"
 UA = "awdk-mesh-lend/1 (+https://aitherium.com)"
+_TAILNET_NET = ipaddress.ip_network("100.64.0.0/10")
 
 #: Windows: a child that never opens a console window and is not tied to ours.
 CREATE_NO_WINDOW = 0x08000000
@@ -729,6 +731,40 @@ def _overlay() -> dict:
     return overlay_status()
 
 
+def serving_overlay(overlay_fn: Optional[Callable[[], dict]] = None,
+                    pid_alive: Optional[Callable[[int], bool]] = None) -> dict:
+    """The overlay a server on this device binds to -- ONE detection for the lend and the
+    worker (adk.mesh_worker), so the two can never disagree about the same machine.
+
+    ``adk.mesh.overlay_status`` first (PATH, user installs, a userspace tailscaled's own
+    socket). When that cannot tell but THIS device's lend server is alive, the lend's
+    recorded address stands: the lend found the tailnet when it started and still
+    serves on it (measured 2026-10-22: the Deck lent on 100.64.0.42 while `worker-on`,
+    run by the beat without the Konsole PATH, said "Tailscale is not installed")."""
+    ov = (overlay_fn or _overlay)()
+    if ov.get("joined"):
+        return ov
+    alive = pid_alive or _pid_alive
+    st = read_state() or {}
+    ip, bind = str(st.get("ip") or ""), str(st.get("bind") or "")
+    try:
+        on_tailnet = ipaddress.ip_address(ip) in _TAILNET_NET
+    except ValueError:
+        on_tailnet = False
+    pid = int(st.get("pid") or 0)
+    if not (on_tailnet and alive(pid)):
+        return ov
+    if pid_alive is None:  # the real process table: the pid must still be the lend
+        from adk.game_guard import pid_is
+
+        if not pid_is(pid, str(st.get("exe") or "")):
+            return ov
+    return {"joined": True, "code": "ok", "tailnet_ip": ip, "tailnet_ips": [ip],
+            "tun": bind != "127.0.0.1", "via": "mesh-lend",
+            "detail": f"on the mesh as {ip} (from the running lend; tailscale said: "
+                      f"{ov.get('detail') or ov.get('code') or 'nothing'})"}
+
+
 def _say_print(text: str, is_error: bool = False) -> None:
     print(text, file=sys.stderr if is_error else sys.stdout)
 
@@ -802,7 +838,7 @@ def cmd_lend(args: argparse.Namespace, *, overlay: Optional[dict] = None,
         return cmd_status(args, say=say)
     if getattr(args, "stop", False):
         return cmd_stop(args, run=run, say=say)
-    ov = overlay if overlay is not None else _overlay()
+    ov = overlay if overlay is not None else serving_overlay()
     if not ov.get("joined"):
         say(f"not on the mesh: {ov.get('detail') or ov.get('code') or 'unknown'}. "
             "Run: adk mesh join", True)

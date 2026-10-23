@@ -27,8 +27,14 @@ def _home(tmp_path, monkeypatch):
     from adk import node_beat
     monkeypatch.setattr(node_beat, "install_autostart",
                         lambda: {"autostart": "test-disabled"})
+    # A starting beater registers its supervised autostart (task / unit / cron): never
+    # for real from a test (it registered a real task on the dev box once, 2026-10-22).
+    monkeypatch.setattr(node_beat, "ensure_autostart",
+                        lambda *a, **k: {"autostart": "test-disabled"}, raising=False)
     # Never let an armed upgrade restart re-exec / kill the test process.
     getattr(node_commands, "_PENDING_RESTART", {}).clear()
+    # No real `schtasks /query` from a test; the task path has its own tests.
+    monkeypatch.setattr(node_commands, "_beat_task_name", lambda: "", raising=False)
     yield tmp_path
     getattr(node_commands, "_PENDING_RESTART", {}).clear()
 

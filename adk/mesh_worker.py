@@ -509,7 +509,7 @@ def cmd_on(args: argparse.Namespace, *, overlay: Optional[dict] = None,
             raise WorkerError("--port must be 1-65535")
         node_id, cmd_key = key_record if key_record is not None else _command_key_record()
         key = worker_key(cmd_key, node_id)
-        ov = overlay if overlay is not None else mesh_lend._overlay()
+        ov = overlay if overlay is not None else mesh_lend.serving_overlay()
         if not ov.get("joined"):
             say(f"not on the mesh: {ov.get('detail') or ov.get('code') or 'unknown'}. "
                 "Run: adk mesh join", True)

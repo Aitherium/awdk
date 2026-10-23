@@ -166,9 +166,14 @@ $code | & $adk pair - --node-class {q(node_class)}{infer} 2>&1 | ForEach-Object 
 $naPath = Join-Path $env:USERPROFILE '.aither\\node_auth.json'
 $na = Get-Content $naPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
 Write-Output "@@node_id $($na.node_id)"
-$pyw = Join-Path $venv 'Scripts\\pythonw.exe'
-schtasks /Create /F /SC ONLOGON /TN AitherNodeBeat /TR "`"$pyw`" -m adk.node_beat" | Out-Null
-schtasks /Run /TN AitherNodeBeat | Out-Null
+# The supervised task (logon + every 5 min, one instance, hidden): node_beat owns
+# its definition. An awdk too old for --install gets the plain logon task.
+& (Join-Path $venv 'Scripts\\python.exe') -m adk.node_beat --install 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {{
+  $pyw = Join-Path $venv 'Scripts\\pythonw.exe'
+  schtasks /Create /F /SC ONLOGON /TN AitherNodeBeat /TR "`"$pyw`" -m adk.node_beat" | Out-Null
+  schtasks /Run /TN AitherNodeBeat | Out-Null
+}}
 Write-Output '@@beat scheduled-task'
 """
 

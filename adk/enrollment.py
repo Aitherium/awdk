@@ -451,6 +451,78 @@ def _worker_advert() -> Optional[Dict[str, Any]]:
         return None
 
 
+#: Seconds a tailnet-IP reading is reused (asking tailscale costs two short children).
+TAILNET_IP_TTL_S = 300.0
+_tailnet_cache: Dict[str, Any] = {"at": 0.0, "ips": []}
+
+
+def _tailnet_ips(now: Optional[float] = None) -> List[str]:
+    """This device's own tailnet IPv4s (100.64.0.0/10), userspace-aware; cached."""
+    import time as _time
+
+    now = _time.time() if now is None else now
+    if now - float(_tailnet_cache["at"]) < TAILNET_IP_TTL_S:
+        return list(_tailnet_cache["ips"])
+    ips: List[str] = []
+    try:
+        from adk import mesh_lend
+
+        ov = mesh_lend.serving_overlay()
+        ips = [str(i) for i in (ov.get("tailnet_ips") or [ov.get("tailnet_ip")]) if i]
+    except Exception as e:  # noqa: BLE001 -- no reading = no field, never a broken beat
+        log.debug("tailnet ip unavailable: %s", e)
+    _tailnet_cache.update(at=now, ips=ips[:4])
+    return list(ips[:4])
+
+
+def mesh_beat_fields() -> Dict[str, Any]:
+    """``tailnet_ips`` and ``mesh`` for the heartbeat. Never raises; a section that
+    cannot be read is left out (Identity keeps what it stored)."""
+    out: Dict[str, Any] = {}
+    ips = _tailnet_ips()
+    if ips:
+        out["tailnet_ips"] = ips
+    mesh: Dict[str, Any] = {}
+    try:
+        from adk import game_guard
+
+        g = game_guard.status()
+        mesh["gaming"] = bool(g.get("gaming"))
+        mesh["yielding"] = bool(g.get("yielding"))
+    except Exception as e:  # noqa: BLE001
+        log.debug("game guard status unavailable: %s", e)
+    try:
+        from adk import mesh_lend
+
+        ls = mesh_lend.status_dict()
+        mesh["lending"] = bool(ls.get("lending"))
+        if ls.get("lending"):
+            mesh["lend_mb"] = int(ls.get("lend_mb") or 0)
+            if ls.get("ip") and ls.get("port"):
+                mesh["endpoint"] = f"{ls['ip']}:{int(ls['port'])}"
+    except Exception as e:  # noqa: BLE001
+        log.debug("mesh lend status unavailable: %s", e)
+    try:
+        from adk import mesh_worker
+
+        ws = mesh_worker.status_dict()
+        st = mesh_worker.read_state()
+        if st or ws.get("serving"):
+            w: Dict[str, Any] = {"serving": bool(ws.get("serving")),
+                                 "healthy": bool(ws.get("healthy")),
+                                 "model": str(ws.get("model") or ""),
+                                 "parallel": int(ws.get("parallel") or 0),
+                                 "yielding": bool(mesh.get("yielding")) and not ws.get("serving")}
+            if ws.get("ip") and ws.get("port"):
+                w["endpoint"] = f"{ws['ip']}:{int(ws['port'])}"
+            mesh["worker"] = w
+    except Exception as e:  # noqa: BLE001
+        log.debug("mesh worker status unavailable: %s", e)
+    if mesh:
+        out["mesh"] = mesh
+    return out
+
+
 def _lending_fields(sysinfo: Any, probe: InferenceProbe) -> Dict[str, Any]:
     try:
         from adk.node_capabilities import advertise_this_node
@@ -991,6 +1063,10 @@ async def _heartbeat_beats(
                     hb["appliances"] = appliances
             except Exception as e:  # noqa: BLE001 -- the registry never breaks a beat
                 log.debug("appliance_names failed: %s", e)
+            # What this device does for the mesh (lend, worker, gaming) and its own
+            # tailnet address(es): Identity stores them, the Tunnel dashboard shows
+            # "lending 14 GB" and matches the device to its headscale node by IP.
+            hb.update(await asyncio.to_thread(mesh_beat_fields))
             resp = await client.post(f"{base}{beat_path}", json=hb, headers=headers)
             status = int(resp.status_code)
             if status == 200 and resp.json().get("status") == "unknown_node" and device:

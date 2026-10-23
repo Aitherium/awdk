@@ -349,8 +349,12 @@ def test_a_second_node_beat_does_not_start(tmp_path):
     assert node_beat.is_running(lock) is False
 
 
-def test_rerunning_enroll_on_windows_starts_no_extra_beater(monkeypatch):
+def test_rerunning_enroll_on_windows_starts_no_extra_beater(monkeypatch, tmp_path):
+    from pathlib import Path
+
     from adk import node_beat
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)  # the task XML lands here
 
     popens = []
     # A stand-in os for node_beat only: patching the real os.name makes every Path()
@@ -362,13 +366,22 @@ def test_rerunning_enroll_on_windows_starts_no_extra_beater(monkeypatch):
     fake_os.__dict__.update(_real_os.__dict__)
     fake_os.name = "nt"
     monkeypatch.setattr(node_beat, "os", fake_os)
-    monkeypatch.setattr(node_beat.subprocess, "run",
-                        lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    runs = []
+    task_run_rc = {"rc": 0}
+
+    def fake_run(argv, *a, **k):
+        runs.append(list(argv))
+        rc = task_run_rc["rc"] if list(argv[:2]) == ["schtasks", "/run"] else 0
+        return SimpleNamespace(returncode=rc, stdout="", stderr="")
+    monkeypatch.setattr(node_beat.subprocess, "run", fake_run)
     monkeypatch.setattr(node_beat.subprocess, "Popen", lambda *a, **k: popens.append(a))
     monkeypatch.setattr(node_beat, "is_running", lambda path=None: True)
     out = node_beat.install_autostart()
-    assert out["autostart"] == "windows-run-key" and out.get("running") == "already"
-    assert popens == []
+    assert out["autostart"] == "windows-task" and out.get("running") == "already"
+    assert popens == [] and not any(r[:2] == ["schtasks", "/run"] for r in runs)
     monkeypatch.setattr(node_beat, "is_running", lambda path=None: False)
-    node_beat.install_autostart()
+    node_beat.install_autostart()  # started through its own task, not a second Popen
+    assert popens == [] and ["schtasks", "/run", "/tn", node_beat.TASK_NAME] in runs
+    task_run_rc["rc"] = 1
+    node_beat.install_autostart()  # the task would not start: one detached beater
     assert len(popens) == 1

@@ -284,6 +284,18 @@ def _diagnostics(_args: Dict[str, str]) -> Dict[str, Any]:
             out[name] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
     out["mesh_lend"] = _mesh_lend_status()
     out["mesh_worker"] = _worker_status()
+    try:  # gaming? yielding? (adk.game_guard, run by the beat)
+        from adk import game_guard
+        out["game_guard"] = game_guard.status()
+    except Exception as exc:  # noqa: BLE001 - one section failing is reported, not fatal
+        out["game_guard"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    try:  # the overlay the lend and the worker bind to, and where it came from
+        from adk import mesh_lend
+        ov = mesh_lend.serving_overlay()
+        out["overlay"] = {k: ov.get(k) for k in ("joined", "code", "detail", "tailnet_ip",
+                                                 "tailnet_ips", "tun", "via")}
+    except Exception as exc:  # noqa: BLE001
+        out["overlay"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
     try:
         from adk import self_update
         out["code"] = {"running_root": str(self_update.RUNNING_ROOT),
@@ -612,6 +624,12 @@ else:
             break
         time.sleep(0.5)
 time.sleep(1.0)
+if spec.get("task"):
+    # the beat's own scheduled task: the same supervised launch as at logon
+    r = subprocess.run(["schtasks", "/run", "/tn", spec["task"]], capture_output=True,
+                       creationflags=int(spec["flags"]))
+    if r.returncode == 0:
+        sys.exit(0)
 log = open(spec["log"], "ab")
 subprocess.Popen(spec["argv"], cwd=spec["cwd"], stdin=subprocess.DEVNULL, stdout=log,
                  stderr=log, creationflags=int(spec["flags"]), close_fds=True)
@@ -634,6 +652,23 @@ def _host_kind() -> str:
     return "darwin" if sys.platform == "darwin" else "posix"
 
 
+#: The per-user task adk.node_beat registers (kept literal: this code must not import
+#: an adk module the upgrade just replaced).
+_BEAT_TASK = "AitherNodeBeat"
+
+
+def _beat_task_name() -> str:
+    """The beat's scheduled task when it is registered on this host, else ''."""
+    import subprocess
+
+    try:
+        r = subprocess.run(["schtasks", "/query", "/tn", _BEAT_TASK], capture_output=True,
+                           timeout=30, check=False, creationflags=_WIN_DETACHED)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    return _BEAT_TASK if r.returncode == 0 else ""
+
+
 def _launchd_label() -> str:
     """The launchd job this process runs as (launchd sets XPC_SERVICE_NAME), else ''.
     A Terminal session has '0' or an ``application.*`` name: not a job to kickstart."""
@@ -646,15 +681,19 @@ def _launchd_label() -> str:
 def _plan_restart() -> Dict[str, Any]:
     """Choose how this process restarts onto the code just installed, and arm it.
 
-    Windows: a hidden detached helper relaunches this same command line once this
-    process has exited. macOS under launchd: ``launchctl kickstart -k``. Anything else
-    (nohup, a hand-started beat, Linux without user units): ``os.execv`` in place.
+    Windows: a hidden detached helper waits for this process to exit, then runs the
+    beat's own scheduled task (``schtasks /run``, when this is adk.node_beat and the task
+    exists) or relaunches this same command line. macOS under launchd: ``launchctl
+    kickstart -k``. Anything else (nohup, a hand-started beat, Linux without user
+    units): ``os.execv`` in place.
     Nothing happens until perform_pending_restart() runs, after the result is posted.
     """
     argv = _relaunch_argv()
     kind = _host_kind()
     if kind == "windows":
-        plan: Dict[str, Any] = {"mechanism": "detached-relaunch", "argv": argv}
+        task = _beat_task_name() if "adk.node_beat" in argv else ""
+        plan: Dict[str, Any] = ({"mechanism": "schtasks-run", "task": task, "argv": argv}
+                                if task else {"mechanism": "detached-relaunch", "argv": argv})
     elif kind == "darwin" and _launchd_label():
         plan = {"mechanism": "launchctl-kickstart", "label": _launchd_label()}
     else:
@@ -695,9 +734,10 @@ def perform_pending_restart() -> Dict[str, Any]:
         return {}
     mech = plan.get("mechanism")
     log.warning("restarting onto the upgraded awdk via %s", mech)
-    if mech == "detached-relaunch":
+    if mech in ("detached-relaunch", "schtasks-run"):
         spec = {"pid": os.getpid(), "argv": plan["argv"], "cwd": os.getcwd(),
-                "log": str(_restart_log_path()), "flags": _WIN_DETACHED}
+                "log": str(_restart_log_path()), "flags": _WIN_DETACHED,
+                "task": plan.get("task") or ""}
         try:
             subprocess.Popen([sys.executable, "-I", "-c", _RELAUNCH_HELPER, json.dumps(spec)],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

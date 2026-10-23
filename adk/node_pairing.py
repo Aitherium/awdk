@@ -202,7 +202,7 @@ def cmd_pair(args: Any) -> int:
         from adk.node_beat import install_autostart
 
         auto = install_autostart()
-        if auto.get("autostart") in ("systemd-user", "windows-run-key"):
+        if auto.get("autostart") not in (None, "failed", "unsupported"):
             print(f"    Heartbeat: running, starts at login ({auto['autostart']})")
         else:
             print(f"    Heartbeat: NOT installed ({auto.get('detail', auto.get('autostart'))});"

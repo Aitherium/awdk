@@ -4,6 +4,19 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.90] - 2026-10-22
+
+### Added
+- Game guard (`adk.game_guard`, run by the device heartbeat every 10 s). While a game runs it stops the mesh worker. The fleet scheduler already falls back when a worker stops. The lend server (`adk mesh lend`) keeps running, because a lend tier that disappears hangs the V4.1 coordinator; it drops to idle priority instead. On Linux that means cgroup `CPUWeight=1`/`IOWeight=1`, applied to the lend's own unit or to a transient scope it is moved into, plus `nice 19`/`SCHED_IDLE` on every thread when this user is allowed to undo that. On Windows it means `IDLE_PRIORITY_CLASS`. Both are restored 60 s after the game ends. It counts as a game when: a Steam game is running (`SteamLaunch AppId=`), a gamescope session is running (Game Mode), Steam is in Big Picture (by flag or by focused window), or the GPU is busy at least 60 % on two ticks in a row. On Windows, it also counts when a fullscreen window comes from a game library or the 3D engine is busy at least 60 %. Turn it off with `AITHER_GAME_GUARD=off`. Diagnostics report `game_guard` (gaming, reason, yielding, lend priority). `python -m adk.game_guard` prints one detection.
+- The heartbeat reports `tailnet_ips` (this device's own 100.64.0.0/10 addresses, cached for 5 min) and `mesh` (lending, lend_mb, endpoint, gaming, yielding, and the worker's serving/healthy/model/parallel/endpoint/yielding). With these, the Tunnel dashboard can show "lending 14 GB" and match the device to its headscale node by IP.
+
+### Fixed
+- The mesh worker and the lend use one overlay detection (`mesh_lend.serving_overlay`). Tailscale is found on PATH, in the official locations, in user installs (`~/.local/bin`, `~/tailscale`, `/opt/tailscale`, ...) and next to a running `tailscaled`. A userspace `tailscaled`'s own `--socket` is used, and when there is no CLI its LocalAPI is asked over that socket. If tailscale still cannot tell, a live lend's recorded tailnet address is used. On the Steam Deck the worker had said "Tailscale is not installed" while the lend was serving on 100.64.0.42. The worker binds the tailnet IP when a TUN device exists and 127.0.0.1 with userspace Tailscale, never 0.0.0.0.
+- `tailscale` calls from the beat open no console window on Windows.
+- The device heartbeat (`python -m adk.node_beat`) comes back by itself when it dies. Windows: a per-user scheduled task `AitherNodeBeat` (at logon and every 5 minutes, one instance, hidden, no time limit, no elevation; the HKCU Run value stays as a second path). Linux with user systemd: the `aither-node-beat.service` user unit with `Restart=always` and lingering. Without user systemd (e.g. a beater left inside a terminal scope): a login autostart entry plus a cron line every 5 minutes and at boot. Every supervised copy starts with `--standby`: while another beater lives it waits (one standby per machine) and takes over the moment that one dies.
+- A starting beater installs or repairs that autostart, so a machine paired earlier adopts it on its next start; an `upgrade` restart is such a start. `python -m adk.node_beat --install` registers it explicitly. `adk pair`, `adk enroll` and remote onboarding register it.
+- On Windows the `upgrade` restart helper runs the beat's own task (`schtasks /run /tn AitherNodeBeat`) when the restarting process is the beat, falling back to relaunching its command line.
+
 ## [3.8.89] - 2026-10-22
 
 ### Added

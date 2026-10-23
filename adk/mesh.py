@@ -356,12 +356,148 @@ _TAILSCALE_KNOWN_PATHS = (
 )
 
 
-def _tailscale() -> str | None:
-    """Find the tailscale binary: PATH first, then the official install locations."""
+#: Where a USER install puts the CLI (no root: a Steam Deck's userspace tailscale, a
+#: tarball unpacked in the home directory). Measured 2026-10-22: a Deck's lend found
+#: its tailscale from the Konsole PATH while `worker-on`, run by the beat, said
+#: "Tailscale is not installed" -- a beat started by systemd/cron has no ~/.local/bin.
+_TAILSCALE_USER_PATHS = (
+    "~/.local/bin/tailscale",
+    "~/bin/tailscale",
+    "~/tailscale/tailscale",
+    "~/.tailscale/tailscale",
+    "~/.local/share/tailscale/tailscale",
+    "/opt/tailscale/tailscale",
+)
+#: The default tailscaled socket (Linux packages); a userspace tailscaled run by a
+#: user names its own with --socket.
+_DEFAULT_TS_SOCKET = "/var/run/tailscale/tailscaled.sock"
+
+
+def _trusted_owner(path: Any) -> bool:
+    """Owned by root or by this user (Windows: always). A tailscale binary, socket or
+    tailscaled process owned by anyone else is not used: on a shared Linux box another
+    user could otherwise have the beat run their binary or answer as tailscaled."""
+    if os.name == "nt" or not hasattr(os, "getuid"):
+        return True
+    try:
+        uid = os.stat(path).st_uid
+    except OSError:
+        return False
+    return uid in (0, os.getuid())
+
+
+def _trusted_binary(path: str) -> bool:
+    """A file owned by root/this user, executable, not group- or world-writable."""
+    if not os.path.isfile(path):
+        return False
+    if os.name == "nt":
+        return True
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return False
+    return _trusted_owner(path) and os.access(path, os.X_OK) and not mode & 0o022
+
+
+def _tailscaled_procs(proc: str = "/proc") -> list[tuple[str, list[str]]]:
+    """(exe path, argv) of every running tailscaled this user can see (Linux only)."""
+    out: list[tuple[str, list[str]]] = []
+    root = Path(proc)
+    if not root.is_dir():
+        return out
+    for d in root.iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            argv = [a for a in (d / "cmdline").read_bytes().decode(
+                "utf-8", "replace").split("\x00") if a]
+        except OSError:
+            continue
+        if not argv or os.path.basename(argv[0]) != "tailscaled":
+            continue
+        if not _trusted_owner(d):
+            continue  # another user's process: its argv and socket are theirs to forge
+        try:
+            exe = os.readlink(d / "exe")
+        except OSError:
+            exe = argv[0]
+        out.append((exe, argv))
+    return out
+
+
+def _socket_from_argv(argv: list[str]) -> str:
+    for i, a in enumerate(argv):
+        if a.startswith(("--socket=", "-socket=")):
+            return a.split("=", 1)[1]
+        if a in ("--socket", "-socket") and i + 1 < len(argv):
+            return argv[i + 1]
+    return ""
+
+
+def tailscale_socket(proc: str = "/proc") -> str:
+    """The tailscaled socket to talk to: $TS_SOCKET / $AITHER_TAILSCALE_SOCKET, else the
+    --socket of a running (userspace) tailscaled, else '' (the CLI's own default)."""
+    env = os.environ.get("AITHER_TAILSCALE_SOCKET") or os.environ.get("TS_SOCKET") or ""
+    if env:
+        return env
+    if os.name == "nt":
+        return ""
+    for _exe, argv in _tailscaled_procs(proc):
+        sock = _socket_from_argv(argv)
+        if sock and os.path.exists(sock) and _trusted_owner(sock):
+            return sock
+    return ""
+
+
+def _tailscale(proc: str = "/proc") -> str | None:
+    """Find the tailscale binary: PATH, the official install locations, a user install
+    in the home directory, then the `tailscale` beside a running tailscaled."""
     found = shutil.which("tailscale") or shutil.which("tailscale.exe")
     if found:
         return found
-    return next((p for p in _TAILSCALE_KNOWN_PATHS if os.path.isfile(p)), None)
+    for p in _TAILSCALE_KNOWN_PATHS:
+        if os.path.isfile(p):
+            return p
+    for p in (os.path.expanduser(u) for u in _TAILSCALE_USER_PATHS):
+        if _trusted_binary(p):
+            return p
+    if os.name != "nt":
+        for exe, _argv in _tailscaled_procs(proc):
+            sib = os.path.join(os.path.dirname(exe), "tailscale")
+            if _trusted_binary(sib):
+                return sib
+    return None
+
+
+def _ts_argv(ts: str, sock: str) -> list[str]:
+    return [ts, "--socket", sock] if sock else [ts]
+
+
+def _localapi_status(sock: str, timeout: float = 5.0) -> dict | None:
+    """tailscaled's LocalAPI ``/localapi/v0/status`` over its unix socket -- the same JSON
+    as ``tailscale status --json``, with no CLI at all. None when it does not answer."""
+    if not sock or os.name == "nt" or not hasattr(socket, "AF_UNIX"):
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(sock)
+            s.sendall(b"GET /localapi/v0/status HTTP/1.0\r\n"
+                      b"Host: local-tailscaled.sock\r\n\r\n")
+            chunks = []
+            while True:
+                b = s.recv(65536)
+                if not b:
+                    break
+                chunks.append(b)
+        raw = b"".join(chunks)
+        head, _, body = raw.partition(b"\r\n\r\n")
+        if b" 200 " not in head.split(b"\r\n", 1)[0] + b" ":
+            return None
+        st = json.loads(body.decode("utf-8", "replace") or "{}")
+        return st if isinstance(st, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 def install_tailscale(run=subprocess.run) -> tuple[bool, str]:
@@ -489,36 +625,57 @@ def overlay_status(headscale_url: str | None = None, timeout: float = 10.0) -> d
         "tailnet_ip": "", "hostname": "", "control_url": "",
     }
     ts = _tailscale()
-    if not ts:
-        out.update(code="tailscale_missing", install_url=TAILSCALE_INSTALL_URL,
-                   detail="Tailscale is not installed, so this device cannot join "
-                          "the mesh network. Install it, then run: adk mesh join")
-        return out
-    try:
-        r = subprocess.run([ts, "status", "--json"], capture_output=True,
-                           text=True, timeout=timeout)
-        st = json.loads(r.stdout or "{}")
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        out.update(code="tailscale_unreachable",
-                   detail=f"tailscale status did not answer ({exc.__class__.__name__}); "
-                          "is the Tailscale service running?")
+    sock = tailscale_socket()
+    # no window per call: the beat runs this every few minutes under pythonw
+    kw: dict[str, Any] = {"creationflags": 0x08000000} if os.name == "nt" else {}
+    st: dict | None = None
+    if ts:
+        try:
+            r = subprocess.run(_ts_argv(ts, sock) + ["status", "--json"], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout, **kw)
+            parsed = json.loads(r.stdout or "{}")
+            st = parsed if isinstance(parsed, dict) and parsed else None
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            out["detail"] = f"tailscale status did not answer ({exc.__class__.__name__})"
+    if st is None:
+        # No CLI (or it could not reach tailscaled): ask tailscaled itself over its
+        # socket -- a userspace tailscaled run by the user names its own.
+        for cand in dict.fromkeys(c for c in (sock, _DEFAULT_TS_SOCKET) if c):
+            st = _localapi_status(cand, timeout=min(timeout, 5.0))
+            if st:
+                out["via"] = "localapi"
+                break
+    if st is None:
+        if not ts:
+            out.update(code="tailscale_missing", install_url=TAILSCALE_INSTALL_URL,
+                       detail="Tailscale is not installed, so this device cannot join "
+                              "the mesh network. Install it, then run: adk mesh join")
+        else:
+            out.update(code="tailscale_unreachable",
+                       detail=(out["detail"] or "tailscale status did not answer")
+                       + "; is the Tailscale service running?")
         return out
     me = st.get("Self") or {}
     out["backend_state"] = str(st.get("BackendState") or "")
     # False = userspace networking: tailnet connections arrive on loopback.
     out["tun"] = bool(st.get("TUN", True))
     out["hostname"] = str(me.get("HostName") or "")
-    out["tailnet_ip"] = next(
-        (str(ip) for ip in (me.get("TailscaleIPs") or []) if _in_tailnet(str(ip))), "")
+    out["tailnet_ips"] = [str(ip) for ip in (me.get("TailscaleIPs") or [])
+                          if _in_tailnet(str(ip))]
+    out["tailnet_ip"] = next(iter(out["tailnet_ips"]), "")
     # The control server is in the prefs, not the status. Best effort: a tailscale
     # without `debug prefs` is judged on state + address alone.
-    try:
-        rp = subprocess.run([ts, "debug", "prefs"], capture_output=True,
-                            text=True, timeout=timeout)
-        prefs = json.loads(rp.stdout or "{}")
-        out["control_url"] = str((prefs if isinstance(prefs, dict) else {}).get("ControlURL") or "")
-    except (OSError, subprocess.SubprocessError, ValueError):
-        pass
+    if ts:
+        try:
+            rp = subprocess.run(_ts_argv(ts, sock) + ["debug", "prefs"], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace",
+                                timeout=timeout, **kw)
+            prefs = json.loads(rp.stdout or "{}")
+            prefs = prefs if isinstance(prefs, dict) else {}
+            out["control_url"] = str(prefs.get("ControlURL") or "")
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            logger.debug("tailscale debug prefs unreadable: %s", exc)
     want = urlparse(headscale_url or os.getenv("AITHER_HEADSCALE_URL", "")
                     or DEFAULT_HEADSCALE_URL).hostname or ""
     have = urlparse(out["control_url"]).hostname or ""

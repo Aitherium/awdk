@@ -161,3 +161,28 @@ def _closed_reasoner_breaker():
     _mt._REASONER_DOWN["until"] = 0.0
     yield
     _mt._REASONER_DOWN["until"] = 0.0
+
+
+@pytest.fixture(autouse=True)
+def _no_real_beat_autostart(monkeypatch):
+    """A test that runs adk.node_beat._main must never register a real scheduled task,
+    Run value, user unit or cron line on the machine running the tests (it did, on the
+    dev box, 2026-10-22). Tests of the autostart itself pass a recording ``run``."""
+    try:
+        from adk import node_beat as _nb
+    except Exception:  # noqa: BLE001 -- a test tree without adk.node_beat
+        return
+    monkeypatch.setattr(_nb, "AUTOSTART_ON_START", False, raising=False)
+    monkeypatch.setattr(_nb, "GAME_GUARD_ON_START", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_tailscale_in_beats(monkeypatch):
+    """Every heartbeat reports this device's tailnet IPs (adk.enrollment._tailnet_ips),
+    which asks the host's real tailscale. Tests never do: none by default; a test of
+    the field patches it (or its sources) itself."""
+    try:
+        from adk import enrollment as _en
+    except Exception:  # noqa: BLE001 -- a test tree without adk.enrollment
+        return
+    monkeypatch.setattr(_en, "_tailnet_ips", lambda now=None: [], raising=False)
