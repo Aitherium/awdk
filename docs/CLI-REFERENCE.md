@@ -48,7 +48,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk components`](#adk-components) |  |
 | [`adk connect`](#adk-connect) | Connect to AitherOS — detect LLMs, set up gateway, or join desktop mesh |
 | [`adk connectors`](#adk-connectors) | Your connected accounts (GitHub, Google, Microsoft): list, connect, grant |
-| [`adk contribute`](#adk-contribute) | Teach Aither's ARC world model — enroll, then play & stream transitions (free) |
+| [`adk contribute`](#adk-contribute) | Volunteer redacted logs/skills/tools/packs (opt-in), or teach ARC |
 | [`adk costs`](#adk-costs) | Show cloud inference costs, savings, and budget |
 | [`adk create-app`](#adk-create-app) | Scaffold a awkit workspace app |
 | [`adk cron`](#adk-cron) | Manage scheduled tasks |
@@ -474,13 +474,18 @@ Your connected accounts (GitHub, Google, Microsoft): list, connect, grant
 
 ## `adk contribute`
 
-Teach Aither's ARC world model — enroll, then play & stream transitions (free)
+Volunteer redacted logs/skills/tools/packs (opt-in), or teach ARC
 
 **Subcommands**
 
+- `adk contribute on` — Opt in (all categories, or the ones named)
+- `adk contribute off` — Opt out (all categories, or the ones named)
+- `adk contribute preview` — Show the exact redacted payload an upload would send
+- `adk contribute delete` — Opt out of everything and request removal of what was sent
+- `adk contribute upload` — Send consented, redacted items now
 - `adk contribute register` — Mint a free wallet + contributor token (idempotent)
 - `adk contribute play` — Play ARC games and stream every transition (needs: pip install 'awdk[arc]')
-- `adk contribute status` — Your accepted count + daily quota
+- `adk contribute status` — Your consent per category, then ARC accepted count + quota
 - `adk contribute leaderboard` — Who has taught it the most
 - `adk contribute solo` — Print the one-command self-host (train YOUR own model)
 

@@ -25,8 +25,10 @@ LOG_REDACTIONS: List[Tuple[Pattern[str], str]] = [
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[REDACTED-AWS-KEY]"),
     # key=value / key: value / "key": "value" for any key naming a password, secret
     # or token (SECRET_KEY=, client_secret:, "access_token": ...). The value ends at
-    # whitespace, a quote or a separator.
-    (re.compile(r"(?i)([A-Za-z0-9_.\-]*(?:password|passwd|secret|token)[A-Za-z0-9_.\-]*)"
+    # whitespace, a quote or a separator. The name runs are BOUNDED: unbounded ``*``
+    # on both sides is quadratic on a long word-character run (16 KB took 12.6 s).
+    (re.compile(r"(?i)([A-Za-z0-9_.\-]{0,64}(?:password|passwd|secret|token)"
+                r"[A-Za-z0-9_.\-]{0,64})"
                 r"(\"?\s*[=:]\s*[\"']?)([^\s\"'&,;]+)"), r"\1\2[REDACTED]"),
 ]
 

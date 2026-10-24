@@ -41,7 +41,11 @@ FIRST_PARTY_ORIGIN = re.compile(r"^https://([a-z0-9-]+\.)*aitherium\.(com|org)$"
 #: ``node``: the owner's page lists this machine's models and runs PLAIN completions on
 #: them. Plain only -- server.py forces ``plain`` for a browser-token request, so a page
 #: token never reaches the agent loop or its tools.
-SCOPE_PATHS = {"kvholder": ("/kvholder/",), "node": ("/v1/models", "/v1/chat/completions")}
+#: ``contribute``: the owner's settings page reads and flips THIS machine's data-
+#: contribution consent and shows the redacted preview (adk.contribute). It never
+#: uploads -- sending stays an explicit ``adk contribute upload`` on the machine.
+SCOPE_PATHS = {"kvholder": ("/kvholder/",), "node": ("/v1/models", "/v1/chat/completions"),
+               "contribute": ("/local/contribute",)}
 
 _lock = threading.Lock()
 _nonces: Dict[str, float] = {}

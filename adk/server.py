@@ -2660,6 +2660,70 @@ def create_app(
             "harness_link": _rc.harness_link_status(),
         }
 
+    # ── Data contribution consent (adk.contribute) for the owner's settings page ──
+    # Read, flip and preview only: nothing here uploads. Same guard as /node/status,
+    # and under AITHER_LOCAL_AUTH=required a page needs a ``contribute``-scope token.
+    @app.get("/local/contribute")
+    async def contribute_status(request: Request):
+        _whoami_guard(request)
+        from adk import contribute as _ctb
+
+        rec = _ctb.load_consent()
+        return {"categories": rec["categories"], "updated_at": rec.get("updated_at"),
+                "licences": rec["licences"], "licence_options": _ctb.LICENCE_SUMMARY,
+                "credit_name": rec.get("credit_name") or "",
+                "terms_version": _ctb.TERMS_VERSION,
+                "uploads_open": _ctb.TERMS_VERSION is not None}
+
+    @app.post("/local/contribute")
+    async def contribute_set(request: Request):
+        _whoami_guard(request)
+        from adk import contribute as _ctb
+
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict) or not isinstance(body.get("on"), bool):
+            raise HTTPException(status_code=400, detail='body must be {"on": true|false, '
+                                                        '"categories": [...]}')
+        cats = body.get("categories") or []
+        if not isinstance(cats, list) or not all(isinstance(c, str) for c in cats):
+            raise HTTPException(status_code=400, detail="categories must be a list of names")
+        licence = body.get("licence")
+        credit = body.get("credit_name")
+        if licence is not None and not isinstance(licence, str):
+            raise HTTPException(status_code=400, detail="licence must be a string")
+        if credit is not None and not isinstance(credit, str):
+            raise HTTPException(status_code=400, detail="credit_name must be a string")
+        try:
+            rec = _ctb.set_consent(cats, body["on"], licence, credit)
+        except _ctb.ContributeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"categories": rec["categories"], "licences": rec["licences"],
+                "credit_name": rec.get("credit_name") or "", "updated_at": rec["updated_at"]}
+
+    @app.get("/local/contribute/preview")
+    async def contribute_preview(request: Request, category: str = "", limit: int = 20):
+        _whoami_guard(request)
+        from adk import contribute as _ctb
+
+        cats = [category] if category else None
+        try:
+            batch = await asyncio.to_thread(
+                _ctb.build_batch, cats, limit=max(1, min(limit, 50)),
+                respect_consent=not cats)
+        except _ctb.ContributeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return batch
+
+    @app.post("/local/contribute/delete")
+    async def contribute_delete(request: Request):
+        _whoami_guard(request)
+        from adk import contribute as _ctb
+
+        return _ctb.delete_all()
+
     # ── Browser pairing: the signed-in owner's page earns a scoped token ────────
     # adk/browser_grant.py has the why. Both routes open with _handoff_guard
     # (loopback peer + first-party Origin + the AITHER_BROWSER_HANDOFF switch).

@@ -7294,6 +7294,78 @@ def _load_arc_pack():
     return mod
 
 
+def _cmd_contribute_data(args, sub: str) -> int:
+    """``adk contribute on|off|status|preview|delete|upload`` (adk.contribute)."""
+    from adk import contribute as ctb
+
+    try:
+        if sub in ("on", "off"):
+            if sub == "on":
+                rec = ctb.set_consent(args.categories, True, getattr(args, "licence", None),
+                                      getattr(args, "credit", None))
+            else:
+                rec = ctb.set_consent(args.categories, False)
+            on = [f"{c} ({rec['licences'][c]})" for c, v in rec["categories"].items() if v]
+            print(f"✓ contributing: {', '.join(on) if on else 'nothing'}")
+            if sub == "on":
+                for lic in sorted({rec["licences"][c] for c, v in rec["categories"].items()
+                                   if v}):
+                    print(f"  {lic}: {ctb.LICENCE_SUMMARY[lic]}")
+            if sub == "on":
+                print("  See exactly what would be sent:  adk contribute preview")
+                if ctb.TERMS_VERSION is None:
+                    print("  Uploads stay off until contributor terms are published.")
+            return 0
+        if sub == "status":
+            rec = ctb.load_consent()
+            print("Data contribution (default OFF):")
+            for c, v in rec["categories"].items():
+                tier = f"  {rec['licences'][c]}" if v else ""
+                print(f"  {c:<14} {'ON' if v else 'off'}{tier}")
+            if rec.get("credit_name"):
+                print(f"  credit as     {rec['credit_name']}")
+            terms = ctb.TERMS_VERSION or "not published (uploads refused)"
+            print(f"  terms          {terms}")
+            print(f"  updated        {rec.get('updated_at') or 'never'}")
+            return 0
+        if sub == "preview":
+            cats = args.category or None
+            batch = ctb.build_batch(cats, limit=args.limit, respect_consent=not cats)
+            if args.json:
+                print(json.dumps(batch, indent=2, ensure_ascii=False))
+                return 0
+            if not batch["categories"]:
+                print("Nothing would be sent: every category is off.")
+                print("  Preview one anyway:  adk contribute preview --category skills")
+                return 0
+            for it in batch["items"]:
+                body = json.dumps(it["payload"], ensure_ascii=False)
+                red = ", ".join(f"{k}={v}" for k, v in sorted(it["redactions"].items()))
+                print(f"[{it['category']}/{it['kind']}] {it['source']}"
+                      f"  redacted: {red or 'none'}")
+                print(f"  {body[:400]}{'…' if len(body) > 400 else ''}")
+            for d in batch["dropped"]:
+                print(f"  dropped {d['category']}: {d.get('source') or ''} "
+                      f"{d.get('file') or ''} ({d['reason']})")
+            print(f"\n{len(batch['items'])} item(s) would be sent, "
+                  f"{len(batch['dropped'])} dropped. Audit: {batch['audit']['engine']}."
+                  "  Full payload: --json")
+            return 0
+        if sub == "delete":
+            res = ctb.delete_all()
+            print("✓ every category is off; staged items removed "
+                  f"({res['staged_removed']} batch file(s)).")
+            if res["deletion_queued"]:
+                print("  A removal request is queued and is sent with the next upload.")
+            return 0
+        res = ctb.upload()
+        print(f"{res.status}: {res.reason or f'{res.sent} item(s) in {res.batches} batch(es)'}")
+        return 0 if res.status in ("sent", "consent_off") else 1
+    except ctb.ContributeError as exc:
+        print(f"✗ {exc}")
+        return 2
+
+
 def cmd_contribute(args) -> int:
     """Teach Aither's ARC world model via the bundled arc-brainpack pack.
 
@@ -7304,9 +7376,16 @@ def cmd_contribute(args) -> int:
         adk contribute play
     """
     sub = getattr(args, "contribute_command", None)
+    if sub in ("on", "off", "preview", "delete", "upload", "status"):
+        rc = _cmd_contribute_data(args, sub)
+        if sub != "status":
+            return rc
     try:
         pack = _load_arc_pack()
     except Exception as exc:
+        if sub == "status":
+            print(f"  (ARC status unavailable: {exc})")
+            return 0
         print(f"✗ could not load the arc-brainpack pack: {exc}")
         return 1
 
@@ -7326,12 +7405,19 @@ def cmd_contribute(args) -> int:
                 return 1
             _show(fn(args.games or None, n=args.steps))
         elif sub == "status":
+            print("\nARC:")
             _show(pack.arc_status())
         elif sub == "leaderboard":
             _show(pack.arc_leaderboard(limit=getattr(args, "limit", 20)))
         elif sub == "solo":
             _show(pack.arc_solo())
         else:
+            print("Volunteer data to make shared models better (opt-in, default OFF).\n")
+            print("  adk contribute status         what is on, per category")
+            print("  adk contribute on [cats]      opt in: harness_logs skills tools packs")
+            print("  adk contribute preview        the exact redacted payload")
+            print("  adk contribute off [cats]     opt out")
+            print("  adk contribute delete         opt out + request removal\n")
             print("Teach Aither's ARC world model (free, open).\n")
             print("  adk contribute register       mint a free wallet + contributor token")
             print("  adk contribute play [games]   play ARC and stream transitions")
@@ -15892,12 +15978,34 @@ def _register_commands(sub):
     # adk packs — alias for list
     sub.add_parser("packs", help="List available agent packs")
 
-    # adk contribute — teach the ARC world model (bundled arc-brainpack pack)
+    # adk contribute — volunteer redacted harness logs/skills/tools/packs (opt-in,
+    # default OFF), and teach the ARC world model (bundled arc-brainpack pack)
     contribute_p = sub.add_parser(
         "contribute",
-        help="Teach Aither's ARC world model — enroll, then play & stream transitions (free)",
+        help="Volunteer redacted logs/skills/tools/packs (opt-in), or teach ARC",
     )
     contribute_sub = contribute_p.add_subparsers(dest="contribute_command")
+    for _verb, _help in (("on", "Opt in (all categories, or the ones named)"),
+                         ("off", "Opt out (all categories, or the ones named)")):
+        _c = contribute_sub.add_parser(_verb, help=_help)
+        _c.add_argument("categories", nargs="*", default=[],
+                        help="harness_logs, skills, tools, packs (default: all)")
+        if _verb == "on":
+            _c.add_argument("--licence", "--license", dest="licence", default=None,
+                            help="train-only (default: we train on it, never share it), "
+                                 "cc-by-4.0 (also open dataset, credited) or cc0-1.0 "
+                                 "(public domain)")
+            _c.add_argument("--credit", default=None,
+                            help="Name to credit in open datasets (cc-by-4.0)")
+    c_prev = contribute_sub.add_parser(
+        "preview", help="Show the exact redacted payload an upload would send")
+    c_prev.add_argument("--category", action="append", default=[],
+                        help="Preview a category even if it is off (repeatable)")
+    c_prev.add_argument("--limit", type=int, default=20, help="Items per category (default 20)")
+    c_prev.add_argument("--json", action="store_true", help="Print the full payload as JSON")
+    contribute_sub.add_parser(
+        "delete", help="Opt out of everything and request removal of what was sent")
+    contribute_sub.add_parser("upload", help="Send consented, redacted items now")
     contribute_sub.add_parser(
         "register", help="Mint a free wallet + contributor token (idempotent)")
     c_play = contribute_sub.add_parser(
@@ -15906,7 +16014,8 @@ def _register_commands(sub):
                         help="ARC game ids (default: a starter set)")
     c_play.add_argument("-n", "--steps", type=int, default=200,
                         help="Max transitions per game (default 200)")
-    contribute_sub.add_parser("status", help="Your accepted count + daily quota")
+    contribute_sub.add_parser(
+        "status", help="Your consent per category, then ARC accepted count + quota")
     c_lb = contribute_sub.add_parser("leaderboard", help="Who has taught it the most")
     c_lb.add_argument("--limit", type=int, default=20, help="Rows to show (default 20)")
     contribute_sub.add_parser("solo", help="Print the one-command self-host (train YOUR own model)")

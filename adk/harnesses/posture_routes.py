@@ -37,7 +37,7 @@ import threading
 from pathlib import Path
 
 #: The posture words a caller may set. ``status`` is the read verb, never a "set".
-WORDS = ("shop", "after", "game", "auto")
+WORDS = ("shop", "after", "game", "dark", "auto")
 #: The assertion's ``to``: a posture assertion can never steer a session or a KV relay.
 TARGET = "posture"
 TOOL_REL = Path("AitherOS") / "dev" / "tools" / "fleet_verbs.py"
