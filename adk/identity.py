@@ -316,8 +316,25 @@ def load_identity(name: str, search_paths: list[Path] | None = None) -> Identity
         if path.exists():
             return _parse_identity(path)
 
+    # The local daemon and the default agent run under service names that have no
+    # identity file of their own, so they came up as a nameless generic assistant:
+    # no persona, no will, none of the default packs (2026-10-25: the daemon behind
+    # awsh and awconnect answered "I am adk-daemon, an AI agent"). They ARE the
+    # default agent: load its identity, keep the service name (memory, keys and
+    # health checks are keyed on it).
+    default = _DEFAULT_IDENTITY_FOR.get(name)
+    if default and default != name:
+        ident = load_identity(default, search_paths)
+        if ident.name == default:
+            ident.name = name
+            return ident
+
     logger.warning(f"Identity '{name}' not found, using defaults")
     return Identity(name=name)
+
+
+#: Service names that run the default agent rather than a persona of their own.
+_DEFAULT_IDENTITY_FOR = {"adk-daemon": "aither", "adk-agent": "aither"}
 
 
 def list_identities(search_paths: list[Path] | None = None) -> list[str]:
