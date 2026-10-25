@@ -212,3 +212,16 @@ def test_the_room_keeps_what_the_session_is_working_on(tmp_path):
     assert "title" not in bare, "an absent title must leave the stored shape unchanged"
     assert "title" not in _normalise_actor("claude_code", "x", {"name": "x", "title": "   "})
     assert len(_normalise_actor("claude_code", "x", {"title": "t" * 500})["title"]) == 120
+
+
+def test_the_model_label_is_the_one_name_every_surface_shows(tmp_path, monkeypatch):
+    """Room, /sessions/unified and the awsh list read the same registry label."""
+    from adk.shell import claude_sessions as cs
+    monkeypatch.setattr(cs, "LABELS_DIR", tmp_path)
+    sid = "948bc68f-ce25-4a74-b7e5-a3ccc69c8a85"
+    (tmp_path / f"{sid}.json").write_text(json.dumps({"title": "Session naming fix"}),
+                                          encoding="utf-8")
+    assert session_display_title(sid, "/work/my-project", "",
+                                 "my-project main 09:11") == "Session naming fix #948bc68f"
+    plain = session_display_title("aaaaaaaa-0000", "/work/my-project", "", "")
+    assert plain == "my-project#aaaaaaaa"

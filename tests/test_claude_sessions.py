@@ -264,3 +264,22 @@ def test_launch_dry_run(projects):
     assert len(lines) == 1
     assert f"claude --resume {UUID_A}" in lines[0]
     assert cwd_a in lines[0]
+
+
+def test_custom_title_beats_ai_title_but_auto_name_does_not(tmp_path, monkeypatch):
+    """The title hook's (or /rename's) name is what the owner reads in the picker;
+    Claude's own "<dir> <branch> HH:MM" says nothing and must not win."""
+    root = tmp_path / "projects"
+    monkeypatch.setattr(cs, "LABELS_DIR", tmp_path / "labels")
+    now = datetime.now(timezone.utc).isoformat()
+    named = _basic_entries(str(tmp_path), "ai words", "hi", now) + [
+        {"type": "custom-title", "customTitle": "Session naming fix", "sessionId": UUID_A}]
+    assert cs.parse_session_meta(_write_journal(root, "p", UUID_A, named)).title \
+        == "Session naming fix"
+    auto = [{"type": "custom-title", "customTitle": "AitherOS-Fresh develop 09:11",
+             "sessionId": UUID_B, "cwd": str(tmp_path)}]
+    (tmp_path / "labels").mkdir()
+    (tmp_path / "labels" / f"{UUID_B}.json").write_text(
+        json.dumps({"title": "Darkmatter physics"}), encoding="utf-8")
+    assert cs.parse_session_meta(_write_journal(root, "p", UUID_B, auto)).title \
+        == "Darkmatter physics"
