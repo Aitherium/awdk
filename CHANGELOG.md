@@ -4,6 +4,12 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.92] - 2026-10-25
+
+### Fixed
+- A learned skill no longer takes over unrelated turns. Recall matched a skill on one shared substring such as "you" or "is", and reinforced every recalled skill after any successful turn. A skill learned from a test transcript was recalled more than 1,500 times and answered as that transcript's persona. Recall now needs whole content words (at least 40% of them), skips skills whose description is injected context (fenced pages, preambles, transcripts), and reinforces only a skill whose tools the turn used. Extraction refuses those openings too. (#14139)
+- The local daemon (`adk-daemon`) and the default agent (`adk-agent`) now load the default `aither` identity under their own name, with its system prompt, will and default tool packs. Before, no identity file matched those names and they ran as a bare generic agent. (#14148)
+
 ## [3.8.91] - 2026-10-23
 
 ### Added

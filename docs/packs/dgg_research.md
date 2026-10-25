@@ -1,12 +1,12 @@
 # DGG Research
 
-`dgg_research` · version `3.8.91` · 7.2 KB
+`dgg_research` · version `3.8.92` · 7.2 KB
 
-**[Download dgg_research-3.8.91.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.91/dgg_research-3.8.91.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.91/dgg_research-3.8.91.sha256)
+**[Download dgg_research-3.8.92.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.92/dgg_research-3.8.92.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.92/dgg_research-3.8.92.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.91/dgg_research-3.8.91.tar.gz
-tar xzf dgg_research-3.8.91.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.92/dgg_research-3.8.92.tar.gz
+tar xzf dgg_research-3.8.92.tar.gz
 python dgg_research/install.py
 ```
 
@@ -107,5 +107,5 @@ When the agent gets `park` or `propose` back, that is a correct outcome and not 
 
 ---
 
-sha256 `a3c6f4e23665fd41df1f85198d740c926e41c92dd9a15874dd154f5deb9dc0de`  
-Built from `v3.8.91` (adk 3.8.91). [All packs](../packs.md)
+sha256 `b65f3e1ff1e91cf93712bf990b07b0e80f741348c99fd547e9887a4ef6a9dcfc`  
+Built from `v3.8.92` (adk 3.8.92). [All packs](../packs.md)
