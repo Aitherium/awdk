@@ -1752,11 +1752,15 @@ class AitherAgent:
             self._recalled_skills = []
             return
         try:
-            for s in getattr(self, "_recalled_skills", None) or []:
-                s.touch()
-                self._skills.save(s)            # reused → reinforce
-            self._recalled_skills = []
             tools = [t for t in (tool_calls_made or []) if "[" not in t]
+            # Reinforce only a skill this turn actually followed (it used one of the
+            # skill's tools). Every recalled skill used to be bumped on ANY good turn,
+            # so a junk match climbed to 1526 "successes" (2026-10-25).
+            for s in getattr(self, "_recalled_skills", None) or []:
+                if set(s.tools_used) & set(tools):
+                    s.touch()
+                    self._skills.save(s)        # reused → reinforce
+            self._recalled_skills = []
             if len(tools) >= 2:                 # a real multi-step procedure
                 skill = self._skill_extractor.extract_from_session(
                     messages=[

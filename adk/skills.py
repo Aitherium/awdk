@@ -144,21 +144,28 @@ class SkillStore:
         Returns:
             Up to *k* matching skills.
         """
-        tokens = [t.lower() for t in re.split(r"\s+", query.strip()) if t]
+        # Content words only, matched as whole words. Any one shared token used to
+        # qualify ("you", "is", "the" as substrings), so a learned "who are you"
+        # transcript rode along on nearly every turn -- recalled 1526 times and
+        # answering a page question as another tenant's persona (2026-10-25).
+        tokens = sorted({t for t in _words(query) if t not in _STOPWORDS})
         if not tokens:
             return []
+        need = max(2, -(-len(tokens) * 2 // 5))  # at least 2 and 40% of the words
 
         scored: list[tuple[int, Skill]] = []
         for skill in self.list_all():
-            blob = " ".join([
+            if is_context_dump(skill.description):
+                continue  # learned from a preamble, not a task: never recalled
+            blob = set(_words(" ".join([
                 skill.name,
                 skill.description,
                 " ".join(skill.steps),
                 " ".join(skill.tags),
                 " ".join(skill.tools_used),
-            ]).lower()
+            ])))
             score = sum(1 for t in tokens if t in blob)
-            if score > 0:
+            if score >= min(need, len(tokens)):
                 scored.append((score, skill))
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -203,6 +210,39 @@ class SkillStore:
             return None
 
 
+_STOPWORDS = frozenset((
+    "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "for", "by",
+    "with", "from", "as", "is", "are", "was", "were", "be", "been", "it", "its", "this",
+    "that", "these", "those", "you", "your", "i", "me", "my", "we", "our", "do", "does",
+    "did", "what", "how", "why", "when", "where", "which", "who", "can", "will", "would",
+    "should", "could", "please", "about", "into", "use", "using", "then", "there",
+    "here", "have", "has", "had", "not", "no", "yes", "any", "all", "some", "one",
+    "user", "assistant", "tool", "tools",
+))
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}")
+
+
+def _words(text: str) -> list[str]:
+    return _WORD_RE.findall((text or "").lower())
+
+
+#: Openings of text the PLATFORM wrote, not the person: injected context blocks, a
+#: fenced page, a pasted transcript. A skill "learned" from one of these matched
+#: every later turn carrying the same preamble ("GROUNDED CONTEXT" 3727 uses,
+#: "## Current date & time" 723, a who-are-you transcript 1526) -- 2026-10-25.
+_CONTEXT_DUMP_RE = re.compile(
+    r"^\s*(?:={3,}|#{1,3}\s|\[[A-Z][A-Z #_/.-]{2,}\]|\[relay\b|"
+    r"(?:USER|User|ASSISTANT|Assistant|SYSTEM|Human)\s*:|"
+    r"GROUNDED CONTEXT|Facts from YOUR memory|Company notes:|"
+    r"Complete the following task|You are (?:fixing|in)\b)")
+
+
+def is_context_dump(text: str) -> bool:
+    """True when ``text`` opens with platform-injected context, not a person's ask."""
+    t = text or ""
+    return bool(_CONTEXT_DUMP_RE.match(t)) or "PAGE CONTENT (untrusted" in t[:200]
+
+
 class SkillExtractor:
     """Extract reusable skills from completed agent sessions.
 
@@ -239,6 +279,8 @@ class SkillExtractor:
             return None
 
         task = self._extract_task(messages)
+        if is_context_dump(task):
+            return None  # a preamble or pasted page is not a task anyone asked for
         tools = self._collect_tools(messages, tools_called)
         steps = self._extract_steps(messages)
 
