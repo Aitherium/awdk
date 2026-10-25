@@ -224,19 +224,8 @@ def session_display_title(session_id: str, cwd: str, transcript_path: str = "",
     # it already carries the BRANCH (peers work on their own) and a start time
     # the owner can match to a tab, so it beats anything derived here. The
     # `#<id8>` form stays for a session that has no such name.
-    from adk.shell.claude_sessions import session_label
-
     repo = cwd_basename(cwd)
     short = (session_id or "")[:8]
-    # The local model's label (aither_session_title.py -> ~/.aither/session-labels)
-    # names the WORK; it is the one spelling every surface shares, so it wins over
-    # Claude's "<repo> <branch> HH:MM" and over a last-prompt topic ("do it").
-    label = session_label(session_id or "")
-    if label:
-        # `#<id8>` keeps two sessions given the same label apart in a list
-        named = f"{label} #{short}" if short else label
-        need = NEEDS_OWNER.get(status or "")
-        return " - ".join([named, need]) if need else named
     name = " ".join(str(claude_name or "").split())
     if not name:
         name = f"{repo}#{short}" if repo and short else (repo or short or "session")
