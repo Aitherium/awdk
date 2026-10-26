@@ -4,6 +4,13 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `adk/harnesses/awsupervise.py` watches this host's Claude Code transcripts (main sessions, subagents, workflow agents) and the router trace. It flags agents that loop or stall: the same tool call 4+ times with no progress, the same error 3+ times, 25 turns and 15 minutes with no progress signal, an edit undone on one file, 3+ upstream failures in a row on the agent's model, or a subagent past its wall budget. It then escalates one rung per 10 minutes while the problem lasts. The first rung is a peer note in the session's steer mailbox, delivered at the next tool call. The second is an `awrelay` finding to `#agents`. The third is a decision card (stop it / re-run on Opus 5.5 / let it continue) whose answer routes back to the session. Each rung is deduped and rate-limited, and every action is logged to `~/.aither/supervisor/events-<date>.jsonl`. A DeepSeek-tier agent that stops progressing or keeps failing upstream gets an Opus 5.5 (`fable`) recommendation. The module is stdlib only and needs no fleet service. It runs as `--once`, `--watch`, `--dry-run` or `--self-test` (synthetic transcripts, no real notifications). On 2026-10-26 a dry run named the stalled `build:skull-fit` DeepSeek agent: 4 h in, 32 turns without progress, 95 router failures in a row. A retrospective run over 12 h flagged 30 agents, all on the DeepSeek tier.
+
+### Fixed
+- hookd no longer turns a hook's silent exit 2 into "blocked by hook" outside PreToolUse. Such an exit is now logged as a failed hook and does not block. PreToolUse still denies. While the settings hub answered 503, the folded `awsettings push --debounce` hook exited 2 with no output on every tool call, and every PostToolUse in every session showed a hook blocking error with an empty reason.
+- `hookd convert` keeps the promise of a `<cmd> || true` hook. Before, it dropped the suffix and folded a fail-soft hook into one that could block. It now marks the spec `h=~...`, and hookd reports that hook's exit as 0 and logs the real code.
+
 ## [3.8.92] - 2026-10-25
 
 ### Fixed

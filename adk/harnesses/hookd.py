@@ -6,7 +6,10 @@ the interpreter + conhost per call, and one Bash tool call fired ~55 processes. 
 hook spawns nothing: Claude Code POSTs the event JSON here, a prefork worker runs each
 Python hook in-process with that JSON on stdin, and the results merge into one response
 with command-hook semantics (exit 2 blocks, JSON stdout is passed through, plain stdout
-becomes context on UserPromptSubmit).
+becomes context on UserPromptSubmit). One exception: an exit 2 that SAYS NOTHING outside
+PreToolUse is a failed hook, not a decision. It is logged and does not block. Measured
+2026-10-26: the folded awsettings push hook exited 2 silently while the settings hub
+answered 503, and every PostToolUse in every session showed "blocked by hook".
 
 Stdlib only, runnable straight from the tree (`adk` imports from a deploy snapshot):
 
@@ -23,8 +26,10 @@ settings.json entry (one per event group, hooks listed as `h=` in order):
      "allowedEnvVars": ["CLAUDE_PROJECT_DIR"]}
 
 `h=<path>|<arg>|<arg>`: a relative path resolves against X-Project-Dir. Only files under
-`allowed_roots()` run. The required X-Hookd header forces a CORS preflight, which this server
-never answers, so a web page cannot drive it.
+`allowed_roots()` run. `h=~<path>|...` marks a hook folded from a command that ended in
+`|| true`: any exit it makes is reported as 0, as the shell did. The required X-Hookd
+header forces a CORS preflight, which this server never answers, so a web page cannot
+drive it.
 """
 from __future__ import annotations
 
@@ -52,6 +57,10 @@ STATE_DIR = HOME / ".aither" / "hookd"
 ROOTS_FILE = STATE_DIR / "roots.txt"  # one extra allowed directory per line
 MODULES_FILE = STATE_DIR / "modules.txt"  # top-level packages `ep:`/`-m:` may run
 MAX_JOBS = 500  # a worker is recycled after this many jobs (module state, memory)
+#: Spec prefix for a hook folded from `<cmd> || true`. Dropping the suffix without keeping
+#: its promise turned a fail-soft hook into one that blocks: `awsettings --quiet push
+#: --debounce || true` folded to a hook that exits 2, silently, whenever the hub is down.
+SOFT = "~"
 
 
 def allowed_roots(project_dir: str) -> list:
@@ -249,18 +258,20 @@ def allowed_modules() -> set:
 
 
 def parse_specs(query: str, project_dir: str) -> list:
-    """`h=path|arg|arg` entries -> [(target, [args])], refusing anything not allowlisted.
+    """`h=path|arg|arg` entries -> [(target, [args], soft)], refusing anything not allowlisted.
 
     A target is a script path, `ep:<module>:<func>` (a console script's entry point) or
-    `-m:<module>`; a module's top-level package must be listed in MODULES_FILE."""
+    `-m:<module>`; a module's top-level package must be listed in MODULES_FILE. `soft` is
+    the SOFT prefix: the hook was folded from `<cmd> || true`."""
     specs = []
     for raw in urllib.parse.parse_qs(query, keep_blank_values=False).get("h", []):
-        parts = raw.split("|")
+        soft = raw.startswith(SOFT)
+        parts = (raw[len(SOFT):] if soft else raw).split("|")
         if parts[0].startswith(("ep:", "-m:")):
             pkg = parts[0][3:].split(":")[0].split(".")[0]
             if pkg not in allowed_modules():
                 raise PermissionError("module not allowlisted: %s" % pkg)
-            specs.append((parts[0], parts[1:]))
+            specs.append((parts[0], parts[1:], soft))
             continue
         p = Path(parts[0].replace("$HOME", str(HOME)))
         if not p.is_absolute():
@@ -268,7 +279,7 @@ def parse_specs(query: str, project_dir: str) -> list:
         p = p.resolve()
         if not any(_under(p, r) for r in allowed_roots(project_dir)):
             raise PermissionError("hook outside allowed roots: %s" % p)
-        specs.append((str(p), parts[1:]))
+        specs.append((str(p), parts[1:], soft))
     return specs
 
 
@@ -311,6 +322,24 @@ def _under(p: Path, root: Path) -> bool:
         return False
 
 
+def silent_exit2(event: str, r: dict) -> bool:
+    """Exit 2 with nothing on stdout or stderr, on an event where 2 would BLOCK.
+
+    That is a hook that failed (an offline sync, a crash path with no message), not a
+    hook that decided anything: there is no reason to show, so the block would read
+    "blocked by hook" on every tool call. PreToolUse stays fail-closed: there exit 2 is
+    a deny, and a gate that cannot say why still denies."""
+    return (r.get("code") == 2 and event != "PreToolUse"
+            and not str(r.get("out") or "").strip() and not str(r.get("err") or "").strip())
+
+
+def soften(r: dict, soft: bool) -> dict:
+    """A hook folded from `<cmd> || true` succeeds whatever it exits; keep the real code."""
+    if soft and r.get("code") not in (0, None):
+        return dict(r, code=0, soft_code=r["code"])
+    return r
+
+
 def merge(event: str, results: list) -> dict:
     """Fold command-hook results into one http-hook response (same JSON schema)."""
     resp: dict = {}
@@ -326,6 +355,8 @@ def merge(event: str, results: list) -> dict:
 
     for r in results:
         out, err, code = r["out"].strip(), r["err"].strip(), r["code"]
+        if silent_exit2(event, r):
+            continue  # a failed hook, not a decision: non-blocking (the handler logs it)
         if code == 2:
             why = err or out or "blocked by hook"
             if event == "PreToolUse":
@@ -460,12 +491,12 @@ def make_handler(pool: Pool, stats: _Stats):
             timeout = float(urllib.parse.parse_qs(url.query).get("t", [DEFAULT_TIMEOUT])[0])
             results: list = [None] * len(specs)
 
-            def go(i: int, path: str, args: list) -> None:
-                results[i] = pool.run({"path": path, "args": args, "stdin": body,
-                                       "cwd": project, "env": env}, timeout)
+            def go(i: int, path: str, args: list, soft: bool) -> None:
+                results[i] = soften(pool.run({"path": path, "args": args, "stdin": body,
+                                              "cwd": project, "env": env}, timeout), soft)
 
-            threads = [threading.Thread(target=go, args=(i, p, a), daemon=True)
-                       for i, (p, a) in enumerate(specs)]
+            threads = [threading.Thread(target=go, args=(i, p, a, s), daemon=True)
+                       for i, (p, a, s) in enumerate(specs)]
             for t in threads:
                 t.start()
             for t in threads:
@@ -476,13 +507,20 @@ def make_handler(pool: Pool, stats: _Stats):
             with stats.lock:
                 stats.requests += 1
                 stats.hooks += len(specs)
-                stats.errors += sum(1 for r in results if r["code"] not in (0, 2))
+                stats.errors += sum(1 for r in results if r["code"] not in (0, 2)
+                                    or r.get("soft_code") or silent_exit2(event, r))
             _log("%s %s %s" % (event, sid[:8], " ".join(
-                "%s=%d/%dms" % (Path(p).name, r["code"], r["ms"])
-                for (p, _), r in zip(specs, results))))
-            for (p, _), r in zip(specs, results):
+                "%s=%d/%dms" % (Path(p).name, r.get("soft_code", r["code"]), r["ms"])
+                for (p, _, _), r in zip(specs, results))))
+            for (p, _, _), r in zip(specs, results):
                 if r["code"] not in (0, 2):
                     _log("  %s exit %d: %s" % (Path(p).name, r["code"], r["err"][-600:]))
+                elif r.get("soft_code"):
+                    _log("  %s exit %d reported as 0 (folded from `|| true`): %s"
+                         % (Path(p).name, r["soft_code"], r["err"][-300:]))
+                elif silent_exit2(event, r):
+                    _log("  %s exit 2 with no reason on %s: a failed hook, not a block"
+                         % (Path(p).name, event))
             self._send(200, resp)
 
     return H
@@ -574,10 +612,11 @@ def hook_spec(h: dict, project_dir: str, scripts: dict):
             return None
         target, rest = args[0].replace("${CLAUDE_PROJECT_DIR}/", ""), args[1:]
     else:
-        word = cmd.removesuffix(" || true").split()
-        if word and word[0] in scripts and not any(c in cmd.removesuffix(" || true")
-                                                    for c in "|&;<>$`"):
-            return "|".join([scripts[word[0]], *word[1:], *args])
+        bare = cmd.removesuffix(" || true")
+        word = bare.split()
+        if word and word[0] in scripts and not any(c in bare for c in "|&;<>$`"):
+            spec = "|".join([scripts[word[0]], *word[1:], *args])
+            return SOFT + spec if bare != cmd else spec  # keep the `|| true` promise
         return None
     try:
         parse_specs(urllib.parse.urlencode({"h": target}), project_dir)
@@ -685,6 +724,19 @@ def _self_test() -> int:
           m.get("hookSpecificOutput", {}).get("additionalContext") == "ctx one\n\nctx two")
     check("PostToolUse plain stdout dropped", merge("PostToolUse", [r(0, "noise")]) == {})
     check("non-blocking error dropped", merge("Stop", [r(1, err="boom")]) == {})
+    check("silent exit 2 on PostToolUse is a failed hook, not a block",
+          merge("PostToolUse", [r(0), r(2), r(0)]) == {})
+    check("silent exit 2 on Stop / UserPromptSubmit does not block",
+          merge("Stop", [r(2)]) == {} and merge("UserPromptSubmit", [r(2, out="  ")]) == {})
+    m = merge("PreToolUse", [r(2)])
+    check("silent exit 2 on PreToolUse still denies (a gate fails closed)",
+          m.get("hookSpecificOutput", {}).get("permissionDecision") == "deny")
+    m = merge("PostToolUse", [r(2, err="lint failed")])
+    check("exit 2 WITH a reason on PostToolUse still blocks",
+          m.get("decision") == "block" and m.get("reason") == "lint failed")
+    check("a SOFT (`|| true`) hook reports any exit as 0 and keeps the real code",
+          soften(r(2), True)["code"] == 0 and soften(r(2), True)["soft_code"] == 2
+          and soften(r(2), False)["code"] == 2 and "soft_code" not in soften(r(0), True))
     m = merge("PreToolUse", [r(0, json.dumps({"hookSpecificOutput": {
         "permissionDecision": "allow"}})), r(0, json.dumps({"hookSpecificOutput": {
             "permissionDecision": "ask", "permissionDecisionReason": "why"}}))])
@@ -743,6 +795,18 @@ def _self_test() -> int:
         specs = parse_specs("h=.claude/hooks/g.py", str(sub))
         check("relative hook found from a subdirectory",
               specs and Path(specs[0][0]) == (hooks_dir / "g.py").resolve())
+        scripts = {"awsettings": "ep:awsettings.cli:main"}
+        soft = hook_spec({"type": "command",
+                          "command": "awsettings --quiet push --debounce || true"}, d, scripts)
+        plain = hook_spec({"type": "command",
+                           "command": "awsettings --quiet --never-fail push --debounce"},
+                          d, scripts)
+        check("convert keeps `|| true` as the SOFT marker, and only there",
+              soft == SOFT + "ep:awsettings.cli:main|--quiet|push|--debounce"
+              and plain == "ep:awsettings.cli:main|--quiet|--never-fail|push|--debounce")
+        specs = parse_specs("h=" + SOFT + ".claude/hooks/g.py|--x", str(sub))
+        check("a SOFT spec parses with soft=True and its args intact",
+              specs and specs[0][1] == ["--x"] and specs[0][2] is True)
         cands = project_candidates("$CLAUDE_PROJECT_DIR", str(sub))
         check("uninterpolated header falls to the payload cwd", cands == [str(sub)])
         if os.name == "nt":
