@@ -58,6 +58,21 @@ GUARD_PAUSE = STATE_DIR / "guard.paused"
 
 DEFAULT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
+# Claude Code's own auto name ("<dir> <branch> HH:MM") says nothing about the work.
+_AUTO_NAME_RE = re.compile(r" \d{1,2}:\d{2}$")
+# Shared session-label registry (awrelay.session.session_label writes/reads the same).
+LABELS_DIR = Path(os.environ.get("AWRELAY_SESSION_LABELS", "").strip()
+                  or Path.home() / ".aither" / "session-labels")
+
+
+def session_label(session_id: str) -> str:
+    """The model-written label for a session (~/.aither/session-labels), or ""."""
+    try:
+        data = json.loads((LABELS_DIR / f"{session_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(data.get("title") or "") if isinstance(data, dict) else ""
+
 
 @dataclass
 class SessionMeta:
@@ -144,6 +159,7 @@ def _head_cwd(path: Path, head_bytes: int = 64 * 1024) -> str:
 def parse_session_meta(path: Path) -> SessionMeta:
     """Recover a session's metadata from head + tail of its journal."""
     meta = SessionMeta(id=path.stem, file=str(path))
+    custom = ""
     for line in _read_tail_lines(path):
         line = line.strip()
         if not line:
@@ -157,6 +173,8 @@ def parse_session_meta(path: Path) -> SessionMeta:
         typ = obj.get("type")
         if typ == "ai-title" and obj.get("aiTitle"):
             meta.title = str(obj["aiTitle"])
+        elif typ == "custom-title" and obj.get("customTitle"):
+            custom = str(obj["customTitle"])  # last one wins, as in Claude's picker
         elif typ == "last-prompt" and obj.get("lastPrompt"):
             meta.last_prompt = str(obj["lastPrompt"])
         if obj.get("cwd"):
@@ -170,8 +188,12 @@ def parse_session_meta(path: Path) -> SessionMeta:
     launch_cwd = _head_cwd(path)
     if launch_cwd:
         meta.cwd = launch_cwd
+    # A name someone (or the title hook) chose beats the AI title; Claude's own
+    # "<dir> <branch> HH:MM" auto name loses to everything but the bare id.
+    if custom and not _AUTO_NAME_RE.search(custom):
+        meta.title = custom
     if not meta.title:
-        meta.title = meta.id[:8]
+        meta.title = session_label(meta.id) or custom or meta.id[:8]
     if not meta.when:
         try:
             meta.when = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
