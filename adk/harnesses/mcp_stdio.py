@@ -1290,6 +1290,56 @@ from adk.harnesses.kvholder_tools import TOOLS as _KVHOLDER_TOOLS  # noqa: E402
 
 TOOLS += _KVHOLDER_TOOLS
 
+
+def _tokengate(name: str, arguments: dict):
+    """Call one tool from the tokengate toolpack.
+
+    Imported lazily: a pack that cannot load in this install must not stop the
+    awsh MCP server from starting, and the caller still gets a typed result
+    (``error_kind: unavailable``) rather than a dead tool.
+    """
+    try:
+        from adk.toolpacks.tokengate import tools as _tg
+    except Exception as exc:  # noqa: BLE001 — reported, never raised into the server
+        return {"ok": False, "error_kind": "unavailable",
+                "error": "%s: %s" % (type(exc).__name__, exc),
+                "hint": "the tokengate toolpack is not available in this awdk install"}
+    fn = getattr(_tg, name, None)
+    if not callable(fn):
+        return {"ok": False, "error_kind": "unavailable",
+                "error": "the tokengate pack does not define %s" % name}
+    return fn(**arguments)
+
+
+TOOLS += [
+    {"name": "tokengate_ask",
+     "description": ("Ask a question about a document too long for a context window. "
+                     "Returns the lane's short answer AND the evidence passages it "
+                     "was read from, each with character offsets into the document "
+                     "you sent. Pass exactly one of path or text."),
+     "schema": {"type": "object",
+                "properties": {
+                    "question": {"type": "string",
+                                 "description": "What to answer from the document."},
+                    "path": {"type": "string",
+                             "description": "Local document: txt/md/code directly, or "
+                                            "pdf/docx/pptx/xlsx with the awdk[docs] extra."},
+                    "text": {"type": "string",
+                             "description": "The document itself, when you already hold it."},
+                    "max_kept_tokens": {"type": "integer", "minimum": 1,
+                                        "description": "Optional cap on the tokens the "
+                                                       "gate keeps; omit for the lane default."},
+                },
+                "required": ["question"]},
+     "fn": lambda a: _tokengate("tokengate_ask", a)},
+
+    {"name": "tokengate_status",
+     "description": ("TokenGate lane health: is it up, is the model loaded, and is it "
+                     "holding a GPU lease. Call this before blaming a failed ask."),
+     "schema": {"type": "object", "properties": {}},
+     "fn": lambda a: _tokengate("tokengate_status", a)},
+]
+
 BY_NAME = {t["name"]: t for t in TOOLS}
 
 

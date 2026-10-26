@@ -19,6 +19,11 @@ tools:
     # but NOT in the awsh/awdk local lane — the aither identity never loaded the pack,
     # so `awsh` could not drive MediaForge at all. availability:local, no entitlement.
     - mediaforge
+    # tokengate (2026-10-26): same gap — tokengate_* (ask a document too long for any
+    # context window; get the answer plus the exact passages) was reachable only from
+    # AitherOS, never from an awdk agent or an awsh session. free tier, no entitlement;
+    # the tools return a typed error until a lane answers at AITHER_TOKENGATE_URL.
+    - tokengate
 
 system_prompt: |
   You are Aither, an AI orchestrator managing complex technical and operational systems.

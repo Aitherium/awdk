@@ -1,0 +1,34 @@
+id: tokengate
+name: TokenGate — Ask a Long Document, Get the Answer and the Passages
+version: 1.0.0
+description: >-
+  Read a document larger than any context window and get a short answer plus the
+  exact passages it came from. tokengate_ask sends a document (a local file or
+  raw text) and a question to a TokenGate document lane: the gate scores every
+  document token at an early layer, keeps the top-K, and the layers above answer
+  from only those — so the answer is cheap and the evidence is verifiable.
+  Evidence passages carry character offsets into the document that was sent, so
+  a caller can quote, link or re-read them. Errors are typed: 413 (over the
+  lane's token ceiling) carries BOTH state_tokens and max_state_tokens, 503
+  (not loaded / waiting for a GPU lease) carries Retry-After when the lane sets
+  it, and an unreachable lane is reported as unreachable — never as an empty
+  answer. A file that looks like a credential store is refused rather than sent.
+  tokengate_status reports health, checkpoint and lease state.
+category: cognition
+tier: free
+author: Aitherium
+icon: file-search
+tags: [documents, long-context, rag, evidence, tokengate, question-answering]
+
+mcp_tools:
+  - "tokengate_*"
+
+# Empty -> the loader file-loads this pack's __init__.py by path and calls register().
+tool_modules: []
+
+entitlements: []
+
+skills: []
+
+persona_fragments:
+  - "TokenGate document lane: you have tokengate_* tools for questions about a document too long for a context window. Call tokengate_ask(question, path=...) for a local file (txt/md/code; pdf/docx/pptx/xlsx need the awdk[docs] extra) or tokengate_ask(question, text=...) when you already have the text — pass exactly one. The result carries the lane's own short answer AND `evidence`: the document sentences the gate kept, ranked, each with `start`/`end` character offsets into the document you sent. Quote or cite those passages when the answer matters; the offsets point into the text as sent, so they remain valid for the file you read. Read `document_chars` and `kept_tokens` to see what the gate actually read. Every failure is typed by `error_kind`: document_too_long (413, with both state_tokens and max_state_tokens — split the document, never pretend the whole thing was read), lane_unavailable (503, not loaded or waiting for a GPU lease; honor Retry-After), unreachable (no lane at the URL), timeout, file_not_found, unsupported_document, extraction_unavailable (install awdk[docs]), secret_file_refused (a credential store is never shipped to the lane — pass text= if you truly mean it), bad_input. tokengate_status() reports whether the lane is up, loaded, and holding a lease."
