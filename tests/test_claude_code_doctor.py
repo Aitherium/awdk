@@ -281,3 +281,63 @@ def test_allow_key_allowlists_an_intentional_custom_key(tmp_path):
     rep = ccd.run_doctor(home, proj, allow_keys=["myTeamKey"], **kw)
     assert rep.exit_code == 0, rep.findings
     assert any("myTeamKey" in n for n in rep.notes)  # the allowlist is printed
+
+
+# --- setup: the user-scope local research delegate ---------------------------------
+
+
+def _entry(tmp_path: Path) -> dict:
+    data = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
+    return data["mcpServers"][ccd.DELEGATE_SERVER]
+
+
+def test_setup_registers_the_delegate_at_user_scope(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+    assert ccd.run_setup(tmp_path, dry_run=False, use_cli=False) == 0
+    entry = _entry(tmp_path)
+    assert entry["type"] == "stdio"
+    assert entry["command"] == ccd.sys.executable
+    assert entry["args"][0] == "-S"
+    assert entry["args"][1].endswith("awdelegate.py")
+    assert entry["args"][-1] == "--mcp"
+    assert ccd.delegate_module().is_file()
+    assert "registered mcpServers.aither-local" in capsys.readouterr().out
+
+
+def test_setup_registration_is_idempotent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+    assert ccd.run_setup(tmp_path, dry_run=False, use_cli=False) == 0
+    first = (tmp_path / ".claude.json").read_bytes()
+    capsys.readouterr()
+    assert ccd.run_setup(tmp_path, dry_run=False, use_cli=False) == 0
+    assert "in step: " in capsys.readouterr().out
+    assert (tmp_path / ".claude.json").read_bytes() == first
+    assert not list(tmp_path.glob(".claude.json.bak-adk-setup-*"))
+
+
+def test_setup_keeps_a_delegate_entry_the_user_edited(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+    mine = {"type": "stdio", "command": "custom-python",
+            "args": ["-m", "my.delegate"], "env": {"X": "1"}}
+    _write(tmp_path / ".claude.json", {"mcpServers": {ccd.DELEGATE_SERVER: mine}})
+    assert ccd.run_setup(tmp_path, dry_run=False, use_cli=False) == 0
+    out = capsys.readouterr().out
+    assert "kept (yours)" in out
+    data = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
+    assert data["mcpServers"][ccd.DELEGATE_SERVER] == mine
+
+
+def test_setup_refuses_to_rewrite_malformed_claude_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+    (tmp_path / ".claude.json").write_text("{ nope", encoding="utf-8")
+    assert ccd.run_setup(tmp_path, dry_run=False, use_cli=False) == 2
+    assert (tmp_path / ".claude.json").read_text(encoding="utf-8") == "{ nope"
+    assert "refusing to rewrite it" in capsys.readouterr().out
+
+
+def test_setup_dry_run_does_not_create_claude_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+    assert ccd.run_setup(tmp_path, dry_run=True, use_cli=False) == 0
+    out = capsys.readouterr().out
+    assert "would register mcpServers.aither-local" in out
+    assert not (tmp_path / ".claude.json").exists()

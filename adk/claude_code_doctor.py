@@ -7,8 +7,11 @@ setup
     ``~/.claude/settings.json`` (atomically, after a timestamped backup). Then runs
     ``awsettings preset apply aitherium-claude`` when the installed awsettings has the
     ``preset`` verb and knows that preset (probed with the read-only ``preset list``);
-    an older awsettings is skipped with a line saying why. ``--dry-run`` prints the
-    plan and changes nothing.
+    an older awsettings is skipped with a line saying why. Finally it registers the
+    local research delegate (``adk/awdelegate.py``) as the user-scope stdio MCP
+    server ``aither-local`` in ``~/.claude.json``, resolving the interpreter and
+    module path on this machine. An entry that already exists is never replaced.
+    ``--dry-run`` prints the plan and changes nothing.
 
 doctor (a checker: exit 0 clean, 1 violation, 2 could-not-judge)
     CCD001  autoMode in a project/local settings file (Claude Code reads autoMode only
@@ -135,6 +138,7 @@ HOOK_TIMEOUT_S = 15
 PLUGIN_ID = "awsh@awsh"
 MARKETPLACE = "awsh"
 AWSETTINGS_PRESET = "aitherium-claude"
+DELEGATE_SERVER = "aither-local"
 
 
 # ------------------------------------------------------------------------ model
@@ -977,6 +981,82 @@ def awsettings_preset_support(aws: str, preset: str = AWSETTINGS_PRESET) -> str:
     return ""
 
 
+def delegate_module() -> Path:
+    """The delegate shipped beside this module -- no import, so this also works
+    from a source checkout whose dependencies are not installed."""
+    return Path(__file__).resolve().parent / "awdelegate.py"
+
+
+def delegate_entry() -> tuple[dict | None, str]:
+    """(stdio entry, '') for THIS machine, or (None, why not).
+
+    The interpreter is the one running setup and the script is the module file
+    beside this file. ``-S`` keeps the server stdlib-only: the delegate imports
+    nothing outside the standard library, while ``import adk`` would pull the
+    whole agent runtime."""
+    module = delegate_module()
+    if module.is_file():
+        return {"type": "stdio", "command": sys.executable,
+                "args": ["-S", str(module), "--mcp"], "env": {}}, ""
+    exe = shutil.which("adk-awdelegate")
+    if exe:
+        return {"type": "stdio", "command": exe, "args": ["--mcp"], "env": {}}, ""
+    return None, "adk/awdelegate.py is missing and no `adk-awdelegate` is on PATH"
+
+
+def user_mcp_path(home: Path) -> Path:
+    """Claude Code's user-scope MCP servers: top-level ``mcpServers`` in
+    ``~/.claude.json`` (not settings.json, and not the plugin-scoped .mcp.json)."""
+    return home / ".claude.json"
+
+
+def register_delegate(home: Path, *, dry_run: bool = False, out=print) -> int:
+    """Register the local research delegate at USER scope, idempotently.
+
+    0 when in step, registered, or deliberately kept; 2 when the file cannot be
+    judged (invalid JSON or a non-object mcpServers) -- never rewritten then.
+    A different existing entry is KEPT: setup installs a default, it does not
+    overwrite a registration the user chose."""
+    entry, why = delegate_entry()
+    path = user_mcp_path(home)
+    if entry is None:
+        out(f"skipped: {DELEGATE_SERVER} MCP registration -- {why}")
+        return 0
+    data: dict = {}
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig") or "{}")
+        except ValueError as exc:
+            out(f"setup: {path} is not valid JSON ({exc}); refusing to rewrite it")
+            return 2
+        if not isinstance(data, dict):
+            out(f"setup: {path} is not a JSON object; refusing to rewrite it")
+            return 2
+    servers = data.get("mcpServers")
+    if servers is not None and not isinstance(servers, dict):
+        out(f"setup: {path}: mcpServers is not an object; refusing to rewrite it")
+        return 2
+    current = (servers or {}).get(DELEGATE_SERVER)
+    if current == entry:
+        out(f"in step: {path}: mcpServers.{DELEGATE_SERVER}")
+        return 0
+    if current is not None:
+        out(f"kept (yours): {path}: mcpServers.{DELEGATE_SERVER} -- delete that "
+            f"entry (or run `claude mcp remove {DELEGATE_SERVER}`) and rerun to "
+            f"re-register it")
+        return 0
+    if dry_run:
+        out(f"would register mcpServers.{DELEGATE_SERVER} in {path}: "
+            f"{entry['command']} {' '.join(entry['args'])}")
+        return 0
+    data.setdefault("mcpServers", {})[DELEGATE_SERVER] = entry
+    backup = atomic_write_json(path, data)
+    out(f"registered mcpServers.{DELEGATE_SERVER} in {path}"
+        + (f" (backup {backup.name})" if backup else "")
+        + " -- restart Claude Code to load it")
+    return 0
+
+
 def run_setup(home: Path, dry_run: bool = False, use_cli: bool = True) -> int:
     src = plugin_source_dir()
     actions: list[str] = []
@@ -1058,6 +1138,9 @@ def run_setup(home: Path, dry_run: bool = False, use_cli: bool = True) -> int:
         actions.append(
             "skipped: awsettings not installed (pip install awsettings to sync the preset)"
         )
+    delegate_rc = register_delegate(home, dry_run=dry_run, out=actions.append)
+    if delegate_rc:
+        rc = rc or delegate_rc
     for a in actions:
         print(("[dry-run] " if dry_run else "") + a)
     if not dry_run:

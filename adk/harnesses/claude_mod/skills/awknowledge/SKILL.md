@@ -143,6 +143,13 @@ valuable part when the symptom recurs.
 exhaustive audits, crisis debugging across systems. Give each stream ownership and a
 gate that can fail. **Stay solo for:** single-threaded edits, isolated fixes, status
 checks. Splitting one coherent edit across agents is bad delegation.
+**Local-first exploration:** before more than ~5 searches or reads, delegate the
+digging to the local research MCP server (`research` on `aither-local`): up to 50
+read-only tool calls, a brief with path:line and URL citations, reused (`recall` /
+`brief`) until a cited file changes. `deep_research` is for the outside world;
+`ask_aither` can write files, so name what it may touch. Measured 2026-10-26: 28
+local tool calls in 82 s kept 65,944 characters out of frontier context; a DeepSeek
+subagent recalled a stored brief in 42 s.
 **Evidence:** 1,004 delegations / 541 workflow runs / 1,184 subagent dispatches,
 clustering on builds, sweeps and crises — not small fixes.
 

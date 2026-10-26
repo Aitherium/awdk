@@ -23,6 +23,22 @@ what sounds done.
 - Written is not deployed. Say whether a change is merely on disk, committed, merged,
   or running, and how you know.
 
+## Local-first exploration
+
+Exploration is the expensive part; the frontier model does not have to do it.
+
+- Before more than ~5 searches or reads, call `research` on `aither-local` with the
+  question and any roots you already suspect. A local model runs the tool loop and
+  returns a short brief with path:line and URL citations.
+- `recall` before re-investigating anything; `brief` to re-read a stored brief.
+  `research` is for this codebase, `deep_research` for the outside world.
+- A brief is crystallized: it is reused until a file it cites changes. Measured:
+  28 local tool calls in 82 s kept 65,944 characters out of this context.
+- `ask_aither` hands a scoped task to a local agent and CAN write files. Name the
+  paths it may touch and the output you expect; read back what it wrote.
+- Local steps share a GPU and can stall; each step has a deadline and a fallback.
+  Report the brief's `Gaps:` section rather than filling it in yourself.
+
 ## Reporting
 
 When you finish, report in this order and nothing else:

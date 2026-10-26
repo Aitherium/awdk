@@ -338,6 +338,11 @@ awdk = "adk.cli:main"
 adk-serve = "adk.server:main"
 adk-workspace = "adk.server:main_workspace"
 adk-bug = "adk.bugreport:main"
+# The local research delegate as a plain command. `adk claude setup` registers the
+# MCP server as `python -S <adk/awdelegate.py>` instead: importing `adk.awdelegate`
+# executes `adk/__init__.py` and pulls the whole runtime, while the delegate is
+# stdlib-only and must start with -S (no site-packages).
+adk-awdelegate = "adk.awdelegate:main"
 adk-shell = "adk.shell.cli:entry"
 # Aither Hearth (the product; its pack id stays `agent-home`): the desktop, awdesk
 # and awsh launchers look for this name first. The same CLI as `adk home`.
