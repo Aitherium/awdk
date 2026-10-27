@@ -77,6 +77,21 @@ def _fake_httpx(monkeypatch, dim, seen):
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
 
 
+def test_describe_names_the_endpoint_only_after_a_real_embed(emb, monkeypatch):
+    """describe() is a REPORT, not a resolution. A fresh provider says url="" and only
+    embed_texts pins it -- anything that picks a lane by reading describe() first sees
+    an empty URL and falls through to the tenant (cloud_memory._local_embedding embeds
+    first on purpose; measured 2026-10-27)."""
+    mod = emb()
+    seen = []
+    _fake_httpx(monkeypatch, 768, seen)
+    monkeypatch.setenv("AITHER_EMBEDDINGS_URL", "https://embed.test:8209")
+    prov = mod.AdkEmbeddings()
+    assert prov.describe()["url"] == ""
+    asyncio.run(prov.embed_texts(["x"]))
+    assert prov.describe()["url"] == "https://embed.test:8209"
+
+
 def test_nomic_space_is_unchanged(emb, monkeypatch):
     mod = emb()
     assert mod.EMBED_SPACE == "nomic"

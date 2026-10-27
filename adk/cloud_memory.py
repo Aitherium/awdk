@@ -27,7 +27,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 Poster = Callable[[str, Dict[str, Any]], Tuple[int, Any]]
 
@@ -71,6 +71,53 @@ def _call(path: str, body: Dict[str, Any], poster: Optional[Poster]) -> Tuple[in
         return 0, None
 
 
+def _await(coro: Any) -> Any:
+    """Await a coroutine from sync verb code, even when a loop is already running.
+
+    `adk embed` is dispatched from the sync CLI, but adk is also imported by the MCP
+    server and the harness daemon, which call verbs from inside a loop; asyncio.run
+    refuses there, so the coroutine gets its own loop in a one-shot worker thread."""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+async def _local_embedding(text: str, modality: str = "text") -> Optional[List[float]]:
+    """Embed ``text`` with the LOCAL provider, or None when only the tenant can answer.
+
+    Asked FIRST, before ``_call``: ``_call`` refuses without ``AITHER_API_KEY``, and a
+    sovereign box that never enrolled must still embed.
+
+    ``embed_texts`` is called BEFORE ``describe()`` on purpose. ``describe()`` reports
+    the URL a PREVIOUS resolution pinned; a fresh provider has ``_url=""``, so a
+    describe-first check reads "no local endpoint" forever (measured 2026-10-27)."""
+    if modality not in ("text", "code"):
+        return None                    # graph_state / agent_state are tenant-only
+    from adk.embeddings import get_provider
+
+    try:
+        prov = get_provider()
+        vecs, _dim = await prov.embed_texts([text])
+        info = prov.describe()
+    except Exception:  # noqa: BLE001 - any local failure falls through to the tenant
+        return None
+    if info.get("backend") not in ("vllm", "microscheduler", "cpu"):
+        return None        # gateway is metered, hash is not a model, none is no vector
+    if (info.get("space") == "aither-code-embed") != (modality == "code"):
+        return None        # each space serves exactly its own modality
+    vec = (vecs or [[]])[0]
+    if not vec or len(vec) != int(info.get("dim") or 0):
+        return None        # never label a vector with a width it does not have
+    return list(vec)
+
+
 def _fail(status: int, payload: Any) -> int:
     if status:
         detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
@@ -110,7 +157,18 @@ def add_cloud_memory_parsers(sub: Any) -> None:
 
 
 def cmd_embed(args: argparse.Namespace, poster: Optional[Poster] = None) -> int:
-    body = {"text": " ".join(args.text), "modality": args.modality, "dim": int(args.dim)}
+    text = " ".join(args.text)
+    vec = _await(_local_embedding(text, getattr(args, "modality", "text")))
+    if vec:
+        if getattr(args, "json", False):
+            print(json.dumps({"embedding": vec, "modality": args.modality,
+                              "dim": len(vec), "backend": "local"}))
+        else:
+            head = ", ".join(f"{v:.4f}" for v in vec[:6])
+            more = ", ..." if len(vec) > 6 else ""
+            print(f"dim={len(vec)} modality={args.modality} [{head}{more}]")
+        return 0
+    body = {"text": text, "modality": args.modality, "dim": int(args.dim)}
     status, payload = _call("/embeddings/embed", body, poster)
     if status != 200 or not isinstance(payload, dict):
         return _fail(status, payload)
