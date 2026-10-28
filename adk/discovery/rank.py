@@ -23,7 +23,9 @@ from typing import Callable, Optional
 
 from adk.discovery import index, scope, sources
 
-DOMAINS = ("tools", "skills", "packs", "agents")
+#: ``lanes`` first: a job that needs no new secret is the answer before any tool
+#: (credential_recipes.yaml ``lanes:``), and it wins a tie.
+DOMAINS = ("lanes", "tools", "skills", "packs", "agents")
 K1, B = 1.2, 0.75
 LIVE_WEIGHT = 0.9
 _STOP = frozenset("a an and the of in on for to with by from into at or is are be this that "

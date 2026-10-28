@@ -94,29 +94,36 @@ def daemon(tmp_path, monkeypatch):
     return client, get_store()
 
 
-def test_prompt_route_launches_once_and_carries_no_value(daemon, monkeypatch):
+def test_prompt_route_opens_the_desk_once_and_carries_no_value(daemon, monkeypatch):
     client, store = daemon
     store.create(_credential())
-    launched = []
+    shown = []
     import adk.decisions.secure_prompt as sp
 
-    monkeypatch.setattr(sp, "launch_gui_prompt",
-                        lambda card: (launched.append(card.id) or True, "masked prompt launched"))
+    def fake(card, **kw):
+        shown.append((card.id, kw.get("owner_initiated")))
+        return sp.CredentialSurface("desk", "awdesk Inbox brought forward")
+
+    monkeypatch.setattr(sp, "open_credential_surface", fake)
     r = client.post("/decisions/d-nwh4/prompt", json={})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["launched"] is True and body["secret_name"] == "PROTON_BRIDGE_PASSWORD"
-    assert set(body) == {"id", "launched", "detail", "secret_name"}
-    # a second tap from another surface does not open a second window
+    assert set(body) == {"id", "launched", "detail", "secret_name", "surface"}
+    assert body["surface"] == "desk"
+    # an "open it" tap is the owner asking: the ladder runs owner-initiated
+    assert shown == [("d-nwh4", True)]
+    # a second tap from another surface does not run the ladder twice
     again = client.post("/decisions/d-nwh4/prompt", json={})
-    assert again.json()["launched"] is True and launched == ["d-nwh4"]
+    assert again.json()["launched"] is True and len(shown) == 1
 
 
-def test_prompt_route_under_pytest_never_opens_a_window(daemon):
+def test_prompt_route_under_pytest_never_starts_the_desk(daemon):
     client, store = daemon
     store.create(_credential())
     body = client.post("/decisions/d-nwh4/prompt", json={}).json()
-    assert body["launched"] is False and "suppressed under test" in body["detail"]
+    assert body["launched"] is False and body["surface"] in ("remote", "none")
+    assert "under test" in body["detail"] or "not installed" in body["detail"]
 
 
 def test_prompt_route_refuses_other_kinds_and_unknown_cards(daemon):

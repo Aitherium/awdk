@@ -6,8 +6,9 @@ the owner enters the value through THIS module — a masked prompt — and it
 goes straight to the vault, then the card closes with the
 ``CREDENTIAL_ANSWER`` marker.
 
-The value's journey: a masked field (the terminal's ``getpass`` or the card
-window's ``show="•"`` entry) -> ``vault_credential`` -> the store that owns
+The value's journey: a masked field (the desk Inbox's CredentialRow, which pipes
+it into the host script's stdin door, or the terminal's ``getpass``) ->
+``vault_credential`` -> the store that owns
 the card's ``credential_scope`` — the platform vault, the user lockbox, or
 the workspace lockbox. It never touches the card store, the daemon's wire
 format, the popup render, or a session transcript. This module never prints
@@ -26,11 +27,13 @@ serves over HTTP, the popup renders, and the steering mailbox copies into
 session transcripts. The marker-only enforcement in ``store.answer()``
 closes that; the prompt here is the designed entry point.
 
-Doors, today: the card window's masked field ("Vault it here") and the
-terminal's ``getpass`` both call ``vault_credential`` — that is the ONE door.
-``launch_gui_prompt`` opens the host's standalone tkinter prompt bound to the
-card (``secret_prompt.py --card``) as the fallback for a desktop where the
-card window is not up; it closes the card itself with the same marker.
+Doors, today: the desk's masked field (through ``secret_prompt.py --card
+--value-stdin``) and the terminal's ``getpass`` both call ``vault_credential`` —
+that is the ONE door. WHERE the owner sees the field is
+:func:`open_credential_surface`: the running desk, else the desk started with its
+own launcher, else the remote surfaces whose link opens it on the PC, else a loud
+"none" with the reason. There is no Python-window fallback (owner, 2026-10-28:
+credential intake goes through awdesk/awconnect, "not one-off Python scripts").
 """
 
 from __future__ import annotations
@@ -41,37 +44,33 @@ import hashlib
 import logging
 import os
 import re
-import subprocess
-import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from adk.decisions.quiet import is_quiet
 from adk.decisions.store import DecisionCard, DecisionError, DecisionStore
 
 logger = logging.getLogger(__name__)
 
-#: The host-side masked GUI, relative to the monorepo root. It is the SAME door
-#: whether the raise came from the CLI or the card window: one command, one
-#: window, and the window closes the card itself when the vault confirms the
-#: write — so the raising session learns the outcome through the ordinary
+#: The host-side vault script, relative to the monorepo root: the in-container
+#: vault path (``vault_set``/``vault_len``) and the desk's stdin door
+#: (``--card --value-stdin``), which closes the card itself once the vault confirms
+#: the write -- so the raising session learns the outcome through the ordinary
 #: answer mailbox and nobody has to invent a detector.
 #:
-#: Why nobody may poll instead: measured 2026-09-13, an agent launched this
-#: prompt by hand next to a card and then waited for the vault value's LENGTH
-#: to change. A replacement token has the same length as the one it replaces,
-#: so three successful stores read as three failures and the owner was told
-#: so three times. The prompt answering the card is the only honest signal.
-GUI_PROMPT_REL = ("AitherOS", "scripts", "secret_prompt.py")
-
-#: Windows only; on POSIX ``creationflags`` is invalid, so the dict is empty.
-_GUI_NO_WINDOW = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | DETACHED_PROCESS
+#: Why nobody may poll instead: measured 2026-09-13, an agent launched a prompt
+#: by hand next to a card and then waited for the vault value's LENGTH to
+#: change. A replacement token has the same length as the one it replaces, so
+#: three successful stores read as three failures and the owner was told so
+#: three times. The door answering the card is the only honest signal.
+HOST_SCRIPT_REL = ("AitherOS", "scripts", "secret_prompt.py")
 
 
 def find_repo_root(start: Optional[Path] = None,
-                   marker: "tuple[str, ...]" = GUI_PROMPT_REL) -> Optional[Path]:
-    """The checkout that carries ``marker`` (the GUI prompt by default), or None.
+                   marker: "tuple[str, ...]" = HOST_SCRIPT_REL) -> Optional[Path]:
+    """The checkout that carries ``marker`` (the host vault script by default), or None.
 
     ``AITHER_REPO_ROOT`` wins when set. Otherwise walk up from this module
     (it lives three or four levels under the root, depending on which package
@@ -92,101 +91,107 @@ def find_repo_root(start: Optional[Path] = None,
     return None
 
 
-def has_display() -> bool:
-    """Is there a desktop to put a window on? Windows always; POSIX needs DISPLAY."""
-    if sys.platform == "win32":
-        return True
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+@dataclass
+class CredentialSurface:
+    """Where a credential card's masked field was put in front of the owner.
 
-
-def gui_prompt_argv(card: DecisionCard, root: Path) -> list[str]:
-    """The exact command that opens the masked GUI bound to ``card``.
-
-    ``pythonw`` on Windows so the GUI owns no console; the script itself asks
-    for the value, writes it to the vault, reads the LENGTH back and answers
-    the card. Nothing here carries the value.
+    ``surface`` is ``desk`` (the awdesk Inbox shows it), ``remote`` (the chat DM,
+    relay and the /decide page carry the card; their link opens the field on the
+    PC) or ``none`` (nothing can render it -- ``detail`` says why). Never a value.
     """
-    exe = Path(sys.executable)
-    if sys.platform == "win32":
-        windowed = exe.with_name("pythonw.exe")
-        if windowed.is_file():
-            exe = windowed
-    argv = [str(exe), str(root.joinpath(*GUI_PROMPT_REL)), "--card", card.id]
-    if card.secret_name:
-        argv += ["--name", card.secret_name]
-    scope = (card.credential_scope or "platform").strip().lower()
-    argv += ["--scope", scope]
-    if (card.credential_format or "").strip().lower() == "totp_seed":
-        argv.append("--totp")
-    return argv
+
+    surface: str
+    detail: str
+    started_desk: bool = False
+    link: str = ""
+    remote: "tuple[str, ...]" = ()
+
+    @property
+    def shown(self) -> bool:
+        return self.surface in ("desk", "remote")
 
 
-def launch_gui_prompt(card: DecisionCard,
-                      pid_out: "Optional[list[int]]" = None, *,
-                      owner_initiated: bool = False) -> "tuple[bool, str]":
-    """Open the masked GUI for a credential card, detached. Returns (launched, why).
+def remote_surfaces(notified: Any = None) -> "list[str]":
+    """The remote surfaces that carry a credential card off this PC.
 
-    ``pid_out``, when given, receives the window's pid so a later ask can tell
-    "the window is still up" from "the owner closed it -- open it again".
+    Every configured chat channel (the fanout DMs every credential card, presence
+    and urgency floor notwithstanding), plus the relay or webhook the raise itself
+    reached (``notified`` is the raise's ``NotifyResult``).
+    """
+    found: list[str] = []
+    try:
+        from adk.decisions.channels import load_config
 
-    Never raises: a card that cannot get a window is still a card, and the
-    caller prints ``why`` so the owner knows to use ``awask answer <id>``
-    (the terminal door) instead. ``why`` never contains a secret.
+        for platform, cfg in sorted((load_config() or {}).items()):
+            if cfg.enabled and cfg.owner_user_id:
+                found.append(str(platform))
+    except Exception as exc:  # noqa: BLE001 - an unreadable channels file is "none here"
+        logger.debug("chat channels unreadable (%s)", type(exc).__name__)
+    for name in getattr(notified, "delivered", None) or []:
+        if name in ("relay", "webhook") and name not in found:
+            found.append(name)
+    return found
 
-    ``owner_initiated`` is the owner pressing "open it" on a surface: that is
-    not an auto-popup, so the quiet hold (a game in front, do-not-disturb) does
-    not apply — the owner asked for the window, now. The test guard still does.
+
+def open_credential_surface(card: DecisionCard, *, owner_initiated: bool = False,
+                            notified: Any = None,
+                            start: "Optional[Callable[[], tuple[bool, str]]]" = None,
+                            ) -> CredentialSurface:
+    """Put a credential card's masked field in front of the owner. Never raises.
+
+    The ladder (owner, 2026-10-28), and there is no rung below it:
+
+    1. awdesk is running: its Inbox CredentialRow IS the field (an owner's "open
+       it" also brings the Inbox forward).
+    2. awdesk is installed but down: start it with its own launcher and wait for
+       its heartbeat. Held while quiet (a game in front, Do-not-disturb) unless the
+       owner asked.
+    3. the remote surfaces carry the card (chat DM, relay, awconnect, the /decide
+       page); their "open it" lands on the daemon's prompt route, which runs this
+       ladder on the PC -- so the field opens in the desk there.
+    4. nothing can render it: ``none`` and the reason. The card stays open.
+
+    NEVER a Tk dialog or a console prompt. Measured 2026-10-28: ``ask_credential``
+    returned ``prompt: "window"`` with awdesk not running, and the owner got a
+    masked Python window instead of the desk -- the one-off-script intake the
+    owner had vetoed. ``awask answer <id>`` at the owner's own terminal remains,
+    as a door the owner opens, never one an ask opens for them.
     """
     if (card.kind or "").strip().lower() != "credential":
-        return False, f"{card.id} is not a credential ask — no prompt to open"
-    # 🚩 A TEST RUN MUST NEVER PUT THIS DIALOG ON A HUMAN'S SCREEN. Measured
-    # 2026-09-19: a pytest run of the credential-card suite spawned six "Store
-    # credentials in AitherSecrets" windows over the owner's desktop, each
-    # asking for a real key from a temp store that no longer existed. The
-    # refusal is keyed on the env marker pytest sets for every test, so a NEW
-    # test file is safe without remembering to stub anything; AITHER_NO_GUI_PROMPT
-    # is the manual switch for a run that is not pytest. It is checked FIRST,
-    # before quiet/display, so the refusal is deterministic rather than
-    # host-dependent — and the test that pins this clears the marker to prove
-    # the guard is the marker and not a dead path.
-    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AITHER_NO_GUI_PROMPT"):
-        return False, ("masked prompt suppressed under test — answer at a terminal "
-                       f"with: awask answer {card.id}")
-    # Quiet (Do-not-disturb, or a full-screen game/app in front): the masked
-    # dialog is topmost to win the raise, i.e. it lands over the game. Hold it.
-    # The card is untouched -- still open, answerable from the terminal door.
+        return CredentialSurface("none", f"{card.id} is not a credential ask")
+    from adk.decisions import notify as desk
+
+    if desk.desk_alive():
+        detail = "awdesk is running: the masked field is in its Inbox"
+        if owner_initiated:
+            error = desk.raise_desk_inbox()
+            detail += (f" (the Inbox could not be brought forward: {error})" if error
+                       else ", brought forward")
+        return CredentialSurface("desk", detail)
     quiet, quiet_why = (False, "") if owner_initiated else is_quiet()
     if quiet:
-        return False, (f"held while quiet: {quiet_why}; "
-                       f"answer with adk decide answer {card.id}")
-    if not has_display():
-        return False, ("no display (DISPLAY unset) — masked prompt not launched; "
-                       f"answer at a terminal with: awask answer {card.id}")
-    root = find_repo_root()
-    if root is None:
-        return False, ("the masked GUI prompt is not in reach (set AITHER_REPO_ROOT "
-                       "to the checkout that carries AitherOS/scripts/secret_prompt.py); "
-                       f"answer at a terminal with: awask answer {card.id}")
-    argv = gui_prompt_argv(card, root)
-    # Detached and console-less: a detached parent has no console, so any
-    # console-subsystem child would otherwise get a NEW window that takes focus.
-    extra: dict = {}
-    if os.name == "nt":
-        extra["creationflags"] = _GUI_NO_WINDOW
+        desk_why = f"awdesk was not started while quiet ({quiet_why})"
     else:
-        extra["start_new_session"] = True
-    try:
-        proc = subprocess.Popen(
-            argv, cwd=str(root), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **extra,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, (f"masked prompt failed to launch ({type(exc).__name__}: {exc}); "
-                       f"answer at a terminal with: awask answer {card.id}")
-    if pid_out is not None:
-        pid_out.append(proc.pid)
-    return True, (f"masked prompt launched for {card.secret_name or card.id} — "
-                  f"it closes {card.id} itself once the vault confirms the write")
+        started, desk_why = (start or desk.start_desk)()
+        if started:
+            if owner_initiated:
+                desk.raise_desk_inbox()
+            return CredentialSurface(
+                "desk", desk_why + "; the masked field is in its Inbox", started_desk=True)
+    from adk.decisions.channels import decide_link
+
+    link = decide_link(card.id)
+    remotes = remote_surfaces(notified)
+    if remotes:
+        return CredentialSurface(
+            "remote", (f"{desk_why}; the ask is on {', '.join(remotes)}, and its link "
+                       f"opens the masked field in awdesk on this PC: {link}"),
+            link=link, remote=tuple(remotes))
+    return CredentialSurface(
+        "none", (f"no surface can show the masked field: {desk_why}, and no remote "
+                 f"channel is configured. {card.id} stays open; start awdesk and it is "
+                 "in the Inbox"),
+        link=link)
 
 
 def _session_bearer() -> str:
@@ -414,7 +419,7 @@ def _host_vault_module():
     if root is not None:
         import importlib.util
 
-        path = root.joinpath(*GUI_PROMPT_REL)
+        path = root.joinpath(*HOST_SCRIPT_REL)
         spec = importlib.util.spec_from_file_location("aither_secret_prompt", path)
         if spec is not None and spec.loader is not None:
             try:
@@ -447,7 +452,7 @@ def _push_via_fleet_host(key: str, value: str, scope: str) -> tuple[bool, str]:
     """
     host = _host_vault_module()
     if host is None:
-        return False, "fleet host(no " + "/".join(GUI_PROMPT_REL) + " in reach)"
+        return False, "fleet host(no " + "/".join(HOST_SCRIPT_REL) + " in reach)"
     try:
         ok, why = host.vault_set(key, value, scope=scope)
     except RuntimeError as exc:  # no engine / no vault-reaching container
@@ -560,7 +565,8 @@ def vault_credential(card_id: str, store: DecisionStore, value: str,
     """Push an already-captured value to the vault and close the card.
 
     THE ONE DOOR. Both entry points — the terminal's masked ``getpass`` and
-    the popup's masked field — call this, rather than each carrying its own
+    the desk's masked field (through the host script's stdin door) — call
+    this, rather than each carrying its own
     copy of "push, then answer with the marker". Two copies of one rule drift,
     and the half that drifts here is the half that decides whether a secret
     reaches the card store: ``store.answer()`` accepts the CREDENTIAL_ANSWER
@@ -857,7 +863,7 @@ def start_reconcile_sweep(interval_s: Optional[float] = None) -> Any:
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return None
     if _host_vault_module() is None:
-        logger.warning("credential sweep off: no %s in reach", "/".join(GUI_PROMPT_REL))
+        logger.warning("credential sweep off: no %s in reach", "/".join(HOST_SCRIPT_REL))
         return None
     every = float(interval_s or SWEEP_INTERVAL_S)
     stop = threading.Event()
@@ -881,8 +887,10 @@ def start_reconcile_sweep(interval_s: Optional[float] = None) -> Any:
 def capture_credential(card_id: str, store: DecisionStore) -> int:
     """Prompt (masked) at the TERMINAL for a credential card's value, vault it.
 
-    The popup's field is the other entry point; both end in
-    ``vault_credential`` so neither can diverge about where the value goes.
+    The desk's field (the host script's stdin door) is the other entry point;
+    both end in ``vault_credential`` so neither can diverge about where the
+    value goes. This one runs only when the owner types ``awask answer <id>``
+    at a terminal: no ask ever opens it for them.
     """
     card = resolve_card(card_id, store)
     label = card.secret_name or card.id

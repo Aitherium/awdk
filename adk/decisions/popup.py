@@ -41,8 +41,8 @@ Deliberate behaviours:
   failure of quality gate 1t, which this repo has already been bitten by.
 
 * **Keyboard first.** ``1``–``9`` pick an option, ``Enter`` takes the
-  recommendation (on a credential card it opens the masked vault prompt bound
-  to the card), ``Ctrl+Enter`` sends the reply box, ``Esc`` snoozes,
+  recommendation (on a credential card it opens the card's masked field in the
+  awdesk Inbox), ``Ctrl+Enter`` sends the reply box, ``Esc`` snoozes,
   ``Ctrl+←/→`` walks the queue. Every binding is suppressed while the caret is in
   the reply box, so typing "1. do the thing" cannot answer the card.
 
@@ -362,8 +362,8 @@ class CardWindow:
             return None                    # a newline in the reply box
         if self._is_credential():
             # A credential card has no recommendation to take; Enter opens
-            # the masked prompt, which is the card's one primary action.
-            self._launch_credential_prompt()
+            # its masked field in the desk, the card's one primary action.
+            self._open_in_desk()
             return "break"
         self._take_recommended()
         return "break"
@@ -561,21 +561,14 @@ class CardWindow:
         self._terminal_row(body, card, wheel)
 
     def _credential_row(self, body, card, wheel) -> None:
-        """A masked field whose value goes to the vault and nowhere else.
+        """WHICH secret, WHERE it goes -- and the one door: the masked field in awdesk.
 
-        The value's whole journey is: this widget -> ``secure_prompt.
-        vault_credential`` -> the store that owns the card's
-        ``credential_scope`` (platform vault, user or workspace
-        lockbox). It is never put
-        in a card field, never passed to ``store.steer`` (which copies text
-        into session transcripts), never logged, and never sent as the answer
-        — ``store.answer`` takes the CREDENTIAL_ANSWER marker only, and the
-        push happens before it.
-
-        The push is done on a WORKER THREAD. It is a network round trip, and
-        doing it inline freezes the Tk event loop: the window stops
-        repainting, which reads as the app hanging on the one interaction
-        where the owner most needs to know what happened.
+        This window takes no value. Owner, 2026-10-28: credential intake goes
+        through awdesk/awconnect, "not one-off Python scripts"; a masked field in a
+        Tk window is the same thing to the owner, whichever script drew it. The
+        desk Inbox's CredentialRow pipes the value into the vault's stdin door,
+        which reads it back and closes this card, so the raising session hears
+        through the ordinary answer mailbox.
         """
         tk = self.tk
         label_text = card.secret_name or card.id
@@ -602,17 +595,11 @@ class CardWindow:
                  bg=BG, fg=SOFT, font=(UI, 9), wraplength=WIDTH - 60,
                  justify="left", anchor="w").pack(fill="x", pady=(2, 0))
         tk.Label(frame,
-                 text="Typed here it goes straight to that store — it is not "
-                      "stored on the card and never reaches a transcript.",
+                 text="Enter it in the awdesk Inbox: the masked field there goes "
+                      "straight to that store, and this card closes once the vault "
+                      "confirms the write.",
                  bg=BG, fg=MUTED, font=(UI, 9), wraplength=WIDTH - 60,
                  justify="left", anchor="w").pack(fill="x", pady=(2, 6))
-
-        entry = tk.Entry(frame, show="•", bg=PANEL, fg=TEXT,
-                         insertbackground=TEXT, relief="flat",
-                         font=(MONO, 11), highlightthickness=1,
-                         highlightbackground=EDGE, highlightcolor=ACCENT)
-        entry.pack(fill="x", ipady=6)
-        self._credential_entry = entry
         self._credential_status = tk.Label(
             frame, text="", bg=BG, fg=MUTED, font=(UI, 9),
             wraplength=WIDTH - 60, justify="left", anchor="w")
@@ -620,133 +607,48 @@ class CardWindow:
 
         row = tk.Frame(frame, bg=BG)
         row.pack(fill="x", pady=(8, 0))
-        # THE door. "Enter it now" opens the host's masked GUI prompt bound to
-        # THIS card: the prompt writes to the vault, reads the length back and
-        # answers the card itself, so the raising session is told through the
-        # ordinary answer mailbox. It is the same command `awask ask
-        # --credential` runs at raise time — one door, whichever surface the
-        # owner happens to be looking at. Enter triggers it (see _on_return).
-        self._plain_button(row, "Enter it now  (Enter)",
-                           self._launch_credential_prompt, primary=True, side="left",
-                           hint="opens the masked vault prompt for this secret; "
-                                "it closes the card when the write is confirmed")
-        self._plain_button(row, "Vault it here  (Ctrl+Enter)",
-                           self._submit_credential, side="left",
-                           hint="push the field above straight to the vault")
-
-        # Reveal is HELD, never toggled, and starts masked. A toggle is a state
-        # someone can leave on: the field then stays readable behind whatever
-        # window comes next, and over a shoulder or a screen share the owner has
-        # no signal that it is still showing. Holding a button is self-cancelling
-        # — the secret is visible exactly as long as a finger is down.
-        reveal = tk.Label(row, text="  👁 hold to reveal  ", bg=PANEL, fg=SOFT,
-                          font=(UI, 9), padx=6, pady=5, cursor="hand2")
-        reveal.pack(side="left", padx=(0, 8), pady=(0, 2))
-        reveal.bind("<ButtonPress-1>", lambda _e: entry.configure(show=""))
-        for unmask in ("<ButtonRelease-1>", "<Leave>"):
-            # <Leave> as well as the release: if the pointer leaves the label
-            # mid-hold the release can land elsewhere, and a field that stayed
-            # unmasked because of a mouse gesture is the exact state this
-            # control is shaped to make impossible.
-            reveal.bind(unmask, lambda _e: entry.configure(show="•"))
-
-        entry.bind("<Control-Return>", lambda _e: self._submit_credential())
-        # A plain Return INSIDE the field submits the field. Without this the
-        # keystroke would fall through to the root binding and open the GUI
-        # prompt on top of a value the owner had just finished typing.
-        entry.bind("<Return>", lambda _e: (self._submit_credential(), "break")[1])
-        entry.focus_set()
+        # THE door, the same ladder every surface runs (secure_prompt.
+        # open_credential_surface): the running desk's Inbox, or the desk started
+        # with its own launcher. Enter triggers it (see _on_return).
+        self._plain_button(row, "Open in awdesk  (Enter)",
+                           self._open_in_desk, primary=True, side="left",
+                           hint="brings the awdesk Inbox forward on this secret's "
+                                "masked field, starting awdesk if it is not running")
 
     def _is_credential(self) -> bool:
         return (self.card.kind or "").strip().lower() == "credential"
 
-    def _launch_credential_prompt(self) -> None:
-        """Open the masked GUI prompt bound to this card, detached.
+    def _open_in_desk(self) -> None:
+        """Put this card's masked field in front of the owner, in the desk.
 
-        The launch is reported either way. A button that silently does nothing
-        is the exact shape that sent the owner hunting for a terminal window,
-        so the reason a prompt could NOT open is flashed on the card and names
-        the terminal door as the fallback.
+        On a WORKER THREAD: starting the desk waits for its heartbeat, and doing
+        that inline would freeze this window. The outcome is reported either way;
+        a button that silently does nothing sends the owner hunting.
         """
-        try:
-            from adk.decisions.secure_prompt import launch_gui_prompt
-        except ImportError as exc:  # pragma: no cover - packaging accident
-            self._flash(f"masked prompt unavailable: {exc}", RED)
-            return
-        launched, why = launch_gui_prompt(self.card)
-        self._flash(why, GREEN if launched else GOLD)
-
-    def _submit_credential(self) -> None:
-        """Read the field, clear it, push on a worker, report the real outcome."""
         import threading
 
-        entry = getattr(self, "_credential_entry", None)
         status = getattr(self, "_credential_status", None)
-        if entry is None:
-            return
-        value = entry.get()
-        # Cleared BEFORE anything else can fail: a secret left sitting in a
-        # visible widget after a failed push is the same disclosure as a
-        # successful one, and a retry would then double-submit it.
-        entry.delete(0, "end")
-        if not value:
-            if status is not None:
-                status.configure(text="Nothing entered — the card stays open.",
-                                 fg=GOLD)
-            return
         if status is not None:
-            status.configure(text="Writing to the vault…", fg=SOFT)
-        card_id = self.card.id
+            status.configure(text="Opening it in awdesk…", fg=SOFT)
+        card = self.card
 
-        def worker(secret: str) -> None:
-            from adk.decisions.store import DecisionError
-
+        def worker() -> None:
             try:
-                # Imported INSIDE the try: an ImportError here used to kill the
-                # worker thread with the status stuck on "Writing to the
-                # vault…" forever — the value already cleared from the field,
-                # the card still open, and nothing on screen saying which. A
-                # missing writer is a failed write and is reported as one.
-                from adk.decisions.secure_prompt import vault_credential
+                from adk.decisions.secure_prompt import open_credential_surface
 
-                code, detail = vault_credential(card_id, self.store, secret,
-                                                via="popup-masked")
-            except DecisionError as exc:
-                code, detail = 3, str(exc)
-            except ImportError as exc:
-                code, detail = 1, (f"in-window writer unavailable ({exc}); use "
-                                   f"'Enter it now' or: awask answer {card_id}")
-            finally:
-                del secret
-            self.root.after(0, lambda: self._credential_done(code, detail))
+                shown = open_credential_surface(card, owner_initiated=True)
+                ok, why = shown.surface == "desk", shown.detail
+            except ImportError as exc:  # pragma: no cover - packaging accident
+                ok, why = False, f"the desk door is unavailable: {exc}"
+            self.root.after(0, lambda: self._desk_outcome(ok, why))
 
-        threading.Thread(target=worker, args=(value,), daemon=True).start()
-        del value
+        threading.Thread(target=worker, daemon=True).start()
 
-    def _credential_done(self, code: int, detail: str) -> None:
-        """Report the push outcome. Only code 0 closes the card."""
+    def _desk_outcome(self, ok: bool, why: str) -> None:
         status = getattr(self, "_credential_status", None)
-        if code == 0:
-            self.handled += 1
-            self._advance()
-            return
-        # Every non-zero path leaves the card OPEN on purpose — a credential
-        # ask that closes on a failed write loses the ask silently, and the
-        # next person sees a resolved card and an absent secret.
-        #
-        # `detail` names WHICH door was shut. The version of this that just
-        # said "vault write failed" was measured live and is what sent the
-        # owner back to the terminal: three legs had failed for three
-        # different reasons and the message distinguished none of them.
-        messages = {
-            1: "Vault write FAILED — card still OPEN, nothing lost. Retry "
-               "after fixing: " + (detail or "no detail"),
-            2: "Nothing entered — the card stays open.",
-            3: detail or "That card is no longer a credential ask.",
-        }
         if status is not None:
-            status.configure(text=messages.get(code, f"Unexpected result {code}"),
-                             fg=RED if code != 2 else GOLD)
+            status.configure(text=why, fg=GREEN if ok else GOLD)
+        self._flash(why, GREEN if ok else GOLD)
 
     # ── the explorable context panel ──────────────────────────────────────────
 

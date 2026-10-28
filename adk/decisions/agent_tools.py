@@ -554,30 +554,40 @@ def _open_credential_card(store: DecisionStore, secret_name: str,
     return None
 
 
-def ensure_prompt(card: DecisionCard, store: DecisionStore) -> str:
-    """Make sure the owner can SEE this ask. Returns where it is.
+def ensure_prompt(card: DecisionCard, notified: Any = None) -> Any:
+    """Make sure the owner can SEE this ask. Returns the ``CredentialSurface``.
 
-    The desk Inbox hosts the masked field itself, so while the desk is alive no
-    Tk window opens beside it (two prompts for one secret is the "separate
-    dialogue" the owner vetoed). Otherwise the masked window is opened -- again
-    if the one opened earlier is gone -- because a credential ask the owner
-    cannot see is the "no card anywhere" failure this exists to end.
+    The desk Inbox hosts the masked field itself: the running desk, else the desk
+    STARTED with its own launcher, else the remote surfaces whose link opens it on
+    the PC, else a loud ``none`` (``secure_prompt.open_credential_surface``). It runs
+    on every ask, a joined one too, because a credential ask the owner cannot see is
+    the "no card anywhere" failure this exists to end -- and it never opens a Python
+    window (owner, 2026-10-28).
     """
-    from adk.decisions import steerback
-    from adk.decisions.notify import desk_alive
+    from adk.decisions.secure_prompt import open_credential_surface
 
-    if desk_alive(store.path):
-        return "desk"
-    pid = steerback.prompt_pid(store, card.id)
-    if pid and steerback.pid_alive(pid):
-        return "window"
-    from adk.decisions.secure_prompt import launch_gui_prompt
+    return open_credential_surface(card, notified=notified)
 
-    spawned: list[int] = []
-    launched, why = launch_gui_prompt(card, pid_out=spawned)
-    if launched and spawned:
-        steerback.set_prompt_pid(store, card.id, spawned[0])
-    return "window" if launched else f"none ({why})"
+
+def lane_instead(secret_name: str, text: str) -> Optional[dict[str, Any]]:
+    """The ask result for a lane that needs NO new secret, or None when none fits.
+
+    Checked BEFORE the vault and before a card: a token that exists but cannot do
+    the job (a read-only HF_TOKEN for an upload) must not be the answer either.
+    """
+    try:
+        from adk.decisions.recipes import lane_line, match_lane
+    except ImportError:
+        return None
+    lane_id, lane = match_lane(secret_name, text)
+    if not lane_id:
+        return None
+    return {"ok": True, "present": False, "stored": False, "card_id": None,
+            "raised": False, "secret_name": secret_name, "lane": lane_id,
+            "use": str(lane.get("use") or ""), "auth": str(lane.get("auth") or ""),
+            "guidance": ("No card raised: this needs no new secret. " + lane_line(lane)
+                         + " If the lane truly does not fit, ask again with "
+                           "lane_override='<why it does not>'.")}
 
 
 def start_credential_ask(
@@ -593,14 +603,21 @@ def start_credential_ask(
     task: str = "",
     harness: str = "",
     subject: str = "",
+    lane_override: str = "",
+    credential_format: str = "",
 ) -> dict[str, Any]:
-    """The non-blocking half of ask_credential: check, raise or join, prompt.
+    """The non-blocking half of ask_credential: lane, check, raise or join, show.
 
     ``subject`` is the universe object the ask concerns; the store defaults it
-    to ``secret:<secret_name>`` when empty.
+    to ``secret:<secret_name>`` when empty. ``lane_override`` says why a matching
+    no-secret lane does not fit; it is recorded on the card for the owner to read.
+    ``credential_format`` (``totp_seed`` arms the desk door's seed guard) applies
+    when no recipe names one.
 
-    Returns ``{present: True}`` when the vault already holds the name (no card),
-    an ``{"ok": False, "error"}`` for a bad ask, or ``{card_id, waiter, ...}``.
+    Returns ``{lane: id}`` when a lane needs no new secret (no card),
+    ``{present: True}`` when the vault already holds the name (no card), an
+    ``{"ok": False, "error"}`` for a bad ask, or ``{card_id, waiter, prompt, ...}``
+    -- ``ok`` False there too, with the card id, when no surface can show it.
     """
     from adk.decisions import steerback
 
@@ -618,6 +635,11 @@ def start_credential_ask(
     if not desc:
         return {"ok": False, "error": "say why you need it (description or why) -- "
                                       "the owner reads that line to decide"}
+    override = (lane_override or "").strip()
+    if not override:
+        lane = lane_instead(name, " ".join((name, why_line, desc)))
+        if lane is not None:
+            return {**lane, "scope": want_scope}
 
     present = vault_presence(name, want_scope)
     if present:
@@ -653,6 +675,8 @@ def start_credential_ask(
                 detail = render_detail(recipe)
             facts = [f"asked by {who}" + (f" (session {sid[:12]})" if sid else "")
                      + (f": {why_line}" if why_line else "")]
+            if override:
+                facts.append(f"a no-secret lane matched and was declined: {override}"[:240])
             candidate = DecisionCard(
                 id="",
                 title=title,
@@ -664,7 +688,8 @@ def start_credential_ask(
                 source=DecisionSource(session_id=sid, agent=who,
                                       cwd=cwd or os.getcwd(), session_pid=session_pid),
                 secret_name=name,
-                credential_format=str(recipe.get("format") or "api_key"),
+                credential_format=str(recipe.get("format") or credential_format
+                                      or "api_key"),
                 credential_scope=want_scope,
                 credential_description=desc,
                 credential_recipe=recipe_id or None,
@@ -689,15 +714,29 @@ def start_credential_ask(
             "waiting_until": (time.time() + wait_seconds) if wait_seconds > 0 else 0,
         })
 
+    notified = None
     if created:
         from adk.decisions.notify import notify
 
         _relay_card_if_configured(card)
-        notify(card, store)
-    where = ensure_prompt(card, store)
-    return {"ok": True, "present": False, "card_id": card.id, "joined": not created,
-            "waiter": waiter, "secret_name": name, "scope": want_scope,
-            "prompt": where, "presence_known": present is not None}
+        notified = notify(card, store)
+    shown = ensure_prompt(card, notified)
+    out: dict[str, Any] = {
+        "ok": shown.shown, "present": False, "card_id": card.id, "joined": not created,
+        "waiter": waiter, "secret_name": name, "scope": want_scope,
+        "prompt": shown.surface, "surface_detail": shown.detail,
+        "presence_known": present is not None}
+    if shown.started_desk:
+        out["started_desk"] = True
+    if shown.link:
+        out["link"] = shown.link
+    if shown.remote:
+        out["remote"] = list(shown.remote)
+    if not shown.shown:
+        # Loud, with the card id: the ask is recorded and stays open, but nothing
+        # can put the field in front of the owner, so waiting on it would be a lie.
+        out["error"] = shown.detail
+    return out
 
 
 def _finish_wait(card_id: str, waiter: str) -> Optional[dict[str, Any]]:
@@ -745,7 +784,8 @@ def ask_credential_sync(
     clamped = float(wait_seconds or 0) > MAX_WAIT_SECONDS
     started = start_credential_ask(secret_name, scope, description, why,
                                    wait_seconds=wait, **source)
-    if not started.get("ok") or started.get("present") or wait <= 0:
+    if (not started.get("ok") or started.get("present") or not started.get("card_id")
+            or wait <= 0):
         return started
     card_id, waiter = started["card_id"], started["waiter"]
     deadline = time.time() + wait
@@ -763,14 +803,18 @@ async def ask_credential(
     description: str = "",
     why: str = "",
     wait_seconds: float = CREDENTIAL_WAIT_DEFAULT,
+    lane_override: str = "",
 ) -> str:
     """Ask the owner to store a secret, and wait until it is in the vault.
 
-    One call does all of it: checks the vault for the NAME first (returns
+    One call does all of it: first it checks whether the job needs a secret at
+    all (a known lane -- mirroring a model is `awrtifact mirror` on the gh login --
+    comes back as {lane, use} with no card), then the vault for the NAME (returns
     present=true and raises nothing if it is already there), joins an open ask
     for the same secret instead of raising a second card, puts the masked
-    field in front of the owner (desk Inbox, else the masked window), and
-    blocks. You get back {stored, scope, receipt_digest} -- never the value.
+    field in front of the owner (the awdesk Inbox, starting the desk if it is
+    installed and down; else the remote surfaces), and blocks. You get back
+    {stored, scope, receipt_digest} -- never the value.
     Then read the secret from the vault yourself. If this times out, do not ask
     again: you are told (or resumed) when the owner stores it.
 
@@ -780,13 +824,17 @@ async def ask_credential(
         description: What the secret is, shown to the owner.
         why: One line: what you will do with it. Shown on the card.
         wait_seconds: How long to block. 0 raises and returns at once.
+        lane_override: Only when a returned lane does not fit: say why. The owner
+            reads it on the card.
     """
     loop = asyncio.get_running_loop()
     wait = min(max(float(wait_seconds or 0), 0.0), MAX_WAIT_SECONDS)
     clamped = float(wait_seconds or 0) > MAX_WAIT_SECONDS
     started = await loop.run_in_executor(None, lambda: start_credential_ask(
-        secret_name, scope, description, why, wait_seconds=wait))
-    if not started.get("ok") or started.get("present") or wait <= 0:
+        secret_name, scope, description, why, wait_seconds=wait,
+        lane_override=lane_override))
+    if (not started.get("ok") or started.get("present") or not started.get("card_id")
+            or wait <= 0):
         return json.dumps(started)
     card_id, waiter = started["card_id"], started["waiter"]
     deadline = time.time() + wait

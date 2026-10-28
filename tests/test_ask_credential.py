@@ -37,6 +37,10 @@ def store(tmp_path: Path, monkeypatch) -> DecisionStore:
     monkeypatch.delenv("AITHER_DECISIONS_STEER_URL", raising=False)
     monkeypatch.setattr(store_module, "_STORE", None)
     monkeypatch.setattr(agent_tools, "_find_recipe", lambda name: ("", {}))
+    # The owner's desk is up: its heartbeat makes the Inbox the surface, so an ask
+    # is shown and waits (with no surface at all the ask fails loud and returns).
+    (tmp_path / "cards").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cards" / ".desk-alive").write_text('{"pid": 4242}', encoding="utf-8")
     yield store_module.get_store()
     store_module._STORE = None  # noqa: SLF001
 

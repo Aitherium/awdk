@@ -22,6 +22,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -45,17 +46,20 @@ class RecipeError(Exception):
 # ── loading ────────────────────────────────────────────────────────────────────
 
 
-def recipes_path() -> Optional[Path]:
-    """The YAML: ``AITHER_CREDENTIAL_RECIPES`` if set, else the checkout's copy."""
+def recipes_path(start: Optional[Path] = None) -> Optional[Path]:
+    """The YAML: ``AITHER_CREDENTIAL_RECIPES`` if set, else the checkout's copy.
+
+    ``start`` is a directory to search up from first (a discovery build names the
+    directory it indexes); this module's own location and the cwd follow.
+    """
     env = os.environ.get(RECIPES_ENV, "").strip()
     if env:
         return Path(env)
-    root = find_repo_root(marker=RECIPES_REL)
+    root = find_repo_root(start=Path(start) if start else None, marker=RECIPES_REL)
     return root.joinpath(*RECIPES_REL) if root else None
 
 
-def load_recipes(path: Optional[Path] = None) -> dict[str, dict[str, Any]]:
-    """``{id: recipe}``. Raises RecipeError when the file or PyYAML is absent."""
+def _load_yaml(path: Optional[Path]) -> dict[str, Any]:
     target = path or recipes_path()
     if target is None or not target.is_file():
         raise RecipeError(
@@ -70,10 +74,90 @@ def load_recipes(path: Optional[Path] = None) -> dict[str, dict[str, Any]]:
         raw = yaml.safe_load(target.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise RecipeError(f"cannot parse {target}: {exc}") from exc
-    recipes = (raw or {}).get("recipes") if isinstance(raw, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
+def load_recipes(path: Optional[Path] = None) -> dict[str, dict[str, Any]]:
+    """``{id: recipe}``. Raises RecipeError when the file or PyYAML is absent."""
+    raw = _load_yaml(path)
+    recipes = raw.get("recipes")
     if not isinstance(recipes, dict) or not recipes:
-        raise RecipeError(f"{target} has no `recipes:` mapping")
+        raise RecipeError(f"{path or recipes_path()} has no `recipes:` mapping")
     return {str(k): (v or {}) for k, v in recipes.items()}
+
+
+# ── lanes: what to do INSTEAD of asking the owner for a secret ─────────────────
+#
+# Owner, 2026-10-28: "i dont want to have to ask for this i want this built into my
+# awdk/awsh/claude code aw* stack and my agents". That day an agent raised a card
+# for a Hugging Face WRITE token to mirror model weights, while every earlier
+# mirror had gone to GitHub releases through `awrtifact mirror` on the gh login the
+# machine already had. A lane is that knowledge as data: an ask that matches one
+# returns the lane and raises NO card, and `adk discover` indexes every lane.
+
+
+def load_lanes(path: Optional[Path] = None) -> dict[str, dict[str, Any]]:
+    """``{id: lane}`` from the recipes file's ``lanes:`` section ({} when it has none).
+
+    Raises RecipeError, like :func:`load_recipes`, when the file or PyYAML is absent.
+    """
+    lanes = _load_yaml(path).get("lanes")
+    if not isinstance(lanes, dict):
+        return {}
+    return {str(k): (v or {}) for k, v in lanes.items() if isinstance(v, dict)}
+
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _stem(word: str) -> str:
+    for suffix in ("ing", "es", "ed", "s"):
+        if len(word) > len(suffix) + 2 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def _normal(text: str) -> str:
+    """Lower-case words, lightly stemmed, one space apart, padded for phrase search."""
+    return " " + " ".join(_stem(w) for w in _WORD.findall((text or "").lower())) + " "
+
+
+def match_lane(secret_name: str, text: str,
+               lanes: Optional[dict[str, dict[str, Any]]] = None) -> "tuple[str, dict[str, Any]]":
+    """The lane an ask should take instead of a new secret: ``(id, lane)`` or ``("", {})``.
+
+    A lane matches when ``text`` (the ask's title, why and description) carries at
+    least one word or phrase from EVERY ``intent`` group, and -- when the lane lists
+    ``secret_names`` -- the asked name is one of them. Both, so a token asked for an
+    unrelated reason (downloading a gated model, say) still raises its card.
+    """
+    if lanes is None:
+        try:
+            lanes = load_lanes()
+        except RecipeError:
+            return "", {}
+    said = _normal(text)
+    name = (secret_name or "").strip().upper()
+    for lane_id, lane in lanes.items():
+        names = {str(n).strip().upper() for n in (lane.get("secret_names") or [])}
+        if names and name not in names:
+            continue
+        groups = [g for g in (lane.get("intent") or []) if isinstance(g, (list, tuple)) and g]
+        if groups and all(any(_normal(str(word)) in said for word in group)
+                          for group in groups):
+            return lane_id, lane
+    return "", {}
+
+
+def lane_line(lane: dict[str, Any]) -> str:
+    """One line an agent reads: the task, the command, the auth it uses, what not to ask."""
+    parts = [str(lane.get("task") or "").strip().rstrip("."),
+             f"use `{str(lane.get('use') or '').strip()}`"]
+    if lane.get("auth"):
+        parts.append(f"auth: {str(lane['auth']).strip()}")
+    if lane.get("never"):
+        parts.append(f"never ask for {str(lane['never']).strip()}")
+    return "; ".join(p for p in parts if p) + ". Needs no new secret."
 
 
 def get_recipe(recipe_id: str, path: Optional[Path] = None) -> dict[str, Any]:

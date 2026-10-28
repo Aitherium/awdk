@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
-from adk.decisions.notify import desk_alive, notify
+from adk.decisions.notify import notify
 from adk.decisions.render import (
     colour_enabled,
     print_card,
@@ -305,6 +305,24 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
             return 2
         args.credential_format = args.credential_format or "api_key"
         kind = "credential"
+        override = (getattr(args, "lane_override", "") or "").strip()
+        if not override:
+            # A known lane needs no new secret (mirroring a model is `awrtifact
+            # mirror` on the gh login): say so and raise NOTHING.
+            from adk.decisions.agent_tools import lane_instead
+
+            lane = lane_instead(args.secret_name.strip(), " ".join(
+                (args.secret_name, args.title or "", args.credential_description or "")))
+            if lane is not None:
+                if args.json:
+                    print(json.dumps(lane, indent=2))
+                else:
+                    print(f"no card raised -- lane {lane['lane']}: {lane['guidance']}",
+                          file=sys.stderr)
+                return 3
+        else:
+            args.fact = list(args.fact or []) + [
+                f"a no-secret lane matched and was declined: {override}"[:240]]
     elif args.secret_name:
         print("--secret-name requires --credential", file=sys.stderr)
         return 2
@@ -352,37 +370,33 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
 
     result = notify(card, store)
 
-    # ONE command, ONE window. A credential ask opens the masked GUI itself
-    # when a desktop exists; the GUI writes to the vault and answers the card,
-    # so the raising session learns the outcome through the ordinary answer
-    # mailbox. An agent that hand-launches the prompt beside the card, or
-    # polls the vault for a change, is re-creating the failure this removes.
+    # ONE command, ONE surface, and never a Python window. The desk Inbox hosts
+    # the masked field (its CredentialRow pipes the value through the host
+    # script's stdin door into the vault, which answers the card), so the raising
+    # session learns the outcome through the ordinary answer mailbox. With the
+    # desk down it is STARTED with its own launcher; failing that the remote
+    # surfaces carry the card (owner, 2026-10-28: "not one-off Python scripts").
+    # An agent that hand-launches a prompt beside the card, or polls the vault
+    # for a change, is re-creating the failure this removes.
     prompt_line = ""
+    unseen = False
     if kind == "credential":
         if joined:
             # Another session already asked for this secret family: this
-            # session now WAITS on that card. A second masked prompt for one
-            # secret is the duplicate the dedupe exists to remove.
+            # session now WAITS on that card. A second surface for one secret
+            # is the duplicate the dedupe exists to remove.
             prompt_line = (f"joined the open ask {card.id} for this secret; the answer "
-                           f"reaches this session too (awask answer {card.id})")
+                           f"reaches this session too")
         elif args.no_prompt:
-            prompt_line = (f"masked prompt not launched (--no-prompt); "
-                           f"answer with: awask answer {card.id}")
-        elif desk_alive():
-            # The desk hosts the masked field ITSELF (its CredentialRow pipes the
-            # value through secret_prompt.py's stdin door into the same vault),
-            # so the standalone Tk dialog must NOT open beside it — two prompts
-            # for one secret is exactly the "separate dialogue" the owner vetoed
-            # (2026-10-05). The desk Inbox is the window. If it quits before the
-            # owner gets there, the heartbeat goes stale and the next raise
-            # opens the Tk prompt again; the terminal door (`awask answer`) and
-            # `--no-prompt` are untouched.
-            prompt_line = (f"awdesk is running — enter {card.secret_name or card.id} "
-                           f"in the desk Inbox (or: awask answer {card.id})")
+            prompt_line = (f"no surface opened (--no-prompt); it is in the desk Inbox "
+                           f"while awdesk runs (or: awask answer {card.id})")
         else:
-            from adk.decisions.secure_prompt import launch_gui_prompt
+            from adk.decisions.secure_prompt import open_credential_surface
 
-            _launched, prompt_line = launch_gui_prompt(card)
+            shown = open_credential_surface(card, notified=result)
+            unseen = not shown.shown
+            prompt_line = (f"{shown.surface}: {shown.detail}" if shown.shown
+                           else f"NO SURFACE for {card.id}: {shown.detail}")
         # stderr on purpose: --json owns stdout, and the line must still reach
         # a human reading the terminal.
         print(f"  {prompt_line}", file=sys.stderr)
@@ -400,6 +414,9 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
         if not args.quiet:
             print(f"  {result.describe()}", file=sys.stderr)
 
+    if unseen:
+        # Loud: the card is recorded and open, but nothing can show its field.
+        return 1
     if args.wait:
         return _wait_for_answer(card.id, store, timeout=args.wait, as_json=args.json)
     return 0
@@ -907,8 +924,8 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--fact", action="append", help="repeatable; a measurement you took")
     ask.add_argument("--kind", default="decision", choices=("decision", "blocked", "info"))
     ask.add_argument("--credential", action="store_true",
-                     help="ask for a secret: the value goes to the vault via a masked "
-                          "prompt (secure_prompt.py), never the card")
+                     help="ask for a secret: the owner types it into the masked field "
+                          "in the awdesk Inbox and it goes to the vault, never the card")
     ask.add_argument("--secret-name", default="", metavar="VAULT_KEY",
                      help="vault key the value is written to (required with --credential)")
     ask.add_argument("--credential-format", default=None,
@@ -923,8 +940,11 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--credential-description", default="",
                      help="why we need it — shown to the owner (required with --credential)")
     ask.add_argument("--no-prompt", action="store_true",
-                     help="with --credential: raise the card only; do not open the masked "
-                          "GUI prompt (the owner answers with `awask answer <id>`)")
+                     help="with --credential: raise the card only; do not start awdesk "
+                          "or bring a surface forward")
+    ask.add_argument("--lane-override", default="", metavar="WHY",
+                     help="with --credential: a no-secret lane matched (exit 3) and does "
+                          "not fit -- say why; the owner reads it on the card")
     ask.add_argument("--urgency", default="normal",
                      choices=("low", "normal", "high", "critical"))
     ask.add_argument("--subject", default="", metavar="ID",

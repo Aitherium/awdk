@@ -263,6 +263,198 @@ def desk_alive(store_dir: Optional[Path] = None) -> bool:
     return age < DESK_ALIVE_STALE_SECONDS
 
 
+# ── starting the desk: where a credential ask goes when the desk is down ───────
+#
+# Owner, 2026-10-28: credential intake goes through awdesk/awconnect, "not one-off
+# Python scripts". The masked field lives in the desk Inbox (its CredentialRow pipes
+# the value into the vault's stdin door), so a credential ask that finds the desk
+# down STARTS it, the way this machine starts it at logon, and waits for its
+# heartbeat. Nothing here opens any other window.
+
+#: The command awsh already reads for "how do I start the desk" (an explicit override).
+DESK_START_ENV = "AWDESK_START_CMD"
+
+#: Seconds to wait for a desk this process started to write its first heartbeat
+#: (the beat starts after the desk's card watcher, so it is not instant). Measured
+#: 2026-10-28 on the owner's desktop: 15 s from the logon launcher to the first beat.
+DESK_START_WAIT_SECONDS = float(os.getenv("AITHER_DESK_START_WAIT", "60"))
+
+#: The desk's own login entries (awdesk linux-integration.cjs / macos-integration.cjs).
+_LINUX_DESKTOP_ID = "aither-desk.desktop"
+_MAC_AGENT_LABEL = "com.aitherium.desk"
+
+#: CREATE_NO_WINDOW alone, never with DETACHED_PROCESS: a console launcher gets a
+#: console with NO window, and the console programs IT runs inherit that hidden console
+#: instead of each being handed a new, visible one (a detached parent has none to give).
+_LAUNCHER_FLAGS = 0x08000000
+
+
+@dataclass
+class DeskLauncher:
+    """How this machine starts awdesk: the argv, and one line naming it."""
+
+    argv: list[str]
+    how: str
+
+
+def _split_command(cmd: str, *, windows: bool) -> list[str]:
+    import shlex
+
+    # posix=False on Windows: POSIX mode reads a backslash as an escape and mangles
+    # every path. It keeps the quotes on a quoted argument instead, so strip them.
+    parts = shlex.split(cmd, posix=not windows)
+    return [p[1:-1] if len(p) > 1 and p[0] == p[-1] and p[0] in "\"'" else p
+            for p in parts]
+
+
+def _desktop_entry_argv(path: Path) -> Optional[list[str]]:
+    """The ``Exec=`` argv of a freedesktop entry, its ``%U``-style field codes dropped."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("Exec="):
+            argv = [a for a in _split_command(line[len("Exec="):], windows=False)
+                    if not (len(a) == 2 and a.startswith("%"))]
+            return argv or None
+    return None
+
+
+def desk_launcher(env: Optional[dict] = None, home: Optional[Path] = None,
+                  platform: Optional[str] = None) -> Optional[DeskLauncher]:
+    """How THIS machine normally starts awdesk, or None when it is not installed.
+
+    In order: the explicit ``AWDESK_START_CMD``; on Windows the logon launcher in the
+    Startup folder (``*awdesk*.vbs``, the same bytes that start it at every logon, run
+    by cscript in a hidden console) and then the installed ``Desk.exe``; on macOS the desk's
+    LaunchAgent; on Linux its autostart entry, then its menu entry. None is "not
+    installed here", never a guessed path.
+    """
+    env = os.environ if env is None else env
+    plat = platform or sys.platform
+    home = Path(home) if home is not None else Path.home()
+    windows = plat.startswith("win")
+    explicit = (env.get(DESK_START_ENV) or "").strip()
+    if explicit:
+        argv = _split_command(explicit, windows=windows)
+        return DeskLauncher(argv, f"{DESK_START_ENV} command") if argv else None
+    if windows:
+        appdata = (env.get("APPDATA") or "").strip()
+        startup = (Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+                   / "Startup") if appdata else None
+        shims = sorted(startup.glob("*awdesk*.vbs")) if startup and startup.is_dir() else []
+        if shims:
+            system_root = (env.get("SystemRoot") or env.get("SYSTEMROOT") or r"C:\Windows")
+            # cscript, not wscript. The shim runs a console program through
+            # WScript.Shell.Exec (its netstat port check); under the windowless wscript
+            # that child is handed a NEW console. Measured 2026-10-28, twice each:
+            # wscript -> 1 new top-level window (OpenConsole.exe PseudoConsoleWindow);
+            # cscript started with _LAUNCHER_FLAGS -> 0, the child shares its hidden
+            # console. Same script, same exit codes; electron is GUI and attaches to none.
+            cscript = str(Path(system_root) / "System32" / "cscript.exe")
+            return DeskLauncher([cscript, "//B", "//Nologo", str(shims[0])],
+                                f"logon launcher {shims[0].name}")
+        try:
+            from adk.desk_release import find_desk_exe, installed_desk_windows
+        except ImportError:  # awask without awdk: only the launchers above exist
+            return None
+        exe = find_desk_exe(installed_desk_windows())
+        return DeskLauncher([exe, "--background"], "installed Desk.exe") if exe else None
+    if plat == "darwin":
+        agent = home / "Library" / "LaunchAgents" / f"{_MAC_AGENT_LABEL}.plist"
+        if agent.is_file() and hasattr(os, "getuid"):
+            return DeskLauncher(["launchctl", "kickstart",
+                                 f"gui/{os.getuid()}/{_MAC_AGENT_LABEL}"],
+                                f"LaunchAgent {_MAC_AGENT_LABEL}")
+        return None
+    for entry in (home / ".config" / "autostart" / _LINUX_DESKTOP_ID,
+                  home / ".local" / "share" / "applications" / _LINUX_DESKTOP_ID):
+        argv = _desktop_entry_argv(entry) if entry.is_file() else None
+        if argv:
+            return DeskLauncher(argv, f"desktop entry {entry.name}")
+    return None
+
+
+def _spawn_detached(argv: list[str]) -> Optional[str]:
+    """Run the launcher with no console window and no handle on it. An error, or None."""
+    kwargs: dict = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        kwargs["creationflags"] = _LAUNCHER_FLAGS
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(argv, **kwargs)  # noqa: S603 - argv from desk_launcher, no shell
+    except (OSError, ValueError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def start_desk(*, store_dir: Optional[Path] = None,
+               launcher: Optional[DeskLauncher] = None,
+               wait_s: Optional[float] = None,
+               spawn=None, sleep=time.sleep, clock=time.monotonic) -> "tuple[bool, str]":
+    """Start awdesk through its own launcher; ``(True, why)`` once its heartbeat is fresh.
+
+    Never raises and never opens anything but the desk. ``(False, why)`` names the
+    step that failed (not installed, the launcher would not run, no heartbeat in
+    time), so the caller can move on to the remote surfaces and say why.
+    """
+    if desk_alive(store_dir):
+        return True, "awdesk is running"
+    found = launcher if launcher is not None else desk_launcher()
+    if found is None:
+        return False, "awdesk is not installed on this machine (no launcher found)"
+    # 🚩 A TEST RUN MUST NEVER START THE OWNER'S DESK. Keyed on the marker pytest sets
+    # for every test, so a new test file is safe without remembering to stub this;
+    # a test that means to start one passes its own `spawn`.
+    if spawn is None and (os.environ.get("PYTEST_CURRENT_TEST")
+                          or os.environ.get("AITHER_NO_GUI_PROMPT")):
+        return False, f"awdesk start suppressed under test (would run the {found.how})"
+    error = (spawn or _spawn_detached)(list(found.argv))
+    if error:
+        return False, f"the {found.how} did not start ({error})"
+    budget = DESK_START_WAIT_SECONDS if wait_s is None else float(wait_s)
+    started = clock()
+    while True:
+        if desk_alive(store_dir):
+            return True, (f"started awdesk with its {found.how} "
+                          f"({clock() - started:.0f} s to its first heartbeat)")
+        if clock() - started >= budget:
+            return False, (f"ran the {found.how}, but awdesk wrote no heartbeat in "
+                           f"{budget:.0f} s")
+        sleep(0.5)
+
+
+def raise_desk_inbox(timeout: float = 4.0) -> Optional[str]:
+    """Ask the running desk to bring its Inbox forward. An error string, or None.
+
+    ``POST /console/open {"pane": "inbox"}`` on the desk bridge -- the same door the
+    escalation ladder uses. The Inbox leads with the asks only the owner can unblock,
+    credential first, so the masked field is what it shows. Used only when the OWNER
+    asked for the field (a remote "open it" tap); an agent's raise leaves the desk's
+    own Do-not-disturb and raise policy in charge.
+    """
+    import urllib.error
+    import urllib.request
+
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AITHER_NO_GUI_PROMPT"):
+        return "the desk Inbox is not raised under test"
+    base = (os.getenv("AWDESK_URL") or os.getenv("AITHERSHELL_AWDESK_URL")
+            or "http://127.0.0.1:47931").rstrip("/")
+    req = urllib.request.Request(base + "/console/open", method="POST",
+                                 data=json.dumps({"pane": "inbox"}).encode("utf-8"))
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310
+            if response.status >= 400:
+                return f"desk bridge HTTP {response.status}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return f"desk bridge unreachable: {exc}"
+    return None
+
+
 def open_card_window(card_id: str) -> Optional[str]:
     """Spawn the card window DETACHED. Returns an error string, or None.
 

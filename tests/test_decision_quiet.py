@@ -89,7 +89,8 @@ def test_popup_and_toast_are_held_and_the_card_stays_open(tmp_path, monkeypatch)
     assert sent == []
 
 
-def test_credential_prompt_is_held(tmp_path, monkeypatch):
+def test_credential_desk_start_is_held(tmp_path, monkeypatch):
+    """Quiet holds STARTING the desk for a credential ask; the card stays open."""
     from adk.decisions import secure_prompt
 
     store = _store(tmp_path)
@@ -98,16 +99,17 @@ def test_credential_prompt_is_held(tmp_path, monkeypatch):
                                      credential_format="api_key",
                                      credential_description="the deploy lane needs it"))
     monkeypatch.setenv("AITHER_QUIET", "1")
-    # launch_gui_prompt refuses FIRST under pytest (that guard exists because a
-    # pytest run once spawned six of these windows on the owner's desktop,
-    # 2026-09-19). Clear the markers so THIS test exercises the quiet refusal
-    # deliberately — it stays deterministic because AITHER_QUIET is set above.
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    monkeypatch.delenv("AITHER_NO_GUI_PROMPT", raising=False)
-    launched, why = secure_prompt.launch_gui_prompt(card)
-    assert launched is False and why.startswith("held while quiet: ")
-    assert f"adk decide answer {card.id}" in why
+    started: list[str] = []
+    shown = secure_prompt.open_credential_surface(
+        card, start=lambda: (started.append(card.id) or (True, "started")))
+    assert started == [], "a game in front: the desk is not started over it"
+    assert shown.surface in ("remote", "none")
+    assert "not started while quiet" in shown.detail
     assert store.get(card.id).status == STATUS_OPEN
+    # The owner pressing "open it" is not an auto-popup: quiet does not hold that.
+    shown = secure_prompt.open_credential_surface(
+        card, owner_initiated=True, start=lambda: (started.append(card.id) or (True, "up")))
+    assert started == [card.id] and shown.surface == "desk"
 
 
 class _FakeWinDLL:

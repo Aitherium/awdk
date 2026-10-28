@@ -150,7 +150,7 @@ def admit(card: dict, caller: Caller) -> "tuple[bool, str]":
     """(shown, reason-if-not). Every card goes through here."""
     name = str(card.get("name") or "")
     domain = card.get("domain")
-    if not name or domain not in ("tools", "skills", "packs", "agents"):
+    if not name or domain not in ("lanes", "tools", "skills", "packs", "agents"):
         return False, "malformed card"
     if card.get("hosting") not in ("local", "fleet", "hosted"):
         return False, "no hosting mark"

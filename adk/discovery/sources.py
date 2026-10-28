@@ -15,7 +15,8 @@ Sources are split into two PARTS:
 * ``user`` -- the same for every working directory: ``~/.claude`` skills and agents,
   Claude Code plugins, aw* CLIs, user packs, the pack catalog, gateway tools and agents.
 * ``cwd`` -- depends on the directory: ``<cwd>/.claude`` skills/commands/agents, a
-  checkout's ``awskills/skills`` and ``awpack/packs``.
+  checkout's ``awskills/skills`` and ``awpack/packs``, and the ``lanes:`` of its
+  credential recipes (jobs that need no new secret).
 """
 
 from __future__ import annotations
@@ -255,6 +256,37 @@ def cli_tools(_cwd: Path = Path("."), probe: Optional[clis.ProbeFn] = None) -> "
     return cards, _receipt(True, len(cards), t0, sig="probe", broken=broken)
 
 
+# ── lanes: jobs that need NO new secret ─────────────────────────────────────
+
+def credential_lanes(cwd: Path) -> "tuple[list, dict]":
+    """The credential recipes file's ``lanes:``: what to do instead of asking for a secret.
+
+    An agent about to ask the owner for a token searches first; a lane card ("mirror
+    a model -> awrtifact mirror on the gh login") is the answer that needs no ask.
+    No recipes file here is an empty source, not a dead one.
+    """
+    t0 = time.monotonic()
+    try:
+        from adk.decisions import recipes
+    except ImportError as exc:
+        return [], _receipt(False, 0, t0, f"ImportError: {exc}")
+    path = recipes.recipes_path(start=cwd)
+    if path is None or not path.is_file():
+        return [], _receipt(True, 0, t0, sig="absent")
+    try:
+        lanes = recipes.load_lanes(path)
+    except recipes.RecipeError as exc:
+        return [], _receipt(False, 0, t0, str(exc)[:200], sig=_sig([path]))
+    cards: list = []
+    for lane_id, lane in sorted(lanes.items()):
+        words = [str(w) for group in lane.get("intent") or [] if isinstance(group, list)
+                 for w in group]
+        cards.append(_card("lanes", lane_id, recipes.lane_line(lane), "credential-lanes",
+                           "local", str(lane.get("use") or ""), tags=words[:24],
+                           path=str(path)))
+    return cards, _receipt(True, len(cards), t0, sig=_sig([path]))
+
+
 # ── packs ───────────────────────────────────────────────────────────────────
 
 def awpack_shelf(cwd: Path) -> "tuple[list, dict]":
@@ -481,7 +513,7 @@ USER_SOURCES: list = [
 ]
 CWD_SOURCES: list = [
     ("cwd_skills", cwd_skills), ("awskills", awskills), ("cwd_agents", cwd_agents),
-    ("awpack_shelf", awpack_shelf),
+    ("awpack_shelf", awpack_shelf), ("credential_lanes", credential_lanes),
 ]
 #: Sources that cannot be fingerprinted by mtime: re-run when older than this.
 NETWORK_TTL_S = {"gateway_tools": 3600.0, "gateway_agents": 3600.0, "pack_catalog": 6 * 3600.0,

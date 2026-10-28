@@ -154,7 +154,7 @@ def _host_script():
     root = secure_prompt.find_repo_root()
     if root is None:
         return None
-    path = root.joinpath(*secure_prompt.GUI_PROMPT_REL)
+    path = root.joinpath(*secure_prompt.HOST_SCRIPT_REL)
     spec = importlib.util.spec_from_file_location("secret_prompt_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -3072,15 +3072,17 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     @app.post("/decisions/{card_id}/prompt", dependencies=[Depends(auth)])
     def open_credential_prompt(card_id: str) -> dict[str, Any]:
-        """Open the masked secure prompt for a credential card ON THIS PC.
+        """Open a credential card's masked field ON THIS PC -- in the awdesk Inbox.
 
         The remote surfaces (the /decide page, a phone push action, awconnect) have
-        no value field; this is their one button. It carries no value in either
-        direction: the window that opens asks for it and writes it to the vault,
-        then closes the card itself. 409 when the card is closed or not a
-        credential ask; ``launched`` false (with why) when no window could open.
+        no value field; this is their one button, and an owner pressing it is an
+        explicit ask: the running desk brings its Inbox forward, a stopped one is
+        STARTED with its own launcher. Never a Python window (owner, 2026-10-28).
+        It carries no value in either direction: the desk's field writes the vault,
+        which closes the card. 409 when the card is closed or not a credential
+        ask; ``launched`` false (with why) when the desk could not show it.
         """
-        from adk.decisions.secure_prompt import launch_gui_prompt
+        from adk.decisions.secure_prompt import open_credential_surface
         from adk.decisions.store import DecisionError, get_store
 
         try:
@@ -3099,13 +3101,15 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         last = _prompt_launched_at.get(card.id, 0.0)
         if now - last < prompt_debounce_sec:
             return {"id": card.id, "launched": True, "secret_name": card.secret_name or "",
-                    "detail": (f"masked prompt for {card.secret_name or card.id} was opened "
-                               f"{int(now - last)}s ago and is on your screen")}
-        launched, why = launch_gui_prompt(card)
+                    "surface": "desk",
+                    "detail": (f"the masked field for {card.secret_name or card.id} was "
+                               f"brought up in awdesk {int(now - last)}s ago")}
+        shown = open_credential_surface(card, owner_initiated=True)
+        launched = shown.surface == "desk"
         if launched:
             _prompt_launched_at[card.id] = now
-        return {"id": card.id, "launched": bool(launched), "detail": why,
-                "secret_name": card.secret_name or ""}
+        return {"id": card.id, "launched": launched, "detail": shown.detail,
+                "secret_name": card.secret_name or "", "surface": shown.surface}
 
     @app.get("/decisions/{card_id}", dependencies=[Depends(auth)])
     def get_decision(card_id: str) -> dict[str, Any]:
@@ -3203,27 +3207,6 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "delivered_to_session": bool(delivered),
             "mailbox": str(delivered) if delivered else "",
         }
-
-    @app.post("/decisions/{card_id}/prompt")
-    def prompt_decision(card_id: str,
-                        principal: Principal = Depends(_require_owner)) -> dict[str, Any]:
-        """Open the masked vault prompt for a credential card, on THIS host's desktop.
-
-        Owner-only: the window it opens asks for a live credential. It ignores
-        ``.popup-off`` and the quiet hold by design -- that switch silences
-        AUTO-popups, and an owner pressing "open it" on a card is not one.
-        """
-        from adk.decisions import secure_prompt
-        from adk.decisions.store import DecisionError, get_store
-
-        try:
-            card = secure_prompt.resolve_card(card_id, get_store())
-        except DecisionError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if not card.is_open:
-            raise HTTPException(status_code=409, detail=f"{card_id} is already {card.status}")
-        launched, why = secure_prompt.launch_gui_prompt(card, owner_initiated=True)
-        return {"launched": launched, "detail": why, "card_id": card_id}
 
     @app.post("/decisions/{card_id}/cancel", dependencies=[Depends(auth)])
     def cancel_decision(card_id: str, body: CancelDecision) -> dict[str, Any]:
