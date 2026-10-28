@@ -12,7 +12,13 @@ from pathlib import Path
 
 AWDK = Path(__file__).resolve().parent.parent
 MOD = AWDK / "adk" / "awdelegate.py"
-SHIM = AWDK.parent / "tools" / "claude-backend" / "awdelegate.py"
+#: Two layouts, one file: the monorepo keeps the shim beside awdk/
+#: (<root>/tools/claude-backend), the published repo has awdk/ AS the root and
+#: the sync copies it to <root>/tools/claude-backend. Resolving only the first
+#: made this test permanently red in the public repo (2026-10-28).
+SHIM_CANDIDATES = (AWDK / "tools" / "claude-backend" / "awdelegate.py",
+                   AWDK.parent / "tools" / "claude-backend" / "awdelegate.py")
+SHIM = next((p for p in SHIM_CANDIDATES if p.is_file()), SHIM_CANDIDATES[0])
 
 
 def _load(name: str):

@@ -19,7 +19,16 @@ from pathlib import Path
 
 
 def _load():
-    target = Path(__file__).resolve().parents[2] / "awdk" / "adk" / "awdelegate.py"
+    # Two layouts, one file. In the monorepo this sits beside awdk/ (<root>/tools/
+    # claude-backend), so the implementation is <root>/awdk/adk/awdelegate.py. In the
+    # published repo awdk/ IS the root and the sync copies this file to
+    # <root>/tools/claude-backend, so the implementation is <root>/adk/awdelegate.py.
+    # Both are resolved by PATH: `import adk` cannot be the answer under `python -S`,
+    # where site-packages (and an editable install) does not exist.
+    here = Path(__file__).resolve()
+    candidates = (here.parents[2] / "awdk" / "adk" / "awdelegate.py",
+                  here.parents[2] / "adk" / "awdelegate.py")
+    target = next((p for p in candidates if p.is_file()), candidates[0])
     if target.is_file():
         spec = importlib.util.spec_from_file_location("_awdk_awdelegate", target)
         module = importlib.util.module_from_spec(spec)

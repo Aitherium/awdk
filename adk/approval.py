@@ -91,6 +91,72 @@ def runtime_gates(agent_name: str) -> set[str]:
         return set(_RUNTIME_GATES.get((agent_name or "").lower(), ()))
 
 
+# ── Durable allowlist: the owner said "always" to THIS tool ───────────────────
+#
+# A per-call Allow is right for send_email(to=a) but wrong for a tool the owner runs
+# ten times a day (opening a page got a card per URL). An entry here is a HUMAN
+# decision recorded once, so it is consulted before the policy set -- and AFTER the
+# runtime gates, which a live guard raises on evidence and which must never be
+# pre-approved (the Hearth taint guard depends on that ordering).
+_ALLOW_FILE_ENV = "AITHER_TOOL_ALLOWLIST_FILE"
+
+
+def _allowlist_path() -> Path:
+    env = os.getenv(_ALLOW_FILE_ENV, "").strip()
+    return Path(env) if env else (_state_dir() / "tool_allowlist.json")
+
+
+def _allow_entries() -> dict:
+    try:
+        raw = json.loads(_allowlist_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def allowlisted(agent_name: str, tool_name: str) -> bool:
+    """True when the owner recorded a durable allow for ``tool_name`` (or its agent)."""
+    entries = _allow_entries()
+    t = (tool_name or "").lower()
+    a = (agent_name or "").lower()
+    return f"{a}:{t}" in entries or t in entries or f"*:{t}" in entries
+
+
+def allow_tool(tool_name: str, agent_name: str = "", note: str = "") -> Path:
+    """Record a durable allow. ``agent_name`` empty = for every agent."""
+    t = (tool_name or "").strip().lower()
+    if not t:
+        raise ValueError("a tool name is required")
+    key = f"{(agent_name or '*').lower()}:{t}"
+    entries = _allow_entries()
+    entries[key] = {"tool": t, "agent": (agent_name or "*").lower(),
+                    "added": time.strftime("%Y-%m-%dT%H:%M:%S"), "note": str(note)[:400]}
+    path = _allowlist_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def forget_tool(tool_name: str, agent_name: str = "") -> bool:
+    """Remove a durable allow. Returns whether one was there."""
+    t = (tool_name or "").strip().lower()
+    entries = _allow_entries()
+    keys = [k for k, v in entries.items()
+            if str(v.get("tool", "")).lower() == t
+            and (not agent_name or str(v.get("agent", "")).lower() == agent_name.lower())]
+    for k in keys:
+        entries.pop(k, None)
+    if not keys:
+        return False
+    _allowlist_path().write_text(json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8")
+    return True
+
+
+def list_allow() -> dict:
+    """Every durable allow, keyed ``agent:tool``."""
+    return _allow_entries()
+
+
 #: Tools that act on the world outside this machine or cannot be undone: posting,
 #: sending, publishing, paying, refunding, deleting. They ask first by DEFAULT, policy or
 #: not. Measured 2026-10-14 on the live daemon: the owner typed "hi" and the agent called
@@ -127,9 +193,15 @@ def needs_approval(agent_name: str, tool_name: str, args: Any = None) -> bool:
         inner = str(args.get("name") or args.get("tool") or "")
     if inner and needs_approval(agent_name, inner):
         return True
-    if is_outward(tool_name):
-        return True
     if (tool_name or "").lower() in runtime_gates(agent_name):
+        return True
+    # A durable allow is a HUMAN decision, so it outranks the default and the policy
+    # set -- otherwise `adk approvals allow send_email` would silently do nothing for
+    # every outward tool, which is exactly the ones an owner wants to stop confirming.
+    # It never outranks a runtime gate, which is raised on live evidence.
+    if allowlisted(agent_name, tool_name):
+        return False
+    if is_outward(tool_name):
         return True
     pol = _policy_set()
     if not pol:

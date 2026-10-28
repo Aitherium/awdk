@@ -1010,7 +1010,10 @@ def _awm_scope(cfg: Optional[Dict[str, Any]] = None) -> str:
     repository directory. ``awm_scope`` in the delegate config or AWM_SCOPE
     overrides all three. Empty when it cannot be derived: recalls then let awm
     derive for itself, and remembers are skipped rather than written to a guess."""
-    configured = str((cfg or load_config()).get("awm_scope")
+    # `cfg or load_config()` made an EXPLICIT empty dict mean "read the file", so a
+    # caller passing {} to isolate itself still got the machine's awm_scope
+    # (test_awm_scope_configuration_wins failed on any dev box that set one).
+    configured = str(((cfg if cfg is not None else load_config()) or {}).get("awm_scope")
                      or os.environ.get("AWM_SCOPE") or "").strip()
     if configured:
         return configured

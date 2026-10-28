@@ -17416,6 +17416,7 @@ _PASSTHROUGH_VERBS = {
     "link": ("adk.link", "main"),
     "autoupdate": ("adk.self_update", "main"),
     "discover": ("adk.discovery.cli", "main"),
+    "approvals": ("adk.approvals_cmd", "main"),
 }
 
 
