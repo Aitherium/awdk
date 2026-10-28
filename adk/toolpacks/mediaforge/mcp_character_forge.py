@@ -311,6 +311,91 @@ def mediaforge_remove_bg(media_id: int) -> dict:
 # LoRA bootstrap — the durable fix for from-scratch generation
 # --------------------------------------------------------------------------- #
 
+#: A tenant's own reference image, sent INLINE (base64) so a box with no GPU can build on it.
+#: Hard caps, checked BEFORE anything is decoded or sent: a JPEG/PNG/WebP, at most 2 MB of
+#: bytes, at most 1024 px on its long edge (the caller downscales; this refuses, never resizes).
+_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
+_UPLOAD_MAX_EDGE = 1024
+_UPLOAD_MAGIC = ((b"\xff\xd8\xff", "jpg"), (b"\x89PNG\r\n\x1a\n", "png"), (b"RIFF", "webp"))
+
+
+def _image_edge(data: bytes) -> int:
+    """The long edge of a JPEG/PNG/WebP, from its header (0 = could not tell -> refused)."""
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+        with Image.open(BytesIO(data)) as im:
+            return max(im.size)
+    except Exception:                                   # noqa: BLE001 - unreadable = refused
+        return 0
+
+
+def mediaforge_upload_image(image_b64: str, filename: str = "reference.jpg") -> dict:
+    """Upload ONE of your own reference images so later ops can build on it.
+
+    `image_b64` is the image's bytes in base64 (no data: prefix needed): JPEG, PNG or WebP,
+    at most 2 MB and 1024 px on the long edge -- downscale before sending. It lands in
+    media-forge's gallery and in YOUR tenant's media ledger, and the returned `media_id` is
+    then accepted by mediaforge_run_op (e.g. voxel_from_image {image: <media_id>}, or a
+    texture op). Nothing is fetched from a URL: the bytes are the upload. Free: the op that
+    uses it is what is metered."""
+    if not isinstance(image_b64, str) or not image_b64.strip():
+        return {"error": "image_b64 is required", "refused": True, "reason": "bad_params"}
+    raw = image_b64.strip()
+    if raw.startswith("data:"):
+        raw = raw.split(",", 1)[-1]
+    if len(raw) > (_UPLOAD_MAX_BYTES * 4) // 3 + 8:
+        return {"error": f"image is over {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB; downscale it "
+                         f"to {_UPLOAD_MAX_EDGE} px first", "refused": True,
+                "reason": "too_large"}
+    import base64
+    import binascii
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return {"error": "image_b64 is not valid base64", "refused": True,
+                "reason": "bad_params"}
+    if len(data) > _UPLOAD_MAX_BYTES:
+        return {"error": f"image is over {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB",
+                "refused": True, "reason": "too_large"}
+    ext = next((e for magic, e in _UPLOAD_MAGIC if data.startswith(magic)
+                and (e != "webp" or data[8:12] == b"WEBP")), None)
+    if ext is None:
+        return {"error": "only JPEG, PNG or WebP images can be uploaded", "refused": True,
+                "reason": "bad_params"}
+    edge = _image_edge(data)
+    if not edge or edge > _UPLOAD_MAX_EDGE:
+        return {"error": f"image must be at most {_UPLOAD_MAX_EDGE} px on its long edge "
+                         f"(got {edge or 'unreadable'})", "refused": True,
+                "reason": "too_large"}
+    owner = _caller_may_reach_owner_api()
+    account = None if owner else _tenant_ledger_account()
+    if not owner and account is None:
+        return {"error": "mediaforge_upload_image needs a signed-in tenant caller",
+                "refused": True, "reason": "no_tenant"}
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(str(filename or "")))[:80]
+    name = (os.path.splitext(name)[0] or "reference") + f".{ext}"
+    try:
+        r = requests.post(f"{_BASE}/api/upload", files={"file": (name, data)}, timeout=120,
+                          headers=_mf_headers())
+        r.raise_for_status()
+        out = r.json()
+    except (requests.RequestException, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if not isinstance(out, dict) or not out.get("ok") or out.get("id") is None:
+        return {"error": str((out or {}).get("error") or "upload failed")}
+    mid = int(out["id"])
+    if account is not None:
+        try:
+            _media_ledger().record_result(account, "upload_image",
+                                          {"ok": True, "head_ids": [mid], "images": [out.get("url")]})
+        except Exception as e:                          # noqa: BLE001 - unusable without it
+            return {"error": f"uploaded, but not recorded for your tenant ({type(e).__name__}); "
+                             "it cannot be used by mediaforge_run_op"}
+    return {"ok": True, "media_id": mid, "bytes": len(data), "edge_px": edge}
+
+
 def mediaforge_list_ops(group: str = "") -> dict:
     """Every op media-forge ships, discovered LIVE from its curated catalog (GET /ops).
 
