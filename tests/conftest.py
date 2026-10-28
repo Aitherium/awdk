@@ -122,6 +122,11 @@ def _isolate_env(monkeypatch, tmp_path):
         pass
 
     monkeypatch.setenv("AITHER_TENANT_SLUG", "aitherium")
+    # adk.memory.Memory falls back to the LIVE Spirit service on a local miss and
+    # teaches it on every remember(), so on a dev host one test's remember("key1")
+    # answered another test's recall("nonexistent"). Tests that exercise the
+    # bridge set AITHER_SPIRIT_BRIDGE=true themselves.
+    monkeypatch.setenv("AITHER_SPIRIT_BRIDGE", "false")
 
     # `adk home serve` setdefaults AITHER_A2A_REQUIRE_TRUST=true in-process. A bare
     # delenv of an unset var records nothing to undo, so set-then-delete: the value
