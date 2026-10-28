@@ -2,13 +2,21 @@
 
 The forkd REST daemon is injected as a mock ``http_fn`` (no KVM/Linux/httpx
 needed), and account selection / degrade spawning are injected too — so the
-fan-out logic, fail-closed scope intersection, account pinning, degrade path,
-and secret-safety are all exercised deterministically offline.
+fan-out logic, fail-closed scope ceiling, account pinning, the degrade path and
+secret-safety are all exercised deterministically offline.
+
+The mock speaks the daemon's REAL router (``crates/forkd-controller/src/http.rs``,
+cross-read against the published ``forkd`` 0.5.3 SDK). ``test_only_published_routes``
+freezes that: a path the daemon does not serve can never pass this suite again,
+which is how the previous fiction (``/fork``, ``/exec/{id}``, ``/children/{id}``,
+port 8760) survived so long.
 
 Live e2e (real forkd on a Linux/KVM mesh node) is owner-gated.
 """
 
 from __future__ import annotations
+
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -16,38 +24,66 @@ from adk.forkd_client import (
     ChildSpec,
     ChildState,
     ForkdClient,
-    ForkResult,
     ForkdError,
+    ForkdParentSnapshot,
+    ForkResult,
 )
+
+TAG = "warm"
+
+#: Every route this client is allowed to touch, from the daemon's router.
+ALLOWED_ROUTES = {
+    ("GET", "/healthz"),
+    ("GET", "/v1/snapshots"),
+    ("POST", "/v1/sandboxes"),
+    ("POST", "/v1/sandboxes/{id}/exec"),
+    ("DELETE", "/v1/sandboxes/{id}"),
+}
 
 
 class MockDaemon:
     """Injectable forkd REST daemon: records calls, returns canned responses."""
 
-    def __init__(self, *, healthy=True, fork_fail_ids=()):
+    def __init__(self, *, healthy=True, fail_spawn_nth=(), fail_list=False,
+                 snapshots=None):
         self.healthy = healthy
-        self.fork_fail_ids = set(fork_fail_ids)
+        self.fail_spawn_nth = set(fail_spawn_nth)   # 0-based spawn-call indexes
+        self.fail_list = fail_list
+        self.snapshots = snapshots if snapshots is not None else [
+            {"tag": TAG, "status": "ready", "bootable": True, "dir": "/warm"}]
         self.calls = []
-        self.exec_payloads = {}  # child_id -> body sent to /exec
+        self.execs = {}   # sandbox id -> exec body
+        self.killed = []
+        self.spawn_bodies = []
+        self._spawns = 0
 
     async def __call__(self, method, url, body):
-        self.calls.append((method, url, body))
-        path = url.split("8760", 1)[-1]
-        if path == "/health":
+        path = urlsplit(url).path
+        self.calls.append((method, path, body))
+        if path == "/healthz":
             return (200 if self.healthy else 503), {"status": "ok" if self.healthy else "down"}
-        if path == "/snapshots":
-            return 201, {"snapshot_id": "snap-1"}
-        if path == "/fork":
-            cid = body.get("child_id")
-            if cid in self.fork_fail_ids:
-                return 500, {"error": "fork failed"}
-            return 201, {"child_id": cid, "session_id": f"sess-{cid}"}
-        if path.startswith("/exec/"):
-            cid = path.split("/exec/", 1)[1]
-            self.exec_payloads[cid] = body
-            return 200, {"exit_code": 0, "stdout": f"done:{cid}", "stderr": ""}
-        if path.startswith("/children/"):
-            return 200, {"status": "reclaimed"}
+        if path == "/v1/snapshots" and method == "GET":
+            if self.fail_list:
+                return 500, {"error": "list failed"}
+            return 200, list(self.snapshots)
+        if path == "/v1/sandboxes" and method == "POST":
+            self.spawn_bodies.append(body)
+            nth = self._spawns
+            self._spawns += 1
+            if nth in self.fail_spawn_nth:
+                return 500, {"error": "spawn failed"}
+            n = int(body.get("n") or 1)
+            return 201, [{"id": f"sbx-{nth}-{i}", "snapshot_tag": body.get("snapshot_tag")}
+                         for i in range(n)]
+        if path.startswith("/v1/sandboxes/") and path.endswith("/exec"):
+            sid = path.split("/")[3]
+            self.execs[sid] = body
+            if "boom" in " ".join(body.get("args") or []):
+                return 200, {"exit_code": 3, "stdout": "", "stderr": "boom"}
+            return 200, {"exit_code": 0, "stdout": f"done:{sid}", "stderr": ""}
+        if path.startswith("/v1/sandboxes/") and method == "DELETE":
+            self.killed.append(path.rsplit("/", 1)[-1])
+            return 200, {}
         return 404, {}
 
 
@@ -67,62 +103,107 @@ def _child(task="do it", tools=("bash", "python"), account="", **kw):
     return ChildSpec(task=task, allowed_tools=list(tools), account_profile=account, **kw)
 
 
+def _client(d, **kw):
+    kw.setdefault("snapshot_tag", TAG)
+    return ForkdClient(http_fn=d, account_select=_acct(), **kw)
+
+
+# ── the contract itself ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_only_published_routes():
+    """Freeze the daemon's router: any invented path fails here, not in production."""
+    d = MockDaemon()
+    await _client(d).fanout([_child(child_id="c"), _child(child_id="c2", task="boom")])
+    used = set()
+    for method, path, _body in d.calls:
+        parts = path.split("/")
+        if len(parts) >= 4 and parts[1:3] == ["v1", "sandboxes"] and parts[3]:
+            parts[3] = "{id}"
+            path = "/".join(parts)
+        used.add((method, path))
+    assert used <= ALLOWED_ROUTES, f"routes outside the daemon's router: {used - ALLOWED_ROUTES}"
+    assert ("POST", "/v1/snapshots") not in used  # no REST snapshot-create is called
+
+
+def test_defaults_match_the_daemon(monkeypatch):
+    monkeypatch.delenv("FORKD_URL", raising=False)
+    monkeypatch.delenv("FORKD_TOKEN", raising=False)
+    monkeypatch.setenv("FORKD_TOKEN", "tok-123")
+    client = ForkdClient(http_fn=MockDaemon())
+    assert client.base_url == "http://127.0.0.1:8889"
+    assert client.token == "tok-123"
+
+
 # ── positive fan-out ────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_fanout_all_children_complete_and_pin_accounts():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct())
     children = [_child(task=f"t{i}", child_id=f"c{i}") for i in range(3)]
-    results = await client.fanout(children)
+    results = await _client(d).fanout(children)
     assert len(results) == 3
     assert all(r.state == ChildState.COMPLETED.value for r in results)
     assert all(r.account_profile == "acct-auto" for r in results)  # auto-selected
-    assert all(r.session_id.startswith("sess-") for r in results)
+    assert all(r.session_id.startswith("sbx-") for r in results)
+    assert all(r.result_text.startswith("done:sbx-") for r in results)
+    # Every forked VM is reclaimed, and every spawn forked from the warm TAG.
+    assert len(d.killed) == 3
+    assert [b["snapshot_tag"] for b in d.spawn_bodies] == [TAG] * 3
+    assert all(b["per_child_netns"] is True for b in d.spawn_bodies)
 
 
 @pytest.mark.asyncio
 async def test_explicit_account_is_pinned():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct())
-    [r] = await client.fanout([_child(account="acct-2", child_id="c")])
+    [r] = await _client(d).fanout([_child(account="acct-2", child_id="c")])
     assert r.account_profile == "acct-2"
-
-
-# ── fail-closed: scope intersection (no escalation) ─────────────────────────
+    # The account is OUR policy layer — the daemon body carries no such field.
+    assert "account_profile" not in d.spawn_bodies[0]
 
 
 @pytest.mark.asyncio
-async def test_child_scope_is_intersection_not_escalation():
+async def test_explicit_snapshot_skips_resolution():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct())
-    # Parent envelope = union of children tools. This child requests admin, but a
-    # separate child bounds the snapshot; the exec payload must exclude admin.
-    children = [
-        _child(tools=["bash", "admin"], child_id="c1"),   # wants admin
-        _child(tools=["bash", "python"], child_id="c2"),
-    ]
-    # Provide an explicit snapshot whose scope EXCLUDES admin (the warm parent).
-    from adk.forkd_client import ForkdParentSnapshot
+    snap = ForkdParentSnapshot(snapshot_id="already-warm", allowed_tools=["bash", "python"])
+    await _client(d).fanout([_child(child_id="c")], snapshot=snap)
+    assert ("GET", "/v1/snapshots", None) not in d.calls
+    assert d.spawn_bodies[0]["snapshot_tag"] == "already-warm"
 
+
+# ── fail-closed: scope ceiling (no escalation) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_child_asking_outside_parent_scope_is_denied_not_narrowed():
+    """The exec surface takes argv, so a wider request cannot be narrowed — deny it."""
+    d = MockDaemon()
     snap = ForkdParentSnapshot(snapshot_id="s", allowed_tools=["bash", "python"])
-    await client.fanout(children, snapshot=snap)
-    # c1 forked+exec'd, but admin was intersected away.
-    assert "admin" not in d.exec_payloads["c1"]["allowed_tools"]
-    assert d.exec_payloads["c1"]["allowed_tools"] == ["bash"]
+    [r] = await _client(d).fanout([_child(tools=["bash", "admin"], child_id="c")],
+                                 snapshot=snap)
+    assert r.state == ChildState.DENIED.value
+    assert "admin" in r.error
+    assert d.execs == {} and d.spawn_bodies == []  # never forked
 
 
 @pytest.mark.asyncio
 async def test_empty_intersection_denies_child():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct())
-    from adk.forkd_client import ForkdParentSnapshot
-
     snap = ForkdParentSnapshot(snapshot_id="s", allowed_tools=["bash"])
-    [r] = await client.fanout([_child(tools=["admin"], child_id="c")], snapshot=snap)
+    [r] = await _client(d).fanout([_child(tools=["admin"], child_id="c")], snapshot=snap)
     assert r.state == ChildState.DENIED.value
-    assert "c" not in d.exec_payloads  # never executed
+    assert d.execs == {}  # never executed
+
+
+@pytest.mark.asyncio
+async def test_resolved_snapshot_uses_the_child_union_as_ceiling():
+    """Auto-resolved parent scope = union of children, so nothing is denied there."""
+    d = MockDaemon()
+    results = await _client(d).fanout([_child(tools=["bash"], child_id="c1"),
+                                       _child(tools=["bash", "python"], child_id="c2")])
+    assert all(r.state == ChildState.COMPLETED.value for r in results)
 
 
 # ── fail-closed: account throttle ───────────────────────────────────────────
@@ -131,11 +212,12 @@ async def test_empty_intersection_denies_child():
 @pytest.mark.asyncio
 async def test_requested_throttled_account_denied():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct(throttled=["acct-bad"]))
+    client = ForkdClient(http_fn=d, account_select=_acct(throttled=["acct-bad"]),
+                         snapshot_tag=TAG)
     [r] = await client.fanout([_child(account="acct-bad", child_id="c")])
     assert r.state == ChildState.DENIED.value
     assert "throttled" in r.error
-    assert "c" not in d.exec_payloads
+    assert d.execs == {}
 
 
 # ── degrade path ────────────────────────────────────────────────────────────
@@ -151,7 +233,8 @@ async def test_degrade_to_spawn_when_daemon_down():
         return ForkResult(child_id=child.child_id, state=ChildState.COMPLETED.value,
                           account_profile=account, result_text="degraded-ok")
 
-    client = ForkdClient(http_fn=d, account_select=_acct(), degrade_spawn=degrade_spawn)
+    client = ForkdClient(http_fn=d, account_select=_acct(), degrade_spawn=degrade_spawn,
+                         snapshot_tag=TAG)
     results = await client.fanout([_child(child_id="c0"), _child(child_id="c1")])
     assert len(results) == 2
     assert all(r.degraded for r in results)
@@ -162,33 +245,89 @@ async def test_degrade_to_spawn_when_daemon_down():
 @pytest.mark.asyncio
 async def test_degrade_without_spawner_fails_closed():
     d = MockDaemon(healthy=False)
-    client = ForkdClient(http_fn=d, account_select=_acct())  # no degrade_spawn
-    [r] = await client.fanout([_child(child_id="c")])
+    [r] = await _client(d).fanout([_child(child_id="c")])
     assert r.state == ChildState.FAILED.value
     assert r.degraded and "no degrade spawner" in r.error
 
 
 @pytest.mark.asyncio
 async def test_daemon_down_no_degrade_returns_failed():
-    d = MockDaemon(healthy=False)
-    client = ForkdClient(http_fn=d, account_select=_acct(), degrade_on_error=False)
+    client = _client(MockDaemon(healthy=False), degrade_on_error=False)
     [r] = await client.fanout([_child(child_id="c")])
     assert r.state == ChildState.FAILED.value
     assert "unavailable" in r.error
 
 
-# ── partial failure ─────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_no_warm_tag_degrades_without_a_fork_attempt(caplog):
+    d = MockDaemon()
+    client = ForkdClient(http_fn=d, account_select=_acct(), snapshot_tag="")
+    with caplog.at_level("INFO", logger="forkd_client"):
+        [r] = await client.fanout([_child(child_id="c")])
+    assert r.degraded and "snapshot tag" in caplog.text  # the reason is logged
+    assert [c for c in d.calls if c[0] == "POST"] == []
 
 
 @pytest.mark.asyncio
-async def test_partial_fork_failure_isolated():
-    d = MockDaemon(fork_fail_ids=["c1"])
-    client = ForkdClient(http_fn=d, account_select=_acct())
-    children = [_child(child_id="c0"), _child(child_id="c1"), _child(child_id="c2")]
-    results = {r.child_id: r for r in await client.fanout(children)}
+async def test_unknown_snapshot_tag_degrades():
+    d = MockDaemon()
+    client = ForkdClient(http_fn=d, account_select=_acct(), snapshot_tag="missing")
+
+    async def spawn(child, account):
+        return ForkResult(child_id=child.child_id, state=ChildState.COMPLETED.value,
+                          degraded=True)
+
+    client._degrade_spawn = spawn
+    [r] = await client.fanout([_child(child_id="c")])
+    assert r.degraded and r.state == ChildState.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_snapshot_list_failure_degrades_not_raises():
+    d = MockDaemon(fail_list=True)
+    spawned = []
+
+    async def spawn(child, account):
+        spawned.append(child.child_id)
+        return ForkResult(child_id=child.child_id, state=ChildState.COMPLETED.value)
+
+    client = ForkdClient(http_fn=d, account_select=_acct(), degrade_spawn=spawn,
+                         snapshot_tag=TAG)
+    results = await client.fanout([_child(child_id="c")])
+    assert len(results) == 1 and results[0].degraded
+    assert spawned == ["c"]
+
+
+# ── partial failure + reclaim ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_partial_spawn_failure_isolated_and_no_reclaim():
+    d = MockDaemon(fail_spawn_nth=[1])
+    results = {r.child_id: r for r in await _client(d).fanout(
+        [_child(child_id="c0"), _child(child_id="c1"), _child(child_id="c2")])}
     assert results["c0"].state == ChildState.COMPLETED.value
     assert results["c1"].state == ChildState.FAILED.value
     assert results["c2"].state == ChildState.COMPLETED.value
+    assert len(d.killed) == 2  # a sandbox that never spawned is not reclaimed
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_is_a_failure_with_stderr():
+    d = MockDaemon()
+    [r] = await _client(d).fanout([_child(task="boom now", child_id="c")])
+    assert r.state == ChildState.FAILED.value
+    assert r.exit_code == 3 and "boom" in r.error
+    assert d.killed  # failed children are still reclaimed
+
+
+@pytest.mark.asyncio
+async def test_exec_argv_carries_the_task():
+    d = MockDaemon()
+    await _client(d).fanout([_child(task="echo hi", child_id="c")])
+    body = next(iter(d.execs.values()))
+    assert body["args"] == ["sh", "-lc", "echo hi"]
+    assert body["timeout_secs"] == 300
 
 
 # ── secret-safety + validation ──────────────────────────────────────────────
@@ -197,27 +336,25 @@ async def test_partial_fork_failure_isolated():
 @pytest.mark.asyncio
 async def test_secret_in_child_definition_refused():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct())
     bad = _child(task="use sk-ant-abcd1234efgh5678 to auth", child_id="c")
     with pytest.raises(ForkdError, match="secret"):
-        await client.fanout([bad])
+        await _client(d).fanout([bad])
     assert d.calls == []  # nothing dispatched
 
 
 @pytest.mark.asyncio
 async def test_secret_in_metadata_refused():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct())
     bad = _child(child_id="c", metadata={"token": "ghp_0123456789abcdefghij"})
     with pytest.raises(ForkdError, match="secret"):
-        await client.fanout([bad])
+        await _client(d).fanout([bad])
 
 
 @pytest.mark.asyncio
 async def test_no_secret_reaches_the_wire():
     d = MockDaemon()
-    client = ForkdClient(http_fn=d, account_select=_acct())
-    await client.fanout([_child(task="call get_secret('k'), never hardcode", child_id="c")])
+    await _client(d).fanout([_child(task="call get_secret('k'), never hardcode",
+                                    child_id="c")])
     import json as _json
 
     wire = _json.dumps(d.calls, default=str)
@@ -227,7 +364,7 @@ async def test_no_secret_reaches_the_wire():
 
 @pytest.mark.asyncio
 async def test_empty_task_and_tools_rejected():
-    client = ForkdClient(http_fn=MockDaemon(), account_select=_acct())
+    client = _client(MockDaemon())
     with pytest.raises(ForkdError):
         await client.fanout([_child(task="   ", child_id="c")])
     with pytest.raises(ForkdError):
@@ -236,8 +373,7 @@ async def test_empty_task_and_tools_rejected():
 
 @pytest.mark.asyncio
 async def test_empty_children_returns_empty():
-    client = ForkdClient(http_fn=MockDaemon(), account_select=_acct())
-    assert await client.fanout([]) == []
+    assert await _client(MockDaemon()).fanout([]) == []
 
 
 # ── degrade path is NOT a hole in the fork-path guarantees ──────────────────
@@ -246,8 +382,6 @@ async def test_empty_children_returns_empty():
 @pytest.mark.asyncio
 async def test_degrade_intersects_tools_no_escalation():
     """Forkd down: a degraded child still can't exceed the parent envelope."""
-    from adk.forkd_client import ForkdParentSnapshot
-
     received = {}
 
     async def spawn(child, account):
@@ -255,8 +389,7 @@ async def test_degrade_intersects_tools_no_escalation():
         return ForkResult(child_id=child.child_id, state=ChildState.COMPLETED.value,
                           account_profile=account)
 
-    client = ForkdClient(http_fn=MockDaemon(healthy=False), account_select=_acct(),
-                         degrade_spawn=spawn)
+    client = _client(MockDaemon(healthy=False), degrade_spawn=spawn)
     snap = ForkdParentSnapshot(snapshot_id="s", allowed_tools=["bash", "python"])
     await client.fanout([_child(tools=["bash", "admin"], child_id="c")], snapshot=snap)
     assert received["c"] == ["bash"]  # admin intersected away even in degrade
@@ -264,47 +397,24 @@ async def test_degrade_intersects_tools_no_escalation():
 
 @pytest.mark.asyncio
 async def test_degrade_empty_intersection_denied():
-    from adk.forkd_client import ForkdParentSnapshot
-
     async def spawn(child, account):
         return ForkResult(child_id=child.child_id, state=ChildState.COMPLETED.value)
 
-    client = ForkdClient(http_fn=MockDaemon(healthy=False), account_select=_acct(),
-                         degrade_spawn=spawn)
+    client = _client(MockDaemon(healthy=False), degrade_spawn=spawn)
     snap = ForkdParentSnapshot(snapshot_id="s", allowed_tools=["bash"])
     [r] = await client.fanout([_child(tools=["admin"], child_id="c")], snapshot=snap)
     assert r.state == ChildState.DENIED.value
 
 
 @pytest.mark.asyncio
-async def test_snapshot_create_failure_degrades_not_raises():
-    class D2(MockDaemon):
-        async def __call__(self, method, url, body):
-            if url.split("8760", 1)[-1] == "/snapshots":
-                return 500, {"error": "boom"}
-            return await super().__call__(method, url, body)
-
-    spawned = []
-
-    async def spawn(child, account):
-        spawned.append(child.child_id)
-        return ForkResult(child_id=child.child_id, state=ChildState.COMPLETED.value)
-
-    client = ForkdClient(http_fn=D2(), account_select=_acct(), degrade_spawn=spawn)
-    results = await client.fanout([_child(child_id="c")])  # auto-snapshot fails
-    assert len(results) == 1 and results[0].degraded
-    assert spawned == ["c"]
-
-
-@pytest.mark.asyncio
 async def test_injected_http_non_forkderror_does_not_escape():
     async def bad_http(method, url, body):
-        if url.endswith("/health"):
+        if url.endswith("/healthz"):
             return 200, {}
-        if url.endswith("/snapshots"):
-            return 201, {"snapshot_id": "s"}
+        if url.endswith("/v1/snapshots"):
+            return 200, [{"tag": TAG, "bootable": True}]
         raise ValueError("boom")  # a non-ForkdError from the injected transport
 
-    client = ForkdClient(http_fn=bad_http, account_select=_acct())
+    client = ForkdClient(http_fn=bad_http, account_select=_acct(), snapshot_tag=TAG)
     [r] = await client.fanout([_child(child_id="c")])
     assert r.state == ChildState.FAILED.value  # normalized, never escapes

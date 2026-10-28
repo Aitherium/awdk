@@ -11,10 +11,28 @@ forkd daemon REST API + a DEGRADE path — it does NOT implement Firecracker. Wh
 no forkd daemon is reachable (everywhere today), ``fanout`` degrades to bounded
 sequential spawns so the fan-out still completes.
 
+The REST contract below is the daemon's OWN router, taken from
+``crates/forkd-controller/src/http.rs`` and cross-read against the published
+Python SDK (``forkd`` 0.5.3, ``controller.py``) — not from this repo's older
+design text, which described routes the daemon never served:
+
+    GET    /healthz                      liveness (auth bypassed)
+    GET    /v1/snapshots                 list warm parents
+    POST   /v1/sandboxes                 {snapshot_tag, n, per_child_netns, ...}
+    GET    /v1/sandboxes/{id}            one sandbox
+    DELETE /v1/sandboxes/{id}            terminate it
+    POST   /v1/sandboxes/{id}/exec       {args: [...], timeout_secs} -> {stdout,
+                                         stderr, exit_code}
+    POST   /v1/sandboxes/{id}/branch     pause + snapshot + resume
+
+Base URL ``$FORKD_URL`` or ``http://127.0.0.1:8889``; bearer ``$FORKD_TOKEN``
+sent as ``Authorization: Bearer`` when set.
+
 Fail-closed, by the rule that a gate denies on every error path:
-  * A child's tool scope is the INTERSECTION of the child's request and the warm
-    parent snapshot's scope — a fork can never ESCALATE privilege. Empty
-    intersection => that child is DENIED, not run.
+  * A child's requested tools must all lie inside the warm parent snapshot's
+    scope — a fork can never ESCALATE privilege. The daemon's exec surface takes
+    argv, not tool names, so a wider request is DENIED rather than silently
+    narrowed: nothing downstream could enforce a narrowing.
   * A child that requested an account which cannot be pinned (throttled/absent)
     is DENIED, not run on an arbitrary account.
   * Secrets never travel in a child/snapshot definition (task + metadata are
@@ -27,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field, replace
@@ -35,7 +54,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 _log = logging.getLogger("forkd_client")
 
-DEFAULT_FORKD_URL = "http://127.0.0.1:8760"
+DEFAULT_FORKD_URL = "http://127.0.0.1:8889"
 
 # Secret patterns that must never be embedded in a child/snapshot definition.
 _SECRET_RES = [
@@ -137,24 +156,34 @@ class ForkdClient:
 
     def __init__(
         self,
-        base_url: str = DEFAULT_FORKD_URL,
+        base_url: Optional[str] = None,
         *,
         http_fn: Optional[HttpFn] = None,
         account_select: Optional[AccountSelectFn] = None,
         degrade_spawn: Optional[DegradeSpawnFn] = None,
+        snapshot_tag: Optional[str] = None,
+        token: Optional[str] = None,
         timeout: float = 30.0,
         degrade_on_error: bool = True,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or os.environ.get("FORKD_URL") or DEFAULT_FORKD_URL).rstrip("/")
         self._http_fn = http_fn
         self._account_select = account_select
         self._degrade_spawn = degrade_spawn
+        # The warm parent a fan-out forks from. There is no REST call that makes a
+        # warm parent out of a tool scope: the daemon snapshots a BOOTED VM
+        # (``forkd snapshot`` CLI, or POST /v1/snapshots with kernel+rootfs on the
+        # daemon host). So a client resolves an existing tag and refuses to invent one.
+        self.snapshot_tag = snapshot_tag if snapshot_tag is not None else os.environ.get(
+            "FORKD_SNAPSHOT_TAG", "")
+        self.token = token if token is not None else os.environ.get("FORKD_TOKEN", "")
         self.timeout = timeout
         self.degrade_on_error = degrade_on_error
 
     # ── transport ──────────────────────────────────────────────────────────
 
-    async def _http(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
+    async def _http(self, method: str, path: str,
+                    body: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
         if self._http_fn is not None:
             try:
                 return await self._http_fn(method, f"{self.base_url}{path}", body)
@@ -163,11 +192,13 @@ class ForkdClient:
                 raise ForkdError(f"forkd transport error: {exc}") from exc
         import httpx
 
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         try:
             # Default transport: public-CA verify (never verify=False). For an
             # internal-CA mesh (https), inject an http_fn that trusts the CA.
             async with httpx.AsyncClient(timeout=self.timeout, verify=True) as c:
-                resp = await c.request(method, f"{self.base_url}{path}", json=body)
+                resp = await c.request(method, f"{self.base_url}{path}", json=body,
+                                       headers=headers)
             try:
                 data = resp.json()
             except Exception:  # noqa: BLE001
@@ -178,33 +209,74 @@ class ForkdClient:
 
     async def health_check(self) -> bool:
         try:
-            status, _ = await self._http("GET", "/health")
+            status, _ = await self._http("GET", "/healthz")
             return status == 200
         except ForkdError:
             return False
 
-    async def create_snapshot(
+    async def list_snapshots(self) -> List[Dict[str, Any]]:
+        status, data = await self._http("GET", "/v1/snapshots")
+        if status != 200:
+            raise ForkdError(f"snapshot list failed ({status}): {data}")
+        rows = data if isinstance(data, list) else data.get("snapshots", [])
+        return [r for r in rows if isinstance(r, dict)]
+
+    async def resolve_snapshot(
         self,
+        tag: str,
         *,
         allowed_tools: List[str],
         mcp_config: Optional[Dict[str, Any]] = None,
         account_profile: str = "",
         ttl_sec: int = 300,
     ) -> ForkdParentSnapshot:
-        status, data = await self._http(
-            "POST", "/snapshots",
-            {"allowed_tools": allowed_tools, "mcp_config": mcp_config,
-             "account_profile": account_profile, "ttl_sec": ttl_sec},
-        )
-        if status not in (200, 201) or not data.get("snapshot_id"):
-            raise ForkdError(f"snapshot create failed ({status}): {data}")
+        """Bind this client's policy envelope to a warm parent that ALREADY exists.
+
+        Refuses a tag the daemon does not list, and one it lists as not bootable —
+        forking from either would fail at spawn with a less useful error.
+        """
+        rows = await self.list_snapshots()
+        match = next((r for r in rows if str(r.get("tag") or r.get("snapshot_tag") or "") == tag),
+                     None)
+        if match is None:
+            known = sorted(str(r.get("tag") or r.get("snapshot_tag") or "?") for r in rows)
+            raise ForkdError(f"snapshot {tag!r} not known to the daemon; have {known}")
+        if match.get("bootable") is False or str(match.get("status", "")).lower() == "failed":
+            raise ForkdError(f"snapshot {tag!r} is not bootable ({match.get('status')})")
         return ForkdParentSnapshot(
-            snapshot_id=str(data["snapshot_id"]),
+            snapshot_id=tag,
             allowed_tools=list(allowed_tools),
             mcp_config=mcp_config,
             parent_account_profile=account_profile,
             ttl_sec=ttl_sec,
         )
+
+    async def spawn_sandboxes(self, snapshot_tag: str, n: int = 1,
+                              per_child_netns: bool = True) -> List[Dict[str, Any]]:
+        """`POST /v1/sandboxes` — fork n children; returns their SandboxInfo dicts."""
+        status, data = await self._http(
+            "POST", "/v1/sandboxes",
+            {"snapshot_tag": snapshot_tag, "n": n, "per_child_netns": per_child_netns},
+        )
+        rows = data if isinstance(data, list) else data.get("sandboxes", [])
+        if status not in (200, 201) or not rows:
+            raise ForkdError(f"sandbox spawn failed ({status}): {data}")
+        return [r for r in rows if isinstance(r, dict)]
+
+    async def exec_command(self, sandbox_id: str, args: List[str],
+                           timeout_secs: int = 30) -> Dict[str, Any]:
+        """`POST /v1/sandboxes/{id}/exec` — `{stdout, stderr, exit_code}`."""
+        status, data = await self._http(
+            "POST", f"/v1/sandboxes/{sandbox_id}/exec",
+            {"args": list(args), "timeout_secs": int(timeout_secs)},
+        )
+        if status != 200:
+            raise ForkdError(f"exec failed ({status}): {data}")
+        return data
+
+    async def kill_sandbox(self, sandbox_id: str) -> None:
+        """`DELETE /v1/sandboxes/{id}` — terminate one sandbox."""
+        await self._http("DELETE", f"/v1/sandboxes/{sandbox_id}")
 
     # ── account + scope helpers (fail-closed) ──────────────────────────────
 
@@ -265,11 +337,16 @@ class ForkdClient:
             return failed if failed is not None else await self._degrade_all(children, envelope)
 
         if snapshot is None:
+            if not self.snapshot_tag:
+                failed = _degraded_or_failed(
+                    "no warm snapshot tag configured ($FORKD_SNAPSHOT_TAG or snapshot_tag=)")
+                return failed if failed is not None else await self._degrade_all(children, envelope)
             try:
-                snapshot = await self.create_snapshot(allowed_tools=envelope)
+                snapshot = await self.resolve_snapshot(
+                    self.snapshot_tag, allowed_tools=envelope)
             except ForkdError as exc:
                 # Post-health transport failure must degrade too (not raise).
-                failed = _degraded_or_failed(f"snapshot create failed: {exc}")
+                failed = _degraded_or_failed(f"snapshot resolve failed: {exc}")
                 return failed if failed is not None else await self._degrade_all(children, envelope)
 
         sem = asyncio.Semaphore(max(1, int(parallel_limit)))
@@ -289,50 +366,51 @@ class ForkdClient:
         return out
 
     async def _fork_one(self, child: ChildSpec, snapshot: ForkdParentSnapshot) -> ForkResult:
-        tools = self._intersect_tools(child.allowed_tools, snapshot.allowed_tools)
-        if not tools:
+        # The daemon execs argv, not a named tool set, so scope is enforced as a
+        # CEILING: a child asking for anything the parent scope lacks is denied
+        # outright. Narrowing it silently would leave a promise nothing enforces.
+        outside = sorted(set(child.allowed_tools) - set(snapshot.allowed_tools))
+        if outside:
             return ForkResult(child_id=child.child_id, state=ChildState.DENIED.value,
-                              error="empty tool scope after parent intersection")
+                              error="requests tools outside the parent scope: "
+                                    + ", ".join(outside))
         account = self._select_account(child.account_profile)
         if not account and child.account_profile:
             return ForkResult(child_id=child.child_id, state=ChildState.DENIED.value,
                               error="requested account unavailable/throttled")
+        sandbox_id = ""
         try:
-            status, fk = await self._http(
-                "POST", "/fork",
-                {"snapshot_id": snapshot.snapshot_id, "child_id": child.child_id,
-                 "account_profile": account},
-            )
-            if status not in (200, 201) or not fk.get("child_id"):
+            [sbx] = await self.spawn_sandboxes(snapshot.snapshot_id, n=1)
+            sandbox_id = str(sbx.get("id") or "")
+            if not sandbox_id:
                 return ForkResult(child_id=child.child_id, state=ChildState.FAILED.value,
-                                  account_profile=account, error=f"fork failed ({status})")
-            session_id = str(fk.get("session_id") or "")
-            status, ex = await self._http(
-                "POST", f"/exec/{child.child_id}",
-                {"task": child.task, "allowed_tools": tools,
-                 "mcp_config": snapshot.mcp_config, "timeout_sec": child.timeout_sec},
-            )
+                                  account_profile=account,
+                                  error=f"spawn returned no id: {sbx}")
+            ex = await self.exec_command(sandbox_id, ["sh", "-lc", child.task],
+                                         timeout_secs=child.timeout_sec)
             ec = ex.get("exit_code", 1)
             ec = 1 if ec is None else int(ec)  # 0 is a VALID success — don't `or 1` it
-            done = status == 200 and ec == 0
+            done = ec == 0
             return ForkResult(
                 child_id=child.child_id,
                 state=ChildState.COMPLETED.value if done else ChildState.FAILED.value,
                 account_profile=account,
                 exit_code=ex.get("exit_code"),
                 result_text=str(ex.get("stdout") or ""),
-                error="" if done else str(ex.get("stderr") or f"exec failed ({status})"),
-                session_id=session_id,
+                error="" if done else str(ex.get("stderr") or "exec failed"),
+                session_id=sandbox_id,
             )
         except ForkdError as exc:
             return ForkResult(child_id=child.child_id, state=ChildState.FAILED.value,
                               account_profile=account, error=str(exc))
         finally:
             # Reclaim the VM (best-effort; never fail the result on reclaim error).
-            try:
-                await self._http("DELETE", f"/children/{child.child_id}")
-            except ForkdError:
-                pass
+            if sandbox_id:
+                try:
+                    await self.kill_sandbox(sandbox_id)
+                except ForkdError as exc:
+                    # The result is already decided; a leaked VM must still be visible.
+                    _log.warning("reclaim of sandbox %s failed: %s", sandbox_id, exc)
 
     # ── degrade path (forkd absent -> normal spawns) ───────────────────────
 
@@ -343,7 +421,6 @@ class ForkdClient:
         against the parent envelope (no escalation) and deny throttled accounts —
         the degrade path must not be a hole in the fork path's guarantees."""
         results: List[ForkResult] = []
-        eset = set(envelope)
         for child in children:  # bounded (sequential) — no microVM parallelism here
             account = self._select_account(child.account_profile)
             if not account and child.account_profile:
@@ -351,7 +428,7 @@ class ForkdClient:
                     child_id=child.child_id, state=ChildState.DENIED.value,
                     degraded=True, error="requested account unavailable/throttled"))
                 continue
-            tools = [t for t in child.allowed_tools if t in eset]
+            tools = self._intersect_tools(child.allowed_tools, envelope)
             if not tools:
                 results.append(ForkResult(
                     child_id=child.child_id, state=ChildState.DENIED.value,

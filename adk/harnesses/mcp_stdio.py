@@ -1069,6 +1069,24 @@ TOOLS: list = [
                 "required": ["session_id"]},
      "fn": lambda a: _req("GET", "/sessions/%s" % a["session_id"])},
 
+    {"name": "awsh_wait",
+     "description": "Block until a session reaches one of the given states (default "
+                    "idle/exited/failed; 'waiting' means it is sitting on a prompt). "
+                    "Two consecutive matching polls are required, so a pty flickering "
+                    "idle mid-turn does not wake you. Returns 408 on timeout -- use it "
+                    "instead of polling awsh_session in a loop or sleeping a guess.",
+     "schema": {"type": "object", "properties": {
+         "session_id": {"type": "string",
+                        "description": "id from awsh_spawn/awsh_sessions"},
+         "until": {"type": "string",
+                   "description": "comma-separated: starting, ready, busy, idle, "
+                                  "exited, failed, waiting"},
+         "timeout": {"type": "number",
+                     "description": "seconds to block, 1-300 (default 30)"}},
+                "required": ["session_id"]},
+     "fn": lambda a: _req("GET", "/sessions/%s/wait?until=%s&timeout=%s" % (
+         a["session_id"], a.get("until", "idle,exited,failed"),
+         int(a.get("timeout", 30))))},
     {"name": "awsh_spawn",
      "description": "Start a NEW coding session the daemon owns. Unlike the "
                     "discovered sessions in awsh_sessions, this one is steerable "

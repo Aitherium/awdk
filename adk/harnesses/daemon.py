@@ -1868,6 +1868,55 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         )
 
 
+    @app.get("/sessions/{session_id}/wait", dependencies=[Depends(auth)])
+    async def wait_session(
+        session_id: str,
+        until: str = Query(default="idle,exited,failed"),
+        timeout: int = Query(default=30, ge=1, le=300),
+    ) -> dict[str, Any]:
+        """Long-poll until the session reaches one of ``until`` (1-300 s).
+
+        Without this an orchestrating agent has two bad options: poll ``get_session`` in a
+        loop, or sleep a guessed interval and hope. (herdr's blocked/idle pane states are
+        the same idea in a terminal multiplexer; this is the API half.)
+
+        Two CONSECUTIVE matching polls are required before returning -- a pty that reports
+        idle between two writes of the same turn is a real flicker, and waking on one
+        sample hands the caller a session that is busy again a millisecond later.
+        ``until`` takes comma-separated values: starting, ready, busy, idle, exited,
+        failed, or ``waiting`` (a peer process sitting on a prompt). Unknown values are a
+        400 rather than a silent wait-forever. Returns 404 for an unknown session and 408
+        when the timeout expires with no match.
+        """
+        wanted = {s.strip() for s in until.split(",") if s.strip()}
+        valid = {"starting", "ready", "busy", "idle", "exited", "failed", "waiting"}
+        unknown = sorted(wanted - valid)
+        if not wanted or unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"until must be a non-empty subset of {sorted(valid)}; bad: {unknown}",
+            )
+        try:
+            mgr.get_session(session_id)
+        except ManagerError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        start = time.time()
+        streak = 0
+        while True:
+            info = mgr.get_session(session_id).info()
+            state = str(info.get("state") or "")
+            streak = streak + 1 if state in wanted else 0
+            if streak >= 2:
+                return {"session": info, "matched": state,
+                        "waited_seconds": round(time.time() - start, 2)}
+            if time.time() - start >= timeout:
+                raise HTTPException(
+                    status_code=408,
+                    detail=f"session {session_id!r} did not reach {sorted(wanted)} "
+                           f"within {timeout}s (state={state!r})",
+                )
+            await asyncio.sleep(0.25)
+
     @app.get("/sessions/{session_id}", dependencies=[Depends(auth)])
     def get_session(session_id: str) -> dict[str, Any]:
         try:
