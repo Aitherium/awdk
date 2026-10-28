@@ -745,13 +745,41 @@ pytest tests/test_forkd_live.py -v --live-e2e
 ```
 
 **Live test checklist**:
-- [ ] Forkd daemon starts and responds to /healthz
-- [ ] the warm parent tag the client is given resolves (GET /v1/snapshots) and reports `bootable: true`
+- [x] Forkd daemon starts and responds to /healthz
+- [x] the warm parent tag the client is given resolves (GET /v1/snapshots) and reports `bootable: true`
 - [ ] fanout(N=100) completes in <100ms (per spec)
 - [ ] Each child has isolated CLAUDE_CONFIG_DIR
-- [ ] Results collected; no child lost
-- [ ] Reclaim frees resources (cgroup limits reset)
+- [x] Results collected; no child lost (one child, one result, exit_code preserved)
+- [x] Reclaim frees resources (post-fanout exec on the sandbox id returns 404)
 - [ ] Account selection varies per fan-out (load balancing verified)
+
+### Live e2e — MEASURED 2026-10-27 (stock Firecracker, no hub pack)
+
+Run against a real `forkd-controller` 0.5.3 in the awnix fleet distro, driven from
+the Windows host by `adk.forkd_client` over real HTTP. Result: `state=completed
+exit=0 stdout='42\n'` from `python3 -c "print(6*7)"` executed **inside the microVM**.
+
+The setup, because none of it is obvious and every step failed first:
+
+1. **Binaries**: the prebuilt `forkd-v0.5.3-x86_64-linux.tar.gz` release asset runs only
+   on glibc ≥ 2.39 (awnix has 2.34) — run it inside `ubuntu:24.04`, not on the distro.
+2. **Daemon container** needs `--network=host --pid=host --privileged --device /dev/kvm`,
+   `iproute2` (+ `iptables`) installed, and `/var/lib/forkd` on a **persistent mount** —
+   with `--rm` and no mount the snapshot registry is lost on every restart and
+   `GET /v1/snapshots` returns `[]` while the files sit on disk.
+3. **Warm parent**: a hub pack (`forkd pull`) cannot be used — `pull` never registers
+   the tag with the daemon, and the packs are written by the **vendored** Firecracker
+   (`deeplethe/firecracker:forkd-v0.4-mem-backend-shared-v1.12`), so stock Firecracker
+   refuses their vmstate ("Invalid data version: 6.0.0" / "bitcode error"). Build the
+   parent with `POST /v1/snapshots {kernel, rootfs, tap, boot_wait_secs}` instead.
+4. **The rootfs must carry the guest agent**: `scripts/install-guest-kernel.sh` for the
+   kernel, then loop-mount the rootfs and copy `rootfs-init/forkd-init.sh` +
+   `forkd-agent.py` to `/` (the kernel cmdline is `init=/forkd-init.sh`). A rootfs
+   without them boots but nothing listens on 8888 and exec fails "No route to host".
+5. **`tap` is mandatory** at snapshot time, or the VM has no NIC — the client then sees
+   the spawn succeed and exec fail. `scripts/netns-setup.sh N` provisions the per-child
+   netns (its bare `veth0` peer name collides with a live podman veth on a fleet host —
+   use a unique peer name and set it up by hand there).
 
 ---
 
