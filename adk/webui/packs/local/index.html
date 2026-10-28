@@ -1107,6 +1107,28 @@
     var API_BASE = (window.AITHER_API_BASE || "").replace(/\/+$/, "");
     var HOSTED = !!window.AITHER_API_BASE;
 
+    // The hosted copy has no local daemon behind it: its chat goes to
+    // Aitherium's hosted endpoint, and every daemon panel (/api/local/*, the
+    // agent roster, MCP servers) exists only on the visitor's own machine.
+    // Measured 2026-10-28 on aitherium.github.io/demo-aitherium/local/: the
+    // page still said "Models run locally -- nothing leaves your machine" while
+    // answering from gateway.aitherium.com, and six panels showed a raw
+    // "Failed to fetch". Say what is true, and do not send a request that can
+    // only fail.
+    var NEEDS_DAEMON = "This runs on your own machine. Install awdk (pip install awdk) and run `adk up` to use it.";
+    function daemonOnly(path) {
+      return HOSTED && (path.indexOf("/api/local/") === 0 || path === "/agents" ||
+                        path.indexOf("/admin/") === 0);
+    }
+    if (HOSTED) {
+      var hostedHint = document.querySelector(".composer-wrap .hint");
+      if (hostedHint) hostedHint.textContent = "Aitherium · Local AI · Beta. This hosted preview answers from Aitherium's servers; install awdk to keep answers on your device.";
+      var hostedEyebrow = document.querySelector("#hero .eyebrow");
+      if (hostedEyebrow && hostedEyebrow.lastChild) hostedEyebrow.lastChild.textContent = " Hosted preview";
+      var hostedLede = document.querySelector("#hero .lede");
+      if (hostedLede) hostedLede.textContent = "Aitherium is Local AI: a private assistant that lives on your hardware. This preview runs on Aitherium's servers so you can try it before you install.";
+    }
+
     // ── Bootstrap: bearer from the URL fragment (#k=…), never in server logs ──
     var key = (location.hash.match(/[#&]k=([^&]+)/) || [])[1] || "";
     var daemonOk = false;
@@ -1144,6 +1166,7 @@
 
     function api(path, opts) {
       opts = opts || {};
+      if (daemonOnly(path)) return Promise.reject(new Error(NEEDS_DAEMON));
       return fetch(API_BASE + path, {
         method: opts.method || "GET",
         headers: hdrs(),
@@ -1164,7 +1187,9 @@
         daemonOk = true;
         el("daemonDot").className = "daemon-dot up";
         var name = (j && (j.agent || j.identity || j.name)) || "your local agent";
-        el("disclaimerText").textContent = "Connected to " + name + ". Models run locally — nothing leaves your machine unless you send it.";
+        el("disclaimerText").textContent = HOSTED
+          ? "Hosted preview: answers come from Aitherium's servers, not your machine. Install awdk to run it locally."
+          : "Connected to " + name + ". Models run locally — nothing leaves your machine unless you send it.";
         el("menuMeta").textContent = "daemon: " + (j.version ? "v" + j.version : "") + " · " + (j.model || "");
         el("offlineBanner").className = "banner";
         fetchMenuData();
@@ -1592,7 +1617,16 @@
           sel.appendChild(o);
         });
         if (prev) sel.value = prev;
-      }).catch(function () { /* daemon offline; panel shows itself */ });
+      }).catch(function (e) {
+        // Local: the offline banner already says the daemon is down.
+        if (!HOSTED) return;
+        var strip = el("backendStrip");
+        strip.innerHTML = "";
+        var note = document.createElement("span");
+        note.className = "empty";
+        note.textContent = e.message;
+        strip.appendChild(note);
+      });
     }
 
     function generateImage() {
@@ -1651,6 +1685,7 @@
 
     function sagaApi(path, opts) {
       opts = opts || {};
+      if (daemonOnly(path)) return Promise.reject(new Error(NEEDS_DAEMON));
       var h = hdrs();
       h["X-Saga-World"] = sagaWorldRef();
       return fetch(API_BASE + path, {
@@ -1890,6 +1925,7 @@
 
     function studioApi(path, opts) {
       opts = opts || {};
+      if (daemonOnly(path)) return Promise.reject(new Error(NEEDS_DAEMON));
       var h = hdrs();
       var k = el("remoteKey").value.trim();
       if (k && /^\/api\/local\/studio\/remote\/(ops|op\/)/.test(path)) h["X-Studio-Key"] = k;
@@ -2245,7 +2281,8 @@
           ? "Composed and sent from a mailbox you already own."
           : "Drafts and messages, composed locally. Sending needs awmail configured (bridge or SMTP).";
       }).catch(function () {
-        el("mailStatusStrip").innerHTML = '<span class="empty">Mail status unavailable.</span>';
+        el("mailStatusStrip").innerHTML = '<span class="empty"></span>';
+        el("mailStatusStrip").firstChild.textContent = HOSTED ? NEEDS_DAEMON : "Mail status unavailable.";
       });
     }
 
@@ -2414,7 +2451,8 @@
           box.appendChild(row);
         });
       }).catch(function () {
-        el("mcpServers").innerHTML = '<p class="empty">MCP server status unavailable.</p>';
+        el("mcpServers").innerHTML = '<p class="empty"></p>';
+        el("mcpServers").firstChild.textContent = HOSTED ? NEEDS_DAEMON : "MCP server status unavailable.";
       });
 
       renderWebMcp();
@@ -2702,7 +2740,12 @@
         var lines = term.querySelectorAll("div");
         if (lines.length >= 4) {
           lines[3].textContent = "models: " + (names || "idle");
-          lines[4].textContent = "daemon: " + (daemonOk ? "connected" : "offline");
+          lines[4].textContent = HOSTED ? "daemon: none (hosted preview)"
+                                        : "daemon: " + (daemonOk ? "connected" : "offline");
+          if (HOSTED) {
+            lines[1].textContent = "engine: hosted preview";
+            lines[2].textContent = "runtime: Aitherium servers";
+          }
         }
       }).catch(function () {});
     }
