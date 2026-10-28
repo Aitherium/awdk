@@ -282,6 +282,33 @@
         "attribution_required": true
       }
     },
+    "lfm3-1.7b": {
+      "id": "lfm3-1.7b",
+      "role": "chat",
+      "file": "LFM3-1.7B-Q4_K_M.gguf",
+      "size_mb": 1049,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://weights.aitherium.com/LFM3-1.7B-Q4_K_M.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": false,
+      "quant": "Q4_K_M",
+      "purpose": "Chat, routing and short generations on CPU. Not an orchestrator (AitherBench 0.4434 vs 0.854 for the 8B orchestrator).",
+      "runtime": "llama.cpp",
+      "licence_id": "lfm3-1.7b",
+      "licence": {
+        "record": "lfm3-1.7b",
+        "name": "LFM Open License v1.0",
+        "url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF",
+        "redistribution_ok": false,
+        "commercial_ok": null,
+        "attribution_required": true
+      },
+      "size_bytes": 1099627808,
+      "sha256": "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4"
+    },
     "orchestrator": {
       "id": "orchestrator",
       "role": "chat",
