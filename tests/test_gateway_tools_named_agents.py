@@ -15,6 +15,7 @@ These tests pin the per-agent contract:
 import json
 
 from adk.server import (
+    _point_to_web_when_nothing_matches,
     _mcp_intent_categories,
     _prioritise_mcp_specs,
     register_gateway_tools_on,
@@ -155,3 +156,29 @@ async def test_call_tool_without_a_name_says_what_is_required():
     out = json.loads(await agent.tools_by_name()["call_tool"].fn())
     assert out["required"]["name"]
     assert out["error"]
+
+
+def _agent_with_web():
+    agent = FakeAgent()
+
+    def web_search(query: str = "") -> str:
+        return "{}"
+
+    agent._tools.register(web_search, name="web_search", description="search the web")
+    return agent
+
+
+def test_missing_tool_name_is_reported_as_a_deployment_fact():
+    """A snake_case query with no match names a tool this host lacks (2026-10-27):
+    say so, instead of answering with web results as if the tool had run."""
+    out = json.loads(_point_to_web_when_nothing_matches(
+        json.dumps({"results": [{"name": "lsp_hover", "description": "symbol docs"}]}),
+        "shadowbroker_news", _agent_with_web()))
+    assert out["results"] == []
+    assert "No tool named 'shadowbroker_news'" in out["note"]
+
+
+def test_a_topic_query_still_points_at_web_search():
+    out = json.loads(_point_to_web_when_nothing_matches(
+        json.dumps({"results": []}), "tanium", _agent_with_web()))
+    assert out["results"] and out["results"][0]["name"] == "web_search"

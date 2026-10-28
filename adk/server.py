@@ -869,6 +869,9 @@ def _filter_search_json(out: str, agent=None) -> str:
 
 
 _QUERY_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{3,}")
+#: A bare snake_case identifier: how a caller writes a tool NAME, not a topic.
+#: "tanium" and "conflict" are topics; "shadowbroker_news" is a tool.
+_TOOL_SHAPED = re.compile(r"^[a-z][a-z0-9]*_[a-z0-9_]+$")
 
 
 def _point_to_web_when_nothing_matches(out: str, query: str, agent=None) -> str:
@@ -899,6 +902,19 @@ def _point_to_web_when_nothing_matches(out: str, query: str, agent=None) -> str:
         blob = f"{(r or {}).get('name', '')} {(r or {}).get('description', '')}".lower()
         if any(w in blob for w in words):
             return out
+    # The query names a tool that this host does not have. Measured 2026-10-27:
+    # an owner pasted ShadowBroker's onboarding, the agent searched for the tool
+    # five times, got unrelated rows, then web-searched the product name and
+    # reported web results as if it had used the board. A tool-shaped query with
+    # no match is a DEPLOYMENT answer -- say it, so the agent can tell the owner
+    # "the pack is not installed here" instead of improvising.
+    if _TOOL_SHAPED.match((query or "").strip()):
+        data["results"] = []
+        data["note"] = f"No tool named {query.strip()!r} exists on this host."
+        data["hint"] = ("The capability may exist on the platform but its pack is "
+                        "not registered on this agent's gateway. Report that plainly; "
+                        "do not repeat this search or substitute web results.")
+        return json.dumps(data)
     data["results"] = [{"name": "web_search",
                         "description": "Search the public internet (news, companies, "
                                        "prices, anything outside this platform).",
