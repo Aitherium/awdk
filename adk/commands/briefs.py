@@ -61,6 +61,57 @@ def cmd_briefs_list(args: Any) -> int:
     return 0
 
 
+def notebooks_from_index() -> "list[dict]":
+    """Every notebook id this host recorded, newest first.
+
+    The index is the ONLY thing that still knows a notebook exists when the
+    platform is unreachable, so `adk notebook list --local` and the offline
+    fallback in the CLI both read it from here instead of re-deriving the
+    shape a second time.
+    """
+    rows: "list[dict]" = []
+    for session_id, entry in (_load_index() or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        notebook = (entry.get("surfaces") or {}).get("notebook") or {}
+        notebook_id = str(notebook.get("id") or "")
+        if not notebook_id:
+            continue
+        surfaces = entry.get("surfaces") or {}
+        rows.append({
+            "session": session_id,
+            "created": str(entry.get("created", "")),
+            "notebook": notebook_id,
+            "at": str(notebook.get("at", "")),
+            # What the desk's "Open transcript" and an agent reading the brief
+            # offline need; both are host paths the index already carries.
+            "log_path": str(entry.get("log_path", "") or ""),
+            "brief": str((surfaces.get("archive") or {}).get("path", "") or ""),
+        })
+    rows.sort(key=lambda row: row["created"], reverse=True)
+    return rows
+
+
+#: Where a notebook opens in AitherOne (the same link the desk's View uses).
+VIEW_URL = "https://aitherium.com/workspace/one?tab=notebooks&id=%s"
+
+
+def print_notebooks(rows: "list[dict]") -> None:
+    """The table shared by `adk notebook list --local` and the offline fallback."""
+    if not rows:
+        print("  No notebooks recorded on this host yet.")
+        return
+    print()
+    print("  %-10s %-18s %-14s" % ("Session", "Created", "Notebook"))
+    for row in rows[:50]:
+        print("  %-10s %-18s %-14s" % (row["session"][:8],
+                                       row["created"][:16],
+                                       row["notebook"]))
+    print()
+    print("  view   " + VIEW_URL % rows[0]["notebook"])
+    print("  replay adk notebook get <id>   then   adk notebook run <id>")
+
+
 def cmd_briefs_show(args: Any) -> int:
     """Print one brief's report file in full."""
     session_id = str(getattr(args, "brief_id", "") or "").strip()

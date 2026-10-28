@@ -16553,6 +16553,8 @@ def _register_commands(sub):
     nb_list_p.add_argument("--workspace", default="", help="Filter by workspace")
     nb_list_p.add_argument("--status", default="", help="Filter by status (draft/ready/running/completed)")
     nb_list_p.add_argument("--limit", type=int, default=50, help="Max notebooks to return (default: 50)")
+    nb_list_p.add_argument("--local", action="store_true",
+                           help="Read this host's index only (works with the platform down)")
 
     nb_get_p = nb_sub.add_parser("get", help="Show a notebook definition (cells, spec, variables)")
     nb_get_p.add_argument("notebook_id", help="Notebook id")
@@ -16777,6 +16779,10 @@ def cmd_notebook(args) -> int:
         out = nt.notebook_plan(prompt, agent=args.agent, effort=args.effort,
                                context=args.context)
     elif sub == "list":
+        if getattr(args, "local", False):
+            from adk.commands.briefs import notebooks_from_index, print_notebooks
+            print_notebooks(notebooks_from_index())
+            return 0
         out = nt.notebook_list(workspace=args.workspace, status=args.status,
                                limit=args.limit)
     elif sub == "get":
@@ -16806,8 +16812,21 @@ def cmd_notebook(args) -> int:
     except Exception:
         print(out)
         return 0
+    if isinstance(parsed, dict) and parsed.get("error"):
+        print(json.dumps(parsed, indent=2, default=str))
+        if sub == "list":
+            # The platform cannot answer, but this host still knows every
+            # notebook IT created. Show them and say which one failed, rather
+            # than letting an unreachable platform read as an empty list.
+            from adk.commands.briefs import notebooks_from_index, print_notebooks
+            rows = notebooks_from_index()
+            if rows:
+                print("\n  Platform unreachable — showing this host's index instead:")
+                print_notebooks(rows)
+                return 2
+        return 1
     print(json.dumps(parsed, indent=2, default=str))
-    return 1 if isinstance(parsed, dict) and parsed.get("error") else 0
+    return 0
 
 
 def _stream_forge_session(genesis_url: str, session_id: str) -> int:

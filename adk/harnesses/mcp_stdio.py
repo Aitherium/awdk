@@ -1358,6 +1358,259 @@ TOOLS += [
      "fn": lambda a: _tokengate("tokengate_status", a)},
 ]
 
+
+# ── notebooks_*: find, read, replay and export the notebooks sessions produce ──
+#
+# Owner, 2026-10-27: "we output a lot of agent notebooks... how do I discover,
+# view, replay them". Two sources answer: the HOST index
+# (~/.aither/briefs/index.json, written by every creation path) works with the
+# platform down; Genesis holds the notebooks themselves. Every platform call goes
+# through adk.notebook_tools -- the one proxy -- so this block only merges the
+# index in and validates ids. It never reads as an empty list when it could not
+# look: an unreadable index and an unreachable platform are both reported.
+
+_NB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
+
+
+def _nb_call(name: str, **kwargs) -> Any:
+    """Call one function of adk.notebook_tools and decode its JSON string."""
+    try:
+        from adk import notebook_tools as _nt
+    except Exception as exc:  # noqa: BLE001 — reported, never raised into the server
+        return {"error": "%s: %s" % (type(exc).__name__, exc), "error_kind": "unavailable"}
+    fn = getattr(_nt, name, None)
+    if not callable(fn):
+        return {"error": "adk.notebook_tools defines no %s" % name,
+                "error_kind": "unavailable"}
+    out = fn(**kwargs)
+    try:
+        return json.loads(out)
+    except (TypeError, ValueError):
+        return {"raw": out}
+
+
+def _nb_id(a: dict, key: str = "notebook_id") -> "str | dict":
+    """The id argument, or a refusal: ids go into a URL path, so no `/`, no `..`."""
+    value = str(a.get(key) or "").strip()
+    if not _NB_ID_RE.match(value) or ".." in value:
+        return {"error": "%s must look like nb_1a2b3c4d (letters, digits, _ . -)" % key}
+    return value
+
+
+def _nb_index() -> "tuple[list, dict]":
+    """(rows, state) from the host index; never raises, never silent."""
+    try:
+        from adk.commands import briefs as _briefs
+    except Exception as exc:  # noqa: BLE001
+        return [], {"readable": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+    path = _briefs._briefs_dir() / "index.json"
+    if not path.is_file():
+        return [], {"readable": False, "path": str(path),
+                    "error": "no index on this host yet"}
+    if not _briefs._load_index():
+        return [], {"readable": False, "path": str(path),
+                    "error": "index is empty or not valid JSON"}
+    rows = _briefs.notebooks_from_index()
+    for row in rows:
+        row["view"] = _briefs.VIEW_URL % row["notebook"]
+    return rows, {"readable": True, "path": str(path)}
+
+
+def _notebooks_list(a: dict) -> dict:
+    limit = max(1, min(int(a.get("limit") or 50), 500))
+    since = str(a.get("since") or "").strip()
+    rows, index_state = _nb_index()
+    if since:
+        rows = [r for r in rows if r.get("created", "") >= since]
+    out: dict = {"index": index_state, "host_count": len(rows),
+                 "notebooks": [dict(r, source="host") for r in rows[:limit]]}
+    if a.get("local_only"):
+        out["platform"] = {"checked": False}
+        return out
+    platform: dict = {"checked": True}
+    remote = _nb_call("notebook_list", limit=limit)
+    if not isinstance(remote, dict):
+        platform.update(reachable=False, error="unexpected answer: %.200r" % (remote,))
+    elif remote.get("error"):
+        platform.update(reachable=False, error=remote["error"])
+    else:
+        listed = remote.get("notebooks") or remote.get("notebooks_sample") or []
+        by_id = {r["notebook"]: r for r in out["notebooks"]}
+        for nb in listed:
+            if not isinstance(nb, dict) or not nb.get("id"):
+                continue
+            row = by_id.get(nb["id"])
+            if row is not None:
+                row.update(source="both", name=nb.get("name"), status=nb.get("status"))
+            elif len(out["notebooks"]) < limit:
+                out["notebooks"].append({"notebook": nb["id"], "name": nb.get("name"),
+                                         "status": nb.get("status"),
+                                         "created": str(nb.get("created_at") or ""),
+                                         "source": "platform"})
+        platform.update(reachable=True, listed=len(listed), via=remote.get("via", "genesis"))
+        # The portal's list reports a Genesis failure behind it as an EMPTY list,
+        # so "reachable" is only claimed once Genesis has answered for a notebook.
+        newest = rows[0]["notebook"] if rows else ""
+        if newest:
+            probe = _nb_call("notebook_get", notebook_id=newest)
+            err = str(probe.get("error") or "") if isinstance(probe, dict) else "no answer"
+            if err.startswith("HTTP 404"):
+                platform.update(verified_by=newest, newest_on_platform=False)
+            elif err:
+                platform.update(reachable=False, error=err)
+            else:
+                platform.update(verified_by=newest, newest_on_platform=True)
+    out["platform"] = platform
+    return out
+
+
+def _notebooks_get(a: dict) -> dict:
+    nid = _nb_id(a)
+    if isinstance(nid, dict):
+        return nid
+    out = _nb_call("notebook_outline", notebook_id=nid)
+    host = next((r for r in _nb_index()[0] if r["notebook"] == nid), None)
+    if isinstance(out, dict):
+        out["host"] = host
+    return out
+
+
+#: Recorded tools a replay can only READ through. Genesis hands every tool_call
+#: cell to an AGENT with the recorded tool and input (NotebookEngine
+#: CELL_DISPATCH_MAP: tool_call -> agent_call), so a recorded Bash, Write or Edit
+#: can be performed AGAIN. Anything outside this set, and any script/service/skill
+#: cell, needs allow_side_effects=true.
+_NB_READ_ONLY_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch",
+                                 "ToolSearch", "ListAgents", "TodoRead", "NotebookRead"})
+_NB_NO_ACTION_CELLS = frozenset({"context", "plan", "note", "result", "markdown",
+                                 "prompt", "agent_delegate", "checkpoint"})
+
+
+def _nb_census(outline: dict) -> "tuple[dict, dict]":
+    """(every cell by type[:tool], the cells a replay could act through)."""
+    census: dict = {}
+    acting: dict = {}
+    for cell in outline.get("cells") or []:
+        ctype = cell.get("type") or "?"
+        key = "%s:%s" % (ctype, cell["tool"]) if cell.get("tool") else ctype
+        census[key] = census.get(key, 0) + 1
+        reads_only = ctype == "tool_call" and cell.get("tool") in _NB_READ_ONLY_TOOLS
+        if not reads_only and ctype not in _NB_NO_ACTION_CELLS:
+            acting[key] = acting.get(key, 0) + 1
+    if outline.get("cells_not_shown"):
+        acting["not inspected"] = outline["cells_not_shown"]   # fail closed
+    return census, acting
+
+
+def _notebooks_replay(a: dict) -> dict:
+    nid = _nb_id(a)
+    if isinstance(nid, dict):
+        return nid
+    outline = _nb_call("notebook_outline", notebook_id=nid)
+    if not isinstance(outline, dict) or outline.get("error"):
+        return outline
+    census, acting = _nb_census(outline)
+    if a.get("dry_run"):
+        return {"dry_run": True, "notebook_id": nid, "would_run": census,
+                "cell_count": outline.get("cell_count"), "side_effect_cells": acting}
+    if acting and not a.get("allow_side_effects"):
+        return {"refused": True, "notebook_id": nid, "side_effect_cells": acting,
+                "error": "this notebook re-runs recorded tool calls that can change "
+                         "things (%s); read it with notebooks_get, then pass "
+                         "allow_side_effects=true to run them anyway"
+                         % ", ".join(sorted(acting))}
+    variables = a.get("variables") or {}
+    if not isinstance(variables, dict):
+        return {"error": "variables must be an object"}
+    mode = str(a.get("mode") or "sequential")
+    if mode not in ("sequential", "parallel"):
+        return {"error": "mode must be sequential or parallel"}
+    return _nb_call("notebook_execute", notebook_id=nid, variables=variables, mode=mode)
+
+
+def _notebooks_status(a: dict) -> dict:
+    rid = _nb_id(a, "run_id")
+    if isinstance(rid, dict):
+        return rid
+    return _nb_call("notebook_run_status", run_id=rid)
+
+
+def _notebooks_export(a: dict) -> dict:
+    nid = _nb_id(a)
+    if isinstance(nid, dict):
+        return nid
+    path = str(a.get("path") or "").strip()
+    if not path:
+        # Never the server's cwd: that is whatever repo the session runs in.
+        folder = Path(os.path.expanduser("~")) / ".aither" / "notebooks"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = str(folder / ("%s.ipynb" % nid))
+    return _nb_call("notebook_export", notebook_id=nid, path=path)
+
+
+_NB_ID_SCHEMA = {"type": "string", "description": "notebook id, e.g. nb_f34c8499"}
+
+TOOLS += [
+    {"name": "notebooks_list",
+     "description": ("Every agent notebook this host recorded (newest first, from "
+                     "~/.aither/briefs/index.json -- works with the platform DOWN), "
+                     "merged with the platform's list when Genesis answers. Each row: "
+                     "session, created, notebook id, transcript path (log_path), brief "
+                     "path, view URL, source host/platform/both. `platform` says whether "
+                     "Genesis was reached; `index` whether the host index was readable. "
+                     "since='2026-10-27' answers 'what did yesterday's sessions produce'."),
+     "schema": {"type": "object", "properties": {
+         "since": {"type": "string",
+                   "description": "ISO date/time; only rows created at or after it"},
+         "limit": {"type": "integer", "description": "max rows (default 50, max 500)"},
+         "local_only": {"type": "boolean",
+                        "description": "read the host index only, no network"}}},
+     "fn": _notebooks_list},
+
+    {"name": "notebooks_get",
+     "description": ("One notebook as an outline: name, status, and every cell's id, "
+                     "type, tool and first words -- what a replay would run. Adds the "
+                     "host index row (session, transcript path) when this host made it."),
+     "schema": {"type": "object", "properties": {"notebook_id": _NB_ID_SCHEMA},
+                "required": ["notebook_id"]},
+     "fn": _notebooks_get},
+
+    {"name": "notebooks_replay",
+     "description": ("Run a notebook again on Genesis and return its run handle "
+                     "(run_id + status). Every cell re-executes: prompt cells call a "
+                     "model, and each recorded tool_call cell is handed to an agent with "
+                     "its recorded tool and input. REFUSES when a cell could change "
+                     "things (recorded Bash/Write/Edit, scripts, service calls) unless "
+                     "allow_side_effects=true. dry_run=true returns the cell census "
+                     "without running anything -- use it first. Blocks until the run "
+                     "ends; then read notebooks_status with the run_id."),
+     "schema": {"type": "object", "properties": {
+         "notebook_id": _NB_ID_SCHEMA,
+         "variables": {"type": "object", "description": "variable overrides for this run"},
+         "mode": {"type": "string", "enum": ["sequential", "parallel"]},
+         "dry_run": {"type": "boolean",
+                     "description": "describe what would run; execute nothing"},
+         "allow_side_effects": {"type": "boolean",
+                                "description": "run cells that can change things"}},
+                "required": ["notebook_id"]},
+     "fn": _notebooks_replay},
+
+    {"name": "notebooks_status",
+     "description": "A notebook run's status, per-cell traces and cost, by run_id.",
+     "schema": {"type": "object", "properties": {"run_id": {"type": "string"}},
+                "required": ["run_id"]},
+     "fn": _notebooks_status},
+
+    {"name": "notebooks_export",
+     "description": ("Export a notebook to a Jupyter .ipynb file (default "
+                     "~/.aither/notebooks/<id>.ipynb) and return the path."),
+     "schema": {"type": "object", "properties": {
+         "notebook_id": _NB_ID_SCHEMA,
+         "path": {"type": "string", "description": "where to write the .ipynb"}},
+                "required": ["notebook_id"]},
+     "fn": _notebooks_export},
+]
+
 BY_NAME = {t["name"]: t for t in TOOLS}
 
 
