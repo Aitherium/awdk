@@ -1,12 +1,12 @@
 # Persona
 
-`persona` · version `3.8.93` · 1.5 KB
+`persona` · version `3.8.94` · 1.5 KB
 
-**[Download persona-3.8.93.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.93/persona-3.8.93.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.93/persona-3.8.93.sha256)
+**[Download persona-3.8.94.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.94/persona-3.8.94.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.94/persona-3.8.94.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.93/persona-3.8.93.tar.gz
-tar xzf persona-3.8.93.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.94/persona-3.8.94.tar.gz
+tar xzf persona-3.8.94.tar.gz
 python persona/install.py
 ```
 
@@ -35,5 +35,5 @@ brain_pack.yaml
 
 ---
 
-sha256 `a3dab8d334883aa9d6b4a9669052c04021013b75e40c51a6b8d3868b30cb7174`  
-Built from `v3.8.93` (adk 3.8.93). [All packs](../packs.md)
+sha256 `f4bdfca31fbaf7d4dd30e2f7640d4ca81aacd401656accabe5488f5ec1b6e971`  
+Built from `v3.8.94` (adk 3.8.94). [All packs](../packs.md)

@@ -4,7 +4,7 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
-## [3.8.93] - 2026-10-28
+## [3.8.94] - 2026-10-28
 
 ### Added
 - `quarantine_fetch` downloads a URL into `~/.aither/quarantine/<stamp>/` (size-capped,
@@ -12,6 +12,14 @@ All notable changes to aither-adk will be documented in this file.
   Microsoft Defender or ClamAV. It reports `clean`, `threat`, `error` or `unscanned` —
   a host with no scanner is never reported as clean. Measured live 2026-10-28: a real
   embeddable-Python zip came back clean and the EICAR test file came back threat.
+- The awdelegate compatibility shim (`tools/claude-backend/awdelegate.py`) now ships
+  in the public repo, so `tests/test_awdelegate.py` passes there instead of failing
+  the publish gate.
+
+## [3.8.93] - 2026-10-28
+
+### Added
+- `quarantine_fetch`: see 3.8.94.
 - The agent tool loop runs independent read-only tool calls concurrently. When one model turn asks for several async reads (`read_*`, `search_*`, `list_*`, `get_*` ...), they run through `asyncio.gather` (up to 8 at once) instead of one after another; four 0.4 s reads finish in ~0.4 s. Writes, unrecognised verbs and sync tools stay serial barriers in the order the model emitted them, and tool results are still appended in that order. `ToolRegistry.parallel_safe()` makes the call; `AITHER_PARALLEL_TOOLS=0` restores the serial loop, an integer caps the batch.
 - `adk/harnesses/awsupervise.py` watches this host's Claude Code transcripts (main sessions, subagents, workflow agents) and the router trace. It flags agents that loop or stall: the same tool call 4+ times with no progress, the same error 3+ times, 25 turns and 15 minutes with no progress signal, an edit undone on one file, 3+ upstream failures in a row on the agent's model, or a subagent past its wall budget. It then escalates one rung per 10 minutes while the problem lasts. The first rung is a peer note in the session's steer mailbox, delivered at the next tool call. The second is an `awrelay` finding to `#agents`. The third is a decision card (stop it / re-run on Opus 5.5 / let it continue) whose answer routes back to the session. Each rung is deduped and rate-limited, and every action is logged to `~/.aither/supervisor/events-<date>.jsonl`. A DeepSeek-tier agent that stops progressing or keeps failing upstream gets an Opus 5.5 (`fable`) recommendation. The module is stdlib only and needs no fleet service. It runs as `--once`, `--watch`, `--dry-run` or `--self-test` (synthetic transcripts, no real notifications). On 2026-10-26 a dry run named the stalled `build:skull-fit` DeepSeek agent: 4 h in, 32 turns without progress, 95 router failures in a row. A retrospective run over 12 h flagged 30 agents, all on the DeepSeek tier.
 
