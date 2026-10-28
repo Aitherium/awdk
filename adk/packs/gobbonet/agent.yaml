@@ -42,3 +42,18 @@ defaults:
   # confident drift, not dullness.
   temperature: 0.3
   max_turns_per_task: 40
+
+# Public civic reference and open-source intel (2026-10-28). Both are AitherOS
+# PLATFORM packs (lib/agents/packs/{civic,shadowbroker}), so they are OPTIONAL:
+# where the platform is not installed they are simply absent and the core loop
+# stays network-free. Where they load, they read the network: public reference
+# data (Census geocoder, CC0 officials, each state's official voting pages) and
+# the read-only ShadowBroker board, whose channel secret stays on that host.
+# Answers carry official links and leads to verify; an address is never stored.
+# The in-browser GobboNet gets the same answers credential-free through the
+# Bonsai civic_* / osint_* tools (AitherVeil bonsai-tools/civic-tools.ts).
+tools:
+  packs:
+    optional:
+      - civic
+      - shadowbroker
