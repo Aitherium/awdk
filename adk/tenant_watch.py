@@ -126,7 +126,13 @@ class AuthRefusedError(RuntimeError):
 
 def _is_role_refusal(detail: str) -> bool:
     d = detail.lower()
-    return "role" in d or "cannot write" in d or "permission" in d
+    # The app's own refusals were rewritten into customer copy (2026-10-17): "can view
+    # this workspace but not change it ... edit access", "needs a workspace
+    # administrator". Without these a viewer was told to run `adk login` again.
+    return any(k in d for k in (
+        "role", "cannot write", "permission", "not change it", "edit access",
+        "workspace administrator",
+    ))
 
 
 def default_inbox(app: str) -> Path:
