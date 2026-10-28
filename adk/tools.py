@@ -14,6 +14,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("adk.tools")
 
+#: Name tokens that mark a tool as a pure read (see ToolRegistry.parallel_safe).
+_READ_VERBS = frozenset({
+    "read", "get", "list", "ls", "search", "find", "query", "recall", "fetch",
+    "grep", "glob", "status", "health", "stat", "stats", "peek", "describe",
+    "lookup", "inspect", "head", "tail", "view", "show", "browse", "explain",
+    "summarize", "diff", "log", "info", "check", "probe", "web", "count",
+})
+#: Name tokens that mark a tool as mutating; they win over a read token
+#: ("get_or_create" stays serial).
+_WRITE_VERBS = frozenset({
+    "write", "edit", "create", "update", "delete", "remove", "rm", "move", "mv",
+    "rename", "set", "put", "post", "patch", "append", "insert", "replace",
+    "run", "exec", "execute", "shell", "bash", "send", "commit", "push",
+    "merge", "kill", "stop", "start", "restart", "deploy", "install", "spawn",
+    "apply", "save", "store", "remember", "forget", "load", "acquire",
+    "release", "cancel", "approve", "publish", "upload", "mint", "rotate",
+})
+_READ_ACTION_CLASSES = frozenset({"read", "query", "search", "observe"})
+
 
 @dataclass
 class ToolDef:
@@ -97,6 +116,25 @@ class ToolRegistry:
 
     def get(self, name: str) -> ToolDef | None:
         return self._tools.get(name)
+
+    def parallel_safe(self, name: str) -> bool:
+        """Whether a call to ``name`` may run concurrently with its siblings.
+
+        Only async tools that READ: a sync tool blocks the event loop inside
+        :meth:`execute`, so a gather would still run it serially, and a write
+        must keep the order the model emitted it in (edit-then-read of the same
+        file). Read-ness is the declared ``action_class`` when one is set,
+        otherwise the tool name's leading verb; an unknown verb is serial.
+        """
+        td = self._tools.get(name)
+        if td is None or not td.is_async:
+            return False
+        if td.action_class:
+            return td.action_class.lower() in _READ_ACTION_CLASSES
+        tokens = name.lower().replace("-", "_").replace(".", "_").split("_")
+        if any(t in _WRITE_VERBS for t in tokens):
+            return False
+        return any(t in _READ_VERBS for t in tokens)
 
     def list_tools(self) -> list[ToolDef]:
         return list(self._tools.values())

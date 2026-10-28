@@ -51,6 +51,20 @@ logger = logging.getLogger("adk.agent")
 TOOL_SESSION_CTX: contextvars.ContextVar = contextvars.ContextVar(
     "adk_tool_session", default="")
 
+def _parallel_tools_max() -> int:
+    """Most read-only tool calls one turn runs at once (1 = the old serial loop).
+
+    ``AITHER_PARALLEL_TOOLS``: ``0``/``off`` disables, an integer caps the batch.
+    """
+    raw = os.environ.get("AITHER_PARALLEL_TOOLS", "8").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return 1
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 8
+
+
 # Baseline tool-loop ceiling. Kept as a module constant because LoopGuard and the
 # tests reference it, but the LIVE ceiling is effort-scaled - see _max_tool_loops().
 _MAX_TOOL_LOOPS = 10
@@ -2929,19 +2943,24 @@ class AitherAgent:
             except Exception:
                 pass
 
+            # Two passes. Pass 1 (serial, in emitted order) runs the loop guard and
+            # the approval gate and decides what executes. Pass 2 executes: runs of
+            # adjacent read-only async calls go out together (asyncio.gather), any
+            # other call is a barrier that runs alone, so writes keep their order.
+            # Results land in _results and are appended in the model's order, so
+            # the contiguous assistant->tool pairing above still holds.
             _deferred_nudges: list[str] = []
+            _results: dict[str, str] = {}
+            _to_run: list[Any] = []
             for tc in resp.tool_calls:
                 verdict = loop_guard.check(tc.name, tc.arguments)
 
                 if verdict.action == LoopAction.CIRCUIT_BREAK:
                     logger.warning("Loop guard CIRCUIT BREAK: %s", verdict.reason)
                     tool_calls_made.append(f"{tc.name}[circuit_break]")
-                    messages.append(Message(
-                        role="tool",
-                        content=json.dumps({"error": "circuit_break", "message": verdict.reason,
-                                            "guidance": verdict.nudge_message}),
-                        tool_call_id=tc.id,
-                    ))
+                    _results[tc.id] = json.dumps({
+                        "error": "circuit_break", "message": verdict.reason,
+                        "guidance": verdict.nudge_message})
                     _deferred_nudges.append(verdict.nudge_message)
                     # Fire metrics + Pulse alert
                     get_metrics().record_loop_guard_break()
@@ -2951,12 +2970,9 @@ class AitherAgent:
                 if verdict.action == LoopAction.BLOCK:
                     logger.info("Loop guard BLOCKED: %s", verdict.reason)
                     tool_calls_made.append(f"{tc.name}[blocked]")
-                    messages.append(Message(
-                        role="tool",
-                        content=json.dumps({"error": "blocked_duplicate", "message": verdict.reason,
-                                            "guidance": verdict.nudge_message}),
-                        tool_call_id=tc.id,
-                    ))
+                    _results[tc.id] = json.dumps({
+                        "error": "blocked_duplicate", "message": verdict.reason,
+                        "guidance": verdict.nudge_message})
                     continue
 
                 if verdict.action == LoopAction.WARN:
@@ -2976,12 +2992,8 @@ class AitherAgent:
                         tc.arguments if isinstance(tc.arguments, dict) else {})
                     if _decision == "deny":
                         tool_calls_made.append(f"{tc.name}[denied]")
-                        messages.append(Message(
-                            role="tool",
-                            content=json.dumps({"error": "denied",
-                                                "message": "The user denied this tool call."}),
-                            tool_call_id=tc.id,
-                        ))
+                        _results[tc.id] = json.dumps({
+                            "error": "denied", "message": "The user denied this tool call."})
                         continue
                     if _decision != "allow":
                         _pending_approvals.append({
@@ -2991,8 +3003,11 @@ class AitherAgent:
                         _paused = True
                         break
 
-                # ALLOW or WARN — execute the tool
+                # ALLOW or WARN — queue for execution
                 tool_calls_made.append(tc.name)
+                _to_run.append(tc)
+
+            async def _exec_one(tc: Any) -> str:
                 if self._events:
                     try:
                         await self._events.emit(
@@ -3000,7 +3015,7 @@ class AitherAgent:
                             tool=tc.name, arguments=tc.arguments,
                         )
                     except Exception:
-                        pass
+                        logger.debug("tool_call event emit failed", exc_info=True)
                 _tool_start = time.perf_counter()
                 # Principal-authority gate (G23): when the caller supplied an
                 # AuthContext, enforce it at the tool boundary so a forbidden
@@ -3008,12 +3023,7 @@ class AitherAgent:
                 # absent (auth=None) the call is identical to before — preserved
                 # as a separate path so app-side execute wrappers that take only
                 # (name, args) are unaffected.
-                if tc.name == LOAD_TOOLS_NAME and _tool_sel.active:
-                    # Meta-tool: widen THIS turn's offer; the next iteration's
-                    # llm.chat() reads the rebuilt tools_schema.
-                    result = _tool_sel.load(tc.arguments)
-                    tools_schema = _tool_sel.schemas(self._tools.to_openai_format)
-                elif _auth is not None:
+                if _auth is not None:
                     result = await self._tools.execute(tc.name, tc.arguments, auth=_auth)
                 else:
                     result = await self._tools.execute(tc.name, tc.arguments)
@@ -3039,7 +3049,7 @@ class AitherAgent:
                             _ft["last_ts"] = _rec["ts"]
                             _ft["ops"].append(tc.name)
                 except Exception:  # noqa: BLE001 — introspection must never break the loop
-                    pass
+                    logger.debug("tool introspection failed", exc_info=True)
                 # Detect artifacts in tool output
                 try:
                     from adk.artifacts import detect_artifact, get_registry
@@ -3048,7 +3058,7 @@ class AitherAgent:
                         _art.tool = tc.name
                         get_registry().add(sid, _art)
                 except Exception:
-                    pass
+                    logger.debug("artifact detection failed", exc_info=True)
                 if self._events:
                     try:
                         await self._events.emit(
@@ -3056,13 +3066,44 @@ class AitherAgent:
                             tool=tc.name, latency_ms=_tool_ms,
                         )
                     except Exception:
-                        pass
-                messages.append(Message(
-                    role="tool",
-                    content=result,
-                    tool_call_id=tc.id,
-                ))
-                if self.loop_policy is not None:
+                        logger.debug("tool_result event emit failed", exc_info=True)
+                return result
+
+            _i = 0
+            _par_max = _parallel_tools_max()
+            # a duck-typed registry without the classifier keeps the serial loop
+            _psafe = getattr(self._tools, "parallel_safe", None) or (lambda _n: False)
+            while _i < len(_to_run):
+                tc = _to_run[_i]
+                if tc.name == LOAD_TOOLS_NAME and _tool_sel.active:
+                    # Meta-tool: widen THIS turn's offer; the next iteration's
+                    # llm.chat() reads the rebuilt tools_schema.
+                    _results[tc.id] = _tool_sel.load(tc.arguments)
+                    tools_schema = _tool_sel.schemas(self._tools.to_openai_format)
+                    _i += 1
+                    continue
+                _wave = [tc]
+                if _par_max > 1 and _psafe(tc.name):
+                    while (_i + len(_wave) < len(_to_run)
+                           and len(_wave) < _par_max
+                           and _psafe(_to_run[_i + len(_wave)].name)):
+                        _wave.append(_to_run[_i + len(_wave)])
+                if len(_wave) > 1:
+                    logger.info("[TOOLS] running %d read-only calls concurrently: %s",
+                                len(_wave), [w.name for w in _wave])
+                    _outs = await asyncio.gather(*(_exec_one(w) for w in _wave))
+                    for w, out in zip(_wave, _outs):
+                        _results[w.id] = out
+                else:
+                    _results[tc.id] = await _exec_one(tc)
+                _i += len(_wave)
+
+            for tc in resp.tool_calls:
+                if tc.id not in _results:
+                    continue  # after a pause: the turn returns before the next call
+                result = _results[tc.id]
+                messages.append(Message(role="tool", content=result, tool_call_id=tc.id))
+                if self.loop_policy is not None and any(t is tc for t in _to_run):
                     self.loop_policy.record(tc.name, tc.arguments, result)
                     _deferred_nudges.extend(self.loop_policy.nudges())
 
