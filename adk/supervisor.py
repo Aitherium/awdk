@@ -59,9 +59,16 @@ class Supervisor:
     reasoner: Optional[Callable[[str], Awaitable[str]]] = None
     steer_fn: Optional[Callable[[str], Awaitable[bool]]] = None
     emit_events: bool = True
+    #: Steps between escalations while the loop is still stuck. Once-only meant
+    #: a single steer that the loop ignored produced "escalate to deep reasoning"
+    #: on every later step while nothing else ever happened (measured
+    #: 2026-10-27: five escalations after the one consult).
+    escalate_cooldown: int = 4
     # internal
     _nudged: bool = field(default=False, init=False)
     _escalated: bool = field(default=False, init=False)
+    _last_escalate_step: int = field(default=-99, init=False)
+    _current_steps: int = field(default=0, init=False)
     last_verdict: Optional[SupervisionVerdict] = field(default=None, init=False)
 
     # ── pure assessment (testable) ───────────────────────────────────────────
@@ -102,8 +109,11 @@ class Supervisor:
             self.session.emit({"type": "supervision", "action": verdict.action,
                                "score": verdict.score, "reason": verdict.reason,
                                "goal": self.goal.text})
-        if verdict.action == "escalate" and not self._escalated:
+        _due = (not self._escalated or
+                self._current_steps - self._last_escalate_step >= self.escalate_cooldown)
+        if verdict.action == "escalate" and _due:
             self._escalated = True
+            self._last_escalate_step = self._current_steps
             if self.reasoner is not None:
                 # FORCED escalation: call the reasoner ON THE AGENT'S BEHALF and
                 # inject the conclusion through the same steering queue the loop
@@ -179,7 +189,9 @@ class Supervisor:
                 c["answered"] = True
             # Assess on step boundaries (and on terminal events).
             if t in ("turn_start", "step", "tool_result", "done", "complete"):
-                verdict = await self.assess(self._state_from_events(c))
+                state = self._state_from_events(c)
+                self._current_steps = int(state.get("steps", 0))
+                verdict = await self.assess(state)
                 self.last_verdict = verdict
                 if verdict.action != "proceed":
                     await self._act(verdict)

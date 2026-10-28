@@ -132,3 +132,30 @@ def test_register_self_tools_count(agent):
         "self_memory_search",
     ):
         assert agent._tools.get(name) is not None
+
+
+def test_self_memory_search_uses_the_backend_s_own_keyword(agent):
+    """The backend names it `limit`, the tool used to pass `k` and every call
+    raised TypeError (2026-10-27). The probe must find the accepted name."""
+    class LimitMemory:
+        def __init__(self):
+            self.calls = []
+        def search(self, query, limit=5):
+            self.calls.append((query, limit))
+            return [{"text": "hit"}]
+
+    mem = LimitMemory()
+    agent.memory = mem
+    register_self_tools(agent)
+    out = json.loads(agent._tools.get("self_memory_search").fn("q", limit=3))
+    assert out["count"] == 1
+    assert mem.calls == [("q", 3)]
+
+
+def test_out_of_roots_error_lists_the_roots():
+    """The refusal must name where the caller MAY read; retrying blind is what
+    the loop did five times on 2026-10-27."""
+    from adk.builtin_tools import _outside_roots
+    out = json.loads(_outside_roots("/nope/x"))
+    assert out["allowed_roots"], out
+    assert "/nope/x" in out["error"]

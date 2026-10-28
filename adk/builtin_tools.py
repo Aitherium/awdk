@@ -66,6 +66,22 @@ def set_allowed_roots(roots: list[str]) -> None:
     _ALLOWED_ROOTS = list(_DEFAULT_ALLOWED_ROOTS) + [r for r in roots if r]
 
 
+def _outside_roots(path: str) -> str:
+    """The refusal a caller can act on: name the roots it may use.
+
+    Measured 2026-10-27: an agent retried the identical out-of-roots read five
+    times because the error named the offending path and nothing else. The list
+    is short and the caller could already enumerate it by asking.
+    """
+    try:
+        roots = [str(r) for r in _get_allowed_roots()]
+    except Exception:  # noqa: BLE001 -- the refusal still stands
+        roots = []
+    return json.dumps({"error": f"Path outside allowed roots: {path}",
+                       "allowed_roots": roots,
+                       "hint": "re-issue with a path under one of allowed_roots"})
+
+
 def _is_safe_path(path: str) -> bool:
     """Check if a path is within allowed roots.
 
@@ -98,7 +114,7 @@ def file_read(path: str, start_line: int = 0, end_line: int = 0, **_ignored) -> 
     end_line: Stop reading at this line (0 = end of file)
     """
     if not _is_safe_path(path):
-        return json.dumps({"error": f"Path outside allowed roots: {path}"})
+        return _outside_roots(path)
     try:
         p = Path(path)
         if not p.exists():
@@ -149,7 +165,7 @@ def file_write(path: str, content: str, mode: str = "overwrite", **_ignored) -> 
     mode: 'overwrite' or 'append'
     """
     if not _is_safe_path(path):
-        return json.dumps({"error": f"Path outside allowed roots: {path}"})
+        return _outside_roots(path)
     try:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -286,7 +302,7 @@ def file_edit(path: str, old_text: str, new_text: str, **_ignored) -> str:
     new_text: Replacement text
     """
     if not _is_safe_path(path):
-        return json.dumps({"error": f"Path outside allowed roots: {path}"})
+        return _outside_roots(path)
     try:
         p = Path(path)
         if not p.exists():
@@ -332,7 +348,7 @@ def file_list(path: str = ".", pattern: str = "*", **_ignored) -> str:
     pattern: Glob pattern to filter (default: *)
     """
     if not _is_safe_path(path):
-        return json.dumps({"error": f"Path outside allowed roots: {path}"})
+        return _outside_roots(path)
     try:
         p = Path(path)
         if not p.is_dir():
@@ -384,7 +400,7 @@ def file_search(path: str = ".", pattern: str = "", content_pattern: str = "",
     """
     pattern = pattern or file_glob or query or "**/*"
     if not _is_safe_path(path):
-        return json.dumps({"error": f"Path outside allowed roots: {path}"})
+        return _outside_roots(path)
     try:
         p = Path(path)
         matches = []
@@ -1574,7 +1590,8 @@ def register_self_tools(agent: AitherAgent) -> int:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    def self_memory_search(query: str, k: int = 5) -> str:
+    def self_memory_search(query: str = "", k: int = 0, limit: int = 0,
+                           top_k: int = 0, max_results: int = 0, **_ignored) -> str:
         """Search this agent's OWN memory tier (not the global graph) for past context.
 
         query: free-text search
@@ -1584,9 +1601,36 @@ def register_self_tools(agent: AitherAgent) -> int:
             mem = getattr(agent, "memory", None)
             if mem is None:
                 return json.dumps({"results": [], "note": "no memory backend"})
-            k = max(1, min(int(k or 5), 25))
-            # memory.search may be sync or async; coerce
-            res = mem.search(query, k=k) if hasattr(mem, "search") else []
+            if not query:
+                return json.dumps({"error": "query is required",
+                                   "accepted": ["query", "k", "limit", "top_k"]})
+            n = max(1, min(int(limit or top_k or max_results or k or 5), 25))
+            # The backend's parameter name is not ours to assume. Measured
+            # 2026-10-27: every call raised "Memory.search() got an unexpected
+            # keyword argument 'k'", the tool reported the raw TypeError, and the
+            # loop retried it verbatim until the repeat cap. Probe the accepted
+            # names once and remember them.
+            res = None
+            if hasattr(mem, "search"):
+                _names = getattr(self_memory_search, "_mem_search_kw", None)
+                if _names is None:
+                    try:
+                        import inspect as _inspect
+                        _params = _inspect.signature(mem.search).parameters
+                        _names = [p for p in ("k", "limit", "top_k", "n")
+                                  if p in _params] or [None]
+                    except (TypeError, ValueError):
+                        _names = ["k", "limit", None]
+                    self_memory_search._mem_search_kw = _names  # type: ignore[attr-defined]
+                for _kw in _names:
+                    try:
+                        res = (mem.search(query, **{_kw: n}) if _kw
+                               else mem.search(query))
+                        break
+                    except TypeError:
+                        continue
+            if res is None:
+                res = []
             if asyncio.iscoroutine(res):
                 # We're inside a sync tool; surface the coroutine name and ask caller to use recall.
                 return json.dumps({"results": [],

@@ -486,6 +486,40 @@ _WEB_REACH_LINE = (
 )
 
 
+def parse_reasoner_call(advice: str, tool_names) -> tuple[str, dict] | None:
+    """The concrete `tool({...})` the reasoner recommended, if it named one.
+
+    Measured 2026-10-27: the reasoner repeatedly gave the correct repair
+    (`self_memory_search({"query": ..., "limit": 3})`, `ops_state({})`) and the
+    fast model re-issued its old call anyway — advice the reasoner has already
+    produced is advice the loop can execute on the model's behalf instead of
+    hoping a 4B repeats it verbatim.
+    """
+    text = advice or ""
+    names = set(tool_names or ())
+    for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]{1,60})\s*\(", text):
+        name = m.group(1)
+        if name not in names:
+            continue
+        i = m.end()
+        if i >= len(text) or text[i] != "{":
+            continue
+        depth = 0
+        for j in range(i, len(text)):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        args = json.loads(text[i:j + 1])
+                    except (ValueError, TypeError):
+                        break
+                    return (name, args) if isinstance(args, dict) else None
+        return None
+    return None
+
+
 def scrub_orphan_think(text: str) -> str:
     """Remove a think tag the model emitted WITHOUT its pair.
 
@@ -4260,8 +4294,12 @@ class AitherAgent:
                 obs = (f"Same call as step {_prev_step}: {name} already ran with these exact "
                        "arguments and its result is above. Use that result, change the "
                        "arguments, or answer with FINAL:.")
-                # Repeating a call that failed is the stall the reasoner consult is for.
-                _ok = bool(_prev[1])
+                # A repeat produces NO new information, so it counts as a failure
+                # even when the first call succeeded. Measured 2026-10-27: with
+                # `_ok = bool(_prev[1])` a repeated successful search kept the
+                # failed-in-a-row counter at 0, the reasoner consult never fired,
+                # and the loop spent its whole budget re-asking the same query.
+                _ok = False
                 _hint = await _ctl_hook("on_stall")
                 if _hint:
                     obs += f"\n{str(_hint)[:600]}"
@@ -4272,6 +4310,11 @@ class AitherAgent:
                        f"now (last: {str(_tool_last_err.get(name, ''))[:200]}). Do not call it "
                        "again: use a different tool or answer with FINAL: and say what failed.")
             elif _vact == LoopAction.CIRCUIT_BREAK or (_vact == LoopAction.BLOCK and not _exempt):
+                # A blocked call is a failed call: otherwise the guard's refusal
+                # is emitted as a success, the stall counter resets, and nothing
+                # ever escalates (measured 2026-10-27 on check_safety_gate x5).
+                _ok = False
+                _repeats += 1
                 obs = str(getattr(_verdict, "nudge_message", "") or "Stop calling tools; answer.")
                 _hint = await _ctl_hook("on_stall")
                 if _hint:
@@ -4375,6 +4418,26 @@ class AitherAgent:
                              "result": _advice[:1500], "ok": not tool_result_failed(_advice)})
                 _obs_text = (f"{_obs_text[:2000]}\n\nREASONER (a bigger model you "
                              f"consulted): {_advice[:2000]}")
+                # Execute a concrete call the reasoner named. The fast model has
+                # re-issued its old call over correct advice (2026-10-27); the
+                # reasoner consult is only worth its latency if the loop acts on
+                # it. One call, only when it differs from the call that stalled.
+                _forced = parse_reasoner_call(
+                    _advice, (t.name for t in self._tools.list_tools()))
+                if _forced and (_forced[0], _forced[1]) != (name, args):
+                    _fname, _fargs = _forced
+                    try:
+                        _fobs = str(await self._tools.execute(_fname, _fargs))
+                    except Exception as exc:  # noqa: BLE001 -- advice stays usable
+                        _fobs = f"(tool error: {type(exc).__name__}: {exc})"
+                    tools_made.append(_fname)
+                    await _emit({"type": "tool_result", "name": _fname,
+                                 "result": _fobs[:1500],
+                                 "ok": not tool_result_failed(_fobs),
+                                 "forced_by": "reasoner"})
+                    _obs_text += (f"\n\n[executed the reasoner's suggested call "
+                                  f"{_fname}({_json.dumps(_fargs)[:400]}) for you] "
+                                  f"RESULT: {_fobs[:2000]}")
             if _ran:
                 _extra_hint = await _ctl_hook("observe", _step + 1, name, args, _obs_text, _ok)
                 if _extra_hint:

@@ -12,6 +12,8 @@ These tests pin the per-agent contract:
 * intent tags are carried, so the per-turn filter can include the meta-tools.
 """
 
+import json
+
 from adk.server import (
     _mcp_intent_categories,
     _prioritise_mcp_specs,
@@ -136,3 +138,20 @@ def test_mcp_intent_categories_tag_by_prefix():
     assert _mcp_intent_categories("codegraph_search") == ["code", "analysis"]
     assert _mcp_intent_categories("web_fetch") == ["research", "web_research", "question"]
     assert _mcp_intent_categories("mystery_tool") == ["analysis"]  # tagged, never bare
+
+
+async def test_search_tools_accepts_max_results_alias():
+    """Aliases are not new knobs, they are what callers write (2026-10-27)."""
+    agent = FakeAgent()
+    _wire(agent, FakeMCP(), [{"name": "beta", "description": "b"}], max_tools=0)
+    found = await agent.tools_by_name()["search_tools"].fn("beta", max_results=3)
+    assert "beta" in found
+
+
+async def test_call_tool_without_a_name_says_what_is_required():
+    """A bare call_tool({}) gets an actionable refusal, not a TypeError."""
+    agent = FakeAgent()
+    _wire(agent, FakeMCP(), [], max_tools=0)
+    out = json.loads(await agent.tools_by_name()["call_tool"].fn())
+    assert out["required"]["name"]
+    assert out["error"]

@@ -1031,7 +1031,12 @@ def register_gateway_tools_on(
 
     registered = 0
 
-    async def search_tools(query: str = "", limit: int = 8) -> str:
+    async def search_tools(query: str = "", limit: int = 0, top_k: int = 0,
+                           max_results: int = 0, k: int = 0, **_ignored) -> str:
+        # Aliases, not new knobs: a caller who writes max_results/top_k/k means
+        # "how many". Measured 2026-10-27: search_tools(max_results=…) raised
+        # "unexpected keyword argument" and the loop retried the same call.
+        limit = int(limit or top_k or max_results or k or 8)
         out = await search_tools_ranked(
             query, catalogue_getter() or [], limit, client_getter()
         )
@@ -1058,7 +1063,24 @@ def register_gateway_tools_on(
     except Exception as e:  # noqa: BLE001
         logger.warning("Failed to register search_tools: %s", e)
 
-    async def call_tool(name: str, arguments: dict | None = None) -> str:
+    async def call_tool(name: str = "", arguments: dict | None = None,
+                        args: dict | None = None, **extra) -> str:
+        if not name:
+            # A bare {} call names no tool. Say what is required instead of a
+            # TypeError the loop can only retry: measured 2026-10-27, the agent
+            # sent call_tool({}) and received "missing 1 required positional
+            # argument: 'name'" three times.
+            return json.dumps({
+                "error": "call_tool requires a tool name",
+                "required": {"name": "tool name from search_tools",
+                             "arguments": "object of that tool's arguments"},
+                "example": {"name": "codegraph_search",
+                            "arguments": {"query": "shadowbroker"}},
+            })
+        if arguments is None and args is not None:
+            arguments = args
+        if extra and arguments is None:
+            arguments = extra
         # A grant that only filters discovery is not a grant: call_tool reaches
         # anything in the catalogue BY NAME, so the refusal lives here too.
         if gateway_tool_denied(name, agent):
