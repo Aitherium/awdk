@@ -106,3 +106,63 @@ async def test_env_off_restores_serial(tmp_path, monkeypatch):
     agent, _ = _agent(tmp_path, calls, _registry(order))
     await agent.chat("read two")
     assert order == [("start", "f0"), ("end", "f0"), ("start", "f1"), ("end", "f1")]
+
+
+# ── stream_react: several ACTION/INPUT pairs in one reply ──
+
+def test_extra_react_actions_parses_pairs_after_the_first():
+    from adk.agent import extra_react_actions
+    text = ('ACTION: read_file\nINPUT: {"path": "a"}\n'
+            'ACTION: read_file\nINPUT: {"path": "b"}\n'
+            'ACTION: list_dir\nINPUT: not json\n')
+    assert extra_react_actions(text) == [("read_file", {"path": "b"})]
+
+
+async def _stream_react_run(tmp_path, reply):
+    from adk.llm.base import StreamChunk
+
+    order: list = []
+    spans: dict = {}
+    calls = {"n": 0}
+
+    async def _stream(messages, *a, **k):
+        calls["n"] += 1
+        text = reply if calls["n"] == 1 else "<think>k</think>FINAL: done"
+        yield StreamChunk(content=text, done=True, model="t")
+
+    llm = AsyncMock()
+    llm.chat_stream = _stream
+    llm.provider_name = "test"
+    llm.chat = AsyncMock(return_value=LLMResponse(content="x", model="m"))
+    mem = Memory(db_path=tmp_path / "s.db", agent_name="s")
+    agent = AitherAgent("s", llm=llm, memory=mem, builtin_tools=False)
+    reg = _registry(order, spans)
+    for td in reg.list_tools():
+        agent._tools._tools[td.name] = td
+    events: list = []
+    resp = await agent.stream_react("read a and b", on_event=events.append)
+    return resp, order, spans, events
+
+
+@pytest.mark.asyncio
+async def test_stream_react_runs_listed_reads_concurrently(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_PARALLEL_TOOLS", raising=False)
+    reply = ('<think>both</think>ACTION: read_file\nINPUT: {"path": "a"}\n'
+             'ACTION: read_file\nINPUT: {"path": "b"}\n')
+    resp, order, spans, events = await _stream_react_run(tmp_path, reply)
+    assert resp.content == "done"
+    assert [k for k, _ in order[:2]] == ["start", "start"]
+    wall = max(e for _, e in spans.values()) - min(s for s, _ in spans.values())
+    assert wall < DELAY * 2 * 0.75, wall
+    results = [e for e in events if isinstance(e, dict) and e.get("type") == "tool_result"]
+    assert any("content of a" in r["result"] and "content of b" in r["result"]
+               for r in results) or len(results) >= 2
+
+
+@pytest.mark.asyncio
+async def test_stream_react_write_among_actions_stays_single(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_PARALLEL_TOOLS", raising=False)
+    reply = ('ACTION: read_file\nINPUT: {"path": "a"}\n'
+             'ACTION: write_file\nINPUT: {"path": "a"}\n')
+    _, order, _, _ = await _stream_react_run(tmp_path, reply)
+    assert ("write", "a") not in order  # the write is not run as an extra

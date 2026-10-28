@@ -461,6 +461,26 @@ def parse_react_input(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+_REACT_ACTION = re.compile(r"ACTION:\s*([a-zA-Z_][a-zA-Z0-9_]*)", re.I)
+
+
+def extra_react_actions(text: str) -> list[tuple[str, dict]]:
+    """Every ``ACTION:``/``INPUT:`` pair AFTER the first in a text-ReAct reply.
+
+    The stream loop runs the first action itself; these are the extra independent
+    lookups the model listed in the same reply. A pair whose INPUT does not parse is
+    dropped (the model sees no observation for it and can re-issue it).
+    """
+    hits = list(_REACT_ACTION.finditer(text or ""))
+    out: list[tuple[str, dict]] = []
+    for k, m in enumerate(hits[1:], start=1):
+        end = hits[k + 1].start() if k + 1 < len(hits) else len(text)
+        args = parse_react_input(text[m.end():end])
+        if args is not None:
+            out.append((m.group(1), args))
+    return out
+
+
 _IMAGE_REF = re.compile(
     r"(?i)(?:https?://\S+?|[a-z]:[\\/][^\s\"'<>|]+?|[.~/][^\s\"'<>|]*?)"
     r"\.(?:png|jpe?g|webp|gif|bmp|tiff?)\b"
@@ -3682,6 +3702,8 @@ class AitherAgent:
             _identity.rstrip() + "\n\n"
             "Think step by step inside <think>...</think>. To call a tool, after your "
             "<think> reply EXACTLY:\nACTION: <tool_name>\nINPUT: <one-line JSON args, or {}>\n"
+            "Several INDEPENDENT read-only lookups may go in one reply as more "
+            "ACTION/INPUT pairs; they run at the same time.\n"
             "When you have enough information, after your <think> reply:\n"
             "FINAL: <concise answer for the user>\n\n"
             f"Available tools:\n{tools_block}"
@@ -4307,6 +4329,22 @@ class AitherAgent:
                         "not run. Reply again with INPUT: on ONE line of valid JSON.")))
                 continue
             args: dict = _parsed or {}
+            # Extra independent reads listed in the same reply run alongside this one —
+            # only when every call is a parallel-safe read and none is approval-gated.
+            _extras: list[tuple[str, dict]] = []
+            try:
+                _psafe = getattr(self._tools, "parallel_safe", None)
+                if _psafe and _parallel_tools_max() > 1 and _psafe(name):
+                    for _xn, _xa in extra_react_actions(_THINK.sub("", full)):
+                        if (len(_extras) + 1 >= _parallel_tools_max()
+                                or not _psafe(_xn)
+                                or needs_approval(self.name, _xn, _xa)
+                                or (_xn, _xa) == (name, args) or (_xn, _xa) in _extras):
+                            continue
+                        _extras.append((_xn, _xa))
+            except Exception as exc:  # noqa: BLE001 -- the first action still runs alone
+                await _degraded("parallel_reads", exc)
+                _extras = []
             await _emit({"type": "tool", "name": name, "args": args})
             # Knowledge graph tracking
             _kg_tools.add(str(name).lower())
@@ -4386,6 +4424,9 @@ class AitherAgent:
                             _new = [t for t in _tool_sel.offered if t.name not in _before]
                             if _new:
                                 obs += "\n" + "\n".join(_tool_line(t) for t in _new)
+                        elif _extras:
+                            obs = await self._react_parallel_reads(
+                                name, args, _extras, _guard, _emit, tools_made)
                         else:
                             obs = str(await self._tools.execute(name, args))
                     except Exception as exc:
@@ -4837,6 +4878,44 @@ class AitherAgent:
     async def recall(self, key: str) -> str | None:
         """Retrieve a value from the agent's persistent memory."""
         return await self.memory.recall(key)
+
+    async def _react_parallel_reads(self, name: str, args: dict,
+                                    extras: list[tuple[str, dict]], guard: Any,
+                                    emit: Callable, tools_made: list) -> str:
+        """Run a text-ReAct step's first action and its extra reads concurrently.
+
+        Returns the first action's result with each extra's result appended as its own
+        labelled OBSERVATION. An extra the loop guard refuses is skipped, not run.
+        """
+        runnable: list[tuple[str, dict]] = []
+        for xn, xa in extras:
+            try:
+                verdict = guard.check(xn, xa)
+            except Exception:  # noqa: BLE001 -- an unreadable guard runs nothing extra
+                continue
+            if getattr(verdict, "action", None) in (LoopAction.BLOCK, LoopAction.CIRCUIT_BREAK):
+                continue
+            runnable.append((xn, xa))
+            await emit({"type": "tool", "name": xn, "args": xa})
+        if runnable:
+            logger.info("[REACT-STREAM] running %d reads concurrently: %s",
+                        len(runnable) + 1, [name] + [n for n, _ in runnable])
+
+        async def _one(n: str, a: dict) -> str:
+            try:
+                return str(await self._tools.execute(n, a))
+            except Exception as exc:  # noqa: BLE001 -- one failed read is an observation
+                return f"(tool error: {type(exc).__name__}: {exc})"
+
+        outs = await asyncio.gather(_one(name, args), *(_one(n, a) for n, a in runnable))
+        obs = outs[0]
+        for (xn, xa), xo in zip(runnable, outs[1:]):
+            tools_made.append(xn)
+            await emit({"type": "tool_result", "name": xn, "result": xo[:1500],
+                        "ok": not tool_result_failed(xo)})
+            obs += (f"\n\nOBSERVATION for {xn}({json.dumps(xa, default=str)[:300]}):\n"
+                    f"{xo[:2000]}")
+        return obs
 
     def new_session(self) -> str:
         """Start a new conversation session."""

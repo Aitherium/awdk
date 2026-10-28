@@ -153,6 +153,12 @@ def check_orphan_modules():
                         imported.add(alias.name)
                 elif node.level and len(parts) >= 1:
                     imported.add(parts[0])
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # "adk.foo" as a string: `python -m adk.foo` spawns, importlib
+                # tables ("adk.foo", "main"), entry-point strings. A module run
+                # that way is reachable even though nothing imports it.
+                for m in re.finditer(r"\badk\.(\w+)", node.value):
+                    imported.add(m.group(1))
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     parts = alias.name.split(".")
@@ -184,6 +190,14 @@ def check_orphan_modules():
         # Standalone hardware diagnostic: run via `python -m adk.bandwidth_benchmark`,
         # prints JSON consumed by node-registration payloads. Nothing imports it.
         "bandwidth_benchmark",
+        # Public library modules a user imports directly; documented, no in-tree caller.
+        "mcp_ui_resources",  # README: from adk.mcp_ui_resources import RenderBlocksMCPServer
+        "capability_registry",  # docstring API: from adk.capability_registry import ...
+        # Standalone `python -m adk.<name>` tools with their own main():
+        "model_pack_loader",
+        "kvslot",  # imported by the fleet's inference layer (outside this repo)
+        "kvartifact",
+        "kvholder_v41",
     }
     for name, path in sorted(module_files.items()):
         if name not in imported and name not in exempt:
