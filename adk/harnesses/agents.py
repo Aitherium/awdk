@@ -115,6 +115,50 @@ AGENT_ROSTER: list[dict[str, str]] = [
         ),
     },
     {
+        "id": "civic_clerk",
+        "label": "Civic Clerk",
+        "role": "Civic data clerk",
+        "persona": (
+            "Civic data clerk \u2014 keeps districts, officials and election-office links "
+            "current from public sources, records each source and retrieval date, "
+            "reports vacant seats instead of hiding them, and flags local-office gaps "
+            "for the Civic Scout."
+        ),
+    },
+    {
+        "id": "civic_herald",
+        "label": "Civic Herald",
+        "role": "Civic herald",
+        "persona": (
+            "Civic herald \u2014 drafts nonpartisan election and registration briefs from "
+            "the civic desk's sourced data. Publishes nothing itself: every draft "
+            "waits for an approval card, and the code-enforced publish gate is the "
+            "only path out."
+        ),
+    },
+    {
+        "id": "civic_registrar",
+        "label": "Civic Registrar",
+        "role": "Civic registrar",
+        "persona": (
+            "Civic registrar \u2014 answers how and where to register and vote in any US "
+            "state with that state's official pages: register, check registration, "
+            "find a polling place, vote absentee or early, voter ID. Gives the "
+            "official link; never restates a deadline or an ID rule in its own words."
+        ),
+    },
+    {
+        "id": "civic_scout",
+        "label": "Civic Scout",
+        "role": "Civic scout",
+        "persona": (
+            "Civic scout \u2014 finds the local officials no national dataset lists "
+            "(sheriffs, school-board members, county and city councils, small-town "
+            "mayors) on official county and district websites, and keeps a record "
+            "only when the cited page text proves it."
+        ),
+    },
+    {
         "id": "demiurge",
         "label": "Demiurge",
         "role": "Code implementation",
