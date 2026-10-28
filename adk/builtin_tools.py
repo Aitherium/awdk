@@ -3858,6 +3858,7 @@ TOOL_INTENT_CATEGORIES = {
 
 # Vectorless tree search over long Markdown documents (PageIndex-style; adk/graph_rag).
 from adk.graph_rag.page_index import doc_tree_search  # noqa: E402
+from adk.quarantine import quarantine_fetch  # noqa: E402 -- joins the web category
 
 # Tool category definitions
 TOOL_CATEGORIES: dict = {
@@ -3865,7 +3866,7 @@ TOOL_CATEGORIES: dict = {
     "shell": [shell_exec, disk_usage],
     "models": [ask_reasoner, look_at],
     "python": [python_exec],
-    "web": [web_search, web_fetch],
+    "web": [web_search, web_fetch, quarantine_fetch],
     "documents": [doc_tree_search],
     "secrets": [secret_get, secret_set, secret_list],
     "creative": [image_generate, image_refine, image_smart],
