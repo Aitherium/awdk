@@ -2573,6 +2573,73 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "corrupt": store.corrupt_cards(),
         }
 
+    @app.get("/attention", dependencies=[Depends(auth)])
+    def attention(
+        rev: str = Query(default=""),
+        wait: int = Query(default=0, ge=0, le=25),
+        width: int = Query(default=100, ge=20, le=400),
+        limit: int = Query(default=3, ge=1, le=10),
+    ) -> dict[str, Any]:
+        """THE BEAM: what needs this person now, and nothing else.
+
+        The one read every surface renders (awsh's top bar, awdesk, the Living
+        Desktop, the phone, the status line, Genesis). Ranking and compression
+        live in ``adk.decisions.beam``; liveness in ``adk.decisions.liveness``, so
+        two surfaces can never disagree about what is first.
+
+        ``rev`` is a cheap change token: pass the one you last saw with
+        ``wait=<s>`` and the call long-polls until it changes (bounded at 25 s,
+        which keeps a poller's thread cheap). A poller that passes no ``rev``
+        gets the current beam immediately.
+
+        Returns ``items`` (the asks a surface NAMES, head first) and ``segments``
+        (the same, already a one-row string for a terminal surface), plus
+        ``open`` / ``oldest_age_seconds`` for a count. Old asks stay in ``open``
+        and are never headlined: red has to mean "now".
+        """
+        from adk.decisions import beam as beam_mod
+        from adk.decisions.liveness import live_waiting_session_ids
+        from adk.decisions.store import get_store
+
+        deadline = time.time() + max(0, min(wait, 25))
+
+        def snapshot() -> dict[str, Any]:
+            cards = get_store().list(status="open")
+            now = time.time()
+            b = beam_mod.build(cards, now=now, live_session_ids=live_waiting_session_ids())
+            fresh = b["fresh"]
+            token = hashlib.sha1(
+                "|".join(f"{c.id}:{c.answered_at or 0}"
+                         for c in sorted(cards, key=lambda x: x.id)).encode()
+            ).hexdigest()[:16]
+            items = [{
+                "id": c.id,
+                "key": f"decision:{c.id}",
+                "title": c.title or c.summary or "(untitled)",
+                "kind": c.kind,
+                "urgency": c.urgency,
+                "age_seconds": round(beam_mod.age_seconds(c, now), 1),
+                "hot": beam_mod.is_hot(c),
+                "options": [o.key for o in (c.options or [])],
+            } for c in fresh[:limit]]
+            return {
+                "rev": token,
+                "generated_at": round(now, 3),
+                "open": b["open"],
+                "oldest_age_seconds": round(b["oldest_age"], 1),
+                "items": items,
+                "segments": beam_mod.compress(b, now=now, width=width, limit=limit),
+            }
+
+        out = snapshot()
+        if wait and rev and rev == out["rev"]:
+            while time.time() < deadline:
+                time.sleep(min(2.0, max(0.0, deadline - time.time())))
+                out = snapshot()
+                if out["rev"] != rev:
+                    break
+        return out
+
     @app.get("/decisions/count", dependencies=[Depends(auth)])
     def count_decisions() -> dict[str, Any]:
         """Cheap enough for a browser badge to poll on a timer."""
