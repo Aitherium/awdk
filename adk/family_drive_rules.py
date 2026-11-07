@@ -243,7 +243,7 @@ def resealed_chunks(key: bytes, entry: Mapping[str, Any], *, wait_s: float) -> L
     """The file's chunks opened and sealed again (new nonce, so new objects)."""
     from adk import family_drive_files as files
 
-    return [fv.seal(key, fv.open_sealed(key, files.fetch_object(oid, wait_s=wait_s)))
+    return [fv.seal(key, files.open_chunk(key, files.fetch_object(oid, wait_s=wait_s)))
             for oid in entry_objects(entry)]
 
 

@@ -84,47 +84,37 @@ def test_the_vault_never_reads_the_master_key():
 
 # --- the CLI: the key travels only wrapped ---------------------------------------------
 
-class FakeHousehold:
-    def __init__(self):
-        self.devices = {}
-        self.wraps = {}
-        self.wire = []
-
-    def __call__(self, method, path, *, json_body=None, content=None, params=None):
-        self.wire.append(json.dumps(json_body or {}) + (content or b"").hex() + json.dumps(params or {}))
-        if path == "/family/storage/keys/devices" and method == "POST":
-            self.devices[json_body["pubkey"]] = json_body["label"]
-            return 200, {}
-        if path == "/family/storage/keys/devices":
-            return 200, {"devices": [{"pubkey": p, "label": l,
-                                      "has_key": [k for (to, k) in self.wraps if to == p]}
-                                     for p, l in self.devices.items()]}
-        if path == "/family/storage/keys/wraps" and method == "POST":
-            self.wraps[(json_body["to_pubkey"], json_body["key_id"])] = json_body["blob_b64"]
-            return 200, {}
-        if path == "/family/storage/keys/wraps":
-            return 200, {"wraps": [{"key_id": k, "blob_b64": b} for (to, k), b in self.wraps.items()
-                                   if to == params["pubkey"]]}
-        raise AssertionError(path)
-
-
 def test_init_share_accept_moves_the_key_only_wrapped(home, monkeypatch, capsys):
-    house = FakeHousehold()
-    monkeypatch.setattr(cli, "request", house)
+    from adk.tests.test_family_key_rotation import ChainHousehold
+
+    house = ChainHousehold()
+    wire = []
+
+    def spy(method, path, **kw):
+        wire.append(json.dumps(kw.get("json_body") or {}) + (kw.get("content") or b"").hex())
+        return house(method, path, **kw)
+
+    monkeypatch.setattr(cli, "request", spy)
+    monkeypatch.setenv("AITHER_FAMILY_DEVICE_TOKEN", "fdt_test")  # an enrolled computer
     monkeypatch.setenv("AITHER_HOME", str(home / "laptop"))
-    assert cli.main(["key", "init", "--label", "laptop"]) == 0
+    assert cli.main(["key", "init", "--label", "laptop"]) == 0  # record 0 of the chain
     key = fv.load_family_key("family")
-    # a second computer registers, the laptop shares, the desktop accepts
+    # a second computer registers, the laptop adds it, the desktop accepts
     monkeypatch.setenv("AITHER_HOME", str(home / "desktop"))
-    assert cli.main(["key", "accept"]) == 2  # nothing waiting yet
+    assert cli.main(["key", "accept"]) == 2  # not a member yet
     assert cli.main(["key", "register", "--label", "desktop"]) == 0
+    desk_pub, desk_fp = fv.public_key_hex(), cli._my_fingerprint()
     monkeypatch.setenv("AITHER_HOME", str(home / "laptop"))
-    assert cli.main(["key", "share"]) == 0
+    capsys.readouterr()
+    assert cli.main(["key", "share"]) == 0  # not a member: nothing wrapped to it
+    assert "with 0 computer(s)" in capsys.readouterr().out
+    assert cli.main(["key", "approve", desk_pub, "00000-00000-00000-00000"]) == 2
+    assert cli.main(["key", "approve", desk_pub, desk_fp]) == 0
     monkeypatch.setenv("AITHER_HOME", str(home / "desktop"))
     assert cli.main(["key", "accept"]) == 0
     assert fv.load_family_key("family") == key
-    wire = "".join(house.wire)
-    assert key.hex() not in wire and base64.b64encode(key).decode() not in wire
+    sent = "".join(wire)
+    assert key.hex() not in sent and base64.b64encode(key).decode() not in sent
     monkeypatch.setenv("AITHER_HOME", str(home / "laptop"))
     capsys.readouterr()
     assert cli.main(["key", "share"]) == 0  # already shared: nothing new wrapped

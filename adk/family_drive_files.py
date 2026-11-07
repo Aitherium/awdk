@@ -89,12 +89,138 @@ def _valid_ec(spec: str) -> str:
     return f"{k}+{m}"
 
 
+def open_chunk(key: bytes, blob: bytes) -> bytes:
+    """Open a sealed object with the current key, or a retired version this computer still
+    keeps after a rotation (only until :func:`reencrypt_drive` has sealed it again)."""
+    if blob[4:12] == fv.key_id(key):
+        return fv.open_sealed(key, blob)
+    keys = fv.retired_keys(cli.FAMILY)
+    keys[fv.key_id(key).hex()] = key
+    return fv.open_with_keyring(keys, blob)
+
+
+def _put_like(sealed: bytes, index: Dict[str, Any], name: str,
+              entry: Dict[str, Any]) -> str:
+    """Store a re-sealed chunk the way its file is kept now (its rule, or its layout)."""
+    from adk import family_drive_rules as rules
+
+    rule, origin = rules.effective(index, name)
+    if origin != "default":
+        return str(put_params(sealed, rules.placement_params(rule))["object_id"])
+    red = str(entry.get("redundancy") or "copies")
+    replicas = int(entry.get("replicas") or 2)
+    ec = red[3:] if red.startswith("ec ") else ""
+    try:
+        return put_object(sealed, replicas=replicas, ec=ec)
+    except cli.ApiError as exc:
+        if not (ec and exc.status == 409):
+            raise
+        return put_object(sealed, replicas=replicas)
+
+
+REENCRYPT_PASSES = 5
+
+
+def reencrypt_drive(key: bytes, *, wait_s: float = 600) -> Dict[str, int]:
+    """Seal the whole drive under ``key``: passes until one finds NO chunk on an old key.
+
+    Another family computer may add a file under the old version while a pass runs (it
+    has not accepted the rotation yet), so one pass is not proof. ``remaining`` is the
+    number of old-key chunks the last pass still had to seal (0 = the drive is done and
+    the caller may tell the household; anything else = run it again later).
+    """
+    total = {"files": 0, "chunks": 0, "skipped": 0, "remaining": 0}
+    for _pass in range(REENCRYPT_PASSES):
+        r = _reencrypt_pass(key, wait_s=wait_s)
+        total["files"] += r["files"]
+        total["chunks"] += r["chunks"]
+        total["skipped"] += r["skipped"]
+        if r["old_seen"] == 0 and r["skipped"] == 0:
+            break
+        total["remaining"] = r["old_seen"] + r["skipped"]
+    else:
+        return total
+    total["remaining"] = count_old_objects(key, wait_s=wait_s)  # read-only proof
+    return total
+
+
+def count_old_objects(key: bytes, *, wait_s: float = 600) -> int:
+    """Read-only: the index object and every chunk it names that is NOT under ``key``."""
+    kid = fv.key_id(key)
+    _s, ptr = cli.request("GET", "/family/storage/drive/index")
+    oid = str((ptr or {}).get("object_id") or "")
+    if not oid:
+        return 0
+    blob = fetch_object(oid, wait_s=wait_s)
+    old = 0 if blob[4:12] == kid else 1
+    index = json.loads(open_chunk(key, blob))
+    for entry in (index.get("files") or {}).values():
+        for c in entry.get("chunks") or []:
+            if fetch_object(c, wait_s=wait_s)[4:12] != kid:
+                old += 1
+    return old
+
+
+def _reencrypt_pass(key: bytes, *, wait_s: float = 600) -> Dict[str, int]:
+    """One pass: seal every chunk not yet under ``key`` again (after a rotation), then the index.
+
+    Old chunks are opened with the retired key, sealed under ``key`` and stored as new
+    objects with the same placement; the index moves to them by compare-and-set (a file
+    replaced meanwhile keeps its new version, and our copies are dropped) and the old
+    objects are deleted. The index itself is sealed under ``key`` by the final move.
+    Returns counts: ``files`` and ``chunks`` sealed again, ``skipped`` files that changed,
+    ``old_seen`` chunks this pass found under an older key.
+    """
+    kid = fv.key_id(key)
+    _oid, index = read_index(key, wait_s=wait_s)
+    redone: Dict[str, Dict[str, List[str]]] = {}
+    old_seen = 0
+    for name, entry in sorted(index["files"].items()):
+        old = list(entry.get("chunks") or [])
+        new: List[str] = []
+        for oid in old:
+            blob = fetch_object(oid, wait_s=wait_s)
+            if blob[4:12] == kid:
+                new.append(oid)
+                continue
+            old_seen += 1
+            new.append(_put_like(fv.seal(key, open_chunk(key, blob)), index, name, entry))
+        if new != old:
+            redone[name] = {"old": old, "new": new}
+    skipped: List[str] = []
+
+    def swap(ix: Dict[str, Any]) -> None:
+        skipped.clear()
+        for name, r in redone.items():
+            e = ix["files"].get(name)
+            if e is None or list(e.get("chunks") or []) != r["old"]:
+                skipped.append(name)  # replaced or removed meanwhile
+                continue
+            e["chunks"] = list(r["new"])
+
+    update_index(key, swap, wait_s=wait_s)  # always: reseals the index under the new key
+    chunks = 0
+    for name, r in redone.items():
+        if name in skipped:
+            drop = [o for o in r["new"] if o not in r["old"]]
+        else:
+            drop = [o for o in r["old"] if o not in r["new"]]
+            chunks += len(drop)
+        for oid in drop:
+            try:
+                cli.request("DELETE", f"/family/storage/objects/{oid}")
+            except cli.ApiError:
+                continue  # an orphan is harmless; repair never chases it
+    return {"files": len(redone) - len(skipped), "chunks": chunks, "skipped": len(skipped),
+            "old_seen": old_seen}
+
+
 def read_index(key: bytes, *, wait_s: float = 600) -> tuple:
     _s, ptr = cli.request("GET", "/family/storage/drive/index")
     oid = str(ptr.get("object_id") or "")
     if not oid:
         return "", _empty()
-    index = json.loads(fv.open_sealed(key, fetch_object(oid, wait_s=wait_s)))
+    index = json.loads(open_chunk(key, fetch_object(oid, wait_s=wait_s)))
     if index.get("schema") != INDEX_SCHEMA:
         raise fv.VaultError("the drive index is not one this adk understands")
     return oid, index
@@ -226,7 +352,7 @@ def cmd_get(args: argparse.Namespace) -> int:
     tmp = out.with_suffix(out.suffix + ".part")
     with tmp.open("wb") as f:
         for oid in entry["chunks"]:
-            f.write(fv.open_sealed(key, fetch_object(oid, wait_s=args.wait)))
+            f.write(open_chunk(key, fetch_object(oid, wait_s=args.wait)))
     tmp.replace(out)
     print(f"Wrote {out} ({entry['size']} bytes).")
     return 0
