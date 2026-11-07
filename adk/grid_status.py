@@ -101,3 +101,47 @@ def collect_grid_status(
         "healthy": healthy,
         "nodes": results,
     }
+
+
+def _node_remedy(node: Dict[str, Any]) -> str:
+    """The action that starts fixing one non-healthy node."""
+    where = f"{node.get('host')}:{node.get('port')}"
+    if node.get("state") == "no_api":
+        return f"restart the llama-server on {where} with --api-oai"
+    return f"start the llama-server on {where}, then `adk grid test {node.get('host')}`"
+
+
+def grid_next_action(status: Dict[str, Any]) -> Optional[str]:
+    """Line-1 action for ``adk grid status``, or None when nothing needs the reader."""
+    if not status.get("nodes"):
+        return "run `adk grid add cluster <ip>` (no grid nodes configured)"
+    bad = [n for n in status["nodes"] if n.get("state") != "healthy"]
+    # Unreachable outranks "up but no /v1": nothing works on a node that is down.
+    bad.sort(key=lambda n: 0 if n.get("state") == "unreachable" else 1)
+    return _node_remedy(bad[0]) if bad else None
+
+
+def render_grid_health(status: Dict[str, Any], show_all: bool = False) -> List[str]:
+    """Health lines for every probed node: problems first, capped at five."""
+    from adk import _attention as att
+
+    nodes = sorted(status.get("nodes") or [],
+                   key=lambda n: {"unreachable": 0, "no_api": 1}.get(n.get("state"), 2))
+    rows = []
+    for n in nodes:
+        where = f"{n.get('host')}:{n.get('port')}"
+        state = n.get("state")
+        if state == "healthy":
+            models = n.get("models") or []
+            rows.append((f"[+] {where} — healthy, models: "
+                         f"{', '.join(models[:3]) or 'default'}", ""))
+        elif state == "no_api":
+            rows.append((f"[!] {where} — up, no /v1 API", _node_remedy(n)))
+        else:
+            rows.append((f"[x] {where} — unreachable", _node_remedy(n)))
+    out = att.numbered(rows, show_all=show_all, more_cmd="adk grid status --all")
+    bad = [n for n in nodes if n.get("state") != "healthy"]
+    if bad:
+        noun = "node down" if len(bad) == 1 else "nodes down"
+        out.append(att.count_line(len(bad), noun, _node_remedy(bad[0])))
+    return out

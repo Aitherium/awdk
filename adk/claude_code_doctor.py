@@ -754,7 +754,61 @@ def run_doctor(
     return rep
 
 
-def print_report(rep: Report, as_json: bool = False, verbose: bool = False) -> None:
+#: What starts fixing each finding code when its message names no command itself.
+FINDING_REMEDIES: dict[str, str] = {
+    "CCD000": "run `adk claude setup` (or fix the JSON in the file named above)",
+    "CCD001": "move autoMode into ~/.claude/settings.json",
+    "CCD002": "delete the hook from every scope but one",
+    "CCD003": "make enabledMcpjsonServers match the servers in .mcp.json",
+    "CCD004": "speed the hook up or narrow its matcher, then `adk claude doctor`",
+    "CCD005": "remove the key, or pass `--allow-key KEY` if it is intentional",
+    "CCD006": "log in to claude.ai in Claude Code, or turn voice off",
+    "CCD007": "rewrite the hook in exec form (\"command\" + \"args\")",
+    "CCD008": "run `adk claude hookd ensure`",
+}
+_SEVERITY_RANK = {"violation": 0, "unjudged": 1, "warning": 2}
+_BACKTICK_CMD = re.compile(r"`([^`]+)`")
+
+
+def finding_remedy(f: Finding) -> str:
+    """The action for one finding: a command its message names, else the code's remedy."""
+    named = _BACKTICK_CMD.findall(f.message)
+    if named:
+        return f"run `{named[-1]}`"
+    return FINDING_REMEDIES.get(f.code, "run `adk claude doctor -v` for details")
+
+
+def render_report(rep: Report, verbose: bool = False, show_all: bool = False) -> list[str]:
+    """Human report: line 1 is the next action, findings ranked and capped at five."""
+    from adk import _attention as att
+
+    ranked = sorted(rep.findings, key=lambda f: _SEVERITY_RANK.get(f.severity, 3))
+    out: list[str] = []
+    if ranked:
+        out.append(att.next_line(finding_remedy(ranked[0]), ranked[0].code))
+    else:
+        out.append(att.IDLE)
+    word = {0: "clean", 1: "violation(s)", 2: "could not judge"}[rep.exit_code]
+    out.append(att.fit(f"claude doctor: {word} ({len(rep.findings)} finding(s))"))
+    if ranked:
+        tag = {"violation": "FAIL", "warning": "WARN", "unjudged": "DEAD"}
+        steps = [(f"{tag[f.severity]} {f.code} {f.message}", finding_remedy(f)) for f in ranked]
+        out.append("")
+        out.extend(att.numbered(steps, show_all=show_all, more_cmd="adk claude doctor --all"))
+    if verbose or not rep.findings:
+        notes, hidden = att.cap(rep.notes, show_all=show_all or verbose)
+        out.extend(att.fit(f"  .. {n}") for n in notes)
+        if hidden:
+            out.append(att.more_line(hidden, "adk claude doctor -v"))
+    if ranked:
+        out.append("")
+        out.append(att.count_line(len(ranked), "finding(s)",
+                                  f"start with: {finding_remedy(ranked[0])}"))
+    return out
+
+
+def print_report(rep: Report, as_json: bool = False, verbose: bool = False,
+                 show_all: bool = False) -> None:
     if as_json:
         print(
             json.dumps(
@@ -767,14 +821,8 @@ def print_report(rep: Report, as_json: bool = False, verbose: bool = False) -> N
             )
         )
         return
-    for f in rep.findings:
-        tag = {"violation": "FAIL", "warning": "WARN", "unjudged": "DEAD"}[f.severity]
-        print(f"{tag} {f.code} {f.message}")
-    if verbose or not rep.findings:
-        for n in rep.notes:
-            print(f"  .. {n}")
-    word = {0: "clean", 1: "violation(s)", 2: "could not judge"}[rep.exit_code]
-    print(f"claude doctor: {word} ({len(rep.findings)} finding(s))")
+    for line in render_report(rep, verbose=verbose, show_all=show_all):
+        print(line)
 
 
 # ------------------------------------------------------------------ self-test
@@ -1163,6 +1211,7 @@ def add_arguments_doctor(p) -> None:
     p.add_argument("--cwd", default="", help="Project directory to judge (default: current)")
     p.add_argument("--json", action="store_true", help="Machine-readable output")
     p.add_argument("-v", "--verbose", action="store_true", help="Also print notes")
+    p.add_argument("--all", action="store_true", help="Show every finding (default: top 5)")
     p.add_argument(
         "--allow-key",
         action="append",
@@ -1195,6 +1244,7 @@ def cmd_doctor(args) -> int:
         rep,
         as_json=bool(getattr(args, "json", False)),
         verbose=bool(getattr(args, "verbose", False)),
+        show_all=bool(getattr(args, "all", False)),
     )
     return rep.exit_code
 

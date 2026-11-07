@@ -21,9 +21,11 @@
     return { get: (k) => tx('readonly', (s) => s.get(k)), put: (k, v) => tx('readwrite', (s) => s.put(v, k)) };
   }
 
-  async function open(store, subtle) {
+  // opts.create === false: never mint a key (desk-link.html signs with the enrolled one or not at all)
+  async function open(store, subtle, opts) {
     subtle = subtle || root.crypto.subtle;
     let kp = await store.get('ed25519');
+    if (!kp && opts && opts.create === false) throw new Error('no-device-key');
     if (!kp) {
       kp = await subtle.generateKey({name: 'Ed25519'}, false, ['sign', 'verify']);
       await store.put('ed25519', kp);

@@ -60,6 +60,16 @@ STORE = Path(os.environ.get("AWDELEGATE_STORE") or (HOME / ".aither" / "crystal"
 TRACE_DIR = Path(os.environ.get("AWROUTER_TRACE_DIR") or (HOME / ".aither" / "agent-trace"))
 VERSION = "1.0"
 
+# Recall-before-produce door (shared contract with the fleet's lib.core.RecallDoor).
+# Script mode (`python -S awdelegate.py`) puts adk/ on sys.path[0], so try both.
+try:
+    from adk import recall_door as _recall  # type: ignore[no-redef]
+except Exception:  # pragma: no cover - script mode / partial install
+    try:
+        import recall_door as _recall  # type: ignore[no-redef]
+    except Exception:
+        _recall = None  # type: ignore[assignment]
+
 DEFAULTS: Dict[str, Any] = {
     "spine": "127.0.0.1:8151",
     "model": "aither-orchestrator",
@@ -965,6 +975,16 @@ def save_brief(question: str, scope: str, paths: List[str], key: str, run: Dict[
          "steps": run["steps"], "answer": run["answer"]}, ensure_ascii=False), encoding="utf-8")
     with open(STORE / "index.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    # Write-back: this accepted brief becomes recallable through the shared door,
+    # so a repeat (or a similar) question can be answered without re-investigating.
+    if _recall is not None:
+        try:
+            _recall.record(
+                "research", question, run["answer"], scope="research",
+                agent=run.get("driver", ""), source="research-brief",
+            )
+        except Exception:
+            pass
     return row
 
 
@@ -1094,13 +1114,51 @@ def research(args: Dict[str, Any], progress=None, cancelled=None,
             body = read_brief(hit["id"])
             if not body.startswith("error:"):
                 write_trace({"event": "reuse", "id": hit["id"], "question": question[:300]})
+                if _recall is not None:
+                    try:
+                        _recall.log_event(
+                            "hit", kind="research", request=question, scope="research",
+                            record_id=hit["id"], score=1.0, saved_calls=1,
+                            saved_tokens=(len(body) + len(question)) // 4, agent="local",
+                        )
+                    except Exception:
+                        pass
                 return ("[crystal brief %s, reused: stored %s ago, %d cited files unchanged, 0 tool calls]\n\n%s"
                         % (hit["id"], _age(hit["created"]), len(hit.get("files") or {}), body))
+
+    # No file-fresh exact brief. Ask the shared recall door: a near-duplicate is
+    # a HIT (zero model calls); a merely similar question is a SEED to start from.
+    seed_text = ""
+    if _recall is not None and not args.get("fresh"):
+        try:
+            _rs = _recall.lookup(
+                "research", question, scope="research",
+                ttl_days=float((cfg.get("ttl_days") or {}).get(scope, 3)),
+            )
+            if _rs.status == _recall.Status.HIT and _rs.output:
+                write_trace({"event": "reuse", "id": _rs.record_id,
+                             "question": question[:300], "via": "recall-door"})
+                return ("[recall hit %s, stored %s ago, 0 model calls]\n\n%s"
+                        % (_rs.record_id, _age(_rs.provenance.get("created", time.time())), _rs.output))
+            if _rs.status == _recall.Status.SEED and _rs.output:
+                seed_text = _rs.output[:6000]
+                write_trace({"event": "seed", "id": _rs.record_id, "question": question[:300]})
+        except Exception:
+            seed_text = ""
+
+    _seed_extra = ""
+    if seed_text:
+        _seed_extra = (
+            "A prior brief on a SIMILAR question is below. Use it as a STARTING POINT: "
+            "verify anything that may have changed and do not repeat claims you have not "
+            "checked with a tool call.\n\n" + seed_text + "\n\n---\n\n"
+        )
     max_steps = _clamp(args.get("max_steps"), 1, 80, int(cfg["max_steps"]))
     budget = float(_clamp(args.get("budget_s"), 20, 1800, int(cfg["budget_s"])))
     model = str(args.get("model") or cfg["model"])
     run = investigate(question, scope, paths, cfg, policy, max_steps, budget, model,
-                      progress=progress, cancelled=cancelled, chat_fn=chat_fn)
+                      progress=progress, cancelled=cancelled, chat_fn=chat_fn,
+                      extra=_seed_extra)
     chain = cfg.get("synth_model") or "none"
     synth = str((chain if isinstance(chain, list) else [chain])[0])
     gaps = re.split(r"(?im)^\W*gaps\W*$|^\W*gaps\s*:", run["answer"] or "", maxsplit=1)

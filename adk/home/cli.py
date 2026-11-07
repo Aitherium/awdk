@@ -31,6 +31,22 @@
     adk home receipts [--verify] [-n N]         what the agent did; --verify exits 0/1/2
     adk home receipts --anchor                  sign the chain head -> <home>/receipts.anchor
     adk home trust status|init                  egress guard, approvals, receipts at a glance
+    adk home devices scan [--no-ssdp] [--json]  every device on your home network (passive:
+                                                neighbor table + SSDP); flags NEW devices
+    adk home devices watch [--json]             scan, then tell the guardians ONCE per new
+                                                device (queued offline, receipted)
+    adk home devices known <mac|ip> [--label L] a known device ("our TV"): never announced
+    adk home devices known <mac|ip> --forget    announce it again if it reappears new
+    adk home doctor [--watch] [--json]          check disks, services, LAN, backup, version;
+                                                tell the guardians once a day; propose fixes
+    adk home doctor cards | approve|deny <card> fixes that change state wait for your OK
+    adk home updates check [--json]             adk, host OS and Home Assistant updates
+                                                (read-only)
+    adk home updates apply                      adk now (validated, health-gated);
+                                                HA + host OS -> guardian cards
+    adk home updates apply --approve ID|--deny ID   answer an update card
+    adk home updates schedule [--day sun --at 03:00|--off] [--run-due]
+                                                weekly window; --run-due raises cards
     adk home report [--pdf FILE] [--days N]     device-signed data-boundary report
     adk home report --verify FILE.json          check a report's signature: exit 0/1/2
     adk home join <game-url> [--steps N] [--learn] [--say TEXT] [--act TEXT]
@@ -243,6 +259,72 @@ def _build(p: argparse.ArgumentParser) -> None:
     trs.add_parser("status", help="What is enforced right now")
     ti = trs.add_parser("init", help="Write air_gap.yaml with enforcement: audit")
     ti.add_argument("--force", action="store_true", help="Overwrite an existing air_gap.yaml")
+
+    dv = hs.add_parser("devices", help="Every device on your home network (passive: the "
+                                       "OS neighbor table + one SSDP search, no port scan)")
+    dvs = dv.add_subparsers(dest="devices_command")
+    dsc = dvs.add_parser("scan", help="Scan now; devices never seen before are flagged NEW")
+    dsc.add_argument("--no-ssdp", action="store_true",
+                     help="Skip the SSDP M-SEARCH (neighbor table only)")
+    dsc.add_argument("--resolve-names", action="store_true",
+                     help="Reverse-DNS addresses that have no hostname (2 s budget)")
+    dsc.add_argument("--json", action="store_true", help="Machine-readable output")
+    dwt = dvs.add_parser("watch", help="Scan, then send the household's guardians ONE notice "
+                                       "per new device (offline: queued for the next run)")
+    dwt.add_argument("--no-ssdp", action="store_true",
+                     help="Skip the SSDP M-SEARCH (neighbor table only)")
+    dwt.add_argument("--resolve-names", action="store_true",
+                     help="Reverse-DNS addresses that have no hostname (2 s budget)")
+    dwt.add_argument("--json", action="store_true", help="Machine-readable output")
+    dkn = dvs.add_parser("known", help="Mark a device known ('this is our TV'): it is "
+                                       "never announced")
+    dkn.add_argument("device", help="Its MAC address (any spelling) or IPv4 address")
+    dkn.add_argument("--label", default="", help="What you call it")
+    dkn.add_argument("--forget", action="store_true", help="Stop treating it as known")
+
+    up = hs.add_parser("updates", help="Patch the home node and its devices: adk, the "
+                                       "host OS and Home Assistant update entities")
+    ups = up.add_subparsers(dest="updates_command")
+    uc = ups.add_parser("check", help="What is out of date (read-only)")
+    ua = ups.add_parser("apply", help="adk now (validated, health-gated); Home Assistant "
+                                      "and the host OS become guardian approval cards")
+    ua_one = ua.add_mutually_exclusive_group()
+    ua_one.add_argument("--approve", default="", metavar="ID", help="Say yes to a card")
+    ua_one.add_argument("--deny", default="", metavar="ID", help="Say no to a card")
+    us = ups.add_parser("schedule", help="The weekly window (default Sunday 03:00 local)")
+    us.add_argument("--day", default="", help="mon..sun")
+    us.add_argument("--at", default="", help="HH:MM, 24-hour, local time")
+    us_on = us.add_mutually_exclusive_group()
+    us_on.add_argument("--off", action="store_true", help="Pause the schedule")
+    us_on.add_argument("--on", action="store_true", help="Resume the schedule")
+    us.add_argument("--run-due", action="store_true",
+                    help="If the window has passed since the last run: check, and raise "
+                         "a card for anything pending (never installs the host OS)")
+    for sp in (uc, ua, us):
+        sp.add_argument("--no-host", action="store_true", help="Skip the host OS")
+        sp.add_argument("--no-ha", action="store_true", help="Skip Home Assistant")
+        sp.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    dr = hs.add_parser("doctor", help="Check this home node (disks, services, LAN, backup, "
+                                      "awdk version); tell the guardians once a day and "
+                                      "propose fixes (changes wait for your OK)")
+    dr.add_argument("--watch", action="store_true", help="Keep checking on an interval")
+    dr.add_argument("--interval", type=float, default=3600.0,
+                    help="Seconds between --watch rounds (minimum 60)")
+    dr.add_argument("--node", default="", help="This device's name for the operator "
+                                              "(default: the hostname)")
+    dr.add_argument("--check-only", action="store_true",
+                    help="Only check: no notice, no operator call, no card")
+    dr.add_argument("--json", action="store_true", help="Machine-readable output")
+    drs = dr.add_subparsers(dest="doctor_command")
+    drs.add_parser("cards", help="Fixes waiting for your OK")
+    for verb, text in (("approve", "Approve one fix: the operator is asked now"),
+                       ("deny", "Decline one fix: nothing runs")):
+        dc = drs.add_parser(verb, help=text)
+        dc.add_argument("card", help="The card id from `adk home doctor cards`")
+        dc.add_argument("--node-id", default="",
+                        help="This device's Identity node id (default: AITHER_NODE_ID); "
+                             "an operator card is answered only for this device")
 
     rp = hs.add_parser("report", help="Device-signed data-boundary report: model boundary, "
                                       "egress policy and events, receipts verdict")
@@ -1462,12 +1544,156 @@ def cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_devices(args: argparse.Namespace) -> int:
+    """``adk home devices scan``: passive LAN inventory; exit 2 when it cannot judge."""
+    from . import lan_inventory
+
+    sub = getattr(args, "devices_command", None) or "scan"
+    if sub == "known":
+        return _cmd_devices_known(args)
+    if sub not in ("scan", "watch"):
+        print(f"unknown devices command: {sub}", file=sys.stderr)
+        return EXIT_SETUP
+    try:
+        if sub == "watch":
+            from . import lan_alerts, serve
+
+            res = lan_alerts.watch(use_ssdp=not args.no_ssdp, resolve=args.resolve_names,
+                                   receipts_path=serve.receipts_path())
+        else:
+            res = lan_inventory.scan(use_ssdp=not args.no_ssdp, resolve=args.resolve_names)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"devices {sub} could not run: {exc}", file=sys.stderr)
+        return EXIT_SETUP
+    if args.json:
+        _emit(res, True)
+        return EXIT_OK
+    lines = [f"{len(res['devices'])} device(s) on your network, "
+             f"{len(res['new'])} new (inventory: {res['state']})"]
+    for d in res["devices"]:
+        tag = "NEW " if d["new"] else "    "
+        extra = lan_inventory.clean_text(
+            d.get("hostname") or ((d.get("ssdp") or {}).get("server") or ""), 80) or ""
+        lines.append(f"  {tag}{d['ip']:<15} {d.get('mac') or '-':<17} {extra}".rstrip())
+    if res["first_scan"]:
+        lines.append("First scan: everything is recorded; the next scan flags newcomers.")
+    alerts = res.get("alerts")
+    if alerts is not None:
+        lines.extend(_alert_lines(alerts))
+    print("\n".join(lines))
+    return EXIT_OK
+
+
+def _alert_lines(alerts: Dict[str, Any]) -> List[str]:
+    """The ``devices watch`` tail: what reached the guardians, what waits, what is known."""
+    out = [f"guardians told: {len(alerts['sent'])}; waiting to send: {len(alerts['queued'])}; "
+           f"known (quiet): {len(alerts['suppressed'])}"]
+    for a in alerts["sent"]:
+        how = "in summary" if a.get("summary") else "told      "
+        out.append(f"  {how} {a['key']}  (receipt #{a.get('receipt_seq')})")
+    for a in alerts["queued"]:
+        out.append(f"  queued  {a['key']}  {a.get('error', '')}".rstrip())
+    if alerts["queued"]:
+        out.append("Queued notices are retried on the next `adk home devices watch`.")
+    return out
+
+
+def _cmd_devices_known(args: argparse.Namespace) -> int:
+    """``adk home devices known <mac|ip> [--label L] [--forget]``."""
+    from . import lan_alerts
+
+    try:
+        if args.forget:
+            was = lan_alerts.forget_known(args.device)
+            print(f"{args.device}: {'no longer known' if was else 'was not marked known'}")
+            return EXIT_OK
+        got = lan_alerts.mark_known(args.device, args.label)
+    except (ValueError, RuntimeError, OSError) as exc:
+        print(f"devices known: {exc}", file=sys.stderr)
+        return EXIT_SETUP
+    named = f" as {got['label']!r}" if got["label"] else ""
+    tail = " (removed from the queue)" if got["dequeued"] else ""
+    print(f"{got['key']} is known{named}: it will not be announced{tail}")
+    return EXIT_OK
+
+
+def cmd_updates(args: argparse.Namespace) -> int:
+    """``adk home updates check|apply|schedule`` (logic in :mod:`adk.home.updates`)."""
+    import asyncio
+
+    from . import updates_cli
+
+    return asyncio.run(updates_cli.run(args))
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """``adk home doctor [--watch]`` and ``cards|approve|deny``. Exit 0 healthy, 1 a
+    finding (or a declined/failed fix), 2 could not run."""
+    from . import doctor, serve
+
+    sub = getattr(args, "doctor_command", None)
+    as_json = bool(getattr(args, "json", False))
+    receipts = serve.receipts_path()
+    if sub == "cards":
+        cards = doctor.list_cards()
+        if as_json:
+            _emit(cards, True)
+        elif not cards:
+            print("nothing is waiting for your OK")
+        else:
+            print("\n".join(f"{c['card']}  {c['kind']} ({c['check']}) on {c['node']}: "
+                            f"{c['summary']}" for c in cards))
+        return EXIT_OK
+    if sub in ("approve", "deny"):
+        try:
+            got = doctor.decide_card(args.card, sub == "approve", receipts_path=receipts,
+                                     node_id=getattr(args, "node_id", "") or "")
+        except KeyError:
+            print(f"no open doctor card {args.card!r} (see: adk home doctor cards)",
+                  file=sys.stderr)
+            return EXIT_SETUP
+        if as_json:
+            _emit(got, True)
+        elif sub == "deny":
+            print(f"{args.card}: declined; nothing ran")
+        else:
+            ran = got.get("ran") or {}
+            if ran.get("error"):
+                print(f"{args.card}: you approved, but it did NOT reach the operator: "
+                      f"{ran['error']}", file=sys.stderr)
+            print(f"{args.card}: approved; operator said "
+                  f"{ran.get('error') or json.dumps(ran.get('decisions'))[:400]}")
+            for d in ran.get("decisions") or []:
+                if d.get("left_for_veil"):
+                    print(f"  operator card {d.get('approval_id')} left for a guardian in "
+                          f"Veil: {d['left_for_veil']}")
+        ok = sub == "approve" and not (got.get("ran") or {}).get("error")
+        return EXIT_OK if ok else EXIT_FAIL
+    kw: Dict[str, Any] = {"node": doctor.node_name(args.node), "receipts_path": receipts,
+                          "notify": not args.check_only}
+
+    def show(res: Dict[str, Any]) -> None:
+        _emit(res, as_json, None if as_json else doctor.render(res))
+
+    try:
+        if args.watch:
+            doctor.watch(interval=args.interval, on_round=show, **kw)
+            return EXIT_OK
+        res = doctor.run_once(**kw)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"home doctor could not run: {exc}", file=sys.stderr)
+        return EXIT_SETUP
+    show(res)
+    return EXIT_FAIL if res["failing"] else EXIT_OK
+
+
 COMMANDS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "init": cmd_init, "persona": cmd_persona, "model": cmd_model, "voice": cmd_voice,
     "harness": cmd_harness, "status": cmd_status, "license": cmd_license,
     "signin": cmd_signin, "teach": cmd_teach,
     "chat": cmd_chat, "join": cmd_join, "enroll": cmd_enroll,
     "serve": cmd_serve, "channels": cmd_channels, "receipts": cmd_receipts, "trust": cmd_trust,
+    "devices": cmd_devices, "updates": cmd_updates, "doctor": cmd_doctor,
     "say": cmd_say, "events": cmd_events, "report": cmd_report,
     "connect-browser": cmd_connect_browser,
     "calendar": lambda a: _planner("cmd_calendar", a),

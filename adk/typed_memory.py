@@ -380,6 +380,21 @@ class RecalledItem:
         return f"{tags}{self.entry.value}".strip()
 
 
+#: How many next-hop ids a context line carries (Chain of Recall).
+REF_RELATED_MAX = 3
+
+
+def _ref_tag(entry: MemoryEntry) -> str:
+    """``[id=tm_x →a,b] `` -- the record's own id and up to 3 next-hop ids.
+
+    Kept short and placed FIRST so clipping a long value never cuts the id off;
+    :meth:`TypedMemory.expand` takes any of these ids.
+    """
+    related = [str(r) for r in (_md(entry).get(_K_RELATED, []) or [])][:REF_RELATED_MAX]
+    hop = f" →{','.join(related)}" if related else ""
+    return f"[id={entry.key}{hop}] "
+
+
 # ---------------------------------------------------------------------------
 # Constraint extraction (decision/correction → prompt preamble)
 # ---------------------------------------------------------------------------
@@ -620,15 +635,42 @@ class TypedMemory:
         lines: list[str] = []
         used = len(header)
         for it in items:
+            ref = _ref_tag(it.entry)
             text = " ".join(it.labelled_content().split())
-            if len(text) > max_item_chars:
-                text = text[: max_item_chars - 1].rstrip() + "…"
-            line = f"- {text}"
+            room = max(16, max_item_chars - len(ref))
+            if len(text) > room:
+                text = text[: room - 1].rstrip() + "…"
+            line = f"- {ref}{text}"
             if lines and used + 1 + len(line) > max_chars:
                 break
             lines.append(line)
             used += 1 + len(line)
         return header + "\n" + "\n".join(lines)
+
+    async def expand(self, id_: str, *, limit: int = 5,
+                     max_item_chars: int = CONTEXT_ITEM_CHARS) -> str:
+        """Chain of Recall: one record in full plus its ``related_ids`` neighbours.
+
+        :meth:`context_block` prefixes every line with ``[id=… →next,ids]``; a model
+        that needs more calls this with one of those ids and gets the record whole
+        and each neighbour clipped, each carrying ITS next-hop ids -- so context
+        expands hop by hop along references instead of being inlined up front.
+        Returns ``''`` for an unknown id.
+        """
+        entry = await self.get(id_)
+        if entry is None:
+            return ""
+        lines = [f"# MEMORY {id_}", f"{_ref_tag(entry)}{entry.value}"]
+        for rid in list(_md(entry).get(_K_RELATED, []) or [])[: max(0, limit)]:
+            neighbour = await self.get(str(rid))
+            if neighbour is None:
+                continue
+            text = " ".join(str(neighbour.value).split())
+            room = max(16, max_item_chars - len(_ref_tag(neighbour)))
+            if len(text) > room:
+                text = text[: room - 1].rstrip() + "…"
+            lines.append(f"- {_ref_tag(neighbour)}{text}")
+        return "\n".join(lines)
 
     async def constraints_block(self, *, limit: int = 20) -> str:
         """A ready-to-inject decisions/corrections block, or ``''`` if none."""

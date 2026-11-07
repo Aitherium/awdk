@@ -156,6 +156,19 @@ class EscalationController:
         out, self.events = self.events, []
         return out
 
+    def drain_background_events(self) -> list[dict]:
+        """Return and clear only the ``background`` completion events.
+
+        The other events here are informational (plan, degraded, escalated) and a
+        caller may still want them; background completions are the one kind the
+        loop must turn into a model-visible message, so they are selected out
+        instead of draining the whole queue.
+        """
+        out = [e for e in self.events if e.get("type") == "background"]
+        if out:
+            self.events = [e for e in self.events if e.get("type") != "background"]
+        return out
+
     def _degraded(self, part: str, exc: BaseException | str) -> None:
         err = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
         logger.warning("turn_control %s degraded: %s", part, err)

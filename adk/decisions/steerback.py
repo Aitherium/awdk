@@ -291,6 +291,29 @@ def _daemon_post(path: str, body: dict) -> tuple[bool, dict]:
         return False, {"error": f"unreachable: {exc}"}
 
 
+#: How long a spawned/resumed session's title may be. The tab strip shows it
+#: whole; a title cut mid-word by the strip is a second thing to decode.
+TITLE_MAX = 64
+
+
+def _continue_title(prefix: str, detail: str) -> str:
+    """``prefix`` + the most specific thing the owner can recognise, <= TITLE_MAX.
+
+    Every waiter used to be titled "resumed: credential stored": twelve tabs, no
+    one of them naming which continuation it was, so the strip could not be used
+    to pick one. The task (or, without one, the session) is what tells them apart.
+    """
+    text = " ".join(str(detail or "").split())
+    if len(prefix) + len(text) <= TITLE_MAX:
+        return (prefix + text).strip()
+    room = max(1, TITLE_MAX - len(prefix) - 1)
+    cut = text[:room]
+    # A clipped label stops at a word boundary, never mid-word.
+    if " " in cut:
+        cut = cut[: cut.rfind(" ")]
+    return f"{prefix}{cut.rstrip()}…"
+
+
 def resume_waiter(waiter: dict, text: str) -> tuple[bool, str]:
     """Bring a dead waiter back: resume its session, else spawn one with its task.
 
@@ -300,31 +323,41 @@ def resume_waiter(waiter: dict, text: str) -> tuple[bool, str]:
     harness = str(waiter.get("harness") or "claude")
     cwd = str(waiter.get("cwd") or "")
     session = str(waiter.get("session_id") or "").strip()
+    task = str(waiter.get("task") or "").strip()
+    # The task is what the owner recognises in a tab strip; the session id is
+    # the fallback when the waiter recorded no task.
+    detail = str(task or session)[:40]
     tried: list[str] = []
     if session:
-        ok, out = _daemon_post("/sessions", {"harness": harness, "resume_session_id": session,
-                                             "cwd": cwd, "title": "resumed: credential stored"})
+        ok, out = _daemon_post("/sessions", {
+            "harness": harness,
+            "resume_session_id": session,
+            "cwd": cwd,
+            "title": _continue_title("resumed: credential stored — continue ", detail),
+        })
         new_id = (out.get("id") or out.get("session_id")) if ok else ""
         if new_id:
-            sent, detail = _daemon_post(f"/sessions/{new_id}/submit", {"text": text})
+            sent, detail_out = _daemon_post(f"/sessions/{new_id}/submit", {"text": text})
             if sent:
                 return True, f"resumed {session[:12]} as {new_id}"
-            tried.append(f"resume submit refused ({detail.get('error', '?')})")
+            tried.append(f"resume submit refused ({detail_out.get('error', '?')})")
         else:
             tried.append(f"resume refused ({out.get('error', 'no id')})")
-    task = str(waiter.get("task") or "").strip()
     if not task:
         return False, "; ".join(tried + ["no task recorded to spawn from"])
-    ok, out = _daemon_post("/sessions", {"harness": harness, "cwd": cwd,
-                                         "title": "credential stored: continue"})
+    ok, out = _daemon_post("/sessions", {
+        "harness": harness,
+        "cwd": cwd,
+        "title": _continue_title("credential stored — continue ", detail),
+    })
     new_id = (out.get("id") or out.get("session_id")) if ok else ""
     if not new_id:
         return False, "; ".join(tried + [f"spawn refused ({out.get('error', 'no id')})"])
-    sent, detail = _daemon_post(f"/sessions/{new_id}/submit",
-                                {"text": f"{text}\n\nThe task that needed it: {task}"})
+    sent, detail_out = _daemon_post(f"/sessions/{new_id}/submit",
+                                    {"text": f"{text}\n\nThe task that needed it: {task}"})
     if sent:
         return True, f"spawned {new_id} to continue the task"
-    return False, "; ".join(tried + [f"spawn submit refused ({detail.get('error', '?')})"])
+    return False, "; ".join(tried + [f"spawn submit refused ({detail_out.get('error', '?')})"])
 
 
 def post_to_decisions(store: Any, card: DecisionCard, line: str) -> None:

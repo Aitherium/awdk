@@ -438,6 +438,13 @@ def mediaforge_list_ops(group: str = "") -> dict:
 #: "a/b", a query string) would let a caller walk out of /op/ onto the owner's /api/*.
 _OP_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
+#: Async op jobs (2026-10-28). The engine records a job against the caller's TENANT so a
+#: poll can only ever read its own; the gateway stamps that scope on the request and never
+#: takes it from a tool argument. `_JOB_ID` is the engine's uuid4 hex -- validated before it
+#: is pasted into a URL path.
+_JOB_TENANT_HEADER = "X-MediaForge-Job-Tenant"
+_JOB_ID = re.compile(r"[0-9a-f]{8,64}")
+
 #: Body keys the ENGINE reads as trust decisions, not op knobs: the AitherSafety tier
 #: (aither_safety.resolve_level honours body.safety_level off public mode) and the
 #: caller identity/role. A caller of this curated tool never gets to name them -- they
@@ -483,6 +490,99 @@ def mediaforge_run_op(name: str, params: dict[str, object] | None = None) -> dic
             return _post(f"/op/{name}", body, timeout=_T_HEAVY, tries=2)
         return {"error": err or "rejected"}
     return data if isinstance(data, dict) else {"error": "non-object result", "raw": data}
+
+
+def mediaforge_run_op_async(name: str, params: dict[str, object] | None = None) -> dict:
+    """Start ONE media-forge op in the background and return its job id at once.
+
+    WHY (2026-10-28): mediaforge_run_op holds the HTTP connection for the whole render, and
+    the public edge closes a connection that produces no bytes for 100 s (HTTP 524,
+    measured on a 108 s TRELLIS mesh op). Any op longer than that therefore failed through
+    the edge however healthy the engine was. This is the SAME op behind the SAME gates --
+    a restricted op, a restricted mode, an operator-only op or a media id your tenant did
+    not produce is refused HERE, and nothing is queued.
+
+    Returns {job_id, state: "queued", op}. Collect it with mediaforge_job_result(job_id);
+    the result is recorded against YOUR tenant, so another tenant polling that id gets
+    "no such job". Use the synchronous mediaforge_run_op for ops that finish in seconds."""
+    if not isinstance(name, str) or not _OP_NAME.fullmatch(name):
+        return {"error": f"invalid op name {name!r}: expected a lowercase op id "
+                         "from mediaforge_list_ops"}
+    body = dict(params or {}) if isinstance(params, dict) or params is None else None
+    if body is None:
+        return {"error": "params must be an object of the op's knobs"}
+    body = {k: v for k, v in body.items()
+            if not (isinstance(k, str) and k.strip().lower() in _TRUST_KEYS)}
+    owner = _caller_may_reach_owner_api()
+    scope = None if owner else _job_tenant_scope()
+    if not owner and scope is None:
+        return {"error": "mediaforge_run_op_async needs a caller whose tenant can be "
+                         "identified: a job filed with no tenant would be collectable by "
+                         "every other tenant, so nothing was queued",
+                "refused": True, "reason": "caller_unidentified"}
+    headers = _mf_headers()
+    headers[_JOB_TENANT_HEADER] = scope or ""
+    try:
+        probe = requests.post(f"{_BASE}/op/{name}/async", json=body, timeout=_T_FAST,
+                              headers=headers)
+    except requests.RequestException as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if probe.status_code == 404:
+        return {"error": f"unknown media-forge op {name!r}, or this media-forge predates the "
+                         "async surface (see mediaforge_list_ops)"}
+    try:
+        probe.raise_for_status()
+        data = probe.json()
+    except (requests.RequestException, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if not isinstance(data, dict) or not data.get("job_id"):
+        return {"error": str((data or {}).get("error") or "media-forge queued no job")}
+    return {"job_id": str(data["job_id"]), "state": "queued", "op": name,
+            "status": str(data.get("status") or "queued")}
+
+
+def mediaforge_job_result(job_id: str) -> dict:
+    """Collect a mediaforge_run_op_async job.
+
+    `state` is "pending" while the engine is still working, "done" with `result` and
+    `assets` (the gallery ids it produced) when it finished, and "failed" with `error`
+    when it did not. Polling sends nothing to the GPU, so it is safe to repeat. A job
+    that belongs to another tenant answers exactly like an id that never existed
+    ({error, not_found: true}) -- a poll never confirms a record it may not read.
+    Asset ids are recorded to your tenant's media ledger on the first "done" poll, so
+    the result is usable by your later ops exactly like a synchronous one."""
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        return {"error": f"invalid job id {job_id!r}: expected the id mediaforge_run_op_async "
+                         "returned"}
+    owner = _caller_may_reach_owner_api()
+    scope = None if owner else _job_tenant_scope()
+    if not owner and scope is None:
+        return {"error": "mediaforge_job_result needs a caller whose tenant can be "
+                         "identified",
+                "refused": True, "reason": "caller_unidentified"}
+    headers = _mf_headers()
+    headers[_JOB_TENANT_HEADER] = scope or ""
+    try:
+        r = requests.get(f"{_BASE}/op/jobs/{job_id}", timeout=_T_FAST, headers=headers)
+    except requests.RequestException as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if r.status_code == 404:
+        return {"error": f"no media-forge job {job_id!r} for your tenant", "not_found": True}
+    try:
+        r.raise_for_status()
+        data = r.json()
+    except (requests.RequestException, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if not isinstance(data, dict):
+        return {"error": "media-forge returned no job record"}
+    if data.get("state") == "done":
+        out = data.get("result")
+        if isinstance(out, dict):
+            out.setdefault("state", "done")
+            out.setdefault("job_id", job_id)
+            out.setdefault("job_assets", data.get("assets") or [])
+        return out
+    return data
 
 
 def mediaforge_lora_dataset(character_id: str, frame_ids: list[str], trigger: str) -> dict:

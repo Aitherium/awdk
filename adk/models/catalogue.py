@@ -117,18 +117,46 @@ def recommend(cat: Dict[str, Any], budget_mb: int, role: str = "chat",
     picked, so a recommendation can always be pulled. ``cpu_only`` caps the pick at
     ``CPU_RECOMMEND_MAX_MB`` so a CPU is never handed a model too slow to use.
     """
-    best: Optional[str] = None
+    ranked = candidates(cat, budget_mb, role=role, cpu_only=cpu_only)
+    return ranked[0] if ranked else None
+
+
+def bench_score(model: Dict[str, Any]) -> Optional[float]:
+    """The model's MEASURED benchmark overall, or None when it was never measured."""
+    b = model.get("bench")
+    if isinstance(b, dict) and isinstance(b.get("overall"), (int, float)):
+        return float(b["overall"])
+    return None
+
+
+def candidates(cat: Dict[str, Any], budget_mb: int, role: str = "chat",
+               cpu_only: bool = False) -> List[str]:
+    """Every PERMITTED ladder model that fits, best first.
+
+    Ranked by measured benchmark score when every candidate shares one item set, so the
+    scores are comparable; an unmeasured model ranks below every measured one. With no
+    comparable scores, the largest model that fits wins, as before.
+    """
+    models = cat.get("models") or {}
+    ok: List[str] = []
     for mid in cat.get("ladder") or []:
-        m = (cat.get("models") or {}).get(mid)
+        m = models.get(mid)
         if not m or m.get("role", "chat") != role:
             continue
         if not licence_verdict(m).allowed or not fits(cat, m, budget_mb):
             continue
         if cpu_only and int(m["size_mb"]) > CPU_RECOMMEND_MAX_MB:
             continue
-        if best is None or int(m["size_mb"]) > int(cat["models"][best]["size_mb"]):
-            best = mid
-    return best
+        ok.append(mid)
+    sets = {(models[mid].get("bench") or {}).get("item_set") for mid in ok
+            if bench_score(models[mid]) is not None}
+    comparable = len(sets) == 1
+
+    def key(mid: str):
+        score = bench_score(models[mid]) if comparable else None
+        return (score is not None, score or 0.0, int(models[mid]["size_mb"]))
+
+    return sorted(ok, key=key, reverse=True)
 
 
 def refused_rungs(cat: Dict[str, Any], budget_mb: int) -> List[str]:

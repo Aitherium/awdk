@@ -255,5 +255,211 @@ def run_invite_enroll(invite: str, *, label: str = "", client: Any = None,
             client.close()
 
 
-__all__ = ["API_ENV", "DEFAULT_API_BASE", "EXIT_FAIL", "EXIT_OK", "EXIT_PENDING",
-           "EXIT_USAGE", "api_base", "normalize_secret", "run_invite_enroll"]
+# ── adk join --workspace: "Join the Aitherium workspace" ─────────────────────
+#
+# One GUI-shaped flow per client (owner rule: browser SSO, never a pasted command):
+#   1. sign in      the machine login if one exists, else the RFC 8628 browser device
+#                   flow (the browser page does the sign-in; nothing is typed here)
+#   2. device       POST /api/v1/me/device/enroll-self -- the existing device plane,
+#                   caller-scoped; skipped when this machine already holds a live
+#                   device for the same member (heartbeat 200), so a rerun is a no-op
+#   3. bearer       ~/.aither/session-bearer (mode 600) for the MCP bridge
+#   4. settings     awsettings config keyed by the signed-in user id (per-member
+#                   namespaces), then a pull of the member's settings domains
+#   5. room         the Company Room (Relay Room) -- Genesis enrols the member into
+#                   it on invite accept; the client records the link
+
+JOIN_ENV = "AITHER_JOIN_URL"
+#: Veil's authenticated pass-through to Genesis (forwards the caller's bearer); the
+#: same door awnode sync uses. AITHER_JOIN_URL wins (self-hosted Genesis).
+DEFAULT_JOIN_BASE = "https://api.aitherium.com/api/bridge/genesis"
+JOIN_STATE_FILE = Path.home() / ".aither" / "workspace_join.json"
+ENROLL_SELF = "/api/v1/me/device/enroll-self"
+HEARTBEAT = "/api/v1/me/device/heartbeat"
+ROOM_URL = "https://app.aitherium.com/companyroom"
+SETTINGS_HUB = "https://api.aitherium.com/api/v1/settings"
+#: Domains a joined member pulls. Credentials are dropped by NAME inside awsettings.
+MEMBER_DOMAINS = ("claude", "desk", "mods")
+
+
+def join_base() -> str:
+    return (os.environ.get(JOIN_ENV) or DEFAULT_JOIN_BASE).strip().rstrip("/")
+
+
+def _write_private_json(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError as exc:  # Windows: the profile directory is already owner-only
+        log.debug("join state file: chmod skipped (%s)", type(exc).__name__)
+    os.replace(tmp, path)
+
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _browser_sign_in(workspace: str) -> Tuple[str, Dict[str, Any]]:
+    """(bearer, user) from the machine login, else the browser device flow."""
+    from adk import credentials
+
+    existing = credentials.user_bearer()
+    if existing:
+        return existing, {}
+    from adk.cli import _DEFAULT_IDENTITY_URL, _device_flow_login, _resolve_identity_url
+
+    issuer = _resolve_identity_url(os.environ.get("AITHER_PORTAL_URL") or _DEFAULT_IDENTITY_URL)
+    result = _device_flow_login(issuer, client_name="adk-join")
+    token = str(result.get("access_token") or "")
+    user = result.get("user") if isinstance(result.get("user"), dict) else {}
+    if token:
+        credentials.save_login(issuer, token, result.get("expires_at") or "",
+                               str(result.get("token_type") or "session"), user,
+                               extra={"workspace_id": workspace} if workspace else None)
+    return token, user
+
+
+def _whoami(get: Callable[[str], Any]) -> str:
+    """The signed-in user id, read from the platform (never from a local file)."""
+    for path in ("/api/v1/me", "/auth/me"):
+        try:
+            r = get(path)
+        except Exception:  # noqa: BLE001 -- try the next door
+            continue
+        if getattr(r, "status_code", 0) == 200:
+            try:
+                body = r.json()
+            except ValueError:
+                continue
+            uid = str((body or {}).get("user_id") or (body or {}).get("id") or "")
+            if uid:
+                return uid
+    return ""
+
+
+def _write_member_settings(uid: str, bearer_file: Optional[Path]) -> Optional[str]:
+    """awsettings config for THIS member. Returns the config path, or None."""
+    try:
+        from awsettings import config as aws_config
+    except ImportError:
+        return None
+    from adk import credentials
+
+    try:
+        path = aws_config.save({
+            "member": uid,
+            "url": aws_config.get("AWSETTINGS_URL") or SETTINGS_HUB,
+            "token_file": str(bearer_file or credentials.BEARER_FILE),
+        })
+    except ValueError:  # an awsettings older than per-member keys: never write unscoped
+        log.info("join: awsettings has no member key; upgrade awsettings to sync")
+        return None
+    return str(path)
+
+
+def _pull_member_settings(run: Callable[..., Any]) -> int:
+    """``awsettings --domain <d> pull`` for each member domain; returns how many passed."""
+    ok = 0
+    for dom in MEMBER_DOMAINS:
+        try:
+            r = run([sys.executable, "-m", "awsettings", "--quiet", "--domain", dom, "pull"],
+                    capture_output=True, text=True, encoding="utf-8", timeout=120)
+        except Exception as exc:  # noqa: BLE001 -- a pull failure is reported, never fatal
+            log.info("join: settings pull %s failed: %s", dom, type(exc).__name__)
+            continue
+        ok += int(getattr(r, "returncode", 1) == 0)
+    return ok
+
+
+def run_workspace_join(workspace: str = "", *, label: str = "", client: Any = None,
+                       sign_in: Optional[Callable[[str], Tuple[str, Dict[str, Any]]]] = None,
+                       run: Optional[Callable[..., Any]] = None,
+                       out: Callable[[str], None] = print,
+                       state_file: Optional[Path] = None,
+                       bearer_file: Optional[Path] = None) -> int:
+    """``adk join --workspace [ID]``: browser sign-in, add this device, sync, room.
+
+    Idempotent: a rerun on a joined machine heartbeats the saved device and, while it
+    is live, enrolls nothing new.
+    """
+    import subprocess
+
+    from adk import credentials
+
+    state_file = state_file or JOIN_STATE_FILE
+    sign_in = sign_in or _browser_sign_in
+    run = run or subprocess.run
+    out("Join the Aitherium workspace: signing in through your browser")
+    try:
+        bearer, user = sign_in(workspace)
+    except RuntimeError as exc:
+        out(f"x Sign-in did not finish: {exc}")
+        return EXIT_FAIL
+    if not bearer:
+        out("x Sign-in did not finish. Run this again and approve it in the browser.")
+        return EXIT_FAIL
+    own_client = client is None
+    if own_client:
+        import httpx
+
+        from adk._tls import tls_verify
+
+        client = httpx.Client(base_url=join_base(), timeout=30.0, verify=tls_verify(),
+                              headers={"Authorization": f"Bearer {bearer}"})
+    try:
+        uid = str((user or {}).get("id") or (user or {}).get("user_id") or "")
+        uid = uid or _whoami(client.get)
+        state = _load_json(state_file)
+        dev = state.get("device") if isinstance(state.get("device"), dict) else {}
+        facts = _device_facts(label)
+        live = False
+        if dev.get("device_token") and dev.get("user_id") == uid:
+            tel = {k: v for k, v in facts.items()
+                   if k in ("platform", "os_version", "agent_version")}
+            r = client.post(HEARTBEAT, json={"token": dev["device_token"], **tel})
+            live = r.status_code == 200
+        if live:
+            out(f"= This device is already joined (device {dev.get('device_id')})")
+        else:
+            r = client.post(ENROLL_SELF, json=facts)
+            if r.status_code != 201:
+                out(f"x Device not added: {_words(_detail(r))}")
+                return EXIT_FAIL
+            reply = r.json()
+            dev = {k: reply.get(k) for k in ("device_id", "device_token", "workspace_id",
+                                              "profile_kind", "heartbeat_s")}
+            dev["user_id"] = uid
+            state["device"] = dev
+            _write_private_json(state_file, state)
+            out(f"+ Device added (device {dev.get('device_id')})")
+        if credentials.is_user_token(bearer):
+            credentials.write_session_bearer(bearer, bearer_path=bearer_file)
+            out("+ MCP session bearer written (owner-only file)")
+        cfg = _write_member_settings(uid, bearer_file) if uid else None
+        if cfg:
+            pulled = _pull_member_settings(run)
+            out(f"+ Settings: {pulled}/{len(MEMBER_DOMAINS)} domains pulled for your account")
+        else:
+            out("- Settings sync skipped (awsettings not installed, or no user id)")
+        state.update(room=ROOM_URL, member=uid,
+                     workspace_id=dev.get("workspace_id") or workspace)
+        _write_private_json(state_file, state)
+        out(f"+ Company Room: {ROOM_URL}")
+        return EXIT_OK
+    except Exception as exc:  # noqa: BLE001 -- transport failures are reported, not raised
+        out(f"x Could not reach {join_base()}: {type(exc).__name__}")
+        return EXIT_FAIL
+    finally:
+        if own_client:
+            client.close()
+
+
+__all__ = ["API_ENV", "DEFAULT_API_BASE", "DEFAULT_JOIN_BASE", "EXIT_FAIL", "EXIT_OK",
+           "EXIT_PENDING", "EXIT_USAGE", "api_base", "join_base", "normalize_secret",
+           "run_invite_enroll", "run_workspace_join"]

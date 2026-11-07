@@ -448,11 +448,15 @@ class TestDemoteNonLeadingSystem:
                             {"role": "user", "content": "hi"}])
         assert out[0]["role"] == "system"
 
-    def test_consecutive_leading_systems_kept(self):
+    def test_consecutive_leading_systems_merged_into_one(self):
+        # Was "kept" until 2026-10-30: Qwen-family templates (Bonsai-2) raise "System
+        # message must be at the beginning" for a second leading system message, so every
+        # awsh turn (base prompt + recall block) 500'd on the orchestrator lane.
         out = self._demote([{"role": "system", "content": "a"},
                             {"role": "system", "content": "b"},
                             {"role": "user", "content": "hi"}])
-        assert [m["role"] for m in out] == ["system", "system", "user"]
+        assert [m["role"] for m in out] == ["system", "user"]
+        assert out[0]["content"] == "a\n\nb"
 
     def test_midconversation_system_demoted_to_user(self):
         # the exact shape that 400'd DeepSeek: a mid-loop steering nudge

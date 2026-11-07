@@ -16,6 +16,37 @@ from adk._tls import ssl_context
 logger = logging.getLogger("adk.llm.openai")
 
 
+def _scheduler_metadata(base_url: str, extra: object = None) -> dict | None:
+    """Routing hints for AitherOS MicroScheduler, or None for any other server.
+
+    ``ADK_SCHEDULER_METADATA`` is a JSON object (e.g. ``{"priority": "user", "source":
+    "desk:awsh"}``) merged with a caller's ``metadata=`` kwarg. Only sent when the target is
+    the scheduler (``:8150`` / ``microscheduler`` in the URL): a cloud OpenAI-compatible API
+    may reject an unknown ``metadata`` field. Why: the awsh daemon's calls carried no
+    priority, so the scheduler read the owner's own chat as AGENT background work and
+    queued it behind agents (2026-10-30: "hey" took 174-241 s; the scheduler answers a
+    user-priority "hi" in 0.7 s).
+    """
+    url = (base_url or "").lower()
+    if ":8150" not in url and "microscheduler" not in url:
+        return None
+    md: dict = {}
+    raw = os.environ.get("ADK_SCHEDULER_METADATA", "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            logger.warning("ADK_SCHEDULER_METADATA is not JSON; ignored")
+        else:
+            if isinstance(parsed, dict):
+                md.update(parsed)
+            else:
+                logger.warning("ADK_SCHEDULER_METADATA is not a JSON object; ignored")
+    if isinstance(extra, dict):
+        md.update(extra)
+    return md or None
+
+
 def _chat_template_kwargs() -> dict | None:
     """Optional server-side chat-template kwargs (vLLM), e.g. disabling Qwen3
     thinking mode: set ADK_CHAT_TEMPLATE_KWARGS='{"enable_thinking": false}'.
@@ -200,6 +231,14 @@ def _demote_nonleading_system(dicts: list[dict]) -> list[dict]:
         if m.get("role") == "system":
             if started:
                 m = {**m, "role": "user"}
+            elif (out and isinstance(m.get("content"), str)
+                    and isinstance(out[-1].get("content"), str)):
+                # Several LEADING system messages (base prompt + a recall block) are
+                # merged into one: Qwen-family templates (Bonsai-2 on the 5090) raise
+                # "System message must be at the beginning" for ANY system message at
+                # index > 0, even a consecutive one (2026-10-30: every awsh turn 500'd).
+                out[-1] = {**out[-1], "content": out[-1]["content"] + "\n\n" + m["content"]}
+                continue
         else:
             started = True
         out.append(m)
@@ -355,6 +394,9 @@ class OpenAIProvider(LLMProvider):
         _ctk = self._resolve_ctk(model)
         if _ctk:
             payload["chat_template_kwargs"] = _ctk
+        _md = _scheduler_metadata(self.base_url, kwargs.get("metadata"))
+        if _md:
+            payload["metadata"] = _md
 
         start = _timer()
         async with self._client() as client:
@@ -457,6 +499,9 @@ class OpenAIProvider(LLMProvider):
         _ctk = self._resolve_ctk(model)
         if _ctk:
             payload["chat_template_kwargs"] = _ctk
+        _md = _scheduler_metadata(self.base_url, kwargs.get("metadata"))
+        if _md:
+            payload["metadata"] = _md
 
         async with self._client() as client:
             async with client.stream(

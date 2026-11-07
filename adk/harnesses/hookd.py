@@ -42,6 +42,7 @@ import os
 import queue
 import re
 import runpy
+import socket
 import sys
 import threading
 import time
@@ -57,6 +58,12 @@ STATE_DIR = HOME / ".aither" / "hookd"
 ROOTS_FILE = STATE_DIR / "roots.txt"  # one extra allowed directory per line
 MODULES_FILE = STATE_DIR / "modules.txt"  # top-level packages `ep:`/`-m:` may run
 MAX_JOBS = 500  # a worker is recycled after this many jobs (module state, memory)
+#: A worker is also recycled after a job that left it holding more than this much private
+#: memory (GB; env AITHER_HOOKD_MAX_WORKER_GB, 0 disables). Measured 2026-10-31: three idle
+#: workers held 5.4 + 5.1 + 3.2 GB (the pool is ~1.3 GB at rest) - a hook imported something
+#: heavy once and the worker kept it for its next 500 jobs, while a CC5 load next to it was
+#: killed at 96% host commit. A fresh worker costs ~40 MB and ~0.3 s.
+MAX_WORKER_GB = float(os.environ.get("AITHER_HOOKD_MAX_WORKER_GB", "0.75") or 0)
 #: Spec prefix for a hook folded from `<cmd> || true`. Dropping the suffix without keeping
 #: its promise turned a fail-soft hook into one that blocks: `awsettings --quiet push
 #: --debounce || true` folded to a hook that exits 2, silently, whenever the hub is down.
@@ -189,6 +196,43 @@ def _worker_main(conn) -> None:
 # ---------------------------------------------------------------- pool side
 
 
+def _private_gb(pid: int):
+    """A process's private memory (commit charge) in GB, or None when it cannot be read."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                            ("PeakWorkingSetSize", ctypes.c_size_t),
+                            ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                            ("PagefileUsage", ctypes.c_size_t),
+                            ("PeakPagefileUsage", ctypes.c_size_t),
+                            ("PrivateUsage", ctypes.c_size_t)]
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            h = k32.OpenProcess(0x1000 | 0x0010, False, pid)  # QUERY_LIMITED | VM_READ
+            if not h:
+                return None
+            try:
+                c = PMC()
+                c.cb = ctypes.sizeof(PMC)
+                gpmi = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+                gpmi.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+                return c.PrivateUsage / 2**30 if gpmi(h, ctypes.byref(c), c.cb) else None
+            finally:
+                k32.CloseHandle(h)
+        with open("/proc/%d/statm" % pid, encoding="ascii") as fh:
+            return int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 2**30
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 class _Worker:
     def __init__(self, ctx) -> None:
         self.parent, child = ctx.Pipe()
@@ -229,7 +273,11 @@ class Pool:
             if w.parent.poll(timeout):
                 res = w.parent.recv()
                 w.jobs += 1
-                if w.jobs >= MAX_JOBS:
+                gb = _private_gb(w.proc.pid) if MAX_WORKER_GB > 0 else None
+                if w.jobs >= MAX_JOBS or (gb is not None and gb > MAX_WORKER_GB):
+                    if gb is not None and gb > MAX_WORKER_GB:
+                        _log("worker %d recycled holding %.2f GB after %s (cap %.2f)"
+                             % (w.proc.pid, gb, w.last, MAX_WORKER_GB))
                     w.parent.send(None)  # the worker returns; a fresh one replaces it
                     self._add()
                 else:
@@ -526,7 +574,16 @@ def make_handler(pool: Pool, stats: _Stats):
     return H
 
 
+# A pool sized for one agent starves when many share a host: the daemon keeps hookd
+# alive with `ensure(PORT, 6)`, so six workers served twelve subagents and every
+# queued Bash hook waited out its full 600 s budget (measured 2026-10-26: ~165
+# cancellations per agent, 11 min per turn, 7 h for zero lanes to finish).
+# serve() enforces the floor so every caller gets it, whatever --workers says.
+_MIN_WORKERS = 24
+
+
 def serve(port: int, workers: int) -> int:
+    workers = max(workers, _MIN_WORKERS)
     pool = Pool(workers)
     stats = _Stats()
     srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(pool, stats))
@@ -546,24 +603,104 @@ def health(port: int, timeout: float = 2.0):
         return None
 
 
+def _port_bound(port: int, timeout: float = 0.5) -> bool:
+    """True when something holds the port, whether or not it answers /health."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+class _EnsureLock:
+    """Exclusive, bounded lock so concurrent SessionStarts cannot herd.
+
+    MEASURED 2026-10-26: twelve hookd daemons accumulated on :8369. Every session
+    runs `ensure`; health() timed out at 2s while the daemon was saturated, and
+    Windows SO_REUSEADDR let each new daemon bind the SAME port anyway. Requests
+    then landed on shadow listeners and UserPromptSubmit hooks died at 70s
+    ("output discarded"), which is what throttled every agent on this box.
+    """
+
+    def __init__(self, path: Path, wait: float = 10.0):
+        self.path = path
+        self.wait = wait
+        self.handle = None
+
+    def __enter__(self) -> "_EnsureLock":
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.handle = open(self.path, "a+")
+            deadline = time.monotonic() + self.wait
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        break  # proceed unlocked rather than fail the session
+                    time.sleep(0.2)
+        except OSError as exc:
+            _log("lock: %s" % exc)
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        try:
+            if self.handle:
+                if os.name == "nt":
+                    import msvcrt
+                    try:
+                        self.handle.seek(0)
+                        msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    except OSError as exc:
+                        _log("unlock: %s" % exc)
+                else:
+                    import fcntl
+                    fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+                self.handle.close()
+        except OSError as exc:
+            _log("lock close: %s" % exc)
+        return False
+
+
 def ensure(port: int, workers: int) -> int:
-    """Start hookd detached and console-less unless it already answers. 0 up, 1 failed."""
+    """Start hookd detached and console-less unless it already answers. 0 up, 1 failed.
+
+    A BOUND PORT THAT DOES NOT ANSWER /health IS A WEDGED DAEMON, NOT A MISSING ONE.
+    Spawning another cannot help (it cannot own the socket) and on Windows it
+    creates a shadow listener that steals requests. So: bound + no health = report
+    failure and leave it alone; the restart is a deliberate act.
+    """
     if health(port):
         return 0
-    import subprocess
-
-    exe = Path(sys.executable)
-    pyw = exe.with_name("pythonw.exe")
-    argv = [str(pyw if pyw.exists() else exe), os.path.abspath(__file__), "serve",
-            "--port", str(port), "--workers", str(workers)]
-    flags = CREATE_NO_WINDOW | 0x00000008 | 0x00000200 if os.name == "nt" else 0
-    subprocess.Popen(argv, creationflags=flags, close_fds=True,  # console-ok: flags set
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL)
-    for _ in range(40):
-        time.sleep(0.25)
-        if health(port, 0.5):
+    if _port_bound(port):
+        _log("port %d is bound but /health did not answer; refusing to spawn a duplicate "
+             "daemon (2026-10-26: 12 accumulated this way)" % port)
+        return 1
+    with _EnsureLock(STATE_DIR / "hookd.ensure.lock"):
+        if health(port):
             return 0
+        if _port_bound(port):
+            return 1
+        import subprocess
+
+        exe = Path(sys.executable)
+        pyw = exe.with_name("pythonw.exe")
+        argv = [str(pyw if pyw.exists() else exe), os.path.abspath(__file__), "serve",
+                "--port", str(port), "--workers", str(workers)]
+        flags = CREATE_NO_WINDOW | 0x00000008 | 0x00000200 if os.name == "nt" else 0
+        subprocess.Popen(argv, creationflags=flags, close_fds=True,  # console-ok: flags set
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        for _ in range(40):
+            time.sleep(0.25)
+            if health(port, 0.5):
+                return 0
     return 1
 
 
@@ -768,6 +905,15 @@ def _self_test() -> int:
         second = pool.run({"path": str(hook), "args": ["A"], "stdin": b'{"x": "ok"}'}, 10)
         check("watchdog Timer does not kill the worker", first["code"] == 0
               and second["code"] == 0 and pool.spawned == 1)
+        # a hook that leaves its worker holding more than the cap: that worker is recycled
+        fat = Path(d) / "fat.py"
+        fat.write_text("import sys\nsys.modules['__hookd_ballast'] = bytearray(%d)\n"
+                       % int((MAX_WORKER_GB + 0.3) * 2**30), encoding="utf-8")
+        before = pool.spawned
+        pool.run({"path": str(fat), "stdin": b"{}"}, 30)
+        light = pool.run({"path": str(hook), "args": ["A"], "stdin": b'{"x": "ok"}'}, 10)
+        check("a worker left over the memory cap is recycled",
+              MAX_WORKER_GB <= 0 or (pool.spawned == before + 1 and light["code"] == 0))
     with tempfile.TemporaryDirectory() as d:
         hooks_dir = Path(d) / ".claude" / "hooks"
         hooks_dir.mkdir(parents=True)

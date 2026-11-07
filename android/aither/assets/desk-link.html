@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Aither desk link signer</title></head>
+<body>
+<script src="kvdevice.js"></script>
+<script>
+// The signer DeskLinkBridge hosts off-screen. It lives on the holder's origin so it reads the
+// SAME device key (IndexedDB 'aither-kvholder'); it never makes one. Native calls
+// deskHello(reqId, relay, nodeId) and gets the signed hello back through AitherDeskSigner.
+(function () {
+  'use strict';
+  const native = window.AitherDeskSigner;
+  const NO_KEY = 'this phone has no device key yet (open Aither once and link this phone)';
+  window.deskHello = async (reqId, relay, nodeId) => {
+    try {
+      const dev = await KVDevice.open(KVDevice.idbStore('aither-kvholder'), null, {create: false});
+      native.onHello(reqId, JSON.stringify(await dev.hello(relay, nodeId)));
+    } catch (e) {
+      native.onError(reqId, String(e && e.message) === 'no-device-key' ? NO_KEY : 'signing failed: ' + e);
+    }
+  };
+  native.ready();
+})();
+</script>
+</body></html>

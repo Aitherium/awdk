@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -483,32 +484,120 @@ DOCTOR_CHECKS: list[tuple[str, object]] = [
 ]
 
 
+#: The command that starts fixing each check, keyed by DOCTOR_CHECKS label.
+#: A count on screen is always paired with one of these (see adk._attention).
+DOCTOR_REMEDIES: dict[str, str] = {
+    "Python": "install Python >= 3.10, then reinstall awdk",
+    "Version": "run `pip install --upgrade awdk`",
+    "GPU": "run `adk setup` (it picks a CPU or cloud backend)",
+    "Docker": "install Docker and start its daemon",
+    "llama.cpp": "run `adk setup`",
+    "vLLM": "run `adk setup`",
+    "DGX/Remote": "set AITHER_DGX_URL (skip if you have no remote GPU)",
+    "API Key": "run `adk login`",
+    "Cloud APIs": "set ANTHROPIC_API_KEY, OPENAI_API_KEY or DEEPSEEK_API_KEY",
+    "Disk": "free space under ~/.aither",
+    "Packs": "run `adk pack remove <name>`, then reinstall it",
+    "Graph sync": "check the sync target is reachable, then run `adk doctor`",
+    "Autostart": "run `adk up`",
+}
+_GENERIC_REMEDY = "run `adk setup`"
+_ERROR_REMEDY = "run `adk-bug` to report it"
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_TAG = re.compile(r"^\s*\[(OK|!!|--)\]\s*")
+
+
+def _run_check(name: str, fn) -> dict:
+    """Run one check with its output captured; return the result for ranking.
+
+    Returns:
+        ``{"name", "passed", "severity", "summary", "output", "remedy"}`` --
+        severity 2 = a ``[--]`` line or an exception, 1 = ``[!!]``, 0 = neither.
+    """
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    errored = False
+    with contextlib.redirect_stdout(buf):
+        try:
+            passed = bool(fn())
+        except Exception as e:  # noqa: BLE001 -- one broken check must not hide the rest
+            _fail(f"{name}: error ({e})")
+            passed, errored = False, True
+    output = buf.getvalue()
+    severity, summary = 0, ""
+    for raw in output.splitlines():
+        line = _ANSI.sub("", raw)
+        m = _TAG.match(line)
+        if not m:
+            continue
+        rank = {"--": 2, "!!": 1}.get(m.group(1), 0)
+        if rank > severity or (not summary and rank == severity):
+            severity, summary = rank, line[m.end():].strip()
+    if not passed and not summary:
+        summary = f"{name}: failed"
+    if errored:
+        remedy = _ERROR_REMEDY
+    elif name == "Docker" and "daemon not running" in summary:
+        remedy = "start the Docker daemon"
+    else:
+        remedy = DOCTOR_REMEDIES.get(name, _GENERIC_REMEDY)
+    return {"name": name, "passed": passed, "severity": severity if not passed else 0,
+            "summary": summary, "output": output, "remedy": remedy}
+
+
+def render_doctor(results: list[dict], version: str, show_all: bool = False) -> list[str]:
+    """Human doctor screen: Next first, failing checks ranked and capped at five.
+
+    Args:
+        results: ``_run_check`` dicts in DOCTOR_CHECKS order.
+        version: adk version for the header.
+        show_all: ``--all`` -- uncapped, plus every check's full output.
+
+    Returns:
+        Display lines; line 1 is ``Next: ...`` or ``Nothing needs you ...``.
+    """
+    from adk import _attention as att
+
+    total = len(results)
+    failing = sorted((r for r in results if not r["passed"]),
+                     key=lambda r: -r["severity"])  # stable: DOCTOR_CHECKS order
+    passed = [r["name"] for r in results if r["passed"]]
+    out: list[str] = []
+    if failing:
+        top = failing[0]
+        out.append(att.next_line(top["remedy"], top["summary"]))
+    else:
+        out.append(att.fit(f"Nothing needs you — {total}/{total} checks passed."))
+    out.append(att.fit(f"ADK Doctor v{version}: {len(passed)}/{total} checks passed"))
+    if failing:
+        out.append("")
+        steps = [(r["summary"], r["remedy"]) for r in failing]
+        out.extend(att.numbered(steps, show_all=show_all, more_cmd="adk doctor --all"))
+    if passed:
+        out.append("")
+        out.append(att.names_line("Passed", passed, show_all=show_all,
+                                  more_cmd="adk doctor --all"))
+    if show_all:
+        out.append("")
+        out.append("Full output:")
+        for r in results:
+            out.extend(_ANSI.sub("", ln).rstrip() for ln in r["output"].splitlines())
+    if failing:
+        out.append("")
+        noun = "check failing" if len(failing) == 1 else "checks failing"
+        out.append(att.count_line(len(failing), noun, f"start with: {failing[0]['remedy']}"))
+    return out
+
+
 def cmd_doctor(_args=None) -> int:
-    """Run all health checks."""
+    """Run all health checks; print the next action first (``--all`` = everything)."""
     from adk import __version__
 
-    print()
-    print(f"  ADK Doctor v{__version__}")
-    print(f"  {'=' * 40}")
-    print()
-
-    checks = 0
-    passed = 0
-
-    for name, fn in DOCTOR_CHECKS:
-        checks += 1
-        try:
-            if fn():
-                passed += 1
-        except Exception as e:
-            _fail(f"{name}: error ({e})")
-
-    print()
-    print(f"  {passed}/{checks} checks passed")
-
-    if passed < checks:
-        print()
-        print("  Run 'adk setup' to fix common issues.")
-
-    print()
+    show_all = bool(getattr(_args, "all", False))
+    results = [_run_check(name, fn) for name, fn in DOCTOR_CHECKS]
+    for line in render_doctor(results, __version__, show_all=show_all):
+        print(line)
     return 0

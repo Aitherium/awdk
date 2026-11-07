@@ -14,6 +14,13 @@ Signed with the local debug key (``~/.android/debug.keystore``) unless ``--keyst
 ``--storepass-file`` name the release key; a release build must carry the release certificate
 (SHA-256 ``RELEASE_CERT_SHA256`` below) or the build fails.
 
+``--release`` says the build is a RELEASE: it refuses to run without ``--keystore`` (there is
+no debug-key fallback for an APK people download). ``--release-from-secret`` is the same
+build with the key fetched from the vault by secret name for this one run
+(AITHER_ANDROID_RELEASE_KEYSTORE_B64 and AITHER_ANDROID_RELEASE_KEYSTORE_PASSWORD,
+written by ``aither_secret.py --to-file`` into a private temp dir and deleted after);
+the signing helper calls back here with ``--release``.
+
 ``--store`` is the Google Play build: Flavor.STORE = true (no self-update; Play updates it) and
 the manifest without the permissions Play restricts (STORE_DROPS). ``--aab`` writes the App
 Bundle Play requires, signed with the same key: that key is the Play UPLOAD key, and Play App
@@ -34,6 +41,7 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+SIGN_TOOL = HERE.parents[2] / "AitherOS" / "dev" / "tools" / "sign_aither_apk.py"
 ENGINE = HERE.parents[1] / "adk" / "webui" / "kvholder" / "holder.js"
 API, TOOLS = "36", "36.0.0"
 BUNDLETOOL = (
@@ -694,6 +702,22 @@ def build_watchface(out: Path, keystore: str = "", storepass_file: str = "") -> 
     return sign(bt, base, out / "aither-watchface.apk", keystore, storepass_file)
 
 
+def release_from_secret(a: argparse.Namespace) -> int:
+    """The vault-keyed release build: sign_aither_apk.py owns the secret fetch (one place),
+    and calls this file back with --release --keystore. Its exit code is ours: 2 = the key
+    could not be fetched (nothing is built, nothing falls back to the debug key)."""
+    cmd = [sys.executable, str(SIGN_TOOL)]
+    if a.out != str(HERE / "out"):
+        cmd += ["--out", a.out]
+    if a.install:
+        cmd += ["--install", a.install]
+    for flag, on in (("--store", a.store), ("--aab", a.aab), ("--wear", a.wear),
+                     ("--watchface", a.watchface)):
+        if on:
+            cmd.append(flag)
+    return subprocess.run(cmd).returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=str(HERE / "out"))
@@ -713,6 +737,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--aab", action="store_true", help="write an App Bundle, not an APK")
     ap.add_argument(
+        "--release",
+        action="store_true",
+        help="a release build: refuse without --keystore (never the debug key)",
+    )
+    ap.add_argument(
+        "--release-from-secret",
+        action="store_true",
+        help="a release build with the key fetched from the vault by name (sign_aither_apk.py)",
+    )
+    ap.add_argument(
         "--wear",
         action="store_true",
         help="the Wear OS app (../aither-wear), same signing; --install takes the watch's adb serial",
@@ -723,8 +757,14 @@ def main(argv: list[str] | None = None) -> int:
         help="the watch face (../aither-watchface), same signing; --install takes the watch's adb serial",
     )
     a = ap.parse_args(argv)
+    if a.release_from_secret:
+        if a.keystore or a.storepass_file:
+            ap.error("--release-from-secret fetches the key itself; drop --keystore")
+        return release_from_secret(a)
     if bool(a.keystore) != bool(a.storepass_file):
         ap.error("--keystore and --storepass-file go together")
+    if a.release and not a.keystore:
+        ap.error("--release needs --keystore and --storepass-file: a release is never debug-signed")
     if a.aab and a.install:
         ap.error("--install takes an APK; a bundle is uploaded to Google Play")
     if a.wear and a.watchface:

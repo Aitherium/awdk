@@ -9,6 +9,7 @@ keep copies see ciphertext; file names live inside a sealed index.
     adk storage drive key share       wrap the key to every registered family computer
     adk storage drive key accept      pick up the key another family computer wrapped for this one
     adk storage drive key status
+    adk storage drive backup now|status|restore|drill   (also `adk family-drive backup ...`)
 
 Configuration (environment): ``AITHER_FAMILY_API`` (default
 ``$AITHER_PORTAL_URL/api/tutor``, portal default ``https://api.aitherium.com``) and the
@@ -158,7 +159,7 @@ def key_status(args: argparse.Namespace) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="adk storage drive",
+    p = argparse.ArgumentParser(prog="adk family-drive",
                                 description="Your family's drive on the family's own devices")
     sub = p.add_subparsers(dest="verb")
     key = sub.add_parser("key", help="The family key (made and kept on family devices)")
@@ -182,6 +183,11 @@ def _extend(sub: Any) -> None:
     except ImportError:
         return
     add_parsers(sub)
+    try:
+        from adk.family_drive_backup import add_parsers as add_backup
+    except ImportError:
+        return
+    add_backup(sub)
 
 
 _KEY = {"init": key_init, "register": key_register, "share": key_share,

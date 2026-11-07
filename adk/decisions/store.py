@@ -268,6 +268,10 @@ class CancelNoteRequiredError(DecisionError, ValueError):
     a ``ValueError`` (it is a bad argument, not a store failure)."""
 
 
+class CardClosedError(DecisionError):
+    """A write that only an OPEN card accepts reached a closed one."""
+
+
 #: Sub-directory of the store that unparseable cards are moved into. Not ``d-*.json``
 #: at the top level, so no listing, glob or dedupe scan sees them again.
 CORRUPT_DIRNAME = "corrupt"
@@ -1842,6 +1846,55 @@ class DecisionStore:
             card.facts.extend(clean)
             self._write(card)
             return card
+
+    def revise(self, card_id: str, *, title: Optional[str] = None,
+               summary: Optional[str] = None, facts: Optional[list[str]] = None,
+               urgency: Optional[str] = None,
+               dedupe_key: Optional[str] = None) -> DecisionCard:
+        """Rewrite what an OPEN card SAYS, keeping its id, options and status.
+
+        For a producer that reports a rolling state (a sweep's latest cycle): it
+        updates the one card the owner already has instead of raising a new card
+        and withdrawing the old one, which re-notifies on every change.
+
+        Only the text moves: ``title``, ``summary``, ``facts`` (replaced, not
+        appended), ``urgency`` and ``dedupe_key``. Options and the default are
+        frozen because an answer maps to an option key; a card whose choices
+        changed is a different question and is raised as one. ``None`` leaves a
+        field alone. A closed card raises :class:`CardClosedError` (its answer
+        already stands; the caller raises a fresh card). A ``dedupe_key`` held by
+        ANOTHER live card is refused, so a revise cannot make two cards one key.
+        """
+        with self._lock:
+            card = self.get(card_id)
+            if card is None:
+                raise DecisionError(f"no such card: {card_id}")
+            if not card.is_open:
+                raise CardClosedError(
+                    f"card {card_id} is {card.status}; raise a new card instead")
+            if (card.kind or "").strip().lower() == "credential":
+                raise DecisionError("a credential card cannot be revised")
+            revised = DecisionCard.from_dict(card.to_dict())
+            if title is not None:
+                revised.title = str(title).strip()
+            if summary is not None:
+                revised.summary = str(summary).strip()
+            if facts is not None:
+                revised.facts = [str(f).strip() for f in facts if str(f).strip()]
+            if urgency is not None:
+                revised.urgency = str(urgency).strip().lower()
+            if dedupe_key is not None:
+                want = str(dedupe_key).strip()
+                if want and want != card.dedupe_key:
+                    holder = self.find_by_dedupe_key(want, live_only=True)
+                    if holder is not None and holder.id != card.id:
+                        raise DecisionError(
+                            f"dedupe_key {want!r} is held by card {holder.id}")
+                revised.dedupe_key = want
+            self._validate(revised)
+            self._write(revised)
+        self._sync_relay(revised)
+        return revised
 
     def _register_steer_waiter(self, card_id: str, src: DecisionSource) -> None:
         """Record a joined session in the steerback waiters file (lock held).

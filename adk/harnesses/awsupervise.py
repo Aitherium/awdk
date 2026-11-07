@@ -31,6 +31,19 @@ WHAT IT READS
                     request. A row carries no session id, so a failure streak is
                     attributed to an agent by its model and by time.
 
+ADK DAEMON SESSIONS (opt-in: --awdk-sessions)
+---------------------------------------------
+The same detectors also judge the awdk harness daemon's own sessions, not only Claude
+Code tabs. awsupervise_sessions reads each session's events.jsonl and folds it into the
+SAME records (Call / Result / Turn / progress) this file's detectors already consume, so
+repeat_call, repeat_error, no_progress, oscillation, upstream_streak and wall_budget run
+unchanged. It adds one detector of its own, stalled_on_thread (g): a session that holds a
+thread subscription but has had no delivery and no tool call touching anything for its
+last N steps is drifting. The subscription table is read read-only (the router owns it),
+so a dry run never creates or writes it. L1 for a session is
+adk.decisions.store.write_steer (peer authority) into that session's own mailbox -- never
+a kill; L2/L3 are the same relay and card rungs below.
+
 DETECTORS (thresholds live in CONFIG)
 -------------------------------------
 a repeat_call      the same tool with the same arguments, 4+ times since the last progress
@@ -67,6 +80,8 @@ CLI
     python awsupervise.py --watch       scan every --interval seconds
     python awsupervise.py --dry-run     detect and print the would-be actions; write nothing
     python awsupervise.py --self-test   synthetic transcripts: every detector and the ladder
+    python awsupervise.py --awdk-sessions --once   also judge adk daemon session logs
+    python awsupervise.py --awdk-sessions --dry-run  ...and write nothing
 
 Exit 0: scanned (findings or not). 1: the self-test failed. 2: could not scan.
 """
@@ -75,6 +90,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -126,6 +142,20 @@ CONFIG: dict = {
     # --- f. wall budget, minutes (0 = off)
     "wall_budget_minutes": 120,
     "wall_budget_minutes_main": 0,
+    # --- g. stalled on a subscribed thread (adk daemon sessions only)
+    # A session that holds a thread subscription, has had no delivery for this long, and
+    # whose last steps contain no tool call touching anything (no path, command or URL in
+    # its input) is drifting: it is subscribed but doing no work and the mail is queuing.
+    "thread_stall_minutes": 45,
+    "thread_stall_steps": 8,
+    # g reads the daemon's subscription table read-only (the router owns it). "" resolves
+    # to AITHER_THREAD_SUBS_DB, then ~/.aither/thread-subscriptions.db; a missing file
+    # means no subscriptions exist yet, so g is simply off.
+    "thread_subs_db": "",
+    "thread_subs_enabled": True,
+    # --- adk daemon sessions (--awdk-sessions): where their logs live and how much to read
+    "awdk_root": "",               # "" -> AITHER_HARNESS_ROOT, then ~/.aither/harness-sessions
+    "awdk_tail_events": 2000,      # trailing events judged per session (0 = everything read)
     # --- the ladder
     "climb_minutes": 10,
     "start_level": {},                 # detector -> first rung (default 1)
@@ -148,7 +178,8 @@ CONFIG: dict = {
 }
 
 DETECTOR_CODE = {"repeat_call": "a", "repeat_error": "b", "no_progress": "c",
-                 "oscillation": "d", "upstream_streak": "e", "wall_budget": "f"}
+                 "oscillation": "d", "upstream_streak": "e", "wall_budget": "f",
+                 "stalled_on_thread": "g"}
 
 #: A session id reaches the filesystem as a directory name (same rule as the drain hook).
 SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -457,6 +488,11 @@ class Agent:
     results: dict = field(default_factory=dict)
     turns: list = field(default_factory=list)
     progress: list = field(default_factory=list)   # (seq, kind, label, ts)
+    #: The last normalized ACTION steps, kept by the awdk session reader only (a Claude
+    #: Code transcript is re-read whole). A text delta is not a step: streaming a report
+    #: must not displace the tool calls the thread-drift detector judges. Each step is
+    #: {"kind", "ts"} plus {"tool", "input"} for a tool call.
+    steps: list = field(default_factory=list)
 
     @property
     def short(self) -> str:
@@ -1153,12 +1189,13 @@ def _recommend(findings: list) -> str:
     return "continue"
 
 
-def steer_text(sid: str, items: list, sessions: dict, cfg: dict) -> list:
+def steer_text(sid: str, items: list, sessions: dict, cfg: dict,
+               where: str = "transcripts") -> list:
     by_agent: dict = {}
     for p in items:
         by_agent.setdefault(p.finding.agent.key, []).append(p.finding)
     lines = [f"# awsupervise: {len(by_agent)} agent(s) in this session look stuck", "",
-             "The host supervisor reads this box's transcripts for loops and stalls. It is "
+             f"The host supervisor reads this box's {where} for loops and stalls. It is "
              "a peer report, not the owner: judge it on its merits.", ""]
     has_sub = False
     for findings in by_agent.values():
@@ -1259,10 +1296,16 @@ class Actuator:
     """Performs (or, dry, describes) one rung for one session. Rate limits live here."""
 
     def __init__(self, paths: Paths, cfg: dict, state: dict, now: float, sessions: dict,
-                 dry: bool = False, runner: Optional[Callable] = None) -> None:
+                 dry: bool = False, runner: Optional[Callable] = None,
+                 steer_writer: Optional[Callable] = None,
+                 steer_where: str = "transcripts") -> None:
         self.paths, self.cfg, self.state, self.now = paths, cfg, state, now
         self.sessions, self.dry = sessions, dry
         self.runner = runner or _run
+        # L1's writer: the local mailbox file for a Claude Code box, the decisions store's
+        # (peer-authority) writer for an adk daemon session. Same rung, same mailbox.
+        self.steer_writer = steer_writer or write_steer
+        self.steer_where = steer_where
 
     def _recent(self, stamps: list) -> list:
         return [t for t in stamps if self.now - t < 3600]
@@ -1296,18 +1339,22 @@ class Actuator:
             rec.update(result="suppressed: rate limit", advance=kind != "card")
             return rec
         if kind == "steer":
-            lines = steer_text(sid, items, self.sessions, self.cfg)
+            lines = steer_text(sid, items, self.sessions, self.cfg, where=self.steer_where)
             rec["text"] = "\n".join(lines)
             if self.dry:
                 rec.update(result=f"would write {self.paths.steer / sid}/<stamp>-supervise.md",
                            advance=True)
                 return rec
             try:
-                path = write_steer(self.paths.steer, sid, lines,
-                                   _event_id(sid, str(self.now), *rec["agents"]))
-                rec.update(result=f"wrote {path}", path=str(path), advance=True)
+                path = self.steer_writer(self.paths.steer, sid, lines,
+                                         _event_id(sid, str(self.now), *rec["agents"]))
             except (OSError, ValueError) as exc:
                 rec.update(result=f"failed: {exc}", advance=False)
+            else:
+                if path is None:  # a writer refuses a malformed session id, never guesses
+                    rec.update(result="refused: not a steerable session id", advance=False)
+                else:
+                    rec.update(result=f"wrote {path}", path=str(path), advance=True)
         elif kind == "relay":
             text = relay_text(sid, items, self.sessions, self.cfg)
             argv = _cli("awrelay", "awrelay") + ["send", self.cfg["relay_channel"], text,
@@ -1581,6 +1628,50 @@ def _utf8_stdio() -> None:
             continue
 
 
+def _load_by_path(name: str, path: Path):
+    """Load ``path`` as its own module, ignoring the rest of ``sys.path``."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # dataclasses and pickling resolve a module by name
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sessions_module():
+    """The adk-session reader (``awsupervise_sessions``), imported on demand.
+
+    The SIBLING FILE wins over any same-named package: this file is also run as a plain
+    script, where ``sys.path[0]`` is the harnesses directory but ``site-packages`` is
+    searched too -- and a stale installed ``adk`` supplies an ``awsupervise_sessions``
+    built against an older ``awsupervise`` (measured: no ``Agent.steps``, so every agent
+    it folds crashes the pass). A package import is trusted only when it IS this file's
+    directory.
+    """
+    here = Path(__file__).resolve().parent
+    try:
+        from adk.harnesses import awsupervise_sessions as mod
+    except ImportError:
+        mod = None
+    if mod is not None:
+        found = Path(getattr(mod, "__file__", "") or "").resolve().parent
+        if found == here:
+            return mod
+    return _load_by_path("_awsupervise_sessions_sibling", here / "awsupervise_sessions.py")
+
+
+
+def _run_session_pass(sessions_mod, cfg: dict, **kw) -> Optional[dict]:
+    """The adk pass, isolated: one broken session tree never sinks the Claude Code pass."""
+    try:
+        return sessions_mod.scan_sessions_once(cfg, **kw)
+    except Exception as exc:
+        sys.stderr.write(f"awsupervise: adk session pass failed: {type(exc).__name__}: "
+                         f"{exc}\n")
+        return None
+
+
 def main(argv: Optional[list] = None) -> int:
     _utf8_stdio()
     ap = argparse.ArgumentParser(prog="awsupervise", description=__doc__.splitlines()[0])
@@ -1596,35 +1687,74 @@ def main(argv: Optional[list] = None) -> int:
                     help="with --dry-run: also judge agents that already finished (never acted on)")
     ap.add_argument("--active-minutes", type=float, default=None,
                     help=f"override the live window (default {CONFIG['active_minutes']})")
+    ap.add_argument("--awdk-sessions", action="store_true",
+                    help="also judge adk harness daemon sessions (their events.jsonl); "
+                         "off by default. Alone it runs one session pass and exits")
+    ap.add_argument("--awdk-root", default="",
+                    help="harness session root (default AITHER_HARNESS_ROOT, then "
+                         "~/.aither/harness-sessions)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="evidence and message text")
     a = ap.parse_args(argv)
     if a.self_test:
         return _self_test()
-    if not (a.once or a.watch or a.dry_run):
+    claude_pass = bool(a.once or a.watch or a.dry_run)
+    if not (claude_pass or a.awdk_sessions):
         ap.print_help()
         return 2
     cfg = dict(CONFIG)
     if a.active_minutes:
         cfg["active_minutes"] = a.active_minutes
+    if a.awdk_root:
+        cfg["awdk_root"] = a.awdk_root
     paths = Paths.default()
-    if not paths.projects.is_dir():
-        print(f"awsupervise: no transcripts at {paths.projects}", file=sys.stderr)
-        return 2
+    sessions_mod = _sessions_module() if a.awdk_sessions else None
+    if claude_pass and not paths.projects.is_dir():
+        if not a.awdk_sessions:
+            print(f"awsupervise: no transcripts at {paths.projects}", file=sys.stderr)
+            return 2
+        print(f"awsupervise: no transcripts at {paths.projects}; judging adk sessions only",
+              file=sys.stderr)
+        claude_pass = False
     while True:
+        results: list = []
+        failed = False
         if a.dry_run:  # writes nothing, so it takes no lock (the lock file is a write)
-            result = scan_once(paths, cfg, dry=True, include_finished=a.include_finished)
+            if claude_pass:
+                results.append(("code", scan_once(paths, cfg, dry=True,
+                                                  include_finished=a.include_finished)))
+            if a.awdk_sessions:
+                got = _run_session_pass(sessions_mod, cfg, dry=True, paths=paths,
+                                        include_finished=a.include_finished,
+                                        root=cfg["awdk_root"] or None)
+                failed = got is None
+                if got is not None:
+                    results.append(("awdk", got))
         else:
-            with _Lock(paths.home / "awsupervise.lock") as got:
-                result = scan_once(paths, cfg) if got else None
-            if result is None:
+            with _Lock(paths.home / "awsupervise.lock") as got_lock:
+                if got_lock and claude_pass:
+                    results.append(("code", scan_once(paths, cfg)))
+                if got_lock and a.awdk_sessions:
+                    got = _run_session_pass(sessions_mod, cfg, paths=paths,
+                                            root=cfg["awdk_root"] or None)
+                    failed = got is None
+                    if got is not None:
+                        results.append(("awdk", got))
+            if not results:
                 print("awsupervise: another instance holds the lock; skipping this pass")
-        if result is not None:
-            print(json.dumps(as_json(result), indent=1, default=str) if a.json
-                  else render(result, verbose=a.verbose or a.dry_run))
+        for name, result in results:
+            if a.json:
+                payload = (as_json(result) if name == "code"
+                           else sessions_mod.as_json_sessions(result))
+                print(json.dumps(payload, indent=1, default=str))
+            else:
+                text = (render(result, verbose=a.verbose or a.dry_run) if name == "code"
+                        else sessions_mod.render_sessions(result,
+                                                          verbose=a.verbose or a.dry_run))
+                print(text)
             sys.stdout.flush()
         if not a.watch:
-            return 0
+            return 2 if failed else 0
         try:
             time.sleep(max(15.0, a.interval))
         except KeyboardInterrupt:

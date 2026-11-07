@@ -1,0 +1,51 @@
+{
+  "_comment": "The attention beam's ordering and counting rules, as cases. Consumed by awdk/tests/test_decisions_beam.py; awsh's src/beam.ts mirrors the same rules (see the awsh CLI's beam.test.ts). Add a case here when a surface mis-ranked something rather than special-casing the surface.",
+  "now": 1800000000,
+  "cases": [
+    {
+      "name": "a fresh high ask leads its tier (the 2026-10-28 miss: the card raised that hour was #29 of 132)",
+      "live": null,
+      "cards": [
+        {"id": "d-old", "kind": "decision", "urgency": "high", "created_at": 1799928000, "options": [{"key": "post"}]},
+        {"id": "d-new", "kind": "decision", "urgency": "high", "created_at": 1799999940, "options": [{"key": "post"}]}
+      ],
+      "expect": {"fresh_ids": ["d-new", "d-old"], "open": 2, "oldest_age": 72000}
+    },
+    {
+      "name": "credential and blocked lead before any urgency",
+      "live": null,
+      "cards": [
+        {"id": "d-crit", "kind": "decision", "urgency": "critical", "created_at": 1799999970, "options": [{"key": "go"}]},
+        {"id": "d-cred", "kind": "credential", "urgency": "normal", "created_at": 1799991000, "options": []}
+      ],
+      "expect": {"fresh_ids": ["d-cred", "d-crit"], "open": 2, "oldest_age": 9000}
+    },
+    {
+      "name": "an ask older than a day is counted, never headlined",
+      "live": null,
+      "cards": [
+        {"id": "d-stale", "kind": "decision", "urgency": "normal", "created_at": 1799913600, "options": [{"key": "ok"}]}
+      ],
+      "expect": {"fresh_ids": [], "open": 1, "oldest_age": 86400}
+    },
+    {
+      "name": "needs-you cards of dead sessions do not count; of live sessions do",
+      "live": ["sess-live"],
+      "cards": [
+        {"id": "d-dead", "kind": "blocked", "urgency": "high", "created_at": 1799999700, "options": [],
+         "dedupe_key": "cc-waiting:sess-dead:1799999700", "source": {"session_id": "sess-dead"}},
+        {"id": "d-live", "kind": "blocked", "urgency": "high", "created_at": 1799999700, "options": [],
+         "dedupe_key": "cc-waiting:sess-live:1799999700", "source": {"session_id": "sess-live"}}
+      ],
+      "expect": {"fresh_ids": ["d-live"], "open": 1, "oldest_age": 300}
+    },
+    {
+      "name": "a card with no options and a plain kind is not an ask",
+      "live": null,
+      "cards": [
+        {"id": "d-info", "kind": "info", "urgency": "normal", "created_at": 1799999999, "options": []}
+      ],
+      "expect": {"fresh_ids": [], "open": 0, "oldest_age": 0}
+    }
+  ]
+}

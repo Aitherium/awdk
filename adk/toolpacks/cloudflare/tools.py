@@ -42,7 +42,19 @@ _TIMEOUT = 20.0
 _DOCS_TIMEOUT = 45.0
 _MAX_DOC_CHARS = 12000
 
-_DNS_TYPES = {"A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV", "CAA", "PTR"}
+_DNS_TYPES = {"A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV", "CAA", "PTR", "SVCB", "HTTPS"}
+# Service-binding records (RFC 9460) travel as structured `data`, not `content`.
+# DNS-AID publishes agents as SVCB under _<proto>._agents.<domain>.
+_SVCB_TYPES = {"SVCB", "HTTPS"}
+
+
+def _svcb_data(value: str):
+    """'1 agent.example.com. alpn="a2a" port=443' -> CF data {priority,target,value}."""
+    parts = value.split(None, 2)
+    if len(parts) < 2 or not parts[0].isdigit():
+        return None
+    return {"priority": int(parts[0]), "target": parts[1],
+            "value": parts[2] if len(parts) > 2 else ""}
 _PROXYABLE = {"A", "AAAA", "CNAME"}
 
 _SCOPE_HINTS = {
@@ -427,12 +439,14 @@ def _as_bool(v, default: bool = True) -> bool:
     return default
 
 def cf_dns_upsert(name: str, type: str, content: str, proxied: bool = True,
-                  zone: str = "") -> dict:  # noqa: A002 — 'type' is the CF field name
+                  zone: str = "", priority: int = 0) -> dict:  # noqa: A002 — CF field name
     """Create a DNS record, or update it in place if name+type already exists.
 
     name: full record name, e.g. 'api.example.com'
-    type: A | AAAA | CNAME | TXT | MX | NS | SRV | CAA | PTR
-    content: the record value (IP for A, target host for CNAME, text for TXT)
+    type: A | AAAA | CNAME | TXT | MX | NS | SRV | CAA | PTR | SVCB | HTTPS
+    content: the record value (IP for A, target host for CNAME, text for TXT;
+             for SVCB/HTTPS the presentation form 'PRIORITY TARGET PARAMS', e.g.
+             '1 agent.example.com. alpn="a2a" port=443 mandatory=alpn,port')
     proxied: route through Cloudflare's proxy (only A/AAAA/CNAME; forced off otherwise)
     zone: zone id or name (default: the configured CLOUDFLARE_ZONE_ID)
 
@@ -474,6 +488,18 @@ def cf_dns_upsert(name: str, type: str, content: str, proxied: bool = True,
     hits = existing.get("result") or []
     payload = {"type": rec_type, "name": rec_name, "content": value,
                "proxied": bool(proxied), "ttl": 1}
+    if rec_type in _SVCB_TYPES:
+        data = _svcb_data(value)
+        if data is None:
+            return {"error": "SVCB/HTTPS content must be 'PRIORITY TARGET [PARAMS]'"}
+        payload = {"type": rec_type, "name": rec_name, "data": data,
+                   "proxied": False, "ttl": 1}
+
+    # MX carries its weight in `priority`; without it Cloudflare writes 0 and every
+    # mail route ties (verified 2026-10-31 while onboarding Email Sending, whose
+    # wizard hands out 67/63/78). 0 stays the default: Cloudflare's own minimum.
+    if rec_type == "MX" and priority:
+        payload["priority"] = int(priority)
 
     if hits:
         rid = str(hits[0].get("id") or "")

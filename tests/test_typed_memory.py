@@ -225,3 +225,33 @@ def _entry(metadata: dict, value: str, ts: float):
     from adk.memory import MemoryEntry
     return MemoryEntry(key="k", value=value, category=metadata.get("role", "fact"),
                        timestamp=ts, metadata=metadata)
+
+
+# ── Chain of Recall: ids ride every line, expand() hops along them ─────────────
+
+
+async def test_context_block_lines_carry_id_and_next_hops(typed):
+    a = await typed.remember("session switch blanks the pane", role=Role.FACT)
+    b = await typed.remember("PR 128 adds a null check for session switch",
+                             role=Role.FACT, related_ids=[a])
+    block = await typed.context_block("session switch", limit=5)
+    assert f"[id={b} →{a}]" in block
+    assert f"[id={a}]" in block
+
+
+async def test_id_survives_clipping(typed):
+    from adk.typed_memory import CONTEXT_ITEM_CHARS
+    rid = await typed.remember("gate incident " + "detail " * 300, role=Role.FACT)
+    line = (await typed.context_block("gate incident")).splitlines()[1]
+    assert line.startswith(f"- [id={rid}]")
+    assert len(line) <= CONTEXT_ITEM_CHARS + 2 and line.endswith("…")
+
+
+async def test_expand_follows_related_ids_one_hop(typed):
+    root = await typed.remember("CI unit-test failed on PR 128", role=Role.FACT)
+    mid = await typed.remember("worker w-7 owns PR 128", role=Role.FACT, related_ids=[root])
+    out = await typed.expand(mid)
+    assert out.splitlines()[0] == f"# MEMORY {mid}"
+    assert "worker w-7 owns PR 128" in out
+    assert f"- [id={root}] CI unit-test failed" in out
+    assert await typed.expand("tm_missing") == ""

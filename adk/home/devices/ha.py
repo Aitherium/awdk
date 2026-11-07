@@ -63,7 +63,7 @@ STATUS_ATTRS = ("friendly_name", "device_class", "brightness", "color_temp_kelvi
                 "current_temperature", "temperature", "target_temp_high",
                 "target_temp_low", "hvac_mode", "hvac_action", "current_position",
                 "volume_level", "is_volume_muted", "unit_of_measurement", "battery_level",
-                "percentage")
+                "percentage", "installed_version", "latest_version")
 
 
 class HAError(RuntimeError):
@@ -222,6 +222,17 @@ class HAClient:
                 raise rest_err
             self.last_path = "mcp"
             return parse_live_context(str(data.get("result") or data.get("text") or ""))
+
+    async def raw_states(self) -> List[Dict[str, Any]]:
+        """Every entity exactly as REST ``/api/states`` returns it, all attributes kept.
+
+        REST only (no MCP fallback: the live context carries no attributes). For readers
+        that need what :data:`STATUS_ATTRS` drops, e.g. an update entity's versions."""
+        rows = await self._rest("GET", STATES_PATH)
+        self.last_path = "rest"
+        if not isinstance(rows, list):
+            raise HAError("Home Assistant sent an unreadable state list")
+        return [r for r in rows if isinstance(r, dict) and r.get("entity_id")]
 
     @staticmethod
     def _row(r: Mapping[str, Any]) -> Dict[str, Any]:

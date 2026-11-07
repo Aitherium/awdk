@@ -18,14 +18,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
+from adk import _attention as att
+
 _TOOLS_REL = Path("AitherOS") / "dev" / "tools"
 #: The marker refresh_agent_tools.py writes into each snapshot's package dir.
 _SNAPSHOT_MARKER = ".aither-snapshot.json"
-_MAX_LINES = 12
+#: The generated report indents local lines by two columns.
+_WIDTH = 78
+#: A fix text that is a shell command rather than prose.
+_COMMAND = re.compile(r"^(python3?|adk|awgit|podman|wsl|pip)\s")
 
 
 def _repo_root_candidates() -> "list[tuple[str, Path]]":
@@ -69,7 +75,39 @@ def _find_repo_tool(name: str) -> "tuple[Path | None, str, list[Path]]":
     return None, "", tried
 
 
+def _show_all() -> bool:
+    """``adk doctor --all``: the generated intercept passes no args, so read argv."""
+    return "--all" in sys.argv[1:]
+
+
+def _lane_next(lines: "list[str]", lane: Path) -> str:
+    """The lane doctor's own remedy (``Run: <cmd>``), else its full report command."""
+    for ln in lines:
+        m = re.search(r"\bRun:\s*(.+?)\s*$", ln)
+        if m:
+            cmd = m.group(1)
+            if cmd.startswith("aither_doctor.py"):
+                cmd = f"python {lane.parent / cmd}"
+            return f"run `{cmd}`"
+    return f"run `python {lane}`"
+
+
+def _as_action(fix: str) -> str:
+    """A chain ``fix:`` text as an action: a command gets ``run `...```, prose stays."""
+    cmd = fix.strip().split("   #", 1)[0].strip()
+    if _COMMAND.match(cmd):
+        return att.run(cmd)
+    return cmd
+
+
 def _doctor_local() -> "list[str]":
+    """Display lines for the generated doctor: the next action first, lists capped.
+
+    Line 1 of this block is ``Next: ...`` (the chain's first broken link, else the
+    lane's own remedy) or ``Nothing needs you``. Lane output is capped at five
+    lines + ``+N more``; ``adk doctor --all`` shows everything unfitted.
+    """
+    show_all = _show_all()
     lane, source, tried = _find_repo_tool("aither_doctor.py")
     if lane is None:
         return [f"lane doctor NOT FOUND (tried {', '.join(str(t) for t in tried)}) "
@@ -84,10 +122,24 @@ def _doctor_local() -> "list[str]":
     except Exception as exc:  # noqa: BLE001 - a doctor that cannot run reports that
         return head + [f"lane doctor could not run: {type(exc).__name__}: {exc}"]
     lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    # Problems first: a FAIL line outranks the ok lines it would otherwise sit under.
+    ranked = sorted(lines, key=lambda ln: 0 if re.search(r"\[(FAIL|WARN|DEAD)", ln) else 1)
+    shown, hidden = att.cap(ranked, show_all=show_all)
+    body = list(shown)
+    if hidden:
+        body.append(att.more_line(hidden, "adk doctor --all", indent="", width=_WIDTH))
     verdict = f"lane rc={proc.returncode}"
-    if len(lines) > _MAX_LINES:
-        lines = lines[:_MAX_LINES] + ["…  (full report: aither_doctor.py)"]
-    return head + lines + [verdict] + _chain_lines()
+    chain = _chain_lines()
+    if chain and chain[0].startswith("chain FIRST BROKEN") and len(chain) > 1:
+        nxt = att.next_line(_as_action(chain[1].split("fix:", 1)[-1]), width=_WIDTH)
+    elif proc.returncode:
+        nxt = att.next_line(_lane_next(lines, lane), width=_WIDTH)
+    else:
+        nxt = att.next_line(None, width=_WIDTH)
+    out = [nxt] + head + body + [verdict] + chain
+    if show_all:
+        return out
+    return [out[0]] + [att.fit(ln, _WIDTH) for ln in out[1:]]
 
 
 def _chain_lines() -> "list[str]":

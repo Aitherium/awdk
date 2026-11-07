@@ -205,7 +205,9 @@ def test_windows_acl_is_applied_to_the_empty_file_before_the_token(home, monkeyp
     tok = lt.new_token()
     lt.write_endpoint(tok, 9444, home)
     (argv, content), = seen
-    assert argv[0] == "icacls" and "/inheritance:r" in argv and "/grant:r" in argv
+    # an absolute path, never a PATH lookup
+    assert Path(argv[0]).name.lower() == "icacls.exe" and "System32" in argv[0]
+    assert "/inheritance:r" in argv and "/grant:r" in argv
     assert content == b""                           # restricted BEFORE the token lands
     assert lt.read_token(home) == tok
 

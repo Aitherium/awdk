@@ -107,6 +107,11 @@
         "commercial_ok": true,
         "attribution_required": true
       },
+      "bench": {
+        "overall": 0.2867,
+        "item_set": "716dcc9b602d9c5f",
+        "measured": "2026-10-28"
+      },
       "size_bytes": 463290464,
       "sha256": "de68ba48a8dacb21979915991e7741b917869d71410a370df951c0c3a237ae50"
     },
@@ -134,6 +139,11 @@
         "commercial_ok": true,
         "attribution_required": true
       },
+      "bench": {
+        "overall": 0.81,
+        "item_set": "716dcc9b602d9c5f",
+        "measured": "2026-10-28"
+      },
       "sha256": "e4781999f1997ef97ce0c58d05750835acc999d18d83ee6489ba7ac7b14cb5f6"
     },
     "bonsai-4b": {
@@ -159,6 +169,11 @@
         "redistribution_ok": true,
         "commercial_ok": true,
         "attribution_required": true
+      },
+      "bench": {
+        "overall": 0.5267,
+        "item_set": "716dcc9b602d9c5f",
+        "measured": "2026-10-28"
       },
       "size_bytes": 1074969344,
       "sha256": "829abec7eb92f5bf464762be7c9e8a45d777c714543a1474fc90cee20e698beb"
@@ -187,6 +202,11 @@
         "commercial_ok": true,
         "attribution_required": true
       },
+      "bench": {
+        "overall": 0.4285,
+        "item_set": "716dcc9b602d9c5f",
+        "measured": "2026-10-28"
+      },
       "sha256": "1376f942aa90e60f7b570c1d81b3916fea1315ff85aa1c4d19006af68fb4b922"
     },
     "bonsai2-27b": {
@@ -213,6 +233,11 @@
         "redistribution_ok": true,
         "commercial_ok": true,
         "attribution_required": true
+      },
+      "bench": {
+        "overall": 0.9,
+        "item_set": "716dcc9b602d9c5f",
+        "measured": "2026-10-28"
       },
       "size_bytes": 5946648928,
       "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3"
@@ -305,6 +330,11 @@
         "redistribution_ok": false,
         "commercial_ok": null,
         "attribution_required": true
+      },
+      "bench": {
+        "overall": 0.4434,
+        "item_set": "716dcc9b602d9c5f",
+        "measured": "2026-10-28"
       },
       "size_bytes": 1099627808,
       "sha256": "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4"

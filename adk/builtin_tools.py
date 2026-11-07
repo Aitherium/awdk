@@ -1820,7 +1820,7 @@ def _graph_request(
         return json.dumps({"error": str(e)})
 
 
-def graph_search(query: str, domain: str = "", limit: int = 10) -> str:
+async def graph_search(query: str, domain: str = "", limit: int = 10) -> str:
     """Search across all AitherGraph domains (code, knowledge, events, memory).
 
     Args:
@@ -1831,7 +1831,7 @@ def graph_search(query: str, domain: str = "", limit: int = 10) -> str:
     params: dict = {"q": query, "limit": limit}
     if domain:
         params["domain"] = domain
-    return _graph_request("GET", "/search", params=params)
+    return await asyncio.to_thread(_graph_request, "GET", "/search", params)
 
 
 async def graph_code_search(query: str, limit: int = 10) -> str:
@@ -1892,7 +1892,7 @@ async def code_concept_search(query: str, limit: int = 5) -> str:
     return out
 
 
-def graph_kb_query(base_id: str, query: str, limit: int = 10) -> str:
+async def graph_kb_query(base_id: str, query: str, limit: int = 10) -> str:
     """RAG query against a knowledge base.
 
     Args:
@@ -1900,35 +1900,35 @@ def graph_kb_query(base_id: str, query: str, limit: int = 10) -> str:
         query: Natural language query.
         limit: Max results.
     """
-    return _graph_request(
-        "POST", f"/knowledge/bases/{base_id}/query",
-        params={"q": query, "limit": limit},
+    return await asyncio.to_thread(
+        _graph_request, "POST", f"/knowledge/bases/{base_id}/query",
+        {"q": query, "limit": limit},
     )
 
 
-def graph_memory_query(query: str, limit: int = 10) -> str:
+async def graph_memory_query(query: str, limit: int = 10) -> str:
     """Query the memory graph.
 
     Args:
         query: What to recall.
         limit: Max results.
     """
-    return _graph_request(
-        "POST", "/memory/query",
-        payload={"query": query, "limit": limit},
+    return await asyncio.to_thread(
+        _graph_request, "POST", "/memory/query",
+        None, {"query": query, "limit": limit},
     )
 
 
-def graph_research(query: str, effort: str = "library_session") -> str:
+async def graph_research(query: str, effort: str = "library_session") -> str:
     """Trigger autonomous research on a topic.
 
     Args:
         query: Research topic.
         effort: Depth (quick_glance, library_session, deep_dive, leave_no_stone).
     """
-    return _graph_request(
-        "POST", "/research",
-        payload={"query": query, "effort": effort}, timeout=120,
+    return await asyncio.to_thread(
+        _graph_request, "POST", "/research",
+        None, {"query": query, "effort": effort}, 120,
     )
 
 
@@ -1936,6 +1936,7 @@ _GRAPH_TOOLS = [
     graph_search, graph_code_search, code_concept_search, graph_kb_query,
     graph_memory_query, graph_research,
 ]
+_GENESIS_ONLY_GRAPH_TOOLS = (graph_search, graph_kb_query, graph_memory_query, graph_research)
 
 
 def _init_graph_tools():
@@ -1946,6 +1947,10 @@ def _init_graph_tools():
     costs schema tokens and a wasted step every time the model believes it.
     """
     tools = list(_GRAPH_TOOLS)
+    # The Genesis-only tools stay registered even when the localhost:8001 default
+    # refuses: removing them emptied the category every agent profile declares, and
+    # the daemon watchdog replaced the daemon every two minutes (2026-10-29). The
+    # registry's refused-backend breaker takes a dead one off the menu after two calls.
     if not code_graph_reachable():
         tools = [t for t in tools if t not in (graph_code_search, code_concept_search)]
     TOOL_CATEGORIES["graph"] = tools
@@ -3795,6 +3800,274 @@ def _genesis_url() -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Strata — the tiered virtual filesystem / artifact registry (HOT / WARM / COLD
+# tiers, aither:// URIs). `adk.strata` already ships the client and
+# `agent.strata` exposes it; these are the agent-facing verbs.
+#
+# THE TENANT IS NEVER A TOOL ARGUMENT. It is bound at registration from the
+# agent's own identity (identity raw -> AITHER_TENANT_SLUG -> the client's
+# default tenant) and baked into every key these tools touch. A model that names
+# another tenant — in a `tenant:` / `aither://` prefix or as a `tenant=` keyword —
+# is REFUSED with the bound tenant named, so it can retry inside its namespace
+# instead of silently reading someone else's.
+#
+# The category is off unless the agent lists `strata` or the process sets
+# AITHER_STRATA_TOOLS=1 (same opt-in shape as AITHER_BACKGROUND_TOOLS). Writes
+# are a second, separate opt-in (AITHER_STRATA_WRITE=1) and, when registered,
+# carry action_class="write" so an AuthContext-gated principal must hold the
+# write action class — the framework's declared write gate. Calling the write
+# function directly is refused too: the flag is read at CALL time, so a
+# registration that predates the env cannot arm it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+STRATA_TOOLS_ENV = "AITHER_STRATA_TOOLS"
+STRATA_WRITE_ENV = "AITHER_STRATA_WRITE"
+STRATA_READ_CAP = 4000  # chars inlined per read; the rest is a range read
+STRATA_READ_CAP_MAX = 200_000
+STRATA_LIST_MAX = 1000
+_STRATA_DEFAULT_TENANT = "default"
+_STRATA_TENANT_ARG_NAMES = ("tenant", "tenant_slug", "workspace", "workspace_id")
+
+
+def _strata_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def strata_tools_enabled() -> bool:
+    """True when the process opted into the strata category (AITHER_STRATA_TOOLS)."""
+    return _strata_truthy(STRATA_TOOLS_ENV)
+
+
+def strata_writes_enabled() -> bool:
+    """True when the process opted into Strata WRITES (AITHER_STRATA_WRITE)."""
+    return _strata_truthy(STRATA_WRITE_ENV)
+
+
+def _strata_client() -> Any:
+    from adk.strata import get_strata
+
+    return get_strata()
+
+
+def strata_tenant_for(agent: Any = None) -> str:
+    """The Strata tenant this agent works as, from its CONFIGURED identity.
+
+    Order: the identity's own `tenant`/`tenant_slug` -> AITHER_TENANT_SLUG (the
+    workspace this process was configured for) -> the Strata client's default.
+    There is deliberately no argument here: nothing a model emits can reach it.
+    """
+    raw = getattr(getattr(agent, "_identity", None), "raw", None)
+    if isinstance(raw, dict):
+        for key in ("tenant", "tenant_slug"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    env = (os.environ.get("AITHER_TENANT_SLUG") or "").strip()
+    if env:
+        return env
+    try:
+        return str(_strata_client().default_tenant or _STRATA_DEFAULT_TENANT)
+    except Exception:  # noqa: BLE001 -- a missing client must not block registration
+        return _STRATA_DEFAULT_TENANT
+
+
+def _strata_key(raw_path: str, tenant: str) -> tuple[str, str]:
+    """(key, refusal) for a caller path, in *tenant*'s namespace.
+
+    Accepts `tenant:<t>/<key>` and `aither://<t>/<key>` prefixes so a pasted
+    service URI still works, but a prefix naming a DIFFERENT tenant is refused:
+    the tenant is the agent's identity, and a quiet re-scope would be worse than
+    an error (the model would believe it read one thing and get another).
+    """
+    raw = (raw_path or "").strip().replace("\\", "/")
+    claim = ""
+    if raw.startswith("aither://"):
+        claim, _, raw = raw[len("aither://"):].partition("/")
+    elif raw.startswith("tenant:"):
+        claim, _, raw = raw[len("tenant:"):].partition("/")
+    key = raw.lstrip("/")
+    claim = claim.strip()
+    if claim and claim != tenant:
+        return "", (
+            f"{raw_path!r} names tenant {claim!r}; this agent works as {tenant!r}. "
+            "The tenant is bound to the agent's identity and is never a tool argument."
+        )
+    if not key.strip("/"):
+        return "", f"{raw_path!r} has no key; pass e.g. 'codegraph/index.json'."
+    if any(part in ("..", ".") for part in key.split("/")):
+        return "", f"{raw_path!r} is not a normalised Strata key."
+    return key, ""
+
+
+def _strata_tenant_arg_refusal(extra: dict, tenant: str) -> str:
+    """A tenant-shaped keyword the model invented is refused, never quietly applied."""
+    if not isinstance(extra, dict):
+        return ""
+    for name in _STRATA_TENANT_ARG_NAMES:
+        if name in extra:
+            return json.dumps({
+                "error": (f"{name}= is not accepted: this agent's Strata tenant is "
+                          f"{tenant!r}, bound at registration."),
+                "tenant": tenant,
+            })
+    return ""
+
+
+def make_strata_tools(tenant: str, client_getter: Any = None) -> list:
+    """Build the tenant-bound `strata_*` tools (a fresh closure set per agent).
+
+    client_getter: callable returning the Strata client. Defaults to the
+    process-wide `get_strata()`; registration passes the AGENT's own client so an
+    injected backend (tests, a sovereign instance) is the one actually used.
+    """
+    get_client = client_getter or _strata_client
+
+    async def strata_list(prefix: str = "", limit: int = 200, **_ignored) -> str:
+        """List keys in this agent's Strata namespace (the artifact registry).
+
+        prefix: key prefix to filter by, e.g. "codegraph/" (empty = everything)
+        limit: maximum keys to return (default 200, capped at 1000)
+        """
+        refusal = _strata_tenant_arg_refusal(_ignored, tenant)
+        if refusal:
+            return refusal
+        key = ""
+        if (prefix or "").strip():
+            key, refusal = _strata_key(prefix, tenant)
+            if refusal:
+                return json.dumps({"error": refusal, "tenant": tenant})
+        try:
+            count = int(limit or 200)
+        except (TypeError, ValueError):
+            count = 200
+        count = max(1, min(count, STRATA_LIST_MAX))
+        try:
+            keys = await get_client().list(prefix=key, tenant=tenant)
+        except Exception as exc:  # noqa: BLE001 -- report, never raise out of a tool
+            return json.dumps({"error": str(exc), "tenant": tenant})
+        keys = [str(k) for k in (keys or [])]
+        return json.dumps({"tenant": tenant, "prefix": key, "count": len(keys),
+                           "keys": keys[:count], "truncated": len(keys) > count})
+
+    async def strata_read(path: str, offset: int = 0, max_chars: int = 0,
+                          **_ignored) -> str:
+        """Read one Strata object as text (large values are clipped, not dropped).
+
+        path: key, e.g. "artifacts/run-42/summary.md"
+        offset: character to start at (0 = the beginning)
+        max_chars: characters to return (0 = 4000; capped at 200000)
+        """
+        refusal = _strata_tenant_arg_refusal(_ignored, tenant)
+        if refusal:
+            return refusal
+        key, refusal = _strata_key(path, tenant)
+        if refusal:
+            return json.dumps({"error": refusal, "tenant": tenant})
+        try:
+            offset = max(0, int(offset or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            cap = int(max_chars or STRATA_READ_CAP)
+        except (TypeError, ValueError):
+            cap = STRATA_READ_CAP
+        cap = max(1, min(cap, STRATA_READ_CAP_MAX))
+        try:
+            data = await get_client().read(f"tenant:{tenant}/{key}")
+        except Exception as exc:  # noqa: BLE001 -- report, never raise out of a tool
+            return json.dumps({"error": str(exc), "tenant": tenant, "path": key})
+        if data is None:
+            return json.dumps({
+                "error": f"no such key: {key}",
+                "tenant": tenant,
+                "hint": "strata_list shows what this agent has stored.",
+            })
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        try:
+            text = bytes(data).decode("utf-8")
+        except (UnicodeDecodeError, TypeError):
+            size = len(data) if hasattr(data, "__len__") else 0
+            return json.dumps({"error": "binary object; strata_read returns text only",
+                               "tenant": tenant, "path": key, "bytes": size})
+        piece = text[offset:offset + cap]
+        out = {
+            "tenant": tenant,
+            "path": key,
+            "chars": len(text),
+            "offset": offset,
+            "content": piece,
+            "truncated": offset + len(piece) < len(text),
+        }
+        if out["truncated"]:
+            out["next_offset"] = offset + len(piece)
+            out["hint"] = (
+                f"Inline & Spill: {len(piece)} chars inlined. Call strata_read with "
+                f"offset={offset + len(piece)} to continue (max_chars up to "
+                f"{STRATA_READ_CAP_MAX})."
+            )
+        return json.dumps(out)
+
+    async def strata_write(path: str, content: str, **_ignored) -> str:
+        """Store text in this agent's Strata namespace (opt-in; refuses when off).
+
+        path: key, e.g. "artifacts/run-42/summary.md"
+        content: text to store (serialize structured data with json.dumps yourself)
+        """
+        if not strata_writes_enabled():
+            return json.dumps({
+                "error": "strata_write is disabled",
+                "tenant": tenant,
+                "fix": f"set {STRATA_WRITE_ENV}=1 to enable Strata writes",
+            })
+        refusal = _strata_tenant_arg_refusal(_ignored, tenant)
+        if refusal:
+            return refusal
+        key, refusal = _strata_key(path, tenant)
+        if refusal:
+            return json.dumps({"error": refusal, "tenant": tenant})
+        if not isinstance(content, str):
+            content = json.dumps(content, default=str)
+        try:
+            ok = await get_client().write(f"tenant:{tenant}/{key}", content)
+        except Exception as exc:  # noqa: BLE001 -- report, never raise out of a tool
+            return json.dumps({"error": str(exc), "tenant": tenant, "path": key})
+        if not ok:
+            return json.dumps({
+                "error": f"write failed: {key}",
+                "tenant": tenant,
+                "hint": "No Strata backend accepted it; check AITHER_STRATA_URL.",
+            })
+        return json.dumps({"ok": True, "tenant": tenant, "path": key,
+                           "bytes": len(content.encode("utf-8"))})
+
+    return [strata_list, strata_read, strata_write]
+
+
+def _register_strata_tools(agent: Any) -> int:
+    """Register the tenant-bound strata tools on *agent*; write only when opted in."""
+    tenant = strata_tenant_for(agent)
+
+    def get_client():
+        try:
+            return agent.strata
+        except Exception:  # noqa: BLE001 -- fall back to the process-wide client
+            return _strata_client()
+
+    tools = make_strata_tools(tenant, get_client)
+    if not strata_writes_enabled():
+        tools = [fn for fn in tools if fn.__name__ != "strata_write"]
+    count = 0
+    for fn in tools:
+        action_class = "write" if fn.__name__ == "strata_write" else "read"
+        agent._tools.register(fn, action_class=action_class, intent_categories=[])
+        count += 1
+    logger.info("Registered %d Strata tools for tenant %s on agent %s",
+                count, tenant, getattr(agent, "name", "?"))
+    return count
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3892,6 +4165,9 @@ TOOL_CATEGORIES: dict = {
     "browse": [],  # populated lazily by _init_browse_tools()
     "find": [],  # populated lazily by _init_find_tools()
     "instruments": [],  # populated lazily by _init_instruments_tools()
+    # Per-agent tenant-bound closures, registered by _register_strata_tools(agent) —
+    # never a flat list, so the tenant cannot come from anywhere but the agent.
+    "strata": [],
     "skills": _SKILL_TOOLS,
     "a2a": _A2A_TOOLS,
 }
@@ -4141,7 +4417,17 @@ def register_builtin_tools(
         categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web", "decisions"])
 
     if categories is None:
-        categories = list(TOOL_CATEGORIES.keys())
+        # The full-category fallback (auto=False with no env) is NOT an opt-in:
+        # "strata" sits in TOOL_CATEGORIES only so an explicit category name
+        # resolves, so it must be dropped here or every full registration would
+        # bind the artifact registry without the agent ever asking for it.
+        categories = [c for c in TOOL_CATEGORIES if c != "strata"]
+
+    # A process-wide opt-in rather than a per-call-site flag (same shape as
+    # AITHER_BACKGROUND_TOOLS). No identity defaults to strata: an agent that
+    # never asked for the artifact registry does not pay its schema tokens.
+    if strata_tools_enabled() and "strata" not in categories:
+        categories = [*categories, "strata"]
 
     count = 0
     for cat in categories:
@@ -4156,6 +4442,11 @@ def register_builtin_tools(
             from adk.storage_tools import register_storage_tools
 
             count += register_storage_tools(agent)
+            continue
+        if cat == "strata":
+            # Closure-based: the tenant is bound from THIS agent's identity, so no
+            # tool argument can point a call at another tenant's namespace.
+            count += _register_strata_tools(agent)
             continue
         fns = TOOL_CATEGORIES.get(cat)
         if fns is None:

@@ -58,6 +58,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 HOST = os.environ.get("AITHER_HARNESS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("AITHER_HARNESS_PORT", "8362"))
@@ -1210,6 +1211,32 @@ TOOLS: list = [
      "fn": lambda a: _steerable_guard(a["session_id"]) or _req(
          "POST", "/sessions/%s/interrupt" % a["session_id"], {})},
 
+    {"name": "awsh_session_wake",
+     "description": "Bring a DEAD harness session back from its own event log: same id, "
+                    "seq continues, the log tail is handed to it as resume context. "
+                    "Idempotent: a live session answers woken=false and is untouched. "
+                    "(Not awsh_wake_*, which are scheduled shell jobs.)",
+     "schema": {"type": "object", "properties": {
+         "session_id": {"type": "string"},
+         "tail": {"type": "integer",
+                  "description": "trailing log events handed back (default 200)"}},
+         "required": ["session_id"]},
+     "fn": lambda a: _req("POST", "/sessions/%s/wake" % quote(
+         str(a["session_id"]), safe=""), {"tail": int(a.get("tail") or 200)})},
+
+    {"name": "awsh_session_events",
+     "description": "One positional page of a harness session's log, live or dormant: "
+                    "events with seq > after, oldest first; pass next_after back to "
+                    "page on while more is true.",
+     "schema": {"type": "object", "properties": {
+         "session_id": {"type": "string"},
+         "after": {"type": "integer", "description": "last seq you hold (default 0)"},
+         "limit": {"type": "integer", "description": "page size, max 1000 (default 200)"}},
+         "required": ["session_id"]},
+     "fn": lambda a: _req("GET", "/sessions/%s/events?after=%d&limit=%d" % (
+         quote(str(a["session_id"]), safe=""),
+         max(0, int(a.get("after") or 0)), max(1, min(int(a.get("limit") or 200), 1000))))},
+
     {"name": "awsh_decisions",
      "description": "Open decision cards waiting on a human.",
      "schema": {"type": "object", "properties": {}},
@@ -1393,7 +1420,8 @@ def _nb_id(a: dict, key: str = "notebook_id") -> "str | dict":
     """The id argument, or a refusal: ids go into a URL path, so no `/`, no `..`."""
     value = str(a.get(key) or "").strip()
     if not _NB_ID_RE.match(value) or ".." in value:
-        return {"error": "%s must look like nb_1a2b3c4d (letters, digits, _ . -)" % key}
+        like = "nbrun_1a2b3c4d" if key == "run_id" else "nb_1a2b3c4d"
+        return {"error": "%s must look like %s (letters, digits, _ . -)" % (key, like)}
     return value
 
 
@@ -1404,13 +1432,10 @@ def _nb_index() -> "tuple[list, dict]":
     except Exception as exc:  # noqa: BLE001
         return [], {"readable": False, "error": "%s: %s" % (type(exc).__name__, exc)}
     path = _briefs._briefs_dir() / "index.json"
-    if not path.is_file():
-        return [], {"readable": False, "path": str(path),
-                    "error": "no index on this host yet"}
-    if not _briefs._load_index():
-        return [], {"readable": False, "path": str(path),
-                    "error": "index is empty or not valid JSON"}
-    rows = _briefs.notebooks_from_index()
+    index, why = _briefs.read_index()
+    if why:
+        return [], {"readable": False, "path": str(path), "error": why}
+    rows = _briefs.notebooks_from_index(index)
     for row in rows:
         row["view"] = _briefs.VIEW_URL % row["notebook"]
     return rows, {"readable": True, "path": str(path)}
@@ -1436,20 +1461,28 @@ def _notebooks_list(a: dict) -> dict:
     else:
         listed = remote.get("notebooks") or remote.get("notebooks_sample") or []
         by_id = {r["notebook"]: r for r in out["notebooks"]}
+        # notebook_list already drops archived rows and says how many.
+        hidden = {"archived": int(remote.get("archived_hidden") or 0), "before_since": 0}
         for nb in listed:
             if not isinstance(nb, dict) or not nb.get("id"):
                 continue
             row = by_id.get(nb["id"])
             if row is not None:
                 row.update(source="both", name=nb.get("name"), status=nb.get("status"))
+            # The store's delete is a soft delete: an archived notebook is a deleted one.
+            elif str(nb.get("status") or "") == "archived":
+                hidden["archived"] += 1
+            elif since and str(nb.get("created_at") or "") < since:
+                hidden["before_since"] += 1
             elif len(out["notebooks"]) < limit:
                 out["notebooks"].append({"notebook": nb["id"], "name": nb.get("name"),
                                          "status": nb.get("status"),
                                          "created": str(nb.get("created_at") or ""),
                                          "source": "platform"})
-        platform.update(reachable=True, listed=len(listed), via=remote.get("via", "genesis"))
+        platform.update(reachable=True, listed=len(listed), via=remote.get("via", "genesis"),
+                        hidden=hidden)
         # The portal's list reports a Genesis failure behind it as an EMPTY list,
-        # so "reachable" is only claimed once Genesis has answered for a notebook.
+        # so "reachable" is only claimed once Genesis itself has answered.
         newest = rows[0]["notebook"] if rows else ""
         if newest:
             probe = _nb_call("notebook_get", notebook_id=newest)
@@ -1460,6 +1493,14 @@ def _notebooks_list(a: dict) -> dict:
                 platform.update(reachable=False, error=err)
             else:
                 platform.update(verified_by=newest, newest_on_platform=True)
+        elif platform["via"] == "portal":
+            # No host row to verify by (a fresh host, or `since` filtered them all).
+            probe = _nb_call("notebook_probe")
+            if isinstance(probe, dict) and probe.get("reachable") is True:
+                platform.update(verified_by="notebooks/sessions")
+            else:
+                err = probe.get("error") if isinstance(probe, dict) else None
+                platform.update(reachable=False, error=str(err or "no answer from Genesis"))
     out["platform"] = platform
     return out
 
@@ -1475,57 +1516,21 @@ def _notebooks_get(a: dict) -> dict:
     return out
 
 
-#: Recorded tools a replay can only READ through. Genesis hands every tool_call
-#: cell to an AGENT with the recorded tool and input (NotebookEngine
-#: CELL_DISPATCH_MAP: tool_call -> agent_call), so a recorded Bash, Write or Edit
-#: can be performed AGAIN. Anything outside this set, and any script/service/skill
-#: cell, needs allow_side_effects=true.
-_NB_READ_ONLY_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch",
-                                 "ToolSearch", "ListAgents", "TodoRead", "NotebookRead"})
-_NB_NO_ACTION_CELLS = frozenset({"context", "plan", "note", "result", "markdown",
-                                 "prompt", "agent_delegate", "checkpoint"})
-
-
-def _nb_census(outline: dict) -> "tuple[dict, dict]":
-    """(every cell by type[:tool], the cells a replay could act through)."""
-    census: dict = {}
-    acting: dict = {}
-    for cell in outline.get("cells") or []:
-        ctype = cell.get("type") or "?"
-        key = "%s:%s" % (ctype, cell["tool"]) if cell.get("tool") else ctype
-        census[key] = census.get(key, 0) + 1
-        reads_only = ctype == "tool_call" and cell.get("tool") in _NB_READ_ONLY_TOOLS
-        if not reads_only and ctype not in _NB_NO_ACTION_CELLS:
-            acting[key] = acting.get(key, 0) + 1
-    if outline.get("cells_not_shown"):
-        acting["not inspected"] = outline["cells_not_shown"]   # fail closed
-    return census, acting
-
-
 def _notebooks_replay(a: dict) -> dict:
     nid = _nb_id(a)
     if isinstance(nid, dict):
         return nid
-    outline = _nb_call("notebook_outline", notebook_id=nid)
-    if not isinstance(outline, dict) or outline.get("error"):
-        return outline
-    census, acting = _nb_census(outline)
-    if a.get("dry_run"):
-        return {"dry_run": True, "notebook_id": nid, "would_run": census,
-                "cell_count": outline.get("cell_count"), "side_effect_cells": acting}
-    if acting and not a.get("allow_side_effects"):
-        return {"refused": True, "notebook_id": nid, "side_effect_cells": acting,
-                "error": "this notebook re-runs recorded tool calls that can change "
-                         "things (%s); read it with notebooks_get, then pass "
-                         "allow_side_effects=true to run them anyway"
-                         % ", ".join(sorted(acting))}
     variables = a.get("variables") or {}
     if not isinstance(variables, dict):
         return {"error": "variables must be an object"}
     mode = str(a.get("mode") or "sequential")
     if mode not in ("sequential", "parallel"):
         return {"error": "mode must be sequential or parallel"}
-    return _nb_call("notebook_execute", notebook_id=nid, variables=variables, mode=mode)
+    # The guard is notebook_execute's own (adk.notebook_tools.replay_census): the
+    # same one `adk notebook run` and the agents' notebook tools go through.
+    return _nb_call("notebook_execute", notebook_id=nid, variables=variables, mode=mode,
+                    allow_side_effects=a.get("allow_side_effects") is True,
+                    dry_run=a.get("dry_run") is True)
 
 
 def _notebooks_status(a: dict) -> dict:
@@ -1577,13 +1582,14 @@ TOOLS += [
 
     {"name": "notebooks_replay",
      "description": ("Run a notebook again on Genesis and return its run handle "
-                     "(run_id + status). Every cell re-executes: prompt cells call a "
-                     "model, and each recorded tool_call cell is handed to an agent with "
-                     "its recorded tool and input. REFUSES when a cell could change "
-                     "things (recorded Bash/Write/Edit, scripts, service calls) unless "
-                     "allow_side_effects=true. dry_run=true returns the cell census "
-                     "without running anything -- use it first. Blocks until the run "
-                     "ends; then read notebooks_status with the run_id."),
+                     "(run_id + status). Every executable cell runs: tool_call, prompt "
+                     "and agent_delegate cells are each handed to an agent with full "
+                     "tools (a recorded session's tool calls carry no prompt, so that "
+                     "agent gets an EMPTY task), scripts and service calls run. REFUSES "
+                     "while any cell can act unless allow_side_effects=true. "
+                     "dry_run=true returns the cell census (acting, empty_task) and runs "
+                     "nothing -- use it first. Blocks until the run ends; then read "
+                     "notebooks_status with the run_id."),
      "schema": {"type": "object", "properties": {
          "notebook_id": _NB_ID_SCHEMA,
          "variables": {"type": "object", "description": "variable overrides for this run"},

@@ -304,8 +304,27 @@ try:
             for k, v in fills.items():
                 text = text.replace("{" + k + "}", v)
             return text
-        if not out["could_not_run"]:
-            main = SPEC["verify"]
+        main = SPEC["verify"]
+        if not out["could_not_run"] and main.get("method") == "IMAP_LOGIN":
+            # A local mail bridge's password is no bearer: the only honest check
+            # is a LOGIN with it. STARTTLS to a self-signed loopback bridge, so
+            # the cert is not verified -- the password is the thing under test.
+            import imaplib
+            try:
+                box = imaplib.IMAP4(main["host"], int(main.get("port", 143)), timeout=20)
+                if main.get("starttls", True):
+                    box.starttls(ssl_context=ssl._create_unverified_context())
+                box.login(fill(main["user"]), token)
+                box.logout()
+                out["status"] = "LOGIN OK"
+            except imaplib.IMAP4.error as exc:
+                out["status"] = "LOGIN REFUSED"
+                out["failures"].append("verify: the server refused the login ("
+                                       + str(exc)[:80] + ")")
+            except OSError as exc:
+                out["could_not_run"] = "cannot reach " + main["host"] + ": " + str(exc)[:80]
+            del token
+        elif not out["could_not_run"]:
             status, body = call(main.get("method", "GET"), fill(main["url"]),
                                 main.get("body"), token)
             out["status"] = status
@@ -333,7 +352,8 @@ def _placeholders(verify: dict[str, Any]) -> list[str]:
     import re
 
     found: list[str] = []
-    texts = [str(verify.get("url") or ""), str(verify.get("body") or "")]
+    texts = [str(verify.get("url") or ""), str(verify.get("body") or ""),
+             str(verify.get("user") or "")]
     for probe in verify.get("scope_probes") or []:
         texts += [str(probe.get("url") or ""), str(probe.get("body") or "")]
     for text in texts:
@@ -358,7 +378,7 @@ def _host_prompt_module():
     return module
 
 
-def run_verify(recipe: dict[str, Any], *, runner=None) -> dict[str, Any]:
+def run_verify(recipe: dict[str, Any], *, runner=None, user: str = "") -> dict[str, Any]:
     """Execute the recipe's probe in the fleet. Returns the verdict dict.
 
     ``runner(script, timeout) -> (rc, stdout)`` is injectable for the self-test;
@@ -369,7 +389,7 @@ def run_verify(recipe: dict[str, Any], *, runner=None) -> dict[str, Any]:
     method = str(verify.get("method") or "none").strip().lower()
     if method == "none":
         return {"ok": True, "no_probe": True, "record": {}, "probes": [], "failures": []}
-    if str(verify.get("auth") or "bearer").strip().lower() != "bearer":
+    if method != "imap_login" and str(verify.get("auth") or "bearer").strip().lower() != "bearer":
         raise RecipeError(f"verify.auth {verify.get('auth')!r} is not supported (bearer only)")
     if runner is None:
         host = _host_prompt_module()
@@ -379,9 +399,15 @@ def run_verify(recipe: dict[str, Any], *, runner=None) -> dict[str, Any]:
             return host._sh_in_container(script, timeout)  # noqa: SLF001 - the one door
     else:
         vault_url = "https://aitheros-secrets:8111"
+    vault_name = str(recipe.get("vault_name") or "")
+    if "{user}" in vault_name or "{user}" in str(verify.get("user") or ""):
+        if not user:
+            raise RecipeError("recipe names {user} but no user resolved (user_from)")
+        vault_name = vault_name.replace("{user}", user)
+        verify = {**verify, "user": str(verify.get("user") or "").replace("{user}", user)}
     spec = {
         "vault_url": vault_url,
-        "vault_name": recipe.get("vault_name"),
+        "vault_name": vault_name,
         "placeholders": _placeholders(verify),
         "verify": {**verify, "method": method.upper()},
     }
@@ -412,8 +438,9 @@ def verdict_facts(recipe_id: str, verdict: dict[str, Any]) -> list[str]:
     if verdict.get("no_probe"):
         return [f"verify {recipe_id} {stamp}: no probe for this recipe"]
     head = f"verify {recipe_id} {stamp}: " + ("PASS" if verdict.get("ok") else "FAIL")
-    if verdict.get("status") is not None:
-        head += f" (HTTP {verdict['status']})"
+    status = verdict.get("status")
+    if status is not None:
+        head += f" ({status})" if isinstance(status, str) else f" (HTTP {status})"
     facts.append(head)
     for path, value in (verdict.get("record") or {}).items():
         facts.append(f"  {path} = {value}")
@@ -439,7 +466,10 @@ def verify_card(card_id: str, store: DecisionStore, *, runner=None,
         raise DecisionError(f"card {card_id} carries no recipe — raise it with "
                             "`awask ask --credential --recipe <id>` to make it verifiable")
     recipe = get_recipe(recipe_id, recipes_file)
-    verdict = run_verify(recipe, runner=runner)
+    from .secure_prompt import _recipe_user
+
+    user = _recipe_user(recipe, recipes_file or recipes_path())
+    verdict = run_verify(recipe, runner=runner, user=user)
     facts = verdict_facts(recipe_id, verdict)
     store.add_facts(card_id, facts)
     if verdict.get("no_probe"):
@@ -549,6 +579,32 @@ def _self_test() -> int:
         code, facts = verify_card(silent.id, store, runner=lambda s, t: (0, ""),
                                   recipes_file=yaml_path)
         check("method: none exits 0 and says so", code == 0 and "no probe" in facts[0])
+
+        # imap_login: the {user} placeholder resolves into the vault name and the LOGIN
+        # user, the script carries the IMAP branch, and a refused login is exit 1.
+        seen: dict = {}
+
+        def imap_runner(verdict: dict):
+            def run(script: str, timeout: int):
+                seen["script"] = script
+                return 0, "AWASK-VERIFY " + json.dumps(verdict) + "\n"
+            return run
+
+        imap = {"vault_name": "pw_{user}", "verify": {"method": "imap_login", "host": "h",
+                                                      "port": 1143, "user": "{user}"}}
+        refused = {"ok": False, "could_not_run": "", "status": "LOGIN REFUSED", "record": {},
+                   "probes": [], "failures": ["verify: the server refused the login (x)"]}
+        verdict = run_verify(imap, runner=imap_runner(refused), user="a@b.c")
+        check("imap_login fills {user} into vault name and LOGIN user",
+              "pw_a@b.c" in seen.get("script", "") and '\\"user\\": \\"a@b.c\\"'
+              in seen.get("script", ""), seen.get("script", "")[-300:])
+        check("imap_login carries the IMAP branch", "IMAP_LOGIN" in seen.get("script", ""))
+        check("a refused imap login is a failure", not verdict.get("ok"))
+        try:
+            run_verify(imap, runner=imap_runner(refused))
+            check("imap_login without a resolved user is refused", False, "ran")
+        except RecipeError:
+            check("imap_login without a resolved user is refused", True)
 
         plain = store.create(DecisionCard.from_dict({
             "id": "", "title": "t", "kind": "credential", "secret_name": "X",

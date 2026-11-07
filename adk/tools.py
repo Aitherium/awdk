@@ -6,6 +6,8 @@ import inspect
 import json
 import logging
 import os
+import re
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -32,6 +34,35 @@ _WRITE_VERBS = frozenset({
     "release", "cancel", "approve", "publish", "upload", "mint", "rotate",
 })
 _READ_ACTION_CLASSES = frozenset({"read", "query", "search", "observe"})
+
+#: A tool whose backend REFUSES the connection is dead for this process for a while.
+#: Measured 2026-10-29 on the daemon host: workspace_health was called ten times in one
+#: "what time is it" turn (a new `days` each time, so the per-turn loop guard never
+#: tripped), every call "[WinError 10061] ... actively refused it". After
+#: _REFUSED_TRIP refusals in a row the tool leaves the menu for _REFUSED_COOLDOWN_S and
+#: a call that still arrives answers at once instead of waiting on the connect.
+_REFUSED_RE = re.compile(
+    r"WinError 10061|actively refused|Connection refused|ConnectError|Errno 111", re.I)
+_REFUSED_TRIP = 2
+_REFUSED_COOLDOWN_S = 600.0
+_refused: dict[str, list[float]] = {}  # name -> [consecutive refusals, open_until]
+
+
+def _backend_down(name: str) -> bool:
+    st = _refused.get(name)
+    return bool(st) and st[1] > time.monotonic()
+
+
+def _note_result(name: str, text: str) -> None:
+    if text.lstrip().startswith('{"error"') and _REFUSED_RE.search(text[:600]):
+        st = _refused.setdefault(name, [0, 0.0])
+        st[0] += 1
+        if st[0] >= _REFUSED_TRIP:
+            st[1] = time.monotonic() + _REFUSED_COOLDOWN_S
+            logger.warning("tool %s: backend refused %d calls in a row -- off the menu "
+                           "for %ds", name, int(st[0]), int(_REFUSED_COOLDOWN_S))
+    else:
+        _refused.pop(name, None)
 
 
 @dataclass
@@ -147,6 +178,8 @@ class ToolRegistry:
         """
         result = []
         for td in (tools if tools is not None else self._tools.values()):
+            if _backend_down(td.name):
+                continue
             result.append({
                 "type": "function",
                 "function": {
@@ -173,6 +206,10 @@ class ToolRegistry:
         td = self._tools.get(name)
         if not td:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        if _backend_down(name):
+            return json.dumps({
+                "error": f"{name} is unavailable: its backend refused the last calls. "
+                         "Do not retry it; answer from what you already have."})
 
         # Authorization check: if auth is provided, enforce it
         if auth is not None:
@@ -206,10 +243,13 @@ class ToolRegistry:
                 result = td.fn(**arguments)
 
             text = result if isinstance(result, str) else json.dumps(result, default=str)
+            _note_result(name, text)
             return _compact_result(name, arguments, text)
         except Exception as e:
             logger.error(f"Tool {name} failed: {e}")
-            return json.dumps({"error": str(e)})
+            text = json.dumps({"error": str(e)})
+            _note_result(name, text)
+            return text
 
 
 #: Compaction at the ONE point every tool result passes on its way into the

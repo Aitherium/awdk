@@ -4,6 +4,22 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.96] - 2026-11-06
+
+### Fixed
+- 3.8.95 could never be published: three docstrings and a test fixture named private
+  directories, so the public-payload scan rejected the tree. Those references are rewritten
+  and the payload is clean. Contents are otherwise 3.8.95 — see the A2A v0.3 notes below.
+
+## [3.8.95] - 2026-11-06
+
+### Fixed
+- A2A `message/send` now reads a part's kind from `kind` (A2A v0.3) as well as the older `type`.
+  A spec client sending `{"kind": "text", ...}` used to get `-32602 "No text content in message"`.
+- The `message/send` result is now a v0.3 Task (`kind: "task"` at the top level). The previous
+  `task` and `message` keys are still present, so existing callers keep working.
+- Parts, messages and tasks carry `kind`; parts also keep `type`.
+
 ## [3.8.94] - 2026-10-28
 
 ### Added

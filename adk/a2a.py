@@ -57,13 +57,32 @@ class TaskState(str, Enum):
     CANCELED = "canceled"
 
 
+
+def _part_kind(part: dict) -> str:
+    """A part's kind: A2A v0.3 spells it ``kind``; earlier drafts and this code used ``type``."""
+    return str(part.get("kind") or part.get("type") or "")
+
+
+def _send_result(task: "Task", message: "A2AMessage | None" = None) -> dict:
+    """The ``message/send`` result: a v0.3 Task (``kind: "task"`` at the top level).
+
+    The legacy ``task`` / ``message`` keys are kept beside it so callers written against the
+    wrapped shape (dispatch.py, builtin_tools._a2a_reply) keep working while spec clients read
+    the Task directly.
+    """
+    result = task.to_dict()
+    result["task"] = task.to_dict()
+    if message is not None:
+        result["message"] = message.to_dict()
+    return result
+
 @dataclass
 class TextPart:
     text: str
     type: str = "text"
 
     def to_dict(self) -> dict:
-        return {"type": self.type, "text": self.text}
+        return {"kind": self.type, "type": self.type, "text": self.text}
 
 
 @dataclass
@@ -72,7 +91,7 @@ class DataPart:
     type: str = "data"
 
     def to_dict(self) -> dict:
-        return {"type": self.type, "data": self.data}
+        return {"kind": self.type, "type": self.type, "data": self.data}
 
 
 @dataclass
@@ -83,7 +102,7 @@ class A2AMessage:
     taskId: str = ""
 
     def to_dict(self) -> dict:
-        d: dict = {"role": self.role, "parts": self.parts}
+        d: dict = {"kind": "message", "role": self.role, "parts": self.parts}
         if self.messageId:
             d["messageId"] = self.messageId
         if self.taskId:
@@ -131,6 +150,7 @@ class Task:
 
     def to_dict(self) -> dict:
         return {
+            "kind": "task",
             "id": self.id,
             "contextId": self.contextId,
             "status": self.status.to_dict(),
@@ -430,7 +450,7 @@ class A2AServer:
         for part in message.get("parts", []):
             if isinstance(part, str):
                 text += part
-            elif isinstance(part, dict) and part.get("type") == "text":
+            elif isinstance(part, dict) and _part_kind(part) == "text":
                 text += part.get("text", "")
 
         if not text:
@@ -447,7 +467,7 @@ class A2AServer:
         # Record user message
         user_msg = A2AMessage(
             role="user",
-            parts=message.get("parts", [{"type": "text", "text": text}]),
+            parts=message.get("parts", [{"kind": "text", "type": "text", "text": text}]),
             messageId=str(uuid.uuid4()),
             taskId=task.id,
         )
@@ -464,7 +484,7 @@ class A2AServer:
             for hist_msg in task.history[:-1]:  # Exclude the message we just added
                 role = hist_msg.get("role", "user")
                 parts = hist_msg.get("parts", [])
-                content = " ".join(p.get("text", "") for p in parts if p.get("type") == "text")
+                content = " ".join(p.get("text", "") for p in parts if _part_kind(p) == "text")
                 if content:
                     history.append({
                         "role": "user" if role == "user" else "assistant",
@@ -476,7 +496,7 @@ class A2AServer:
             # Record agent response
             agent_msg = A2AMessage(
                 role="agent",
-                parts=[{"type": "text", "text": resp.content}],
+                parts=[{"kind": "text", "type": "text", "text": resp.content}],
                 messageId=str(uuid.uuid4()),
                 taskId=task.id,
             )
@@ -487,22 +507,19 @@ class A2AServer:
                 for art_data in resp.artifacts:
                     art = Artifact(
                         artifactId=art_data.get("id", str(uuid.uuid4())),
-                        parts=[{"type": "data", "data": art_data}],
+                        parts=[{"kind": "data", "type": "data", "data": art_data}],
                         name=art_data.get("type", "artifact"),
                     )
                     self._tasks.add_artifact(task.id, art)
 
             self._tasks.update_status(task.id, TaskState.COMPLETED)
 
-            return _jsonrpc_success(req_id, {
-                "task": task.to_dict(),
-                "message": agent_msg.to_dict(),
-            })
+            return _jsonrpc_success(req_id, _send_result(task, agent_msg))
 
         except Exception as exc:
             logger.error("A2A message/send failed: %s", exc)
             self._tasks.update_status(task.id, TaskState.FAILED, message=str(exc))
-            return _jsonrpc_success(req_id, {"task": task.to_dict()})
+            return _jsonrpc_success(req_id, _send_result(task))
 
     def _handle_tasks_get(self, req_id, params: dict) -> dict:
         task_id = params.get("id", params.get("taskId", ""))

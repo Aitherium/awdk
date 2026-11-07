@@ -105,7 +105,10 @@ def cmd_recommend(args: Any, cat: Dict[str, Any]) -> int:
     pick = catalogue.recommend(cat, hw.budget_mb, cpu_only=hw.kind == "ram")
     skipped = catalogue.refused_rungs(cat, hw.budget_mb)
     if getattr(args, "json", False):
+        ranked = catalogue.candidates(cat, hw.budget_mb, cpu_only=hw.kind == "ram")
         _say(json.dumps({"hardware": hw.to_dict(), "recommended": pick,
+                         "choices": [{"id": mid, "score": catalogue.bench_score(
+                             cat["models"][mid])} for mid in ranked],
                          "fits_but_refused": skipped}, indent=2))
         return 0 if pick else 1
     _say(f"This machine: {hw.describe()}")
@@ -115,6 +118,17 @@ def cmd_recommend(args: Any, cat: Dict[str, Any]) -> int:
              f"{_gb(catalogue.floor_mb(cat, m))}) - {m.get('purpose') or ''}".rstrip(" -"))
         _say(f"  licence: {catalogue.licence_verdict(m).reason}")
         _say(f"  next: adk models pull {pick} && adk models use {pick}")
+        ranked = catalogue.candidates(cat, hw.budget_mb, cpu_only=hw.kind == "ram")
+        if len(ranked) > 1:
+            _say("")
+            _say("Your choices on this hardware (best first; any of them works):")
+            for mid in ranked:
+                mm = cat["models"][mid]
+                score = catalogue.bench_score(mm)
+                tag = f"score {score:.2f}" if score is not None else "not benchmarked"
+                star = "  <- recommended" if mid == pick else ""
+                _say(f"  {mid:<14} {_gb(int(mm['size_mb'])):>7}  {tag}{star}")
+            _say("  pick one: adk models pull <id> && adk models use <id>")
         return 0
     if skipped:
         _say("No model this machine can run may be distributed yet. These fit, but the "

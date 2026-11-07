@@ -185,3 +185,27 @@ def test_call_desktop_reports_which_surfaces_are_open_and_an_old_desk_is_cannot_
     c, _ = _client([ConnectionError("refused")])
     rc, doc = c.call_desktop()
     assert rc == 2 and "Aither app is not running" in doc["error"]
+
+
+def test_commands_list_and_run_by_id():
+    c, calls = _client([(200, '{"ok":true,"commands":[{"id":"snip.screen","label":"Snip"}]}'),
+                        (200, '{"ok":true,"id":"snip.screen","label":"Snip"}'),
+                        (404, '{"ok":false}'),
+                        ConnectionError("down")])
+    code, rows = c.list_commands()
+    assert code == 0 and rows[0]["id"] == "snip.screen"
+    assert calls[0][:2] == ("GET", "http://127.0.0.1:1/commands")
+    code, doc = c.run_command("snip.screen")
+    assert code == 0 and doc["ok"] is True
+    assert calls[1][0] == "POST" and json.loads(calls[1][2]) == {"id": "snip.screen"}
+    code, doc = c.run_command("nope")
+    assert code == 1 and "adk desk commands" in doc["error"]
+    code, doc = c.run_command("snip.screen", "x")
+    assert code == 2 and doc["cannotJudge"] is True
+    with pytest.raises(ValueError):
+        db.build_run_request("  ")
+
+
+def test_commands_list_bridge_down_is_cannot_judge():
+    c, _ = _client([ConnectionError("down")])
+    assert c.list_commands() == (2, [])

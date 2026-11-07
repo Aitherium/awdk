@@ -106,6 +106,7 @@ from adk.harnesses.owner_steer import (
     sanitize_owner_text,
     verify_tab_identity,
 )
+from adk.harnesses.thread_subs import ThreadSubError, thread_key_from_event
 
 #: A hop count at or above this is already a completed round trip ("owner asks" = 0,
 #: "agent answers" = 1); dispatching at this count or higher would land a third leg,
@@ -270,6 +271,7 @@ class SteerDispatcher:
         verify_tab: Optional[
             Callable[[int, str], Tuple[bool, str, Optional[int]]]] = None,
         owner_verifier: Optional[OwnerAssertionVerifier] = None,
+        thread_subscriptions: Any = None,
     ) -> None:
         self._list_unified_sessions = list_unified_sessions or (lambda: [])
         self._send_managed_input = send_managed_input
@@ -290,6 +292,9 @@ class SteerDispatcher:
         self._verify_tab = verify_tab or verify_tab_identity
         # The pinned owner-assertion public key. None = no event is ever the owner's.
         self._owner_verifier = owner_verifier
+        # Subscription pass-through (thread_subs.py). None = off: an unaddressed event
+        # stays "not this dispatcher's business", exactly the pre-2026-11-01 behaviour.
+        self._thread_subs = thread_subscriptions
 
         self._lock = threading.Lock()
         self._delivered_ids: "OrderedDict[str, float]" = OrderedDict()
@@ -317,9 +322,12 @@ class SteerDispatcher:
     # ── internals ───────────────────────────────────────────────────────────
 
     def _handle(self, room: Any, event: Dict[str, Any]) -> None:
+        if self._thread_subs is not None and self._handle_thread_control(event):
+            return
         to = event.get("to")
         if not to:
-            return  # unaddressed — not this dispatcher's business
+            self._pass_through(room, event)
+            return
 
         event_id = str(event.get("id") or "")
         if event_id and self._already_processed(event_id):
@@ -347,6 +355,99 @@ class SteerDispatcher:
                 continue
             self._dispatch_one(room, room_id, event, sender_id, target_id, hops)
 
+        if event_id:
+            self._mark_processed(event_id)
+
+    # ── subscription pass-through (the router's fast path) ────────────────
+
+    def _handle_thread_control(self, event: Dict[str, Any]) -> bool:
+        """``thread.subscribe`` / ``thread.unsubscribe``: True when it was one.
+
+        A session may only (un)subscribe ITSELF -- the subscriber is the event's actor id,
+        never a payload field, so no producer can point a thread at somebody else's
+        mailbox. Exception: an owner-plan authenticated principal (the router) may name
+        ``payload.subscriber``, because that is how the slow path hands a thread to the
+        worker it just spawned.
+        """
+        etype = str(event.get("type") or "")
+        if etype not in ("thread.subscribe", "thread.unsubscribe"):
+            return False
+        key = thread_key_from_event(event)
+        actor_id = str((event.get("actor") or {}).get("id") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        subscriber = actor_id
+        named = str(payload.get("subscriber") or "").strip()
+        if named and named != actor_id:
+            if _auth_plan(event) != TIER1_REQUIRED_PLAN:
+                self._record_refusal(event, target=named,
+                                     reason="only the owner-plan router may subscribe "
+                                            "another session")
+                return True
+            subscriber = named
+        if key is None or not subscriber:
+            self._record_refusal(event, target=subscriber or None,
+                                 reason="thread control needs payload.thread "
+                                        "{surface, id} and an actor")
+            return True
+        try:
+            if etype == "thread.subscribe":
+                self._thread_subs.subscribe(key[0], key[1], subscriber,
+                                            title=str(payload.get("title") or ""))
+            else:
+                self._thread_subs.unsubscribe(key[0], key[1], subscriber)
+        except ThreadSubError as exc:
+            self._record_refusal(event, target=subscriber, reason=str(exc))
+            return True
+        except Exception as exc:  # a broken store must not crash the listener
+            self._note_error(f"thread {etype} failed: {type(exc).__name__}: {exc}")
+            return True
+        with self._lock:
+            self._append_recent(event, target=subscriber, channel="thread",
+                                detail=f"{etype} {key[0]}:{key[1]}")
+        self._write_status()
+        return True
+
+    def _pass_through(self, room: Any, event: Dict[str, Any]) -> None:
+        """Deliver an unaddressed event on a subscribed thread to every subscriber.
+
+        Always the PEER mailbox tier: a subscription is a routing hint, and the text is
+        typically a stranger's comment, so it never reaches a keyboard (no tier 1, no
+        owner-steer). The mailbox drains at the target's next turn boundary, which is
+        also what batches a burst of follow-ups into one turn. The sender never gets its
+        own event back (a worker replying in its own thread is not a loop).
+        """
+        if self._thread_subs is None:
+            return
+        key = thread_key_from_event(event)
+        if key is None:
+            return
+        try:
+            subscribers = self._thread_subs.subscribers(key[0], key[1])
+        except Exception as exc:
+            self._note_error(f"thread lookup failed: {type(exc).__name__}: {exc}")
+            return
+        if not subscribers:
+            return  # no owner yet -- the router's slow path decides
+        event_id = str(event.get("id") or "")
+        if event_id and self._already_processed(event_id):
+            return
+        if self._safe_hops(event.get("hops")) >= DELIVERABLE_HOPS_CEILING:
+            self._record_refusal(event, target=None, reason="hop limit")
+            return
+        sender_id = str((event.get("actor") or {}).get("id") or "")
+        for target_id in subscribers:
+            if target_id == sender_id:
+                continue
+            resolved = self._resolve(room, target_id)
+            kind, label = resolved if resolved is not None else ("claude_code", target_id)
+            self._dispatch_to_mailbox(
+                room, event, sender_id, target_id, kind, label,
+                detail=f"pass-through {key[0]}:{key[1]}, queued for its next turn boundary",
+            )
+            try:
+                self._thread_subs.touch(key[0], key[1], target_id)
+            except Exception as exc:
+                self._note_error(f"thread touch failed: {type(exc).__name__}: {exc}")
         if event_id:
             self._mark_processed(event_id)
 

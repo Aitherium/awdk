@@ -405,7 +405,14 @@ class LocalVoiceBackend(VoiceBackend):
             voice_model = PiperVoice.load(self._piper_model)
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wav:
-                voice_model.synthesize(text, wav)
+                # piper-tts >= 1.3 renamed the wave-writing call to synthesize_wav;
+                # its synthesize() now yields audio chunks and never sets the wave
+                # header ("# channels not specified"). Older releases only have
+                # synthesize(text, wav_file).
+                if hasattr(voice_model, "synthesize_wav"):
+                    voice_model.synthesize_wav(text, wav)
+                else:
+                    voice_model.synthesize(text, wav)
             return buf.getvalue()
 
         try:

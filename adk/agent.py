@@ -217,7 +217,8 @@ def _reasoner_down() -> str:
 #: approval, a plain "I could not"). Such a turn must not be learned as a skill.
 _GAVE_UP_ANSWER = re.compile(
     r"(?i)^(?:I stopped:|I reached my step limit|Waiting for your approval|"
-    r"I (?:could ?n[o']t|was unable|am unable|can ?n[o']t) )")
+    r"I (?:could ?n[o']t|couldn't|was unable|am unable|can ?n[o']t|can't|"
+    r"don't have (?:access|the ability)) )")
 
 
 #: A question about how something IS right now. Measured 2026-10-14: "how is the platform
@@ -965,6 +966,7 @@ class AitherAgent:
         user_mcp: bool = True,
         memory_maintenance: bool = False,
         routines: bool = False,
+        background_tools: bool = False,
         loop_policy: "LoopPolicy | None" = None,
         crystal: "Crystal | None" = None,
         tool_grants: "dict | None" = None,
@@ -1244,6 +1246,27 @@ class AitherAgent:
                 register_builtin_tools(self)
             except Exception:
                 pass
+
+        # Full-duplex background tools (opt-in, off by default): bg_start wraps any
+        # registered tool so a slow call outlives the step that launched it, and its
+        # result reaches the next model step (adk.background_tasks). None = off.
+        # AITHER_BACKGROUND_TOOLS=1 turns it on for every agent a process builds (the
+        # harness daemon sets it), so no call site has to thread the flag through.
+        self.background_tools = bool(background_tools) or os.environ.get(
+            "AITHER_BACKGROUND_TOOLS", "").strip().lower() in ("1", "true", "yes", "on")
+        self._background = None
+        if self.background_tools:
+            try:
+                from adk.background_tasks import (
+                    BackgroundTasks,
+                    register_background_tools,
+                )
+
+                self._background = BackgroundTasks()
+                register_background_tools(self, self._background)
+            except Exception as exc:  # noqa: BLE001 -- the turn runs without them
+                logger.warning("background tools unavailable: %s", exc)
+                self._background = None
 
         # App proxy tools — register HTTP proxy tools from ADK_APP_PROXY_URL
         try:
@@ -1829,7 +1852,11 @@ class AitherAgent:
                     s.touch()
                     self._skills.save(s)        # reused → reinforce
             self._recalled_skills = []
-            if len(tools) >= 2:                 # a real multi-step procedure
+            # A clock question is answered from the clock; tools on that turn were a
+            # detour, and saved as its "skill" they were replayed on the next ask
+            # (2026-10-29: "what time is it" learned arc_register + arc_solo).
+            from adk.situation import asks_clock
+            if len(tools) >= 2 and not asks_clock(message):  # a real multi-step procedure
                 skill = self._skill_extractor.extract_from_session(
                     messages=[
                         {"role": "user", "content": message},
@@ -2069,6 +2096,15 @@ class AitherAgent:
         # LLM call; threaded into tool execution below. None → unchanged behavior.
         _auth = kwargs.pop("auth", None)
 
+        # Background tools read the caller's principal/session from a ContextVar so
+        # a backgrounded tool runs under the same authority as a foreground call.
+        if getattr(self, "_background", None) is not None:
+            try:
+                from adk.background_tasks import bind_turn
+                bind_turn(session_id=sid, auth=_auth)
+            except Exception as exc:  # noqa: BLE001 -- the turn runs without them
+                logger.debug("background turn bind failed: %s", exc)
+
         # Per-turn system prompt = identity + [AGENT HOST] situation block + any
         # caller-supplied system_additions (AitherShell's [USER'S SHELL] block).
         # Popped so it never reaches the provider as a kwarg. Appended at the END
@@ -2124,6 +2160,17 @@ class AitherAgent:
         except Exception:
             pass
 
+        # A clock question gets the clock next to it -- unless the caller sent its own
+        # shell block, whose clock is the one the human means.
+        _user_turn = message
+        try:
+            from adk.situation import USER_SHELL_HEADER_PREFIX, asks_clock, clock_hint
+            if asks_clock(message) and not any(
+                    USER_SHELL_HEADER_PREFIX in str(x) for x in (_sys_additions or [])):
+                _user_turn = f"{message}\n\n{clock_hint()}"
+        except Exception as exc:  # noqa: BLE001 -- a hint, never the turn
+            logger.debug("clock hint skipped: %s", exc)
+
         # Build messages with context-aware truncation
         messages = None
         if self._context_mgr:
@@ -2140,7 +2187,7 @@ class AitherAgent:
                     stored = await self.memory.get_history(sid, limit=20)
                     for h in stored:
                         self._context_mgr.add(h["role"], h["content"])
-                self._context_mgr.add_user(message)
+                self._context_mgr.add_user(_user_turn)
                 msg_dicts = self._context_mgr.build()
                 messages = [Message(role=d["role"], content=d["content"]) for d in msg_dicts]
             except Exception:
@@ -2155,7 +2202,7 @@ class AitherAgent:
                 stored = await self.memory.get_history(sid, limit=20)
                 for h in stored:
                     messages.append(Message(role=h["role"], content=h["content"]))
-            messages.append(Message(role="user", content=message))
+            messages.append(Message(role="user", content=_user_turn))
 
         # Inject graph memory context (non-fatal). Retrieve enough, and untruncated
         # enough, that recall stays reliable under a noisy long session — and tell the
@@ -2281,6 +2328,11 @@ class AitherAgent:
         if self._skills:
             try:
                 matches = self._skills.search(message, k=3)
+                # A skill whose tools this agent no longer has cannot be followed;
+                # recalled anyway, the model calls the missing names (2026-10-29).
+                matches = [s for s in matches
+                           if not s.tools_used
+                           or any(self._tools.get(t) is not None for t in s.tools_used)]
                 if matches:
                     block = "[LEARNED SKILLS — proven procedures you can reuse]\n" + "\n".join(
                         f"- {s.name}: {s.description} (used {s.success_count}×; tools: "
@@ -2334,6 +2386,14 @@ class AitherAgent:
             self._tools.list_tools(), self._current_intent, _filter_tools_by_intent,
             mode=getattr(self, "tool_selection", None))
         tools_schema = _tool_sel.schemas(self._tools.to_openai_format)
+        # A bare clock question needs no tool: its answer is beside it in the user turn.
+        # With 87 schemas offered the model still reached for one 2 runs in 3 on the
+        # live daemon (2026-10-29: arc_register, arc_solo -- an unrelated side effect).
+        # Only a SHORT question with no action verb: "what time is it, then run the
+        # build" keeps its tools.
+        if (_user_turn is not message and len(message.split()) <= 8
+                and not _ACTION_PATTERNS.search(message)):
+            tools_schema = []
         tool_calls_made = []
         # The user named an image: LOOK at it before the model's first call (same rule as
         # stream_react). Measured 2026-10-05 on this native loop: the 8B called
@@ -2495,6 +2555,15 @@ class AitherAgent:
                     combined_hints = "\n".join(_steering_hints)
                     messages.append(Message(role="system", content=f"[STEERING HINT]\n{combined_hints}"))
                     logger.debug("[STEERING] Injected %d system hints", len(_steering_hints))
+
+                # Background tool completions (opt-in): hand the model whatever
+                # finished since the last iteration as a new message.
+                _bg_reg = getattr(self, "_background", None)
+                if _bg_reg is not None:
+                    for _bev in _bg_reg.drain_events():
+                        _btxt = str(_bev.get("text") or "")
+                        if _btxt:
+                            messages.append(Message(role="user", content=_btxt))
             except Exception as _steer_err:
                 logger.warning("Steering drain error (non-fatal): %s", _steer_err)
 
@@ -3123,6 +3192,14 @@ class AitherAgent:
                     continue  # after a pause: the turn returns before the next call
                 result = _results[tc.id]
                 messages.append(Message(role="tool", content=result, tool_call_id=tc.id))
+                # A call that returned an error is a failed call, not a step: unmarked,
+                # a turn of refused graph_search calls was saved as the "what time is
+                # it" skill and replayed on the next ask (2026-10-29).
+                if isinstance(result, str) and result.lstrip().startswith('{"error"'):
+                    for _k in range(len(tool_calls_made) - 1, -1, -1):
+                        if tool_calls_made[_k] == tc.name:
+                            tool_calls_made[_k] = f"{tc.name}[failed]"
+                            break
                 if self.loop_policy is not None and any(t is tc for t in _to_run):
                     self.loop_policy.record(tc.name, tc.arguments, result)
                     _deferred_nudges.extend(self.loop_policy.nudges())
@@ -3832,6 +3909,22 @@ class AitherAgent:
         except Exception as exc:  # noqa: BLE001 -- the turn runs without escalation
             await _degraded("turn_control", exc)
 
+        # Background completions ride this turn's events queue so the next model step
+        # sees them; with no controller they wait in a local list.
+        _bg_local: list[dict] = []
+        _bg_registry = getattr(self, "_background", None)
+        if _bg_registry is not None:
+            try:
+                from adk.background_tasks import bind_turn
+                # stream_react has no principal argument; bind the session so an
+                # approval recorded for this turn is honoured, and auth=None so a
+                # backgrounded tool behaves exactly like a foreground one here.
+                bind_turn(session_id=sid, auth=None)
+                _bg_registry.bind_events(_ctl.events if _ctl is not None else _bg_local)
+            except Exception as exc:  # noqa: BLE001 -- the turn runs without them
+                await _degraded("background", exc)
+                _bg_registry = None
+
         async def _ctl_hook(hook: str, *args, timeout: float = 6.0):
             fn = getattr(_ctl, hook, None) if _ctl is not None else None
             if fn is None:
@@ -4112,6 +4205,31 @@ class AitherAgent:
                         await _emit({"type": "steering", "text": str(_sh), "hint": True})
             except Exception as exc:  # noqa: BLE001 -- the step runs unsteered
                 await _degraded("steering", exc)
+
+            # ── Background tool completions ──
+            # A background task that finished since the last step becomes an
+            # observation before the model decides its next action, so a slow tool
+            # never costs the turn a whole extra round trip.
+            try:
+                if _ctl is not None:
+                    _bg_events = _ctl.drain_background_events()
+                else:
+                    # DRAIN IN PLACE: the registry holds this list OBJECT, so
+                    # rebinding _bg_local to a fresh list would orphan every
+                    # completion that lands after this step.
+                    _bg_events = list(_bg_local)
+                    _bg_local.clear()
+                for _bev in _bg_events:
+                    _btxt = str(_bev.get("text") or "")
+                    if not _btxt:
+                        continue
+                    _say_to_model(_btxt)
+                    await _emit({"type": "background", "task_id": _bev.get("task_id"),
+                                 "name": _bev.get("name"),
+                                 "status": _bev.get("status")})
+            except Exception as _bg_err:  # noqa: BLE001 -- a drain fault is not the turn
+                await _degraded("background", _bg_err)
+
             if _pending_hint:
                 _say_to_model(_pending_hint)
                 _pending_hint = ""
@@ -4601,6 +4719,12 @@ class AitherAgent:
                 await self.memory.add_message(sid, "assistant", answer)
         except Exception as exc:  # noqa: BLE001 -- the answer was already streamed
             logger.debug("stream_react persist failed: %s", exc)
+
+        if _bg_registry is not None:
+            try:
+                _bg_registry.bind_events(None)
+            except Exception as exc:  # noqa: BLE001 -- the turn is already answered
+                logger.debug("background unbind failed: %s", exc)
 
         if _own_steer_queue:
             unregister_steering_queue(sid)

@@ -25,6 +25,11 @@ import android.webkit.WebViewClient;
  */
 public class MainActivity extends Activity implements Shell.Host {
     static final String HOME = "https://app.aitherium.com/";
+    /** The first launch on a grown-up's phone opens the same phone-first onboarding the PWA
+     *  runs (sign in by browser SSO, pick a workspace, Company Room + Aither chat, enable
+     *  notifications): Veil's /?firstrun=1 (welcome-channels/onboarding/Body.tsx). Once. */
+    static final String FIRST_RUN = HOME + "?firstrun=1&source=android";
+    static final String FIRST_RUN_SEEN = "first_run_seen";
     /** The page hides its own install cards for this (localapp); one app, one icon. The Play
      *  build adds " Play": the page then offers no purchase (Play's payments policy). A
      *  grown-up's phone adds " AitherOS": the page is the phone OS (host android-os) and
@@ -74,7 +79,16 @@ public class MainActivity extends Activity implements Shell.Host {
         if (pair != null) shell.background(pair);
         Uri t = target(getIntent());
         if (linkDevice(t)) t = null; // the approve sheet opens over the app's home
-        shell.open(t == null ? null : t.toString());
+        android.content.SharedPreferences once = getSharedPreferences("aither_first_run", MODE_PRIVATE);
+        String first = t == null ? firstRunUrl(once.getBoolean(FIRST_RUN_SEEN, false), cfg.childDevice()) : null;
+        if (first != null) once.edit().putBoolean(FIRST_RUN_SEEN, true).apply();
+        shell.open(first != null ? first : t == null ? null : t.toString());
+    }
+
+    /** The first launch's page, or null (seen before, or a child's phone: a child's first
+     *  page is their classroom, never the grown-up onboarding). */
+    static String firstRunUrl(boolean seen, boolean child) {
+        return seen || child ? null : FIRST_RUN;
     }
 
     /** A device-link QR (app.aitherium.com/auth/device?code=, idp.aitherium.com/link) goes
@@ -111,6 +125,8 @@ public class MainActivity extends Activity implements Shell.Host {
         web.addJavascriptInterface(new PageVoice.Bridge(this, web), "AitherVoice");
         // window.AitherNearby: devices in pairing mode on this Wi-Fi (NearbyDevices, 5 minutes)
         web.addJavascriptInterface(new NearbyDevices.Bridge(this, web), "AitherNearby");
+        // window.AitherDeskLink: drive the owner's PC over the USB cable (DeskLink, adb reverse)
+        web.addJavascriptInterface(new DeskLinkBridge(this, web), "AitherDeskLink");
         web.setWebChromeClient(new android.webkit.WebChromeClient() {
             @Override
             public void onReceivedTitle(WebView v, String t) {

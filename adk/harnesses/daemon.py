@@ -41,16 +41,43 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from adk.harnesses.character_recall import register as register_character_recall
 from adk.harnesses.manager import ManagerError, SessionManager, default_manager
 from adk.harnesses.models import ProfileError, list_profiles
+from adk.harnesses.owner_steer import load_owner_verifier
 from adk.harnesses.registry import get as get_harness
-from adk.harnesses.character_recall import register as register_character_recall
 from adk.harnesses.rooms import DEFAULT_ROOM, RoomError, default_registry
 from adk.harnesses.session import SessionConfig
 from adk.harnesses.spool import default_tailer
 from adk.harnesses.steer_dispatch import frame_peer_text
 from adk.harnesses.steer_dispatch import register as register_steer_dispatcher
-from adk.harnesses.owner_steer import load_owner_verifier
+from adk.harnesses.thread_subs import default_thread_subscriptions
+
+# The thread router is an OPT-IN feature registered only when
+# ``AITHER_THREAD_ROUTER=1``, so a missing ``thread_router`` module must not stop the
+# daemon from booting: a path-scoped commit that ships ``daemon.py`` without it starts
+# with the router unavailable and one stderr line, never an ImportError at import time.
+# (``thread_subs`` above stays a hard import: the already-tracked ``steer_dispatch``
+# imports it at module scope, so nothing here could make it optional.)
+try:
+    from adk.harnesses.thread_router import DEFAULT_MENTION_TOKENS
+    from adk.harnesses.thread_router import register as register_thread_router
+    THREAD_ROUTER_IMPORT_ERROR = ""
+except ImportError as _thread_router_import_exc:  # optional feature: degrade, don't die
+    THREAD_ROUTER_IMPORT_ERROR = (
+        f"{type(_thread_router_import_exc).__name__}: {_thread_router_import_exc}")
+    DEFAULT_MENTION_TOKENS: tuple[str, ...] = ()
+    register_thread_router = None
+# Work items are the durable record of what the router admitted. Optional for the same
+# reason the router is: a build without the module must still boot, with the router
+# running on the owner-plan stamp alone.
+try:
+    from adk.harnesses import work_items as _work_items_mod
+    WORK_ITEMS_IMPORT_ERROR = ""
+except ImportError as _work_items_import_exc:  # optional feature: degrade, don't die
+    WORK_ITEMS_IMPORT_ERROR = (
+        f"{type(_work_items_import_exc).__name__}: {_work_items_import_exc}")
+    _work_items_mod = None
 from adk.harnesses.transcript_bridge import default_bridge
 from adk.harnesses.well import default_well
 
@@ -777,6 +804,11 @@ if BaseModel is not None:
         rows: int = 30
         cols: int = 100
 
+    class WakeSessionBody(BaseModel):  # type: ignore[misc]
+        """``POST /sessions/{id}/wake`` body: how many trailing log events to hand back."""
+
+        tail: int = 200
+
     class ProvisionSandbox(BaseModel):  # type: ignore[misc]
         workspace_slug: str
         repos: list[str] = Field(default_factory=list)
@@ -833,6 +865,15 @@ if BaseModel is not None:
     class CancelDecision(BaseModel):  # type: ignore[misc]
         note: str = ""
 
+    class ReviseDecision(BaseModel):  # type: ignore[misc]
+        """``POST /decisions/{id}/revise``: the text of an OPEN card; None = keep."""
+
+        title: Optional[str] = None
+        summary: Optional[str] = None
+        facts: Optional[list[str]] = None
+        urgency: Optional[str] = None
+        dedupe_key: Optional[str] = None
+
     class RaiseOption(BaseModel):  # type: ignore[misc]
         key: str
         label: str
@@ -858,6 +899,10 @@ if BaseModel is not None:
         facts: list[str] = Field(default_factory=list)
         options: list[RaiseOption] = Field(default_factory=list)
         default: str = ""
+        #: A B2 card: an option that destroys or externally commits something.
+        #: It can never be closed by an INFERRED answer (a default or a
+        #: recommendation read out of "yes") -- the owner must name the option.
+        irreversible: bool = False
         secret_name: str = ""
         credential_format: str = "password"
         credential_scope: str = "platform"
@@ -1137,6 +1182,141 @@ def _self_update_status() -> Optional[dict[str, Any]]:
         return self_update.status()
     except Exception:  # noqa: BLE001 - health never fails on a report
         return None
+
+
+#: Permission modes a router-spawned worker may carry. ``bypassPermissions`` is
+#: deliberately absent: an environment variable must never turn the first-message
+#: listener into an auto-approving agent.
+THREAD_ROUTER_PERMISSION_MODES = ("default", "acceptEdits", "plan")
+
+
+def thread_router_permission_mode(environ: Optional[dict] = None) -> Optional[str]:
+    """``AITHER_THREAD_ROUTER_PERMISSION_MODE``, validated.
+
+    Returns ``""`` when unset (the harness's own default, today's behaviour), the mode
+    when it is one of :data:`THREAD_ROUTER_PERMISSION_MODES`, and ``None`` when it is
+    anything else -- the caller MUST refuse to start the router and log why.
+    ``bypassPermissions`` can never arrive this way.
+    """
+    env = os.environ if environ is None else environ
+    raw = str(env.get("AITHER_THREAD_ROUTER_PERMISSION_MODE") or "").strip()
+    if not raw:
+        return ""
+    if raw in THREAD_ROUTER_PERMISSION_MODES:
+        return raw
+    sys.stderr.write(
+        "[daemon] thread router refused: AITHER_THREAD_ROUTER_PERMISSION_MODE="
+        f"{raw!r} is not one of {', '.join(THREAD_ROUTER_PERMISSION_MODES)}; "
+        "bypassPermissions is never accepted from this env\n")
+    return None
+
+
+def thread_router_session_config(request: Any, *, harness: str,
+                                 permission_mode: str) -> SessionConfig:
+    """The ``SessionConfig`` a router-spawned worker starts from.
+
+    Extracted from the spawn closure so the tool profile is testable without a daemon:
+    ``permission_mode`` travels exactly as ``POST /sessions`` sends it, and the router
+    never invents a looser one. A value outside the allowlist is refused here too, so
+    no second caller can route ``bypassPermissions`` around the env check.
+    """
+    if permission_mode and permission_mode not in THREAD_ROUTER_PERMISSION_MODES:
+        raise ValueError(
+            f"permission mode {permission_mode!r} is not allowed for a router-spawned "
+            f"worker (one of {', '.join(THREAD_ROUTER_PERMISSION_MODES)})")
+    system_prompt_append = (
+        "You were started by the thread router for "
+        f"{request.surface}:{request.thread_id}. The request that opened this "
+        "thread is in your steering mailbox; do that work, then reply in the "
+        "room."
+    )
+    if harness not in ("aither", "awdk", "group"):
+        from adk.reasoning_doctrine import with_doctrine
+
+        system_prompt_append = with_doctrine(system_prompt_append)
+    return SessionConfig(
+        harness=harness,
+        cwd=validate_cwd(os.getcwd()),
+        title=request.title,
+        system_prompt_append=system_prompt_append,
+        permission_mode=permission_mode,
+    )
+
+
+def _work_item_hooks(work_items: Any, policy: Any):
+    """The router's two work-item callables: the admission gate and the recorder.
+
+    Both are closures over the one store so a process cannot record an item in a
+    different table from the one it admitted into. The gate is deterministic: it reads
+    the request's surface, sender and actor kind, and the operator's policy. It never
+    reads the message text -- outside text is data, not authority.
+    """
+    def admission(request: Any) -> dict:
+        decision = work_items.check(
+            policy,
+            surface=request.surface,
+            thread_id=request.thread_id,
+            event_id=request.event_id,
+            sender=request.sender,
+            sender_id=request.sender_id,
+            human=bool(getattr(request, "human", True)),
+            addressed=bool(getattr(request, "addressed", True)),
+        )
+        return {
+            "accepted": decision.kind == "accept",
+            "observed": decision.kind == "would_accept",
+            "reason": decision.reason,
+        }
+
+    def on_routed(request: Any, worker_id: str) -> None:
+        item = work_items.by_event(
+            request.surface, request.thread_id, request.event_id)
+        if item is None:
+            # The router accepted on its owner-plan stamp alone (no admission hook was
+            # consulted); record the item so the lifecycle exists anyway.
+            item = work_items.record(
+                surface=request.surface,
+                thread_id=request.thread_id,
+                event_id=request.event_id,
+                title=request.title,
+                sender=request.sender,
+                mandate=_work_items_mod.Mandate(
+                    strength="explicit",
+                    basis="addressed",
+                    sender=str(request.sender_id or ""),
+                    policy_version=str(getattr(policy, "version", "")),
+                    scope="",
+                    surface=request.surface,
+                ),
+            )
+        work_items.start(item.id, worker_id)
+
+    return admission, on_routed
+
+
+def _work_item_view(item: Any) -> dict:
+    """One work item as the panel reads it: the stage first, identifiers folded after."""
+    name, action = _work_items_mod.stage(item)
+    return {
+        "id": item.id,
+        "surface": item.surface,
+        "thread_id": item.thread_id,
+        "title": item.title,
+        "status": item.status,
+        "stage": name,
+        "action": action,
+        "report_state": item.report_state,
+        "worker_id": item.worker_id,
+        "attention": item.attention,
+        "outcome": item.outcome,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "mandate": {
+            "strength": item.mandate.strength,
+            "basis": item.mandate.basis,
+            "policy_version": item.mandate.policy_version,
+        },
+    }
 
 
 def create_app(manager: Optional[SessionManager] = None, token: str = ""):
@@ -3030,6 +3210,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             facts=[f for f in (body.facts or []) if f.strip()],
             source=_source,
         )
+        # Feature-detected like dedupe below: this daemon and the store can be
+        # two vintages, and passing an unknown kwarg to DecisionCard would 500.
+        if "irreversible" in set(getattr(DecisionCard, "__dataclass_fields__", {}) or {}):
+            kwargs["irreversible"] = bool(body.irreversible)
 
         # DEDUPE IS FEATURE-DETECTED, AND FAIL-CLOSED WHEN ASKED FOR AND ABSENT.
         # Same shape and same reason as the credential block below: this daemon
@@ -3274,6 +3458,30 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "delivered_to_session": bool(delivered),
             "mailbox": str(delivered) if delivered else "",
         }
+
+    @app.post("/decisions/{card_id}/revise", dependencies=[Depends(auth)])
+    def revise_decision(card_id: str, body: ReviseDecision) -> dict[str, Any]:
+        """Rewrite an OPEN card's text in place; the id, options and status stay.
+
+        A rolling producer (one card per sweep, updated each cycle) uses this so
+        the owner keeps ONE card instead of a raise + withdraw on every change.
+        404 no such card, 409 the card is closed (raise a new one), 400 a field
+        the store refuses (bad urgency, a dedupe key another live card holds).
+        """
+        from adk.decisions.store import CardClosedError, DecisionError, get_store
+
+        store = get_store()
+        if store.get(card_id) is None:
+            raise HTTPException(status_code=404, detail=f"no such card: {card_id}")
+        try:
+            card = store.revise(card_id, title=body.title, summary=body.summary,
+                                facts=body.facts, urgency=body.urgency,
+                                dedupe_key=body.dedupe_key)
+        except CardClosedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DecisionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return card.to_dict()
 
     @app.post("/decisions/{card_id}/cancel", dependencies=[Depends(auth)])
     def cancel_decision(card_id: str, body: CancelDecision) -> dict[str, Any]:
@@ -3885,14 +4093,67 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @app.get("/sessions/{session_id}/events", dependencies=[Depends(auth)])
-    def events(session_id: str, since: int = Query(default=0)) -> dict[str, Any]:
+    @app.get("/sessions/{session_id}/events")
+    def events(
+        session_id: str, request: Request,
+        since: int = Query(default=0, ge=0),
+        after: Optional[int] = Query(default=None, ge=0),
+        limit: int = Query(default=0, ge=0, le=1000),
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """THE positional read of a harness session log: ``?after=<seq>&limit=N``.
+
+        Oldest first; ``next_after`` is the cursor for the next page and ``more`` says one
+        is waiting. ``since`` is the older spelling of ``after``. Without ``limit`` a live
+        session answers everything after the cursor (the pre-existing shape). A session
+        the daemon no longer holds (restarted, reaped) is read from its ``events.jsonl``
+        -- OWNER ONLY, the same rule as ``/transcript``, because the log carries
+        whatever the owner typed into it.
+        """
+        cursor = since if after is None else after
+        held = True
         try:
-            session = mgr.get_session(session_id)
+            mgr.get_session(session_id)
+        except ManagerError:
+            held = False
+        if not held and not _speaks_as_owner(principal, request):
+            raise HTTPException(
+                status_code=403,
+                detail=f"principal {principal.id!r} may not read a dormant session log",
+            )
+        reader = getattr(mgr, "read_events", None)
+        if reader is None:
+            raise HTTPException(status_code=404, detail=f"no such session: {session_id}")
+        try:
+            return reader(session_id, after=cursor, limit=limit)
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        evs = session.events_since(since)
-        return {"events": evs, "last_seq": session.last_seq, "state": session.state}
+
+    @app.post("/sessions/{session_id}/wake")
+    def wake_session(
+        session_id: str, request: Request,
+        body: Optional[WakeSessionBody] = None,
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """Re-spawn a dead harness session from its own ``events.jsonl``. Idempotent.
+
+        A live session answers ``woken: false`` untouched. A dead one comes back under
+        the same id with its seq continuing and the log tail as resume context. OWNER
+        ONLY: it starts a coding agent AND hands it the log, which is both the
+        ``POST /sessions`` power and the ``/transcript`` read.
+        """
+        if not _speaks_as_owner(principal, request):
+            raise HTTPException(
+                status_code=403,
+                detail=f"principal {principal.id!r} may not wake a session",
+            )
+        tail = max(0, min(int((body.tail if body else 200)), 2000))
+        try:
+            return mgr.wake(session_id, tail=tail)
+        except ManagerError as exc:
+            detail = str(exc)
+            code = 404 if detail.startswith("no such session") else 400
+            raise HTTPException(status_code=code, detail=detail) from exc
 
     @app.get("/sessions/{session_id}/stream", dependencies=[Depends(auth)])
     async def stream(session_id: str, since: int = Query(default=0)):
@@ -3965,6 +4226,18 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     # via ``Room.add_listener``, but two SEPARATE ``SteerDispatcher`` instances do not
     # share their delivered-event LRU, so registering a second one would double-deliver
     # every addressed event despite that guard.
+    def _thread_subscriptions_or_none() -> Any:
+        """The pass-through table, or None (feature off) when its file cannot open.
+
+        A daemon that cannot open the subscription DB must still dispatch addressed
+        events, so a failure here is one stderr line, never a failed startup.
+        """
+        try:
+            return default_thread_subscriptions()
+        except Exception as exc:  # sqlite/permissions -- degrade, never block boot
+            sys.stderr.write(f"[daemon] thread subscriptions off: {exc}\n")
+            return None
+
     def _list_unified_sessions_for_dispatch() -> list[dict[str, Any]]:
         """Real backing for the dispatcher's target resolver -- same source
         ``GET /sessions/unified`` reads. A resolver that raises must not crash dispatch
@@ -4070,6 +4343,65 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 return False
         return bool(getattr(session.config, "allow_peer_input", False))
 
+    def _spawn_thread_worker(request: Any) -> Optional[str]:
+        """Start one worker for a thread the router took ownership of.
+
+        Uses the SAME ``SessionConfig`` -> ``mgr.create`` core ``POST /sessions`` uses,
+        so a router-spawned worker is an ordinary managed session: visible in
+        ``/sessions``, attachable, stoppable, and charged against the same session cap.
+        It also applies the route's ENTITLEMENT and reasoning-DOCTRINE pre-flight. It
+        does not re-run the route's connector/roster/skill checks because it derives
+        none of those from a request: it asks for no connector, names no agent and
+        renders no skill. The harness comes from the daemon's own env, and the router
+        acts as the owner (the triggering event must carry the owner-plan stamp), so
+        the entitlement is judged against OWNER_PRINCIPAL -- a harness this box is not
+        licensed for is refused instead of silently spawned. Degrades to ``None``
+        (thread_router logs it and publishes a receipt) rather than raising into a room
+        listener.
+        """
+        harness = os.environ.get("AITHER_THREAD_ROUTER_HARNESS", "claude")
+        try:
+            spec = get_harness(harness)
+        except Exception:  # an unknown harness is refused by mgr.create below anyway
+            spec = None
+        needed = getattr(spec, "requires_entitlement", "") if spec else ""
+        if needed and not OWNER_PRINCIPAL.has(needed):
+            sys.stderr.write(
+                f"[daemon] thread router refuses harness {harness!r}: the owner "
+                f"principal lacks entitlement {needed!r}\n"
+            )
+            return None
+        # An explicit tool profile, validated the way an environment is allowed to be:
+        # empty = today's behaviour, and anything outside the allowlist (above all
+        # bypassPermissions) refuses the spawn rather than widening it.
+        permission_mode = thread_router_permission_mode()
+        if permission_mode is None:
+            return None
+        try:
+            config = thread_router_session_config(
+                request, harness=harness, permission_mode=permission_mode)
+            return mgr.create(config).id
+        except Exception as exc:  # noqa: BLE001 - a failed spawn is reported, never raised
+            sys.stderr.write(
+                f"[daemon] thread router spawn failed: {type(exc).__name__}: {exc}\n"
+            )
+            return None
+
+    def _thread_router_int(name: str, default: int) -> int:
+        try:
+            return max(1, int(os.environ.get(name, "") or default))
+        except ValueError:
+            return default
+
+    def _thread_router_mentions() -> tuple[str, ...]:
+        """The tokens that address the router, from a comma-separated env var."""
+        raw = os.environ.get("AITHER_THREAD_ROUTER_MENTIONS", "").strip()
+        if not raw:
+            return DEFAULT_MENTION_TOKENS
+        tokens = tuple(t.strip() for t in raw.split(",") if t.strip())
+        return tokens or DEFAULT_MENTION_TOKENS
+
+    thread_subscriptions = _thread_subscriptions_or_none()
     steer_dispatcher = register_steer_dispatcher(
         rooms,
         list_unified_sessions=_list_unified_sessions_for_dispatch,
@@ -4079,7 +4411,101 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         # The gateway's owner-assertion PUBLIC key, read ONCE here -- never per request,
         # and never from the principals registry an agent tab can write.
         owner_verifier=load_owner_verifier(),
+        # Subscription pass-through: follow-ups on a thread a session subscribed to
+        # (GitHub PR, Discord thread, mail chain) reach its mailbox with no router turn.
+        thread_subscriptions=thread_subscriptions,
     )
+
+    # ThreadRouter (the SLOW path): the one listener that decides who handles the FIRST
+    # event on a thread nobody owns yet, by spawning a worker and subscribing it. DEFAULT
+    # OFF (AITHER_THREAD_ROUTER=1 flips it) because this is the only listener that spends
+    # compute: a restart must not quietly start spawning sessions before the owner has
+    # decided it should. Enable it together with thread_subscriptions -- without the
+    # table there is no way to check ownership or subscribe the worker.
+    # The tool profile every router-spawned worker runs under. Empty = today's
+    # behaviour (the harness's own default). An invalid value -- bypassPermissions
+    # included -- refuses the router at startup; ``thread_router_permission_mode``
+    # prints why, and the line below makes the consequence explicit.
+    thread_router = None
+    work_items = None
+    if os.environ.get("AITHER_WORK_ITEMS", "0") == "1":
+        # The durable work-item log is its own switch: an operator may want the record
+        # without the router spending compute, and vice versa. A malformed policy is
+        # refused at startup, never guessed at.
+        if _work_items_mod is None:
+            sys.stderr.write(
+                "[daemon] work items unavailable: optional modules missing ("
+                f"{WORK_ITEMS_IMPORT_ERROR or 'unknown import error'})\n")
+        else:
+            try:
+                work_items = _work_items_mod.default_work_items()
+                work_policy = _work_items_mod.policy_from_env()
+            except Exception as exc:  # noqa: BLE001 - a bad policy must not half-start
+                sys.stderr.write(
+                    "[daemon] work items not started: invalid policy "
+                    f"({type(exc).__name__}: {exc})\n")
+                work_items = None
+            else:
+                app.state.work_items = work_items
+                app.state.work_item_policy = work_policy
+    if os.environ.get("AITHER_THREAD_ROUTER", "0") == "1":
+        if register_thread_router is None:
+            sys.stderr.write(
+                "[daemon] thread router unavailable: optional modules missing ("
+                f"{THREAD_ROUTER_IMPORT_ERROR or 'unknown import error'})\n"
+            )
+        elif thread_subscriptions is not None:
+            # Judged ONLY when the router is actually being started: a stale value in a
+            # shell must not log a refusal for a feature the operator never enabled.
+            router_permission_mode = thread_router_permission_mode()
+            if router_permission_mode is None:
+                sys.stderr.write(
+                    "[daemon] thread router not started: invalid "
+                    "AITHER_THREAD_ROUTER_PERMISSION_MODE\n"
+                )
+            else:
+                admission = None
+                on_routed = None
+                if work_items is not None:
+                    admission, on_routed = _work_item_hooks(work_items, work_policy)
+                thread_router = register_thread_router(
+                    rooms,
+                    # ORDERING IS LOAD-BEARING: the router subscribes the worker it
+                    # spawns, so the dispatcher MUST be registered first. Reversed, the
+                    # dispatcher's pass-through would see the brand-new subscriber on
+                    # the same event and deliver the triggering text twice. register()
+                    # refuses that order.
+                    must_follow=steer_dispatcher,
+                    thread_subscriptions=thread_subscriptions,
+                    spawn=_spawn_thread_worker,
+                    list_sessions=lambda: mgr.list_sessions(),
+                    mention_tokens=_thread_router_mentions(),
+                    max_workers=_thread_router_int("AITHER_THREAD_ROUTER_MAX_WORKERS", 4),
+                    # A stranger must not be able to spawn compute: off unless the owner
+                    # opts in.
+                    allow_unstamped=(
+                        os.environ.get("AITHER_THREAD_ROUTER_ALLOW_UNSTAMPED", "0")
+                        == "1"),
+                    admission=admission,
+                    on_routed=on_routed,
+                )
+    app.state.thread_router = thread_router
+
+    @app.get("/work-items", dependencies=[Depends(auth)])
+    def list_work_items(needs_person: bool = False, limit: int = 50) -> dict:
+        """Open work items, person-stage first when asked.
+
+        The panel's first question is "does anything need me now?"; the second is "what
+        is the system doing?". ``needs_person=true`` answers only the first. ``enabled``
+        is false when ``AITHER_WORK_ITEMS`` is off, so a caller can tell "nothing needs
+        you" from "nothing is recorded".
+        """
+        if work_items is None:
+            return {"enabled": False, "items": []}
+        items = work_items.needs_person() if needs_person else work_items.open_items()
+        capped = max(1, min(int(limit), 200))
+        return {"enabled": True, "items": [_work_item_view(item) for item in items[:capped]]}
+
 
     # Cockpit autopilot: opt-in (OFF by default) per-session auto-steer. It reads the
     # same rows /sessions/unified serves and steers only through the managed-pty submit

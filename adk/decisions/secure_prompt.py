@@ -164,9 +164,14 @@ def open_credential_surface(card: DecisionCard, *, owner_initiated: bool = False
     if desk.desk_alive():
         detail = "awdesk is running: the masked field is in its Inbox"
         if owner_initiated:
-            error = desk.raise_desk_inbox()
-            detail += (f" (the Inbox could not be brought forward: {error})" if error
-                       else ", brought forward")
+            error = desk.raise_desk_inbox(card_id=card.id)
+            if error:
+                # The owner asked for the field and nothing came forward: say so. A
+                # "desk" verdict here told the phone "the secure prompt is open on
+                # your PC" while the PC showed nothing (2026-11-01).
+                return CredentialSurface(
+                    "none", f"{detail}, but it could not be brought forward: {error}")
+            detail += f", brought forward on {card.id}"
         return CredentialSurface("desk", detail)
     quiet, quiet_why = (False, "") if owner_initiated else is_quiet()
     if quiet:
@@ -175,7 +180,7 @@ def open_credential_surface(card: DecisionCard, *, owner_initiated: bool = False
         started, desk_why = (start or desk.start_desk)()
         if started:
             if owner_initiated:
-                desk.raise_desk_inbox()
+                desk.raise_desk_inbox(card_id=card.id)
             return CredentialSurface(
                 "desk", desk_why + "; the masked field is in its Inbox", started_desk=True)
     from adk.decisions.channels import decide_link

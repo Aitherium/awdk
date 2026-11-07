@@ -580,6 +580,8 @@ Interact with awdesk bridge: send commands, view history
 - `adk desk history` — Show recent commands and replies
 - `adk desk fleet` — Machine fleet via the desk bridge: status \| down \| up \| gaming \| resume \| adopt \| panel
 - `adk desk desktop` — Desktop surfaces via awdesk: overlay \| app \| status
+- `adk desk commands` — List the desk's commands (palette rows)
+- `adk desk run` — Run one desk command by id (see `adk desk commands`)
 
 ## `adk devices`
 
@@ -621,6 +623,10 @@ Manage encrypted documents (upload, list, download, delete)
 ## `adk doctor`
 
 Check system health (Python, GPU, LLM backends, API keys)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--all` | str |  | `false` | Show every failing check and each check's full output |
 
 ## `adk down`
 
@@ -1033,6 +1039,8 @@ One-command community node onboarding (GitHub auth + hardware detection + serve 
 | `--model` | str |  |  | Override the resolved inference model |
 | `--no-browser` | str |  | `false` | Do not attempt browser open for GitHub auth |
 | `--dry-run` | str |  | `false` | Walk the full plan without side effects |
+| `--workspace` | str |  |  | Join the Aitherium workspace instead: browser sign-in, add this device, sync your settings, MCP bearer, Company Room (rerun is a no-op) |
+| `--label` | str |  |  | With --workspace: this device's name |
 
 ## `adk kb`
 

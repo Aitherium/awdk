@@ -203,7 +203,7 @@ def notebook_list(workspace: str = "", status: str = "", limit: int = 50) -> str
     if status:
         params["status"] = status
     if not _via_bridge():
-        return _cap(_request("GET", "/notebooks/", params=params))
+        return _cap(_hide_archived(_request("GET", "/notebooks/", params=params), status))
     # Through the control plane the list cannot use the bridge: it rebuilds the path
     # WITHOUT its trailing slash, Genesis answers `/notebooks` with a 307 to
     # `/notebooks/`, and the bridge passes the 307 on with no Location (measured
@@ -213,12 +213,39 @@ def notebook_list(workspace: str = "", status: str = "", limit: int = 50) -> str
     # list: callers that must tell "none" from "down" verify with notebook_get.
     from adk.control_plane import control_plane_url
 
-    data = _request("GET", "/api/notebooks", params=params, base=control_plane_url())
+    data = _hide_archived(_request("GET", "/api/notebooks", params=params,
+                                   base=control_plane_url()), status)
     if isinstance(data, dict) and not data.get("error") and isinstance(
             data.get("notebooks"), list):
         rows = data["notebooks"]
-        data = {"notebooks": rows[:int(limit)], "total": len(rows), "via": "portal"}
+        data = {"notebooks": rows[:int(limit)], "total": len(rows), "via": "portal",
+                "archived_hidden": data.get("archived_hidden", 0)}
     return _cap(data)
+
+
+def _hide_archived(data: Any, status: str) -> Any:
+    """Drop archived rows unless they were asked for: the store's delete is a SOFT delete
+    (status 'archived'), so an archived notebook is a deleted one. Counted, not silent."""
+    if status == "archived" or not isinstance(data, dict):
+        return data
+    rows = data.get("notebooks")
+    if not isinstance(rows, list):
+        return data
+    kept = [r for r in rows if not (isinstance(r, dict) and r.get("status") == "archived")]
+    return dict(data, notebooks=kept, archived_hidden=len(rows) - len(kept))
+
+
+def notebook_probe() -> str:
+    """Whether Genesis ITSELF answers the notebooks router, as the signed-in caller.
+
+    The portal list reports a Genesis failure as an empty list, so an empty list
+    proves nothing; this asks Genesis directly (its sessions route, the same
+    probe the desk's Live badge uses). ``{"reachable": true}`` or an error.
+    """
+    data = _request("GET", "/notebooks/sessions", timeout=20.0)
+    if isinstance(data, dict) and data.get("error"):
+        return json.dumps({"reachable": False, "error": data["error"]})
+    return json.dumps({"reachable": True})
 
 
 def notebook_outline(notebook_id: str) -> str:
@@ -269,21 +296,100 @@ def notebook_get(notebook_id: str) -> str:
     return _cap(_request("GET", f"/notebooks/{notebook_id}"))
 
 
+# ── What a run executes: ONE rule for every Python surface ────────────────────
+#
+# `adk notebook run`, the agents' notebooks tools and the awsh notebooks_replay
+# tool all execute through notebook_execute below, so the guard lives here and
+# nowhere else in Python. Genesis executes every cell type except the
+# structural ones (NotebookEngine CELL_DISPATCH_MAP). tool_call, prompt and
+# agent_delegate each become an agent_call step: WorkflowEngine._execute_agent
+# hands the cell's prompt/task text to an AgentForge agent (default demiurge)
+# with no tool allowlist, so the recorded tool name does not limit what that
+# agent does. script, service_call, skill_invoke, loops and branches run code
+# or calls. A run is inert only when every cell is structural, or a checkpoint
+# (which only waits for a person). An unknown cell type counts as acting.
+
+#: Cell types a run cannot act through.
+INERT_CELLS = frozenset({"context", "plan", "note", "result", "markdown", "checkpoint"})
+#: Cell types Genesis hands to an agent, with the cell's prompt/task as its task.
+AGENT_CELLS = frozenset({"tool_call", "prompt", "agent_delegate"})
+
+
+def replay_census(notebook: Any) -> dict:
+    """What a run of this notebook definition would execute, by cell ``type[:tool]``.
+
+    Returns ``cell_count``, ``census`` (every cell), ``acting`` (the cells a run
+    could change things through) and ``empty_task``: agent cells with no prompt
+    or task text. A recorded session's tool_call cells carry only the tool name
+    and its input, so Genesis would start an agent with an EMPTY task for each.
+    """
+    nb = notebook if isinstance(notebook, dict) else {}
+    cells = nb.get("cells") or (nb.get("spec") or {}).get("cells") or []
+    census: dict = {}
+    acting: dict = {}
+    count = empty = 0
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        count += 1
+        ctype = str(cell.get("type") or "?")
+        cfg = cell.get("config") if isinstance(cell.get("config"), dict) else {}
+        tool = str(cfg.get("tool") or cfg.get("tool_name") or cell.get("tool") or "")
+        key = "%s:%s" % (ctype, tool) if tool else ctype
+        census[key] = census.get(key, 0) + 1
+        if ctype in INERT_CELLS:
+            continue
+        acting[key] = acting.get(key, 0) + 1
+        if ctype in AGENT_CELLS and not str(cfg.get("prompt") or cfg.get("task") or "").strip():
+            empty += 1
+    return {"cell_count": count, "census": census, "acting": acting, "empty_task": empty}
+
+
+def _refusal(census: dict) -> str:
+    acting = ", ".join("%d x %s" % (n, k) for k, n in sorted(census["acting"].items()))
+    text = "a run executes cells that can change things (%s)" % acting
+    if census.get("empty_task"):
+        text += ("; %d of them have no prompt (recorded tool calls), so each would start "
+                 "an agent with an EMPTY task" % census["empty_task"])
+    return text + ". Look first with dry_run, then pass allow_side_effects=true to run it."
+
+
 def notebook_execute(notebook_id: str, variables: Optional[dict] = None,
-                     mode: str = "sequential") -> str:
+                     mode: str = "sequential", allow_side_effects: bool = False,
+                     dry_run: bool = False) -> str:
     """Execute an Agent Notebook and return its run handle (run_id + status).
 
     Cells run on Genesis with cost tracking. Execution may pause at a ``checkpoint``
     cell awaiting approval — poll notebook_run_status to see progress and resolve
     gates from the portal. Pass variables to fill the notebook's templated inputs.
 
+    Every executable cell runs: tool_call, prompt and agent_delegate cells are each
+    handed to an agent with full tools, scripts and service calls run. So this
+    REFUSES while any cell can act, unless ``allow_side_effects`` is true, and it
+    refuses a notebook it cannot read (it cannot judge one). ``dry_run`` returns
+    what would run and executes nothing.
+
     Args:
         notebook_id: The notebook to run.
         variables: Optional variable overrides for this run (dict).
         mode: "sequential" (default) or "parallel" where the graph allows it.
+        allow_side_effects: Run it although its cells can change things.
+        dry_run: Return the cell census and the acting cells; execute nothing.
     """
     if not notebook_id:
         return json.dumps({"error": "notebook_id is required"})
+    if dry_run or not allow_side_effects:
+        definition = _request("GET", f"/notebooks/{notebook_id}")
+        if not isinstance(definition, dict) or definition.get("error"):
+            why = definition.get("error") if isinstance(definition, dict) else "no answer"
+            return json.dumps({"error": "could not read the notebook to judge what a run "
+                                        "would execute: %s" % why, "notebook_id": notebook_id})
+        census = replay_census(definition)
+        if dry_run:
+            return json.dumps(dict(census, dry_run=True, notebook_id=notebook_id))
+        if census["acting"]:
+            return json.dumps(dict(census, refused=True, notebook_id=notebook_id,
+                                   error=_refusal(census)))
     body = {"variables": variables or {}, "mode": mode}
     return _cap(_request("POST", f"/notebooks/{notebook_id}/execute", json_body=body,
                          timeout=300.0))

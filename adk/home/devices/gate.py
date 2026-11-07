@@ -76,7 +76,8 @@ class DeviceGate:
             rows = await self.client.states()
         except HAError as exc:
             return {"error": str(exc)}
-        visible = set(pol.exposed_to(person, cfg, [r["entity_id"] for r in rows]))
+        visible = set(pol.exposed_to(person, cfg, [r["entity_id"] for r in rows],
+                                     now=self.now()))
         dom = str(domain or "").strip().lower()
         out = []
         for r in rows:
@@ -104,8 +105,12 @@ class DeviceGate:
     # ── the request ──────────────────────────────────────────────────────────
     async def request(self, person: Mapping[str, Any], cfg: Mapping[str, Any],
                       store: Dict[str, Any], *, domain: Any, action: Any, target: Any,
-                      params: Any = None, tainted: bool, guardians: Iterable[str]
+                      params: Any = None, tainted: bool, guardians: Iterable[str],
+                      note: str = "", expect: Optional[Mapping[str, str]] = None
                       ) -> Dict[str, Any]:
+        """``note`` is appended to the summary a person approves; ``expect`` (attribute
+        -> value, e.g. an update entity's ``latest_version``) is stored on a quorum
+        request and checked again when it runs: changed, nothing runs."""
         who = _who(person)
         try:
             act = pol.normalize_action(domain, action, target, params)
@@ -121,7 +126,7 @@ class DeviceGate:
         except HAError as exc:
             return {"error": f"{exc}; nothing ran"}
         ent = entities.get(act["target"])
-        exposed = pol.exposed_to(person, cfg, entities.keys())
+        exposed = pol.exposed_to(person, cfg, entities.keys(), now=self.now())
         if ent is None:
             exposed = [e for e in exposed if e != act["target"]]
         d = pol.decide(cfg=cfg, person=person, entity_id=act["target"], action=act["action"],
@@ -130,7 +135,7 @@ class DeviceGate:
         digest = pol.action_digest(act, self.household)
         args = {"by": who, "action": act, "digest": digest, "policy": d.as_dict()}
         name = (ent or {}).get("name") or ""
-        text = pol.summary(act, name)
+        text = pol.summary(act, name) + (f" ({note})" if note else "")
         if d.verdict == pol.REFUSE:
             await self._log("device_refused", "home_act", args, {"refused": d.reason},
                             "refused:policy")
@@ -155,6 +160,8 @@ class DeviceGate:
             await self._log("device_refused", "home_act", args, {"refused": str(exc)},
                             "refused:no-quorum")
             return {"error": f"refused: {exc}", "policy": d.as_dict()}
+        if expect:
+            row["expect"] = {str(k): str(v) for k, v in expect.items()}
         await self._log("device_request", "home_act", args,
                         {"approval": row["id"], "required": row["required"],
                          "approvers": row["approvers"], "expires_at": row["expires_at"]},
@@ -217,7 +224,7 @@ class DeviceGate:
         ent = entities.get(act["target"])
         d = pol.decide(cfg=cfg, person=person, entity_id=act["target"], action=act["action"],
                        params=act["params"], tainted=tainted, now=self.now(),
-                       exposed=pol.exposed_to(person, cfg, entities.keys()),
+                       exposed=pol.exposed_to(person, cfg, entities.keys(), now=self.now()),
                        device_class=(ent or {}).get("device_class"))
         args = {"by": who, "action": act, "digest": digest, "policy": d.as_dict()}
         if d.verdict not in (pol.ASK_ASKER, pol.ACT):
@@ -231,11 +238,31 @@ class DeviceGate:
     # ── guarded / ask-parent: votes ─────────────────────────────────────────
     async def vote(self, person: Mapping[str, Any], cfg: Mapping[str, Any],
                    store: Dict[str, Any], approval_id: str, allow: bool, *,
-                   guardians: Iterable[str]) -> Dict[str, Any]:
+                   guardians: Iterable[str],
+                   persist: Optional[Callable[[], Any]] = None) -> Dict[str, Any]:
+        """``persist`` is called once the row is claimed (``executing``), BEFORE the
+        action runs, so a crash or a concurrent reader never sees it pending again."""
         who = _who(person)
         row = ap.get(store, approval_id)
         if row is None:
             return {"error": "no such request; nothing changed"}
+        # A guest's request stands only while a helper grant covers its target NOW: a
+        # revoke or an expiry after the ask must not be outvoted by a late yes.
+        req = row.get("requested_by") or {}
+        target = str((row.get("action") or {}).get("target") or "")
+        ap.refresh(row, self.clock())
+        if row["status"] == ap.PENDING and \
+                str(req.get("role") or pol.GUEST) not in pol.ADULT_ROLES | pol.MINOR_ROLES \
+                and target not in pol.granted_entities(cfg, str(req.get("pid") or ""),
+                                                       self.now()):
+            ap.cancel(row, now=self.clock(), reason="the helper's access ended")
+            await self._log("device_refused", "home_act",
+                            {"by": who, "approval": row["id"], "digest": row["digest"]},
+                            {"refused": "helper grant no longer covers it"},
+                            "refused:helper-grant-ended")
+            await notify_approval(ap.public(row))
+            return {"error": "refused: the helper's access to that device has ended; "
+                             "nothing ran", "approval": ap.public(row)}
         # Who counts NOW: the approvers fixed at creation who are still guardians.
         eligible = sorted(set(row["approvers"]) & {str(g) for g in guardians})
         try:
@@ -266,6 +293,20 @@ class DeviceGate:
             await notify_approval(ap.public(row))
             return {"error": f"{exc}; nothing ran", "approval": ap.public(row)}
         ent = entities.get(act["target"])
+        expect = row.get("expect") or {}
+        attrs = (ent or {}).get("attributes") or {}
+        drift = sorted(k for k, v in expect.items() if str(attrs.get(k, "")) != v)
+        if drift:
+            res = {"error": f"refused: {', '.join(drift)} changed since this was asked; "
+                            "nothing ran -- ask again"}
+            ap.finish(row, False, res, self.clock())
+            await self._log("device_refused", "home_act",
+                            {"by": who, "approval": row["id"], "digest": row["digest"]},
+                            {"refused": "changed", "fields": drift}, "refused:changed")
+            await notify_approval(ap.public(row))
+            return {**res, "approval": ap.public(row)}
+        if persist is not None:
+            persist()
         voters = sorted(p for p, v in row["votes"].items() if v["allow"])
         args = {"by": row["requested_by"], "action": act, "digest": row["digest"],
                 "policy": row["policy"], "approved_by": voters, "approval": row["id"]}

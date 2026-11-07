@@ -99,7 +99,10 @@ def _host_gaming(now: "float | None" = None) -> bool:
     except OSError:
         return False
     try:
-        expires = json.loads(lock.read_text(encoding="utf-8")).get("expires")
+        ldoc = json.loads(lock.read_text(encoding="utf-8-sig"))
+        if str(ldoc.get("kind") or "").strip().lower() == "sleep":
+            return False  # a posture power-down of the GPU, not a game
+        expires = ldoc.get("expires")
     except (OSError, ValueError, AttributeError):
         expires = None
     if expires:

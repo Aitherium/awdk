@@ -427,14 +427,18 @@ def start_desk(*, store_dir: Optional[Path] = None,
         sleep(0.5)
 
 
-def raise_desk_inbox(timeout: float = 4.0) -> Optional[str]:
+def raise_desk_inbox(timeout: float = 4.0, card_id: Optional[str] = None) -> Optional[str]:
     """Ask the running desk to bring its Inbox forward. An error string, or None.
 
-    ``POST /console/open {"pane": "inbox"}`` on the desk bridge -- the same door the
+    ``POST /console/open {"pane": "inbox", "card": <id>}`` on the desk bridge -- the same door the
     escalation ladder uses. The Inbox leads with the asks only the owner can unblock,
     credential first, so the masked field is what it shows. Used only when the OWNER
     asked for the field (a remote "open it" tap); an agent's raise leaves the desk's
     own Do-not-disturb and raise policy in charge.
+
+    ``card_id`` names the card whose masked field the owner asked for. Without it the
+    desk raised the Inbox LIST on whatever it showed last, and the phone still said
+    "the secure prompt is open on your PC" (2026-11-01, X402_SQUADS_MEMBER_PUBKEYS).
     """
     import urllib.error
     import urllib.request
@@ -444,12 +448,19 @@ def raise_desk_inbox(timeout: float = 4.0) -> Optional[str]:
     base = (os.getenv("AWDESK_URL") or os.getenv("AITHERSHELL_AWDESK_URL")
             or "http://127.0.0.1:47931").rstrip("/")
     req = urllib.request.Request(base + "/console/open", method="POST",
-                                 data=json.dumps({"pane": "inbox"}).encode("utf-8"))
+                                 data=json.dumps({"pane": "inbox", **({"card": card_id} if card_id else {})}
+                                                ).encode("utf-8"))
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310
             if response.status >= 400:
                 return f"desk bridge HTTP {response.status}"
+            try:
+                verdict = json.loads(response.read() or b"{}")
+            except ValueError:
+                verdict = {}
+            if isinstance(verdict, dict) and verdict.get("ok") is False:
+                return f"the desk refused: {verdict.get('error') or 'no reason given'}"
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return f"desk bridge unreachable: {exc}"
     return None

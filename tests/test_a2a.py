@@ -47,12 +47,12 @@ class TestDataModels:
     def test_text_part(self):
         p = TextPart(text="hello")
         d = p.to_dict()
-        assert d == {"type": "text", "text": "hello"}
+        assert d == {"kind": "text", "type": "text", "text": "hello"}  # v0.3 kind + legacy type
 
     def test_data_part(self):
         p = DataPart(data={"key": "value"})
         d = p.to_dict()
-        assert d == {"type": "data", "data": {"key": "value"}}
+        assert d == {"kind": "data", "type": "data", "data": {"key": "value"}}
 
     def test_message_to_dict(self):
         msg = A2AMessage(role="user", parts=[{"type": "text", "text": "hi"}])
@@ -559,6 +559,50 @@ class TestA2AServer:
 
 
 # ── Agent Card Interfaces ────────────────────────────────────────────────
+
+
+class TestA2AV03Shape:
+    """A spec v0.3 client spells a part's kind ``kind`` and expects a Task back.
+
+    2026-11-06 live audit: a spec part returned -32602 "No text content in message" while the
+    legacy ``type`` spelling completed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_v03_kind_text_part_is_read(self):
+        agent = _make_mock_agent()
+        server = A2AServer(agent=agent)
+        resp = await server.handle_jsonrpc({
+            "jsonrpc": "2.0", "method": "message/send", "id": 7,
+            "params": {"message": {"kind": "message", "role": "user", "messageId": "m1",
+                                   "parts": [{"kind": "text", "text": "Hello"}]}},
+        })
+        assert "error" not in resp, resp
+        agent.chat.assert_awaited_once()
+        assert agent.chat.await_args.args[0] == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_the_result_is_a_v03_task_and_keeps_the_legacy_keys(self):
+        server = A2AServer(agent=_make_mock_agent())
+        resp = await server.handle_jsonrpc({
+            "jsonrpc": "2.0", "method": "message/send", "id": 8,
+            "params": {"message": {"role": "user", "parts": [{"kind": "text", "text": "Hi"}]}},
+        })
+        result = resp["result"]
+        assert result["kind"] == "task" and result["status"]["state"] == "completed"
+        assert result["id"] == result["task"]["id"]                  # legacy wrapper still present
+        assert result["message"]["kind"] == "message"
+        agent_part = result["message"]["parts"][0]
+        assert agent_part["kind"] == "text" and agent_part["type"] == "text"
+
+    @pytest.mark.asyncio
+    async def test_a_part_with_neither_spelling_is_still_refused(self):
+        server = A2AServer(agent=_make_mock_agent())
+        resp = await server.handle_jsonrpc({
+            "jsonrpc": "2.0", "method": "message/send", "id": 9,
+            "params": {"message": {"role": "user", "parts": [{"text": "no kind"}]}},
+        })
+        assert resp["error"]["code"] == -32602
 
 
 class TestAgentCardInterfaces:

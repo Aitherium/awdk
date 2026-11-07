@@ -42,6 +42,8 @@ TAINT_NAME = "taint.json"
 #: Taint sources that do not block device actions (the household's own state).
 DEVICE_SAFE_SOURCES = frozenset({"home_status"})
 OWNER = {"pid": "owner", "name": "owner", "role": pol.OWNER}
+#: How this process names itself on the device-approvals lock.
+LOCK_HOLDER = "adk home serve (Hearth device tools)"
 
 DEVICE_PROMPT = """\
 ## The home's devices
@@ -133,6 +135,13 @@ def build_device_tools(receipts_file: Optional[Path] = None, root: Optional[Path
 
         write_private_text(store_path, json.dumps(store, default=str))
 
+    def store_lock() -> Any:
+        """The same OS lock `adk home updates` takes on this store: a guardian's vote
+        here and a card raised there can never overwrite each other."""
+        from .filelock import arun_lock
+
+        return arun_lock(store_path, holder=LOCK_HOLDER, timeout=15.0)
+
     def dumps(obj: Any) -> str:
         return json.dumps(obj, default=str)
 
@@ -151,10 +160,17 @@ def build_device_tools(receipts_file: Optional[Path] = None, root: Optional[Path
         target: one entity id from home_status, like light.kitchen
         params: optional JSON object, like {"brightness_pct": 40} or {"temperature": 21}
         """
-        store = load_store()
-        out = await gate.request(OWNER, load_policy(home), store, domain=domain,
-                                 action=action, target=target, params=params or None,
-                                 tainted=is_tainted(), guardians=[OWNER["pid"]])
+        try:
+            async with store_lock():
+                store = load_store()
+                out = await gate.request(OWNER, load_policy(home), store, domain=domain,
+                                         action=action, target=target,
+                                         params=params or None, tainted=is_tainted(),
+                                         guardians=[OWNER["pid"]])
+                if out.get("status") in ("waiting_for_guardians", "asked_a_parent"):
+                    save_store(store)
+        except RuntimeError as exc:
+            return dumps({"error": f"busy: {exc}; nothing ran"})
         if out.get("status") == "waiting_for_you":
             act = out["action"]
             out = {"error": f"not done yet: {out['summary']} waits for the owner's yes",
@@ -164,7 +180,6 @@ def build_device_tools(receipts_file: Optional[Path] = None, root: Optional[Path
                        "target": act["target"], "params": json.dumps(act["params"]),
                        "digest": out["digest"]}}}
         elif out.get("status") in ("waiting_for_guardians", "asked_a_parent"):
-            save_store(store)
             row = out["approval"]
             out = {"error": f"not done yet: {out['summary']} is guarded and waits for "
                             "the owner's yes", "summary": out["summary"],
@@ -206,14 +221,19 @@ def build_device_tools(receipts_file: Optional[Path] = None, root: Optional[Path
         approval: the request id home_act returned
         summary: the request's summary, exactly as home_act returned it
         """
-        store = load_store()
-        row = ap.get(store, approval)
-        if row is None or row.get("summary") != summary:
-            return dumps({"error": "refused: no such request with that summary; "
-                                   "nothing ran"})
-        out = await gate.vote(OWNER, load_policy(home), store, approval, True,
-                              guardians=[OWNER["pid"]])
-        save_store(store)
+        try:
+            async with store_lock():
+                store = load_store()
+                row = ap.get(store, approval)
+                if row is None or row.get("summary") != summary:
+                    return dumps({"error": "refused: no such request with that summary; "
+                                           "nothing ran"})
+                out = await gate.vote(OWNER, load_policy(home), store, approval, True,
+                                      guardians=[OWNER["pid"]],
+                                      persist=lambda: save_store(store))
+                save_store(store)
+        except RuntimeError as exc:
+            return dumps({"error": f"busy: {exc}; nothing ran"})
         if out.get("ran"):
             out["summary"] = row["summary"]
         return dumps(out)

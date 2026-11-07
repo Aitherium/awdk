@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import platform as _platform
+import re
 import socket
 import time
 from datetime import datetime, timezone
@@ -46,6 +47,26 @@ USER_SHELL_HEADER_PREFIX = "[USER'S SHELL"
 
 _MAX_ADDITION_CHARS = 4000
 _MAX_ADDITIONS = 8
+
+
+#: A question about the current time or date. The host clock sits in the system prompt,
+#: but a small model with a long tool menu still reached for tools: measured 2026-10-29,
+#: "what time is it?" on the daemon's non-stream path answered 1 run in 3, the others
+#: spending 6-10 calls on tools that could not tell time.
+_CLOCK_Q = re.compile(
+    r"(?i)\b(?:what(?:'?s| is)? (?:the )?(?:time|date)\b(?! to\b)|what day|which day|"
+    r"(?:current|today'?s) (?:time|date)|time is it|day is (?:it|today))")
+
+
+def asks_clock(message: str) -> bool:
+    """True when ``message`` asks for the current time, date or weekday."""
+    return bool(_CLOCK_Q.search(message or ""))
+
+
+def clock_hint(now: datetime | None = None) -> str:
+    """One line for the user turn: the host clock, and that no tool is needed."""
+    line = render_host_block(now).splitlines()[1]  # "local time: ..."
+    return f"[{line}]"
 
 
 def situation_enabled(env: dict[str, str] | None = None) -> bool:

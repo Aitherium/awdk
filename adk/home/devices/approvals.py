@@ -23,6 +23,8 @@ from .policy import ANY_GUARDIAN, action_digest
 
 PENDING, APPROVED, DENIED, EXPIRED, EXECUTING, EXECUTED, FAILED = (
     "pending", "approved", "denied", "expired", "executing", "executed", "failed")
+#: A pending request withdrawn by the host (its requester's helper grant ended).
+CANCELLED = "cancelled"
 OPEN = frozenset({PENDING})
 #: Resolved approvals kept per store (newest kept).
 KEEP = 200
@@ -75,6 +77,27 @@ def refresh(row: Dict[str, Any], now: float) -> Dict[str, Any]:
         row["status"] = EXPIRED
         row["resolved_at"] = now
     return row
+
+
+def cancel(row: Dict[str, Any], *, now: float, reason: str) -> Dict[str, Any]:
+    """Withdraw a PENDING row (nothing else): it can no longer be voted on or run."""
+    if row["status"] == PENDING:
+        row["status"] = CANCELLED
+        row["resolved_at"] = now
+        row["result"] = {"cancelled": str(reason)[:200]}
+    return row
+
+
+def cancel_requested_by(store: Dict[str, Any], pid: str, *, now: float,
+                        reason: str) -> List[Dict[str, Any]]:
+    """Cancel every pending row ``pid`` asked for; returns the cancelled rows."""
+    out = []
+    for row in (store.get("approvals") or {}).values():
+        refresh(row, now)
+        if pid and row["status"] == PENDING and \
+                (row.get("requested_by") or {}).get("pid") == pid:
+            out.append(cancel(row, now=now, reason=reason))
+    return out
 
 
 def vote(row: Dict[str, Any], *, pid: str, allow: bool, now: float,

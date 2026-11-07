@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -47,6 +47,92 @@ from adk.harnesses.registry import HarnessSpec, LaunchSpec, Transport, resolve_b
 #: Events kept in memory for reconnecting clients. The transcript on disk is
 #: complete; this only bounds RAM for a long-running session.
 MAX_BUFFERED_EVENTS = 5000
+
+#: Hard ceiling on one positional page of ``events.jsonl`` (``read_events_page``).
+MAX_EVENTS_PAGE = 1000
+
+#: Character budget of the resume context a woken session is handed.
+WAKE_CONTEXT_CHARS = int(os.environ.get("AITHER_HARNESS_WAKE_CONTEXT_CHARS", "6000"))
+
+
+def session_root(root: Optional[Path] = None) -> Path:
+    """The directory every session's ``<id>/events.jsonl`` lives under."""
+    return Path(root) if root else Path(
+        os.environ.get("AITHER_HARNESS_ROOT", Path.home() / ".aither" / "harness-sessions")
+    )
+
+
+def read_events_page(path: Path, after: int = 0, limit: int = 0) -> tuple[list[dict], bool]:
+    """Events with ``seq > after`` from a transcript, oldest first: ``(page, more)``.
+
+    The positional read of a session log: ``after`` is the last seq the caller holds,
+    ``limit`` bounds the page (0 = up to ``MAX_EVENTS_PAGE``) and ``more`` says another
+    page is waiting. A line that is not a JSON object with an int ``seq`` is skipped,
+    never fatal: a torn last line from a crashed writer must not hide the rest.
+    """
+    cap = min(limit, MAX_EVENTS_PAGE) if limit > 0 else MAX_EVENTS_PAGE
+    page: list[dict] = []
+    more = False
+    try:
+        handle = Path(path).open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        return [], False
+    with handle:
+        for line in handle:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            seq = obj.get("seq") if isinstance(obj, dict) else None
+            if not isinstance(seq, int) or seq <= after:
+                continue
+            if len(page) >= cap:
+                more = True
+                break
+            page.append(obj)
+    return page, more
+
+
+def resume_context(events: list[dict], budget: int = WAKE_CONTEXT_CHARS) -> str:
+    """The tail of a session log as plain text a re-spawned harness can read.
+
+    Turns become ``user:`` / ``assistant:`` lines, tool calls ``tool:`` and errors
+    ``error:``; deltas of one turn are joined. Kept from the END within ``budget``
+    characters, because the most recent turns are what a resume needs.
+    """
+    lines: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        text = "".join(buf).strip()
+        if text:
+            lines.append(f"assistant: {text}")
+        buf.clear()
+
+    for ev in events:
+        kind = str(ev.get("kind") or "")
+        if kind == EventKind.TEXT_DELTA.value:
+            buf.append(str(ev.get("text") or ""))
+            continue
+        flush()
+        if kind == EventKind.TURN_STARTED.value and ev.get("text"):
+            lines.append(f"user: {str(ev['text']).strip()}")
+        elif kind == EventKind.TOOL_CALL.value:
+            lines.append(f"tool: {ev.get('tool') or '?'}")
+        elif kind == EventKind.ERROR.value and ev.get("text"):
+            lines.append(f"error: {str(ev['text']).strip()}")
+    flush()
+    out: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        if used + len(line) + 1 > budget:
+            if not out:
+                out.append(line[-budget:])
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(reversed(out))
+
 
 #: Wall-clock ceiling on a ONESHOT_PER_TURN turn, in seconds.
 #:
@@ -221,12 +307,12 @@ class HarnessSession:
         self._threads: list[threading.Thread] = []
         self._closed = threading.Event()
 
-        base = root or Path(
-            os.environ.get("AITHER_HARNESS_ROOT", Path.home() / ".aither" / "harness-sessions")
-        )
-        self.dir = Path(base) / self.id
+        self.dir = session_root(root) / self.id
         self.dir.mkdir(parents=True, exist_ok=True)
         self._transcript = self.dir / "events.jsonl"
+        #: The config a later ``wake`` re-spawns from. ``SessionManager.wake`` points
+        #: this at the ORIGINAL config so a resume block is never stacked twice.
+        self.persist_config: SessionConfig = config
 
         # Session-focus record state (non-Claude harnesses only; see _track_focus).
         self._focus_asks: list[str] = []
@@ -320,6 +406,42 @@ class HarnessSession:
         with self._lock:
             out = [e.to_dict() for e in self._events if e.seq > seq]
         return out[-limit:] if limit else out
+
+    def events_page(self, after: int = 0, limit: int = 0) -> tuple[list[dict[str, Any]], bool]:
+        """The positional read: events with ``seq > after``, oldest first, ``(page, more)``.
+
+        Served from memory when the buffer still holds ``after + 1``; otherwise from
+        ``events.jsonl``, which is complete where the buffer is bounded. ``limit=0``
+        from memory answers every buffered event after the cursor (the shape the
+        ``?since=`` readers already depend on); from disk it is ``MAX_EVENTS_PAGE``.
+        """
+        with self._lock:
+            covered = not self._events or self._events[0].seq <= after + 1
+            if covered:
+                rest = [e.to_dict() for e in self._events if e.seq > after]
+        if covered:
+            if limit <= 0:
+                return rest, False
+            cap = min(limit, MAX_EVENTS_PAGE)
+            return rest[:cap], len(rest) > cap
+        return read_events_page(self._transcript, after, limit)
+
+    def resume_from(self, last_seq: int, harness_session_id: str = "") -> None:
+        """Continue an existing log: the next event is ``last_seq + 1``. Before start()."""
+        with self._lock:
+            self._seq = max(self._seq, int(last_seq))
+        if harness_session_id and not self.harness_session_id:
+            self.harness_session_id = harness_session_id
+
+    def persist_session_file(self) -> None:
+        """Write ``session.json`` beside the log so a dead session can be woken."""
+        try:
+            (self.dir / "session.json").write_text(
+                json.dumps({"id": self.id, "config": asdict(self.persist_config)}),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            sys.stderr.write(f"[harness {self.id}] session.json not written: {exc}\n")
 
     @property
     def last_seq(self) -> int:

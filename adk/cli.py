@@ -9034,9 +9034,13 @@ def cmd_grid(args) -> int:
     #                "cluster": [{"host": "...", "port": 8121, "model": "..."}] }
 
     if sub == "status" or sub is None:
-        print()
-        print("  Grid Topology")
-        print("  " + "=" * 55)
+        from adk import _attention as att
+        from adk.grid_status import collect_grid_status, grid_next_action, render_grid_health
+
+        # Probe first: line 1 is the action the probe results call for.
+        health = collect_grid_status(saved, grid_nodes)
+        print(att.next_line(grid_next_action(health)))
+        print("Grid Topology")
 
         # Primary (local GPU)
         backend = saved.get("backend", "")
@@ -9064,9 +9068,13 @@ def cmd_grid(args) -> int:
         c_url = saved.get("cluster_url", "")
         c_model = saved.get("cluster_model", "")
         if c_nodes:
-            for i, node in enumerate(c_nodes):
+            shown_c, hidden_c = att.cap(c_nodes, show_all=bool(getattr(args, "all", False)))
+            for i, node in enumerate(shown_c):
                 c_display = f"{node['host']}:{node.get('port', 8121)}"
-                print(f"  [cpu.{i}]   {c_display:30s}  {node.get('model', c_model or 'auto')}")
+                print(att.fit(f"  [cpu.{i}]   {c_display:30s}  "
+                              f"{node.get('model', c_model or 'auto')}"))
+            if hidden_c:
+                print(att.more_line(hidden_c, "adk grid status --all"))
         elif c_url:
             print(f"  [cpu.0]   {c_url:30s}  {c_model or 'auto'}")
         else:
@@ -9085,13 +9093,11 @@ def cmd_grid(args) -> int:
             print("  Optional: adk login → free account, enables config sync across machines")
             print("            https://api.aitherium.com/signup")
 
-        # Health check all nodes
+        # Health of all nodes (probed above, before line 1 was printed)
         print()
-        print("  Health")
-        print("  " + "-" * 55)
-        _grid_health_check(saved, grid_nodes)
-
-        print()
+        print(f"Health ({health['healthy']}/{health['total']} healthy)")
+        for line in render_grid_health(health, show_all=bool(getattr(args, "all", False))):
+            print(line)
         return 0
 
     elif sub == "add":
@@ -11867,36 +11873,27 @@ def _jobs_start_local(args) -> int:
 def _jobs_list_local(args) -> int:
     """List local jobs from ~/.aither/jobs.db."""
     from adk.local_jobs import get_store
+    from adk.jobs_render import render_job_list
     jobs = get_store().list()
     if not jobs:
-        print("  No local jobs. Start one: adk jobs start \"<task>\"")
+        print("Next: run `adk jobs start \"<task>\"` (no local jobs yet)")
         return 0
-    print("\n  Local Jobs")
-    print("  " + "=" * 70)
-    print(f"  {'ID':<10s} {'Status':<11s} {'Synced':<7s} {'Query':<40s}")
-    print("  " + "-" * 70)
-    for j in jobs:
-        synced = "yes" if j.get("remote_id") else "-"
-        print(f"  {j['id'][:8]:<10s} {j['status']:<11s} {synced:<7s} {(j['query'] or '')[:40]:<40s}")
-    print()
+    for line in render_job_list(jobs, show_all=bool(getattr(args, "all", False))):
+        print(line)
     return 0
 
 
 def _jobs_status_local(args) -> int:
     """Show a local job's status + result."""
     from adk.local_jobs import get_store
+    from adk.jobs_render import render_local_status
     job = get_store().get(args.id)
     if not job:
-        print(f"  Local job not found: {args.id}")
+        print(f"Next: run `adk jobs list` (no local job {args.id}; "
+              "add --remote for a cloud expedition)")
         return 1
-    print(f"\n  Job {job['id'][:8]}  [{job['status']}]")
-    print(f"  Query: {job['query']}")
-    if job.get("remote_id"):
-        print(f"  Synced → {job.get('remote_url', '')}/expedition/{job['remote_id']}")
-    if job.get("result"):
-        print("\n" + job["result"])
-    if job.get("error"):
-        print(f"\n  Error: {job['error']}")
+    for line in render_local_status(job):
+        print(line)
     return 0
 
 
@@ -11951,21 +11948,13 @@ async def _jobs_list(args) -> int:
                 expeditions = data.get("expeditions", [])
 
                 if not expeditions:
-                    print("  No jobs found.")
+                    print("Nothing needs you. No cloud expeditions.")
                     return 0
 
-                print("\n  Expeditions / Jobs")
-                print("  " + "=" * 70)
-                print(
-                    f"  {'ID':<20s} {'Status':<12s} {'Title':<36s}"
-                )
-                print("  " + "-" * 70)
-                for exp in expeditions:
-                    exp_id = exp.get("id", "unknown")[:20]
-                    status = exp.get("status", "unknown")[:12]
-                    title = exp.get("title", "")[:36]
-                    print(f"  {exp_id:<20s} {status:<12s} {title:<36s}")
-                print()
+                from adk.jobs_render import render_job_list
+                for line in render_job_list(expeditions, remote=True,
+                                            show_all=bool(getattr(args, "all", False))):
+                    print(line)
                 return 0
             elif resp.status_code == 404:
                 print("  Error: Genesis /expedition/list not found (404)")
@@ -12015,29 +12004,10 @@ async def _jobs_status(args) -> int:
             if tasks_resp.status_code == 200:
                 tasks = tasks_resp.json().get("tasks", [])
 
-            # Print status
-            print()
-            print(f"  Expedition: {exp_id}")
-            print("  " + "=" * 70)
-            for key, value in status_data.items():
-                if key != "id":
-                    print(f"  {key:.<20s} {value}")
-
-            # Print tasks if available
-            if tasks:
-                print()
-                print("  Tasks:")
-                print("  " + "-" * 70)
-                for task in tasks:
-                    task_id = task.get("id", "unknown")
-                    task_status = task.get("status", "unknown")
-                    task_title = task.get("title", "")
-                    print(f"    [{task_status:>8s}] {task_id:.<24s} {task_title}")
-                    if task.get("result_summary"):
-                        print(f"             Result: {task['result_summary'][:50]}")
-                    if task.get("error"):
-                        print(f"             Error: {task['error'][:50]}")
-            print()
+            from adk.jobs_render import render_expedition_status
+            for line in render_expedition_status(
+                    exp_id, status_data, tasks, show_all=bool(getattr(args, "all", False))):
+                print(line)
             return 0
     except Exception as e:
         print(f"  Error: Could not reach Genesis at {genesis_url}")
@@ -13904,7 +13874,10 @@ def _register_grid_parser(sub):
     grid_p = sub.add_parser(
         "grid", help="Manage grid distributed nodes (add, remove, list, test, sync)")
     grid_sub = grid_p.add_subparsers(dest="grid_command")
-    grid_sub.add_parser("status", help="Show grid topology and health of all nodes")
+    grid_status_p = grid_sub.add_parser(
+        "status", help="Show grid topology and health of all nodes")
+    grid_status_p.add_argument("--all", action="store_true",
+                               help="Show every node (default: top 5)")
     grid_add_p = grid_sub.add_parser("add", help="Add a node to the grid")
     grid_add_p.add_argument("role", choices=["reasoning", "cluster"], help="Node role")
     grid_add_p.add_argument("host", help="Hostname or IP address")
@@ -14340,6 +14313,16 @@ def _register_commands(sub):
     storage_p.add_argument("storage_args", nargs=argparse.REMAINDER,
                            help="scan | inventory | diff | propose | approve | apply | "
                                 "quarantine | revert | graph")
+
+    # adk family-drive — the family drive (`adk storage drive` spelled as one verb):
+    # keys, files, copy rules, backup now|status|restore|drill. Same pass-through shape.
+    fdrive_p = sub.add_parser(
+        "family-drive",
+        help="The family drive — keys, files, copy rules, backup and restore",
+        add_help=False,
+    )
+    fdrive_p.add_argument("family_drive_args", nargs=argparse.REMAINDER,
+                          help="key | put | get | ls | rm | rules | backup")
 
     # adk bricks — see, upgrade, test and roll back the Aither World bricks on this
     # machine. Same REMAINDER pass-through as `decide`/`storage`: adk/bricks.py owns
@@ -15414,6 +15397,12 @@ def _register_commands(sub):
         "--dry-run", action="store_true",
         help="Walk the full plan without side effects"
     )
+    join_p.add_argument(
+        "--workspace", nargs="?", const="", default=None, metavar="ID",
+        help="Join the Aitherium workspace instead: browser sign-in, add this device, "
+             "sync your settings, MCP bearer, Company Room (rerun is a no-op)"
+    )
+    join_p.add_argument("--label", default="", help="With --workspace: this device's name")
 
     # adk mesh — AitherMesh overlay and A2A operations
     mesh_p = sub.add_parser("mesh", help="AitherMesh overlay operations (onboard, list peers)")
@@ -15902,7 +15891,10 @@ def _register_commands(sub):
     _register_support_verbs(sub)
 
     # adk doctor — system health checks
-    sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
+    doctor_p = sub.add_parser(
+        "doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
+    doctor_p.add_argument("--all", action="store_true",
+                          help="Show every failing check and each check's full output")
 
     # adk gobbonet — run the GobboNet UI with keyless search, in one command
     gobbo_p = sub.add_parser(
@@ -16198,6 +16190,15 @@ def _register_commands(sub):
     desk_desktop_p.add_argument("surface", nargs="?", default="status",
                                 choices=("overlay", "app", "status"))
     desk_desktop_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    # `adk desk commands` / `adk desk run <id>` -- the desk's palette rows (snip, record,
+    # audio, draw, orb ...) by name, the same ids the tray and Ctrl+K palette run.
+    desk_cmds_p = desk_sub.add_parser("commands", help="List the desk's commands (palette rows)")
+    desk_cmds_p.add_argument("filter", nargs="?", default="", help="Substring to filter ids/labels")
+    desk_cmds_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    desk_run_p = desk_sub.add_parser("run", help="Run one desk command by id (see `adk desk commands`)")
+    desk_run_p.add_argument("id", help="Command id, e.g. snip.region, record.screen")
+    desk_run_p.add_argument("arg", nargs="?", default=None, help="Optional argument")
+    desk_run_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
 
     # adk support — help and community links
     sub.add_parser("support", help="Get help — Discord, GitHub, docs")
@@ -16485,9 +16486,12 @@ def _register_commands(sub):
     # without it they operate on the LOCAL job store (~/.aither/jobs.db).
     jobs_list_p = jobs_sub.add_parser("list", help="List jobs (local by default)")
     jobs_list_p.add_argument("--remote", action="store_true", help="List cloud expeditions instead")
+    jobs_list_p.add_argument("--all", action="store_true", help="Show every job (default: top 5)")
     jobs_status_p = jobs_sub.add_parser("status", help="Show status of a job")
     jobs_status_p.add_argument("id", help="Job ID (local) or Expedition ID (--remote)")
     jobs_status_p.add_argument("--remote", action="store_true", help="Query the cloud expedition")
+    jobs_status_p.add_argument("--all", action="store_true",
+                               help="Show every expedition task (default: top 5)")
     jobs_steer_p = jobs_sub.add_parser("steer", help="Send a follow-up message to a job")
     jobs_steer_p.add_argument("id", help="Job/Expedition ID")
     jobs_steer_p.add_argument("message", help="Follow-up message")
@@ -16565,6 +16569,11 @@ def _register_commands(sub):
                           help="Set a run variable (repeatable)")
     nb_run_p.add_argument("--mode", default="sequential",
                           choices=["sequential", "parallel"], help="Execution mode")
+    nb_run_p.add_argument("--dry-run", action="store_true",
+                          help="Show what a run would execute; run nothing")
+    nb_run_p.add_argument("--allow-side-effects", action="store_true",
+                          help="Run although cells can change things (agent, script and "
+                               "service cells); refused without it")
 
     nb_status_p = nb_sub.add_parser("status", help="Show a run's status, cell traces, and cost")
     nb_status_p.add_argument("run_id", help="Run id (from `notebook run`)")
@@ -16780,8 +16789,13 @@ def cmd_notebook(args) -> int:
                                context=args.context)
     elif sub == "list":
         if getattr(args, "local", False):
-            from adk.commands.briefs import notebooks_from_index, print_notebooks
-            print_notebooks(notebooks_from_index())
+            from adk.commands.briefs import notebooks_from_index, print_notebooks, read_index
+            index, why = read_index()
+            if why:
+                # Could not look: say so and exit 2, never an empty list and 0.
+                print("  " + why, file=sys.stderr)
+                return 2
+            print_notebooks(notebooks_from_index(index))
             return 0
         out = nt.notebook_list(workspace=args.workspace, status=args.status,
                                limit=args.limit)
@@ -16797,7 +16811,9 @@ def cmd_notebook(args) -> int:
                 print(f"Warning: ignoring malformed --var '{pair}' (expected KEY=VALUE)",
                       file=sys.stderr)
         out = nt.notebook_execute(args.notebook_id, variables=variables or None,
-                                  mode=args.mode)
+                                  mode=args.mode,
+                                  allow_side_effects=getattr(args, "allow_side_effects", False),
+                                  dry_run=getattr(args, "dry_run", False))
     elif sub == "status":
         out = nt.notebook_run_status(args.run_id)
     elif sub == "export":
@@ -17287,6 +17303,51 @@ def _cmd_desk_fleet(args) -> int:
     return exit_code
 
 
+def _cmd_desk_commands(args) -> int:
+    """`adk desk commands [filter]` -- the desk's palette rows, capped at 40 with a count."""
+    import json as _json
+
+    from adk.desk_bridge import DeskBridgeClient
+
+    exit_code, rows = DeskBridgeClient().list_commands()
+    needle = (getattr(args, "filter", "") or "").lower()
+    if needle:
+        rows = [r for r in rows if needle in f"{r.get('id', '')} {r.get('label', '')}".lower()]
+    if getattr(args, "json_output", False):
+        print(_json.dumps({"ok": exit_code == 0, "commands": rows}, indent=2))
+        return exit_code
+    if exit_code != 0:
+        print("0 desk commands -- the desk bridge is not running (start awdesk)")
+        return exit_code
+    for r in rows[:40]:
+        print(f"  {str(r.get('id', '')):34} {r.get('label', '')}")
+    if len(rows) > 40:
+        print(f"  +{len(rows) - 40} more -- narrow with `adk desk commands <filter>`")
+    print(f"{len(rows)} command(s). Run one: adk desk run <id>")
+    return 0
+
+
+def _cmd_desk_run(args) -> int:
+    """`adk desk run <id> [arg]` -- run one desk palette row by id."""
+    import json as _json
+
+    from adk.desk_bridge import DeskBridgeClient
+
+    try:
+        exit_code, result = DeskBridgeClient().run_command(args.id, getattr(args, "arg", None))
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    if getattr(args, "json_output", False):
+        print(_json.dumps(result, indent=2))
+        return exit_code
+    if exit_code == 0:
+        print(f"ran {args.id}" + (f" -- {result.get('label')}" if result.get("label") else ""))
+    else:
+        print(f"desk run {args.id}: {result.get('error', 'cannot judge')}")
+    return exit_code
+
+
 def _cmd_desk_desktop(args) -> int:
     """`adk desk desktop overlay|app|status` -- raise one of awdesk's two desktop
     surfaces (the aitherium.com Living Desktop over the Windows desktop, or the
@@ -17317,7 +17378,7 @@ def _cmd_desk_desktop(args) -> int:
 
 
 def _cmd_desk(args) -> int:
-    """Handle awdesk bridge commands (command, history, fleet, desktop)."""
+    """Handle awdesk bridge commands (command, history, fleet, desktop, commands, run)."""
     import json as _json
 
     from adk.desk_bridge import DeskBridgeClient
@@ -17327,6 +17388,10 @@ def _cmd_desk(args) -> int:
         return _cmd_desk_fleet(args)
     if cmd == "desktop":
         return _cmd_desk_desktop(args)
+    if cmd == "commands":
+        return _cmd_desk_commands(args)
+    if cmd == "run":
+        return _cmd_desk_run(args)
     client = DeskBridgeClient()
 
     if cmd == "command":
@@ -17409,6 +17474,7 @@ def _install_air_gap_guard() -> bool:
 _PASSTHROUGH_VERBS = {
     "decide": ("adk.decisions.cli", "main"),
     "storage": ("adk.storage_cmd", "main"),
+    "family-drive": ("adk.family_drive_cli", "main"),
     "bricks": ("adk.bricks", "main"),
     "lookout": ("adk.lookout", "main"),
     "mothership": ("adk.lookout", "main"),  # the 3.8.31 spelling of lookout
@@ -17421,11 +17487,6 @@ _PASSTHROUGH_VERBS = {
 
 
 def main():
-    # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
-    _dv = locals().get("argv")
-    if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
-        from ._doctor import report
-        return report()
     # GENERATED repo-state intercept (gen_aw_doctor.py) -- do not edit
     try:
         from awgit import state as _aw_state
@@ -17699,6 +17760,9 @@ def main():
         from adk.kvholder_cli import run as _run_kvholder
         sys.exit(_run_kvholder(args))
     elif args.command == "join":
+        if getattr(args, "workspace", None) is not None:
+            from adk.invite_enroll import run_workspace_join
+            sys.exit(run_workspace_join(args.workspace, label=args.label or ""))
         from adk.commands.join import cmd_join
         sys.exit(cmd_join(args))
     elif args.command == "approvals":

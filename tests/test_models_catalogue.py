@@ -414,3 +414,49 @@ def test_adk_cli_runs_models_list():
     assert r.returncode == 0, r.stderr[-2000:]
     ids = {m["id"] for m in json.loads(r.stdout)["models"]}
     assert {"bonsai2-27b", "aither-code-embed", "gemma4-12b"} <= ids
+
+
+# ── ranking by measured benchmark score ──────────────────────────────────────────────
+
+def _scored(m, overall, item_set="set-a"):
+    m["bench"] = {"overall": overall, "item_set": item_set, "measured": "2026-10-28"}
+    return m
+
+
+def test_a_better_score_beats_a_bigger_model():
+    """The 2026-10-28 shape: a small model that scores higher outranks a larger one."""
+    c = _cat(small=_scored(_model("small", 400, dict(OK)), 0.53),
+             big=_scored(_model("big", 2000, dict(OK)), 0.43))
+    assert catalogue.recommend(c, 8000) == "small"
+    assert catalogue.candidates(c, 8000) == ["small", "big"]
+
+
+def test_unmeasured_models_rank_below_measured_ones():
+    c = _cat(small=_scored(_model("small", 400, dict(OK)), 0.30),
+             big=_model("big", 2000, dict(OK)))
+    assert catalogue.candidates(c, 8000) == ["small", "big"]
+
+
+def test_scores_from_different_item_sets_are_not_compared():
+    """Incomparable scores fall back to largest-that-fits rather than mis-ranking."""
+    c = _cat(small=_scored(_model("small", 400, dict(OK)), 0.90, "set-a"),
+             big=_scored(_model("big", 2000, dict(OK)), 0.10, "set-b"))
+    assert catalogue.recommend(c, 8000) == "big"
+
+
+def test_no_scores_keeps_the_old_largest_that_fits_rule(cat):
+    assert catalogue.candidates(cat, 4096) == ["big", "small"]
+
+
+def test_choices_still_never_include_a_gated_or_unfitting_model():
+    c = _cat(small=_scored(_model("small", 400, dict(OK)), 0.20),
+             gated=_scored(_model("gated", 400, dict(OK, redistribution_ok=False)), 0.99),
+             huge=_scored(_model("huge", 9000, dict(OK)), 0.95))
+    assert catalogue.candidates(c, 4000) == ["small"]
+
+
+def test_shipped_catalogue_ranks_bonsai2_first_on_a_big_card():
+    cat_ = catalogue.load()
+    ranked = catalogue.candidates(cat_, 32000)
+    assert ranked[0] == "bonsai2-27b"
+    assert catalogue.bench_score(cat_["models"]["bonsai2-27b"]) == 0.9

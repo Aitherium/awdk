@@ -9,7 +9,8 @@ Three classes, decided per ENTITY (and, for a few domains, per action):
              scripts, switches and anything unknown. One yes from the asker (an
              adult) on a card bound to the exact arguments.
 ``guarded``  locks, garage doors / gates / doors, alarm panels, valves, sirens, water
-             heaters, anything tagged ``dangerous``, and every camera action. A
+             heaters, ``update`` entities (firmware, add-ons), anything tagged
+             ``dangerous``, and every camera action. A
              request that resolves only when ``approvals_required`` of the allowed
              approvers (default: one guardian) say yes, before it expires.
 
@@ -23,7 +24,15 @@ adult              every exposed       the guardians' quorum
 teen, child        only their list     free (on their list) acts; anything else
                                        becomes "ask a parent" (a guardian request)
 guest              nothing             nothing
+helper (a guest    the entities of     like an adult, on those entities only, and
+with a grant)      their active grant  only between ``not_before`` and ``expires_at``
 =================  ==================  ===========================================
+
+A HELPER GRANT (babysitter, relative, dog-walker) is a guardian's time-bound share to
+one guest pid: ``{grant_id, pid, name, entities, exposure, not_before, expires_at,
+granted_by}`` in ``cfg["grants"]``. It fails closed: a grant that is revoked, expired, not
+yet valid, or whose times cannot be read grants nothing, and a guest with no active grant
+is exactly the plain guest above. ``now`` is passed in (the clock is the caller's).
 
 A TAINTED session (it read mail, the web or other untrusted text) never acts without
 a human: free and confirm become confirm (asker's card; a child's become ask-parent),
@@ -41,9 +50,11 @@ import copy
 import hashlib
 import json
 import re
+import secrets
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, time as dtime
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from datetime import datetime, timezone
+from datetime import time as dtime
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 FREE, CONFIRM, GUARDED = "free", "confirm", "guarded"
 CLASSES = (FREE, CONFIRM, GUARDED)
@@ -67,6 +78,8 @@ DOMAIN_CLASS: Dict[str, str] = {
     "select": CONFIRM,
     "lock": GUARDED, "alarm_control_panel": GUARDED, "camera": GUARDED,
     "valve": GUARDED, "siren": GUARDED, "water_heater": GUARDED,
+    # Firmware / add-on / core updates: a bad one bricks a device or takes the hub down.
+    "update": GUARDED,
 }
 #: (domain, device_class) -> class, over :data:`DOMAIN_CLASS`.
 DEVICE_CLASS_CLASS: Dict[tuple, str] = {
@@ -110,6 +123,7 @@ def default_config() -> Dict[str, Any]:
         "devices": {},
         "hidden": [],
         "exposure": {"people": {}, GUEST: []},
+        "grants": [],
     }
 
 
@@ -209,7 +223,211 @@ def validate_config(raw: Any) -> Dict[str, Any]:
     if not isinstance(guests, list) or not all(_ENTITY_RE.match(str(e)) for e in guests):
         raise PolicyError("exposure.guest: a list of entity ids")
     cfg["exposure"][GUEST] = sorted({str(e) for e in guests})
+    grants = raw.get("grants") or []
+    if not isinstance(grants, list):
+        raise PolicyError("grants is a list of helper grants")
+    seen = set()
+    for g in grants:
+        row = validate_grant(g)
+        if row["grant_id"] in seen:
+            raise PolicyError(f"grant {row['grant_id']}: duplicate grant_id")
+        seen.add(row["grant_id"])
+        cfg["grants"].append(row)
     return cfg
+
+
+# ── helper grants (time-bound guest access) ────────────────────────────────────
+
+#: The longest a single helper grant may run: time-bound means bounded.
+MAX_GRANT_S = 90 * 24 * 3600
+#: How far ahead a new grant may start.
+MAX_GRANT_LEAD_S = 30 * 24 * 3600
+_GRANT_ID_RE = re.compile(r"^hg_[a-z0-9]{6,32}$")
+_GRANT_EXPOSURE = (GUEST,)
+
+
+def _instant(value: Any, where: str) -> datetime:
+    """An aware UTC datetime from a datetime, epoch seconds or ISO-8601 text."""
+    if isinstance(value, bool):
+        raise PolicyError(f"{where}: not a time")
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(float(value), timezone.utc)
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise PolicyError(f"{where}: not an ISO-8601 time") from exc
+    else:
+        raise PolicyError(f"{where}: not a time")
+    if dt.tzinfo is None:
+        raise PolicyError(f"{where}: a time needs a timezone")
+    return dt.astimezone(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def validate_grant(raw: Any) -> Dict[str, Any]:
+    """A clean helper grant, or :class:`PolicyError`. Unknown keys are dropped."""
+    if not isinstance(raw, Mapping):
+        raise PolicyError("a grant is an object")
+    gid = str(raw.get("grant_id") or "")
+    if not _GRANT_ID_RE.match(gid):
+        raise PolicyError(f"grant {gid!r}: grant_id is hg_ + 6-32 lower-case letters/digits")
+    pid = raw.get("pid")
+    if not isinstance(pid, str) or not 0 < len(pid) <= 64:
+        raise PolicyError(f"grant {gid}: pid is the helper's person id")
+    name = str(raw.get("name") or "").strip()[:64]
+    if not name:
+        raise PolicyError(f"grant {gid}: name the helper")
+    by = raw.get("granted_by")
+    if not isinstance(by, str) or not 0 < len(by) <= 64:
+        raise PolicyError(f"grant {gid}: granted_by is the guardian's person id")
+    ents = raw.get("entities") or []
+    if not isinstance(ents, list) or not all(_ENTITY_RE.match(str(e)) for e in ents):
+        raise PolicyError(f"grant {gid}: entities is a list of entity ids")
+    exposure = raw.get("exposure") or ""
+    if exposure and exposure not in _GRANT_EXPOSURE:
+        raise PolicyError(f"grant {gid}: exposure is \"guest\" (the guest list) or empty")
+    if not ents and not exposure:
+        raise PolicyError(f"grant {gid}: share some entities or the guest list")
+    start = _instant(raw.get("not_before"), f"grant {gid}: not_before")
+    end = _instant(raw.get("expires_at"), f"grant {gid}: expires_at")
+    if not start < end:
+        raise PolicyError(f"grant {gid}: expires_at must be after not_before")
+    if (end - start).total_seconds() > MAX_GRANT_S:
+        raise PolicyError(f"grant {gid}: a grant runs at most {MAX_GRANT_S // 86400} days")
+    row: Dict[str, Any] = {
+        "grant_id": gid, "pid": pid, "name": name, "granted_by": by,
+        "entities": sorted({str(e) for e in ents}), "exposure": str(exposure),
+        "not_before": _iso(start), "expires_at": _iso(end)}
+    if raw.get("revoked_at") is not None:
+        row["revoked_at"] = _iso(_instant(raw["revoked_at"], f"grant {gid}: revoked_at"))
+        rby = raw.get("revoked_by")
+        row["revoked_by"] = str(rby)[:64] if isinstance(rby, str) else ""
+    return row
+
+
+def grant_status(grant: Mapping[str, Any], now: datetime) -> str:
+    """``active`` | ``pending`` (before not_before) | ``expired`` | ``revoked`` |
+    ``invalid`` (unreadable times: fails closed)."""
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    if grant.get("revoked_at"):
+        return "revoked"
+    try:
+        start = _instant(grant.get("not_before"), "not_before")
+        end = _instant(grant.get("expires_at"), "expires_at")
+    except PolicyError:
+        return "invalid"
+    if now < start:
+        return "pending"
+    if now >= end:
+        return "expired"
+    return "active"
+
+
+def _grant_entities(grant: Mapping[str, Any], cfg: Mapping[str, Any]) -> set:
+    """The grant's explicit entities only. ``exposure="guest"`` is snapshotted into
+    ``entities`` when the grant is made (:func:`grant_helper`), so a later edit of the
+    guest list never widens a grant the guardian already signed off."""
+    return set(grant.get("entities") or [])
+
+
+def active_grants(cfg: Mapping[str, Any], pid: str, now: datetime) -> List[Dict[str, Any]]:
+    """The grants to ``pid`` that are active at ``now`` (none for an empty pid)."""
+    if not pid:
+        return []
+    return [dict(g) for g in cfg.get("grants") or []
+            if isinstance(g, Mapping) and g.get("pid") == pid
+            and grant_status(g, now) == "active"]
+
+
+def granted_entities(cfg: Mapping[str, Any], pid: str, now: datetime) -> set:
+    """Every entity id an active grant shares with ``pid`` at ``now``."""
+    out: set = set()
+    for g in active_grants(cfg, pid, now):
+        out |= _grant_entities(g, cfg)
+    return out
+
+
+def grant_helper(cfg: Mapping[str, Any], *, pid: str, name: str, granted_by: str,
+                 not_before: Any, expires_at: Any, now: datetime,
+                 entities: Iterable[str] = (), exposure: str = "",
+                 grant_id: Optional[str] = None
+                 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(new cfg, the grant): ``cfg`` with one more helper grant. Pure; the host saves the
+    cfg and writes the receipt. :class:`PolicyError` on anything malformed.
+
+    ``exposure="guest"`` is SNAPSHOTTED into ``entities`` (the guest list as it is now).
+    ``not_before`` may be at most :data:`MAX_GRANT_LEAD_S` after ``now``, and the window
+    may not overlap another live (active or pending) grant to the same pid: extend one
+    by revoke + grant."""
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    ents = {str(e) for e in entities or []}
+    if exposure == GUEST:
+        ents |= set((cfg.get("exposure") or {}).get(GUEST) or [])
+    elif exposure:
+        raise PolicyError("exposure is \"guest\" (the guest list) or empty")
+    gid = grant_id or "hg_" + secrets.token_hex(8)
+    if not ents:
+        raise PolicyError(f"grant {gid}: share some entities (the guest list is empty)")
+    row = validate_grant({
+        "grant_id": gid, "pid": pid, "name": name, "granted_by": granted_by,
+        "entities": sorted(ents), "exposure": "",
+        "not_before": not_before, "expires_at": expires_at})
+    start, end = _instant(row["not_before"], "not_before"), _instant(row["expires_at"], "")
+    if (start - now).total_seconds() > MAX_GRANT_LEAD_S:
+        raise PolicyError(f"grant {gid}: not_before is at most "
+                          f"{MAX_GRANT_LEAD_S // 86400} days ahead")
+    if end <= now:
+        raise PolicyError(f"grant {gid}: that window has already ended")
+    out = copy.deepcopy(dict(cfg))
+    grants = list(out.get("grants") or [])
+    if any(g.get("grant_id") == row["grant_id"] for g in grants):
+        raise PolicyError(f"grant {row['grant_id']}: duplicate grant_id")
+    for g in grants:
+        if g.get("pid") != pid or grant_status(g, now) not in ("active", "pending"):
+            continue
+        if start < _instant(g["expires_at"], "") and _instant(g["not_before"], "") < end:
+            raise PolicyError(f"{name} already has grant {g['grant_id']} in that window: "
+                              "revoke it and grant again to change it")
+    grants.append(row)
+    out["grants"] = grants
+    return out, row
+
+
+def revoke_helper(cfg: Mapping[str, Any], grant_id: str, *, revoked_by: str,
+                  now: datetime) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(new cfg, the revoked grant). The row stays (with ``revoked_at``/``revoked_by``)
+    so the policy still shows who had access when. :class:`PolicyError` if unknown."""
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    out = copy.deepcopy(dict(cfg))
+    grants = list(out.get("grants") or [])
+    for i, g in enumerate(grants):
+        if g.get("grant_id") == grant_id:
+            if not g.get("revoked_at"):
+                g = {**g, "revoked_at": _iso(now), "revoked_by": str(revoked_by)[:64]}
+                grants[i] = g
+            out["grants"] = grants
+            return out, dict(g)
+    raise PolicyError(f"no grant {grant_id!r}")
+
+
+def list_helper_grants(cfg: Mapping[str, Any], now: datetime,
+                       pid: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Every grant (or ``pid``'s) with its ``status`` at ``now``, latest window first."""
+    rows = [{**g, "status": grant_status(g, now)} for g in cfg.get("grants") or []
+            if isinstance(g, Mapping) and (pid is None or g.get("pid") == pid)]
+    return sorted(rows, key=lambda g: str(g.get("not_before")), reverse=True)
 
 
 def _hhmm(text: str) -> dtime:
@@ -317,8 +535,11 @@ def default_minor_exposure(person: Mapping[str, Any], entity_ids: Iterable[str])
 
 
 def exposed_to(person: Mapping[str, Any], cfg: Mapping[str, Any],
-               entity_ids: Iterable[str]) -> List[str]:
-    """The entity ids this person may see (and, if their class allows, act on)."""
+               entity_ids: Iterable[str], now: Optional[datetime] = None) -> List[str]:
+    """The entity ids this person may see (and, if their class allows, act on).
+
+    A guest also sees what a helper grant ACTIVE at ``now`` shares with them (the
+    system clock when omitted)."""
     ids = [e for e in entity_ids if _ENTITY_RE.match(str(e))]
     hidden = set(cfg.get("hidden") or [])
     role = str(person.get("role") or GUEST)
@@ -331,6 +552,9 @@ def exposed_to(person: Mapping[str, Any], cfg: Mapping[str, Any],
             set(default_minor_exposure(person, ids))
         return sorted(e for e in ids if e in allowed and e not in hidden)
     allowed = set(exp.get(GUEST) or [])
+    if cfg.get("grants"):
+        when = now or datetime.now(timezone.utc)
+        allowed |= granted_entities(cfg, str(person.get("pid") or ""), when)
     return sorted(e for e in ids if e in allowed and e not in hidden)
 
 
@@ -377,11 +601,24 @@ def decide(*, cfg: Mapping[str, Any], person: Mapping[str, Any], entity_id: str,
     live entity list). Pure: same inputs, same decision."""
     role = str(person.get("role") or GUEST)
     t = bool(tainted)
+    helper = False
     if role not in ADULT_ROLES | MINOR_ROLES:
-        return Decision(REFUSE, "", "guests cannot use the home's devices", role, t)
+        # A guest acts only through a helper grant active NOW that names this entity
+        # (and the entity must still be exposed to them: hidden wins).
+        pid = str(person.get("pid") or "")
+        mine = [g for g in cfg.get("grants") or []
+                if isinstance(g, Mapping) and pid and g.get("pid") == pid]
+        if not mine:
+            return Decision(REFUSE, "", "guests cannot use the home's devices", role, t)
+        if entity_id not in granted_entities(cfg, pid, now):
+            return Decision(REFUSE, "", "your helper access does not cover that device "
+                            "right now -- ask a guardian", role, t)
+        helper = True
     if entity_id not in set(exposed):
         why = ("that device is not on your list -- ask a parent to add it"
                if role in MINOR_ROLES else "that device is not shared with Hearth")
+        if helper:
+            why = "that device is not shared with you"
         return Decision(REFUSE, "", why, role, t)
     cls = action_class(entity_id, action, params, cfg, now, device_class)
     rule, source = rule_for(entity_id, cls, cfg)
@@ -410,7 +647,8 @@ def decide(*, cfg: Mapping[str, Any], person: Mapping[str, Any], entity_id: str,
                         "say yes to the exact action first", role, t, approvals_required=1,
                         approvers=[str(person.get("pid"))],
                         expires_s=int(rule["expires_s"]), rule_source="asker")
-    return Decision(ACT, cls, "free", role, t)
+    return Decision(ACT, cls, "free, under your helper grant" if helper else "free",
+                    role, t)
 
 
 # ── the action itself ─────────────────────────────────────────────────────────
@@ -471,4 +709,5 @@ def summary(action: Mapping[str, Any], name: str = "") -> str:
 
 __all__ = [n for n in dir() if not n.startswith("_") and n not in (
     "annotations", "asdict", "copy", "dataclass", "datetime", "dtime", "field", "hashlib",
-    "json", "re", "Any", "Dict", "Iterable", "List", "Mapping", "Optional")]
+    "json", "re", "secrets", "timezone", "Any", "Dict", "Iterable", "List", "Mapping",
+    "Optional", "Tuple")]

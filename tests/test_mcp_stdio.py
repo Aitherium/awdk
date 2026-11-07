@@ -817,64 +817,134 @@ def test_notebooks_ids_are_validated_before_any_call(monkeypatch):
     assert "error" in mcp_stdio._notebooks_status({"run_id": "../runs"})
 
 
-def test_notebooks_replay_dry_run_executes_nothing(monkeypatch):
-    calls = []
-
-    def fake(name, **kw):
-        calls.append(name)
-        return {"cell_count": 3, "cells": [{"type": "context"},
-                                           {"type": "tool_call", "tool": "Read"},
-                                           {"type": "tool_call", "tool": "Read"}]}
-
-    monkeypatch.setattr(mcp_stdio, "_nb_call", fake)
-    out = mcp_stdio._notebooks_replay({"notebook_id": "nb_new00002", "dry_run": True})
-    assert out["would_run"] == {"context": 1, "tool_call:Read": 2}
-    assert out["side_effect_cells"] == {}
-    assert calls == ["notebook_outline"]
-
-
-def _replay_fake(cells, seen, **outline_extra):
-    def fake(name, **kw):
-        if name == "notebook_outline":
-            return dict({"cell_count": len(cells), "cells": cells}, **outline_extra)
-        seen.update(name=name, **kw)
-        return {"success": True, "run_id": "run_1", "status": "completed"}
-    return fake
-
-
-def test_notebooks_replay_runs_through_notebook_execute(monkeypatch):
+def test_notebooks_replay_goes_through_the_one_guard_in_notebook_execute(monkeypatch):
     seen = {}
-    cells = [{"type": "context"}, {"type": "prompt"}, {"type": "tool_call", "tool": "Grep"}]
-    monkeypatch.setattr(mcp_stdio, "_nb_call", _replay_fake(cells, seen))
-    out = mcp_stdio._notebooks_replay({"notebook_id": "nb_new00002", "variables": {"x": 1}})
-    assert out["run_id"] == "run_1"
+    monkeypatch.setattr(mcp_stdio, "_nb_call",
+                        lambda name, **kw: seen.update(name=name, **kw) or {"ok": 1})
+    mcp_stdio._notebooks_replay({"notebook_id": "nb_new00002", "variables": {"x": 1}})
     assert seen == {"name": "notebook_execute", "notebook_id": "nb_new00002",
-                    "variables": {"x": 1}, "mode": "sequential"}
+                    "variables": {"x": 1}, "mode": "sequential",
+                    "allow_side_effects": False, "dry_run": False}
+    # Only a real boolean true opts in.
+    mcp_stdio._notebooks_replay({"notebook_id": "nb_1", "allow_side_effects": "yes",
+                                 "dry_run": True})
+    assert seen["allow_side_effects"] is False and seen["dry_run"] is True
     assert "error" in mcp_stdio._notebooks_replay({"notebook_id": "nb_1", "mode": "rm"})
+    assert "nbrun_" in mcp_stdio._notebooks_status({"run_id": "../x"})["error"]
 
 
-def test_notebooks_replay_refuses_recorded_writes_unless_allowed(monkeypatch):
-    # tool_call cells go to an AGENT with the recorded tool + input, so a recorded
-    # Bash/Write could be performed again: refused unless the caller says so.
-    seen = {}
-    cells = [{"type": "tool_call", "tool": "Read"}, {"type": "tool_call", "tool": "Bash"},
-             {"type": "tool_call", "tool": "Write"}, {"type": "tool_call", "tool": "Bash"}]
-    monkeypatch.setattr(mcp_stdio, "_nb_call", _replay_fake(cells, seen))
-    out = mcp_stdio._notebooks_replay({"notebook_id": "nb_new00002"})
-    assert out["refused"] is True and seen == {}
-    assert out["side_effect_cells"] == {"tool_call:Bash": 2, "tool_call:Write": 1}
-    out = mcp_stdio._notebooks_replay({"notebook_id": "nb_new00002",
-                                       "allow_side_effects": True})
-    assert out["run_id"] == "run_1" and seen["name"] == "notebook_execute"
+def _nt_fake(monkeypatch, cells, seen, definition_error=None):
+    from adk import notebook_tools as nt
+
+    def fake_request(method, path, **kw):
+        seen.append((method, path))
+        if method == "GET":
+            return {"error": definition_error} if definition_error else {
+                "id": "nb_x", "cells": cells}
+        return {"success": True, "run_id": "nbrun_1", "status": "completed"}
+
+    monkeypatch.setattr(nt, "_request", fake_request)
+    return nt
 
 
-def test_notebooks_replay_fails_closed_on_cells_it_could_not_inspect(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(mcp_stdio, "_nb_call", _replay_fake([{"type": "context"}], seen,
-                                                            cells_not_shown=40))
-    out = mcp_stdio._notebooks_replay({"notebook_id": "nb_new00002"})
-    assert out["refused"] is True and out["side_effect_cells"] == {"not inspected": 40}
-    assert seen == {}
+# The replay rule, pinned with the same cases as awdesk notebooks-client.test.cjs.
+_RECORDED = [{"type": "context", "config": {"title": "s"}},
+             {"type": "tool_call", "config": {"tool": "Read", "input": {"p": "a"}}},
+             {"type": "tool_call", "config": {"tool": "Bash", "input": {"c": "rm"}}},
+             {"type": "prompt", "config": {"prompt": "summarise"}},
+             {"type": "agent_delegate", "config": {"agent": "demiurge", "task": "fix"}}]
+
+
+def test_notebook_execute_refuses_every_agent_cell_without_consent(monkeypatch):
+    # Genesis hands tool_call, prompt AND agent_delegate cells to an agent with full
+    # tools, so none is inert -- not even a recorded Read (verifier, 2026-10-28).
+    seen = []
+    nt = _nt_fake(monkeypatch, _RECORDED, seen)
+    out = json.loads(nt.notebook_execute("nb_x"))
+    assert out["refused"] is True and seen == [("GET", "/notebooks/nb_x")]
+    assert out["acting"] == {"tool_call:Read": 1, "tool_call:Bash": 1, "prompt": 1,
+                             "agent_delegate": 1}
+    assert out["empty_task"] == 2  # the recorded tool calls carry no prompt
+    assert "EMPTY task" in out["error"]
+    seen.clear()
+    out = json.loads(nt.notebook_execute("nb_x", allow_side_effects=True))
+    assert out["run_id"] == "nbrun_1" and seen == [("POST", "/notebooks/nb_x/execute")]
+
+
+def test_notebook_execute_dry_run_and_inert_and_unknown_cells(monkeypatch):
+    seen = []
+    nt = _nt_fake(monkeypatch, _RECORDED, seen)
+    out = json.loads(nt.notebook_execute("nb_x", dry_run=True, allow_side_effects=True))
+    assert out["dry_run"] is True and out["cell_count"] == 5
+    assert out["census"]["context"] == 1 and all(m == "GET" for m, _ in seen)
+    seen.clear()
+    nt = _nt_fake(monkeypatch, [{"type": "context"}, {"type": "note"},
+                                {"type": "checkpoint", "config": {"label": "ok?"}}], seen)
+    assert json.loads(nt.notebook_execute("nb_x"))["run_id"] == "nbrun_1"
+    nt = _nt_fake(monkeypatch, [{"type": "context"}, {"type": "brand_new_kind"}], seen)
+    assert json.loads(nt.notebook_execute("nb_x"))["acting"] == {"brand_new_kind": 1}
+
+
+def test_notebook_execute_refuses_a_notebook_it_cannot_read(monkeypatch):
+    seen = []
+    nt = _nt_fake(monkeypatch, [], seen, definition_error="HTTP 502: bad gateway")
+    out = json.loads(nt.notebook_execute("nb_x"))
+    assert "502" in out["error"] and seen == [("GET", "/notebooks/nb_x")]
+
+
+def test_notebooks_list_since_and_archived_apply_to_platform_rows(tmp_path, monkeypatch):
+    _nb_index(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_stdio, "_nb_call", lambda name, **kw: (
+        {"via": "portal", "notebooks": [
+            {"id": "nb_old2025", "created_at": "2025-01-01T00:00:00"},
+            {"id": "nb_probe01", "status": "archived", "created_at": "2026-10-28T01:00:00"},
+            {"id": "nb_fresh01", "created_at": "2026-10-28T02:00:00"}]}
+        if name == "notebook_list" else {"id": kw.get("notebook_id")}))
+    out = mcp_stdio._notebooks_list({"since": "2026-10-27"})
+    assert [r["notebook"] for r in out["notebooks"]] == ["nb_new00002", "nb_fresh01"]
+    assert out["platform"]["hidden"] == {"archived": 1, "before_since": 1}
+
+
+def test_notebooks_list_empty_index_still_asks_genesis_itself(tmp_path, monkeypatch):
+    # A fresh host: no host row to verify by, and the portal answers [] when
+    # Genesis fails behind it -- reachable must come from Genesis, not the portal.
+    _nb_index(tmp_path, monkeypatch, entries={"s": {"surfaces": {}}})
+    answers = {"notebook_list": {"notebooks": [], "via": "portal"},
+               "notebook_probe": {"reachable": False, "error": "HTTP 502: bad gateway"}}
+    monkeypatch.setattr(mcp_stdio, "_nb_call", lambda name, **kw: answers[name])
+    out = mcp_stdio._notebooks_list({})
+    assert out["platform"]["reachable"] is False and "502" in out["platform"]["error"]
+    answers["notebook_probe"] = {"reachable": True}
+    out = mcp_stdio._notebooks_list({})
+    assert out["platform"]["reachable"] is True
+    assert out["platform"]["verified_by"] == "notebooks/sessions"
+
+
+def test_notebooks_rows_carry_the_brief_title(tmp_path, monkeypatch):
+    _nb_index(tmp_path, monkeypatch)
+    (tmp_path / "briefs" / "sess-new.md").write_text(
+        "EXECUTIVE-BRIEF: Notebooks get a desk page\n\n**What changed**\n", encoding="utf-8")
+    out = mcp_stdio._notebooks_list({"local_only": True})
+    titles = {r["notebook"]: r["title"] for r in out["notebooks"]}
+    assert titles == {"nb_new00002": "Notebooks get a desk page", "nb_old00001": ""}
+
+
+def test_cli_local_list_exits_2_on_an_unreadable_index(tmp_path, monkeypatch, capsys):
+    import argparse
+
+    from adk import cli
+    folder = tmp_path / "briefs"
+    folder.mkdir()
+    (folder / "index.json").write_text('{"sess": {"surfaces": ', encoding="utf-8")
+    monkeypatch.setenv("AITHER_BRIEFS_DIR", str(folder))
+    args = argparse.Namespace(nb_command="list", local=True)
+    assert cli.cmd_notebook(args) == 2
+    assert "could not read" in capsys.readouterr().err
+    ok_dir = tmp_path / "ok"
+    ok_dir.mkdir()
+    _nb_index(ok_dir, monkeypatch)
+    assert cli.cmd_notebook(args) == 0
+    assert "nb_new00002" in capsys.readouterr().out
 
 
 def test_notebooks_export_defaults_under_the_aither_home(tmp_path, monkeypatch):
@@ -916,4 +986,18 @@ def test_notebook_list_through_the_bridge_uses_the_portal_route(monkeypatch):
     monkeypatch.setattr(nt, "_request", fake_request)
     out = json.loads(nt.notebook_list(limit=1))
     assert seen == {"method": "GET", "path": "/api/notebooks", "base": "https://portal.test"}
-    assert out == {"notebooks": [{"id": "nb_1"}], "total": 2, "via": "portal"}
+    assert out == {"notebooks": [{"id": "nb_1"}], "total": 2, "via": "portal",
+                   "archived_hidden": 0}
+
+
+def test_notebook_list_hides_archived_unless_asked(monkeypatch):
+    # The store's delete is soft: an archived notebook is a deleted one (the lane's own
+    # probe nb_fa9d16f8 was the only row the owner's list showed, 2026-10-28).
+    from adk import notebook_tools as nt
+    _clear_genesis_env(monkeypatch)
+    rows = [{"id": "nb_probe01", "status": "archived"}, {"id": "nb_2", "status": "draft"}]
+    monkeypatch.setattr(nt, "_request", lambda method, path, **kw: {"notebooks": list(rows)})
+    out = json.loads(nt.notebook_list())
+    assert [r["id"] for r in out["notebooks"]] == ["nb_2"] and out["archived_hidden"] == 1
+    out = json.loads(nt.notebook_list(status="archived"))
+    assert [r["id"] for r in out["notebooks"]] == ["nb_probe01", "nb_2"]

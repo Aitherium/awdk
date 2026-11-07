@@ -12,6 +12,10 @@ Routes (contract shared with awsh and the desk app):
 - ``POST /command`` ``{"text": ...}`` -> ``200 {id, reply}`` when it finished quickly,
   ``202 {id}`` when the reply lands in history later
 - ``GET  /command/history?limit=N`` -> ``{"items": [{id, at, source, text, reply, kind}]}``
+- ``GET  /commands``                -> ``{"commands": [{id, label, group}]}`` -- the desk's
+  palette rows (snip, record, audio, ink, orb ...), the same names the tray shows
+- ``POST /commands/run`` ``{"id", "arg"?}`` -> runs ONE row through the desk's runCommand;
+  an id that is not a palette row is refused (404)
 
 Exit codes: 0 ok · 1 refused (the verdict says ``ok: false``) · 2 could not judge (the
 bridge is not running and no fallback answered). Silence is never a pass.
@@ -68,6 +72,7 @@ TIMEOUTS = {
     "command": 1800.0,
     "history": 15.0,
     "desktop": 10.0,
+    "commands": 15.0,
 }
 
 Transport = Callable[[str, str, Optional[str], float], Tuple[int, str]]
@@ -91,6 +96,22 @@ def build_command_request(text: str) -> Tuple[str, str, str]:
 def build_history_request(limit: int = 20) -> Tuple[str, str, Optional[str]]:
     """Pure: -> ("GET", "/command/history?limit=N", None)."""
     return ("GET", f"/command/history?limit={int(limit)}", None)
+
+
+def build_commands_request() -> Tuple[str, str, Optional[str]]:
+    """Pure: -> ("GET", "/commands", None) -- the desk's palette rows."""
+    return ("GET", "/commands", None)
+
+
+def build_run_request(command_id: str, arg: Optional[str] = None) -> Tuple[str, str, str]:
+    """Pure: palette row id -> ("POST", "/commands/run", body). Refuses an empty id."""
+    cid = (command_id or "").strip()
+    if not cid:
+        raise ValueError("a desk command id is required (see `adk desk commands`)")
+    body: dict = {"id": cid}
+    if arg is not None:
+        body["arg"] = str(arg)
+    return ("POST", "/commands/run", json.dumps(body))
 
 
 DESKTOP_SURFACES = ("overlay", "app", "status")
@@ -267,6 +288,42 @@ class DeskBridgeClient:
             doc.update({"ok": False, "cannotJudge": True, "error": refused})
         doc.setdefault("pending", status == 202)
         return (exit_code_for(status, doc), doc)
+
+    # -- palette commands (snip, record, audio, ink, orb ...) ---------------------
+    def list_commands(self) -> Tuple[int, list]:
+        """(exit, rows). 2 when the bridge is down or answers no list."""
+        method, path, body = build_commands_request()
+        try:
+            status, raw = self.transport(method, self.url + path, body, TIMEOUTS["commands"])
+        except Exception:
+            return (2, [])
+        doc = _parse(raw)
+        rows = doc.get("commands") if isinstance(doc, dict) else None
+        if status != 200 or not isinstance(rows, list):
+            return (2, [])
+        return (0, [r for r in rows if isinstance(r, dict)])
+
+    def run_command(self, command_id: str, arg: Optional[str] = None) -> Tuple[int, dict]:
+        """Run one palette row. 0 ran · 1 refused (unknown id) · 2 could not judge."""
+        method, path, body = build_run_request(command_id, arg)
+        try:
+            status, raw = self.transport(method, self.url + path, body, TIMEOUTS["commands"])
+        except Exception as exc:
+            return (2, {"ok": False, "cannotJudge": True,
+                        "error": f"desk bridge unreachable ({exc.__class__.__name__})"})
+        doc = _parse(raw)
+        if not isinstance(doc, dict):
+            doc = {"error": "non-object reply"}
+        if status == 404:
+            doc.update({"ok": False, "error": doc.get("error")
+                        or f"no desk command {command_id!r} -- list them with `adk desk commands`"})
+            return (1, doc)
+        refused = explain_status(status)
+        if refused:
+            doc.update({"ok": False, "cannotJudge": True, "error": refused})
+            return (2, doc)
+        doc.setdefault("ok", status == 200)
+        return (0 if status == 200 else 2, doc)
 
     # -- desktop surfaces -------------------------------------------------------
     def call_desktop(self, surface: str = "status") -> Tuple[int, dict]:

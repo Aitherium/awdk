@@ -15,6 +15,14 @@ awvoice listen                                    # record the mic, print what w
 awvoice --self-test                               # no external service needed
 ```
 
+**Conversation loop (listen -> think -> speak).** `awvoice.loop` is the ONE
+implementation every voice surface shares: `VoiceLoop(transcriber, thinker,
+speaker).feed(pcm_16k_mono)` end-points on energy, runs the turn, keeps history.
+`HttpTranscriber` / `HttpSpeaker` / `OpenAICompatThinker` speak the fleet
+protocols; `Callable*` stand in for tests. `awdiscord.voice` is the Discord
+transport (join/leave/drag, downmix 48k stereo -> 16k mono, PCM playback).
+Integration for awconnect/awsh/awdk/awdesk: `.claude/reference/awvoice-integration.md`.
+
 Endpoints: `--stt-url` / `--tts-url` (top-level, before the verb) or
 `AWVOICE_STT_URL` / `AWVOICE_TTS_URL`; `say` uses `AWVOICE_DESK_URL`.
 `local:aither` needs `pip install "awvoice[local]"` (onnxruntime + espeakng-loader); the

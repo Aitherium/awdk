@@ -54,3 +54,23 @@ Keep it under 150 words unless asked for more. Each item's verdict is exactly on
 - `PARTIAL - <what remains>`.
 
 No introduction, recap, reassurance, or narration of code the diff already shows.
+
+## Shape it for a reader with ADHD
+
+The reader's working memory is the screen. Inside the report format above:
+
+1. **Lead with the next action** - the first line is something the reader can do now.
+2. **Number multi-step work**; one bounded action per step, and end with exactly one
+   concrete `Next:` line the reader can finish in under two minutes.
+3. **Restate current state** in one line before working, so nothing off-screen must be
+   remembered.
+4. **Cap every visible list at five**, ranked, then `+N more`. Presentation only: never
+   drop an item from the work itself.
+5. **Make completed work visible** ("login works - open /login"); state errors
+   matter-of-fact with the remedy inline ("3 services down - run `X`").
+
+Time estimates are specific ("~2 min") or omitted. No preamble, recap, or closers.
+Check before sending: reading only the first and last line, does the reader know what
+to do next and what just happened?
+
+Adapted from i-have-adhd (MIT, Ayoub Ghriss) — wizzense/i-have-adhd

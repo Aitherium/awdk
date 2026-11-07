@@ -43,6 +43,13 @@ def owner_principal() -> str:
     return f"{domain}\\{user}" if domain else user
 
 
+def icacls_path() -> str:
+    """``%SystemRoot%\\System32\\icacls.exe``: an absolute path, never a PATH lookup (a
+    planted ``icacls.exe`` earlier on PATH would otherwise decide who reads the file)."""
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    return str(Path(root) / "System32" / "icacls.exe")
+
+
 def restrict_owner_only(path: PathLike) -> None:
     """Owner-only access to ``path``, or :class:`PrivateFileError`."""
     path = Path(path)
@@ -55,7 +62,7 @@ def restrict_owner_only(path: PathLike) -> None:
     who = owner_principal()
     try:
         proc = subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:F"],
+            [icacls_path(), str(path), "/inheritance:r", "/grant:r", f"{who}:F"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
