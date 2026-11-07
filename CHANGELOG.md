@@ -4,6 +4,15 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.100] - 2026-11-07
+
+### Fixed
+- `adk addon list` finds the add-on manifests bundled in the wheel. A pip install
+  used to print "No addon manifests found." because the bundled copy carries no
+  `_schema.yaml`; that directory is now recognised by holding manifests.
+- The release test for the Windows file ACL judges the `icacls.exe` path as a
+  Windows path on every OS, so the release lane runs green on Linux.
+
 ## [3.8.99] - 2026-11-07
 
 ### Fixed

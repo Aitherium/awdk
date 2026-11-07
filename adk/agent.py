@@ -4405,6 +4405,16 @@ class AitherAgent:
                     logger.info("[REACT-STREAM] native tool call rewritten: %s",
                                 _native.splitlines()[0])
                     full = _native
+                else:
+                    # Qwen-coder XML (<function=NAME><parameter=K>V) -- Bonsai-2 writes
+                    # calls this way; ReAct takes one action per step, so the first.
+                    from adk.llm.base import _qwen_xml_tool_calls
+                    _qcalls, _ = _qwen_xml_tool_calls(full)
+                    if _qcalls:
+                        full = (f"ACTION: {_qcalls[0].name}\n"
+                                f"INPUT: {json.dumps(_qcalls[0].arguments)}")
+                        logger.info("[REACT-STREAM] qwen-xml tool call rewritten: %s",
+                                    _qcalls[0].name)
             m = _ACT.search(full)
             if not m:
                 answer = scrub_orphan_think(_THINK.sub("", full)).strip()
