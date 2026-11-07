@@ -12,7 +12,7 @@ import copy
 import json
 import os
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pytest
@@ -181,7 +181,7 @@ def test_check_host_failure_is_cannot_judge_never_zero() -> None:
 def test_every_fixed_command_is_absolute() -> None:
     for argv in (up.APT_LIST, up.SOFTWAREUPDATE_LIST, up.APT_UPGRADE, up.SUDO_PREFIX):
         assert argv[0].startswith("/")
-    assert Path(up.windows_argv()[0]).is_absolute()
+    assert PureWindowsPath(up.windows_argv()[0]).is_absolute()
 
 
 # ── schedule ─────────────────────────────────────────────────────────────────

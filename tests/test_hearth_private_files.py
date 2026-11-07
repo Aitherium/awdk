@@ -38,7 +38,9 @@ def _fake_icacls(monkeypatch, result=0):
     seen = []
 
     def run(argv, **kw):
-        assert argv[0] == "icacls" and "/inheritance:r" in argv and "/grant:r" in argv
+        # Absolute system path by contract (never a PATH lookup), so a planted
+        # icacls.exe cannot decide who reads the file.
+        assert argv[0] == pf.icacls_path() and "/inheritance:r" in argv and "/grant:r" in argv
         seen.append((Path(argv[1]), Path(argv[1]).read_bytes()))
         if isinstance(result, BaseException):
             raise result

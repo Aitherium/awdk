@@ -4,7 +4,7 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
-## [3.8.98] - 2026-11-06
+## [3.8.99] - 2026-11-07
 
 ### Fixed
 - `adk`'s local research delegate loads the recall door on FIRST USE through
@@ -14,6 +14,11 @@ All notable changes to aither-adk will be documented in this file.
   (`tests/test_awdelegate.py`), which held 3.8.96's release run red. Reuse behaviour is
   unchanged: every brief still writes back to the door, and a near-duplicate question is
   still answered without a model call.
+
+- The Windows tool paths the home agent runs for access control and system queries
+  (`icacls`, `powershell`, `ARP.EXE`) are built with `ntpath`, not the host's path
+  module. They are absolute Windows paths on every platform, so a POSIX host can no
+  longer produce a mixed-separator path that is neither.
 
 ## [3.8.96] - 2026-11-06
 

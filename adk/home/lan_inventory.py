@@ -25,6 +25,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import ntpath
 import os
 import re
 import socket
@@ -347,7 +348,7 @@ def _run(cmd: List[str]) -> Optional[str]:
 def windows_arp_path() -> str:
     """``%SystemRoot%\\System32\\ARP.EXE`` (never a PATH lookup)."""
     root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
-    return str(Path(root) / "System32" / "ARP.EXE")
+    return ntpath.join(root, "System32", "ARP.EXE")
 
 
 def _existing(paths: Iterable[str]) -> List[str]:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import getpass
 import logging
+import ntpath
 import os
 import secrets
 import subprocess
@@ -47,7 +48,7 @@ def icacls_path() -> str:
     """``%SystemRoot%\\System32\\icacls.exe``: an absolute path, never a PATH lookup (a
     planted ``icacls.exe`` earlier on PATH would otherwise decide who reads the file)."""
     root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
-    return str(Path(root) / "System32" / "icacls.exe")
+    return ntpath.join(root, "System32", "icacls.exe")
 
 
 def restrict_owner_only(path: PathLike) -> None:

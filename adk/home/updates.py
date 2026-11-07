@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 import os
 import re
 import signal
@@ -145,7 +146,7 @@ def clean(value: Any, limit: int = 200) -> str:
 
 def powershell_path() -> str:
     root = os.environ.get("SystemRoot") or r"C:\Windows"
-    return os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    return ntpath.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
 
 def windows_argv() -> Tuple[str, ...]:
