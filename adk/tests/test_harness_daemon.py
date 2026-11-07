@@ -361,3 +361,33 @@ def test_awrun_submit_comet_deploy_refused_even_with_a_genuinely_valid_stray_bea
     assert "comet-deploy" in body["error"]
     assert "daemon" in body["error"].lower()
     assert "id" not in body, "a real submit would have returned a run id — this must never"
+
+
+# ── local-model preflight (sovereign builder lane) ──────────────────────────
+
+def test_local_model_preflight_is_off_by_default():
+    from adk.harnesses.daemon import local_model_refusal
+
+    assert local_model_refusal("awdk", env={}) == ""
+
+
+def test_local_model_preflight_fails_closed_when_required():
+    from adk.harnesses.daemon import local_model_refusal
+
+    req = {"AITHER_HARNESS_MODEL_REQUIRED": "1"}
+    assert "is not set" in local_model_refusal("awdk", env=req)
+    env = dict(req, AITHER_HARNESS_MODEL_URL="http://local-llm:8080/v1")
+    why = local_model_refusal("awdk", env=env, probe=lambda u: "ConnectError: refused")
+    assert why.startswith("blocked: no local model at http://local-llm:8080/v1")
+    assert local_model_refusal("awdk", env=env, probe=lambda u: "") == ""
+    # a non-local harness is never gated on the local model
+    assert local_model_refusal("claude", env=env, probe=lambda u: "down") == ""
+
+
+def test_create_session_answers_503_without_a_local_model(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("AITHER_HARNESS_MODEL_REQUIRED", "1")
+    monkeypatch.delenv("AITHER_HARNESS_MODEL_URL", raising=False)
+    resp = client.post("/sessions", json={"harness": "awdk", "cwd": str(tmp_path)},
+                       headers=auth())
+    assert resp.status_code == 503
+    assert resp.json()["detail"].startswith("blocked: no local model")

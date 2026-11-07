@@ -81,6 +81,22 @@ _PUBLIC_DOMAIN = "aitherium.com"
 _PUBLIC_IDP_HOST = "idp.aitherium.com"
 
 
+def _pna_kwargs() -> dict:
+    """``allow_private_network=True`` where this Starlette supports it, else nothing.
+
+    The kwarg exists only in newer Starlette; on an older one (the media-forge sovereign
+    image pins FastAPI 0.115 / Starlette 0.41) passing it makes EVERY request 500 at
+    middleware build, so a daemon that "started" serves nothing. Without PNA the only
+    loss is an https page's private-network preflight, never a route.
+    """
+    import inspect
+
+    from starlette.middleware.cors import CORSMiddleware as _Cors
+
+    params = inspect.signature(_Cors.__init__).parameters
+    return {"allow_private_network": True} if "allow_private_network" in params else {}
+
+
 def _is_public_non_idp_host(host: str) -> bool:
     return host != _PUBLIC_IDP_HOST and (
         host == _PUBLIC_DOMAIN or host.endswith("." + _PUBLIC_DOMAIN))
@@ -1489,7 +1505,7 @@ def create_app(
         # your LAN, and this grant applies only to the explicit origin allowlist above.
         # allow_credentials stays OFF, so no ambient cookie rides along. A wildcard
         # origin here would hand every website on the internet a port scanner.
-        allow_private_network=True,
+        **_pna_kwargs(),
     )
 
     # Trace ID middleware — generates/propagates X-Request-ID on every request

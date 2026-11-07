@@ -110,6 +110,22 @@ _DECISIONS_LIMIT_MAX = 500
 #: not connectable. `daemon_endpoint.py` already draws this distinction the same way
 #: (`advertised_host = DEFAULT_HOST if host in ("0.0.0.0", "::", "")`).
 
+def _pna_kwargs() -> dict:
+    """``allow_private_network=True`` where this Starlette supports it, else nothing.
+
+    The kwarg exists only in newer Starlette; on an older one (the media-forge sovereign
+    image pins FastAPI 0.115 / Starlette 0.41) passing it makes EVERY request 500 at
+    middleware build, so a daemon that "started" serves nothing. Without PNA the only
+    loss is an https page's private-network preflight, never a route.
+    """
+    import inspect
+
+    from starlette.middleware.cors import CORSMiddleware as _Cors
+
+    params = inspect.signature(_Cors.__init__).parameters
+    return {"allow_private_network": True} if "allow_private_network" in params else {}
+
+
 def _default_bind_host(env: Optional[dict] = None) -> str:
     """The bind address when nothing on the command line names one.
 
@@ -674,6 +690,46 @@ def validate_cwd(cwd: str) -> str:
         f"cwd {target} is outside the allowed roots for this daemon "
         f"({os.pathsep.join(str(r) for r in roots)})"
     )
+
+
+#: Harnesses whose brain is a model THIS box serves (the awdk loop on adk serve).
+LOCAL_MODEL_HARNESSES = ("awdk",)
+MODEL_REQUIRED_ENV = "AITHER_HARNESS_MODEL_REQUIRED"
+MODEL_URL_ENV = "AITHER_HARNESS_MODEL_URL"
+
+
+def _probe_models(url: str, timeout: float = 5.0) -> str:
+    """GET ``<url>/models`` (the OpenAI-compatible listing). "" = answered, else why not."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/models", timeout=timeout) as resp:
+            return "" if 200 <= resp.status < 300 else f"HTTP {resp.status}"
+    except urllib.error.HTTPError as exc:
+        return f"HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001 - every transport failure is the same verdict
+        return f"{type(exc).__name__}: {exc}"[:200]
+
+
+def local_model_refusal(harness: str, env: Optional[dict] = None, probe=_probe_models) -> str:
+    """Why a local-model harness must not start now, or "" when it may.
+
+    Off unless ``AITHER_HARNESS_MODEL_REQUIRED=1``. A sovereign appliance sets it so a
+    builder lane whose local model is missing says so at ``POST /sessions`` (503,
+    "blocked: no local model ..."), instead of starting a session whose every turn dies
+    in the background while the caller waits hours for evidence that never comes.
+    """
+    env = os.environ if env is None else env
+    if harness not in LOCAL_MODEL_HARNESSES:
+        return ""
+    if (env.get(MODEL_REQUIRED_ENV) or "").strip().lower() not in ("1", "true", "yes", "on"):
+        return ""
+    url = (env.get(MODEL_URL_ENV) or "").strip()
+    if not url:
+        return f"blocked: no local model ({MODEL_URL_ENV} is not set on this daemon)"
+    why = probe(url)
+    return f"blocked: no local model at {url} ({why})" if why else ""
 
 
 try:  # pragma: no cover - import guard
@@ -1350,7 +1406,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         # allowlist above (a wildcard is refused at startup), and every route but
         # /health still needs the bearer, so this makes the daemon DETECTABLE,
         # not drivable.
-        allow_private_network=True,
+        **_pna_kwargs(),
     )
 
     def auth(request: Request, authorization: str = Header(default="")) -> Principal:
@@ -1493,6 +1549,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             # Which code this process runs and whether newer code is installed
             # (adk/self_update.py). Cached state only; the watcher does the probing.
             "code_update": _self_update_status(),
+            # Whether local-model harnesses are gated on a reachable model (no probe here:
+            # /health stays cheap; POST /sessions is where the model is checked).
+            "model_required": bool(local_model_refusal("awdk", probe=lambda _u: "")),
+            "model_url": (os.environ.get(MODEL_URL_ENV) or "").strip() or None,
         }
 
     # ── the HUB contract (Aither Hub — gobbonet) ───────────────────────────
@@ -1786,6 +1846,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             spec = get_harness(body.harness)
         except Exception:
             spec = None
+        refusal = local_model_refusal(body.harness)
+        if refusal:
+            raise HTTPException(status_code=503, detail=refusal)
         needed = getattr(spec, "requires_entitlement", "") if spec else ""
         if needed and not principal.has(needed):
             raise HTTPException(
