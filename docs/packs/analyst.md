@@ -1,12 +1,12 @@
 # Analyst Studio
 
-`analyst` · version `3.8.99` · 5.3 KB
+`analyst` · version `3.8.100` · 5.3 KB
 
-**[Download analyst-3.8.99.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.99/analyst-3.8.99.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.99/analyst-3.8.99.sha256)
+**[Download analyst-3.8.100.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.100/analyst-3.8.100.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.100/analyst-3.8.100.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.99/analyst-3.8.99.tar.gz
-tar xzf analyst-3.8.99.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.100/analyst-3.8.100.tar.gz
+tar xzf analyst-3.8.100.tar.gz
 python analyst/install.py
 ```
 
@@ -41,5 +41,5 @@ skills/structured-inference.md
 
 ---
 
-sha256 `3e786b2dbe7b9cb2cc28c53b61a85ee8864f50d3b234a8a8435e929b39db3330`  
-Built from `v3.8.99` (adk 3.8.99). [All packs](../packs.md)
+sha256 `40f846847821625a71a8e3aa9e5d4500c9742a708f69afc06b02208272e8f597`  
+Built from `v3.8.100` (adk 3.8.100). [All packs](../packs.md)

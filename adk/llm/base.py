@@ -285,6 +285,33 @@ def has_text_tool_call(content: str) -> bool:
     return bool(content) and ("<tool_call>" in content or _TOOL_CALL_CLOSE in content)
 
 
+_QWEN_FN_RE = re.compile(
+    r"<tool_call>\s*<function=([\w.\-]+)>(.*?)</function>\s*(?:</tool_call>|$)", re.S)
+_QWEN_PARAM_RE = re.compile(r"<parameter=([\w.\-]+)>\s*(.*?)\s*</parameter>", re.S)
+
+
+def _qwen_xml_tool_calls(content: str) -> tuple[list[ToolCall], str]:
+    """Calls written in the Qwen-coder XML dialect (Bonsai-2 on llama.cpp, 2026-11-07):
+    ``<tool_call><function=file_read><parameter=path>/x.py</parameter></function></tool_call>``.
+    Each parameter value is JSON-decoded when it parses (numbers, objects), else kept as
+    text. ([], content) when the dialect is absent."""
+    if "<function=" not in (content or ""):
+        return [], content
+    calls: list[ToolCall] = []
+    for m in _QWEN_FN_RE.finditer(content):
+        args: dict = {}
+        for k, v in _QWEN_PARAM_RE.findall(m.group(2)):
+            try:
+                args[k] = _json.loads(v)
+            except ValueError:
+                args[k] = v
+        calls.append(ToolCall(id=f"call_{len(calls)}", name=m.group(1), arguments=args))
+    if not calls:
+        return [], content
+    cleaned = re.sub(r"\n{3,}", "\n\n", _QWEN_FN_RE.sub("", content)).strip()
+    return calls, cleaned
+
+
 def extract_tool_calls_from_text(
     content: str,
     finish_reason_hint: str = "",
@@ -309,6 +336,11 @@ def extract_tool_calls_from_text(
             cleaned = _HERMES_TOOL_RE.sub("", content).strip()
             cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
             return tool_calls, cleaned
+
+    # ── Qwen-coder XML: <tool_call><function=NAME><parameter=K>V</parameter>... ──
+    xml_calls, xml_cleaned = _qwen_xml_tool_calls(content)
+    if xml_calls:
+        return xml_calls, xml_cleaned
 
     # ── Half-tagged: a JSON call followed by ``</tool_call>`` with no opener ──
     half_calls, half_cleaned = _half_tagged_tool_calls(content)

@@ -11,7 +11,7 @@ import json
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -206,7 +206,9 @@ def test_windows_acl_is_applied_to_the_empty_file_before_the_token(home, monkeyp
     lt.write_endpoint(tok, 9444, home)
     (argv, content), = seen
     # an absolute path, never a PATH lookup
-    assert Path(argv[0]).name.lower() == "icacls.exe" and "System32" in argv[0]
+    # PureWindowsPath: on the Linux release runner a PosixPath would not split
+    # the backslashes, and .name would be the whole Windows path.
+    assert PureWindowsPath(argv[0]).name.lower() == "icacls.exe" and "System32" in argv[0]
     assert "/inheritance:r" in argv and "/grant:r" in argv
     assert content == b""                           # restricted BEFORE the token lands
     assert lt.read_token(home) == tok
