@@ -73,10 +73,24 @@ _MANIFEST_DIRS: List[str] = [
 ]
 
 
+#: The copy that ships INSIDE the wheel. sync_addon_manifests_to_awdk.py copies every
+#: manifest but skips `_`-prefixed files, so it has no `_schema.yaml`; requiring that marker
+#: here made `adk addon list` print "No addon manifests found." on every pip install while
+#: working in the monorepo (awdk 4.0 stranger-install job, 2026-11-07).
+_BUNDLED_DIR = Path(os.path.dirname(__file__)) / "addon_manifests"
+
+
 def _find_manifest_dir() -> Optional[Path]:
     for d in _MANIFEST_DIRS:
         p = Path(d)
-        if p.is_dir() and (p / "_schema.yaml").exists():
+        if not p.is_dir():
+            continue
+        if (p / "_schema.yaml").exists():
+            return p
+        # The bundled copy is recognised by holding manifests, not by the schema marker.
+        if p.resolve() == _BUNDLED_DIR.resolve() and any(
+            not f.name.startswith("_") for f in p.glob("*.yaml")
+        ):
             return p
     return None
 
