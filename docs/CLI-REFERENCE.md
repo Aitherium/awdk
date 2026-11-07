@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**141 commands.**
+**142 commands.**
 
 | command | what it does |
 |---|---|
@@ -66,6 +66,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk enroll`](#adk-enroll) | Register this workstation with the control plane |
 | [`adk eval`](#adk-eval) | Evaluate MCP tools and packs on a connected gateway |
 | [`adk explore`](#adk-explore) | Browse packs, agents, and skills in the Aitherium marketplace |
+| [`adk family-drive`](#adk-family-drive) | The family drive — keys, files, copy rules, backup and restore |
 | [`adk feedback`](#adk-feedback) | Send feedback or logs to your company app's support |
 | [`adk fleet`](#adk-fleet) | Create & manage a fleet of agents (local \| managed \| hosted \| cloud-run) |
 | [`adk fleet-host`](#adk-fleet-host) | awnix fleet host (WSL2): status, start/stop/restart, reattach data, migrate (dry-run default) |
@@ -685,6 +686,14 @@ Browse packs, agents, and skills in the Aitherium marketplace
 | `<category>` | str |  | `all` | Filter: agents, tools, skills, grid, all (default: all) |
 | `--free` | str |  | `false` | Show only free packs |
 
+## `adk family-drive`
+
+The family drive — keys, files, copy rules, backup and restore
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<family_drive_args>` | str |  |  | key \| put \| get \| ls \| rm \| rules \| backup |
+
 ## `adk feedback`
 
 Send feedback or logs to your company app's support
@@ -877,6 +886,9 @@ Agent Home: host your own agent, pick its model and harness, and let it join gam
 - `adk home channels` — Each channel: available, configured, bound owner (masked), preferred
 - `adk home receipts` — The signed log of what the agent did
 - `adk home trust` — Trust profile: egress guard, approvals, receipts
+- `adk home devices` — Every device on your home network (passive: the OS neighbor table + one SSDP search, no port scan)
+- `adk home updates` — Patch the home node and its devices: adk, the host OS and Home Assistant update entities
+- `adk home doctor` — Check this home node (disks, services, LAN, backup, awdk version); tell the guardians once a day and propose fixes (changes wait for your OK)
 - `adk home report` — Device-signed data-boundary report: model boundary, egress policy and events, receipts verdict
 - `adk home join` — Join a game: observe, act, chat, learn
 - `adk home enroll` — World-model enrollment of a game room (pack)
