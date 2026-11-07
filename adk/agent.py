@@ -4897,6 +4897,11 @@ class AitherAgent:
                     and not decision.agentic and _depth in ("", "skip", "gate")):
                 return {"answer": "", "used_tools": False, "artifacts": []}
             steps = 4 if decision.effort <= 5 else (8 if decision.effort <= 7 else 12)
+            # The operator's hard ceiling wins here too: a scene-edit builder set
+            # ADK_MAX_TOOL_LOOPS=40 and still stopped at 8 steps mid-search.
+            _env_cap = os.environ.get("ADK_MAX_TOOL_LOOPS", "").strip()
+            if _env_cap.isdigit() and int(_env_cap) > 0:
+                steps = int(_env_cap)
             resp = await self.stream_react(
                 message, on_event=on_enrich_event, history=history,
                 max_steps=steps, session_id=sid,
