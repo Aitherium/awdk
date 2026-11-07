@@ -4,6 +4,17 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.98] - 2026-11-06
+
+### Fixed
+- `adk`'s local research delegate loads the recall door on FIRST USE through
+  `importlib` instead of a module-level `from adk import recall_door`. That import
+  broke the delegate's one-file, stdlib-only contract (`python -S awdelegate.py` on a
+  machine with nothing installed) and failed the public-payload test gate
+  (`tests/test_awdelegate.py`), which held 3.8.96's release run red. Reuse behaviour is
+  unchanged: every brief still writes back to the door, and a near-duplicate question is
+  still answered without a model call.
+
 ## [3.8.96] - 2026-11-06
 
 ### Fixed

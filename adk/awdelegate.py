@@ -38,6 +38,7 @@ import getpass
 import hashlib
 import html
 import http.client
+import importlib
 import ipaddress
 import json
 import os
@@ -61,14 +62,27 @@ TRACE_DIR = Path(os.environ.get("AWROUTER_TRACE_DIR") or (HOME / ".aither" / "ag
 VERSION = "1.0"
 
 # Recall-before-produce door (shared contract with the fleet's lib.core.RecallDoor).
-# Script mode (`python -S awdelegate.py`) puts adk/ on sys.path[0], so try both.
-try:
-    from adk import recall_door as _recall  # type: ignore[no-redef]
-except Exception:  # pragma: no cover - script mode / partial install
-    try:
-        import recall_door as _recall  # type: ignore[no-redef]
-    except Exception:
-        _recall = None  # type: ignore[assignment]
+# Resolved on FIRST USE through importlib, never a static import: this file must stay
+# stdlib-only so `python -S awdelegate.py` starts on a machine with nothing installed
+# (tests/test_awdelegate.py enforces that statically). Script mode puts adk/ on
+# sys.path[0], so the package path is tried first and the bare sibling module second.
+_RECALL: Any = None
+_RECALL_TRIED = False
+
+
+def _recall_door() -> Any:
+    """The optional recall door, or None when the payload does not carry it."""
+    global _RECALL, _RECALL_TRIED
+    if not _RECALL_TRIED:
+        _RECALL_TRIED = True
+        for _name in ("adk.recall_door", "recall_door"):
+            try:
+                _RECALL = importlib.import_module(_name)
+                break
+            except Exception:  # pragma: no cover - script mode / partial install
+                continue
+    return _RECALL
+
 
 DEFAULTS: Dict[str, Any] = {
     "spine": "127.0.0.1:8151",
@@ -977,6 +991,7 @@ def save_brief(question: str, scope: str, paths: List[str], key: str, run: Dict[
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     # Write-back: this accepted brief becomes recallable through the shared door,
     # so a repeat (or a similar) question can be answered without re-investigating.
+    _recall = _recall_door()
     if _recall is not None:
         try:
             _recall.record(
@@ -1114,6 +1129,7 @@ def research(args: Dict[str, Any], progress=None, cancelled=None,
             body = read_brief(hit["id"])
             if not body.startswith("error:"):
                 write_trace({"event": "reuse", "id": hit["id"], "question": question[:300]})
+                _recall = _recall_door()
                 if _recall is not None:
                     try:
                         _recall.log_event(
@@ -1129,6 +1145,7 @@ def research(args: Dict[str, Any], progress=None, cancelled=None,
     # No file-fresh exact brief. Ask the shared recall door: a near-duplicate is
     # a HIT (zero model calls); a merely similar question is a SEED to start from.
     seed_text = ""
+    _recall = _recall_door()
     if _recall is not None and not args.get("fresh"):
         try:
             _rs = _recall.lookup(
