@@ -43,8 +43,12 @@ def test_public_marketplace_points_at_the_plugin():
     nested = _json(MOD / ".claude-plugin" / "marketplace.json")
     plugin = _json(MOD / ".claude-plugin" / "plugin.json")
     assert root["name"] == nested["name"] == "awsh"
-    (entry,) = root["plugins"]
-    assert entry["name"] == plugin["name"]
+    # The marketplace may list other plugins (the Aitherium connector plugin
+    # sits beside this one); exactly one entry is this plugin, and it is first.
+    (entry,) = [p for p in root["plugins"] if p["name"] == plugin["name"]]
+    assert root["plugins"][0] is entry
+    for other in root["plugins"]:
+        assert (AWDK / other["source"]).resolve().is_dir(), other["name"]
     assert (AWDK / entry["source"]).resolve() == MOD.resolve()
     assert entry["version"] == nested["plugins"][0]["version"] == plugin["version"]
 
