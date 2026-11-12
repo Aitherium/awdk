@@ -1,0 +1,29 @@
+{
+  "name": "aitherium",
+  "version": "0.1.0",
+  "description": "Use Aitherium from Claude Code: the Aitherium connector (docs search, local-model fit check, your account's memory and services), a setup skill that installs a local agent and model, and the /aitherium command.",
+  "author": {
+    "name": "Aitherium",
+    "url": "https://aitherium.com"
+  },
+  "homepage": "https://aitherium.com/docs/mcp",
+  "repository": "https://github.com/Aitherium/awdk",
+  "license": "BUSL-1.1",
+  "privacyPolicyUrl": "https://aitherium.com/privacy",
+  "termsOfServiceUrl": "https://aitherium.com/terms",
+  "documentationUrl": "https://aitherium.com/docs/mcp",
+  "supportUrl": "https://aitherium.com/support",
+  "keywords": [
+    "aitherium",
+    "aitheros",
+    "mcp",
+    "local-models",
+    "agents"
+  ],
+  "mcpServers": {
+    "aitherium": {
+      "type": "http",
+      "url": "https://mcp.aitherium.com/connector"
+    }
+  }
+}
