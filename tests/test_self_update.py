@@ -283,3 +283,21 @@ def test_the_cli_routes_autoupdate_to_this_module():
     from adk import cli
 
     assert cli._PASSTHROUGH_VERBS["autoupdate"] == ("adk.self_update", "main")
+
+
+def test_a_second_server_on_another_port_gets_its_own_daemon_name():
+    """Regression 2026-11-09: every adk.server registered as "adk-daemon", so a
+    second server (:8079) overwrote the main daemon's run record and consumed its
+    one-time apply flag, then self-restarted onto new code with auto-update OFF."""
+    assert su.daemon_name_for_port(9001) == "adk-daemon"
+    assert su.daemon_name_for_port(8079) == "adk-daemon-8079"
+    assert su.daemon_name_for_port(8079) != su.daemon_name_for_port(9001)
+
+
+def test_a_one_time_apply_for_the_main_daemon_is_not_consumed_by_another(tmp_path, monkeypatch):
+    monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+    su.run_dir().mkdir(parents=True, exist_ok=True)
+    (su.run_dir() / "adk-daemon.apply").write_text("1", encoding="utf-8")
+    assert su._apply_requested(su.daemon_name_for_port(8079)) is False
+    assert (su.run_dir() / "adk-daemon.apply").exists()
+    assert su._apply_requested(su.daemon_name_for_port(9001)) is True

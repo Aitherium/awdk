@@ -461,21 +461,27 @@ class DegenerationDetector:
 # Retry with exponential backoff (connection/timeout errors only)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Exception types that warrant a retry (connection and timeout errors)
-_RETRYABLE_EXCEPTIONS = (
-    ConnectionError, TimeoutError, OSError,
-)
+# Exception types that warrant a retry (connection and timeout errors), plus the
+# httpx ones when httpx is installed. Built on the first failure, not at import:
+# httpx is a third of the 150 ms cold-start budget the stranger-install gate
+# holds ``import adk`` to, and a call that is failing has already imported it.
+_RETRYABLE_EXCEPTIONS: tuple[type[BaseException], ...] | None = None
 
-# Also catch httpx-specific errors if httpx is available
-try:
-    import httpx
-    _RETRYABLE_EXCEPTIONS = (
-        ConnectionError, TimeoutError, OSError,
-        httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
-        httpx.PoolTimeout, httpx.RemoteProtocolError,
-    )
-except ImportError:
-    pass
+
+def _retryable_exceptions() -> tuple[type[BaseException], ...]:
+    global _RETRYABLE_EXCEPTIONS
+    if _RETRYABLE_EXCEPTIONS is None:
+        found: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError, OSError)
+        try:
+            import httpx
+            found += (
+                httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+                httpx.PoolTimeout, httpx.RemoteProtocolError,
+            )
+        except (ImportError, AttributeError):  # absent, or a test's stand-in module
+            return found
+        _RETRYABLE_EXCEPTIONS = found
+    return _RETRYABLE_EXCEPTIONS
 
 
 def llm_retry(
@@ -500,7 +506,7 @@ def llm_retry(
             for attempt in range(max_retries + 1):
                 try:
                     return await fn(*args, **kwargs)
-                except _RETRYABLE_EXCEPTIONS as exc:
+                except _retryable_exceptions() as exc:
                     last_exc = exc
                     if attempt >= max_retries:
                         logger.warning(

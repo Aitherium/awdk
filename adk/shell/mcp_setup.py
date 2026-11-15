@@ -80,9 +80,13 @@ def resolve_auth() -> Tuple[Optional[str], str]:
 
 # ── Gateway URL ───────────────────────────────────────────────────────────
 
-# NOTE: local uses HTTPS — AitherOS services use TLS internally.
+# NOTE: local is the HOST-side port, which speaks plain HTTP (the WSL relay in front of
+# the gateway). Measured 2026-11-12: http://localhost:8182/health 200, https -> SSL
+# WRONG_VERSION_NUMBER, so `adk mcp status` called a healthy gateway unreachable. Fleet
+# containers reach the gateway by service name over TLS and never use this entry.
+# AITHER_MCP_LOCAL_URL overrides it.
 _GATEWAY_URLS = {
-    "local": "https://localhost:8182/mcp",
+    "local": os.environ.get("AITHER_MCP_LOCAL_URL") or "http://localhost:8182/mcp",
     "remote": "https://mcp.aitherium.com/mcp",
 }
 

@@ -102,11 +102,8 @@ async def _resolve_peer_id() -> str:
         pass
 
     # Fail-closed: do not fabricate. Real peer IDs look like 'peer-<12 hex>'.
-    raise RuntimeError(
-        "Cannot resolve peer_id. Run 'adk mesh onboard' first to register this node, "
-        "or set AITHER_PEER_ID environment variable to the node's authenticated peer ID "
-        "(format: peer-<12 hex characters>)."
-    )
+    from adk.node_join_path import peer_id_problem
+    raise RuntimeError(peer_id_problem())
 
 
 async def advertise(

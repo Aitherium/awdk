@@ -291,7 +291,14 @@ def check(name, status, body, spec):
     return problems
 
 try:
-    token = vault(SPEC["vault_name"])
+    # A CANDIDATE (verify-before-store) arrives base64'd inside the spec, which
+    # travels on this process's stdin -- never an argv, an env var or a log.
+    cand = SPEC.pop("candidate_b64", "")
+    if cand:
+        token = __import__("base64").b64decode(cand).decode("utf-8")
+        del cand
+    else:
+        token = vault(SPEC["vault_name"])
     if not token:
         out["could_not_run"] = "vault has no value for " + SPEC["vault_name"]
     else:
@@ -378,12 +385,17 @@ def _host_prompt_module():
     return module
 
 
-def run_verify(recipe: dict[str, Any], *, runner=None, user: str = "") -> dict[str, Any]:
+def run_verify(recipe: dict[str, Any], *, runner=None, user: str = "",
+               candidate: Optional[str] = None) -> dict[str, Any]:
     """Execute the recipe's probe in the fleet. Returns the verdict dict.
 
     ``runner(script, timeout) -> (rc, stdout)`` is injectable for the self-test;
     the default is the host script's ``_sh_in_container``. Raises RecipeError
     when the probe could not RUN (that is exit 2, never a pass).
+
+    ``candidate``: probe THIS value instead of the stored one (verify BEFORE
+    store). It rides base64'd in the script on the exec's stdin, never in an
+    argv, and the verdict carries pass/fail only -- never the value.
     """
     verify = recipe.get("verify") or {}
     method = str(verify.get("method") or "none").strip().lower()
@@ -411,6 +423,10 @@ def run_verify(recipe: dict[str, Any], *, runner=None, user: str = "") -> dict[s
         "placeholders": _placeholders(verify),
         "verify": {**verify, "method": method.upper()},
     }
+    if candidate is not None:
+        import base64
+
+        spec["candidate_b64"] = base64.b64encode(candidate.encode("utf-8")).decode("ascii")
     body = _PROBE_TEMPLATE % {"spec": json.dumps(json.dumps(spec))}
     # `python3 -` reads the program from stdin; a heredoc keeps it byte-exact
     # across the Windows -> WSL boundary (a `$` in argv would not survive).

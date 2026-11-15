@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from adk import llamacpp_setup as lcs
+from adk._tls import urllib_context
 
 # ---------------------------------------------------------------------------
 # What we serve
@@ -54,52 +55,52 @@ DEFAULT_CTX = 8192
 WEIGHTS_BASE = "https://weights.aitherium.com"
 HF_BASE = "https://huggingface.co/{repo}/resolve/main/{file}"
 
-#: The PrismML fork release every size is served with. prism-b10685 is the first
-#: build with PTQ1_0 and the shared Hadamard transform (PRs #148, #150). The next tag
-#: (prism-b10687) has no llama-* archives at all, so do not bump without listing the
-#: release's assets first.
-PRISM_RELEASE = "prism-b10685-7dffb15"
+#: The PrismML fork release every size is served with. prism-b12128 (2026-10-31) is the
+#: first pinned build that loads Hadamard v2 (Bonsai 2 2B/4B/9B; prism-b10685 refused
+#: them with "unsupported prism.hadamard.version: 2"). Some tags (prism-b10687) ship no
+#: llama-* archives at all, so never bump without listing the release's assets first.
+PRISM_RELEASE = "prism-b12128-d7b2896"
 PRISM_DOWNLOAD = "https://github.com/PrismML-Eng/llama.cpp/releases/download/" + PRISM_RELEASE
 
 #: (os, arch, build) -> (asset, sha256). Digests are the ones GitHub publishes for the
 #: release's assets (``gh api repos/PrismML-Eng/llama.cpp/releases/tags/<tag>``).
 PRISM_ASSETS: Dict[Tuple[str, str, str], Tuple[str, str]] = {
     ("windows", "x64", "cpu"): (
-        "llama-prism-b10685-7dffb15-bin-win-cpu-x64.zip",
-        "f877b5539021119714889be0e4aca8c1f97f399c2fe502b21e2113b3c9fba822"),
+        "llama-prism-b12128-d7b2896-bin-win-cpu-x64.zip",
+        "a6e41db401ce93a28f4a2ed20fb7809455302231dd37037c9f1b4505d33fe00b"),
     ("windows", "arm64", "cpu"): (
-        "llama-prism-b10685-7dffb15-bin-win-cpu-arm64.zip",
-        "169a55f0c02e8784810c5e92faa54e4717231a9c2d99fd38b4eb7e4f71025755"),
+        "llama-prism-b12128-d7b2896-bin-win-cpu-arm64.zip",
+        "e958470735549873af6f660424c20e8d227b1f9842600f91671185396e0f2ef6"),
     ("windows", "x64", "vulkan"): (
-        "llama-prism-b10685-7dffb15-bin-win-vulkan-x64.zip",
-        "f1e8090392390e5c26b184ff90f5350a5e6421bfdd74606f12c8c5de9c668b2b"),
+        "llama-prism-b12128-d7b2896-bin-win-vulkan-x64.zip",
+        "ec1479514a34272c815b3d194046d27003867aa9c95069d9cd3031b5c31e01ff"),
     ("windows", "x64", "cuda"): (
-        "llama-prism-b10685-7dffb15-bin-win-cuda-12.4-x64.zip",
-        "7aa73f2c52081a7280fa4b02660ba902b964e461b0cfc0b652935e4a59b01c6e"),
+        "llama-prism-b12128-d7b2896-bin-win-cuda-12.4-x64.zip",
+        "14969ae6831abfc836295e8f4b8e09e686a063b559a8c974412001d9f5ce4f7f"),
     ("linux", "x64", "cpu"): (
-        "llama-prism-b10685-7dffb15-bin-ubuntu-x64.tar.gz",
-        "a1fd3a575e70532567845815a042428831771661b857e80f06422fb08904cb7f"),
+        "llama-prism-b12128-d7b2896-bin-ubuntu-x64.tar.gz",
+        "67bdd24e458715fd2fbb128297c44f480b3b4bbea254adf5e571feb3e82c5f53"),
     ("linux", "arm64", "cpu"): (
-        "llama-prism-b10685-7dffb15-bin-ubuntu-arm64.tar.gz",
-        "238f34e59c955eed38433ac5bfc0406ff48c4452768c2cc691c630678c34700d"),
+        "llama-prism-b12128-d7b2896-bin-ubuntu-arm64.tar.gz",
+        "2f292d018686ad5cbba5743dbbcaaf8999fa8acb20a8b376090d91c5e7e8c35c"),
     ("linux", "x64", "vulkan"): (
-        "llama-prism-b10685-7dffb15-bin-ubuntu-vulkan-x64.tar.gz",
-        "20aec2cce7e07b1df8a21a4bfef4b88db085210dac01b8a32374b5ed756f50e4"),
+        "llama-prism-b12128-d7b2896-bin-ubuntu-vulkan-x64.tar.gz",
+        "a73a76f26b161e2fff3815cc3ae6f1daeee5991e1269982561aa620e8e07cca4"),
     ("linux", "arm64", "vulkan"): (
-        "llama-prism-b10685-7dffb15-bin-ubuntu-vulkan-arm64.tar.gz",
-        "ae3d154bab4632b0cd47d2c00964ad12dfe06ab7e0ad535ddb8a61fb330fb64c"),
+        "llama-prism-b12128-d7b2896-bin-ubuntu-vulkan-arm64.tar.gz",
+        "ae8ecf507d7544d489191d121887832f84387d966a37d42bc30106277dec60a4"),
     ("linux", "x64", "cuda"): (
-        "llama-prism-b10685-7dffb15-bin-linux-cuda-12.4-x64.tar.gz",
-        "29326793ab8a8d0b42d348bcd0ba0a5f4513220d29d1a1d40e943e357c666386"),
+        "llama-prism-b12128-d7b2896-bin-linux-cuda-12.4-x64.tar.gz",
+        "0d31cc673f400004533ff407a133d957f7fc322e67457958693f752c6d87d342"),
     ("macos", "arm64", "metal"): (
-        "llama-prism-b10685-7dffb15-bin-macos-arm64.tar.gz",
-        "7fffa7a40c74f3e9bd78f3f2f9f12f9befb7b13af45d5a69c239cf3fd37b9045"),
+        "llama-prism-b12128-d7b2896-bin-macos-arm64.tar.gz",
+        "7072bcece7b2ae5cc97db85b65f4a57d96a4f1b926555bc97cf48d6357b3e532"),
     ("macos", "arm64", "cpu"): (
-        "llama-prism-b10685-7dffb15-bin-macos-arm64.tar.gz",
-        "7fffa7a40c74f3e9bd78f3f2f9f12f9befb7b13af45d5a69c239cf3fd37b9045"),
+        "llama-prism-b12128-d7b2896-bin-macos-arm64.tar.gz",
+        "7072bcece7b2ae5cc97db85b65f4a57d96a4f1b926555bc97cf48d6357b3e532"),
     ("macos", "x64", "cpu"): (
-        "llama-prism-b10685-7dffb15-bin-macos-x64.tar.gz",
-        "b674befce466c4938e7e70a7b13009c7df2e76b072525495a78851c987a5121a"),
+        "llama-prism-b12128-d7b2896-bin-macos-x64.tar.gz",
+        "50aa0c304908a12a6ddea723c111bd6abb91fbd6a8ccbb573874f47fb801d14f"),
 }
 
 #: The Windows CUDA build ships without the CUDA runtime; without these DLLs beside the
@@ -164,6 +165,28 @@ BONSAI_SIZES: Dict[str, BonsaiSize] = {
             "Bonsai-27B-Q1_0.gguf", "prism-ml/Bonsai-27B-gguf", 3_803_452_480,
             "17ef842e47450caeb8eaa3ebfbbab5d2f2278b62b79be107985fb69a2f819aa0", 8.0, 7.0)},
     ),
+    # Bonsai 2 small sizes: PrismML ships PTQ1_0 only, so every backend serves that file.
+    # They need Hadamard v2, i.e. PRISM_RELEASE >= prism-b12128. Byte counts and sha256 from
+    # the models catalogue; ram_gb/vram_gb sized like the Bonsai 1 file of similar size.
+    "bonsai2-2b": BonsaiSize(
+        "bonsai2-2b", "Bonsai 2 2B", 2, "2B",
+        {"PTQ1_0": WeightFile(
+            "Ternary-Bonsai-2-2B-PTQ1_0.gguf", "prism-ml/Ternary-Bonsai-2-2B-gguf", 429_183_456,
+            "36061ad406df8a4903a6db005be350c50fabfaf717f9ef0acf4b76adcd9929fa", 2.0, 1.5)},
+    ),
+    "bonsai2-4b": BonsaiSize(
+        "bonsai2-4b", "Bonsai 2 4B", 2, "4B",
+        {"PTQ1_0": WeightFile(
+            "Ternary-Bonsai-2-4B-PTQ1_0.gguf", "prism-ml/Ternary-Bonsai-2-4B-gguf", 949_549_920,
+            "56711263ec9a9ffeaa74a3a0e58dece8127cf9268404746c721113ca76994d60", 3.0, 2.5)},
+    ),
+    "bonsai2-9b": BonsaiSize(
+        "bonsai2-9b", "Bonsai 2 9B", 2, "9B",
+        {"PTQ1_0": WeightFile(
+            "Ternary-Bonsai-2-9B-PTQ1_0.gguf", "prism-ml/Ternary-Bonsai-2-9B-gguf",
+            1_997_486_976,
+            "3561df7ac7d26a71ffa991ac2db740b10841c3a350aa2676ccd3ff5d428b4e8b", 5.0, 4.0)},
+    ),
     "bonsai2-27b": BonsaiSize(
         "bonsai2-27b", "Bonsai 2 27B", 2, "27B",
         {
@@ -181,8 +204,17 @@ BONSAI_SIZES: Dict[str, BonsaiSize] = {
     ),
 }
 
-#: Largest first: the order ``--auto`` tries them in.
-SIZE_ORDER = ["bonsai2-27b", "bonsai-27b", "bonsai-8b", "bonsai-4b", "bonsai-1.7b"]
+#: Every size, largest download first (what ``plan_sizes`` lists and ``--model`` accepts).
+SIZE_ORDER = ["bonsai2-27b", "bonsai-27b", "bonsai2-9b", "bonsai-8b", "bonsai2-4b",
+              "bonsai-4b", "bonsai2-2b", "bonsai-1.7b"]
+
+#: The order ``--auto`` tries sizes in: best MEASURED quality first, not biggest. AitherBench
+#: overall (models catalogue): Bonsai 2 27B 0.90, Bonsai 27B 0.81, Bonsai 4B 0.53, Bonsai 8B
+#: 0.43, Bonsai 1.7B 0.29. Bonsai 8B scores below the 4B, so ``--auto`` never picks it (it
+#: stays installable by name). Bonsai 2 2B/4B/9B are the newer generation and sit above the
+#: Bonsai 1 size they replace.
+AUTO_ORDER = ["bonsai2-27b", "bonsai-27b", "bonsai2-9b", "bonsai2-4b", "bonsai-4b",
+              "bonsai2-2b", "bonsai-1.7b"]
 
 #: Share of each memory pool a model may take. The rest stays with the OS, the
 #: browser and the apps the person is actually using.
@@ -254,7 +286,7 @@ def plan_size(size: BonsaiSize, accel: lcs.AccelInfo) -> SizePlan:
                         fits, placement, build, need, reason)
 
     small_q = "PTQ1_0" if size.generation == 2 else "Q1_0"
-    fast_q = "PQ2_0" if size.generation == 2 else "Q1_0"
+    fast_q = "PQ2_0" if size.generation == 2 and "PQ2_0" in size.weights else small_q
 
     if accel.kind == "metal":
         pool = accel.ram_gb * UNIFIED_SHARE
@@ -288,13 +320,16 @@ def plan_sizes(accel: lcs.AccelInfo) -> List[SizePlan]:
 
 
 def recommend(accel: lcs.AccelInfo, plans: Optional[List[SizePlan]] = None) -> Optional[SizePlan]:
-    """``--auto``: the largest size that fits on the GPU; with no GPU fit, the largest in RAM.
+    """``--auto``: the best size (``AUTO_ORDER``) that fits on the GPU; with no GPU fit, the
+    best that fits in RAM.
 
     A GPU box prefers what the GPU can hold over a bigger size in system RAM: the same
     model on the processor is the slow path, so it is the fallback, not the pick.
     None when not even the 1.7B fits.
     """
     plans = plans if plans is not None else plan_sizes(accel)
+    rank = {sid: i for i, sid in enumerate(AUTO_ORDER)}
+    plans = sorted((p for p in plans if p.id in rank), key=lambda p: rank[p.id])
     gpu = [p for p in plans if p.fits and p.placement == "gpu"]
     if gpu:
         return gpu[0]
@@ -459,7 +494,7 @@ def _download_resumable(url: str, dest: Path, w: WeightFile,
             headers["Range"] = f"bytes={have}-"
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - https only
+            with urllib.request.urlopen(req, timeout=60, context=urllib_context()) as resp:  # noqa: S310 - https only
                 if have and resp.status != 206:
                     have = 0  # the server ignored Range: start over
                 with open(part, "ab" if have else "wb") as f:
@@ -769,7 +804,7 @@ def install(model: str = "", auto: bool = False, port: int = DEFAULT_PORT,
         if rec is None:
             return InstallOutcome(False, error="no Bonsai size fits this computer's memory")
         model = rec.id
-        print(f"  Picked: {rec.label} -- the largest that fits ({rec.reason})")
+        print(f"  Picked: {rec.label} -- the best that fits ({rec.reason})")
     if model not in BONSAI_SIZES:
         return InstallOutcome(False, error=f"unknown size {model!r}; choose one of "
                                            + ", ".join(SIZE_ORDER))

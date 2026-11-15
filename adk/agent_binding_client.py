@@ -1,4 +1,4 @@
-"""`adk agent bind|swap-brain|backend|managed ...` — thin client of Genesis /v1/agent.
+"""`adk agent bind|swap-brain|backend|managed|twin ...` — thin client of Genesis /v1/agent.
 
 Genesis ``routers/agent_binding.py`` (``APIRouter(prefix="/v1/agent")``) serves the
 binding and managed-agent routes the portal uses; until this module the CLI had no
@@ -29,7 +29,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "managed.byok": ("POST", "/managed/byok"),
 }
 
-BINDING_VERBS = ("bind", "swap-brain", "backend", "managed")
+BINDING_VERBS = ("bind", "swap-brain", "backend", "managed", "twin")
 MANAGED_VERBS = ("status", "chat", "run", "resync", "byok")
 
 
@@ -78,6 +78,30 @@ def add_parsers(agent_sub: Any) -> None:
                     help="Name of an environment variable holding the key")
     by.add_argument("--environment-id", dest="environment_id", default="")
     by.add_argument("--json", dest="json_output", action="store_true")
+
+    # adk agent twin deploy|list -- this project's agent as a self-hosted twin
+    from adk.twin_client import add_parser as _add_twin_parser
+    _add_twin_parser(agent_sub)
+
+
+def bearer() -> tuple[str, str]:
+    """``(token, source)`` for the control plane, or ``("", "")`` when signed out.
+
+    The kit's ONE credential resolution (``adk.mcp_setup.auth_candidates``): an explicit
+    env key first, then the `adk login` session, then the legacy token files. Until
+    2026-11-12 these verbs read ``AITHER_API_KEY`` only, so a signed-in user with no env
+    var sent no Authorization header and `adk agent managed status` answered
+    ``401 Missing bearer token``. The source never contains the token.
+    """
+    try:
+        from adk.mcp_setup import auth_candidates
+
+        for token, source in auth_candidates():
+            if token:
+                return token, source
+    except Exception:  # noqa: BLE001 - a broken credential store is "signed out"
+        pass
+    return "", ""
 
 
 def _drop_empty(body: dict[str, Any]) -> dict[str, Any]:
@@ -148,15 +172,21 @@ def run(args: Any, prompt: Optional[Callable[[str], str]] = None) -> int:
     """Execute one binding/managed verb against the gateway. Returns an exit code."""
     import httpx
 
-    from adk.fleet_manager import _api_key, _gateway_base
+    # The base that really serves /v1/agent (an AITHER_API_URL naming the MCP gateway
+    # does not: adk.twin_client.agent_base).
+    from adk.twin_client import agent_base as _gateway_base
 
+    if getattr(args, "agent_command", "") == "twin":
+        from adk.twin_client import run as _run_twin
+        return _run_twin(args)
     try:
         method, path, body, params = build_request(args, prompt)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     url = f"{_gateway_base()}/v1/agent{path}"
-    headers = {"Authorization": f"Bearer {_api_key()}"} if _api_key() else {}
+    token, _source = bearer()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         r = httpx.request(method, url, json=body, params=params, headers=headers,
                           timeout=180.0 if "chat" in path or "run" in path else 60.0)
@@ -170,6 +200,8 @@ def run(args: Any, prompt: Optional[Callable[[str], str]] = None) -> int:
     if r.status_code >= 400:
         print(f"✗ {method} {url} -> {r.status_code}", file=sys.stderr)
         print(json.dumps(data, indent=2)[:1500], file=sys.stderr)
+        if r.status_code == 401 and not token:
+            print("not signed in: run `adk login` (or set AITHER_API_KEY)", file=sys.stderr)
         return 1
     if getattr(args, "json_output", False) or not isinstance(data, dict):
         print(json.dumps(data, indent=2))

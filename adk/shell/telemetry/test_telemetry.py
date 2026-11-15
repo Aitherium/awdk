@@ -22,7 +22,7 @@ from adk.shell.metrics import (
     CounterMetric,
     GaugeMetric,
 )
-from adk.shell.telemetry_config import (
+from adk.shell.telemetry.config import (
     TelemetryConfig,
     load_telemetry_config,
     TelemetryContext,
@@ -393,8 +393,8 @@ class TestTelemetryConfig:
     
     def test_telemetry_context(self):
         """Test telemetry context manager."""
-        with patch('adk.shell.telemetry_config.get_pulse_client') as mock_client, \
-             patch('adk.shell.telemetry_config.get_metrics_collector') as mock_collector:
+        with patch('adk.shell.events.get_pulse_client') as mock_client, \
+             patch('adk.shell.metrics.get_metrics_collector') as mock_collector:
             
             mock_pulse = MagicMock()
             mock_client.return_value = mock_pulse
@@ -412,8 +412,8 @@ class TestTelemetryConfig:
     
     def test_telemetry_context_error(self):
         """Test telemetry context with error."""
-        with patch('adk.shell.telemetry_config.get_pulse_client') as mock_client, \
-             patch('adk.shell.telemetry_config.get_metrics_collector') as mock_collector:
+        with patch('adk.shell.events.get_pulse_client') as mock_client, \
+             patch('adk.shell.metrics.get_metrics_collector') as mock_collector:
             
             mock_pulse = MagicMock()
             mock_client.return_value = mock_pulse
@@ -529,7 +529,8 @@ class TestErrorHandling:
     
     def test_emit_never_blocks(self):
         """Test that emit operations never block."""
-        client = PulseEventClient(enabled=True, flush_interval_ms=10000)
+        # Batch above the emit count: the 100th emit must queue, not auto-flush.
+        client = PulseEventClient(enabled=True, flush_interval_ms=10000, max_batch_size=1000)
         
         # Multiple rapid emits should not block
         start = time.time()
@@ -542,8 +543,8 @@ class TestErrorHandling:
     
     def test_graceful_degradation_if_pulse_unavailable(self):
         """Test graceful degradation when Pulse is unavailable."""
-        with patch('adk.shell.events.httpx') as mock_httpx:
-            mock_httpx.Client.side_effect = Exception("Connection failed")
+        # events.py imports httpx inside each call, so patch the library itself.
+        with patch('httpx.Client', side_effect=Exception("Connection failed")):
             
             client = PulseEventClient(enabled=True)
             client._register_service()  # Should not raise

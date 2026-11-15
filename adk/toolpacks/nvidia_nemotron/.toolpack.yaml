@@ -1,0 +1,19 @@
+# Auto-generated from _nvidia_spec/nvidia-components.yaml — do not hand-edit.
+id: nvidia_nemotron
+name: NVIDIA Nemotron Orchestrator
+version: 1.0.0
+description: "Hosted Nemotron models tuned for multi-agent orchestration and planning, reached through the build.nvidia.com API. The pack calls a hosted endpoint; it redistributes no weights. Nemotron weights carry the NVIDIA Open Model License."
+category: tool_packs
+author: Aitherium
+icon: route
+tags: [nvidia, nemotron, toolpack]
+license_class: free
+requires_auth: true
+available: true
+requires_nvaie: false
+
+mcp_tools:
+  - "nemotron_*"
+tool_modules: []
+entitlements: []
+skills: []

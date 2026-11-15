@@ -140,7 +140,7 @@ def test_a_cpu_is_never_handed_a_model_too_slow_to_use():
     """60 GB of RAM fits the 27B; on a CPU it ran at 0.43 tokens/s. The 4B, not the 27B."""
     cat = catalogue.load()
     assert catalogue.recommend(cat, 60000) == "bonsai2-27b"          # a GPU with that much
-    assert catalogue.recommend(cat, 60000, cpu_only=True) == "bonsai-4b"
+    assert catalogue.recommend(cat, 60000, cpu_only=True) == "bonsai2-4b"
     pick = catalogue.recommend(cat, 60000, cpu_only=True)
     assert int(cat["models"][pick]["size_mb"]) <= catalogue.CPU_RECOMMEND_MAX_MB
 
@@ -460,3 +460,128 @@ def test_shipped_catalogue_ranks_bonsai2_first_on_a_big_card():
     ranked = catalogue.candidates(cat_, 32000)
     assert ranked[0] == "bonsai2-27b"
     assert catalogue.bench_score(cat_["models"]["bonsai2-27b"]) == 0.9
+
+
+# ── beyond the ladder: additive, never the pick ──────────────────────────────────────
+
+def _without_beyond(cat_):
+    """The catalogue as it was before the tier: no list, and no score on its models."""
+    c = copy.deepcopy(cat_)
+    for e in c.pop("beyond_ladder", []) or []:
+        c["models"][e["id"]].pop("bench", None)
+    return c
+
+
+def _ladder_budgets(cat_):
+    """Every budget edge the ladder has (each rung's floor, +-1) plus a coarse sweep."""
+    edges = {0, 1, 512, 899, 900, 901, 262144, 1048576}
+    for mid in cat_["ladder"]:
+        f = catalogue.floor_mb(cat_, cat_["models"][mid])
+        edges |= {f - 1, f, f + 1}
+    for e in cat_.get("beyond_ladder") or []:
+        f = catalogue.floor_mb(cat_, cat_["models"][e["id"]])
+        edges |= {f - 1, f, f + 1}
+    return sorted(edges | set(range(0, 140000, 1024)))
+
+
+def test_recommend_keeps_its_pick_at_every_budget_the_ladder_covers():
+    """The parity contract: adding the tier changed no answer, GPU or CPU."""
+    cat_ = catalogue.load()
+    assert cat_.get("beyond_ladder"), "the shipped catalogue carries the tier"
+    before = _without_beyond(cat_)
+    for budget in _ladder_budgets(cat_):
+        for cpu in (False, True):
+            assert (catalogue.recommend(cat_, budget, cpu_only=cpu)
+                    == catalogue.recommend(before, budget, cpu_only=cpu)), (budget, cpu)
+            assert (catalogue.candidates(cat_, budget, cpu_only=cpu)
+                    == catalogue.candidates(before, budget, cpu_only=cpu)), (budget, cpu)
+    for budget in (12288, 16384, 24576, 32768, 49152, 60000, 98304, 262144):
+        assert catalogue.recommend(cat_, budget) == "bonsai2-27b"
+
+
+def test_recommend_cli_recommended_line_is_unchanged(capsys, monkeypatch, tmp_path):
+    cat_ = catalogue.load()
+    for c, name in ((cat_, "now.json"), (_without_beyond(cat_), "before.json")):
+        (tmp_path / name).write_text(json.dumps(c), encoding="utf-8")
+    for budget in (4096, 12288, 24576, 65536):
+        heads = []
+        for name in ("now.json", "before.json"):
+            monkeypatch.setattr(catalogue, "CATALOGUE_PATH", tmp_path / name)
+            models_cli.main(["recommend", "--budget-mb", str(budget)])
+            out = capsys.readouterr().out
+            heads.append(out.split("You could also run")[0].rstrip())
+        assert heads[0] == heads[1], budget
+
+
+def test_shipped_tier_is_gemma4_only_offerable_and_off_the_ladder():
+    cat_ = catalogue.load()
+    ids = [e["id"] for e in cat_["beyond_ladder"]]
+    assert ids == ["gemma4-12b"]
+    for e in cat_["beyond_ladder"]:
+        m = cat_["models"][e["id"]]
+        assert e["id"] not in cat_["ladder"] and not m["on_ladder"]
+        assert catalogue.licence_verdict(m).allowed
+        assert e["machines"] == 1 and e["evidence"] and e["name"] and e["served_on"]
+        assert m["quant"] and m["size_mb"] > 0
+    g = cat_["models"]["gemma4-12b"]
+    assert g["bench"] == {"overall": 0.9667, "item_set": "716dcc9b602d9c5f",
+                          "measured": "2026-10-28"}
+    assert g["bench"]["item_set"] == cat_["models"]["bonsai2-27b"]["bench"]["item_set"]
+
+
+def test_shipped_tier_appears_only_above_the_top_rung():
+    cat_ = catalogue.load()
+    top = catalogue.floor_mb(cat_, cat_["models"][cat_["ladder"][-1]])
+    gemma = catalogue.floor_mb(cat_, cat_["models"]["gemma4-12b"])
+    assert gemma > top
+    assert catalogue.beyond_ladder_choices(cat_, top) == []          # fits nothing extra
+    assert catalogue.beyond_ladder_choices(cat_, gemma - 1) == []
+    got = catalogue.beyond_ladder_choices(cat_, gemma)
+    assert [o["id"] for o in got] == ["gemma4-12b"]
+    assert got[0]["score"] == 0.9667 and got[0]["item_set"] == "716dcc9b602d9c5f"
+    assert got[0]["floor_mb"] == gemma and got[0]["machines"] == 1
+    assert catalogue.beyond_ladder_choices(cat_, 262144, cpu_only=True) == []
+
+
+def _tiered(**extra):
+    c = _cat(small=_model("small", 400, dict(OK)), big=_model("big", 2000, dict(OK)))
+    c["models"].update(extra)
+    c["beyond_ladder"] = [{"id": k, "name": k.title(), "machines": 1, "served_on": "a GPU",
+                           "evidence": ["measured"]} for k in extra]
+    return c
+
+
+def test_tier_skips_gated_multi_machine_and_unfitting_models():
+    c = _tiered(gated=_model("gated", 3000, dict(OK, redistribution_ok=False)),
+                pooled=_model("pooled", 3000, dict(OK)),
+                huge=_model("huge", 90000, dict(OK)),
+                fine=_model("fine", 3000, dict(OK)))
+    for e in c["beyond_ladder"]:
+        if e["id"] == "pooled":
+            e["machines"] = 2
+    assert [o["id"] for o in catalogue.beyond_ladder_choices(c, 8000)] == ["fine"]
+    assert catalogue.beyond_ladder_choices(c, 3999) == [], "below the top rung's floor"
+    assert catalogue.recommend(c, 8000) == "big"
+
+
+def test_tier_ranks_by_score_and_says_when_unscored(capsys, tmp_path, monkeypatch):
+    c = _tiered(a=_model("a", 3000, dict(OK)),
+                b=_scored(_model("b", 3500, dict(OK)), 0.8))
+    assert [o["id"] for o in catalogue.beyond_ladder_choices(c, 8000)] == ["b", "a"]
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps(c), encoding="utf-8")
+    monkeypatch.setattr(catalogue, "CATALOGUE_PATH", p)
+    assert models_cli.main(["recommend", "--budget-mb", "8000"]) == 0
+    out = capsys.readouterr().out
+    assert "Recommended: big" in out and "You could also run" in out
+    assert "no score of ours" in out and "score 0.80 on item set set-a" in out
+    assert models_cli.main(["recommend", "--budget-mb", "8000", "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["recommended"] == "big"
+    assert [o["id"] for o in doc["also_fits_beyond_ladder"]] == ["b", "a"]
+    assert models_cli.main(["recommend", "--budget-mb", "4000"]) == 0
+    assert "You could also run" not in capsys.readouterr().out
+
+
+def test_a_catalogue_without_the_tier_still_works(cat):
+    assert catalogue.beyond_ladder_choices(cat, 1 << 20) == []

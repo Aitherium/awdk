@@ -82,23 +82,109 @@ _PRIORITY_ENV_KEYS = (
 )
 
 
+#: Env vars that name the AitherOS spine (MicroScheduler, ``:8150``), first wins.
+SPINE_URL_ENVS = ("AITHER_MICROSCHEDULER_URL", "AITHER_LOCAL_LLM_URL", "AITHER_CORE_LLM_URL")
+#: The spine on this host. HTTPS only: a plain ``http://`` request into the TLS
+#: spine hangs or closes the socket and reads as "down".
+SPINE_HOST_URL = "https://127.0.0.1:8150"
+#: What an interactive ``auto`` turn asks the spine for, first one it serves wins:
+#: the orchestrator alias (Bonsai 2 27B on the 5090), Bonsai itself, the DeepSeek-V4
+#: pool served LOCALLY on the DGX Spark, then Gemma 4 12B (vision). All local.
+INTERACTIVE_MODELS = (
+    "aither-orchestrator",
+    "bonsai2-27b",
+    "deepseek-v4-flash-pool",
+    "gemma4-12b",
+)
+#: Paid cloud APIs are never auto-picked. ``ADK_ALLOW_PAID_CLOUD=1`` lets OpenAI /
+#: Anthropic keys join auto-detect (after every local backend); DeepSeek cloud is
+#: reachable only by naming it (``AITHER_BACKEND=deepseek``) -- 2026-11-12 its
+#: account answers 402, and a key in the env must never route a turn there.
+PAID_CLOUD_OPT_IN = "ADK_ALLOW_PAID_CLOUD"
+
+
+def _truthy(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_spine_url(url: str) -> bool:
+    u = (url or "").lower()
+    return ":8150" in u or "microscheduler" in u
+
+
+def spine_url_from_env() -> str:
+    """The configured spine URL (``https`` forced, ``/v1`` stripped), or ``""``."""
+    for name in SPINE_URL_ENVS:
+        url = (os.environ.get(name) or "").strip()
+        if url and _is_spine_url(url):
+            return _normalise_spine_url(url)
+    return ""
+
+
+def _normalise_spine_url(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if url.startswith("http://"):
+        url = "https://" + url[len("http://"):]
+    if url.endswith("/v1"):
+        url = url[: -len("/v1")]
+    return url
+
+
+def default_scheduler_metadata(source: str = "adk") -> dict[str, Any]:
+    """Scheduler hints for an interactive call: user priority unless the env says otherwise.
+
+    ``ADK_SCHEDULER_METADATA`` (a JSON object) overrides key by key. Without a priority
+    the spine files the owner's turn as AGENT background work behind every agent
+    (2026-10-30: a "hey" waited 174-241 s).
+    """
+    import json
+
+    md: dict[str, Any] = {"priority": "user", "source": source}
+    raw = (os.environ.get("ADK_SCHEDULER_METADATA") or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            md.update(parsed)
+    return md
+
+
+def spine_backend(
+    model: str | None = None, *, base_url: str | None = None, source: str = "adk"
+) -> ModelBackend:
+    """A local-only MicroScheduler backend at user priority (interactive default)."""
+    from adk.core.backends.microscheduler import MicroSchedulerBackend
+
+    return MicroSchedulerBackend(
+        base_url=_normalise_spine_url(base_url or spine_url_from_env() or SPINE_HOST_URL),
+        model=model or "auto",
+        prefer=INTERACTIVE_MODELS,
+        source=source,
+        metadata=default_scheduler_metadata(source),
+        local_only=True,
+    )
+
+
 def auto_backend(model: str | None = None) -> ModelBackend:
-    """Pick the best available backend in priority order.
+    """Pick the best available backend, LOCAL FIRST.
 
-    Order (same as :mod:`awnode`):
+    Order:
 
-    1. ``AITHER_BACKEND`` env override
-    2. Genesis (``AITHER_URL`` set and reachable) — slice B will probe
+    1. ``AITHER_BACKEND`` env override (the only way to reach DeepSeek cloud)
+    2. The AitherOS spine when configured (``AITHER_MICROSCHEDULER_URL`` /
+       ``AITHER_LOCAL_LLM_URL`` / ``AITHER_CORE_LLM_URL`` naming ``:8150``)
     3. vLLM (``AITHER_VLLM_URL`` set)
-    4. OpenAI (``OPENAI_API_KEY`` set)
-    5. Anthropic (``ANTHROPIC_API_KEY`` set)
-    6. DeepSeek (``DEEPSEEK_API_KEY`` set)
-    7. llama.cpp (``AITHER_LLAMACPP_URL`` set — a local ``llama-server``)
+    4. llama.cpp (``AITHER_LLAMACPP_URL`` set -- a local ``llama-server``)
+    5. OpenAI / Anthropic keys -- ONLY with ``ADK_ALLOW_PAID_CLOUD=1``
+    6. The spine on this host, ``https://127.0.0.1:8150`` (the default)
+
+    A ``DEEPSEEK_API_KEY`` in the env is never auto-picked, and Ollama is not a
+    backend here. The spine backend asks for :data:`INTERACTIVE_MODELS` at user
+    priority with ``local_only`` set, so the scheduler never hops to a paid route.
 
     This call **does not** make network probes. It only inspects env vars.
-    A real reachability probe lands in :mod:`awnode` in slice B.
-
-    Raises :class:`RuntimeError` if nothing is configured.
     """
     # Local imports keep ``adk.core`` import-cheap.
     from adk.core.backends.anthropic import AnthropicBackend
@@ -116,7 +202,13 @@ def auto_backend(model: str | None = None) -> ModelBackend:
     )
 
     def _build(kind: str) -> ModelBackend | None:
-        if kind == "vllm":
+        if kind in ("spine", "microscheduler", "aither"):
+            url = spine_url_from_env()
+            if url or kind != "spine":
+                return spine_backend(model, base_url=url or None)
+        elif kind == "spine-default":
+            return spine_backend(model)
+        elif kind == "vllm":
             url = os.environ.get("AITHER_VLLM_URL")
             if url:
                 return VLLMBackend(base_url=url, model=model or "auto")
@@ -135,7 +227,12 @@ def auto_backend(model: str | None = None) -> ModelBackend:
             if key:
                 return DeepSeekBackend(api_key=key, model=model or "deepseek-chat")
         elif kind == "llamacpp":
-            host = os.environ.get("AITHER_LLAMACPP_URL") or legacy_env_base_url()
+            # Only an explicit AITHER_LLAMACPP_URL counts in auto-detect. A leftover
+            # OLLAMA_HOST (legacy_env_base_url) must not beat the spine default
+            # (2026-11-12 review: the owner's host sets it and lost the spine).
+            host = os.environ.get("AITHER_LLAMACPP_URL") or (
+                legacy_env_base_url() if override == "llamacpp" else ""
+            )
             if host:
                 return LlamaCppBackend(base_url=host, model=model or "default")
         return None
@@ -148,15 +245,16 @@ def auto_backend(model: str | None = None) -> ModelBackend:
             )
         return _maybe_speculative(chosen)
 
-    for kind in ("vllm", "openai", "anthropic", "deepseek", "llamacpp"):
+    order: list[str] = ["spine", "vllm", "llamacpp"]
+    if _truthy(PAID_CLOUD_OPT_IN):
+        order += ["openai", "anthropic"]
+    order.append("spine-default")
+    for kind in order:
         backend = _build(kind)
         if backend is not None:
             return _maybe_speculative(backend)
 
-    raise RuntimeError(
-        "no model backend available. Set one of: AITHER_VLLM_URL, OPENAI_API_KEY, "
-        "ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, AITHER_LLAMACPP_URL."
-    )
+    raise RuntimeError("no model backend available")  # unreachable: spine-default
 
 
 def _maybe_speculative(backend: ModelBackend) -> ModelBackend:

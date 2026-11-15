@@ -173,7 +173,7 @@ curl -X GET http://127.0.0.1:8111/secrets/HETZNER_API_KEY \
 > every command here pointed at a service that could not answer it.
 >
 > **TRY BOTH SCHEMES — the scheme is NOT stable across restarts.** On its first boot
-> this service logged `Uvicorn running on https://0.0.0.0:8125` and answered only
+> this service logged `Uvicorn running on` a wildcard bind address and answered only
 > `https://`; after a restart the same container answered only `http://`, and the
 > HTTPS probes showed up in its own log as `Invalid HTTP request received`. Pinning
 > either spelling is a latent outage: the wrong one returns `000`, which reads as

@@ -1,0 +1,312 @@
+# NVIDIA component specification — the single source of truth for the NVIDIA
+# tool packs. Edit this file, then regenerate; never hand-edit a generated pack.
+#
+# schema: aither.nvidia-components/v1
+#
+# Fields the generator consumes:
+#   display_name, description, license_class, requires_auth, auth_type,
+#   buildable_today, hand_written, requires_nvaie, why_unavailable,
+#   self_hosted_requires_nvaie, source_url, secret_name, token_file,
+#   owning_agent, tools[] (name, description, args[])
+#
+# buildable_today: true means the pack can be generated and used with a FREE
+# credential (or none). A component that needs NVIDIA AI Enterprise stays
+# false and is never advertised as available.
+
+schema: aither.nvidia-components/v1
+
+components:
+  nvidia_cuda:
+    display_name: NVIDIA CUDA docs (Nsight AI MCP)
+    description: >-
+      Live CUDA documentation and code examples over NVIDIA's hosted Nsight AI
+      MCP server. cuda_docs_search is the point of the pack: call it before
+      writing CUDA C++/kernels, nvcc or CMake flags, or making any
+      compute-capability claim.
+    license_class: free
+    requires_auth: true
+    auth_type: oauth
+    buildable_today: true
+    hand_written: true
+    requires_nvaie: false
+    source_url: https://api.copilot.nsight.ngc.nvidia.com/mcp/cuda-docs
+    token_file: cuda_docs_token.json
+    owning_agent: prometheus
+    tools:
+      - name: cuda_docs_search
+        description: Search the live CUDA documentation corpus.
+        args:
+          - {name: query, type: str, required: true}
+          - {name: limit, type: int, default: 5}
+      - name: cuda_docs_tools
+        description: Report what the hosted MCP server actually exposes.
+        args: []
+      - name: cuda_docs_status
+        description: Ask the server whether the lane can answer.
+        args: []
+      - name: cuda_docs_login
+        description: Run the OAuth browser approval once and store a refresh token.
+        args: []
+
+  nim:
+    display_name: NVIDIA NIM (hosted build.nvidia.com API)
+    description: >-
+      Hosted, OpenAI-compatible inference through build.nvidia.com. Free with
+      an NGC API key and rate-limited. This is the hosted API lane only:
+      self-hosted NIM requires NVIDIA AI Enterprise.
+    license_class: mixed
+    requires_auth: true
+    auth_type: api_key
+    buildable_today: true
+    requires_nvaie: false
+    self_hosted_requires_nvaie: true
+    source_url: https://integrate.api.nvidia.com/v1
+    secret_name: nim_api_key
+    token_file: nim_api_key
+    owning_agent: apollo
+    tools:
+      - name: nim_list_models
+        description: List the models served by the hosted NIM API.
+        args: []
+      - name: nim_chat
+        description: One chat completion against a hosted NIM model.
+        args:
+          - {name: prompt, type: str, required: true}
+          - {name: model, type: str, default: meta/llama-3.1-8b-instruct}
+          - {name: max_tokens, type: int, default: 512}
+          - {name: temperature, type: float, default: 0.2}
+      - name: nim_check_health
+        description: Confirm the hosted endpoint answers with the current key.
+        args: []
+
+  nvidia_nemotron:
+    display_name: NVIDIA Nemotron Orchestrator
+    description: >-
+      Hosted Nemotron models tuned for multi-agent orchestration and planning,
+      reached through the build.nvidia.com API. The pack calls a hosted
+      endpoint; it redistributes no weights. Nemotron weights carry the NVIDIA
+      Open Model License.
+    license_class: free
+    requires_auth: true
+    auth_type: api_key
+    buildable_today: true
+    requires_nvaie: false
+    source_url: https://integrate.api.nvidia.com/v1
+    secret_name: nim_api_key
+    token_file: nim_api_key
+    owning_agent: apollo
+    tools:
+      - name: nemotron_chat
+        description: One chat completion against a hosted Nemotron model.
+        args:
+          - {name: prompt, type: str, required: true}
+          - {name: model, type: str, default: nvidia/llama-3.3-nemotron-super-49b-v1}
+          - {name: max_tokens, type: int, default: 512}
+          - {name: temperature, type: float, default: 0.2}
+      - name: nemotron_status
+        description: Report which Nemotron models the endpoint currently lists.
+        args: []
+      - name: nemotron_config
+        description: Report the resolved endpoint and credential source (no secret value).
+        args: []
+
+  nvidia_nemo:
+    display_name: NVIDIA NeMo Framework
+    description: >-
+      Modular framework for training and fine-tuning LLMs, speech and multimodal
+      models. The framework itself is Apache-2.0 and installs from pip at no cost;
+      only NeMo microservices and NeMo Guardrails NIM require NVIDIA AI Enterprise.
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet installed on this host (pip path)
+    owning_agent: apollo
+    tools:
+      - {name: nemo_model_catalog, description: List models available to NeMo., args: []}
+      - {name: nemo_download_model, description: Download a model checkpoint., args: []}
+      - {name: nemo_check_compat, description: Check hardware and driver compatibility., args: []}
+
+  nvidia_riva:
+    display_name: NVIDIA Riva Speech AI
+    description: Multi-lingual speech recognition, synthesis, and understanding platform.
+    license_class: ai-enterprise
+    requires_auth: true
+    auth_type: license
+    buildable_today: false
+    requires_nvaie: true
+    why_unavailable: requires NVIDIA AI Enterprise
+    owning_agent: apollo
+    tools:
+      - {name: riva_transcribe, description: Transcribe audio to text., args: []}
+      - {name: riva_synthesize, description: Synthesize speech from text., args: []}
+      - {name: riva_nlu, description: Run natural-language understanding., args: []}
+
+  nvidia_cosmos:
+    display_name: NVIDIA Cosmos Video Generation
+    description: Foundation model for video understanding, generation, and prediction.
+    license_class: ai-enterprise
+    requires_auth: true
+    auth_type: license
+    buildable_today: false
+    requires_nvaie: true
+    why_unavailable: requires NVIDIA AI Enterprise
+    owning_agent: apollo
+    tools:
+      - {name: cosmos_generate_video, description: Generate a video from a prompt., args: []}
+      - {name: cosmos_predict_future, description: Predict future frames., args: []}
+      - {name: cosmos_understand_video, description: Produce a structured understanding of a video., args: []}
+
+  nvidia_deepstream:
+    display_name: NVIDIA DeepStream
+    description: Intelligent video analytics platform for real-time multi-stream processing.
+    license_class: ai-enterprise
+    requires_auth: true
+    auth_type: license
+    buildable_today: false
+    requires_nvaie: true
+    why_unavailable: requires NVIDIA AI Enterprise
+    owning_agent: apollo
+    tools:
+      - {name: deepstream_pipeline_create, description: Create a GStreamer pipeline., args: []}
+      - {name: deepstream_detect_objects, description: Detect objects in a stream., args: []}
+      - {name: deepstream_track_objects, description: Track objects across frames., args: []}
+
+  nvidia_isaac:
+    display_name: NVIDIA Isaac Robotics
+    description: Platform for autonomous machines perception, simulation, and deployment.
+    license_class: ai-enterprise
+    requires_auth: true
+    auth_type: license
+    buildable_today: false
+    requires_nvaie: true
+    why_unavailable: requires NVIDIA AI Enterprise
+    owning_agent: apollo
+    tools:
+      - {name: isaac_sim_create_world, description: Create a simulated world., args: []}
+      - {name: isaac_sim_run_episode, description: Run one simulated episode., args: []}
+      - {name: isaac_deploy, description: Deploy a policy to a robot., args: []}
+
+  nvidia_tensorrt_llm:
+    display_name: TensorRT-LLM Inference Engine
+    description: >-
+      NVIDIA's production LLM inference engine with dynamic batching and
+      quantization. Apache-2.0 and free; not NVIDIA AI Enterprise-gated.
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet installed on this host
+    owning_agent: apollo
+    tools:
+      - {name: trt_build_engine, description: Build a TensorRT-LLM engine., args: []}
+      - {name: trt_infer, description: Run inference on a built engine., args: []}
+      - {name: trt_benchmark, description: Benchmark an engine., args: []}
+
+  nvidia_openshell:
+    display_name: NVIDIA OpenShell
+    description: Lightweight agentic shell that orchestrates other tools.
+    license_class: ai-enterprise
+    requires_auth: true
+    auth_type: license
+    buildable_today: false
+    requires_nvaie: true
+    why_unavailable: requires NVIDIA AI Enterprise
+    owning_agent: prometheus
+    tools:
+      - {name: openshell_init, description: Initialise the shell., args: []}
+      - {name: openshell_exec, description: Execute a command., args: []}
+      - {name: openshell_status, description: Report shell status., args: []}
+
+  nvidia_dynamo:
+    display_name: NVIDIA Dynamo
+    description: Datacenter-scale inference serving platform with dynamic load balancing.
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet integrated into the platform
+    owning_agent: apollo
+    tools:
+      - {name: dynamo_status, description: Report cluster status., args: []}
+
+  nvidia_jetson:
+    display_name: NVIDIA JetPack Edge Runtime
+    description: Optimized inference runtime for JetPack edge agents (Jetson, Orin).
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet integrated into the platform
+    owning_agent: apollo
+    tools:
+      - {name: jetson_status, description: Report the edge runtime status., args: []}
+
+  nvidia_switchyard:
+    display_name: NVIDIA NeMo Switchyard
+    description: Model routing and orchestration across agent workloads and inference backends.
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet integrated into the platform
+    owning_agent: apollo
+    tools:
+      - {name: switchyard_route, description: Route a request to a backend., args: []}
+
+  triton:
+    display_name: Triton Inference Server
+    description: Open-source multi-framework inference server (BSD-3-Clause).
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet integrated into the platform
+    owning_agent: apollo
+    tools:
+      - {name: triton_status, description: Report server readiness., args: []}
+
+  tao:
+    display_name: NVIDIA TAO Toolkit
+    description: Transfer-learning toolkit for vision and speech models.
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet integrated into the platform
+    owning_agent: apollo
+    tools:
+      - {name: tao_status, description: Report toolkit status., args: []}
+
+  dali:
+    display_name: NVIDIA DALI
+    description: Data loading and augmentation library for GPU pipelines (Apache-2.0).
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet integrated into the platform
+    owning_agent: apollo
+    tools:
+      - {name: dali_status, description: Report pipeline status., args: []}
+
+  nsight:
+    display_name: NVIDIA Nsight Systems and Compute
+    description: Profiling and debugging tools for GPU workloads (free downloads).
+    license_class: free
+    requires_auth: false
+    auth_type: none
+    buildable_today: false
+    requires_nvaie: false
+    why_unavailable: Not yet integrated into the platform
+    owning_agent: apollo
+    tools:
+      - {name: nsight_status, description: Report profiler availability., args: []}

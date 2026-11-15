@@ -10,10 +10,23 @@
   "min_budget_mb": 900,
   "headroom_divisor": 2,
   "ladder": [
-    "bonsai-1.7b",
-    "bonsai-4b",
-    "bonsai-8b",
+    "bonsai2-2b",
+    "bonsai2-4b",
+    "bonsai2-9b",
     "bonsai2-27b"
+  ],
+  "beyond_ladder": [
+    {
+      "id": "gemma4-12b",
+      "name": "Gemma 4 12B",
+      "machines": 1,
+      "served_on": "one RTX 5090 (32 GB) with llama.cpp at Q4_K_M",
+      "evidence": [
+        "AitherBench routing_model + tool_reach, 30 items, 30/30 judged, 2026-10-28",
+        "release fleet-gemma4-12b-q4: 7,662,533,088 bytes in 5 public parts",
+        "Apache-2.0 (licence record gemma4-12b, redistribution permitted)"
+      ]
+    }
   ],
   "models": {
     "aither-code-embed": {
@@ -94,7 +107,7 @@
         "https://huggingface.co/prism-ml/Ternary-Bonsai-1.7B-gguf/resolve/main/Ternary-Bonsai-1.7B-PQ2_0.gguf"
       ],
       "opt_in": false,
-      "on_ladder": true,
+      "on_ladder": false,
       "quant": "PQ2_0",
       "purpose": "Chat on a phone-class GPU or a plain CPU.",
       "runtime": "prism-llama.cpp",
@@ -157,7 +170,7 @@
         "https://huggingface.co/prism-ml/Ternary-Bonsai-4B-gguf/resolve/main/Ternary-Bonsai-4B-PQ2_0.gguf"
       ],
       "opt_in": false,
-      "on_ladder": true,
+      "on_ladder": false,
       "quant": "PQ2_0",
       "purpose": "Chat on a 4 GB card.",
       "runtime": "prism-llama.cpp",
@@ -189,7 +202,7 @@
         "https://huggingface.co/prism-ml/Ternary-Bonsai-8B-gguf/resolve/main/Ternary-Bonsai-8B-PQ2_0.gguf"
       ],
       "opt_in": false,
-      "on_ladder": true,
+      "on_ladder": false,
       "quant": "PQ2_0",
       "purpose": "Chat with better reasoning on an 8 GB card.",
       "runtime": "prism-llama.cpp",
@@ -241,6 +254,87 @@
       },
       "size_bytes": 5946648928,
       "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3"
+    },
+    "bonsai2-2b": {
+      "id": "bonsai2-2b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-2-2B-PTQ1_0.gguf",
+      "size_mb": 409,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-2-2B-gguf/resolve/main/Ternary-Bonsai-2-2B-PTQ1_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": true,
+      "quant": "PTQ1_0",
+      "purpose": "Chat on a phone-class GPU or a plain CPU.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai2-2b",
+      "licence": {
+        "record": "bonsai2-small",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 429183456,
+      "sha256": "36061ad406df8a4903a6db005be350c50fabfaf717f9ef0acf4b76adcd9929fa"
+    },
+    "bonsai2-4b": {
+      "id": "bonsai2-4b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-2-4B-PTQ1_0.gguf",
+      "size_mb": 905,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-2-4B-gguf/resolve/main/Ternary-Bonsai-2-4B-PTQ1_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": true,
+      "quant": "PTQ1_0",
+      "purpose": "Chat on a 2-4 GB card.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai2-4b",
+      "licence": {
+        "record": "bonsai2-small",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 949549920,
+      "sha256": "56711263ec9a9ffeaa74a3a0e58dece8127cf9268404746c721113ca76994d60"
+    },
+    "bonsai2-9b": {
+      "id": "bonsai2-9b",
+      "role": "chat",
+      "file": "Ternary-Bonsai-2-9B-PTQ1_0.gguf",
+      "size_mb": 1904,
+      "parts": 0,
+      "join": false,
+      "urls": [
+        "https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-gguf/resolve/main/Ternary-Bonsai-2-9B-PTQ1_0.gguf"
+      ],
+      "opt_in": false,
+      "on_ladder": true,
+      "quant": "PTQ1_0",
+      "purpose": "Chat, tools and reasoning on a 4-11 GB card.",
+      "runtime": "prism-llama.cpp",
+      "licence_id": "bonsai2-9b",
+      "licence": {
+        "record": "bonsai2-small",
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "redistribution_ok": true,
+        "commercial_ok": true,
+        "attribution_required": true
+      },
+      "size_bytes": 1997486976,
+      "sha256": "3561df7ac7d26a71ffa991ac2db740b10841c3a350aa2676ccd3ff5d428b4e8b"
     },
     "deepseek-v4-flash": {
       "id": "deepseek-v4-flash",
@@ -305,6 +399,11 @@
         "redistribution_ok": true,
         "commercial_ok": true,
         "attribution_required": true
+      },
+      "bench": {
+        "overall": 0.9667,
+        "item_set": "716dcc9b602d9c5f",
+        "measured": "2026-10-28"
       }
     },
     "lfm3-1.7b": {

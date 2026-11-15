@@ -1,0 +1,3 @@
+npm install
+npx flue run src/agents/aither.ts -m "What time is it on the platform right now? Use your tool and quote the utc value."
+# needs Node >= 22.19 and a sign-in (adk login); README.md covers TLS and the pinned versions

@@ -1087,6 +1087,38 @@
         "full",
         "enterprise"
       ]
+    },
+    {
+      "id": "patty-everyday",
+      "name": "Patty Everyday Helper",
+      "type": "bundle",
+      "version": "1.0.0",
+      "description": "One-click start for an everyday assistant: the Atlas helper, core workspace skills, and the desktop companion. No setup, no jargon.",
+      "tier": "free",
+      "category": "everyday",
+      "tags": [
+        "everyday",
+        "non-technical",
+        "starter",
+        "click-install"
+      ]
+    },
+    {
+      "id": "jason-business-desk",
+      "name": "Jason Business Desk",
+      "type": "bundle",
+      "version": "1.0.0",
+      "description": "The business operator's desk: legal, finance, research and writing agents plus commerce tools, business skills and portable research packs.",
+      "tier": "developer",
+      "category": "business",
+      "tags": [
+        "business",
+        "operator",
+        "legal",
+        "finance",
+        "research",
+        "starter"
+      ]
     }
   ]
 }

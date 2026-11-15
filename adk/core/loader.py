@@ -20,7 +20,9 @@ Lets users define agents as data files instead of writing Python::
 
 Model strings use the ``"<backend>:<model>"`` form, e.g.
 ``"openai:gpt-4o-mini"``, ``"llamacpp:default"``, ``"anthropic:claude-3-5-sonnet"``,
-``"deepseek:deepseek-chat"``, ``"vllm:auto"``. ``"auto"`` runs :func:`auto_backend`.
+``"spine:bonsai2-27b"`` (the local AitherOS spine, user priority, local only),
+``"vllm:auto"``. ``"auto"`` runs :func:`auto_backend` (local first). ``"deepseek:..."``
+names the paid DeepSeek cloud API and is used only when a spec says so.
 
 Tools are loaded by dotted path. The target must be either a :class:`Tool`
 instance or a function decorated with :func:`tool`.
@@ -101,6 +103,9 @@ def _build(spec: dict[str, Any]) -> Agent:
 # ---------------------------------------------------------------------------
 
 _BACKEND_CLASSES: dict[str, str] = {
+    # The AitherOS spine (MicroScheduler :8150, https + AitherNet CA). Local models only.
+    "spine": "adk.core.model:spine_backend",
+    "aither": "adk.core.model:spine_backend",
     "openai": "adk.core.backends.openai_compat:OpenAIBackend",
     "vllm": "adk.core.backends.openai_compat:VLLMBackend",
     "deepseek": "adk.core.backends.openai_compat:DeepSeekBackend",

@@ -64,7 +64,6 @@ def _build_report(exc: BaseException, source: str = "command") -> dict:
             "arch": platform.machine(),
             "os_release": platform.release(),
             "python_version": platform.python_version(),
-            "hostname": platform.node(),
             "ram_gb": ram_gb,
             "cpu": cpu_info,
             "gpu": _detect_gpu(),
@@ -109,12 +108,18 @@ def _format_issue_body(report: dict) -> str:
 
 
 def _ask_confirm(prompt: str) -> bool:
-    """Ask Y/n with default Y. Non-interactive defaults to yes."""
+    """Ask y/N. Nothing is sent unless a person at a terminal types yes.
+
+    The default used to be YES, and a non-interactive run (a script, CI, a service)
+    answered yes on its own. That sent the stack trace, the command line and the
+    machine's hostname with nobody having agreed, and the fallback path opens a
+    PUBLIC GitHub issue. A report is someone's data: silence is a no.
+    """
     if not sys.stdin.isatty():
-        return True
+        return False
     try:
         answer = input(prompt).strip().lower()
-        return answer in ("", "y", "yes")
+        return answer in ("y", "yes")
     except (EOFError, KeyboardInterrupt):
         return False
 
@@ -183,7 +188,7 @@ def handle_crash(exc: BaseException, source: str = "command") -> None:
     print("", file=sys.stderr)
 
     should_send = _ask_confirm(
-        "  \033[33mSend error report to help us fix this? (Y/n)\033[0m "
+        "  \033[33mSend error report to help us fix this? (y/N)\033[0m "
     )
 
     if not should_send:

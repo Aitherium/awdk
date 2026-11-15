@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -30,71 +31,30 @@ import urllib.request
 from importlib import metadata as md
 from pathlib import Path
 
-from adk import bricks_os
+from adk import brick_family, bricks_os
 
-#: Frozen from the Aither World registry, ecosystem.yaml (every entry whose install line
-#: is ``pip install <dist>``). An installed package cannot read the registry,
-#: so the list travels with the code; tests/test_bricks.py fails when it drifts
-#: from the registry. (registry id, distribution name, source)
-FAMILY: tuple[tuple[str, str, str], ...] = (
-    ("aitherkvcache", "aither-kvcache", "pypi"),
-    ("awask", "awask", "pypi"),
-    ("awavatar", "awavatar", "pypi"),
-    ("awbac", "awbac", "pypi"),
-    ("awbrain", "awbrain", "pypi"),
-    ("awbrowse", "awbrowse", "pypi"),
-    ("awclassify", "awclassify", "pypi"),
-    ("awdecide", "awdecide", "pypi"),
-    ("awdelphi", "awdelphi", "pypi"),
-    ("awdit", "awdit", "pypi"),
-    ("awdk", "awdk", "pypi"),
-    ("awembed", "awembed", "pypi"),
-    ("awevolve", "awevolve", "pypi"),
-    ("awfind", "awfind", "pypi"),
-    ("awflow", "aitherium-awflow", "pypi"),
-    ("awfocus", "awfocus", "pypi"),
-    ("awgit", "awgit", "pypi"),
-    ("awgraph", "awgraph", "pypi"),
-    ("awgym", "awgym", "pypi"),
-    ("awiam", "awiam", "pypi"),
-    ("awkno", "awkno", "pypi"),
-    ("awm", "awm", "pypi"),
-    ("awmail", "awmail", "pypi"),
-    ("awmine", "awmine", "git"),
-    ("awnboard", "awnboard", "pypi"),
-    ("awnest", "awnest", "pypi"),
-    ("awnet", "awnet", "pypi"),
-    ("awnode", "awnode", "pypi"),
-    ("awpool", "awpool", "pypi"),
-    ("awpredict", "awpredict", "git"),
-    ("awprism", "awprism", "pypi"),
-    ("awreason", "awreason", "pypi"),
-    ("awrecover", "awrecover", "pypi"),
-    ("awrecurse", "awrecurse", "pypi"),
-    ("awrelay", "awrelay", "pypi"),
-    ("awrena", "awrena", "pypi"),
-    ("awrepl", "awrepl", "pypi"),
-    ("awreport", "awreport", "pypi"),
-    ("awresearch", "awresearch", "pypi"),
-    ("awrise", "awrise", "pypi"),
-    ("awrouter", "awrouter", "pypi"),
-    ("awrtifact", "awrtifact", "pypi"),
-    ("awrun", "awrun", "pypi"),
-    ("awscreen", "awscreen", "pypi"),
-    ("awseal", "awseal", "pypi"),
-    ("awsettings", "awsettings", "pypi"),
-    ("awshare", "awshare", "pypi"),
-    ("awsprite", "awsprite", "pypi"),
-    ("awstorage", "awstorage", "pypi"),
-    ("awswarm", "awswarm", "pypi"),
-    ("awtax", "awtax", "pypi"),
-    ("awtoll", "awtoll", "pypi"),
-    ("awtunnel", "awtunnel", "pypi"),
-    ("awvision", "awvision", "pypi"),
-    ("awvoice", "awvoice", "pypi"),
-    ("awwall", "awwall", "pypi"),
-    ("gawbbonet", "gawbbonet", "pypi"),
-)
+#: (registry id, distribution name, source) for every family brick whose install line
+#: is ``pip install <dist>`` -- ``pip install git+...`` reads as source "git". Read from
+#: the vendored family.json (adk.brick_family), which gen_ecosystem.py --emit writes
+#: from ecosystem.yaml and EC018 holds fresh; a missing file raises at import rather
+#: than reporting an empty family. tests/test_bricks.py still diffs it against the
+#: registry.
+_PIP_INSTALL = re.compile(r"\s*pip install\s+([A-Za-z0-9_.\-\[\]]+)")
+
+
+def _family_rows() -> tuple[tuple[str, str, str], ...]:
+    rows = set()
+    for b in brick_family.bricks():
+        m = _PIP_INSTALL.match(b.get("install") or "")
+        if not m:
+            continue
+        dist = m.group(1)
+        src = "git" if dist == "git" else "pypi"
+        rows.add((b["id"], b["id"] if src == "git" else dist, src))
+    return tuple(sorted(rows))
+
+
+FAMILY: tuple[tuple[str, str, str], ...] = _family_rows()
 
 INDEX_URL = os.environ.get("ADK_BRICKS_INDEX", "https://pypi.org/pypi")
 

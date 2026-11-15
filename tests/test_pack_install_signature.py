@@ -44,7 +44,8 @@ def _install(monkeypatch, tmp_path: Path, headers: dict) -> int:
     monkeypatch.setattr(cli, "_get_genesis_url", lambda: "http://genesis.invalid")
     monkeypatch.delenv("AITHER_PACK_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("AITHER_PACK_REQUIRE_SIGNING", raising=False)
-    args = types.SimpleNamespace(pack_command="install", pack_id="dev.sig")
+    # library_only: this exercises the Library download path itself, not the resolver
+    args = types.SimpleNamespace(pack_command="install", pack_id="dev.sig", library_only=True)
     return cli._cmd_pack(args)
 
 

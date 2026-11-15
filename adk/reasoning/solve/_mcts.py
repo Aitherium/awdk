@@ -78,6 +78,10 @@ def _as_array(v: Any, like: Any) -> Any:
     return np.asarray(v)
 
 
+#: A learned state value is worth at most this much of a real goal hit at an MCTS leaf.
+VALUE_WEIGHT = 0.5
+
+
 def _score(v: Any) -> float:
     """A goal returns a bool or a progress number in [0, 1] (as the core's goal_score)."""
     if v is None:
@@ -230,11 +234,13 @@ class ImaginedEnv:
         model: WorldModel,
         actions: Sequence[Act],
         goal: Optional[Callable[[Any], float]],
+        value: Optional[Callable[[Any], float]] = None,
     ) -> None:
         self.state = state
         self.model = model
         self.actions = list(actions)
         self.goal = goal
+        self.value = value
         self.over = False
 
     def get_state_hash(self) -> int:
@@ -259,15 +265,23 @@ class ImaginedEnv:
         return nxt, 0.0, False
 
     def evaluate(self) -> float:
-        if self.goal is None:
-            return 0.0
+        g = 0.0
+        if self.goal is not None:
+            try:
+                g = _score(self.goal(self.state))
+            except Exception:  # noqa: BLE001
+                g = 0.0
+        if g > 0.0 or self.value is None:
+            return g
+        # No goal signal at this leaf: ask the learned state critic (a calibrated V(s) from
+        # the Terminal-RSI loop), scaled below a real goal hit so it guides, never overrides.
         try:
-            return _score(self.goal(self.state))
-        except Exception:  # noqa: BLE001
+            return VALUE_WEIGHT * _score(self.value(self.state))
+        except Exception:  # noqa: BLE001 - a critic that throws contributes nothing
             return 0.0
 
     def clone(self) -> "ImaginedEnv":
-        c = ImaginedEnv(self.state, self.model, self.actions, self.goal)
+        c = ImaginedEnv(self.state, self.model, self.actions, self.goal, self.value)
         c.over = self.over
         return c
 
@@ -303,8 +317,9 @@ def _mcts_plan(
     max_depth: int,
     iterations: int,
     time_s: float,
+    value: Optional[Callable[[Any], float]] = None,
 ) -> Dict[str, Any]:
-    env = ImaginedEnv(start, model, actions, goal)
+    env = ImaginedEnv(start, model, actions, goal, value)
     cfg = MCTSConfig(
         iterations=iterations,
         time_limit_ms=max(1.0, time_s * 1000.0),
@@ -343,6 +358,7 @@ def plan(
     max_states: int = 5000,
     time_s: Optional[float] = None,
     method: str = "auto",
+    value: Optional[Callable[[Any], float]] = None,
     mcts_iterations: int = 400,
 ) -> Dict[str, Any]:
     """Shortest action path from ``start`` to the goal, inside the model only.
@@ -406,6 +422,7 @@ def plan(
             max_depth=max_depth,
             iterations=mcts_iterations,
             time_s=max(0.05, left),
+            value=value,
         )
         out.update(
             method="mcts",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import hmac
 import inspect
 import json
@@ -19,6 +20,7 @@ import socket
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Optional
 from adk.device_class import resolve_stored  # noqa: E402
 
@@ -144,6 +146,60 @@ def _gateway_attach_policy(raw: str) -> dict:
     elif parts.scheme != "http":
         out["refuse"] = f"unsupported gateway scheme {parts.scheme!r}"
     return out
+
+
+def gateway_attach_report(state: dict, *, key_present: bool = True, connected: bool = False,
+                          catalogue: int = 0, registered: int = 0, error: str = "") -> bool:
+    """Record the ONLINE gateway attach verdict in the fields /health reads.
+
+    The sovereign attach (``_connect_local_mcp_if_available``) always wrote
+    ``mcp_tools_registered`` / ``mcp_tools_catalogue`` / ``mcp_last_error``; the online
+    attach (``_connect_gateway_mcp``) wrote none of them. Measured 2026-11-12 on the
+    public twin server: ``tools: {mode: builtin-only, registered: 0, attach_attempts: 0,
+    last_error: ""}`` -- no credential was configured, and /health gave no reason, and
+    would have read the same with a working attach. Returns True when tools are usable.
+
+    "Attached" needs a non-empty catalogue AND registered tools, the same rule as the
+    sovereign path: a client that connected and listed nothing is not an attach.
+    """
+    if not key_present:
+        state["gateway_mcp_connected"] = False
+        state["mcp_tools_registered"] = 0
+        state["mcp_tools_catalogue"] = 0
+        state["mcp_last_error"] = (
+            "no gateway credential configured (AITHER_API_KEY unset): built-in tools only")
+        return False
+    state["mcp_attach_attempts"] = state.get("mcp_attach_attempts", 0) + 1
+    ok = bool(connected and catalogue > 0 and registered > 0)
+    state["gateway_mcp_connected"] = ok
+    state["mcp_tools_registered"] = registered if ok else 0
+    state["mcp_tools_catalogue"] = catalogue if ok else 0
+    if ok:
+        state["mcp_last_error"] = ""
+    else:
+        state["mcp_last_error"] = error or (
+            "gateway refused the connection or the credential" if not connected
+            else "gateway listed 0 tools" if catalogue <= 0
+            else "no gateway tool could be registered")
+    return ok
+
+
+#: Schema routes. On a bearer-gated server they list every route this daemon has
+#: (33 /admin routes, /cli/execute, /secrets on the public twin server, measured
+#: 2026-11-12), so they are gated like the routes they describe.
+_SCHEMA_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
+
+
+def schema_routes_public(server_api_key: str) -> bool:
+    """May /docs, /redoc and /openapi.json be read without a credential?
+
+    Yes on a daemon with no AITHER_SERVER_API_KEY (the loopback default: every route
+    is already open to the box's own user). No once a server key is set -- the operator
+    declared the server bearer-gated -- unless AITHER_PUBLIC_DOCS=1 opts back in.
+    """
+    if not (server_api_key or "").strip():
+        return True
+    return os.getenv("AITHER_PUBLIC_DOCS", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _local_gateway_api_key(config, account_ok: bool = True) -> str:
@@ -835,8 +891,32 @@ def _prioritise_mcp_specs(specs: list) -> list:
     return first + head + tail
 
 
+#: The gateway tools THIS TURN may reach, or None for no per-turn restriction.
+#: Set by ``/stream`` from ``allowed_gateway_tools`` (the control plane sends a twin's
+#: recorded pack whitelist with each turn). A ContextVar because one agent object
+#: serves many turns at once: the restriction belongs to the turn, not the agent.
+_TURN_GATEWAY_ALLOW: contextvars.ContextVar = contextvars.ContextVar(
+    "adk_turn_gateway_allow", default=None)
+
+
+def turn_gateway_allow(names) -> "frozenset | None":
+    """Normalise a request's ``allowed_gateway_tools``. None = no restriction.
+
+    Only a non-empty list of names restricts; anything else (absent, empty, not a
+    list) leaves the turn as it was, so a caller cannot widen or break a turn with
+    it -- the field can only narrow.
+    """
+    if not isinstance(names, (list, tuple)):
+        return None
+    allow = frozenset(str(n).strip().lower() for n in names if str(n).strip())
+    return allow or None
+
+
 def gateway_tool_denied(name: str, agent=None) -> bool:
     """True when a gateway tool name matches the host or the AGENT's deny list.
+
+    A turn that carries a whitelist (``_TURN_GATEWAY_ALLOW``) is also denied every
+    gateway tool not on it.
 
     Two planes, unioned: ADK_GATEWAY_TOOL_DENY (host env, comma-separated names or
     lowercase ``prefix*`` patterns) and the agent's own ``tool_grants`` dict —
@@ -847,6 +927,9 @@ def gateway_tool_denied(name: str, agent=None) -> bool:
     n = str(name or "").strip().lower()
     if not n:
         return True  # an empty name reaches nothing
+    allow = _TURN_GATEWAY_ALLOW.get()
+    if allow is not None and n not in allow:
+        return True
     patterns = list((os.environ.get("ADK_GATEWAY_TOOL_DENY", "") or "").split(","))
     grants = getattr(agent, "tool_grants", None)
     if isinstance(grants, dict):
@@ -1119,7 +1202,8 @@ def register_gateway_tools_on(
             return json.dumps({
                 "error": "denied_by_grant",
                 "tool": str(name)[:120],
-                "message": "this tool is denied by the host grant list (ADK_GATEWAY_TOOL_DENY)",
+                "message": "this tool is not granted to this agent on this host "
+                           "(its tool whitelist, or ADK_GATEWAY_TOOL_DENY)",
                 "fix": ("use search_tools to find an allowed alternative; if none fits, "
                         "tell the user this host denies that tool"),
             })
@@ -1156,6 +1240,10 @@ def register_gateway_tools_on(
             continue
 
         async def _gateway_tool_call(tn=tool_name, **kwargs) -> str:
+            # The eager set is registered once per agent, so the per-turn whitelist
+            # (and a grant added later) is judged at call time as well.
+            if gateway_tool_denied(tn, agent):
+                return f"Error: the tool '{tn}' is not granted to this agent on this host"
             local = await _try_local_shadow(agent, tn, kwargs)
             if local is not None:
                 return local
@@ -1178,6 +1266,88 @@ def register_gateway_tools_on(
         except Exception:  # noqa: BLE001 — one bad spec must not drop the rest
             continue
     return registered
+
+
+def _brain_pack_persona(pack_dir: Path, name: str) -> dict[str, Any]:
+    """Return ``{"system_prompt": ...}`` from brain_pack.yaml when it is THIS agent's.
+
+    A pack that came from the pack registry carries the authored persona in
+    ``brain_pack.yaml`` and keeps ``agent.yaml`` as a portable manifest whose
+    model/tools sit under ``spec``. The runtime reads only a TOP-LEVEL
+    ``system_prompt``, so such an agent silently answered as the generic
+    ``AitherAgent``. The fallback is accepted ONLY when the brain pack names this
+    same identity — a directory that happens to hold another agent's brain pack
+    must never speak as this one.
+    """
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover - yaml is an adk dependency
+        return {}
+    brain_yaml = Path(pack_dir) / "brain_pack.yaml"
+    if not brain_yaml.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(brain_yaml.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 — a broken brain pack must not break the turn
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    declared = str(data.get("identity") or data.get("name") or "").strip()
+    if declared != name:
+        return {}
+    prompt = data.get("system_prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {}
+    return {"system_prompt": prompt}
+
+
+def _load_persona_spec(pack_dir: Path, name: str) -> dict[str, Any]:
+    """agent.yaml (with its ``.local`` overrides) plus the brain_pack persona fallback.
+
+    Used by ``get_agent`` for every named agent this daemon builds. See
+    ``_brain_pack_persona`` for why the fallback exists.
+    """
+    from adk.pack_discovery import load_agent_spec
+
+    spec: dict[str, Any] = {}
+    agent_yaml = Path(pack_dir) / "agent.yaml"
+    if agent_yaml.exists():
+        spec = load_agent_spec(agent_yaml) or {}
+    if not spec.get("system_prompt"):
+        brain = _brain_pack_persona(pack_dir, name)
+        if brain:
+            # agent.yaml wins on every key it defines; the brain pack only fills
+            # the gap this function exists for.
+            spec = {**brain, **spec}
+    return spec
+
+
+def _installed_agents(root: Path | None = None,
+                      exclude: set[str] | None = None) -> list[dict[str, Any]]:
+    """Agents installed under ``~/.aither/agents/<name>/`` (status ``installed``).
+
+    Cheap by design: name plus a description read from the pack's spec, never an
+    agent build. A pack whose spec cannot be read is still listed (it is still
+    callable), with an empty description.
+    """
+    root = root or (Path.home() / ".aither" / "agents")
+    exclude = exclude or set()
+    out: list[dict[str, Any]] = []
+    try:
+        dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return out
+    for d in dirs:
+        if d.name in exclude or d.name.startswith((".", "_")):
+            continue
+        try:
+            spec = _load_persona_spec(d, d.name)
+        except Exception:  # noqa: BLE001 - a broken pack is listed, not fatal
+            spec = {}
+        out.append({"name": d.name, "identity": d.name,
+                    "description": str(spec.get("description") or ""),
+                    "status": "installed"})
+    return out
 
 
 def create_app(
@@ -1322,6 +1492,10 @@ def create_app(
             # ── Workflow -> expedition mirror tailer (host-side half) ──
             if os.environ.get("AITHER_WORKFLOW_MIRROR", "1") != "0":
                 _state["workflow_mirror_task"] = asyncio.create_task(_workflow_mirror_loop())
+
+        # Turns a killed process left open are run to a terminal outcome
+        # (adk.turn_journal). In the background: startup never waits on a model.
+        _state["turn_resume_task"] = asyncio.create_task(_resume_interrupted_turns())
 
         yield
         # ── Shutdown cleanup ──
@@ -1585,6 +1759,8 @@ def create_app(
                         # secret, and is read by visitors with no session. Listed
                         # EXACTLY, never as a prefix -- /api/* is otherwise gated.
                         "/api/demos/community.json"}
+    if not schema_routes_public(_server_api_key):
+        _skip_auth_paths -= _SCHEMA_PATHS
 
     def _is_pack_ui_asset(path: str) -> bool:
         """Pack-UI static assets are unauthenticated like the console shell at "/".
@@ -1701,9 +1877,11 @@ def create_app(
         External requests cannot claim PLATFORM caller type.
         """
         if request.url.path in _skip_auth_paths or _is_pack_ui_asset(request.url.path):
-            # The skip list names PAGES. In required mode it covers reads only:
+            # The skip list names PAGES, so it covers reads only, in EVERY mode:
             # POST /chat is the chat endpoint, not the page that shares its path.
-            if not _local_auth_required or request.method in ("GET", "HEAD", "OPTIONS"):
+            # (Until 2026-11-08 the non-required mode let POST /chat through, so a
+            # bearer-protected server answered anyone over its public tunnel.)
+            if request.method in ("GET", "HEAD", "OPTIONS"):
                 return await call_next(request)
 
         # Validate X-Caller-Type if present (prevent spoofing)
@@ -1805,6 +1983,17 @@ def create_app(
         _state["fleet"] = fleet
         return fleet
 
+    async def _resume_interrupted_turns() -> None:
+        from adk import turn_journal
+
+        try:
+            report = await turn_journal.resume_open_turns(get_agent)
+        except Exception as exc:  # noqa: BLE001 -- never blocks or fails startup
+            logger.warning("turn resume failed: %s: %s", type(exc).__name__, exc)
+            report = {"error": f"{type(exc).__name__}: {exc}"}
+        _state["turn_resume"] = {
+            k: (len(v) if isinstance(v, list) else v) for k, v in report.items()}
+
     async def get_agent(name: str | None = None, *, is_local: bool = False) -> AitherAgent:
         """Get agent by name. In fleet mode, routes to the right agent.
 
@@ -1827,7 +2016,6 @@ def create_app(
 
         if _state["agent"] is None:
             # Load agent spec with customization overrides
-            from adk.pack_discovery import load_agent_spec
             from pathlib import Path
 
             identity = _state["identity"]
@@ -1836,9 +2024,7 @@ def create_app(
             # Try to load agent spec from installed pack
             pack_dir = Path.home() / ".aither" / "agents" / identity
             if pack_dir.exists():
-                agent_yaml = pack_dir / "agent.yaml"
-                if agent_yaml.exists():
-                    agent_spec = load_agent_spec(agent_yaml) or {}
+                agent_spec = _load_persona_spec(pack_dir, identity)
 
             # Build AitherAgent with optional system_prompt override
             kwargs = {
@@ -1880,15 +2066,12 @@ def create_app(
                 return cached
 
             # Load agent spec for the requested agent
-            from adk.pack_discovery import load_agent_spec
             from pathlib import Path
 
             agent_spec = {}
             pack_dir = Path.home() / ".aither" / "agents" / name
             if pack_dir.exists():
-                agent_yaml = pack_dir / "agent.yaml"
-                if agent_yaml.exists():
-                    agent_spec = load_agent_spec(agent_yaml) or {}
+                agent_spec = _load_persona_spec(pack_dir, name)
 
             kwargs = {
                 "name": name,
@@ -2139,6 +2322,14 @@ def create_app(
         # plane degraded, read identically to a working one from outside until this
         # key existed. `last_recall` is what the most recent turn was actually given.
         result["crystal"] = _crystal_health(a)
+        # Durable turns: how many are open, what the last one came to, and what the
+        # startup resume did with the turns a killed process left behind.
+        try:
+            from adk import turn_journal as _turn_journal
+            result["turns"] = await asyncio.to_thread(_turn_journal.health, a)
+            result["turns"]["startup_resume"] = _state.get("turn_resume")
+        except Exception as exc:  # noqa: BLE001 -- /health must always answer
+            result["turns"] = {"error": str(exc)[:200]}
         if a is not None:
             try:
                 _tp = _turn_planes(a)
@@ -4484,7 +4675,10 @@ def create_app(
         # visitor lands somewhere instead of a blank console. The selected UI
         # pack (the app itself) lives at /local; `adk ui set <pack>` still
         # chooses it. Never blank — falls back console -> minimal.
-        return _pack_html("switcher")
+        # AITHER_LANDING_PACK swaps the landpage per deployment: the public twin
+        # server (twins.aitherium.com) lands strangers on "twins-start", the
+        # create-your-twin entry, not on the Demo Hall grid.
+        return _pack_html(os.getenv("AITHER_LANDING_PACK", "").strip() or "switcher")
 
     # ─── Same-origin directory proxy (for a landpage that shows other people's work) ───
 
@@ -4712,6 +4906,18 @@ def create_app(
         from fastapi.responses import RedirectResponse
         return RedirectResponse("https://demo.aitherium.com")
 
+    from adk.llm import LLMBackendUnreachable
+
+    @app.exception_handler(LLMBackendUnreachable)
+    async def _backend_unreachable_handler(request: Request, exc: LLMBackendUnreachable):
+        # One line naming the endpoint and the remedy, not a transport traceback.
+        logger.error("%s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "backend_unreachable", "message": str(exc),
+                     "endpoint": exc.endpoint},
+        )
+
     @app.exception_handler(ConnectionError)
     async def _no_backend_handler(request: Request, exc: ConnectionError):
         return JSONResponse(
@@ -4738,18 +4944,19 @@ def create_app(
                 "agents": fleet.registry.list(),
             }
         a = await get_agent()
-        return {
-            "fleet": None,
-            "orchestrator": a.name,
-            "agents": [{
-                "name": a.name,
-                "identity": a._identity.name,
-                "description": a._identity.description,
-                "skills": a._identity.skills,
-                "tools": [t.name for t in a._tools.list_tools()],
-                "status": "running",
-            }],
-        }
+        agents = [{
+            "name": a.name,
+            "identity": a._identity.name,
+            "description": a._identity.description,
+            "skills": a._identity.skills,
+            "tools": [t.name for t in a._tools.list_tools()],
+            "status": "running",
+        }]
+        # Every installed agent is callable by name (``agent`` on /chat builds it on
+        # first use), so list them too -- listing only the default identity made a
+        # server answering 23 agents report one.
+        agents.extend(_installed_agents(exclude={a.name}))
+        return {"fleet": None, "orchestrator": a.name, "agents": agents}
 
     @app.post("/agents/{agent_name}/chat")
     async def agent_chat(agent_name: str, request: Request):
@@ -4990,10 +5197,11 @@ def create_app(
         reasoning = body.get("reasoning", False)
         mcp_endpoints = body.get("mcp_endpoints")
         system_additions = body.get("system_additions")
+        gateway_allow = turn_gateway_allow(body.get("allowed_gateway_tools"))
 
         return StreamingResponse(
             _aitheros_stream(get_agent, message, session_id, agent_name, reasoning, mcp_endpoints,
-                             system_additions=system_additions),
+                             system_additions=system_additions, gateway_allow=gateway_allow),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -5058,11 +5266,23 @@ def create_app(
         except (TypeError, ValueError):
             gen_params = {}
 
+        # The caller's working directory (an awsh session's spawn cwd). Bound for
+        # the turn so the built-in tools resolve relative paths there, and named
+        # to the model. Until 2026-11-12 the awdk harness accepted a cwd and the
+        # turn ran in whatever directory this server was started from.
+        from adk.turn_cwd import usable as _usable_cwd
+        turn_cwd = _usable_cwd(body.get("cwd"))
+        if turn_cwd:
+            system_additions = list(system_additions or []) + [
+                f"[SESSION CWD] This session's working directory is {turn_cwd}. "
+                "Relative paths in file, search, git and shell tools resolve there."]
+
         return StreamingResponse(
             _aitheros_stream(get_agent, message, session_id, agent_name, reasoning,
                              mcp_endpoints, gen_params=gen_params or None,
                              system_additions=system_additions,
-                             is_local=bool(body.get("is_local", False))),
+                             is_local=bool(body.get("is_local", False)),
+                             cwd=turn_cwd),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -5087,7 +5307,9 @@ def create_app(
                      conversation history. Injected as a [STEERING HINT]
                      system block that guides the agent's next reasoning step
                      without interrupting flow.
-            cancel — abort the running generation (not yet implemented).
+            cancel — abort the session's running streamed turn. The stream ends
+                     with a typed ``error`` (``interrupted: true``) + ``complete``
+                     and the turn journal records the turn as abandoned.
         """
         body = await request.json()
         session_id = body.get("session_id", "")
@@ -5096,6 +5318,20 @@ def create_app(
 
         if not session_id:
             return JSONResponse({"ok": False, "error": "session_id required"}, status_code=400)
+
+        if action == "cancel":
+            _running = _TURN_TASKS.get(session_id)
+            if _running is None or _running.done():
+                return JSONResponse(
+                    {"ok": False, "error": "no running turn", "session_id": session_id},
+                    status_code=404,
+                )
+            _running.cancel()
+            return JSONResponse(
+                {"ok": True, "session_id": session_id, "action": "cancel",
+                 "cancelled": True},
+                status_code=200,
+            )
 
         from adk.steering import queue_steering_message
         queued = await queue_steering_message(session_id, action, message)
@@ -5157,6 +5393,34 @@ def create_app(
         from adk.artifacts import get_registry
         arts = get_registry().get(session_id)
         return {"session_id": session_id, "artifacts": [a.to_dict() for a in arts]}
+
+    @app.get("/sessions/{session_id}/turns")
+    async def session_turns(session_id: str, agent: str | None = None,
+                            wait: float = 0.0, after: int = 0, ack: str | None = None):
+        """The session's turns and their outcomes, from the turn journal.
+
+        ``outcome`` is ``open``, ``finished``, ``failed`` (with ``reason``),
+        ``resumed`` (interrupted by a kill and completed after it) or
+        ``abandoned``. ``wait`` (seconds, at most 120) holds the answer until the
+        session has no open turn: a client that lost its connection to a killed
+        server reads the resumed turn's ``result`` here. ``ack=<turn_id>`` records
+        that the client has that turn's answer, so the same request sent again
+        starts a new turn instead of being handed the old answer.
+        """
+        from adk import turn_journal
+
+        a = await get_agent(agent)
+        if ack:
+            await asyncio.to_thread(turn_journal.acknowledge, a, session_id, ack)
+        deadline = time.monotonic() + max(0.0, min(float(wait or 0.0), 120.0))
+        while True:
+            status = await asyncio.to_thread(
+                turn_journal.session_status, a, session_id, after=after)
+            if not status.get("open") or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.25)
+        status["waited"] = bool(wait)
+        return status
 
     @app.post("/sessions/{session_id}/confirm")
     async def confirm_tools(session_id: str, request: Request):
@@ -6409,7 +6673,8 @@ def create_app(
         Fail-soft: no token or connection failure logs warning, agent runs offline.
         """
         if not config.aither_api_key:
-            logger.debug("Gateway MCP: no API key configured (running offline)")
+            logger.info("Gateway MCP: no API key configured -- built-in tools only")
+            gateway_attach_report(_state, key_present=False)
             return
 
         try:
@@ -6456,15 +6721,29 @@ def create_app(
                             "(%d eager + 2 meta-tools)",
                             tool_count, a.name, max_tools,
                         )
+                        gateway_attach_report(_state, connected=True,
+                                              catalogue=len(tools or []),
+                                              registered=tool_count)
+                    else:
+                        gateway_attach_report(_state, connected=True,
+                                              error="no agent to register tools on")
                 except Exception as exc:  # noqa: BLE001 — tool registration is advisory
                     logger.debug("Gateway tool registration failed (non-fatal): %s", exc)
+                    gateway_attach_report(
+                        _state, connected=True,
+                        error=f"tool registration failed: {type(exc).__name__}: {exc}")
             else:
-                _state["gateway_mcp_connected"] = False
+                gateway_attach_report(_state, connected=False,
+                                      error=f"gateway {gateway_url} unavailable or refused "
+                                            "the credential")
                 logger.debug("Gateway MCP connection failed (running offline)")
         except ImportError:
             logger.debug("Gateway MCP unavailable (continuing offline)")
+            gateway_attach_report(_state, connected=False,
+                                  error="gateway MCP client not installed")
         except Exception as exc:  # noqa: BLE001 — must never crash startup
-            _state["gateway_mcp_connected"] = False
+            gateway_attach_report(_state, connected=False,
+                                  error=f"{type(exc).__name__}: {exc}")
             logger.warning("Gateway MCP init failed (continuing offline): %s", exc)
 
     async def _register_with_gateway():
@@ -7220,6 +7499,10 @@ def create_app(
                 if not got:
                     resp = await prov.chat([Message(role="user", content=message)], max_tokens=1024)
                     yield f"data: {json.dumps({'type': 'answer', 'answer': getattr(resp, 'content', '') or ''})}\n\n"
+            elif ref.chat_protocol == "aitheros":
+                from adk.aitheros_chat import chat as _aitheros_chat
+                text = await _aitheros_chat(ref.invoke_url, message)
+                yield f"data: {json.dumps({'type': 'answer', 'answer': text})}\n\n"
             else:
                 from adk.shell.genesis_client import GenesisClient
                 client = GenesisClient(base_url=ref.invoke_url)
@@ -7507,6 +7790,15 @@ def create_app(
                 "FormBridge routes NOT mounted (adk.formbridge missing -- install the "
                 "FormBridge engine distribution, not the public awdk wheel): %s", e,
             )
+
+    # ── Host-shared code graph (/v1/codegraph/*): `awgraph query` asks the ONE warm
+    # graph this daemon holds instead of loading its own copy of the index per call.
+    try:
+        from adk.codegraph_routes import router as _codegraph_router
+
+        app.include_router(_codegraph_router)
+    except ImportError as e:
+        logger.warning("code graph routes not available: %s", e)
 
     # ── Local AI UI routes (the `local` UI pack: tasks, images, mail) ──
     # Mounted on the main app so the pack served at "/" has ONE origin and
@@ -7889,10 +8181,17 @@ def _tool_result_ok(result) -> bool:
         return False
     return True
 
+#: session id -> the task running that session's streamed turn. What
+#: ``POST /chat/steer {action: "cancel"}`` cancels.
+_TURN_TASKS: "dict[str, asyncio.Future]" = {}
+
+
 async def _aitheros_stream(
     get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool,
     mcp_endpoints: list | None = None, gen_params: dict | None = None,
     system_additions: list | None = None, is_local: bool = False,
+    gateway_allow: "frozenset | None" = None,
+    cwd: str = "",
 ):
     """SSE generator emitting AitherOS-typed events.
 
@@ -7909,6 +8208,9 @@ async def _aitheros_stream(
       event: complete       -> {duration_ms, tokens_used}
     """
     start = time.time()
+    # This turn's gateway tool whitelist. Set unconditionally (None clears it) so a
+    # restriction can never leak from one turn into the next on a reused context.
+    _TURN_GATEWAY_ALLOW.set(gateway_allow)
     try:
         # Only a local client's flag is passed on, so a get_agent written against the
         # one-argument form keeps working for every other caller.
@@ -8060,6 +8362,9 @@ async def _aitheros_stream(
 
             async def _run_turn():
                 try:
+                    if cwd:
+                        from adk.turn_cwd import TURN_CWD
+                        TURN_CWD.set(cwd)   # this task's context: the turn's tools
                     await register_steering_queue(session_id)
                     try:
                         _routing = await _routing_task
@@ -8088,6 +8393,11 @@ async def _aitheros_stream(
                     _q.put_nowait(_done)
 
             _turn_task = asyncio.ensure_future(_run_turn())
+            # POST /chat/steer {action: "cancel"} finds the running turn here.
+            _TURN_TASKS[session_id] = _turn_task
+            _turn_task.add_done_callback(
+                lambda _t, _sid=session_id: (
+                    _TURN_TASKS.pop(_sid, None) if _TURN_TASKS.get(_sid) is _t else None))
 
             # Thinking streams as its OWN channel, accumulated. Per-chunk passthrough
             # would print one brain line per token in the CLI; relaying it as `token`
@@ -8173,7 +8483,20 @@ async def _aitheros_stream(
 
             # Re-raises a stream_react failure into the outer handler, which
             # emits a typed error + terminal complete (never a truncated stream).
-            resp = await _turn_task
+            try:
+                resp = await _turn_task
+            except asyncio.CancelledError:
+                if not _turn_task.cancelled():
+                    raise   # this stream was cancelled, not the turn
+                # The turn was interrupted (/chat/steer cancel): a typed end, not a
+                # stream that just stops. The journal records it as abandoned.
+                _int = json.dumps({"type": "error", "error": "turn interrupted",
+                                   "interrupted": True})
+                yield f"event: error\ndata: {_int}\n\n"
+                _end_ms = int((time.time() - start) * 1000)
+                yield (f"event: complete\ndata: "
+                       f"{json.dumps({'type': 'complete', 'duration_ms': _end_ms, 'interrupted': True, 'session_id': session_id})}\n\n")
+                return
 
             # Let a mid-flight reasoner steer land, then stop watching — the
             # stream is ending and nothing will drain new steers after it.
@@ -8793,8 +9116,93 @@ def _self_update_status():
         return None
 
 
-def main():
-    """CLI entry point: aither-serve"""
+#: The daemon serves people (awsh, the desk, chat), so its spine calls are user
+#: priority unless the operator set ADK_SCHEDULER_METADATA. Without a priority
+#: MicroScheduler files the owner's turn as AGENT background work behind every agent
+#: (2026-10-30: "hey" waited 174-241 s). Cloud APIs never see the field
+#: (adk.llm.openai_compat._scheduler_metadata sends it to :8150 only).
+DAEMON_SCHEDULER_METADATA = '{"priority": "user", "source": "adk.server"}'
+
+#: Any of these set = the operator chose where models come from; leave it alone.
+_LLM_LOCATION_ENVS = (
+    "AITHER_LOCAL_LLM_URL", "AITHER_MICROSCHEDULER_URL", "AITHER_CORE_LLM_URL",
+    "AITHER_VLLM_URL", "AITHER_LLAMACPP_URL", "AITHER_LLM_BASE_URL",
+)
+
+
+def _apply_local_first_env_defaults(env=None) -> dict:
+    """Fill the daemon's local-first defaults; never overrides a value already set.
+
+    * ``ADK_SCHEDULER_METADATA`` -> user priority (see above).
+    * ``AITHER_LOCAL_LLM_URL`` -> this host's spine (``https://127.0.0.1:8150``, or the
+      in-fleet name inside a container) when no model location is configured, so the
+      router starts at the spine and never at a port scan or a cloud key.
+
+    Returns what it set (names and values; none of them is a secret).
+    """
+    env = os.environ if env is None else env
+    applied: dict = {}
+    if not (env.get("ADK_SCHEDULER_METADATA") or "").strip():
+        env["ADK_SCHEDULER_METADATA"] = DAEMON_SCHEDULER_METADATA
+        applied["ADK_SCHEDULER_METADATA"] = DAEMON_SCHEDULER_METADATA
+    if not any((env.get(k) or "").strip() for k in _LLM_LOCATION_ENVS):
+        try:
+            from adk.core.backends.microscheduler import default_scheduler_url
+            spine = default_scheduler_url()
+        except Exception:  # noqa: BLE001 - the host default is still right on a host
+            spine = "https://127.0.0.1:8150"
+        env["AITHER_LOCAL_LLM_URL"] = spine
+        applied["AITHER_LOCAL_LLM_URL"] = spine
+    return applied
+
+
+def _backend_preflight_line(config) -> str:
+    """A startup line when the configured LOOPBACK model endpoint refuses connections.
+
+    Loopback only: it is instant and dials nothing off this machine. "" when the
+    endpoint answers, is remote, or no explicit endpoint is configured.
+    """
+    import urllib.parse as _up
+
+    base = str(getattr(config, "llm_base_url", "") or "").strip()
+    if not base:
+        return ""
+    try:
+        parts = _up.urlsplit(base)
+        host = (parts.hostname or "").lower()
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return ""
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return ""
+    try:
+        socket.create_connection((host, port), timeout=1.5).close()
+        return ""
+    except OSError:
+        from adk.llm import backend_unreachable_message
+
+        return f"  Model:  ERROR {backend_unreachable_message(base)}"
+
+
+def resolve_serve_identity(cli_identity, agent, config) -> str:
+    """The identity a single-agent server answers as.
+
+    Order: explicit ``--identity``; the prebuilt (project) agent's name; the
+    project/env identity on ``config`` (``config.yaml`` from ``adk init``);
+    ``aither``.
+    """
+    return (str(cli_identity or "")
+            or (str(getattr(agent, "name", "") or "") if agent is not None else "")
+            or str(getattr(config, "identity", "") or "")
+            or "aither")
+
+
+def main(agent: "AitherAgent | None" = None):
+    """CLI entry point: aither-serve
+
+    ``agent`` is a prebuilt agent to serve (``adk run`` passes the one the
+    project's ``agent.py`` defines); None builds one from ``--identity``.
+    """
     # Air gap first: no client may be built before the egress guard is in place.
     _install_air_gap_guard()
     # One client vanishing mid-accept must not close :9001 (Windows; adk.accept_resilience).
@@ -8812,8 +9220,13 @@ def main():
     # The code graph runs in a child process (adk.graph_worker): in-process, awgraph's
     # pure-Python load and scorer held the GIL for whole turns (2026-10-14).
     os.environ.setdefault("ADK_AWGRAPH_WORKER", "1")
+    _local_first = _apply_local_first_env_defaults()
+    if _local_first:
+        logger.info("local-first defaults applied: %s", ", ".join(sorted(_local_first)))
     parser = argparse.ArgumentParser(description="AitherADK Agent Server")
-    parser.add_argument("--identity", "-i", default="aither", help="Agent identity to load (single-agent mode)")
+    parser.add_argument("--identity", "-i", default=None,
+                        help="Agent identity to load (single-agent mode; default: the project "
+                             "agent, then config.yaml `identity:`, then aither)")
     parser.add_argument("--port", "-p", type=int, default=None, help="Port (default: 8080)")
     parser.add_argument("--host", default=None,
                         help="Host (default: $AITHER_HOST or 0.0.0.0; "
@@ -8832,6 +9245,11 @@ def main():
         config.llm_backend = args.backend
     if args.model:
         config.model = args.model
+
+    # Which agent this serves: an explicit --identity, else the project's own agent,
+    # else the project config's `identity:` (config.yaml from `adk init`), else aither.
+    # The argparse default used to be "aither", so the project identity never applied.
+    identity = resolve_serve_identity(args.identity, agent, config)
 
     port = args.port or config.server_port
     host = resolve_bind_host(args.host, config.server_host)
@@ -8868,8 +9286,11 @@ def main():
         print(f"    aither serve --workspace --port {port}")
         return
 
+    if agent is not None and not is_fleet:
+        _wire_daemon_agent(agent)
     app = create_app(
-        identity=args.identity,
+        agent=None if is_fleet else agent,
+        identity=identity,
         config=config,
         fleet_path=fleet_path,
         fleet_agents=fleet_agents,
@@ -8896,11 +9317,14 @@ def main():
         print(f"  Chat:   POST http://localhost:{port}/agents/<name>/chat")
         print(f"  Forge:  POST http://localhost:{port}/forge/dispatch")
     elif workspace_mode:
-        print(f"Starting AitherADK workspace server — identity: {args.identity}, port: {port}")
+        print(f"Starting AitherADK workspace server — identity: {identity}, port: {port}")
         print(f"  Portal: http://localhost:{port} (workspace UI)")
         print(f"  Embed:  http://localhost:{port}/?embedded=true")
     else:
-        print(f"Starting AitherADK server — identity: {args.identity}, port: {port}")
+        print(f"Starting AitherADK server — identity: {identity}, port: {port}")
+    _model_line = _backend_preflight_line(config)
+    if _model_line:
+        print(_model_line)
 
     print(f"  Chat:   POST http://localhost:{port}/chat")
     print(f"  OpenAI: POST http://localhost:{port}/v1/chat/completions")
@@ -8944,7 +9368,7 @@ def main():
 
         _inflight = getattr(app.state, "chat_inflight", None)
         self_update.start(
-            "adk-daemon",
+            self_update.daemon_name_for_port(port),
             lambda: _inflight is None or int((_inflight.snapshot() or {}).get("inflight", 0)) == 0,
             health_url=f"http://127.0.0.1:{port}/health",
         )

@@ -10,7 +10,7 @@ import time
 from typing import Optional
 from adk.shell.events import get_pulse_client, create_query_id, PrivacyLevel
 from adk.shell.metrics import get_metrics_collector
-from adk.shell.telemetry_config import TelemetryContext, load_telemetry_config
+from adk.shell.telemetry.config import TelemetryContext, load_telemetry_config
 
 
 # ============================================================================

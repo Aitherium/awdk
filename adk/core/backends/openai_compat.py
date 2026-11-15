@@ -148,6 +148,13 @@ class LlamaCppBackend(_OpenAICompatBackend):
 
 
 class DeepSeekBackend(_OpenAICompatBackend):
+    """The PAID DeepSeek cloud API. Opt-in only: built when a caller names it
+    (``AITHER_BACKEND=deepseek`` or a ``deepseek:<model>`` spec), never by
+    :func:`adk.core.model.auto_backend` from a key in the env (owner 2026-11-12:
+    the account answers 402). DeepSeek-V4 served LOCALLY is the spine's
+    ``deepseek-v4-flash-pool`` (``spine:deepseek-v4-flash-pool``), not this class.
+    """
+
     name = "deepseek"
 
     def __init__(self, *, api_key: str, model: str = "deepseek-chat") -> None:

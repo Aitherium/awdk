@@ -114,3 +114,29 @@ def test_errors_and_server_refusals_are_named(gw):
 def test_teach_help_lists_the_verbs(gw):
     out = hearth_plugin.hearth_command(["teach"])
     assert "classes" in out and "announce" in out and gw.calls == []
+
+
+SHA = "a" * 64
+OPS = '[{"op":"remove","path":"steps[2]"}]'
+
+
+def test_plan_is_one_read_call(gw):
+    hearth_plugin.hearth_command(["teach", "plan", "lsn_1"])
+    assert gw.calls == [("classroom_lesson_plan", {"lesson_id": "lsn_1"})]
+
+
+def test_edit_without_yes_sends_nothing_and_with_yes_confirms(gw):
+    out = hearth_plugin.hearth_command(["teach", "edit", "lsn_1", "--sha", SHA, "--", OPS])
+    assert gw.calls == [] and out.startswith("NOT sent") and "--yes" in out
+    hearth_plugin.hearth_command(["teach", "edit", "lsn_1", "--sha", SHA, "--yes", "--", OPS])
+    assert gw.calls == [("classroom_edit_lesson_plan",
+                         {"lesson_id": "lsn_1", "expected_sha256": SHA,
+                          "ops": '[{"op": "remove", "path": "steps[2]"}]', "confirm": True})]
+
+
+def test_bad_plan_usage_sends_nothing(gw):
+    for args in (["plan"], ["edit", "lsn_1", "--", OPS], ["edit", "lsn_1", "--sha", SHA],
+                 ["edit", "lsn_1", "--sha", SHA, "--", "not", "json"],
+                 ["edit", "lsn_1", "--sha", SHA, "--", "[]"]):
+        assert hearth_plugin.hearth_command(["teach", *args]).startswith("hearth teach:")
+    assert gw.calls == []

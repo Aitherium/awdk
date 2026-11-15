@@ -1,0 +1,23 @@
+# Hand-written pack (hand_written: true in _nvidia_spec/nvidia-components.yaml).
+# The generator must never overwrite this directory; it renders the generated
+# packs only. See nvidia_cuda/tools.py for why the OAuth flow is hand-rolled.
+id: nvidia_cuda
+name: NVIDIA CUDA docs (Nsight AI MCP)
+version: 1.0.0
+description: "Live CUDA documentation and code examples over NVIDIA's hosted Nsight AI MCP server. cuda_docs_search is the point of the pack: call it before writing CUDA C++/kernels, nvcc or CMake flags, or making any compute-capability claim."
+category: tool_packs
+author: Aitherium
+icon: cpu
+tags: [nvidia, cuda, docs, toolpack]
+license_class: free
+requires_auth: true
+auth_type: oauth
+available: true
+requires_nvaie: false
+fail_soft: true
+
+mcp_tools:
+  - "cuda_docs_*"
+tool_modules: []
+entitlements: []
+skills: [cuda-docs]

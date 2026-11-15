@@ -128,6 +128,99 @@ def decisions_waiting(cards: Iterable[Any]) -> list:
     return out
 
 
+def info_ttl_seconds() -> float:
+    """The ONE info-card TTL -- the store's, currently 6h.
+
+    ``grouping.INFO_TTL_SECONDS`` still says 24h; that is a BACKSTOP for a card
+    the store never re-reads, not a second policy. Anything asking "how long does
+    an info card live" reads this, so the two cannot drift into different
+    answers on the same screen.
+    """
+    from adk.decisions.store import info_ttl_seconds as _store_ttl
+
+    return _store_ttl()
+
+
+# ── the list-first grouping every surface shares ──────────────────────────────
+#
+# The window, the terminal, awdesk, Fairy and Alt+Space all show the SAME
+# partition of the queue, so "where did that card go" has one answer:
+#
+#   * **Needs you** -- every open card that is not stale, plus every PROTECTED
+#     card (credential / blocked / blocker) however old. Capped when displayed;
+#     the total and the "N more" count travel with it so the cap is visible
+#     rather than a card silently going missing.
+#   * **Older than the staleness line** -- open, past
+#     :func:`store.stale_after_seconds` (7 days by default), and NOT protected.
+#     Collapsed by default; the only group "Dismiss all stale" may touch.
+#
+# Ordering is :func:`store.rank_key` inside both groups, so a card cannot move
+# between surfaces by being resorted differently.
+
+#: How many rows "Needs you" shows before the real "N more" row.
+NEEDS_YOU_CAP = 5
+
+#: Kinds that stay in "Needs you" at any age and can never be bulk-dismissed.
+PROTECTED_KINDS = frozenset({"credential", "blocked", "blocker"})
+
+
+def _as_card(obj: Any) -> Any:
+    """A ``DecisionCard`` for either a card object or its dict."""
+    if isinstance(obj, dict):
+        from adk.decisions.store import DecisionCard
+
+        return DecisionCard.from_dict(obj)
+    return obj
+
+
+def stale_view(cards: Iterable[Any], now: float | None = None, *,
+               cap: int = NEEDS_YOU_CAP,
+               stale_after: float | None = None) -> dict:
+    """The grouped, ranked view of a queue. Pure: reads the cards it is given.
+
+    Returns a dict with ``needs_you`` (the capped rows), ``needs_you_total``,
+    ``needs_you_more``, ``needs_you_cap``, ``older``, ``older_count``,
+    ``open`` (every open card, ranked -- the cursor walks THIS) and
+    ``total_open``. Counting happens over the whole queue, never over the page:
+    a "5 more" computed from the visible rows is how a card looks dismissed
+    when it is not.
+    """
+    from adk.decisions import store as _store
+
+    t = time.time() if now is None else float(now)
+    line = _store.stale_after_seconds() if stale_after is None else float(stale_after)
+
+    ranked = []
+    for obj in cards:
+        card = _as_card(obj)
+        if (getattr(card, "status", "") or "open") != "open":
+            continue
+        ranked.append(card)
+    ranked.sort(key=lambda c: _store.rank_key(c, t))
+
+    needs: list[Any] = []
+    older: list[Any] = []
+    for card in ranked:
+        kind = (getattr(card, "kind", "") or "").strip().lower()
+        if kind in PROTECTED_KINDS:
+            needs.append(card)
+            continue
+        age = t - float(getattr(card, "created_at", 0.0) or 0.0)
+        (older if age > line else needs).append(card)
+
+    shown = needs[:max(0, int(cap))]
+    return {
+        "needs_you": shown,
+        "needs_you_total": len(needs),
+        "needs_you_more": max(0, len(needs) - len(shown)),
+        "needs_you_cap": max(0, int(cap)),
+        "older": older,
+        "older_count": len(older),
+        "open": ranked,
+        "total_open": len(ranked),
+    }
+
+
 # ── triage patterns for the desk ──────────────────────────────────────────────
 # These patterns are read by decision-cards.cjs and must agree with the Python triage above.
 
@@ -146,7 +239,13 @@ def is_decision_pattern_json() -> dict:
     """
     # The queue order travels with the patterns, so the desk ranks cards the
     # way store.rank does (both are pinned by card_rank_cases.json).
-    from adk.decisions.store import RANK_FIRST_KINDS, URGENCY_RANK, stale_after_seconds
+    from adk.decisions.store import (
+        AUTO_DEFAULT_RANK,
+        NOOP_SUGGESTION_LABELS,
+        RANK_FIRST_KINDS,
+        URGENCY_RANK,
+        stale_after_seconds,
+    )
 
     return {
         "decision_kinds": sorted(TRIAGE_PATTERNS["decision_kinds"]),
@@ -155,4 +254,8 @@ def is_decision_pattern_json() -> dict:
         "rank_first_kinds": list(RANK_FIRST_KINDS),
         "urgency_rank": dict(URGENCY_RANK),
         "stale_after_seconds": stale_after_seconds(),
+        # Cards that answer themselves (a deadline applies their default, or the
+        # suggestion is one of these no-ops) sort BELOW cards needing the owner.
+        "noop_labels": list(NOOP_SUGGESTION_LABELS),
+        "auto_default_rank": AUTO_DEFAULT_RANK,
     }

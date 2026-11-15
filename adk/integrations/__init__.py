@@ -28,6 +28,45 @@ def _check_module(name: str) -> bool:
         return False
 
 
+#: What each brick UNLOCKS in adk -- adk's own tool names, which the registry cannot
+#: know. Everything else about the brick (that it exists, its import name, its
+#: description) is read from the vendored family.json (adk.brick_family, generated
+#: from ecosystem.yaml). awgraph, awgit and awrelay are hard deps of awdk; the rest
+#: are optional.
+_UNLOCKS: dict[str, list[str]] = {
+    "awgraph": ["code_search", "call_graph"],
+    "awgit": ["lease", "stage_mine"],
+    "awrelay": ["relay_send", "relay_history"],
+    "awm": ["remember", "recall"],
+    "awrecover": ["snapshot", "restore"],
+    "awseal": ["sign", "verify"],
+    "awshare": ["publish", "fetch"],
+    "awnest": ["attest", "declare_agent"],
+    "awbrowse": ["browse_page", "browse_fill_form"],
+    "awfind": ["find_search"],
+}
+
+
+def _family() -> list[tuple[str, str, str, list[str]]]:
+    """(name, module, description, unlocks) for each brick adk integrates, in
+    registry order. Raises when family.json is missing (FamilyDataMissingError) or no
+    longer names a brick adk wires up -- either way the report would be wrong."""
+    from adk import brick_family
+
+    fam = brick_family.by_id()
+    unknown = sorted(set(_UNLOCKS) - set(fam))
+    if unknown:
+        raise LookupError(
+            f"adk.integrations wires {unknown}, which the family index "
+            f"({brick_family.DATA_PATH}) does not register; regenerate family.json "
+            f"or drop them here")
+    return [
+        (bid, fam[bid].get("module") or bid, fam[bid].get("tagline") or bid,
+         list(_UNLOCKS[bid]))
+        for bid in fam if bid in _UNLOCKS
+    ]
+
+
 def capabilities() -> dict[str, Any]:
     """Report the aw* family capabilities installed in this session.
 
@@ -37,26 +76,10 @@ def capabilities() -> dict[str, Any]:
         - missing: list of {name, description, why_needed}
         - extras_to_install: suggested pip extra to get missing features
     """
-    # The family, in (name, module, description, unlocks) tuples.
-    # Hard deps (awgraph, awgit, awrelay) are always present.
-    # The rest are optional.
-    _FAMILY = [
-        ("awgraph", "awgraph", "Code graph: what the code is and dependencies", ["code_search", "call_graph"]),
-        ("awgit", "awgit", "Edit ops and leases: version control for shared checkout", ["lease", "stage_mine"]),
-        ("awrelay", "awrelay", "Agent messaging: post findings to shared channels", ["relay_send", "relay_history"]),
-        ("awm", "awm", "Portable scoped memory: tenant:user:project", ["remember", "recall"]),
-        ("awrecover", "awrecover", "Snapshots with all-or-nothing restore", ["snapshot", "restore"]),
-        ("awseal", "awseal", "Sign artifacts for verification", ["sign", "verify"]),
-        ("awshare", "awshare", "Publish and fetch with verification", ["publish", "fetch"]),
-        ("awnest", "awnest", "Human attestation and gates", ["attest", "declare_agent"]),
-        ("awbrowse", "awbrowse", "Browser automation: navigate, fill, extract", ["browse_page", "browse_fill_form"]),
-        ("awfind", "awfind", "Search client: ranked results", ["find_search"]),
-    ]
-
     installed = []
     missing = []
 
-    for name, module, description, unlocks in _FAMILY:
+    for name, module, description, unlocks in _family():
         if _check_module(module):
             installed.append({
                 "name": name,
@@ -93,7 +116,8 @@ def capabilities() -> dict[str, Any]:
         "installed": installed,
         "missing": missing,
         "extras_to_install": sorted(extras_needed),
-        "suggest": f"pip install awdk[{','.join(sorted(extras_needed))}]" if extras_needed else None,
+        "suggest": (f"pip install awdk[{','.join(sorted(extras_needed))}]"
+                    if extras_needed else None),
     }
 
 

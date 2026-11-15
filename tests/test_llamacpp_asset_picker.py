@@ -114,7 +114,8 @@ def test_windows_cuda_prefers_a_cuda_build():
 
 
 def test_linux_cuda_falls_back_to_cpu_rather_than_failing():
-    # llama.cpp ships no Linux CUDA binary. The fallback is correct -- a slow
+    # b10588 shipped no Linux CUDA binary (v1/b12359 does -- see
+    # test_llamacpp_release_pin.py). The fallback is correct -- a slow
     # model beats no model -- and the caller announces it. What must NOT happen
     # is the old behaviour: refuse outright.
     assert pick("linux", "cuda") == "llama-b10588-bin-ubuntu-x64.tar.gz"
@@ -168,12 +169,12 @@ def test_live_release_still_matches():
     # execution makes a real failure read as 'skipped' -- so an unreachable
     # GitHub is a FAILURE here, named as such, and offline runs opt out via
     # ADK_OFFLINE=1 at decoration time where the decision belongs.
+    # The endpoint is the PINNED tag now (one release object, not a list).
     with urllib.request.urlopen(req, timeout=20) as r:
-        releases = json.load(r)
-    release = next((r for r in releases if any(
-        a["name"].startswith("llama-") and "-bin-" in a["name"]
-        for a in r.get("assets", []))), None)
-    assert release is not None, "no recent release carries a server build"
+        release = json.load(r)
+    assert any(a["name"].startswith("llama-") and "-bin-" in a["name"]
+               for a in release.get("assets", [])), \
+        f"pinned release {release.get('tag_name')} carries no server build"
     live = release["assets"]
     for os_family, kind, arch in [("linux", "cpu", "x64"), ("windows", "cpu", "x64"),
                                   ("macos", "metal", "arm64")]:

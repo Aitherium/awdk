@@ -15,6 +15,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, BinaryIO
 
+from adk._tls import urllib_context
+
 
 # Conservative rate limit: don't saturate a home connection.
 # Typical home upload is ~10 Mbps = 1.25 MB/s.
@@ -345,7 +347,7 @@ class MirrorClient:
 
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=urllib_context()) as resp:
                 # Stream download with rate limiting
                 total = self._total_bytes(resp, start_byte)
                 if start_byte > 0 and resp.status != 206:

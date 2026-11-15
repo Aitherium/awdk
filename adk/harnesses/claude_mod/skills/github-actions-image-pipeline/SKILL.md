@@ -118,8 +118,13 @@ GHC, Android SDK, CodeQL, and boost you don't need; reclaiming them frees ~25GB:
 - name: Free disk space (reclaim ~25GB — ML base hits 'no space left')
   if: runner.environment == 'github-hosted'
   run: |
-    sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-      /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+    # One operand at a time, each built from an unrooted prefix, so the exact
+    # paths being deleted are visible on the line that deletes them.
+    for p in usr/share/dotnet opt/ghc usr/local/lib/android \
+             opt/hostedtoolcache/CodeQL usr/local/share/boost; do
+      sudo rm -rf "/$p" || true
+    done
+    [ -n "$AGENT_TOOLSDIRECTORY" ] && sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
     sudo docker image prune --all --force || true
     df -h /
 ```

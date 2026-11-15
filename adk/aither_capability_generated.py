@@ -378,11 +378,11 @@ CAPABILITIES: List[Capability] = [
         owning_agent='apollo',
         available=False,
         description='Foundation model for video understanding, generation, and prediction.',
-        tier='free',
-        requires_auth=False,
+        tier='enterprise',
+        requires_auth=True,
         icon='',
         tags=['nvidia', 'cosmos'],
-        why_unavailable='Not yet integrated into the platform',
+        why_unavailable='requires NVIDIA AI Enterprise',
     ),
     Capability(
         id='nvidia_cuda',
@@ -407,7 +407,7 @@ CAPABILITIES: List[Capability] = [
             ' an exception into the agent loop.'
             ),
         tier='free',
-        requires_auth=False,
+        requires_auth=True,
         icon='cpu',
         tags=['nvidia', 'cuda', 'gpu', 'kernels', 'nsight', 'docs', 'performance', 'hpc'],
         why_unavailable='',
@@ -420,11 +420,11 @@ CAPABILITIES: List[Capability] = [
         owning_agent='apollo',
         available=False,
         description='Intelligent video analytics platform for real-time multi-stream processing.',
-        tier='free',
-        requires_auth=False,
+        tier='enterprise',
+        requires_auth=True,
         icon='',
         tags=['nvidia', 'deepstream'],
-        why_unavailable='Not yet integrated into the platform',
+        why_unavailable='requires NVIDIA AI Enterprise',
     ),
     Capability(
         id='nvidia_dynamo',
@@ -448,11 +448,11 @@ CAPABILITIES: List[Capability] = [
         owning_agent='apollo',
         available=False,
         description='Platform for autonomous machines perception, simulation, and deployment.',
-        tier='free',
-        requires_auth=False,
+        tier='enterprise',
+        requires_auth=True,
         icon='',
         tags=['nvidia', 'isaac'],
-        why_unavailable='Not yet integrated into the platform',
+        why_unavailable='requires NVIDIA AI Enterprise',
     ),
     Capability(
         id='nvidia_jetson',
@@ -476,13 +476,15 @@ CAPABILITIES: List[Capability] = [
         owning_agent='apollo',
         available=False,
         description=(
-            'Modular framework for training and fine-tuning LLMs, speech, and multimodal models.'
+            'Modular framework for training and fine-tuning LLMs, speech and multimodal models. Th'
+            'e framework is Apache-2.0 and installs from pip at no cost; NeMo microservices and Gu'
+            'ardrails NIM require NVIDIA AI Enterprise.'
             ),
         tier='free',
         requires_auth=False,
         icon='',
         tags=['nvidia', 'nemo'],
-        why_unavailable='Not yet integrated into the platform',
+        why_unavailable='Not yet installed on this host (pip path)',
     ),
     Capability(
         id='nvidia_nemotron',
@@ -491,9 +493,13 @@ CAPABILITIES: List[Capability] = [
         tools=['nemotron_*'],
         owning_agent='apollo',
         available=True,
-        description='Fine-tuned LLM optimized for multi-agent orchestration and planning.',
+        description=(
+            'Hosted Nemotron models tuned for multi-agent orchestration and planning, reached thro'
+            'ugh the build.nvidia.com API. The pack calls a hosted endpoint and redistributes no w'
+            'eights; Nemotron weights carry the NVIDIA Open Model License.'
+            ),
         tier='free',
-        requires_auth=False,
+        requires_auth=True,
         icon='',
         tags=['nvidia', 'nemotron'],
         why_unavailable='',
@@ -506,10 +512,11 @@ CAPABILITIES: List[Capability] = [
         owning_agent='apollo',
         available=True,
         description=(
-            'Containerized, production-grade LLM inference microservice (OpenAI-compatible).'
+            'Hosted build.nvidia.com API lane only: OpenAI-compatible inference, free with an NGC '
+            'API key and rate-limited. Self-hosted NIM requires NVIDIA AI Enterprise.'
             ),
         tier='free',
-        requires_auth=False,
+        requires_auth=True,
         icon='',
         tags=['nvidia', 'nim'],
         why_unavailable='',
@@ -525,11 +532,11 @@ CAPABILITIES: List[Capability] = [
             'Lightweight agentic shell that orchestrates other tools (integrates into AitherShell)'
             '.'
             ),
-        tier='free',
-        requires_auth=False,
+        tier='enterprise',
+        requires_auth=True,
         icon='',
         tags=['nvidia', 'openshell'],
-        why_unavailable='Not yet integrated into the platform',
+        why_unavailable='requires NVIDIA AI Enterprise',
     ),
     Capability(
         id='nvidia_riva',
@@ -539,11 +546,11 @@ CAPABILITIES: List[Capability] = [
         owning_agent='apollo',
         available=False,
         description='Multi-lingual speech recognition, synthesis, and understanding platform.',
-        tier='free',
-        requires_auth=False,
+        tier='enterprise',
+        requires_auth=True,
         icon='',
         tags=['nvidia', 'riva'],
-        why_unavailable='Not yet integrated into the platform',
+        why_unavailable='requires NVIDIA AI Enterprise',
     ),
     Capability(
         id='nvidia_switchyard',
@@ -569,13 +576,14 @@ CAPABILITIES: List[Capability] = [
         owning_agent='apollo',
         available=False,
         description=(
-            "NVIDIA's production LLM inference engine with dynamic batching and quantization."
+            "NVIDIA's production LLM inference engine with dynamic batching and quantization. Apac"
+            'he-2.0 and free; not NVIDIA AI Enterprise-gated.'
             ),
         tier='free',
         requires_auth=False,
         icon='',
         tags=['nvidia', 'trt'],
-        why_unavailable='Not yet integrated into the platform',
+        why_unavailable='Not yet installed on this host',
     ),
     Capability(
         id='planb-ledger',
@@ -796,6 +804,25 @@ CAPABILITIES: List[Capability] = [
         requires_auth=True,
         icon='key-round',
         tags=['gate', 'boot', 'codes', 'mint', 'aitherium'],
+        why_unavailable='',
+    ),
+    Capability(
+        id='managed_agent_deploy',
+        display_name='Managed Agent Deploy — host a tenant agent as an Anthropic Managed Agent',
+        kind='toolpack',
+        tools=[],
+        owning_agent='demiurge',
+        available=True,
+        description=(
+            "Compile the bound agent's brain/skill/mcp packs and deploy it as a hosted Anthropic M"
+            "anaged Agent in the customer's own account (BYOK). Capability gate for POST /managed/"
+            'deploy; the managed_agent_deploy plan feature then applies. Also the entry point for '
+            'the deploy-as-A2A option.'
+            ),
+        tier='free',
+        requires_auth=False,
+        icon='rocket',
+        tags=['managed-agents', 'deploy', 'a2a', 'agent-building'],
         why_unavailable='',
     ),
 ]

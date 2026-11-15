@@ -539,6 +539,61 @@ def register_admin_routes(
     async def admin_packs_reload():
         return await _reload_packs()
 
+    @app.post("/admin/packs/install")
+    async def admin_packs_install(request: Request):
+        """Install an EXTERNAL pack directory from a pack registry.
+
+        Unlike /admin/packs/apply (bundled packs only), this installs a pack the
+        operator points at on disk. The source is restricted to a configured pack
+        REGISTRY root: an arbitrary path could plant an ``agent.yaml`` (read as
+        the agent spec) plus tool packs, which is the same arbitrary-code class
+        the config allowlist above refuses.
+        """
+        from adk.pack_install import PackCollisionError, install_from, pack_roots
+
+        body = await request.json()
+        raw = str(body.get("path") or body.get("from") or "").strip()
+        overwrite = body.get("overwrite") is True
+        if not raw:
+            return JSONResponse(status_code=400, content={"error": "path required"})
+        try:
+            resolved = Path(raw).expanduser().resolve()
+        except OSError:
+            return JSONResponse(status_code=400, content={"error": "invalid path"})
+
+        allowed: list[Path] = []
+        for root in pack_roots():
+            try:
+                candidate = root.resolve()
+            except OSError:
+                continue
+            if candidate.exists():
+                allowed.append(candidate)
+        if not any(resolved == r or r in resolved.parents for r in allowed):
+            return JSONResponse(status_code=400, content={
+                "error": "pack_root_required",
+                "detail": "installs are limited to a configured pack registry root",
+                "roots": [str(r) for r in allowed],
+            })
+
+        try:
+            results = install_from(resolved, overwrite=overwrite)
+        except PackCollisionError as exc:
+            # 409 + a DISTINCT code: this is not a malformed request, it is a
+            # refusal to replace an agent this installer did not create.
+            return JSONResponse(status_code=409, content={
+                "error": "pack_collision",
+                "agent": exc.agent,
+                "destination": str(exc.dest),
+                "detail": _scrub(exc.reason),
+                "overwrite": False,
+            })
+        except (OSError, ValueError) as exc:
+            return JSONResponse(status_code=400,
+                                content={"error": "install_failed",
+                                         "detail": _scrub(str(exc))})
+        return {"ok": True, "installed": results}
+
     @app.post("/admin/packs/apply")
     async def admin_packs_apply(request: Request):
         """Materialize a bundled pack into THIS agent's ~/.aither/agents, enable

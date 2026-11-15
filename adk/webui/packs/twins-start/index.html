@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create your twin — Aitherium</title>
+<!-- The landpage of the public twin server (twins.aitherium.com, AITHER_LANDING_PACK=twins-start).
+     This server RUNS twins; a stranger CREATES one in Studio on app.aitherium.com, where sign-in,
+     the BYOK key and the first-free/extra-paid allowance live. The page shows BOTH doors
+     (hosted, self-hosted), so it no longer redirects on its own. Its sentences are asserted
+     against lib/billing/twin_ledger.py::twin_rule by dev/tests/test_twin_plan.py. -->
+<style>
+  :root { --bg:#07090d; --fg:#e6e9ef; --muted:#8b93a3; --accent:#22d3ee; --line:#1c2230; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f7f8fa; --fg:#11141a; --muted:#596173; --accent:#0e7490; --line:#dde1e8; } }
+  html,body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:640px; margin:6vh auto; padding:0 16px; }
+  h1 { font-size:28px; margin:0 0 8px; }
+  h2 { font-size:18px; margin:28px 0 6px; }
+  h2 em { font-style:normal; font-size:12px; font-weight:600; color:var(--accent); border:1px solid var(--line); border-radius:6px; padding:1px 6px; margin-left:6px; white-space:nowrap; }
+  li em { font-style:normal; color:var(--accent); }
+  ul { color:var(--muted); padding-left:18px; }
+  code { color:var(--fg); }
+  pre { background:var(--line); color:var(--fg); padding:10px 12px; border-radius:8px; overflow-x:auto; }
+  p { color:var(--muted); margin:0 0 16px; }
+  a.cta { display:inline-block; padding:10px 18px; border-radius:8px; background:var(--accent); color:#001014; font-weight:600; text-decoration:none; }
+  small { display:block; margin-top:24px; color:var(--muted); border-top:1px solid var(--line); padding-top:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Create your twin</h1>
+  <p>A twin is your agent, running for you. Where its model runs decides what it costs.
+     Only a twin hosted on Aitherium's own compute is counted or limited. Twins on your own
+     key or your own hardware are not.</p>
+  <!-- One section per row of lib/billing/twin_plan.py::DOORS, in the same order. The titles,
+       statuses and commands are asserted against that table by dev/tests/test_twin_plan.py. -->
+  <section data-door="shared">
+    <h2>Aitherium's shared compute <em>works</em></h2>
+    <p>Your twin hosted by Aitherium on its own model. First twin free; each extra one is a
+       one-time fee. A daily turn limit applies per twin. Only for agents Aitherium's twin
+       server carries.</p>
+    <pre>adk agent twin deploy --hosted</pre>
+    <a class="cta" href="https://app.aitherium.com/studio?mode=agent&amp;step=deploy">Start in Studio</a>
+  </section>
+  <section data-door="anthropic_key">
+    <h2>Your own Anthropic key <em>works</em></h2>
+    <p>Your agent pack as a managed agent hosted at Anthropic, with tools, memory and approvals
+       bridged back to AitherOS through the gateway. Anthropic bills you for use. Nothing to
+       Aitherium. No Aitherium limit on number or turns.</p>
+    <pre>adk agent managed byok, then adk agent twin deploy --anthropic</pre>
+  </section>
+  <section data-door="other_key">
+    <h2>Your own key for another provider (for example DeepSeek) <em>works</em></h2>
+    <p>The kit's agent loop on your machine, using your provider key, with skills, tools, tool
+       packs, agent packs and MCP. Your provider bills you for use. The agent loop runs on your
+       machine; Aitherium hosting the loop on your non-Anthropic key is not built.</p>
+    <pre>adk host --provider deepseek</pre>
+  </section>
+  <section data-door="dedicated_gpu">
+    <h2>A GPU rented in your own GPU-provider account <em>quote only</em></h2>
+    <p>A rented GPU running the twin's model, paid by you to the provider. About the cost of
+       the rental; varies by model and GPU. The command quotes and rents nothing. A twin on
+       Aitherium's twin server cannot use a rented GPU yet.</p>
+    <pre>adk agent twin deploy --dedicated --dry-run</pre>
+  </section>
+  <section data-door="own_hardware">
+    <h2>Your own hardware <em>works</em></h2>
+    <p>The twin's agent server on your own machine or node. Any number of twins. Free. No
+       Aitherium limit on number or turns.</p>
+    <pre>adk agent twin deploy</pre>
+    <ul>
+      <li>One twin on one machine <em>works</em>: <code>adk agent twin deploy</code></li>
+      <li>Several machines of yours on one private mesh <em>works</em>:
+          <code>adk mesh join, then adk agent twin deploy --reach mesh</code></li>
+      <li>Agents on the mesh finding and calling each other <em>works</em>:
+          <code>adk agents ls; adk chat &lt;agent&gt;</code></li>
+      <li>A shared multi-user room with a workspace attached to that mesh <em>not built</em>.
+          Workspaces and rooms exist as separate platform tools; nothing joins them to a mesh
+          of twins.</li>
+    </ul>
+  </section>
+  <p>The same list, live: <code>adk agent twin doors</code></p>
+  <small>Looking for the demos? <a href="/local">This server's agent</a>.</small>
+</main>
+</body>
+</html>

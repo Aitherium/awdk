@@ -4,6 +4,16 @@
 
 ## Install
 
+Windows with nothing installed (no Python, no admin, no account), in PowerShell --
+it gets Python (via uv), installs awdk and runs `adk` once:
+
+```powershell
+$env:AITHER_INSTALL='toolkit'; irm https://aitherium.com/install.ps1 | iex
+```
+
+Any OS with Python 3.10+:
+
+
 ```
 pip install awdk
 ```
@@ -83,6 +93,30 @@ ely = await Elysium.connect(api_key="aither_sk_live_...")
 await ely.register_agent("my-agent", capabilities=["code", "search"])
 agents = await ely.discover_agents(capability="code")
 ```
+
+## Part of the harness
+
+<!-- aither-harness:start GENERATED from ecosystem.yaml `harness:` by gen_brick_map.py. Edits between these markers are overwritten; change the registry. -->
+> **`awdk` is part of `awharness` — the super agent harness.** One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.
+>
+> **Today:** There is no single install. `pip install awdk` and `npm i -g @aitherium/awsh` are two commands, and each other brick installs on its own line. `adk harness parts` reads this list and reports which parts this machine has, at what version, and the install line for each one it lacks.
+>
+> **Planned, not built:** One install command that brings the composed bricks up together, and one process that starts them. Neither exists; nothing by this name is published.
+>
+> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 93 bricks, in layers: https://aitherium.github.io/#map
+<!-- aither-harness:end -->
+
+What the harness adds to a bare agent loop, with the command that shows it:
+
+- Drives other agent products (Claude Code, Codex, Gemini CLI, aider, a real terminal) through one session API: `adk harness harnesses`
+- Sessions owned by a daemon, so they outlive the terminal: `adk harness serve`, `adk harness list`, `adk harness attach <id>`
+- A session can start, message, wait on and end other sessions: MCP tools `awsh_spawn`, `awsh_send`, `awsh_wait`, `awsh_end` (`python -m adk.harnesses.mcp_stdio`)
+- Scoped memory recalled at session start: `awm recall --claude-hook`
+- A queue and a clock: `awrun submit`, `awrise add`
+- File leases between agents: `awgit lease acquire <path>`
+- Scoped, signed permits: `awpermit mint`, `awpermit verify`
+- The platform MCP gateway after one sign-in: `adk login`, `adk connect`
+- Which composed bricks this machine has, and what is missing: `adk harness parts` (installs nothing)
 
 ## CLI
 

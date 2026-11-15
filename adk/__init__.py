@@ -1,11 +1,22 @@
 """Aither ADK — Build AI agent fleets with any LLM backend."""
 
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
-try:  # single source of truth = the installed package metadata (pyproject version)
-    __version__ = _pkg_version("awdk")
-except PackageNotFoundError:  # running from a source checkout without install
-    __version__ = "3.8.100"  # kept in sync by packaging/sync_versions.py
+def _resolve_version() -> str:
+    """Single source of truth = the installed package metadata (pyproject version).
+
+    Resolved on first access of ``adk.__version__`` (see ``__getattr__``), not at
+    import: ``importlib.metadata`` alone costs a third of the 150 ms cold-start
+    budget the stranger-install gate holds ``import adk`` to.
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
+
+    try:
+        return _pkg_version("awdk")
+    except PackageNotFoundError:  # running from a source checkout without install
+        __version__ = "3.8.107"  # kept in sync by packaging/sync_versions.py
+        return __version__
+
 
 # Air gap: when enforcement is configured (AITHER_AIR_GAP, or an
 # air_gap.yaml at $AITHER_AIR_GAP_CONFIG / ~/.aither / /etc/aither), patch every
@@ -18,11 +29,11 @@ except Exception:  # noqa: BLE001 - the guard must never break `import adk`
     _airgap_autoinstall = None  # type: ignore[assignment]
 
 from adk.agent import AitherAgent
-from adk.dispatch import MultiAgentDispatcher, DispatchSpec, DispatchResult
-from adk.gate import CompletionGate, GateVerdict, gated_run, hard_checks
-from adk.tools import tool, ToolRegistry
-from adk.llm import LLMRouter
 from adk.config import Config
+from adk.dispatch import DispatchResult, DispatchSpec, MultiAgentDispatcher
+from adk.gate import CompletionGate, GateVerdict, gated_run, hard_checks
+from adk.llm import LLMRouter
+from adk.tools import ToolRegistry, tool
 
 __all__ = [
     "AitherAgent",
@@ -204,6 +215,9 @@ def auto_setup(**kwargs):
 
 # Lazy imports for heavier modules
 def __getattr__(name):
+    if name == "__version__":
+        globals()["__version__"] = _v = _resolve_version()
+        return _v
     if name == "AgentRegistry":
         from adk.registry import AgentRegistry
         return AgentRegistry

@@ -145,6 +145,12 @@ def build_episode(
     """One JSON-able episode record from a finished run (``result`` is a SolveResult)."""
     from ._provenance import H30_SHA
 
+    # Unwrap an adapter's ``_env`` ATTRIBUTE only: SystemEnv has a ``_env()`` METHOD
+    # (its subprocess environment), and unwrapping that recorded the env as "method".
+    inner = getattr(env, "_env", env)
+    if callable(inner) and not hasattr(inner, "observe"):
+        inner = env
+
     served: Dict[str, int] = {}
     for c in recorder.calls:
         served[c["served_model"] or "?"] = served.get(c["served_model"] or "?", 0) + 1
@@ -176,7 +182,10 @@ def build_episode(
             "local_only": getattr(raw_backend, "local_only", None),
             "adk_version": str(adk_version),
             "core_sha": H30_SHA,
-            "env": type(getattr(env, "_env", env)).__name__ if env is not None else "",
+            "env": type(inner).__name__ if env is not None else "",
+            # CLI args that rebuild this env (e.g. a system spec path); None when the
+            # env does not declare them. Lets a win be replayed by a later process.
+            "replay_args": list(getattr(inner, "replay_args", None) or []) or None,
             "goal_sha256": hashlib.sha256(goal.encode("utf-8")).hexdigest()[:16],
             "config": _config(config),
         },

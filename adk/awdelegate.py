@@ -4,8 +4,9 @@
 WHY: the planning tier (Opus 5.5) and the execution tier (DeepSeek-V4-Flash) were
 spending their tokens on exploration. A frontier model reads dozens of greps, file
 reads and web lookups once and then throws the raw output away. This server moves
-that loop onto the LOCAL models behind the spine (OpenAI shape,
-http://127.0.0.1:8151). A local model runs up to 50 read-only tool calls and keeps
+that loop onto the LOCAL models behind the spine (MicroScheduler, OpenAI shape,
+https://127.0.0.1:8150 with the AitherNet CA; :8151 is the Claude Bridge port).
+A local model runs up to 50 read-only tool calls and keeps
 notes. It hands back only a short brief with path:line and URL citations.
 
 This file is the awdk copy: `pip install awdk` puts it at `adk/awdelegate.py`, and
@@ -85,11 +86,17 @@ def _recall_door() -> Any:
 
 
 DEFAULTS: Dict[str, Any] = {
-    "spine": "127.0.0.1:8151",
+    # MicroScheduler, TLS only (plain http into it hangs). A bare "host:port" is
+    # read as https. :8151 is the Claude Bridge, not the scheduler (measured 10-30).
+    "spine": "https://127.0.0.1:8150",
     "model": "aither-orchestrator",
-    # Availability, not a downgrade: the same spine's DeepSeek route takes over only
-    # after the local driver fails twice in a row, and the brief says so.
-    "fallback_model": "deepseek-v4-flash",
+    # Availability, not a downgrade, and still LOCAL: DeepSeek-V4 served on the DGX
+    # Spark pool takes over only after the local driver fails twice in a row, and the
+    # brief says so. Never the paid DeepSeek API (owner 2026-11-12: it answers 402).
+    "fallback_model": "deepseek-v4-flash-pool",
+    # Scheduler hints on every call: a delegate answers a person's question, so it is
+    # user priority; local_only stops the spine hopping to a paid cloud route.
+    "scheduler_metadata": {"priority": "user", "source": "awdelegate", "local_only": True},
     # The session's working directory is the project Claude Code was started in;
     # the other two are the delegate's own store and Claude's project memory. A
     # machine that wants more (or different) roots sets "roots" in
@@ -103,13 +110,13 @@ DEFAULTS: Dict[str, Any] = {
     # The local driver gathers; a stronger model WRITES the brief from the gathered
     # evidence only. Measured 2026-10-26: aither-orchestrator alone ran 31 tool calls
     # in 44.7s, but its brief contradicted itself and invented reason strings.
-    # deepseek-v4-flash is the execution tier (not frontier); "deepseek-v4-flash-pool"
-    # keeps it fully local at ~2 min per brief; "none" ships the driver's own draft.
-    # A chain, tried in order: DeepSeek direct, then the same model family through
-    # OpenRouter (the spine's or-* routes; measured 1.6 s for or-deepseek-v4.1-flash).
-    "synth_model": ["deepseek-v4-flash", "or-deepseek-v4.1-flash"],
+    # "deepseek-v4-flash-pool" is DeepSeek-V4 on the DGX Spark pool, fully local at
+    # ~2 min per brief (p95 153 s measured 2026-11-11, hence the 240 s timeout);
+    # bonsai2-27b on the 5090 is the second link; "none" ships the driver's own draft.
+    # No paid cloud link: the DeepSeek API and OpenRouter routes were removed 2026-11-12.
+    "synth_model": ["deepseek-v4-flash-pool", "bonsai2-27b"],
     "synth_chars": 120000,
-    "synth_timeout_s": 120,
+    "synth_timeout_s": 240,
     "daemon_port": 9001,
     "step_timeout_s": 60,
     # Local first on a short leash: the 5090 is shared, and one tiny call measured
@@ -570,17 +577,57 @@ class DriverError(Exception):
     pass
 
 
+def spine_address(spine: str) -> Tuple[str, str, int]:
+    """(scheme, host, port) of the spine setting. A bare "host:port" means https.
+
+    Plain http is kept only for a URL that says so explicitly and is NOT the
+    scheduler port: http into the TLS spine hangs and reads as "down".
+    """
+    raw = spine.strip().rstrip("/")
+    scheme = "https"
+    if "://" in raw:
+        scheme, _, raw = raw.partition("://")
+        scheme = scheme.lower()
+    raw = raw.split("/", 1)[0]
+    host, _, port_s = raw.rpartition(":")
+    if not host:
+        host, port_s = port_s, "8150"
+    port = int(port_s)
+    if scheme != "https" and port == 8150:
+        scheme = "https"
+    return scheme, host, port
+
+
+def _spine_tls() -> Any:
+    """Verified TLS to the spine with the AitherNet CA. Never unverified."""
+    import ssl
+    for cafile in (CA_BUNDLE, str(HOME / "aithernet-ca-bundle.pem")):
+        if cafile and os.path.isfile(cafile):
+            try:
+                return ssl.create_default_context(cafile=cafile)
+            except (OSError, ValueError):
+                continue
+    raise DriverError("AitherNet CA bundle not found (%s); set AITHER_CA_BUNDLE" % CA_BUNDLE)
+
+
 def chat(cfg: Dict[str, Any], model: str, messages: List[Dict[str, Any]],
          tools: Optional[List[Dict[str, Any]]], max_tokens: int, timeout: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    host, _, port = str(cfg["spine"]).rpartition(":")
+    scheme, host, port = spine_address(str(cfg["spine"]))
     body: Dict[str, Any] = {"model": model, "messages": messages, "max_tokens": max_tokens,
                             "temperature": 0.2, "stream": False}
+    md = cfg.get("scheduler_metadata")
+    if isinstance(md, dict) and md:
+        body["metadata"] = dict(md)
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
     raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
     try:
-        conn = http.client.HTTPConnection(host, int(port), timeout=timeout)
+        if scheme == "https":
+            conn: Any = http.client.HTTPSConnection(
+                host, port, timeout=timeout, context=_spine_tls())
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
         conn.request("POST", "/v1/chat/completions", body=raw,
                      headers={"Content-Type": "application/json", "x-aither-caller": "awdelegate"})
         resp = conn.getresponse()

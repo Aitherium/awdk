@@ -10,6 +10,10 @@ exists AND says ``redistribution_ok: true``. No record, ``false``, and "the reco
 not say" are all refusals, each with its own one-line reason. ``list`` shows every model;
 ``pull`` and ``use`` call the gate; ``recommend`` only ever considers permitted models.
 
+BEYOND THE LADDER. ``beyond_ladder`` lists models for a machine with more memory than the
+ladder's top rung needs. ``recommend`` never picks one; ``beyond_ladder_choices`` only
+ADDS them, as "you could also run", once the budget is past the top rung's floor.
+
 THE SIZING RULE is the appliance selector's (``awnix-model-select.py`` ``select()``): the
 largest ladder model whose weights fit ``budget / headroom_divisor``, and nothing at all
 below ``min_budget_mb``. Both numbers come from the catalogue.
@@ -193,4 +197,58 @@ def rows(cat: Dict[str, Any], budget_mb: int) -> List[Dict[str, Any]]:
             "allowed": v.allowed, "reason": v.reason,
             "on_ladder": mid in ladder, "sha256": bool(m.get("sha256")),
         })
+    return out
+
+
+def beyond_ladder_choices(cat: Dict[str, Any], budget_mb: int,
+                          cpu_only: bool = False) -> List[Dict[str, Any]]:
+    """Models ABOVE the ladder's top rung that this machine could also run, best first.
+
+    Additive by construction: ``recommend`` and ``candidates`` never read this list, so
+    every budget the ladder covers keeps its pick. An entry is offered only when
+
+    * the budget is at or past the top ladder rung's floor (it is ABOVE the ladder),
+    * the machine is a GPU (a CPU is capped at ``CPU_RECOMMEND_MAX_MB``, see recommend),
+    * its measured serving used ONE machine (the probe sizes one machine, so a
+      multi-machine model never "fits" a budget it was not measured against),
+    * the licence gate permits it, and its weights fit ``budget_mb`` with headroom.
+
+    Args:
+        cat: The loaded catalogue.
+        budget_mb: One machine's memory budget (VRAM, or unified memory).
+        cpu_only: The budget is plain RAM.
+
+    Returns:
+        One dict per offer: id, name, size_mb, quant, floor_mb, machines, score (None
+        when we never measured it), item_set, served_on, evidence. Ranked by measured
+        score when all scored offers share one item set; unscored ones last.
+    """
+    models = cat.get("models") or {}
+    ladder = list(cat.get("ladder") or [])
+    if cpu_only or not ladder or ladder[-1] not in models:
+        return []
+    if budget_mb < floor_mb(cat, models[ladder[-1]]):
+        return []
+    out: List[Dict[str, Any]] = []
+    for e in cat.get("beyond_ladder") or []:
+        mid = str(e.get("id") or "")
+        m = models.get(mid)
+        if not m or mid in ladder or m.get("role", "chat") != "chat":
+            continue
+        if int(e.get("machines") or 0) != 1:
+            continue
+        if not licence_verdict(m).allowed or not fits(cat, m, budget_mb):
+            continue
+        bench = m.get("bench") if isinstance(m.get("bench"), dict) else {}
+        out.append({
+            "id": mid, "name": str(e.get("name") or mid), "size_mb": int(m["size_mb"]),
+            "quant": str(m.get("quant") or ""), "floor_mb": floor_mb(cat, m),
+            "machines": 1, "score": bench_score(m),
+            "item_set": bench.get("item_set") if bench_score(m) is not None else None,
+            "served_on": str(e.get("served_on") or ""),
+            "evidence": list(e.get("evidence") or []),
+        })
+    sets = {o["item_set"] for o in out if o["score"] is not None}
+    if len(sets) <= 1:
+        out.sort(key=lambda o: (o["score"] is not None, o["score"] or 0.0), reverse=True)
     return out

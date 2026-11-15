@@ -32,6 +32,10 @@ import httpx
 from adk.config import load_saved_config
 
 
+#: Every chat protocol `adk chat` can speak; anything else in agents.json is ignored.
+CHAT_PROTOCOLS = ("adk", "openai", "aitheros")
+
+
 @dataclass
 class AgentRef:
     """One discoverable agent in the mesh."""
@@ -47,7 +51,7 @@ class AgentRef:
     status: str = "unknown"         # online | registered | unknown
     source: str = "unknown"         # registry | a2a-fleet | local
 
-    # Explicit chat protocol override from agents.json ("adk" | "openai"); else inferred.
+    # Explicit chat protocol override from agents.json (one of CHAT_PROTOCOLS); else inferred.
     chat_protocol_override: str = ""
 
     @property
@@ -56,9 +60,13 @@ class AgentRef:
           "adk"    -> a full adk agent server, POST {url}/chat/stream (AitherOS SSE).
           "openai" -> a raw OpenAI-compatible inference server (llama.cpp /
                       vllm), POST {url}/v1/chat/completions.
+          "aitheros" -> an AitherOS platform service (Atlas), POST {url}/chat
+                      with {"message", "auto_execute": false}; one JSON reply.
+                      Never inferred: such a service serves neither route above,
+                      so it has to be named in agents.json.
         Explicit override wins; else inferred from provider_hint (a raw inference
         backend => openai) — a registered adk agent defaults to "adk"."""
-        if self.chat_protocol_override in ("adk", "openai"):
+        if self.chat_protocol_override in CHAT_PROTOCOLS:
             return self.chat_protocol_override
         from adk.legacy_backend import migrate_backend_name
 

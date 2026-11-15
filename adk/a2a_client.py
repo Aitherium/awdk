@@ -349,6 +349,8 @@ async def send_message(
     task_id: str = "",
     this_agent_name: str = "adk-client",
     timeout: int = 60,
+    priority: str | None = None,
+    source: str | None = None,
 ) -> dict:
     """Send a chat message to a remote agent.
 
@@ -358,6 +360,10 @@ async def send_message(
         task_id: Optional existing task ID to continue (empty = new task)
         this_agent_name: Name of the calling agent (for keypair lookup)
         timeout: Request timeout in seconds
+        priority: Scheduler priority the peer should run the turn at. ``"user"`` when
+            a person is waiting on this delegated turn; None = the peer's default.
+        source: Who is asking (``chat:awdiscord``, ``desk:awsh``); rides with priority
+            in ``message.metadata`` (adk.a2a.a2a_turn_metadata).
 
     Returns:
         {"task": {...}, "message": {...}} on success
@@ -401,6 +407,11 @@ async def send_message(
     }
     if task_id:
         message_dict["taskId"] = task_id
+    from adk.a2a import a2a_turn_metadata
+
+    turn_md = a2a_turn_metadata(priority, source)
+    if turn_md:
+        message_dict["metadata"] = turn_md
 
     request_dict = {
         "jsonrpc": "2.0",

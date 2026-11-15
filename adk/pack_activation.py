@@ -77,7 +77,14 @@ def _skill_search_dirs() -> list[Path]:
     for d in os.environ.get("AITHER_SKILL_DIRS", "").split(os.pathsep):
         if d.strip():
             dirs.append(Path(d.strip()).expanduser())
+    # Every place `adk skills install --target ...` writes (adk.addons.skill_targets):
+    # the project's and the user's Claude Code skill dirs as well as the kit's own.
+    # Measured 2026-11-12, `--target project` (and the default, `claude`) landed in
+    # `.claude/skills`, which this list did not include, so the kit agent's
+    # skill_search / skill_load could not see a skill the kit itself had installed.
+    dirs.append(Path.cwd() / ".claude" / "skills")
     dirs.append(Path.home() / ".aither" / "skills")
+    dirs.append(Path.home() / ".claude" / "skills")
     here = Path(__file__).resolve()
     for parent in here.parents[1:4]:
         cand = parent / "awskills" / "skills"

@@ -30,8 +30,13 @@ class Awdk < Formula
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
   homepage "https://aitherium.com"
-  url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.8.100.tar.gz"
-  sha256 "5ddb4a89c2d14713bacbe82ac36464b73fb48cdcf740c0d2676b0505f17ef7de"
+  # The formula's own digest below is a placeholder token between a
+  # version bump and its publish, by design: the digest is of the PyPI sdist, which
+  # does not exist until .github/workflows/pypi-publish.yml uploads it. That
+  # workflow's "Fill the brew sha256 from the published sdist" step then commits the
+  # real digest (packaging/sync_versions.py --digests). Do not hand-edit it.
+  url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.8.107.tar.gz"
+  sha256 "PLACEHOLDER_SHA256" # replaced after upload by pypi-publish.yml step "Fill the brew sha256 from the published sdist"; RH002 (check_adk_release_health.py) fails a release where it survives
   # SPDX. "Proprietary" is not an SPDX identifier and `brew audit` rejects it;
   # the LICENSE file is Business Source License 1.1.
   license "BUSL-1.1"

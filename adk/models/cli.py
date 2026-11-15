@@ -24,7 +24,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from . import catalogue, probe
 
@@ -104,12 +104,14 @@ def cmd_recommend(args: Any, cat: Dict[str, Any]) -> int:
     hw = _hardware(args)
     pick = catalogue.recommend(cat, hw.budget_mb, cpu_only=hw.kind == "ram")
     skipped = catalogue.refused_rungs(cat, hw.budget_mb)
+    also = catalogue.beyond_ladder_choices(cat, hw.budget_mb, cpu_only=hw.kind == "ram")
     if getattr(args, "json", False):
         ranked = catalogue.candidates(cat, hw.budget_mb, cpu_only=hw.kind == "ram")
         _say(json.dumps({"hardware": hw.to_dict(), "recommended": pick,
                          "choices": [{"id": mid, "score": catalogue.bench_score(
                              cat["models"][mid])} for mid in ranked],
-                         "fits_but_refused": skipped}, indent=2))
+                         "fits_but_refused": skipped,
+                         "also_fits_beyond_ladder": also}, indent=2))
         return 0 if pick else 1
     _say(f"This machine: {hw.describe()}")
     if pick:
@@ -129,6 +131,7 @@ def cmd_recommend(args: Any, cat: Dict[str, Any]) -> int:
                 star = "  <- recommended" if mid == pick else ""
                 _say(f"  {mid:<14} {_gb(int(mm['size_mb'])):>7}  {tag}{star}")
             _say("  pick one: adk models pull <id> && adk models use <id>")
+        _say_beyond_ladder(also)
         return 0
     if skipped:
         _say("No model this machine can run may be distributed yet. These fit, but the "
@@ -139,6 +142,24 @@ def cmd_recommend(args: Any, cat: Dict[str, Any]) -> int:
         _say(f"No catalogue model fits {_gb(hw.budget_mb)} with headroom "
              f"(the floor is {_gb(int(cat.get('min_budget_mb') or 0))}).")
     return 1
+
+
+def _say_beyond_ladder(also: List[Dict[str, Any]]) -> None:
+    """The "you could also run" block: models above the ladder that fit, never the pick."""
+    if not also:
+        return
+    _say("")
+    _say("You could also run (above the default ladder; opt-in, not the recommendation):")
+    for o in also:
+        machines = "one machine" if o["machines"] == 1 else f"{o['machines']} machines"
+        score = (f"score {o['score']:.2f} on item set {o['item_set']}"
+                 if o["score"] is not None else "no score of ours")
+        _say(f"  {o['id']:<14} {o['name']}, {_gb(o['size_mb'])} {o['quant']}, needs "
+             f"{_gb(o['floor_mb'])}, {machines}, {score}")
+        _say(f"    measured on: {o['served_on']}")
+        for line in o["evidence"]:
+            _say(f"    evidence: {line}")
+    _say("  try one: adk models pull <id> && adk models use <id>")
 
 
 def _gated(cat: Dict[str, Any], model_id: str, verb: str) -> Optional[Dict[str, Any]]:

@@ -26,62 +26,103 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ── Auth resolution ───────────────────────────────────────────────────────
 
+def _aither_home() -> Path:
+    return Path(os.environ.get("AITHER_HOME", str(Path.home() / ".aither")))
+
+
+def auth_candidates() -> List[Tuple[str, str]]:
+    """Every credential on this machine that could open an MCP gateway, best first.
+
+    Returns ``[(token, source_description), ...]`` with duplicates removed. The
+    source never contains the token.
+
+    Order matters. Measured 2026-11-12 against the local gateway (:8182): a stale
+    ``portal.token`` outranked the live ``adk login`` session, so
+    ``adk mcp setup --bake-token`` baked a credential the gateway answers with
+    ``401 invalid_token`` while the session bearer the stdio bridge sends
+    (``~/.aither/session-bearer``) answered 200. The login session therefore
+    comes before the legacy token files.
+    """
+    out: List[Tuple[str, str]] = []
+    seen: set = set()
+
+    def add(token: Any, source: str) -> None:
+        tok = str(token or "").strip()
+        if tok and tok not in seen:
+            seen.add(tok)
+            out.append((tok, source))
+
+    # 1. Explicit env (the caller said which key to use)
+    add(os.environ.get("AITHER_MCP_KEY", ""), "AITHER_MCP_KEY env var")
+    add(os.environ.get("AITHER_API_KEY", ""), "AITHER_API_KEY env var")
+
+    home = _aither_home()
+
+    # 2. The person's login session (`adk login`): auth.json profiles, then the
+    #    session-bearer file. This is what a local gateway accepts.
+    try:
+        from adk.credentials import user_bearer
+
+        add(user_bearer(auth_path=home / "auth.json",
+                        bearer_path=home / "session-bearer"),
+            "adk login session")
+    except Exception:  # noqa: BLE001 - a broken login store is "no session"
+        pass
+    try:
+        add((home / "session-bearer").read_text(encoding="utf-8"),
+            str(home / "session-bearer"))
+    except OSError:
+        pass
+
+    # 3. Portal token (legacy `aither login`)
+    try:
+        add((home / "portal.token").read_text(encoding="utf-8"), str(home / "portal.token"))
+    except OSError:
+        pass
+
+    # 4. auth.json top-level token (legacy device flow) / credentials.json (legacy)
+    for name, keys in (("auth.json", ("access_token", "token")),
+                       ("credentials.json", ("api_key", "token"))):
+        path = home / name
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            for key in keys:
+                if isinstance(data.get(key), str):
+                    add(data[key], str(path))
+
+    return out
+
+
 def resolve_auth() -> Tuple[Optional[str], str]:
     """
-    Find the best available auth token.
+    Find the best available auth token (the first of :func:`auth_candidates`).
 
     Returns:
         (token_or_none, source_description)
     """
-    # 1. Env var (highest priority — explicit)
-    env_key = os.environ.get("AITHER_API_KEY", "").strip()
-    if env_key:
-        return env_key, "AITHER_API_KEY env var"
-
-    aither_home = Path(os.environ.get("AITHER_HOME", str(Path.home() / ".aither")))
-
-    # 2. Portal token (from `aither login`)
-    portal_token = aither_home / "portal.token"
-    if portal_token.is_file():
-        token = portal_token.read_text(encoding="utf-8").strip()
-        if token:
-            return token, str(portal_token)
-
-    # 3. auth.json (device flow / OAuth)
-    auth_json = aither_home / "auth.json"
-    if auth_json.is_file():
-        try:
-            data = json.loads(auth_json.read_text(encoding="utf-8"))
-            token = data.get("access_token") or data.get("token", "")
-            if token:
-                return token.strip(), str(auth_json)
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-    # 4. credentials.json (legacy)
-    creds = aither_home / "credentials.json"
-    if creds.is_file():
-        try:
-            data = json.loads(creds.read_text(encoding="utf-8"))
-            token = data.get("api_key") or data.get("token", "")
-            if token:
-                return token.strip(), str(creds)
-        except (json.JSONDecodeError, KeyError):
-            pass
-
+    candidates = auth_candidates()
+    if candidates:
+        return candidates[0]
     return None, "no token found"
 
 
 # ── Gateway URL ───────────────────────────────────────────────────────────
 
-# NOTE: local uses HTTPS — AitherOS services use TLS internally.
+# NOTE: local is the HOST-side port, which speaks plain HTTP (the WSL relay in front of
+# the gateway). Measured 2026-11-12: http://localhost:8182/health 200, https -> SSL
+# WRONG_VERSION_NUMBER, so `adk mcp status` called a healthy gateway unreachable. Fleet
+# containers reach the gateway by service name over TLS and never use this entry.
+# AITHER_MCP_LOCAL_URL overrides it.
 _GATEWAY_URLS = {
-    "local": "https://localhost:8182/mcp",
+    "local": os.environ.get("AITHER_MCP_LOCAL_URL") or "http://localhost:8182/mcp",
     "remote": "https://mcp.aitherium.com/mcp",
 }
 
@@ -100,6 +141,12 @@ _IDE_CONFIG_PATHS = {
     "windsurf": ".windsurf/mcp.json",
     "vscode": ".vscode/mcp.json",
 }
+
+
+def auth_headers(token: str) -> Dict[str, str]:
+    """The auth headers a baked config carries. :func:`verify_gateway_auth` sends
+    exactly these, so what was verified is what gets written."""
+    return {"Authorization": f"Bearer {token}", "X-API-Key": token}
 
 
 def generate_config(
@@ -125,8 +172,7 @@ def generate_config(
     headers: Dict[str, str] = {}
     if token:
         # Fallback: bake token directly into config for non-OAuth IDEs
-        headers["Authorization"] = f"Bearer {token}"
-        headers["X-API-Key"] = token
+        headers.update(auth_headers(token))
     if extra_headers:
         headers.update(extra_headers)
     if headers:
@@ -188,12 +234,166 @@ def set_tier_simulation(
 
 # ── Gateway probe ─────────────────────────────────────────────────────────
 
+def _tls_verify() -> bool:
+    return os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"
+
+
+def _parse_rpc(resp: Any) -> Dict[str, Any]:
+    """A StreamableHTTP reply: plain JSON, or an SSE stream whose last data event is it."""
+    if resp.headers.get("content-type", "").startswith("text/event-stream"):
+        payload = ""
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+        return json.loads(payload) if payload else {}
+    return resp.json()
+
+
+def verify_gateway_auth(url: str, token: str, timeout: float = 20.0) -> Dict[str, Any]:
+    """Prove a credential against the gateway with a REAL authenticated call.
+
+    Runs the MCP handshake (``initialize``) and then ``tools/list`` with the
+    headers a baked config would carry. ``/health`` answers 200 to anyone, so it
+    says nothing about whether the credential works.
+
+    Returns ``{ok, status_code, tool_count, error}``:
+      * ``ok is True``   the gateway listed tools for this credential
+      * ``ok is False``  the gateway answered and refused it (401/403, RPC error)
+      * ``ok is None``   cannot judge (unreachable, timeout, malformed reply)
+    The token is never placed in ``error``.
+    """
+    import httpx
+
+    out: Dict[str, Any] = {"ok": None, "status_code": 0, "tool_count": 0, "error": None}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        **auth_headers(token),
+    }
+
+    def refused(resp: Any, step: str) -> bool:
+        out["status_code"] = resp.status_code
+        if resp.status_code in (401, 403):
+            try:
+                reason = str((resp.json() or {}).get("error") or "")[:60]
+            except (ValueError, AttributeError):
+                reason = ""
+            out["ok"] = False
+            out["error"] = (f"gateway rejected the credential (HTTP {resp.status_code}"
+                            + (f" {reason}" if reason else "") + ")")
+            return True
+        if resp.status_code >= 400:
+            out["error"] = f"{step} returned HTTP {resp.status_code}"
+            return True
+        return False
+
+    try:
+        with httpx.Client(timeout=timeout, verify=_tls_verify(), headers=headers) as client:
+            resp = client.post(url, json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                           "clientInfo": {"name": "awdk-mcp-setup", "version": "1.0"}},
+            })
+            if refused(resp, "initialize"):
+                return out
+            sid = resp.headers.get("mcp-session-id") or ""
+            session = {"Mcp-Session-Id": sid} if sid else {}
+            if sid:
+                client.post(url, headers=session,
+                            json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+            resp = client.post(url, headers=session,
+                               json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+            if refused(resp, "tools/list"):
+                return out
+            data = _parse_rpc(resp)
+    except httpx.HTTPError as exc:
+        out["error"] = f"gateway unreachable: {type(exc).__name__}"
+        return out
+    except ValueError:
+        out["error"] = "gateway sent a reply that is not JSON-RPC"
+        return out
+
+    if not isinstance(data, dict) or "result" not in data:
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            out["ok"] = False
+            out["error"] = "tools/list failed: " + str(err.get("message") or "error")[:120]
+        else:
+            out["error"] = "tools/list returned no result"
+        return out
+    tools = (data.get("result") or {}).get("tools")
+    out["tool_count"] = len(tools) if isinstance(tools, list) else 0
+    out["ok"] = True
+    return out
+
+
+def may_try_every_credential(url: str) -> bool:
+    """True when ``url`` is this machine or an Aitherium host.
+
+    Trying each stored credential in turn hands every one of them to the server
+    at ``url``. That is fine for the local gateway and for Aitherium's own, and
+    wrong for any other address a config or a flag might name.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    return host == "aitherium.com" or host.endswith(".aitherium.com")
+
+
+def select_working_auth(
+    url: str, candidates: Optional[List[Tuple[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Pick the first credential the gateway at ``url`` actually accepts.
+
+    Returns ``{verdict, token, source, tool_count, tried}``:
+      * ``verdict == "ok"``          ``token``/``source`` listed ``tool_count`` tools
+      * ``verdict == "rejected"``    the gateway refused every candidate
+      * ``verdict == "unverified"``  the gateway could not be asked; ``token`` is the
+                                     best candidate, NOT proven
+      * ``verdict == "none"``        no credential on this machine
+    ``tried`` is ``[(source, error), ...]`` for the candidates that did not pass.
+    """
+    cands = auth_candidates() if candidates is None else list(candidates)
+    if not may_try_every_credential(url):
+        # An address that is neither this machine nor Aitherium's gets ONE
+        # credential, the best one, as before: never the whole local store.
+        cands = cands[:1]
+    out: Dict[str, Any] = {"verdict": "none", "token": None, "source": "no token found",
+                           "tool_count": 0, "tried": []}
+    if not cands:
+        return out
+    for token, source in cands:
+        res = verify_gateway_auth(url, token)
+        if res["ok"] is True:
+            out.update(verdict="ok", token=token, source=source,
+                       tool_count=res["tool_count"])
+            return out
+        out["tried"].append((source, res["error"] or "unknown"))
+        if res["ok"] is None:
+            out.update(verdict="unverified", token=cands[0][0], source=cands[0][1])
+            return out
+    out["verdict"] = "rejected"
+    return out
+
+
 def probe_gateway(url: str, token: Optional[str] = None) -> Dict[str, Any]:
     """
     Health-check the MCP gateway. Returns a status dict.
 
     Keys: connected (bool), status (str), tier (str), tool_count (int),
-          user (str), balance (int), error (str or None).
+          user (str), balance (int), error (str or None),
+          auth_ok (True/False, or None when no token was given or it could
+          not be judged), auth_error (str or None).
+
+    ``connected`` only means ``/health`` answered. With a token, ``auth_ok``
+    is the result of a real authenticated ``tools/list``
+    (:func:`verify_gateway_auth`); never report a gateway as usable on
+    ``connected`` alone.
     """
     import httpx
 
@@ -205,12 +405,14 @@ def probe_gateway(url: str, token: Optional[str] = None) -> Dict[str, Any]:
         "user": "",
         "balance": 0,
         "error": None,
+        "auth_ok": None,
+        "auth_error": None,
     }
 
-    # Health check (no auth) — verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false" for self-signed local certs
+    # Health check (no auth)
     health_url = url.rsplit("/mcp", 1)[0] + "/health"
     try:
-        with httpx.Client(timeout=5, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
+        with httpx.Client(timeout=5, verify=_tls_verify()) as client:
             resp = client.get(health_url)
             if resp.status_code != 200:
                 result["error"] = f"Health endpoint returned {resp.status_code}"
@@ -221,22 +423,24 @@ def probe_gateway(url: str, token: Optional[str] = None) -> Dict[str, Any]:
         result["error"] = f"Gateway unreachable: {type(exc).__name__}: {exc}"
         return result
 
-    # Authenticated probe — try to list tools
     if token:
-        headers = {"Authorization": f"Bearer {token}", "X-API-Key": token}
+        auth = verify_gateway_auth(url, token)
+        result["auth_ok"] = auth["ok"]
+        result["auth_error"] = auth["error"]
+        result["tool_count"] = auth["tool_count"]
+        # Account metadata (best effort; the tools/list above is the verdict)
         try:
-            with httpx.Client(timeout=10, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
-                # Use the well-known endpoint for metadata
+            with httpx.Client(timeout=10, verify=_tls_verify()) as client:
                 info_url = url.rsplit("/mcp", 1)[0] + "/.well-known/mcp.json"
-                resp = client.get(info_url, headers=headers)
+                resp = client.get(info_url, headers=auth_headers(token))
                 if resp.status_code == 200:
                     data = resp.json()
                     result["tier"] = data.get("tier", "")
-                    result["tool_count"] = data.get("tool_count", 0)
+                    result["tool_count"] = result["tool_count"] or data.get("tool_count", 0)
                     result["user"] = data.get("user", "")
                     result["balance"] = data.get("balance", 0)
         except Exception:
-            pass  # Non-fatal — health is enough
+            pass  # Non-fatal
 
     return result
 

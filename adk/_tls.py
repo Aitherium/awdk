@@ -251,3 +251,47 @@ def ssl_context(verify: Union[bool, str, None] = None) -> Union[bool, "object"]:
         return ctx
     except Exception:  # noqa: BLE001 -- TLS policy must never crash an HTTP call
         return verify
+
+
+_URLLIB_CTX: dict = {}
+
+
+def urllib_context():
+    """An ``ssl.SSLContext`` for ``urllib.request.urlopen(..., context=...)``.
+
+    Plain ``urlopen`` with no context trusts only the OS store as OpenSSL sees it, and a
+    clean Windows hands OpenSSL a near-empty ROOT store (Windows fetches roots lazily
+    through CryptoAPI, which OpenSSL never triggers). Measured 2026-11-13 in a fresh
+    Windows Sandbox: ``adk quickstart-local`` died on api.github.com with
+    CERTIFICATE_VERIFY_FAILED. This context trusts the OS store AND the same trust
+    decision httpx gets from ``tls_verify()`` (certifi, or SSL_CERT_FILE / SSL_CERT_DIR,
+    plus the AitherNet CA bundle when installed), so a corporate root in the OS store
+    still verifies. ``AITHER_TLS_VERIFY=false`` keeps meaning "do not verify".
+    Cached per trust decision. Never raises: on any failure it returns ``None``, which
+    is urllib's own default.
+    """
+    try:
+        import ssl
+
+        verify = tls_verify()
+        if verify is False:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        if verify is True:
+            path, capath = _env_trust_store()
+        else:
+            path, capath = str(verify), None
+        stamp = os.path.getmtime(path) if path else os.path.getmtime(capath)
+        key = (path, capath, stamp)
+        ctx = _URLLIB_CTX.get(key)
+        if ctx is None:
+            ctx = ssl.create_default_context()  # the OS store
+            ctx.load_verify_locations(cafile=path, capath=capath)
+            if len(_URLLIB_CTX) > 8:
+                _URLLIB_CTX.clear()
+            _URLLIB_CTX[key] = ctx
+        return ctx
+    except Exception:  # noqa: BLE001 -- TLS policy must never crash an HTTP call
+        return None

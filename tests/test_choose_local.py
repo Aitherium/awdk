@@ -167,6 +167,9 @@ def test_a_live_door_is_never_second_guessed_locally(monkeypatch):
             return
 
         def do_POST(self):  # noqa: N802 - http.server's own name
+            # drain the request first: on Windows, closing a socket with unread
+            # input sends RST, which can abort the client before it reads the reply
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
             body = json.dumps(
                 {"decision_id": "from-the-door", "answer": "deep", "confidence": 0.9,
                  "source": "engine", "learned_from": 7}

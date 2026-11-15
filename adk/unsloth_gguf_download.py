@@ -24,6 +24,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
 
+from adk._tls import urllib_context
+
 # Kimi-K3 quantization ladder with resource requirements
 KIMI_K3_QUANTS = {
     "UD-IQ1_S": {"size_gb": 594, "min_total_memory_gb": 610},
@@ -74,7 +76,7 @@ def list_kimi_shards(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=urllib_context()) as resp:
             tree_data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -102,7 +104,7 @@ def list_kimi_shards(
     )
 
     try:
-        with urllib.request.urlopen(req_root, timeout=timeout) as resp:
+        with urllib.request.urlopen(req_root, timeout=timeout, context=urllib_context()) as resp:
             root_data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         raise ValueError(f"Could not fetch root tree: {e}") from e
@@ -241,7 +243,7 @@ def download_shards(
             req.add_header("Range", f"bytes={resume_offset}-")
 
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with urllib.request.urlopen(req, timeout=300, context=urllib_context()) as resp:
                 bytes_downloaded = 0
                 with open(part_file, "ab" if resume_offset > 0 else "wb") \
                         as f:

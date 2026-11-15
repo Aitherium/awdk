@@ -13,7 +13,7 @@ import android.content.Context;
  * and install as everything else (Updater.check), so nothing unverified is ever installed.
  */
 public class UpdateJob extends JobService {
-    static final int JOB_ID = 4202;
+    static final int JOB_ID = 4206; // 4202 is ShieldWatch's: sharing it, each schedule replaced the other's job
 
     static void schedule(Context c, long afterMs) {
         JobScheduler js = c.getSystemService(JobScheduler.class);

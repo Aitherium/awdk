@@ -353,6 +353,54 @@ def brain_packs(_cwd: Path = Path(".")) -> "tuple[list, dict]":
     return cards, _receipt(True, len(cards), t0, sig=f"{len(cards)}")
 
 
+def catalog_source(_cwd: Path = Path(".")) -> "tuple[list, dict]":
+    """The unified catalog (`adk.catalog`): packs, apps, brain packs, awpacks, agents.
+
+    This is the LOCAL reader over files on disk, so a card here is entitled to
+    say ``hosting: local`` and to omit ``fetched_for`` -- the source name
+    ``catalog-local`` is deliberately NOT in ``CALLER_SCOPED_SOURCES`` so an
+    anonymous session still sees what is installed beside it. The price tier is
+    carried as ``min_tier`` in the scope ladder's spelling, so the scope filter
+    refuses a paid card to a free caller instead of this source guessing.
+    """
+    t0 = time.monotonic()
+    try:
+        from adk.catalog import _SCOPE_TIER, load_catalog
+        items = load_catalog()
+    except Exception as exc:  # noqa: BLE001
+        return [], _receipt(False, 0, t0, f"{type(exc).__name__}: {exc}")
+    domain_of = {"agent_pack": "packs", "skill_pack": "skills", "tool_pack": "tools",
+                 "mcp_pack": "tools", "application": "packs", "bundle": "packs",
+                 "brain_pack": "packs", "awpack": "packs", "company": "packs",
+                 "agent": "agents", "extension": "tools", "plugin": "tools"}
+    cards: list = []
+    for item in items:
+        domain = domain_of.get(item["kind"])
+        if domain is None:
+            continue
+        if item.get("status") in ("blocked", "internal"):
+            continue
+        tier = (item.get("pricing") or {}).get("tier") or "free"
+        min_tier = _SCOPE_TIER.get(str(tier).lower(), "enterprise")
+        lic = ((item.get("trust") or {}).get("license")) or ""
+        text = item.get("what_it_does") or item.get("summary") or ""
+        if item.get("blockers"):
+            text = f"{text} ({item['blockers'][0]})"
+        # Name by ID, not display name: `pack_catalog` and `toolpacks` already key
+        # on the id, and `index._dedupe` compares (domain, name) -- using the
+        # display name here would list every pack twice under two spellings.
+        short = str(item["id"]).split(":", 1)[-1]
+        cards.append(_card(domain, short, text, "catalog-local", "local",
+                           (item.get("install") or {}).get("command")
+                           or f"adk catalog get {item['id']}",
+                           tags=[str(t) for t in item.get("tags") or []][:8],
+                           catalog_id=item["id"], kind=item["kind"],
+                           display_name=str(item["name"]),
+                           min_tier="" if min_tier == "free" else min_tier,
+                           license=lic, license_flag=scope.license_flag(lic)))
+    return cards, _receipt(True, len(cards), t0, sig=f"catalog:{len(cards)}")
+
+
 def pack_catalog(_cwd: Path = Path("."), fetch: Optional[Callable] = None) -> "tuple[list, dict]":
     """The pack catalog: a hosted catalog (``AITHER_CATALOG_URL``) when one is
     configured and answers, else the catalog snapshot bundled in the wheel. Packs are
@@ -511,6 +559,10 @@ USER_SOURCES: list = [
     ("brain_packs", brain_packs), ("pack_catalog", pack_catalog),
     ("gateway_tools", gateway_tools), ("gateway_agents", gateway_agents),
 ]
+#: Rides in BOTH parts: the catalog is local files, so a cwd part built for a
+#: checkout knows the catalog too. Appended AFTER the specific sources so a
+#: pack already described by `pack_catalog`/`toolpacks` wins the dedupe.
+CATALOG_SOURCES: list = [("catalog_source", catalog_source)]
 CWD_SOURCES: list = [
     ("cwd_skills", cwd_skills), ("awskills", awskills), ("cwd_agents", cwd_agents),
     ("awpack_shelf", awpack_shelf), ("credential_lanes", credential_lanes),
@@ -525,6 +577,6 @@ CRITICAL = {"tools": ("gateway_tools",), "skills": ("cwd_skills", "user_skills",
 #: and a cached receipt is reused only for the same bearer fingerprint.
 CALLER_SCOPED = frozenset({"gateway_tools", "gateway_agents", "pack_catalog"})
 
-__all__ = ["CALLER_SCOPED", "CRITICAL", "CWD_SOURCES", "GATEWAY_URL", "NETWORK_TTL_S",
-           "USER_SOURCES", "bearer_fingerprint", "fingerprint_of", "gateway_caller",
-           "gateway_search"]
+__all__ = ["CALLER_SCOPED", "CATALOG_SOURCES", "CRITICAL", "CWD_SOURCES",
+           "GATEWAY_URL", "NETWORK_TTL_S", "USER_SOURCES", "bearer_fingerprint",
+           "fingerprint_of", "gateway_caller", "gateway_search"]

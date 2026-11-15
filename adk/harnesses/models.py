@@ -83,6 +83,15 @@ def _repo_root_candidates() -> list[Path]:
         here.parents[2],
         Path.cwd(),
     ]
+    # A deployed snapshot (C:/AitherOS-Deploy/adk-<sha>/awdk) has no AitherOS/ beside it,
+    # so the host's recorded checkout is the next place to look (the doctor_local convention).
+    pinned = Path.home() / ".aither" / "repo-root"
+    try:
+        recorded = pinned.read_text(encoding="utf-8").strip() if pinned.is_file() else ""
+    except OSError:
+        recorded = ""
+    if recorded:
+        candidates.append(Path(recorded))
     env_root = os.environ.get("AITHEROS_ROOT")
     if env_root:
         candidates.insert(0, Path(env_root))
@@ -202,6 +211,9 @@ def resolve_binding(profile_name: str, *, bridge_url: str = "") -> ModelBinding:
             credential_source="machine default",
         )
 
+    if profile.get("uses_login"):
+        return _login_binding(name, profile)
+
     token, source = tool.resolve_auth(profile)
     if not token:
         raise ProfileError(
@@ -239,6 +251,46 @@ def resolve_binding(profile_name: str, *, bridge_url: str = "") -> ModelBinding:
         context_window=int(profile.get("context_window") or 0),
         description=str(profile.get("description") or ""),
         credential_source=source,
+    )
+
+
+def _login_binding(name: str, profile: dict[str, Any]) -> ModelBinding:
+    """A ``uses_login`` profile: real Anthropic on the CLI's saved login.
+
+    It names models only -- no base URL, no token, and the Artifact tool stays
+    enabled because Anthropic's own validator accepts its schema. The env is
+    non-empty, so :meth:`ModelBinding.claude_setting_sources` drops the ``user``
+    settings file (where a machine-wide gateway or router env would otherwise
+    win), and :func:`apply_binding` pops every inherited ``ANTHROPIC_*`` var, so
+    the CLI falls back to its stored OAuth credential.
+    """
+    model = str(profile.get("model") or "")
+    if not model:
+        raise ProfileError(f"Login profile '{name}' names no model.")
+    env: dict[str, str] = {
+        "ANTHROPIC_MODEL": model,
+        "ANTHROPIC_DEFAULT_FABLE_MODEL": str(profile.get("fable_model") or model),
+        "CLAUDE_CODE_SUBAGENT_MODEL": str(profile.get("subagent_model") or model),
+    }
+    # Unset tiers are left to the CLI's own first-party defaults (real Claude
+    # models); naming one here would only pin a guess.
+    for key, var in (
+        ("opus_model", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+        ("sonnet_model", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+        ("haiku_model", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+    ):
+        if profile.get(key):
+            env[var] = str(profile[key])
+    if profile.get("effort"):
+        env["CLAUDE_CODE_EFFORT_LEVEL"] = str(profile["effort"])
+    return ModelBinding(
+        profile=name,
+        env=env,
+        expected_model=model,
+        transport=str(profile.get("transport") or "native"),
+        context_window=int(profile.get("context_window") or 0),
+        description=str(profile.get("description") or ""),
+        credential_source="saved Claude login",
     )
 
 

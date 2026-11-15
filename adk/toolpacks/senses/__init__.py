@@ -113,11 +113,13 @@ def speak_text(text: str, out_path: str) -> dict[str, Any]:
 def see_screen(out_path: str = "screen.png") -> dict[str, Any]:
     """Capture this machine's screen to a file."""
     try:
-        from awscreen import capture
+        from awscreen import Finder
     except Exception as exc:  # noqa: BLE001
         return _missing("awscreen", exc)
     try:
-        return {"ok": True, "path": str(capture(out_path))}
+        shot = Finder().capture(out_path)
+        return {"ok": True, "path": str(shot.path), "width": shot.width,
+                "height": shot.height}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 

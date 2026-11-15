@@ -361,13 +361,15 @@ def build_life_tools(store: FollowupStore,
 #: that act on the owner's real accounts (:mod:`adk.home.connector_tools`); every
 #: connector tool that is not read-only is here (a test asserts the subset).
 #: ``tutor_assign`` / ``tutor_set_focus`` change a child's learning plan
-#: (:mod:`adk.home.tutor_tools`). ``lesson_draft`` / ``differentiate`` write a
-#: teacher's lesson drafts and ``parent_note_send`` messages a parent
-#: (:mod:`adk.home.teacher_tools`).
+#: (:mod:`adk.home.tutor_tools`). ``lesson_draft`` / ``differentiate`` /
+#: ``lesson_plan_edit`` / ``lesson_extra`` write a teacher's lesson drafts,
+#: ``suggest_score`` runs a model on a child's work and ``parent_note_send`` messages
+#: a parent (:mod:`adk.home.teacher_tools`).
 ALWAYS_ASK = ("follow_up_recurring", "relay_send", "relay_reply_in_thread",
               "send_relay_message", "send_email", "send_user_email",
               "calendar_add", "mail_send", "todo_add", "tutor_assign", "tutor_set_focus",
               "lesson_draft", "differentiate", "parent_note_send",
+              "lesson_plan_edit", "lesson_extra", "suggest_score",
               # adk.home.home_tools: changing or removing an event, ticking a to-do.
               "calendar_move", "calendar_delete", "todo_done",
               # adk.home.device_tools: a device action the policy did not let run at

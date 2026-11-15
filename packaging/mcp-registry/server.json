@@ -1,0 +1,50 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.aitherium/aitheros",
+  "title": "AitherOS",
+  "description": "AitherOS platform MCP: agents, code, memory and infrastructure tools over one endpoint",
+  "version": "3.8.107",
+  "websiteUrl": "https://aitherium.com",
+  "repository": {
+    "url": "https://github.com/Aitherium/awdk",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.aitherium.com/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer API key minted by the Aitherium signup endpoint (aither_sk_live_*). OAuth2 clients send the same bearer.",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "awdk",
+      "version": "3.8.107",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AITHERIDENTITY_URL",
+          "description": "Override the AitherIdentity endpoint used for sign-in. Only needed for a self-hosted node; the public default works out of the box.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AITHERIUM_API_KEY",
+          "description": "Optional API key for the hosted gateway. The local runtime runs fully local without it; its file and web tools need no credential.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

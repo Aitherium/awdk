@@ -111,12 +111,16 @@ _JOB_FIELDS = (
     "missed", "at", "report", "executor",
     "last_wake_id", "last_started_at", "last_finished_at", "last_state", "last_reason",
     "consecutive_failures", "created_at", "updated_at",
+    # awrise's WHY of the last bad wake (its own last error line), its cause
+    # bucket, the identical-why streak, and a dependency-down hold. Absent on
+    # an older awrise store, so they default to None like every other field.
+    "last_why", "last_cause", "why_streak", "why_since", "held_until", "held_on",
 )
 
 #: The ledger projection every consumer sees. Missing keys are ``None``.
 _ROW_FIELDS = (
     "ts", "job", "event", "state", "reason", "wake_id", "pass_id",
-    "duration_s", "exit_code", "output_tail", "pid",
+    "duration_s", "exit_code", "output_tail", "pid", "why", "cause",
 )
 
 AWRISE_HOME = os.environ.get("AWRISE_HOME") or str(Path.home() / ".aither" / "awrise")

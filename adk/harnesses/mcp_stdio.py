@@ -216,8 +216,20 @@ def _req(method: str, path: str, body: Any = None, timeout: float = 20.0,
     headers = {"Authorization": "Bearer %s" % tok}
     if payload is not None:
         headers["Content-Type"] = "application/json"
-    conn = http.client.HTTPConnection(HOST, PORT, timeout=timeout)
+    unreachable = {"fix": "start it: adk shell serve --host 0.0.0.0 --port 8362 "
+                          "(or python -m adk.harnesses.daemon)"}
+    # Connect on a SHORT budget and judge it separately from the answer: only a failed
+    # connect means "unreachable". A connect that succeeds and an answer that is slow
+    # is a different fact (see the TimeoutError arm below).
+    conn = http.client.HTTPConnection(HOST, PORT, timeout=min(timeout, 5.0))
     try:
+        conn.connect()
+    except OSError as exc:
+        conn.close()
+        return dict(unreachable, error="harness daemon unreachable at %s:%d: %s"
+                                       % (HOST, PORT, exc))
+    try:
+        conn.sock.settimeout(timeout)
         conn.request(method, path, body=payload, headers=headers)
         r = conn.getresponse()
         raw = r.read().decode("utf-8", "replace")
@@ -235,12 +247,19 @@ def _req(method: str, path: str, body: Any = None, timeout: float = 20.0,
                            "AITHER_AGENT_TOKEN_AUTOMINT=0 to present the root bearer"}
         if r.status >= 400:
             return {"error": "harness %s %s: HTTP %d" % (method, path, r.status),
-                    "detail": raw[:400]}
+                    "status": r.status, "detail": raw[:1500]}
         return json.loads(raw) if raw.strip() else {"ok": True}
+    except TimeoutError as exc:
+        # NOT "unreachable": the connection was made and the answer did not arrive in
+        # this client's own budget. Reporting it as a dead daemon sent callers off to
+        # restart a healthy one (measured 2026-11-12: awsh_wait(timeout=45) hit this
+        # client's 20 s default and said the daemon was unreachable).
+        return {"error": "harness %s %s: no answer within %.0fs (client timeout; the "
+                         "daemon accepted the connection)" % (method, path, timeout),
+                "timed_out": True, "detail": str(exc)}
     except (OSError, http.client.HTTPException) as exc:
-        return {"error": "harness daemon unreachable at %s:%d: %s" % (HOST, PORT, exc),
-                "fix": "start it: adk shell serve --host 0.0.0.0 --port 8362 "
-                       "(or python -m adk.harnesses.daemon)"}
+        return dict(unreachable, error="harness daemon unreachable at %s:%d: %s"
+                                       % (HOST, PORT, exc))
     except json.JSONDecodeError as exc:
         return {"error": "harness returned non-JSON: %s" % exc}
     finally:
@@ -330,6 +349,9 @@ def _peer_input_guard(session_id: str):
     rows = _managed_rows()
     if session_id not in rows:
         return _discovered_refusal(session_id)
+    if _spawned_by_me(session_id, rows[session_id]):
+        # The session this tab started: its spawner prompts it (framed), opt-in or not.
+        return None
     if not rows[session_id].get("allow_peer_input"):
         return {"error": "session %s did not opt in to PEER input on its pty "
                          "(allow_peer_input at spawn) -- a peer's words queue in "
@@ -339,6 +361,115 @@ def _peer_input_guard(session_id: str):
                        "accepts a peer's text on its keyboard.",
                 "you_can_still": ["awsh_say", "awsh_spawn(allow_peer_input=true)"]}
     return None
+
+
+#: Sessions THIS server process started (awsh_spawn / awsh_resume). The daemon also
+#: records the spawner (``spawned_by`` on the row) from the authenticated principal;
+#: this set covers a daemon too old to say so and a tab presenting the root bearer.
+_SPAWNED_HERE: set = set()
+
+
+def _my_principal() -> str:
+    """The principal id the daemon knows this tab's scoped token by."""
+    return "agent:%s" % SENDER
+
+
+def _spawned_by_me(session_id: str, row: dict | None) -> bool:
+    if session_id in _SPAWNED_HERE:
+        return True
+    return bool(row) and str(row.get("spawned_by") or "") == _my_principal()
+
+
+def _refused_as_peer(result: dict) -> bool:
+    """Did the daemon refuse the pty because this caller is a peer (not a bad id)?"""
+    return result.get("status") == 403 and "did not opt in to peer input" in str(
+        result.get("detail") or "")
+
+
+def _wait(a: dict) -> dict:
+    """``awsh_wait``: long-poll one session, with a client budget LONGER than the wait."""
+    try:
+        seconds = max(1, min(int(float(a.get("timeout") or 30)), 300))
+    except (TypeError, ValueError):
+        return {"error": "timeout must be a number of seconds, 1-300"}
+    sid = quote(str(a["session_id"]), safe="")
+    until = quote(str(a.get("until") or "idle,exited,failed"), safe=",")
+    out = _req("GET", "/sessions/%s/wait?until=%s&timeout=%d" % (sid, until, seconds),
+               timeout=seconds + 15.0)
+    if out.get("status") == 408:
+        # The wait ran its full length and the state never matched: an answer, not
+        # a failure of the daemon.
+        return {"matched": None, "timed_out": True, "waited_seconds": seconds,
+                "detail": out.get("detail", ""),
+                "next": "awsh_session(session_id) shows the state it is in now"}
+    return out
+
+
+def _interrupt(a: dict) -> dict:
+    sid = a["session_id"]
+    refused = _steerable_guard(sid)
+    if refused:
+        return refused
+    out = _req("POST", "/sessions/%s/interrupt" % quote(str(sid), safe=""), {})
+    if "error" in out or out.get("interrupted"):
+        return out
+    if not out.get("reason"):
+        # A daemon that answers a bare false: read the state so the caller is told
+        # WHY nothing was interrupted instead of re-checking a correct id.
+        info = _req("GET", "/sessions/%s" % quote(str(sid), safe=""))
+        state = str(info.get("state") or "unknown")
+        out["state"] = state
+        out["reason"] = (
+            "no turn is running to interrupt (state=%s)" % state
+            if state in ("idle", "ready", "starting", "exited", "failed") else
+            "the %s transport has no interrupt channel" % (info.get("transport") or "harness"))
+    out["next"] = "awsh_end(session_id=%r) stops the session itself" % sid
+    return out
+
+
+def _end(a: dict) -> dict:
+    """``awsh_end``: stop a session the daemon manages. ``DELETE /sessions/{id}``.
+
+    The daemon has always had the route; no tool reached it, so a spawned session
+    could only be abandoned (measured 2026-11-12: two idle test sessions left on the
+    daemon). Two refusals keep this from being a way to stop someone else's work:
+    a session this tab did not spawn, and a session that is mid-turn, each need
+    ``force=true`` and are named in the refusal.
+    """
+    sid = str(a.get("session_id") or "").strip()
+    if not sid:
+        return {"error": "awsh_end needs session_id (see awsh_sessions)"}
+    rows = _managed_rows()
+    if sid not in rows:
+        refusal = _discovered_refusal(sid)
+        refusal["error"] = ("session %s is not MANAGED by the daemon (a discovered tab, "
+                            "or no such id) -- it does not own that process and cannot "
+                            "end it" % sid)
+        refusal["why"] = ("only sessions STARTED through the daemon (awsh_spawn / POST "
+                          "/sessions) can be ended here; a discovered tab is closed in "
+                          "its own window.")
+        return refusal
+    row = rows[sid]
+    force = bool(a.get("force"))
+    state = str(row.get("state") or "")
+    if state in ("exited", "failed"):
+        return {"ended": True, "already": True, "session_id": sid, "state": state}
+    mine = _spawned_by_me(sid, row)
+    if not force and not mine:
+        return {"error": "session %s was not spawned by this tab (spawned_by=%r, "
+                         "title=%r) -- refusing to end someone else's session"
+                         % (sid, row.get("spawned_by") or "unrecorded", row.get("title")),
+                "fix": "pass force=true if it really is yours to end"}
+    if not force and state == "busy":
+        return {"error": "session %s is mid-turn (state=busy) -- ending it now would "
+                         "cut that turn off" % sid,
+                "fix": "awsh_wait for idle, or pass force=true"}
+    out = _req("DELETE", "/sessions/%s" % quote(sid, safe=""), timeout=30.0)
+    if "error" in out:
+        return out
+    _SPAWNED_HERE.discard(sid)
+    return {"ended": True, "session_id": sid, "state": out.get("state"),
+            "exit_code": out.get("exit_code"), "was": state, "forced": force and not mine}
 
 
 def _steerable_guard(session_id: str):
@@ -504,11 +635,14 @@ def _spawn(args: dict) -> dict:
     if "error" in out:
         return out
     sid = out.get("id") or out.get("session_id")
-    reaches = ("now reaches its pty" if body.get("allow_peer_input") else
-               "queues in its steering mailbox (a peer reaches the pty only when "
-               "spawned with allow_peer_input=true)")
+    if sid:
+        _SPAWNED_HERE.add(sid)
+    reaches = ("reaches its pty from any peer" if body.get("allow_peer_input") else
+               "from THIS tab reaches its pty (you spawned it); other peers queue in "
+               "its steering mailbox unless it was spawned with allow_peer_input=true")
     return {"session_id": sid, "steerable": True, "info": out,
-            "next": "awsh_send(session_id=%r, text=...) %s" % (sid, reaches)}
+            "next": "awsh_send(session_id=%r, text=...) %s; awsh_end(session_id=%r) "
+                    "when you are done with it" % (sid, reaches, sid)}
 
 
 def _backends() -> dict:
@@ -554,7 +688,8 @@ def _unsearched_resumable(searched: str) -> list:
         if "error" in known:
             return []
         return [h for h in (known.get("resumable") or [])
-                if h != searched and h not in _RESUMABLE_STORES]
+                if h != searched and h not in _RESUMABLE_STORES
+                and h not in _KIT_HARNESSES]
     except Exception:  # noqa: BLE001
         return []
 
@@ -585,6 +720,55 @@ def _focus_for(session_id: str) -> dict:
     return {}
 
 
+#: Harnesses whose sessions live in the kit's own store (adk.memory + the turn
+#: journal beside it), not in a transcript directory.
+_KIT_HARNESSES = ("awdk",)
+
+
+def _resumable_kit(harness: str, limit: int) -> dict:
+    """The kit's sessions, from the store its loop writes (``~/.aither/memory``).
+
+    Read straight from the files, read-only, so the listing works with the kit
+    server down -- which is exactly when a session needs resuming. A session whose
+    last turn was cut off by a kill says so (``open_turn``): resuming it and
+    sending the same request, or just restarting the kit, completes that turn.
+    """
+    import time
+
+    from adk import turn_journal
+
+    try:
+        found = turn_journal.list_resumable(limit=limit)
+    except Exception as exc:  # noqa: BLE001 -- a listing reports, it does not raise
+        return {"error": f"kit session store unreadable: {type(exc).__name__}: {exc}",
+                "searched": [harness]}
+    rows = []
+    for row in found:
+        out = {
+            "session_id": row["session_id"],
+            "harness": harness,
+            "agent": row.get("agent", ""),
+            "messages": row.get("messages", 0),
+            "last_activity_at": int(row.get("last_activity_at") or 0),
+            "age_hours": round(
+                (time.time() - float(row.get("last_activity_at") or 0)) / 3600.0, 1),
+            "open_turn": bool(row.get("open_turn")),
+            "store": row.get("store", ""),
+        }
+        if row.get("last_turn"):
+            out["last_turn"] = row["last_turn"]
+        rows.append(out)
+    return {
+        "count": len(rows),
+        "sessions": rows,
+        "searched": [harness],
+        "store": str(turn_journal.memory_dir()),
+        "unsearched": _unsearched_resumable(harness),
+        "next": "awsh_resume(session_id=..., harness=%r) reopens one; the session "
+                "this tab resumes takes awsh_send from it" % harness,
+    }
+
+
 def _resumable(args: dict) -> dict:
     """Prior sessions that CAN be reopened, newest first.
 
@@ -607,6 +791,9 @@ def _resumable(args: dict) -> dict:
         limit = max(1, min(int(args.get("limit") or 20), 200))
     except (TypeError, ValueError):
         limit = 20
+
+    if harness in _KIT_HARNESSES:
+        return _resumable_kit(harness, limit)
 
     store = _RESUMABLE_STORES.get(harness)
     if store is None:
@@ -739,6 +926,8 @@ def _resume(args: dict) -> dict:
     if "error" in out:
         return out
     new_id = out.get("id") or out.get("session_id")
+    if new_id:
+        _SPAWNED_HERE.add(new_id)
     return {"session_id": new_id, "resumed_from": sid, "steerable": True, "info": out,
             "next": "awsh_send(session_id=%r, text=...) now reaches it" % new_id}
 
@@ -760,13 +949,20 @@ def _send(session_id: str, text: str) -> dict:
     guard = _peer_input_guard(session_id)
     if guard is None:
         result = _req("POST", "/sessions/%s/input" % session_id, {"text": framed})
-        if "error" in result:
+        if "error" not in result:
+            result.setdefault("channel", "pty")
+            result.setdefault("landed_now", True)
+            result.setdefault("queued", False)
+            result.setdefault("detail", "written to the session's stdin now")
             return result
-        result.setdefault("channel", "pty")
-        result.setdefault("landed_now", True)
-        result.setdefault("queued", False)
-        result.setdefault("detail", "written to the session's stdin now")
-        return result
+        if not _refused_as_peer(result):
+            return result
+        # A daemon older than the spawner rule: it refused this tab on the pty, so
+        # the message takes the mailbox tier and SAYS so, rather than erroring.
+        guard = {"error": "the running daemon refused this tab on the pty (%s); it "
+                          "predates the spawner rule -- restart it to prompt sessions "
+                          "you spawn, or spawn with allow_peer_input=true"
+                          % str(result.get("detail") or "")[:300]}
 
     written = _write_mailbox_fallback(session_id, framed, suffix="send")
     if written is None:
@@ -868,8 +1064,12 @@ def _say(to: str, text: str, room: str = "main", hops: int = 0) -> dict:
     # 2. Actual delivery -- the same two tiers `_send` uses.
     row = _session_row(to)
     guard = _peer_input_guard(to)
+    deliver: dict = {}
     if guard is None:
         deliver = _req("POST", "/sessions/%s/input" % to, {"text": framed})
+        if _refused_as_peer(deliver):
+            guard = {"error": "the running daemon refused this tab on the pty"}
+    if guard is None:
         if "error" in deliver:
             channel, landed_now, detail = "none", False, deliver["error"]
         else:
@@ -1074,8 +1274,9 @@ TOOLS: list = [
      "description": "Block until a session reaches one of the given states (default "
                     "idle/exited/failed; 'waiting' means it is sitting on a prompt). "
                     "Two consecutive matching polls are required, so a pty flickering "
-                    "idle mid-turn does not wake you. Returns 408 on timeout -- use it "
-                    "instead of polling awsh_session in a loop or sleeping a guess.",
+                    "idle mid-turn does not wake you. A wait that runs out answers "
+                    "{timed_out: true} -- use it instead of polling awsh_session in a "
+                    "loop or sleeping a guess.",
      "schema": {"type": "object", "properties": {
          "session_id": {"type": "string",
                         "description": "id from awsh_spawn/awsh_sessions"},
@@ -1085,13 +1286,13 @@ TOOLS: list = [
          "timeout": {"type": "number",
                      "description": "seconds to block, 1-300 (default 30)"}},
                 "required": ["session_id"]},
-     "fn": lambda a: _req("GET", "/sessions/%s/wait?until=%s&timeout=%s" % (
-         a["session_id"], a.get("until", "idle,exited,failed"),
-         int(a.get("timeout", 30))))},
+     "fn": _wait},
     {"name": "awsh_spawn",
      "description": "Start a NEW coding session the daemon owns. Unlike the "
-                    "discovered sessions in awsh_sessions, this one is steerable "
-                    "-- awsh_send and awsh_interrupt work on it.",
+                    "discovered sessions in awsh_sessions, this one is steerable: "
+                    "awsh_send from the tab that spawned it reaches its pty, and "
+                    "awsh_end stops it. A LOCAL model_profile the active fleet "
+                    "posture does not serve is refused at spawn, naming what is.",
      "schema": {"type": "object", "properties": {
          "harness": {"type": "string",
                      "description": "claude (default; headless stream-json), claude-tty "
@@ -1114,8 +1315,9 @@ TOOLS: list = [
          "allow_peer_input": {
              "type": "boolean",
              "description": "opt this session in to PEER steers typed straight into "
-                            "its pty (framed). Default false: peers queue in its "
-                            "mailbox; the owner lands either way."},
+                            "its pty (framed). Default false: only the tab that "
+                            "spawned it (and the owner) reach the pty; other peers "
+                            "queue in its mailbox."},
          "connectors": {
              "type": "array", "items": {"type": "string", "enum": ["github"]},
              "description": "opt in to the connected GitHub account for git/gh in "
@@ -1130,7 +1332,9 @@ TOOLS: list = [
                     "not, which is what awsh_resume needs an id from. Filter by cwd "
                     "to one project. Says which harness stores it searched.",
      "schema": {"type": "object", "properties": {
-         "harness": {"type": "string", "description": "claude (default)"},
+         "harness": {"type": "string",
+                     "description": "claude (default), or awdk for the kit's own "
+                                    "sessions (says which have a turn a kill cut off)"},
          "cwd": {"type": "string", "description": "limit to one project directory"},
          "limit": {"type": "integer", "description": "default 20, max 200"}}},
      "fn": _resumable},
@@ -1204,12 +1408,31 @@ TOOLS: list = [
                          a.get("room") or "main", a.get("hops", 0))},
 
     {"name": "awsh_interrupt",
-     "description": "Interrupt a session that is running away.",
+     "description": "Cancel the RUNNING turn of a session the daemon manages, leaving "
+                    "the session up. interrupted=false comes with the reason (no turn "
+                    "running, or a transport with no interrupt channel). To stop the "
+                    "session itself use awsh_end.",
      "schema": {"type": "object",
                 "properties": {"session_id": {"type": "string"}},
                 "required": ["session_id"]},
-     "fn": lambda a: _steerable_guard(a["session_id"]) or _req(
-         "POST", "/sessions/%s/interrupt" % a["session_id"], {})},
+     "fn": _interrupt},
+
+    {"name": "awsh_end",
+     "description": "END a session the daemon manages (one you started with "
+                    "awsh_spawn/awsh_resume): its process is stopped and it leaves "
+                    "the live list; the transcript stays on disk and awsh_session_wake "
+                    "can bring it back. Refuses a session this tab did not spawn and "
+                    "one that is mid-turn unless force=true. Cannot end a discovered "
+                    "tab.",
+     "schema": {"type": "object",
+                "properties": {
+                    "session_id": {"type": "string",
+                                   "description": "id from awsh_spawn/awsh_sessions"},
+                    "force": {"type": "boolean",
+                              "description": "end it even if this tab did not spawn it "
+                                             "or it is mid-turn (default false)"}},
+                "required": ["session_id"]},
+     "fn": _end},
 
     {"name": "awsh_session_wake",
      "description": "Bring a DEAD harness session back from its own event log: same id, "
@@ -1312,19 +1535,23 @@ TOOLS: list = [
      "fn": _solve},
 
     {"name": "awsh_awrun_queue",
-     "description": "The awrun job queue.",
+     "description": "The awrun job queue. OWNER-ONLY on the daemon: an agent tab's "
+                    "scoped token is refused (awrun runs commands); read the same "
+                    "queue with the `awrun queue` CLI on this machine instead.",
      "schema": {"type": "object", "properties": {}},
      "fn": lambda a: _req("GET", "/awrun/queue")},
 
     {"name": "awsh_awrun_status",
-     "description": "Status of one awrun job.",
+     "description": "Status of one awrun job. OWNER-ONLY on the daemon (an agent "
+                    "tab is refused); `awrun status <id>` on this machine reads it.",
      "schema": {"type": "object",
                 "properties": {"run_id": {"type": "string"}},
                 "required": ["run_id"]},
      "fn": lambda a: _req("GET", "/awrun/status/%s" % a["run_id"])},
 
     {"name": "awsh_awrun_cancel",
-     "description": "Cancel one awrun job.",
+     "description": "Cancel one awrun job. OWNER-ONLY on the daemon: an agent tab "
+                    "is refused.",
      "schema": {"type": "object",
                 "properties": {"run_id": {"type": "string"}},
                 "required": ["run_id"]},

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="41"
-    android:versionName="0.4.3">
+    android:versionCode="42"
+    android:versionName="0.4.4">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
 
@@ -234,6 +234,29 @@
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- the passkey provider (S4): Aither's vault answers navigator.credentials on this
+             phone, so signing in needs no Bluetooth. Bound only by the system (API 34+). -->
+        <service
+            android:name=".PasskeyProviderService"
+            android:enabled="true"
+            android:exported="true"
+            android:label="Aither vault"
+            android:icon="@mipmap/ic_launcher"
+            android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.credentials.CredentialProviderService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.credentials.provider"
+                android:resource="@xml/credential_provider" />
+        </service>
+
+        <activity
+            android:name=".PasskeyActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".HolderService"
             android:exported="false"
@@ -341,6 +364,14 @@
 
         <service
             android:name=".HeartbeatJob"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- "Index my files in Strata": every 6 h while charging on an unmetered network, the
+             folders the owner picked in Android's folder picker (SAF tree grants, so no storage
+             permission is declared), metadata only. Off by default (FileIndexJob). -->
+        <service
+            android:name=".FileIndexJob"
             android:exported="true"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 

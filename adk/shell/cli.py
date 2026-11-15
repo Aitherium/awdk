@@ -150,6 +150,9 @@ def cli(
         aither_config.rich_output = False
     if private:
         aither_config.privacy_level = "private"
+        # Private mode reaches every tool call in this process: adk.tool_capture
+        # writes nothing while AITHER_PRIVATE is set.
+        os.environ["AITHER_PRIVATE"] = "1"
     
     # Handle special flags
     if completions:
@@ -1969,8 +1972,18 @@ def agents_external():
 
 
 def _genesis_url():
-    return os.environ.get("AITHER_GENESIS_URL",
-                          os.environ.get("AITHER_URL", "http://localhost:8001"))
+    """Genesis base for the shell's pack, agent and marketplace calls.
+
+    ``AITHER_GENESIS_URL`` / ``AITHER_URL`` when set, else the portal's Genesis
+    bridge. The default used to be ``http://localhost:8001``; Genesis has had no
+    host port since it moved behind the fleet load balancer, so every command
+    here answered "Cannot reach Genesis" on a machine where the bridge works.
+    """
+    explicit = os.environ.get("AITHER_GENESIS_URL") or os.environ.get("AITHER_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    from adk.control_plane import genesis_data_base
+    return genesis_data_base()
 
 
 def _portal_headers():
@@ -3728,13 +3741,12 @@ def pack_list(output_json):
             if child.is_dir() and (child / ".toolpack.yaml").exists():
                 local_packs.add(child.name)
 
-    # Try to fetch remote catalog
+    # Try to fetch remote catalog: every candidate base, with the saved bearer
+    # (adk.pack_remote), so this lists what `adk pack list` lists.
     catalog = []
     try:
-        with httpx.Client(base_url=_genesis_url(), timeout=10) as c:
-            resp = c.get("/v1/packs/catalog")
-            if resp.status_code == 200:
-                catalog = resp.json().get("packs", [])
+        from adk import pack_remote
+        catalog, _source, _tried = pack_remote.fetch_catalog(_genesis_url())
     except Exception:
         pass
 
@@ -3805,15 +3817,15 @@ def pack_search(query, output_json):
 
     catalog = []
     try:
-        with httpx.Client(base_url=_genesis_url(), timeout=10) as c:
-            resp = c.get("/v1/packs/catalog")
-            if resp.status_code == 200:
-                catalog = resp.json().get("packs", [])
+        from adk import pack_remote
+        catalog, source, tried = pack_remote.fetch_catalog(_genesis_url())
+        if not source:
+            raise RuntimeError("; ".join(tried) or "no catalogue host answered")
     except Exception as e:
         if output_json:
-            print(json.dumps({"error": f"Cannot reach Genesis: {e}", "packs": []}))
+            print(json.dumps({"error": f"Cannot reach the pack catalogue: {e}", "packs": []}))
         else:
-            click.echo(f"Cannot reach Genesis: {e}", err=True)
+            click.echo(f"Cannot reach the pack catalogue: {e}", err=True)
         sys.exit(1)
 
     q = query.lower()
@@ -3916,14 +3928,22 @@ def pack_install(pack_id, output_json):
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        with httpx.Client(base_url=_genesis_url(), timeout=60) as c:
-            # POST /v1/packs/download/{id} is the endpoint Genesis has always
-            # served; the GET form only exists on Genesis >= 2026-07-30 (added
-            # as an alias for older ADK clients). Prefer POST, fall back to GET
-            # for sovereign nodes running something older than either.
-            resp = c.post(f"/v1/packs/download/{pack_id}", headers=headers)
-            if resp.status_code in (404, 405):
-                resp = c.get(f"/v1/packs/{pack_id}/download", headers=headers)
+        # POST /v1/packs/download/{id} first, GET /v1/packs/{id}/download for a
+        # Genesis that only has the alias, on every candidate base in turn
+        # (adk.pack_remote.download).
+        from adk import pack_remote
+        resp, used_base, tried = pack_remote.download(pack_id, _genesis_url())
+        if resp is None:
+            raise RuntimeError("; ".join(tried) or "no catalogue host answered")
+
+        if resp.status_code in (401, 403):
+            msg = ("not signed in: run `aither login`" if resp.status_code == 401
+                   else f"'{pack_id}' needs a license this account does not hold")
+            if output_json:
+                print(json.dumps({"ok": False, "error": msg, "pack_id": pack_id}))
+            else:
+                click.echo(msg, err=True)
+            sys.exit(2)
 
         if resp.status_code == 402:
             msg = resp.json().get("detail", "License required")
@@ -3991,6 +4011,9 @@ def pack_install(pack_id, output_json):
                     click.echo(msg, err=True)
                 sys.exit(1)
         tar.extractall(target, filter="data")
+    # Genesis nests members under `<pack>-<version>/`; the loader reads
+    # `<pack>/.toolpack.yaml` one level down.
+    pack_remote.hoist_single_root(target)
 
     version = resp.headers.get("X-Pack-Version", "unknown")
 
@@ -5375,6 +5398,111 @@ def sessions_guard(action, daemon, interval, min_sessions, no_auto_restore):
                     capture_output=True, text=True)
         click.echo(f"  scheduled task       : {'installed' if r.returncode == 0 else 'NOT installed'}"
                    + ("" if r.returncode == 0 else "  -> `aither sessions guard install`"))
+
+
+# --- catalog (aither catalog list / get / install) ---
+# One reader, one inventory: these commands delegate to `adk.catalog`, which
+# reads the same files the platform's unified catalog reads. Nothing here keeps
+# a second list -- a pack added to config/packs_catalog.yaml shows up here with
+# no change to this file.
+
+
+def _catalog_echo(doc, as_json):
+    if as_json:
+        click.echo(json.dumps(doc, ensure_ascii=True, indent=2))
+        return
+    items = doc.get("items", [])
+    if not items:
+        click.echo("nothing matches")
+        return
+    for item in items:
+        click.echo(f"{item.get('id', ''):<44} {item.get('name', '')}")
+        line = item.get("what_it_does") or ""
+        if line:
+            click.echo(f"    {line}")
+    click.echo("" if not items else "\n" + str(len(items)) + " item(s)")
+
+
+@cli.group("catalog", invoke_without_command=True)
+@click.pass_context
+def catalog_grp(ctx):
+    """Browse what Aither can install: packs, agents, bundles, brain packs.
+
+    
+    aither catalog list --for patty-everyday   # the everyday set
+    aither catalog list --for jason-business   # the business set
+    aither catalog get patty-everyday
+    aither catalog install business-bundle --dry-run
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(catalog_list)
+
+
+@catalog_grp.command("list")
+@click.option("--for", "for_who", default=None,
+              help="Audience filter (everyone, patty-everyday, jason-business, developer)")
+@click.option("--kind", default=None,
+              help="Kind filter (agent_pack, brain_pack, tool_pack, bundle, ...)")
+@click.option("-q", "--query", default=None, help="Search terms")
+@click.option("--limit", type=int, default=None, help="Max rows (default: all)")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def catalog_list(for_who, kind, query, limit, as_json):
+    """List catalog entries; works offline, no gateway required."""
+    from adk import catalog as _catalog
+    items = _catalog.search(query or "", kind=kind or None,
+                            for_who=for_who or None, limit=limit)
+    _catalog_echo({"ok": True, "count": len(items), "items": items}, as_json)
+
+
+@catalog_grp.command("get")
+@click.argument("item_id")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def catalog_get(item_id, as_json):
+    """Show one entry -- what it does, what it includes, what it needs."""
+    from adk import catalog as _catalog
+    item = _catalog.get_entry(item_id)
+    if item is None:
+        click.echo(f"no catalog entry {item_id!r}", err=True)
+        raise SystemExit(2)
+    if as_json:
+        click.echo(json.dumps(item, ensure_ascii=True, indent=2))
+        return
+    click.echo(f"{item['id']}  ({item['kind']})")
+    click.echo(f"  {item.get('what_it_does', '')}")
+    includes = [i.get("id", "") for i in item.get("includes") or []]
+    if includes:
+        click.echo(f"  includes: {', '.join(includes)}")
+    req = item.get("requires") or {}
+    needs = [k for k in ("capabilities", "credentials", "min_plan") if req.get(k)]
+    if needs:
+        click.echo("  needs: " + "; ".join(f"{k}={req[k]}" for k in needs))
+    if item.get("blockers"):
+        click.echo("  blocked: " + "; ".join(item["blockers"]))
+    click.echo(f"  status: {item.get('status', 'available')}")
+
+
+@catalog_grp.command("install")
+@click.argument("item_id")
+@click.option("--target", default="workspace",
+              type=click.Choice(["workspace", "my_claude", "awdk_local"]),
+              help="Where to install")
+@click.option("--dry-run", is_flag=True, help="Show the plan; change nothing")
+@click.option("--signature", default="", help="Signature for a paid entry")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def catalog_install(item_id, target, dry_run, signature, as_json):
+    """Install (or plan) one entry. Free entries verify by digest."""
+    from adk import catalog as _catalog
+    result = _catalog.install_entry(item_id, target, dry_run=dry_run,
+                                    signature=signature)
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=True, indent=2))
+    else:
+        click.echo(f"{'plan' if dry_run else 'install'} {item_id} -> {target}")
+        for step in result.get("plan") or []:
+            click.echo(f"  - {step}")
+        if result.get("detail"):
+            click.echo(f"  {result['detail']}")
+    raise SystemExit(int(result.get("exit_code", 0)))
 
 
 # ─── command center (aither hq / inbox / agents / palette / brief / watch) ──

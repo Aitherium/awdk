@@ -80,9 +80,8 @@ async def _resolve_peer_id() -> str:
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read peer_id from node_auth: %s", e)
 
-    raise RuntimeError(
-        "Cannot resolve peer_id. Run 'adk mesh onboard' first, or set AITHER_PEER_ID."
-    )
+    from adk.node_join_path import peer_id_problem
+    raise RuntimeError(peer_id_problem())
 
 
 def _saved_tenant() -> str:
@@ -117,24 +116,25 @@ async def enroll(args: Any) -> None:
             peer_id = await _resolve_peer_id()
             print(f"✓ Already onboarded: {peer_id}")
         except RuntimeError:
-            # Step 2: If not onboarded, run mesh onboard
-            print("Detecting hardware and registering mesh peer...")
+            # Step 2: not a mesh peer yet -> the signed-in join (`adk mesh join`).
+            # It was `adk mesh onboard`, the operator path: with no tenant and no
+            # capability token it is refused for a signed-in person (2026-11-12).
+            print("Joining the mesh as this account (adk mesh join)...")
             try:
-                # Call adk mesh onboard
                 proc = await asyncio.create_subprocess_exec(
-                    "adk", "mesh", "onboard",
+                    "adk", "mesh", "join",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=240.0)
                 if proc.returncode != 0:
-                    print(f"✗ Mesh onboard failed: {stderr.decode('utf-8', errors='replace')}")
+                    print(f"✗ Mesh join failed: {stderr.decode('utf-8', errors='replace')}")
                     sys.exit(1)
                 print(stdout.decode("utf-8", errors="replace"))
                 peer_id = await _resolve_peer_id()
                 print(f"✓ Mesh peer registered: {peer_id}")
             except asyncio.TimeoutError:
-                print("✗ Mesh onboard timeout")
+                print("✗ Mesh join timeout")
                 sys.exit(1)
             except FileNotFoundError:
                 print("✗ adk command not found")

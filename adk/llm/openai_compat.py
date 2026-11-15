@@ -117,6 +117,35 @@ class ContextOverflowError(httpx.HTTPStatusError):
         self.limit_tokens = limit_tokens
 
 
+#: The local model server the kit's own ``local`` backend preset dials.
+LOCAL_MODEL_URL = "https://127.0.0.1:8150/v1"
+
+
+def backend_unreachable_message(endpoint: str) -> str:
+    """One line: the endpoint that did not answer and how to point at the local one."""
+    base = str(endpoint or "").split("/chat/completions")[0].rstrip("/")
+    if base == LOCAL_MODEL_URL:
+        return (f"Model backend unreachable: nothing answered at {base}. Start the local "
+                "model server, or choose another backend: adk backend guide")
+    return (f"Model backend unreachable: nothing answered at {base}. Start that server, "
+            f"or point at the local model server: adk backend set vllm --base-url "
+            f"{LOCAL_MODEL_URL} (or set AITHER_LLM_BACKEND=vllm "
+            f"AITHER_LLM_BASE_URL={LOCAL_MODEL_URL})")
+
+
+class LLMBackendUnreachable(httpx.ConnectError):
+    """Nothing is listening at the configured model endpoint.
+
+    Subclasses ``httpx.ConnectError`` so every existing handler and the retry
+    ladder keep working; ``str(exc)`` is the one-line message a CLI prints
+    instead of a transport traceback, and ``endpoint`` is the URL that was tried.
+    """
+
+    def __init__(self, endpoint: str, *, request=None):
+        super().__init__(backend_unreachable_message(endpoint), request=request)
+        self.endpoint = str(endpoint or "")
+
+
 def _overflow_from_body(body: str) -> tuple[bool, int, int]:
     """(is_overflow, requested_tokens, limit_tokens) from a provider/gateway body."""
     low = (body or "").lower()
@@ -298,6 +327,33 @@ def _read_cached_tokens(usage: dict) -> int:
     )
 
 
+_DEFAULT_TIMEOUT_S = 120.0
+
+
+def _resolve_timeout(timeout: float | None) -> float:
+    """An explicit timeout wins; else ``AITHER_LLM_TIMEOUT`` (seconds); else 120 s.
+
+    A server whose model lane is contended (a GPU job holding the card) needs a
+    longer read timeout than an interactive client, and must get it from its unit
+    file rather than from a code patch.
+    """
+    if timeout is not None:
+        return float(timeout)
+    raw = os.environ.get("AITHER_LLM_TIMEOUT", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("AITHER_LLM_TIMEOUT=%r is not a number; using %.0f s",
+                           raw, _DEFAULT_TIMEOUT_S)
+        else:
+            if value > 0:
+                return value
+            logger.warning("AITHER_LLM_TIMEOUT=%r must be positive; using %.0f s",
+                           raw, _DEFAULT_TIMEOUT_S)
+    return _DEFAULT_TIMEOUT_S
+
+
 class OpenAIProvider(LLMProvider):
     """OpenAI-compatible API client. Works with any endpoint that speaks the OpenAI format."""
 
@@ -306,14 +362,14 @@ class OpenAIProvider(LLMProvider):
         base_url: str = "https://api.openai.com/v1",
         api_key: str = "",
         default_model: str = "gpt-4o-mini",
-        timeout: float = 120.0,
+        timeout: float | None = None,
         ctk_by_model: dict[str, dict] | None = None,
         verify: "bool | str | None" = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
-        self._timeout = timeout
+        self._timeout = _resolve_timeout(timeout)
         # TLS verify= for the httpx client. None -> httpx default (system trust),
         # correct for public providers (openai.com/together/groq). For a self-hosted
         # endpoint served over https with the internal AitherNet CA (e.g. Genesis on
@@ -597,6 +653,12 @@ class OpenAIProvider(LLMProvider):
                 # (measured 2026-09-21: a scheduler restart mid-run answered
                 # "All connection attempts failed" and, unretried, killed the instance).
                 if attempt == max_retries:
+                    if isinstance(exc, httpx.ConnectError):
+                        # Refused on every attempt: name the endpoint and the remedy
+                        # (measured 2026-11-12: a default run ended in a bare
+                        # "httpx.ConnectError: All connection attempts failed").
+                        raise LLMBackendUnreachable(
+                            url, request=getattr(exc, "_request", None)) from exc
                     raise
                 wait = min(max(floor, min(2 ** attempt, 30)), 120)
                 logger.warning(

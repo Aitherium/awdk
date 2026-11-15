@@ -32,9 +32,18 @@ import os
 import shlex
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
 from adk.desk_release import desk_update_hint
+
+#: The port the desk bridge falls back to when nobody persisted a pick.
+DEFAULT_BRIDGE_PORT = 47931
+
+#: Where awdesk's launcher persists the port it actually bound
+#: (``%APPDATA%\\Desk\\bridge-port.txt``) -- the twin of
+#: the platform's own ``desk_bridge.py``, which the fleet side uses.
+DESK_PORT_FILE = Path("Desk") / "bridge-port.txt"
 
 FLEET_VERBS = ("status", "down", "up", "gaming", "resume", "adopt", "panel")
 
@@ -151,13 +160,76 @@ def exit_code_for(status: int, doc: Any) -> int:
     return 2
 
 
-def get_bridge_url() -> str:
+def bridge_port_file() -> Path:
+    """The port file awdesk's launcher writes on THIS machine."""
+    appdata = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
+    base = Path(appdata) if appdata else Path.home() / ".config"
+    return base / DESK_PORT_FILE
+
+
+def bridge_port(default: int = DEFAULT_BRIDGE_PORT) -> int:
+    """The persisted desk-bridge port, else ``default``. Never raises."""
+    try:
+        text = bridge_port_file().read_text(encoding="ascii", errors="replace").strip()
+        port = int(text)
+        return port if 0 < port < 65536 else default
+    except (OSError, ValueError):
+        return default
+
+
+def _answers(url: str, timeout: float = 0.3) -> bool:
+    """Does a bridge answer ``GET /health`` right now? A closed desk is normal."""
+    import urllib.request  # noqa: PLC0415 - only this resolver needs the network
+
+    try:
+        with urllib.request.urlopen(url + "/health", timeout=timeout) as resp:  # noqa: S310
+            return 200 <= int(getattr(resp, "status", 200) or 0) < 300
+    except Exception:  # noqa: BLE001 - refused, timeout and malformed all mean "no"
+        return False
+
+
+_bridge_cache: "tuple[float, str] | None" = None
+
+
+def _env_bridge_url() -> str:
+    """``AWDESK_URL``; awsh hands ``AITHERSHELL_AWDESK_URL`` over as the EVENTS url."""
     url = (
         os.environ.get("AWDESK_URL")
         or os.environ.get("AITHERSHELL_AWDESK_URL")
-        or "http://127.0.0.1:47931"
-    )
-    return url.rstrip("/")
+        or ""
+    ).strip()
+    return url.rstrip("/").removesuffix("/events")
+
+
+def get_bridge_url(host: str = "127.0.0.1", default: int = DEFAULT_BRIDGE_PORT,
+                   *, probe: bool = True) -> str:
+    """Where the live desk bridge answers, chosen by LIVENESS.
+
+    Candidates in order: the env URL, the port awdesk's launcher persisted, the
+    constant -- the first that answers ``GET /health`` within 300 ms. The FILE is a
+    record, not proof: measured 2026-11-07 10:45 PT the running desk (relaunched
+    without the Startup launcher) listened on 47931 while the file still said 49031,
+    so trusting the file alone fails in the opposite direction. Nothing answering
+    means the desk is closed, which is normal; the file's port is then the answer.
+    """
+    global _bridge_cache
+    persisted = f"http://{host}:{bridge_port(default)}"
+    if not probe:
+        return _env_bridge_url() or persisted
+    now = time.monotonic()
+    if _bridge_cache is not None and now - _bridge_cache[0] < 30.0:
+        return _bridge_cache[1]
+    candidates: list[str] = []
+    explicit = _env_bridge_url()
+    if explicit:
+        candidates.append(explicit)
+    for port in (bridge_port(default), default):
+        url = f"http://{host}:{port}"
+        if url not in candidates:
+            candidates.append(url)
+    chosen = next((url for url in candidates if _answers(url)), persisted)
+    _bridge_cache = (now, chosen)
+    return chosen
 
 
 def bridge_token(env: Optional[dict] = None, home: Optional[str] = None) -> str:

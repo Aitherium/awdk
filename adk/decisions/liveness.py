@@ -103,4 +103,117 @@ def keep_waiting(cards: Iterable, live: Optional[Iterable[str]] = None) -> list:
     return [c for c in cards if beam.still_waiting(c, live)]
 
 
-__all__ = ["keep_waiting", "live_waiting_session_ids", "pid_alive", "sessions_dir"]
+# ── the raiser question: is the session that ASKED still there? ───────────────
+#
+# ``live_waiting_session_ids`` answers "is this session waiting on the owner?".
+# Retirement asks a narrower and more dangerous question -- "is the session that
+# raised this card gone, so nobody will ever act on the answer?" -- and it may
+# only return True on POSITIVE proof of death. An unmeasured session must never
+# make an open ask disappear: retiring on an unknown would hide a real question,
+# the exact opposite of the doctrine above.
+
+def _field(obj, name: str, default=""):
+    """Read ``name`` from a DecisionSource/dict or a card's ``source``.
+
+    A dict carrying ``source`` is a CARD; any other dict is the source itself
+    (``card.waiters`` serialize as bare ``DecisionSource`` dicts), so its own
+    key is the answer -- not "not measured".
+    """
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        src = obj.get("source") if "source" in obj else obj
+    else:
+        src = getattr(obj, "source", obj)
+    if src is None:
+        return default
+    if isinstance(src, dict):
+        return src.get(name, default)
+    return getattr(src, name, default)
+
+
+def session_entry(session_id: str, directory: Optional[Path] = None) -> Optional[dict]:
+    """The registry record for ``session_id``, or None when it is not listed."""
+    want = str(session_id or "").strip()
+    if not want:
+        return None
+    root = directory or sessions_dir()
+    try:
+        names = list(root.iterdir())
+    except OSError:
+        return None
+    for path in names:
+        if path.suffix != ".json":
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("sessionId") or "") == want:
+            return raw
+    return None
+
+
+def raiser_gone(card, *, directory: Optional[Path] = None) -> bool:
+    """True only when the session that raised ``card`` is PROVABLY dead.
+
+    Registry first: a record for the session names the live process, so a dead
+    recorded pid is proof and a live one is proof of the opposite. A session the
+    registry no longer lists is NOT proof (the registry may have been cleaned or
+    never enabled), so the pid resolved at raise time is the fallback. No usable
+    pid at all means "not measured" -- never "gone".
+    """
+    session_id = str(_field(card, "session_id") or "")
+    entry = session_entry(session_id, directory) if session_id else None
+    if entry is not None:
+        try:
+            pid = int(entry.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid <= 0:
+            return False
+        return not pid_alive(pid)
+    try:
+        session_pid = int(_field(card, "session_pid") or 0)
+    except (TypeError, ValueError):
+        session_pid = 0
+    if session_pid <= 0:
+        return False
+    return not pid_alive(session_pid)
+
+
+def waiter_alive(waiter, *, directory: Optional[Path] = None) -> bool:
+    """True while a card still has a session that will act on the answer.
+
+    Deliberately conservative: anything unmeasured counts as ALIVE, because a
+    waiter wrongly declared dead is a question retired out from under a session
+    that was still blocked on it.
+    """
+    session_id = str(_field(waiter, "session_id") or "")
+    entry = session_entry(session_id, directory) if session_id else None
+    if entry is not None:
+        try:
+            pid = int(entry.get("pid") or 0)
+        except (TypeError, ValueError):
+            return True
+        return pid <= 0 or pid_alive(pid)
+    try:
+        session_pid = int(_field(waiter, "session_pid") or 0)
+    except (TypeError, ValueError):
+        return True
+    if session_pid <= 0:
+        return True
+    return pid_alive(session_pid)
+
+
+__all__ = [
+    "keep_waiting",
+    "live_waiting_session_ids",
+    "pid_alive",
+    "raiser_gone",
+    "session_entry",
+    "sessions_dir",
+    "waiter_alive",
+]

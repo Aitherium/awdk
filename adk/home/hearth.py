@@ -144,7 +144,7 @@ READ_ONLY_TOOLS = frozenset({"receipts", "list_followups", "list_my_cards", "hom
                              "calendar_agenda", "mail_unread", "todo_list",
                              "tutor_learners", "tutor_report",
                              "class_brief", "struggle_report", "grade_assist",
-                             "parent_note_draft"})
+                             "parent_note_draft", "lesson_plan"})
 #: Tools that read the owner's private accounts and return third-party text
 #: (adk.home.connector_tools.READ_ONLY_CONNECTOR_TOOLS; a test pins the two equal).
 PRIVATE_READ_TOOLS = frozenset({"calendar_agenda", "mail_unread", "todo_list"})
@@ -161,7 +161,7 @@ WEB_READ_TOOLS = frozenset({"web_fetch", "web_search"})
 #: Classroom readers (adk.home.teacher_tools) return text students and parents wrote
 #: (answers, notes): untrusted, and student records must never ride a web_fetch out.
 STUDENT_DATA_TOOLS = frozenset({"class_brief", "struggle_report", "grade_assist",
-                                "parent_note_draft",
+                                "parent_note_draft", "lesson_plan",
                                 # Family-tutor readers (adk.home.family_tutor) return
                                 # the same kind of child records — names, levels,
                                 # weekly reports — so they taint too: a report read

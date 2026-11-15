@@ -195,6 +195,8 @@ async def test_local_wins_and_freellmapi_beats_paid_keys(isolated, monkeypatch):
     monkeypatch.setattr(LLMRouter, "_try_local_selfhost", none)
     assert await LLMRouter()._auto_detect() is sentinel_free
     monkeypatch.setattr(LLMRouter, "_try_freellmapi", none)
+    # A paid key joins auto-detect only with the opt-in (owner 2026-11-12).
+    monkeypatch.setenv("ADK_ALLOW_PAID_CLOUD", "1")
     r = LLMRouter()
     await r._auto_detect()
     assert r.provider_name == "anthropic"

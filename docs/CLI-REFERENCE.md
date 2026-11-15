@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**142 commands.**
+**144 commands.**
 
 | command | what it does |
 |---|---|
@@ -36,10 +36,12 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk backend`](#adk-backend) | Manage LLM backends (list, set, test, switch, status) |
 | [`adk backup`](#adk-backup) | Backup all agent data (memory, graphs, config) |
 | [`adk balance`](#adk-balance) | Your Aitherium wallet: balance, bought/earned/spent, how to buy |
+| [`adk baseline`](#adk-baseline) | Report the ready-to-code component baseline (--json, --sync) |
 | [`adk bonsai`](#adk-bonsai) | Small on-device Bonsai model (llama.cpp, CPU; phone-friendly) |
 | [`adk bonsai-local`](#adk-bonsai-local) | Run a Bonsai model on your own computer (:8090), natively — any size, GPU or CPU, no container needed |
 | [`adk bricks`](#adk-bricks) | Aither World bricks and the awnix OS — list, outdated, upgrade (tested, auto-rollback), rollback |
 | [`adk briefs`](#adk-briefs) | List and read executive briefs |
+| [`adk catalog`](#adk-catalog) | Browse and install catalog entries: packs, agents, bundles (list \| get \| install) |
 | [`adk chat`](#adk-chat) | Chat with a mesh agent by name (adk chat <agent> [msg]) |
 | [`adk claude`](#adk-claude) | Run scoped headless Claude Code subagents (serve/spawn/runs/kill) |
 | [`adk claude-account`](#adk-claude-account) | Manage multiple Claude Code (Anthropic) account profiles |
@@ -108,12 +110,12 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk mobile`](#adk-mobile) | Test Android/iOS apps end to end (Maestro) and keep screenshots as proof |
 | [`adk models`](#adk-models) | Browse the model catalogue, pick one for this machine, pull it verified, serve it (list \| recommend \| pull \| use) |
 | [`adk mothership`](#adk-mothership) |  |
-| [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research) |
+| [`adk new`](#adk-new) | Scaffold a full template app (e.g. deep-research, flue) |
 | [`adk notebook`](#adk-notebook) | Plan, run, and inspect Agent Notebooks (.anb) on Genesis |
 | [`adk onboard`](#adk-onboard) | Interactive onboarding — detect, configure, integrate |
 | [`adk onboard-remote`](#adk-onboard-remote) | Add a computer you can SSH into to your devices (install, pair, verify online) |
 | [`adk operator`](#adk-operator) | Ask your workspace's Aither Operator (same policy and audit as Aither Control) |
-| [`adk pack`](#adk-pack) | Manage ToolPack extensions (list, search, install, remove, info) |
+| [`adk pack`](#adk-pack) | Manage ToolPack extensions (list, search, install, enable, remove, info) |
 | [`adk packs`](#adk-packs) | List available agent packs |
 | [`adk pair`](#adk-pair) | Pair this machine with the portal as an inference node (6-char code from the portal) |
 | [`adk pair-mode`](#adk-pair-mode) | Let a device that is already yours find this one on the Wi-Fi (5 minutes) |
@@ -134,7 +136,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk setup`](#adk-setup) | Interactive GPU setup wizard (vLLM/llama.cpp) + optional AitherOS stack |
 | [`adk setup-all`](#adk-setup-all) | Install/set up all AitherOS client products (adk + shell + node + connect) |
 | [`adk shell`](#adk-shell) | Launch AitherShell interactive terminal |
-| [`adk skills`](#adk-skills) | Manage learned skills |
+| [`adk skills`](#adk-skills) | Skills: learned (saved prompts) and installable (awskills) |
 | [`adk solve`](#adk-solve) | Run the reasoning loop on an environment (toy or ARC-AGI-3) with a model backend |
 | [`adk soul`](#adk-soul) | Import/export SOUL.md identity files |
 | [`adk spec`](#adk-spec) | Spec-driven change workflow: proposal -> delta specs -> tasks -> archive |
@@ -226,6 +228,7 @@ Run/manage host-tier agent loops (run, list, status, stop)
 - `adk agent swap-brain` — Swap the agent's brain pack
 - `adk agent backend` — Set the agent's backend (local \| managed \| ...)
 - `adk agent managed` — Managed (hosted twin) agent: status\|chat\|run\|resync\|byok
+- `adk agent twin` — Deploy this project's agent as a self-hosted twin: deploy\|list
 
 ## `adk agent-prompt`
 
@@ -234,6 +237,7 @@ Print the setup prompt for AI coding agents
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `--raw` | str |  | `false` | Print raw prompt without footer |
+| `--start` | str |  | `false` | Print the short one-prompt on-ramp instead: paste it into a coding agent and it ends with a running agent that called a gateway tool |
 
 ## `adk agents`
 
@@ -323,6 +327,15 @@ Your Aitherium wallet: balance, bought/earned/spent, how to buy
 | `--json` | str |  | `false` | Machine-readable output |
 | `--gateway` | str |  |  | Gateway URL (default gateway.aitherium.com) |
 
+## `adk baseline`
+
+Report the ready-to-code component baseline (--json, --sync)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--json` | str |  | `false` | Emit rows as JSON |
+| `--sync` | str |  | `false` | Compare installed components with ~/.aither/baseline.json (0 match, 1 drift, 2 no record) |
+
 ## `adk bonsai`
 
 Small on-device Bonsai model (llama.cpp, CPU; phone-friendly)
@@ -370,6 +383,14 @@ List and read executive briefs
 
 - `adk briefs list` — List recorded briefs
 - `adk briefs show` — Print one brief in full
+
+## `adk catalog`
+
+Browse and install catalog entries: packs, agents, bundles (list | get | install)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<catalog_args>` | str |  |  | list \| get ID \| install ID |
 
 ## `adk chat`
 
@@ -853,6 +874,7 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 - `adk harness tell` — Say something to ONE named session (nick, session id or prefix)
 - `adk harness wrap` — Terminal-resident daemon session (bridge stdin/stdout to daemon)
 - `adk harness mod` — The Claude Code mod: run any harness as a native Claude Code subagent
+- `adk harness parts` — Which parts of the composed harness are installed here, at what version, and the install line for each missing one
 - `adk harness pair` — Pair the awconnect browser extension: approve a code, list, revoke
 
 | option | type | required | default | description |
@@ -899,7 +921,7 @@ Host a self-hosted agent (your model key) + connect it to your fleet — one com
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `--provider` | str |  |  | Model provider: deepseek/openai/anthropic (prompted if omitted) |
+| `--provider` | str |  |  | Model provider: aither (local spine, default)/openai/anthropic/deepseek (prompted if omitted) |
 | `--model` | str |  |  | Model name (default: the provider's default) |
 | `--name` | str |  |  | Fleet label for this agent (default: <hostname>-adk) |
 | `--identity` | str |  | `aither` | Agent identity to load (default: aither) |
@@ -1234,11 +1256,11 @@ Browse the model catalogue, pick one for this machine, pull it verified, serve i
 
 ## `adk new`
 
-Scaffold a full template app (e.g. deep-research)
+Scaffold a full template app (e.g. deep-research, flue)
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `<template>` | str | yes |  | Template name, e.g. deep-research |
+| `<template>` | str | yes |  | Template name: deep-research, or flue (a Flue TypeScript agent wired to the platform) |
 | `-d`, `--directory` | str |  |  | Target directory (default: ./<template>) |
 
 ## `adk notebook`
@@ -1307,7 +1329,7 @@ Ask your workspace's Aither Operator (same policy and audit as Aither Control)
 
 ## `adk pack`
 
-Manage ToolPack extensions (list, search, install, remove, info)
+Manage ToolPack extensions (list, search, install, enable, remove, info)
 
 **Subcommands**
 
@@ -1317,6 +1339,8 @@ Manage ToolPack extensions (list, search, install, remove, info)
 - `adk pack sync` — Install every entitled pack not already present (license-driven)
 - `adk pack buy` — Autonomously buy a pack with Aitherium credits (no Stripe)
 - `adk pack negotiate` — Haggle with the seller Broker for a better price
+- `adk pack enable` — Enable a pack on this agent (installs it first when missing)
+- `adk pack disable` — Disable an enabled pack
 - `adk pack remove` — Remove an installed pack
 - `adk pack update` — Update one or all installed packs
 - `adk pack export` — Export offline bundle (.tar.gz)
@@ -1575,13 +1599,16 @@ Launch AitherShell interactive terminal
 
 ## `adk skills`
 
-Manage learned skills
+Skills: learned (saved prompts) and installable (awskills)
 
 **Subcommands**
 
-- `adk skills list` — List all learned skills
-- `adk skills search` — Search skills
+- `adk skills list` — Learned skills and installed skills
+- `adk skills search` — Search learned skills and the installable awskills shelf
 - `adk skills export` — Export skills in agentskills.io format
+- `adk skills install` — Install an awskills skill into a harness skills dir
+- `adk skills update` — Re-install an installed skill from the shelf
+- `adk skills remove` — Remove a skill adk installed
 
 ## `adk solve`
 
@@ -1591,6 +1618,7 @@ Run the reasoning loop on an environment (toy or ARC-AGI-3) with a model backend
 |---|---|---|---|---|
 | `--env` | str |  | `counter` | Environment adapter (default: counter) |
 | `--game` | str |  |  | --env arc: game id (e.g. ls20) |
+| `--spec` | str |  |  | --env system: a YAML/JSON spec (prompt, parameters, tools, resources, skills, context, goal) for the system to explore |
 | `--seed` | int |  | `0` | --env arc: seed (10-69 is held out) |
 | `--env-dir` | str |  |  | --env arc: games directory (default $ADK_ARC_ENV_DIR) |
 | `--backend` | str |  | `microscheduler` | Model backend profile: microscheduler (default, :8150) or a reasoning.json tier (fast\|orchestrator\|reasoning) |
@@ -1678,7 +1706,7 @@ Start chatting with your codebase (zero config)
 |---|---|---|---|---|
 | `<path>` | str |  | `.` | Project directory (default: current) |
 | `--model` | str |  |  | Model: deepseek-flash, deepseek-pro, local, openrouter, or a model slug |
-| `--provider` | str |  |  | Provider: deepseek, openrouter, local, openai, anthropic |
+| `--provider` | str |  |  | Provider: local (the AitherOS spine, default), openai, anthropic, openrouter, deepseek |
 | `--mcp` | str |  | `false` | Connect to AitherOS MCP gateway (1200+ tools) |
 
 ## `adk status`
@@ -1777,7 +1805,7 @@ Run a persistent agent connected to your AitherOS fleet (one command)
 | `--no-tenant-persona` | str |  | `false` | Run the generic 'aither' agent even when your login's company pack is synced |
 | `--brain-pack` | str |  |  | brain_pack.yaml (or a directory holding one) the agent loads; default: ./brain_pack.yaml when present |
 | `--name` | str |  |  | Fleet label for this agent (default: <hostname>-adk) |
-| `--provider` | str |  |  | Cloud provider if no local LLM: deepseek/openai/anthropic |
+| `--provider` | str |  |  | Cloud provider if no local LLM: openai/anthropic/deepseek (never auto-picked) |
 | `--model` | str |  |  | Model name (default: the provider's default) |
 | `--port` | int |  | `8080` | Local port for aither-serve (default: 8080) |
 | `--yes`, `--non-interactive` | str |  | `false` | Non-interactive: zero prompts, machine-readable JSON (for AI agents/CI) |
@@ -1837,7 +1865,7 @@ Volunteer embedding compute for DGG (enroll, serve, start)
 
 **Subcommands**
 
-- `adk volunteer enroll` — Enroll as a volunteer (mesh onboard + consent + trust)
+- `adk volunteer enroll` — Enroll as a volunteer (adk mesh join + consent + trust)
 - `adk volunteer serve` — Download model and start llama-server
 - `adk volunteer start` — Claim batches, embed, and submit results
 - `adk volunteer status` — Show volunteer status (reputation, tokens, batches)

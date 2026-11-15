@@ -78,12 +78,19 @@ def cmd_shell(args: Any) -> int:
         "tell": _cmd_tell,
         "mod": _cmd_mod,
         "pair": _cmd_pair,
+        "parts": _cmd_parts,
     }.get(command)
     if handler is None:
         print(f"Unknown subcommand: {command}", file=sys.stderr)
         _print_help()
         return 2
     return handler(args)
+
+
+def _cmd_parts(args: Any) -> int:
+    """The composed harness as this machine has it. No daemon involved."""
+    from adk.harness_parts import main as parts_main
+    return parts_main(["--json"] if getattr(args, "json", False) else [])
 
 
 def _cmd_pair(args: Any) -> int:
@@ -344,6 +351,8 @@ def _print_help() -> None:
   adk harness send <id> "<text>"
   adk harness attach <id> [--follow]
   adk harness kill <id>
+  adk harness parts [--json]                  which parts of the composed harness
+                                              are installed here, and what is missing
 
 Sessions live in the daemon, so one started here is the same session the
 browser at aitherium.com attaches to."""

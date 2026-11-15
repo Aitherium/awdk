@@ -12,6 +12,9 @@
  *   - RFC 8414 / OIDC         the authorization-server metadata lives on
  *                             idp.aitherium.com; the apex answers with that
  *                             document instead of a Pages 404
+ *   - A2A (JSON-RPC)          POST /a2a answers message/send from the bundled
+ *                             llms.txt, so the published agent-card.json
+ *                             advertises a transport that really answers
  *
  * Everything else — every page, asset and file — is fetch(request): Pages
  * answers exactly as it did before this Worker existed. ANY exception in here
@@ -49,7 +52,12 @@ export const CONTENT_TYPES = {
   '/llms.txt': 'text/markdown; charset=utf-8',
   '/AGENTS.md': 'text/markdown; charset=utf-8',
   '/SKILLS.md': 'text/markdown; charset=utf-8',
+  '/.well-known/agent-card.json': 'application/json; charset=utf-8',
 };
+
+/** The A2A JSON-RPC endpoint the agent card advertises (transport JSONRPC). */
+export const A2A_PATH = '/a2a';
+const A2A_MAX_BODY = 64 * 1024;
 
 /** Who may frame the OS homepage: the apex itself and its own subdomains. */
 export const FRAME_ANCESTORS = "frame-ancestors 'self' https://*.aitherium.com";
@@ -201,10 +209,125 @@ async function serveMarkdown(request, url) {
   return markdownResponse(htmlToMarkdown(html, url.toString()), origin.status, 'html');
 }
 
+// ── A2A: a thin JSON-RPC concierge answered from the bundled llms.txt ────
+
+const A2A_CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, OPTIONS',
+  'access-control-allow-headers': 'content-type, a2a-version, authorization',
+};
+
+function rpc(body) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...A2A_CORS },
+  });
+}
+
+const rpcError = (id, code, message) => rpc({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
+
+const STOP = new Set(['the', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'is', 'are', 'what', 'how',
+  'do', 'does', 'you', 'can', 'with', 'me', 'my', 'it', 'about', 'tell', 'your', 'this', 'that']);
+
+function terms(text) {
+  return [...new Set(String(text).toLowerCase().match(/[a-z0-9][a-z0-9-]+/g) || [])].filter((t) => !STOP.has(t));
+}
+
+/**
+ * Answer a question from the site's own llms.txt: the best-matching lines,
+ * nothing invented. No model call, no subrequest — the concierge points an
+ * agent at the right document; MCP and the app do the real work.
+ */
+export function conciergeAnswer(question, md) {
+  const lines = String(md || '').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('```'));
+  const title = (lines.find((l) => l.startsWith('# ')) || '# This site').slice(2);
+  const summary = (lines.find((l) => l.startsWith('> ')) || '').slice(2);
+  const head = summary ? `${title}: ${summary}` : title;
+  const want = terms(question);
+  const scored = [];
+  lines.forEach((l, i) => {
+    if (l.startsWith('# ') || l.startsWith('> ')) return;
+    const low = l.toLowerCase();
+    let score = 0;
+    for (const t of want) if (low.includes(t)) score += 1;
+    if (score) scored.push({ l, i, score });
+  });
+  scored.sort((a, b) => b.score - a.score || a.i - b.i);
+  const hits = scored.slice(0, 6).sort((a, b) => a.i - b.i).map((h) => (h.l.startsWith('- ') ? h.l : `- ${h.l}`));
+  if (!hits.length) {
+    return `${head}\n\nNothing in llms.txt matched that. The full index is /llms.txt; `
+      + 'the MCP server card is /.well-known/mcp/server-card.json.';
+  }
+  return `${head}\n\nFrom llms.txt:\n${hits.join('\n')}\n\nFull index: /llms.txt`;
+}
+
+function messageText(message) {
+  const parts = (message && Array.isArray(message.parts)) ? message.parts : [];
+  return parts
+    .filter((p) => p && typeof p.text === 'string' && (p.kind === undefined || p.kind === 'text'))
+    .map((p) => p.text)
+    .join('\n')
+    .trim();
+}
+
+async function serveA2A(request, url) {
+  const method = request.method;
+  if (method === 'OPTIONS') return new Response(null, { status: 204, headers: A2A_CORS });
+  if (method !== 'POST') {
+    return new Response('A2A JSON-RPC: POST only (see /.well-known/agent-card.json)\n', {
+      status: 405,
+      headers: { allow: 'POST, OPTIONS', 'content-type': 'text/plain; charset=utf-8', ...A2A_CORS },
+    });
+  }
+  const text = await request.text();
+  if (text.length > A2A_MAX_BODY) return rpcError(null, -32600, 'request too large');
+  let req;
+  try { req = JSON.parse(text); } catch { return rpcError(null, -32700, 'parse error'); }
+  if (!req || typeof req !== 'object' || Array.isArray(req) || req.jsonrpc !== '2.0' || typeof req.method !== 'string') {
+    return rpcError(req && req.id, -32600, 'invalid request');
+  }
+  const { id } = req;
+  switch (req.method) {
+    case 'message/send':
+    case 'SendMessage': {
+      const message = req.params && req.params.message;
+      const q = messageText(message);
+      if (!q) return rpcError(id, -32602, 'params.message needs at least one text part');
+      let md = homepageMarkdown;
+      if (!md) {
+        try {
+          const r = await fetch(new URL('/llms.txt', url).toString());
+          if (r.ok) md = await r.text();
+        } catch { /* answer with pointers only */ }
+      }
+      return rpc({
+        jsonrpc: '2.0',
+        id,
+        result: {
+          kind: 'message',
+          role: 'agent',
+          messageId: crypto.randomUUID(),
+          contextId: (message && message.contextId) || crypto.randomUUID(),
+          parts: [{ kind: 'text', text: conciergeAnswer(q, md) }],
+        },
+      });
+    }
+    case 'tasks/get':
+    case 'tasks/cancel':
+    case 'GetTask':
+    case 'CancelTask':
+      // Every reply is an immediate Message; no task is ever created.
+      return rpcError(id, -32001, 'task not found');
+    default:
+      return rpcError(id, -32601, `method not found: ${req.method}`);
+  }
+}
+
 async function handle(request) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
+  if (path === A2A_PATH) return serveA2A(request, url);
   if (method !== 'GET' && method !== 'HEAD') return fetch(request);
 
   if (path in AUTH_METADATA) {

@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.100"
+version = "3.8.107"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -172,7 +172,14 @@ snapshots = ["awrecover>=0.1.0"] # labelled snapshots; restore lands fully or no
 seal = ["awseal>=0.1.0"]         # Ed25519 provenance a stranger can verify
 share = ["awshare>=0.1.0"]       # content-addressed publish/fetch, verified on retrieval
 nest = ["awnest>=0.1.0"]         # is there a human there -- verdicts and bound attestations
-senses = ["awfind>=0.1.0", "awbrowse>=0.1.0"]  # search and page reading for agents
+senses = [  # every brick the senses toolpack imports (check_brick_symbols BSY002)
+    "awfind>=0.1.0", "awbrowse>=0.1.0", "awvision>=0.3.2", "awvoice>=0.3.0",
+    "awscreen>=1.0.1", "awwall>=0.1.1", "awrise>=0.4.1",
+]
+# The flow toolpack (adk/toolpacks/flow): flow_run/flow_list/flow_resume over awflow's
+# journaled runtime. Published as `aitherium-awflow` (PyPI `awflow` is a stranger's
+# 2022 package -- never depend on that name). Import is lazy; absent = ok:false.
+flow = ["aitherium-awflow>=0.2.2"]
 # Priority-aware run queue (awrun_submit/queue/status/bump/cancel below). Same
 # reason as memory/snapshots/seal/share above: awrun is 0.1.0 and NOT on PyPI,
 # so it is an extra, never a hard dependency in [project.dependencies] -- a
@@ -193,7 +200,7 @@ mail = ["awmail>=0.1.0"]
 # as "pip install awnboard", so this is an extra rather than a hard dependency.
 pool = ["awnboard>=0.1.0"]
 # Everything the family offers, for an agent that wants the lot.
-aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0", "awtunnel>=0.2.0", "awmail>=0.1.0"]
+aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0", "awtunnel>=0.2.0", "awmail>=0.1.0", "aitherium-awflow>=0.2.2"]
 
 anthropic = ["anthropic>=0.18.0"]
 openai = ["openai>=1.0.0"]
@@ -368,6 +375,15 @@ exclude = [
     "GRID_SETUP.md",
     "docker-compose.grid.yml",
     "tests/test_formbridge.py",
+    # Internal-only modules the public mirror already strips (sync-adk.yml) and
+    # check_moat_boundary.py refuses. The wheel that reaches PyPI is built from
+    # THIS tree, not from the stripped mirror, so the boundary has to hold here
+    # too: awdk 3.8.105 on PyPI carried both. Every importer degrades on
+    # ImportError.
+    "adk/aither_bridge.py",
+    "adk/shell/plugins/builtins/train_pipeline.py",
+    "tests/test_aither_bridge.py",
+    "tests/test_encounter_keying.py",
 ]
 artifacts = [
     "adk/identities/aither.yaml",
@@ -393,6 +409,10 @@ artifacts = [
     # manifest lives in a DOT directory (.claude-plugin/) the default walk skips.
     # Without this the wheel imports fine and `mod status` reports mod_present=false.
     "adk/harnesses/claude_mod/**/*",
+    # The Flue-on-Aitherium template (`adk new flue`): a Node project whose
+    # .env.example, .gitignore and .adk-next-steps are dotfiles. Named here so a
+    # wheel cannot ship the template without them.
+    "adk/templates/flue/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]

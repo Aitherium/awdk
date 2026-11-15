@@ -213,6 +213,18 @@
       -webkit-background-clip: text; background-clip: text; color: transparent;
     }
     .lede { color: var(--muted); font-size: 16px; line-height: 1.55; max-width: 460px; margin: 0 auto 32px; }
+    /* Hosted copy only (the GitHub Pages demo): the in-tab demo is the real
+       product, so it leads, and the hosted chat below it is labelled fallback. */
+    .intab {
+      display: block; max-width: 520px; margin: -12px auto 28px; padding: 14px 18px;
+      text-align: left; text-decoration: none; color: var(--text);
+      background: rgba(34,211,238,.06); border: 1px solid rgba(34,211,238,.35);
+      border-radius: 14px;
+    }
+    .intab:hover, .intab:focus-visible { background: rgba(34,211,238,.11); border-color: rgba(34,211,238,.6); }
+    .intab strong { display: block; font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    .intab span { display: block; font-size: 13px; line-height: 1.45; color: var(--muted); }
+    .intab[hidden] { display: none; }
 
     .composer-wrap { width: min(720px, 100%); margin: 0 auto; }
     .composer {
@@ -239,6 +251,7 @@
     }
     .send:disabled { opacity: .4; cursor: default; }
     .hint { text-align: center; font-size: 11px; color: var(--faint); margin-top: 10px; }
+    .hint a { color: var(--cyan); }
 
     .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 22px 0 0; }
     .chip {
@@ -696,6 +709,13 @@
           <div class="eyebrow"><span class="dot"></span> On-device inference</div>
           <h1>Ask your <em>local</em> mind.</h1>
           <p class="lede">Aitherium is Local AI — a private assistant that lives on your hardware. No cloud round-trip. No training on your words.</p>
+          <!-- Shown only in HOSTED mode (see the HOSTED block in the script). The
+               in-tab runtime is not bundled here: it is served only from
+               aitherium.com, so the hosted copy links to it instead. -->
+          <a class="intab" id="intabCta" hidden href="https://aitherium.com/gobbonet/chat.html" rel="noopener">
+            <strong>Run the model in your browser tab &rarr;</strong>
+            <span>The in-tab demo runs a 1-bit Bonsai model, a tool-calling agent loop and an embedder on your own GPU over WebGPU, with no inference server. It needs a WebGPU browser (Chrome or Edge) and downloads the model once (250 MB for the smallest).</span>
+          </a>
         </div>
 
         <div class="thread" id="thread" aria-live="polite"></div>
@@ -1120,13 +1140,27 @@
       return HOSTED && (path.indexOf("/api/local/") === 0 || path === "/agents" ||
                         path.indexOf("/admin/") === 0);
     }
+    // The in-tab demo (no inference server; the model runs in the visitor's
+    // tab over WebGPU) lives on aitherium.com. The hosted chat on this page is
+    // only a FALLBACK, and says so on screen (LAD011).
+    var IN_TAB_DEMO = "https://aitherium.com/gobbonet/chat.html";
     if (HOSTED) {
       var hostedHint = document.querySelector(".composer-wrap .hint");
-      if (hostedHint) hostedHint.textContent = "Aitherium · Local AI · Beta. This hosted preview answers from Aitherium's servers; install awdk to keep answers on your device.";
+      if (hostedHint) {
+        hostedHint.textContent = "Hosted fallback: this chat answers from Aitherium's servers, not your tab. For the model in your tab, open ";
+        var hintLink = document.createElement("a");
+        hintLink.href = IN_TAB_DEMO;
+        hintLink.rel = "noopener";
+        hintLink.textContent = "the in-tab demo";
+        hostedHint.appendChild(hintLink);
+        hostedHint.appendChild(document.createTextNode("."));
+      }
       var hostedEyebrow = document.querySelector("#hero .eyebrow");
-      if (hostedEyebrow && hostedEyebrow.lastChild) hostedEyebrow.lastChild.textContent = " Hosted preview";
+      if (hostedEyebrow && hostedEyebrow.lastChild) hostedEyebrow.lastChild.textContent = " Hosted fallback";
       var hostedLede = document.querySelector("#hero .lede");
-      if (hostedLede) hostedLede.textContent = "Aitherium is Local AI: a private assistant that lives on your hardware. This preview runs on Aitherium's servers so you can try it before you install.";
+      if (hostedLede) hostedLede.textContent = "Aitherium is Local AI: a private assistant that lives on your hardware. The chat on this page is a hosted fallback that runs on Aitherium's servers. To run the model in your own tab, use the in-tab demo.";
+      var intabCta = document.getElementById("intabCta");
+      if (intabCta) intabCta.hidden = false;
     }
 
     // ── Bootstrap: bearer from the URL fragment (#k=…), never in server logs ──
@@ -1188,7 +1222,7 @@
         el("daemonDot").className = "daemon-dot up";
         var name = (j && (j.agent || j.identity || j.name)) || "your local agent";
         el("disclaimerText").textContent = HOSTED
-          ? "Hosted preview: answers come from Aitherium's servers, not your machine. Install awdk to run it locally."
+          ? "Hosted fallback: answers come from Aitherium's servers, not your tab. The in-tab demo is at aitherium.com/gobbonet/chat.html; install awdk to run it on your machine."
           : "Connected to " + name + ". Models run locally — nothing leaves your machine unless you send it.";
         el("menuMeta").textContent = "daemon: " + (j.version ? "v" + j.version : "") + " · " + (j.model || "");
         el("offlineBanner").className = "banner";
@@ -2740,10 +2774,10 @@
         var lines = term.querySelectorAll("div");
         if (lines.length >= 4) {
           lines[3].textContent = "models: " + (names || "idle");
-          lines[4].textContent = HOSTED ? "daemon: none (hosted preview)"
+          lines[4].textContent = HOSTED ? "daemon: none (hosted fallback)"
                                         : "daemon: " + (daemonOk ? "connected" : "offline");
           if (HOSTED) {
-            lines[1].textContent = "engine: hosted preview";
+            lines[1].textContent = "engine: hosted fallback (in-tab demo: aitherium.com/gobbonet/chat.html)";
             lines[2].textContent = "runtime: Aitherium servers";
           }
         }
@@ -2776,7 +2810,9 @@
     resizeAsk();
     renderFiles();
     refreshHealth();
-    if (el("thread").childElementCount === 0) {
+    // HOSTED has no daemon on this origin: the warm-up POSTed "ping" to the Pages
+    // origin's /v1/chat/completions on every visit (measured 2026-11-13 over CDP).
+    if (!HOSTED && el("thread").childElementCount === 0) {
       setTimeout(function () {
         // Warm-up probe so the first answer is fast; the hero stays until asked.
         fetch("/v1/chat/completions", {

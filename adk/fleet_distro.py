@@ -7,7 +7,7 @@ fixtures so they cannot drift. Order:
 
 1. env ``AITHER_FLEET_DISTRO``, then ``AITHER_WSL_DISTRO``, ``FLEET_DISTRO``,
    ``AWDESK_FLEET_DISTRO`` (first non-empty wins);
-2. ``fleet_distro:`` of node ``debian-fleet`` in ``AitherOS/config/nodes.yaml``
+2. ``fleet_distro:`` of node ``awnix`` in ``AitherOS/config/nodes.yaml``
    (env ``AITHER_NODES_YAML``; else the monorepo this file sits in; else
    ``$AITHEROS_ROOT``). A pip-installed copy with neither falls through to 3,
    which is the right answer for it -- no checkout path is baked in;
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 DEFAULT_FLEET_DISTRO = "awnix"
-FLEET_NODE_ID = "debian-fleet"
+FLEET_NODE_ID = "awnix"
 ENV_VARS: Tuple[str, ...] = (
     "AITHER_FLEET_DISTRO",
     "AITHER_WSL_DISTRO",
@@ -66,7 +66,7 @@ def _clean(value: str) -> str:
 
 
 def read_nodes_fleet_distro(path: Path) -> Optional[str]:
-    """``nodes.<debian-fleet>.fleet_distro`` from one nodes.yaml, or None."""
+    """``nodes.<awnix>.fleet_distro`` from one nodes.yaml, or None."""
     try:
         lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
@@ -241,7 +241,7 @@ def _nodes_file(env: Mapping[str, str]) -> Optional[Path]:
 
 
 def read_nodes_value(dotted: str, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
-    """``nodes.<debian-fleet>.<dotted>`` from the first nodes.yaml found, or None."""
+    """``nodes.<awnix>.<dotted>`` from the first nodes.yaml found, or None."""
     p = _nodes_file(os.environ if env is None else env)
     if p is None:
         return None

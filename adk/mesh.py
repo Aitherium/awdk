@@ -768,6 +768,10 @@ async def join(
                   or resp.get("address") or "")
     if not overlay_ip:
         raise RuntimeError(f"Conductor returned no overlay_ip: {resp}")
+    # The answer names this machine's mesh peer (`strata_peer`). Nothing kept it, so
+    # `adk volunteer` could not resolve a peer id after a good join (2026-11-12).
+    from adk.node_join_path import remember_peer_id
+    remember_peer_id(resp)
 
     # SELF-SERVICE AUTOMATION: the conductor auto-issues a headscale key + URL
     # for NAT'd nodes in the onboard response, so the customer never has to

@@ -147,6 +147,11 @@ CARD_RECIPES: dict[str, dict[str, Any]] = {
              "consequence": "awrise run --name {job} is started detached (pid recorded on "
                             "the card); read the outcome in the wake list; the schedule and "
                             "streak are unchanged unless it succeeds"},
+            {"key": "fix", "label": "Dispatch a fix agent",
+             "consequence": "awrise investigate --name {job} --dispatch is started detached: "
+                            "an agent session on the harness daemon gets this wake's why, "
+                            "cause and output tail and fixes the cause; the schedule is "
+                            "unchanged"},
         ),
         #: The default is what a free-text reply and a deadline both apply, so it
         #: is the ONLY branch that may be reached by accident — and its argv is
@@ -156,12 +161,16 @@ CARD_RECIPES: dict[str, dict[str, Any]] = {
             "disable": (BIN_NAME, "disable", "--name", "{job}"),
             "keep": None,
             "run_now": (BIN_NAME, "run", "--name", "{job}"),
+            #: The brief is built by awrise from its OWN ledger -- never from card
+            #: text, which is attacker-writable -- so the only interpolated var is
+            #: the job name, re-validated at apply time like the other two.
+            "fix": (BIN_NAME, "investigate", "--name", "{job}", "--dispatch"),
         },
         #: Started and NOT waited on. The process applying the answer is the
         #: owner's reply channel; blocking it for the length of a scheduled job
         #: stalls the channel, and a timeout kill would abort the very run the
         #: owner just asked for.
-        "detach": ("run_now",),
+        "detach": ("run_now", "fix"),
     },
     "wakes-add": {
         "producer": "wakes-api",

@@ -64,7 +64,8 @@ INFERENCE_KIND = "llama-worker"
 #: adk.node_commands carry the same tuple for ``worker-on``'s ``model``.
 WORKER_MODELS: Tuple[str, ...] = ("bonsai-1.7b", "bonsai-4b", "bonsai-8b")
 DEFAULT_MODEL = "bonsai-1.7b"
-DECK_MODEL = "bonsai-8b"
+#: Bonsai 4B, not 8B: the 8B scores below the 4B (AitherBench 0.43 vs 0.53) at twice the size.
+DECK_MODEL = "bonsai-4b"
 MAX_PARALLEL = 4
 CTX_PER_SLOT = 2048
 #: Domain separation for the API key derived from the device command key. The fleet

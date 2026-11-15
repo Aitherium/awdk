@@ -86,6 +86,8 @@ def test_discover_walks_selfhost_ladder(monkeypatch, bonsai_like, health_only):
     monkeypatch.delenv("AITHER_LOCAL_LLM_URL", raising=False)
     # health-only port first: must be skipped; bonsai port second: must win.
     monkeypatch.setattr(li, "SELFHOST_PORTS", (health_only, bonsai_like))
+    # Hermetic: never adopt a live spine on the test host (it is HTTPS now).
+    monkeypatch.setattr(li, "SCHEDULER_URLS", ())
     found = asyncio.run(li.discover_local_endpoint())
     assert found.found
     assert found.source == "port"
@@ -99,6 +101,8 @@ def test_router_adopts_selfhost_before_vllm_scan(monkeypatch, bonsai_like):
 
     monkeypatch.delenv("AITHER_LOCAL_LLM_URL", raising=False)
     monkeypatch.setattr(li, "SELFHOST_PORTS", (bonsai_like,))
+    # Hermetic: never adopt a live spine on the test host (it is HTTPS now).
+    monkeypatch.setattr(li, "SCHEDULER_URLS", ())
 
     class _Cfg:  # minimal Config stand-in: nothing explicit, no keys
         llm_backend = "auto"
@@ -246,6 +250,8 @@ def test_router_skips_selfhost_that_lacks_the_configured_model(monkeypatch, bons
 
     monkeypatch.delenv("AITHER_LOCAL_LLM_URL", raising=False)
     monkeypatch.setattr(li, "SELFHOST_PORTS", (bonsai_like,))
+    # Hermetic: never adopt a live spine on the test host (it is HTTPS now).
+    monkeypatch.setattr(li, "SCHEDULER_URLS", ())
     router = LLMRouter(config=_bare_cfg(), model="bonsai2-27b")
     assert asyncio.run(router._try_local_selfhost()) is None
 
@@ -256,6 +262,8 @@ def test_router_keeps_selfhost_that_serves_the_configured_model(monkeypatch, bon
 
     monkeypatch.delenv("AITHER_LOCAL_LLM_URL", raising=False)
     monkeypatch.setattr(li, "SELFHOST_PORTS", (bonsai_like,))
+    # Hermetic: never adopt a live spine on the test host (it is HTTPS now).
+    monkeypatch.setattr(li, "SCHEDULER_URLS", ())
     router = LLMRouter(config=_bare_cfg(), model="bonsai-selfhost")
     provider = asyncio.run(router._try_local_selfhost())
     assert provider is not None and provider.default_model == "bonsai-selfhost"

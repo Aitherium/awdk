@@ -431,6 +431,8 @@ class TestLLMRouter:
     async def test_auto_detect_falls_back_to_env(self, monkeypatch):
         respx.get("http://localhost:11434/api/tags").mock(side_effect=httpx.ConnectError("refused"))
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+        # Paid keys need the opt-in (owner 2026-11-12); without it they are never picked.
+        monkeypatch.setenv("ADK_ALLOW_PAID_CLOUD", "1")
         router = LLMRouter()
         provider = await router.get_provider()
         assert router.provider_name == "openai"

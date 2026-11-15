@@ -40,7 +40,7 @@ it in the config file instead, edit `~/.hermes/config.yaml` (or use `hermes conf
 model:
   provider: "custom"
   base_url: "http://localhost:11434/v1"
-  api_key: "not-needed-for-local"
+  api_key: "local"   # any non-empty value; the local server ignores it
   default: "qwen3:8b"
 ```
 

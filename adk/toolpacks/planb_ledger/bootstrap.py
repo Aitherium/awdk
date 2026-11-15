@@ -79,7 +79,8 @@ def pick_model(requested: str = "auto") -> str:
             raise SystemExit(f"unknown model '{requested}' — one of: {', '.join(MODELS)}")
         return requested
     ram = _ram_gb()
-    for mid in ("bonsai-27b", "bonsai-8b", "bonsai-4b"):
+    # Bonsai 8B is never auto-picked: it scores below the 4B (AitherBench 0.43 vs 0.53).
+    for mid in ("bonsai-27b", "bonsai-4b"):
         if ram >= MODELS[mid]["min_ram_gb"] + 2:  # headroom for the OS
             return mid
     return "bonsai-1.7b"

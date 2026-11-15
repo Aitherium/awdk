@@ -4,6 +4,205 @@ All notable changes to aither-adk will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `adk quickstart-local` / `llamacpp_setup` install a PINNED llama.cpp release instead
+  of the newest nightly: v1.0.0 (assets from its twin nightly b12359, same commit --
+  the v1.0.0 tag ships no binaries). llama.cpp is semver from v1 on, so a MAJOR can drop
+  flags and API (v1 removed `--defrag-thold`); following the newest build meant a first
+  run could land on one untried. Each archive is verified BEFORE extraction: the sha256
+  recorded for every b12359 asset, plus `gh attestation verify --repo ggml-org/llama.cpp`
+  when gh is installed. `AITHER_LLAMACPP_TAG` points at another build, and then a passing
+  attestation is required. An existing install from another build is named, not replaced.
+- CUDA builds: the toolkit is chosen against the driver's `CUDA Version` (v1 ships 12.x
+  and 13.5; a toolkit newer than the driver silently runs on CPU). Linux now gets the
+  Linux CUDA build v1 ships, with its cudart archive placed beside `llama-server`; the
+  cudart pick is matched to OS and arch (it could hand an x64 box the arm64 runtime).
+
+## [3.8.107] - 2026-11-13
+
+### Fixed
+- `adk quickstart-local` on a clean Windows: the llama.cpp release query, the
+  HuggingFace listing and every model download used plain `urllib` with no SSL
+  context, so they trusted only what OpenSSL sees of the Windows root store -- near
+  empty on a fresh install -- and died with CERTIFICATE_VERIFY_FAILED on
+  api.github.com (measured by the newcomer-journey gate in Windows Sandbox).
+  `adk._tls.urllib_context()` now trusts the OS store plus the same roots httpx uses
+  (certifi / SSL_CERT_FILE / the AitherNet bundle); llamacpp_setup, models.download,
+  models.mirror, bonsai_native and unsloth_gguf_download pass it.
+
+### Docs
+- Windows with nothing installed: one PowerShell line that needs no Python and no
+  admin -- `$env:AITHER_INSTALL='toolkit'; irm https://aitherium.com/install.ps1 | iex`
+  (uv brings Python, installs awdk, runs `adk` once). Shown before `pip install awdk`.
+
+## [3.8.106] - 2026-11-12
+
+### Added
+- `adk.lessons`: what an agent learned from the work, as records the workspace admin can
+  see and control. `LessonStore.capture` keeps a lesson only when an outcome is behind it
+  and its replay case scores better with the lesson than with what is in use; lessons are
+  re-checked on the workspace's schedule and retired when they stop helping. Admin
+  operations: list, approve, on, off, edit, undo, forget, settings. Skills export and
+  import as agentskills.io `SKILL.md`. Records are scoped to tenant and workspace and live
+  in a store with no remote path.
+- `adk agent twin doors`: every place a twin's model can run, with its cost, limits, what
+  works today and the command. Printed from the control plane's own table; the kit keeps
+  no copy.
+- `adk agent twin deploy --anthropic [--dry-run]`: host your bound agent at Anthropic on your
+  own Anthropic key (store it with `adk agent managed byok`). Not counted or turn-limited by
+  Aitherium; Anthropic bills you.
+- `adk agent twin deploy --dedicated [--dry-run]`: the plan and the quoted hourly rental of
+  a GPU of your own for a twin (no turn limit). Read-only with or without `--dry-run`: it
+  never rents. Without a live quote it says "about the cost of the rental; varies by model
+  and GPU" instead of a number.
+- Twin plan, both doors from the kit: `adk agent twin deploy` self-hosts the project's agent
+  (free, no paid plan, no count or turn limit); `adk agent twin deploy --hosted` asks
+  Aitherium to host your bound agent on its own compute (first one free, daily turn limit,
+  no provider key). Both take `--dry-run`.
+- `adk agent twin rebind [--apply]`: record each twin's pack tool whitelist where none is
+  recorded. Shows the plan by default; `--apply` writes it.
+- `/stream` accepts `allowed_gateway_tools`: a list of gateway tool names the turn may
+  reach. Every other gateway tool is refused for that turn (search, `call_tool` and the
+  eager tools). The field can only narrow a turn; absent or empty changes nothing.
+- Durable turns (`adk.turn_journal`, on by default; `AITHER_TURN_JOURNAL=0` turns it off).
+  Every `chat` / `stream_react` turn is journaled in the agent's own memory database
+  (`~/.aither/memory/<agent>.db`, tables `turn_journal` and `turn_open`): accepted with
+  its request, each tool call started (name, arguments, idempotency key) and finished
+  (result or error), and a terminal outcome (`finished`, `failed` with the reason,
+  `resumed`, `abandoned`). Each row is committed with `synchronous=FULL` before the step
+  it describes runs. A turn that a killed process left open is run again when the server
+  starts, or by the client that sends the same request for the same session again. In the
+  resumed turn a tool call with a recorded result is answered from the journal and not
+  run; a call that was in flight is not run either, the model is told its outcome is
+  unknown, unless the tool was registered with `repeat_safe=True` (or a read
+  `action_class`). `GET /sessions/{id}/turns[?wait=N]` shows turns, steps and outcomes;
+  `/health` carries `turns`. Not covered: a kill during model generation loses that
+  generation (the turn restarts after its last recorded tool result); streamed tokens
+  are not replayed, the reconnecting client gets the final answer; a turn that ran
+  under a caller's `auth` context waits for that caller instead of resuming at startup;
+  a dead owner whose pid was reused by another process is not detected. See
+  `docs/durable-turns.md`.
+- `POST /chat/steer` with `action: "cancel"` cancels the session's running streamed turn
+  (it was documented as not implemented). `/chat/stream` takes `cwd`: relative paths in
+  the built-in file, search, git and shell tools resolve there for that turn.
+- awsh: `awsh_resumable(harness="awdk")` lists the kit's sessions and says which have a
+  turn a kill cut off; a resumed `awdk` session continues the same conversation and takes
+  input from the principal that resumed it; `awsh_interrupt` reaches a streaming `awdk`
+  turn (a relay session no longer reports `idle` mid-turn); the spawn `cwd` travels with
+  each `awdk` turn; a relay turn whose kit was killed mid-stream waits for the kit to
+  return and emits the resumed turn's answer.
+- `adk agent twin deploy [--dry-run]` and `adk agent twin list`: register the agent in the
+  current project as a self-hosted twin (`POST /v1/agent/agent-endpoints`, `provider:
+  self_hosted`, `bind: true`). The twin answers on your own server and model; no agent is
+  created at a model provider. `--dry-run` prints the request (callback bearer redacted),
+  the checks still failing and the cost, and sends nothing.
+- Chat protocol `aitheros` for `adk chat <agent>` and the mesh chat proxy: an agent
+  registered in `~/.aither/agents.json` with `"chat_protocol": "aitheros"` is reached
+  with `POST {invoke_url}/chat` and `{"message", "auto_execute": false}`, the route
+  AitherOS platform services such as Atlas serve. They answer neither
+  `/v1/chat/completions` nor `/chat/stream`, so `adk chat atlas` returned 404 under
+  both existing protocols. A reply with no text, or any non-200, exits 1.
+- One add-on resolver, `adk.addons`, fronting the bricks that already install things:
+  awpack packs, then Library packs, then awnode extensions (`awpack:`, `library:`,
+  `ext:` prefixes pin a source), plus awskills skills and third-party skills from
+  Hermes Agent taps (`hermes:<owner>/<repo>/<skill>`) and agentskills.io folders
+  (`agentskills:<owner>/<repo>/<path>`). Every install writes one record,
+  `~/.aither/addons.lock.json` (`adk.addon_lock`): kind, source, version, trust tier,
+  sha256. `adk pack search|install|update|remove` and the new `adk pack enable|disable`
+  go through it; an awpack install is followed by `awpack verify`.
+- `adk skills install|update|remove <name> [--target claude|project|adk]`; `adk skills
+  search` also lists installable awskills skills.
+- Agent tools `search_packs` and `install_pack` (tool category `packs`, on by default for
+  the daemon and `aither` identities): an agent can add a capability mid-task. Anything
+  not first-party pauses for the owner's approval (`adk.approval.register_arg_gate`),
+  and a durable "always allow" cannot pre-approve it.
+
+### Fixed
+- `adk mesh ls` answered `401 Unauthorized`: it sent no login session, to a host
+  (`gateway.aitherium.com`, the MCP gateway) that has no peer directory. It now reads
+  your account's node registry (Identity `/v1/nodes`) with the `adk login` session and
+  prints which registry it read; `--mesh-url` to an overlay directory keeps the mesh PSK.
+- `adk volunteer status|start` said "Cannot resolve peer_id. Run 'adk mesh onboard'
+  first": the operator path a signed-in person cannot use, about a peer id no flow
+  saved. `adk mesh join` now keeps the peer id the mesh registry returns, `adk
+  volunteer enroll` registers through `adk mesh join`, and the error says what it
+  looked at and the commands that fix it.
+- One join path in every help text (`adk mesh onboard --help`, `adk volunteer --help`):
+  the same steps the platform's MCP tools print, with the single owner step marked.
+- `adk agent bind|swap-brain|backend|managed ...` sent no credential for a signed-in user
+  (`401 Missing bearer token`): they read `AITHER_API_KEY` only. They now use the kit's
+  one credential resolution (`adk.mcp_setup.auth_candidates`), so the `adk login` session
+  works.
+- On a server with `AITHER_SERVER_API_KEY` set, `/docs`, `/redoc` and `/openapi.json`
+  need the bearer like the routes they describe (`AITHER_PUBLIC_DOCS=1` opts back in). A
+  daemon with no server key is unchanged.
+- `/health` `tools.last_error` now says why there are no platform tools on an online
+  daemon (no credential, refused, empty catalogue), and `tools.registered` /
+  `tools.catalogue` are written by the online gateway attach, not only the offline one.
+- A Windows Sandbox receipt over `_MAX_SANDBOX_CHARS` (20 000 characters) collapsed to
+  `{ok, command, truncated, preview, findings_are}` only, so a client could not point
+  the owner at the run folder and could not compare the executed digest. The capped
+  receipt now keeps a summary — `ok`, `command`, `exit_code`, `timed_out`, `run_dir`,
+  the executed `sha256`, `findings_are`, `error` and per-category `counts` (processes,
+  lookups, connections, services added, persistence values, planted scheduled tasks,
+  findings) — and caps only the preview. The uncapped shape is unchanged.
+- `adk discover` suggested `adk pack enable <id>`, which did not exist.
+- `adk tools list` raised `ImportError` (`get_builtin_registry` was missing).
+- `adk pack info <id>` died on a 401 from the per-pack route; it now falls back the way
+  `adk pack list` does (catalog, bundled catalog, then a local or awpack pack).
+- `adk mcp setup --bake-token` printed `connected (healthy)` and baked a credential the
+  gateway answered with `401 invalid_token`: a stale `portal.token` outranked the
+  `adk login` session, and the only check was the unauthenticated `/health`. Setup now
+  tries each stored credential (login session first) with a real authenticated
+  `tools/list`, bakes the first one the gateway accepts, and reports the tool count. If
+  the gateway answers and refuses every credential it writes nothing, names each source
+  and its HTTP status, says to run `adk login`, and exits 1. If the gateway cannot be
+  reached it says `NOT VERIFIED`. `adk mcp status` marks a gateway `[OK]` only after the
+  same authenticated call, and exits 1 when no gateway is usable. No token is printed.
+- `adk tools list` printed `MCP: not available ('MCPTool' object has no attribute 'get')`
+  for every signed-in user.
+- `adk tools sync` stopped at `Authentication failed` when the active profile's key was
+  refused, although the `adk login` session on the same machine was accepted. A 401 is
+  now retried with each other stored credential.
+- `adk run` in a project made by `adk init` served an agent named `aither` without the
+  tools `agent.py` registers; `-i <name>` only renamed that agent. It now serves the
+  project's own agent (`adk.project.load_project_agent`). Without an `agent.py`, the
+  `identity:` in the project `config.yaml` applies. An explicit `--identity` naming a
+  different agent, `--fleet` and `--agents` behave as before.
+- An unreachable model backend ended in `httpx.ConnectError: All connection attempts
+  failed` with a traceback. It is now `adk.llm.LLMBackendUnreachable` (a subclass of
+  `httpx.ConnectError`): one line naming the endpoint that was tried and how to point at
+  the local model server. `adk run` prints it at startup when the configured loopback
+  endpoint refuses connections, the server answers 503 `backend_unreachable`, and the
+  scaffolded `agent.py` exits 1 with that line.
+- A project `.mcp.json` pointing at a server with a very large catalogue registered
+  every tool schema on the agent (1,921 schemas, about 247k tokens, against a platform
+  gateway), so each turn on a 32k model failed with a context overflow. A server
+  publishing more than `AITHER_MCP_EAGER_MAX` tools (default 40) is now exposed as
+  `mcp__<server>__search_tools` and `mcp__<server>__call_tool`.
+
+## [3.8.104] - 2026-11-07
+
+### Changed
+- The aw* family is read from a vendored index, `adk/data/family.json`, generated from
+  the Aither World registry (`gen_ecosystem.py --emit`, held fresh by EC018). `adk
+  bricks`, `adk doctor` and `adk.integrations` no longer carry their own frozen lists,
+  which had drifted: `adk bricks` now also knows awsuite, awdiscord and awpermit. A
+  missing index raises (`adk.brick_family.FamilyDataMissingError`) or makes the doctor
+  verdict UNJUDGED -- never an empty family.
+- The flow extra (`aitherium-awflow`) and 3.8.102-3.8.103 changes shipped without a
+  section here; see the git history for those.
+
+## [3.8.101] - 2026-11-07
+
+### Added
+- `adk pair` and `adk enroll` install this device's file-index job (`adk.file_index`):
+  awstorage>=0.8.0 (pip, or a private venv at `~/.aither/venvs/awstorage` when the interpreter is
+  PEP 668 externally managed), then `awstorage files schedule` -- a recurring scan + push of
+  every local volume as the node id the device registered with, pushed with the device's
+  own token. One line in the enrolment output says what was scheduled or what failed.
+  `--no-autostart` or `AITHER_NO_FILE_INDEX=1` skips it.
+
 ## [3.8.100] - 2026-11-07
 
 ### Fixed

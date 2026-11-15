@@ -31,6 +31,14 @@ NAMED a door, an outage stays an outage -- you are owed an honest error, not a
 quietly different answer; `AITHER_DECIDE_LOCAL=1` overrides that, `=0` disables
 the local backend outright. Without `awdecide` the behaviour is unchanged:
 `DecideUnavailableError`, whose message now names the fix.
+
+**Context travels with the decision.** `decide(..., caller=, metadata=)` (and
+`decide_batch`) carry who asked and from where -- `session_id`, `turn_id`,
+`request_id`, `parent_id`, or anything else. At the door it rides as body
+`metadata`; on the local backend it lands in awdecide's DecisionRecord side table
+(`awdecide.record.attach`) with the rung that answered and the latency, so the
+outcome can later be joined back to the turn that made the call. Recording it
+never fails a decision.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ import json
 import os
 import re
 import ssl
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -166,6 +175,45 @@ def _import_awdecide() -> Optional[Tuple[Any, Any]]:
     return mcp_mod, ledger_mod
 
 
+def _import_record() -> Any:
+    """awdecide.record (the DecisionRecord side table), or None when the installed
+    awdecide predates it. Tests replace this function."""
+    try:
+        from awdecide import record as record_mod
+    except ImportError:
+        return None
+    return record_mod if hasattr(record_mod, "attach") else None
+
+
+def _meta(caller: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Who asked, and from where. `caller` defaults to AITHER_DECIDE_CALLER, then
+    "adk.choose"; every other key is the caller's own (session_id, turn_id, ...)."""
+    m = {str(k): v for k, v in (metadata or {}).items() if v is not None}
+    m.setdefault("caller", caller or os.environ.get("AITHER_DECIDE_CALLER") or "adk.choose")
+    return m
+
+
+def _attach_local(loop: Any, d: "Decision", body: Dict[str, Any]) -> None:
+    """Land the context of a LOCAL decision in the ledger it was recorded in.
+    The rung is awdecide's own backend name; fail-open, a decision is never lost
+    to its context."""
+    if not d.decision_id:
+        return
+    rec = _import_record()
+    if rec is None:
+        return
+    ctx: Dict[str, Any] = dict(body.get("metadata") or {})
+    ctx.setdefault("state_text", body.get("state"))
+    if body.get("options") is not None:
+        ctx.setdefault("options", body.get("options"))
+    ctx["rung"] = str(d.raw.get("backend") or d.source.split(":", 1)[-1])
+    ctx["latency_ms"] = d.latency_ms
+    try:
+        rec.attach(loop.ledger._con, d.decision_id, **ctx)
+    except Exception as e:  # noqa: BLE001 -- the decision stands without its context
+        d.raw["record_error"] = f"{type(e).__name__}: {e}"[:200]
+
+
 def _raw_url() -> str:
     return os.environ.get("AITHER_DECIDE_URL", "").strip()
 
@@ -238,10 +286,18 @@ def _shape_local(a: Dict[str, Any]) -> Decision:
     return d
 
 
+def _local_one(mcp_mod: Any, loop: Any, fork: str, body: Dict[str, Any]) -> Decision:
+    t0 = time.perf_counter()
+    d = _shape_local(mcp_mod.call(loop, "decide", _local_args(fork, body)))
+    d.latency_ms = round((time.perf_counter() - t0) * 1000, 3)
+    _attach_local(loop, d, body)
+    return d
+
+
 def _local_decide(fork: str, body: Dict[str, Any], down: Optional[Exception] = None) -> Decision:
     mcp_mod, loop = _local_loop(down)
     try:
-        return _shape_local(mcp_mod.call(loop, "decide", _local_args(fork, body)))
+        return _local_one(mcp_mod, loop, fork, body)
     finally:
         loop.ledger.close()
 
@@ -252,11 +308,8 @@ def _local_batch(
     """One Loop, one connection, one thread; order preserved."""
     mcp_mod, loop = _local_loop(down)
     try:
-        return [
-            _shape_local(mcp_mod.call(loop, "decide",
-                                      _local_args(str(it.get("fork") or fork), dict(it))))
-            for it in items
-        ]
+        return [_local_one(mcp_mod, loop, str(it.get("fork") or fork), dict(it))
+                for it in items]
     finally:
         loop.ledger.close()
 
@@ -295,15 +348,21 @@ def decide(
     question: str = "",
     min_confidence: float = 0.0,
     timeout: float = 30.0,
+    caller: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Decision:
     """Ask the door. `state` must be a STABLE descriptor of the situation at this
-    fork (same situation -> same string); that is what lets it learn."""
+    fork (same situation -> same string); that is what lets it learn.
+
+    `caller` / `metadata` (session_id, turn_id, request_id, parent_id, ...) are
+    recorded WITH the decision -- see the module docstring -- never used to answer it."""
     body = {
         "domain": _domain(fork),
         "state": state,
         "kind": kind,
         "question": question,
         "min_confidence": min_confidence,
+        "metadata": _meta(caller, metadata),
     }
     if options is not None:
         body["options"] = [str(o) if kind != "score" or options else o for o in options]
@@ -318,10 +377,20 @@ def decide(
 
 
 def decide_batch(
-    fork: str, items: Sequence[Dict[str, Any]], *, timeout: float = 60.0
+    fork: str,
+    items: Sequence[Dict[str, Any]],
+    *,
+    timeout: float = 60.0,
+    caller: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> List[Decision]:
     """Several decisions in one round trip. Each item: {state, options?, kind?,
-    question?, min_confidence?}. Order is preserved."""
+    question?, min_confidence?, metadata?}. Order is preserved. `caller` and
+    `metadata` apply to every item; an item's own `metadata` wins per key."""
+    items = [
+        dict(it, metadata=_meta(caller, {**(metadata or {}), **(it.get("metadata") or {})}))
+        for it in items
+    ]
     payload = [
         {
             "domain": _domain(str(it.get("fork") or fork)),
@@ -330,6 +399,7 @@ def decide_batch(
             "options": it.get("options"),
             "question": it.get("question", ""),
             "min_confidence": it.get("min_confidence", 0.0),
+            "metadata": it["metadata"],
         }
         for it in items
     ]

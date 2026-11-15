@@ -1,0 +1,76 @@
+# Example SiteProfile: aitherium.com. Copy it for a new domain and change every
+# value; list only endpoints you have seen answer.
+domain: aitherium.com
+name: Aitherium
+version: 1.0.0
+description: >-
+  Aitherium: an agent platform. Ask the concierge about products, docs and
+  pricing over A2A; the full toolset is on the MCP server.
+origins:
+  apex: https://aitherium.com
+  app: https://app.aitherium.com
+  api: https://api.aitherium.com
+  mcp: https://mcp.aitherium.com
+agents:
+  - id: concierge
+    name: Aitherium Concierge
+    description: Answers questions about Aitherium from the published llms.txt.
+    a2a_url: https://aitherium.com/a2a
+    transport: JSONRPC
+skills:
+  - id: agent-readiness
+    name: Agent readiness
+    description: Probe and fix how a website presents itself to AI agents.
+    source: ../../agent_ready/SKILL.md
+  - id: agentic-web
+    name: Agentic web
+    description: Publish a domain for AI agents from one site profile, gates included.
+    source: ../SKILL.md
+endpoints:
+  checkout: https://aitherium.com/api/shop/checkout
+auth:
+  resource: https://aitherium.com
+  issuer: https://idp.aitherium.com/identity
+  authorization_servers: [https://idp.aitherium.com/identity]
+  scopes: [openid, profile, email, roles, offline_access, "agent:read", "agent:write", "tools:execute"]
+mcp:
+  name: aitheros
+  url: https://mcp.aitherium.com/mcp
+  transport: streamable-http
+webmcp_tools: []
+web_bot_auth:
+  signature_agent: https://aitherium.com
+  key_secret_name: WEB_BOT_AUTH_ED25519_JWK   # a vault NAME; the value never lives here
+  # public_jwks: {keys: [...]}                # the committed public half
+dns_aid:
+  - proto: a2a
+    target: aitherium.com
+    port: 443
+    alpn: a2a
+commerce:
+  mpp:
+    operations:
+      - path: /api/shop/checkout
+        method: post
+        intent: charge
+        payment_method: stripe
+        amount: "10.00"
+        currency: USD
+    service_info:
+      categories: [ai-tools, agent-infrastructure, software]
+  acp:
+    version: "2025-09-29"
+    api_base_url: https://aitherium.com/api/shop
+    transports: [https]
+    services: [checkout]
+  ucp:
+    protocol_version: "2026-01-11"
+    services: [shopping]
+    capabilities: [checkout]
+    endpoints:
+      checkout: https://aitherium.com/api/shop/checkout
+  ap2:
+    roles: [merchant]
+    required: false
+  x402:
+    test_mode: true     # live x402 needs a wallet + facilitator: an owner decision

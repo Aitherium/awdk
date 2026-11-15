@@ -207,6 +207,11 @@ def cmd_pair(args: Any) -> int:
         else:
             print(f"    Heartbeat: NOT installed ({auto.get('detail', auto.get('autostart'))});"
                   " run `python -m adk.node_beat` to keep this machine online")
+    # Its files, indexed in Strata as THIS registered node, with no setup of its own
+    # (owner 2026-11-07). --no-autostart skips it like the heartbeat.
+    from adk import file_index
+
+    print(f"    {file_index.summary_line(file_index.install(args))}")
     if result.get("public_url"):
         print(f"    Reachable via {result['public_url']}")
     if not result.get("cert_enrolled"):

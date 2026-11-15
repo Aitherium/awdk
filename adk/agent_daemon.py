@@ -79,12 +79,15 @@ def clear_status() -> None:
 # Process management
 # ---------------------------------------------------------------------------
 
-def spawn_detached(argv: list[str], log_path: Path, env: Optional[dict] = None) -> int:
+def spawn_detached(argv: list[str], log_path: Path, env: Optional[dict] = None,
+                   cwd: Optional[str] = None) -> int:
     """Spawn a fully detached background process; return its pid.
 
     stdout+stderr are redirected to ``log_path`` (append). On Windows the process
     is created detached + in a new process group; on POSIX it starts a new session
-    so it is not killed when the launching shell exits.
+    so it is not killed when the launching shell exits. ``cwd`` is the child's
+    working directory (a project's ``adk run`` finds ``agent.py`` there); None
+    keeps the launcher's.
     """
     _ensure_dirs()
     log_f = open(log_path, "ab")  # noqa: SIM115 — handle is owned by the child
@@ -94,6 +97,8 @@ def spawn_detached(argv: list[str], log_path: Path, env: Optional[dict] = None) 
         "stdin": subprocess.DEVNULL,
         "env": env or dict(os.environ),
     }
+    if cwd:
+        kwargs["cwd"] = cwd
     if sys.platform == "win32":
         kwargs["creationflags"] = _WIN_DETACHED
     else:

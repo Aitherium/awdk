@@ -45,6 +45,79 @@ _PROTOCOL_VERSION = "0.3.0"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Scheduler priority for a delegated turn
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Priorities a caller may ask for, in AitherOS MicroScheduler's vocabulary.
+A2A_PRIORITIES = ("user", "orchestrator", "agent", "faculty", "neuron", "scout",
+                  "background", "batch")
+
+
+def _source_token(value: object, limit: int = 64) -> str:
+    """A caller-supplied name reduced to [A-Za-z0-9:._-] (safe in a log line)."""
+    import re
+
+    return re.sub(r"[^A-Za-z0-9:._-]", "", str(value or ""))[:limit]
+
+
+def a2a_turn_metadata(priority: str | None = None, source: str | None = None,
+                      **extra: object) -> dict:
+    """``message.metadata`` an A2A caller sends so the peer schedules the turn right.
+
+    A surface delegating a PERSON's turn (Discord, awsh, the desk) passes
+    ``priority="user"`` and its own ``source`` (``chat:awdiscord``); background fan-out
+    passes nothing and the peer keeps its own default. An unknown priority is dropped,
+    never forwarded.
+    """
+    md: dict = {k: v for k, v in extra.items() if v not in (None, "")}
+    p = str(priority or "").strip().lower()
+    if p in A2A_PRIORITIES:
+        md["priority"] = p
+    s = _source_token(source)
+    if s:
+        md["source"] = s
+    return md
+
+
+#: Priorities that take the spine's reserved interactive slots. Only a caller whose
+#: signature verified AND is trusted may ask for them (2026-11-12 review: an unsigned
+#: peer could send priority=user, source=desk:awsh and take the owner's slot).
+_INTERACTIVE_PRIORITIES = ("user",)
+
+
+def scheduler_metadata_from_message(message_metadata: object,
+                                    caller: str | None = None,
+                                    trusted: bool = True) -> dict | None:
+    """The scheduler hints for the LLM calls of one inbound ``message/send`` turn.
+
+    Only what the caller asked for: no ``priority`` in ``message.metadata`` means None,
+    and the agent's own ``ADK_SCHEDULER_METADATA`` default applies unchanged. The
+    source keeps the caller's prefix and appends ``:a2a`` (``chat:awdiscord:a2a``):
+    MicroScheduler reserves its interactive slots by source PREFIX, so an ``a2a:``
+    prefix would forfeit the reservation an owner's turn needs. A caller that names no
+    source becomes ``a2a:<caller>``.
+    """
+    md = message_metadata if isinstance(message_metadata, dict) else {}
+    asked = str(md.get("priority") or "").strip().lower()
+    if md.get("human_started") is True:
+        asked = "user"
+    if asked not in A2A_PRIORITIES:
+        return None
+    if not trusted:
+        # An unverified caller keeps its work queued, but never at an interactive
+        # priority and never under a caller-chosen (reserved) source prefix.
+        if asked in _INTERACTIVE_PRIORITIES:
+            asked = "agent"
+        return {"priority": asked, "source": "a2a:" + (_source_token(caller) or "peer")}
+    src = _source_token(md.get("source"))
+    if src:
+        src = src if src.endswith(":a2a") else src + ":a2a"
+    else:
+        src = "a2a:" + (_source_token(caller) or "peer")
+    return {"priority": asked, "source": src}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Data models (Google A2A spec)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -428,7 +501,8 @@ class A2AServer:
         req_id = body.get("id")
 
         if method == "message/send":
-            return await self._handle_message_send(req_id, params)
+            return await self._handle_message_send(req_id, params,
+                                                   caller_trusted=caller_trusted)
         elif method == "tasks/get":
             return self._handle_tasks_get(req_id, params)
         elif method == "tasks/cancel":
@@ -439,7 +513,8 @@ class A2AServer:
         else:
             return _jsonrpc_error(req_id, -32601, f"Method not found: {method}")
 
-    async def _handle_message_send(self, req_id, params: dict) -> dict:
+    async def _handle_message_send(self, req_id, params: dict,
+                                   caller_trusted: bool = False) -> dict:
         """Handle message/send — create or continue a task."""
         message = params.get("message", {})
         task_id = message.get("taskId", "")
@@ -464,6 +539,14 @@ class A2AServer:
         else:
             task = self._tasks.create_task(context_id=context_id)
 
+        # The turn's scheduler priority: what the delegating caller asked for (an
+        # owner's Discord/awsh turn says "user"), carried to every LLM call below and
+        # stated on the task so tasks/get and the subscribe stream show it.
+        sched = scheduler_metadata_from_message(message.get("metadata"),
+                                                trusted=caller_trusted)
+        if sched:
+            task.metadata["scheduling"] = sched
+
         # Record user message
         user_msg = A2AMessage(
             role="user",
@@ -472,7 +555,10 @@ class A2AServer:
             taskId=task.id,
         )
         self._tasks.add_message(task.id, user_msg)
-        self._tasks.update_status(task.id, TaskState.WORKING)
+        self._tasks.update_status(
+            task.id, TaskState.WORKING,
+            message=(f"working at {sched['priority']} priority ({sched['source']})"
+                     if sched else ""))
 
         # Execute agent chat
         try:
@@ -491,7 +577,12 @@ class A2AServer:
                         "content": content,
                     })
 
-            resp = await self._agent.chat(text, history=history or None)
+            if sched:
+                # `metadata` reaches the scheduler call (adk.llm.openai_compat merges it
+                # over ADK_SCHEDULER_METADATA); other providers ignore the kwarg.
+                resp = await self._agent.chat(text, history=history or None, metadata=sched)
+            else:
+                resp = await self._agent.chat(text, history=history or None)
 
             # Record agent response
             agent_msg = A2AMessage(

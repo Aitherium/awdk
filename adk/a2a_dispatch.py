@@ -69,6 +69,8 @@ async def dispatch_to_agent(
     instructions: str = "",
     context: dict = None,
     timeout_seconds: float = _DISPATCH_TIMEOUT_SECONDS,
+    priority: str | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch a task to a single A2A agent via JSON-RPC.
 
@@ -78,6 +80,9 @@ async def dispatch_to_agent(
         instructions: Optional detailed instructions
         context: Optional context dict passed as metadata
         timeout_seconds: Timeout for the request
+        priority / source: scheduler hints merged into the metadata
+            (adk.a2a.a2a_turn_metadata). Fan-out is background work by default:
+            pass ``priority="user"`` only when a person waits on this task.
 
     Returns:
         Dict with keys: status (working/completed/failed), result, error (if failed)
@@ -86,6 +91,9 @@ async def dispatch_to_agent(
         agent_url = agent_url.rstrip("/")
         rpc_url = urljoin(agent_url + "/", "a2a")
 
+        from adk.a2a import a2a_turn_metadata
+
+        metadata = {**(context or {}), **a2a_turn_metadata(priority, source)}
         payload = {
             "jsonrpc": "2.0",
             "id": "dispatch-task",
@@ -93,7 +101,7 @@ async def dispatch_to_agent(
             "params": {
                 "task": task,
                 "instructions": instructions,
-                "metadata": context or {},
+                "metadata": metadata,
             },
         }
 

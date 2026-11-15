@@ -220,7 +220,7 @@ class TestVolunteerResolvePeerId:
                 with pytest.raises(RuntimeError) as exc_info:
                     await _resolve_peer_id()
                 assert "Cannot resolve peer_id" in str(exc_info.value)
-                assert "adk mesh onboard" in str(exc_info.value)
+                assert "adk mesh join" in str(exc_info.value)
 
 
 class TestVolunteerClaimLoop:

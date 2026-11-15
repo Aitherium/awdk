@@ -37,7 +37,7 @@ from typing import Any
 
 __all__ = [
     "ApprovalStore", "get_approval_store", "needs_approval", "decision_for",
-    "set_runtime_gates", "runtime_gates", "call_key",
+    "set_runtime_gates", "runtime_gates", "call_key", "register_arg_gate",
 ]
 
 
@@ -89,6 +89,31 @@ def set_runtime_gates(agent_name: str, tools: Any) -> None:
 def runtime_gates(agent_name: str) -> set[str]:
     with _GATES_LOCK:
         return set(_RUNTIME_GATES.get((agent_name or "").lower(), ()))
+
+
+#: Argument-dependent gates (lowercased tool -> predicate(args) -> True = ask first).
+#: For a tool that is safe for some arguments and not others: ``install_pack`` of a
+#: first-party pack runs, of a third-party one asks. Like a runtime gate it is judged
+#: BEFORE the durable allowlist, so "always allow install_pack" can never pre-approve
+#: installing code nobody vetted. A predicate that raises is treated as "ask".
+_ARG_GATES: dict[str, Any] = {}
+
+
+def register_arg_gate(tool_name: str, predicate: Any) -> None:
+    """Gate ``tool_name`` per call: ask first whenever ``predicate(args)`` is truthy."""
+    with _GATES_LOCK:
+        _ARG_GATES[(tool_name or "").lower()] = predicate
+
+
+def _arg_gated(tool_name: str, args: Any) -> bool:
+    with _GATES_LOCK:
+        pred = _ARG_GATES.get((tool_name or "").lower())
+    if pred is None:
+        return False
+    try:
+        return bool(pred(args if isinstance(args, dict) else {}))
+    except Exception:  # noqa: BLE001 - cannot judge = ask (fail closed)
+        return True
 
 
 # ── Durable allowlist: the owner said "always" to THIS tool ───────────────────
@@ -194,6 +219,8 @@ def needs_approval(agent_name: str, tool_name: str, args: Any = None) -> bool:
     if inner and needs_approval(agent_name, inner):
         return True
     if (tool_name or "").lower() in runtime_gates(agent_name):
+        return True
+    if _arg_gated(tool_name, args):
         return True
     # A durable allow is a HUMAN decision, so it outranks the default and the policy
     # set -- otherwise `adk approvals allow send_email` would silently do nothing for

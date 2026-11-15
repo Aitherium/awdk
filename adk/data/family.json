@@ -1,0 +1,1609 @@
+{
+ "schema": "aither-family/1",
+ "generated_by": "gen_ecosystem.py --emit (from ecosystem.yaml); do not edit",
+ "count": 93,
+ "bricks": [
+  {
+   "id": "awdk",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "Build AI agent fleets — 3 lines, any backend, local or cloud.",
+   "install": "pip install awdk",
+   "module": "adk",
+   "pairs_with": [
+    "AitherConnect",
+    "aitheros",
+    "awask",
+    "awdaemons",
+    "awembed",
+    "awflow",
+    "awm",
+    "awnode",
+    "awpack",
+    "awreport",
+    "awrun",
+    "awskills"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "plugin",
+     "run": "awsh@awsh",
+     "state": "live"
+    },
+    {
+     "harness": "claude-code",
+     "kind": "command",
+     "run": "adk claude setup",
+     "state": "live"
+    },
+    {
+     "harness": "claude-code",
+     "kind": "command",
+     "run": "adk claude doctor",
+     "state": "live"
+    },
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "python -m adk.harnesses.mcp_stdio",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awskills",
+   "status": "public",
+   "kind": "corpus",
+   "tagline": "Portable agent skills — self-contained procedures an agent loads on demand.",
+   "install": "git clone https://github.com/Aitherium/awskills",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awknowledge"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awpack",
+   "status": "public",
+   "kind": "corpus",
+   "tagline": "First-party agent packs — the ones we build, versioned and installable on their own.",
+   "install": "git clone https://github.com/Aitherium/awpack",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awsh",
+    "awskills",
+    "gawbbonet"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awm",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A portable, scoped agent memory.",
+   "install": "pip install awm",
+   "module": "awm",
+   "pairs_with": [
+    "awdk",
+    "awembed",
+    "awgraph",
+    "awpredict"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awm mcp",
+     "state": "live"
+    },
+    {
+     "harness": "claude-code",
+     "kind": "hook",
+     "run": "awm recall --claude-hook",
+     "event": "SessionStart",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "aitheros",
+   "status": "unpublished",
+   "kind": "runtime",
+   "tagline": "One file you run, and the machine has a local AI stack.",
+   "install": null,
+   "module": null,
+   "pairs_with": [
+    "AitherConnect",
+    "awdaemons",
+    "awdesk",
+    "awdk",
+    "awgym",
+    "awnode",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awdaemons",
+   "status": "unpublished",
+   "kind": "runtime",
+   "tagline": "The AitherOS daemons as one file — no Python, no signing, no install.",
+   "install": "see the repo — built by awdk/packaging/build_executable.py --narrow",
+   "module": null,
+   "pairs_with": [
+    "awdesk",
+    "awdk",
+    "awnode",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awdesk",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "Aither World Desk -- the desktop body of AitherOS Online: tray, avatars, decision cards, the Living Desktop as an overlay.",
+   "install": "see the repo -- Electron app (npm install && npx electron .)",
+   "module": null,
+   "pairs_with": [
+    "AitherConnect",
+    "awavatar",
+    "awdaemons",
+    "awdk",
+    "awnode",
+    "awsettings",
+    "awsh",
+    "awsprite",
+    "awtunnel",
+    "awvision",
+    "awvoice"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awnode",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "A lightweight local gateway — bridges your apps to the AI backends you chose.",
+   "install": "pip install awnode",
+   "module": "awnode",
+   "pairs_with": [
+    "aitherkvcache",
+    "awdk",
+    "awspaces"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrun",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "A priority-aware queue and dispatcher for agentic runs and ad-hoc CI builds. It also judges whether the runner pool is big enough for the queue it is draining, and can ask a host to grow it -- reserving capacity is zero-sum, so a saturated pool needs more of it, not a different share of it.",
+   "install": "pip install awrun",
+   "module": "awrun",
+   "pairs_with": [
+    "awbac",
+    "awdit",
+    "awdk",
+    "awevolve",
+    "awflow",
+    "awiam",
+    "awpool",
+    "awrelay",
+    "awrise",
+    "awseal",
+    "awshare"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awpool",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "The free half of the elastic work pool: dispatches public-safe work onto the free GitHub-hosted runners of the public aw* mirrors, so their idle CI minutes become compute. awrun remains the paid/self-hosted lane; this is its free twin.",
+   "install": "pip install awpool",
+   "module": "awpool",
+   "pairs_with": [
+    "awdk",
+    "awnet",
+    "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awgraph",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A semantic code graph for agents — AST + tree-sitter, call graphs.",
+   "install": "pip install awgraph",
+   "module": "awgraph",
+   "pairs_with": [
+    "awdk",
+    "awembed",
+    "awm",
+    "awtoll"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awgraph mcp",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awgit",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Semantic version control on top of git — edit-ops and leases.",
+   "install": "pip install awgit",
+   "module": "awgit",
+   "pairs_with": [
+    "awgraph",
+    "awrelay"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awgit mcp",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awdelphi",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Anonymous multi-round expert panels — a converged answer with a trace.",
+   "install": "pip install awdelphi",
+   "module": "awdelphi",
+   "pairs_with": [
+    "awdk",
+    "awrelay"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awclassify",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Classify any document -- what it is, who may read it, who it is for, what it is about.",
+   "install": "pip install awclassify",
+   "module": "awclassify",
+   "pairs_with": [
+    "awdk",
+    "awkno",
+    "awknowledge"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awdecide",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "One typed-decision contract -- choice / score / bool with a probability -- over a ladder of backends you already run (rules, tiny local models, an LLM's logprobs), fail-closed, with a Brier ledger that resolves every decision against its outcome.",
+   "install": "pip install awdecide",
+   "module": "awdecide",
+   "pairs_with": [
+    "awclassify",
+    "awdk",
+    "awgraph",
+    "awpredict",
+    "awprove",
+    "awrepl",
+    "awtoll"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awdecide mcp",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awtoll",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "What every tool call costs you in context, measured from your own transcripts.",
+   "install": "pip install awtoll",
+   "module": "awtoll",
+   "pairs_with": [
+    "awdk",
+    "awgit",
+    "awgraph"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awseal",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Sign an artifact so a stranger can verify it.",
+   "install": "pip install awseal",
+   "module": "awseal",
+   "pairs_with": [
+    "awdit",
+    "awrena",
+    "awrtifact",
+    "awshare"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awshare",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Publish an artifact and fetch it back verified.",
+   "install": "pip install awshare",
+   "module": "awshare",
+   "pairs_with": [
+    "awclassify",
+    "awrecover",
+    "awrtifact",
+    "awseal"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awsuite",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Your Google Workspace as agent tools, and no write happens without a yes.",
+   "install": "pip install awsuite",
+   "module": "awsuite",
+   "pairs_with": [
+    "awdk",
+    "awpack",
+    "awsh",
+    "awskills"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awdit",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "An append-only audit trail whose gaps are DETECTABLE.",
+   "install": "pip install awdit",
+   "module": "awdit",
+   "pairs_with": [
+    "awbac",
+    "awseal"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awbac",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Role-based access control that fails closed and explains itself.",
+   "install": "pip install awbac",
+   "module": "awbac",
+   "pairs_with": [
+    "awdit"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awiam",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Who is this caller? A directory and session store that fails honestly.",
+   "install": "pip install awiam",
+   "module": "awiam",
+   "pairs_with": [
+    "awbac",
+    "awdit"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awtunnel",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Reach a service that has no public address.",
+   "install": "pip install awtunnel",
+   "module": "awtunnel",
+   "pairs_with": [
+    "awnet",
+    "awnode"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awpermit",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Let an agent through your door with a scope, a spend cap, and someone accountable.",
+   "install": "pip install git+https://github.com/Aitherium/awpermit",
+   "module": "awpermit",
+   "pairs_with": [
+    "awbac",
+    "awdit",
+    "awnest",
+    "awseal"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awnest",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Prove there is a human before you let them into the nest.",
+   "install": "pip install awnest",
+   "module": "awnest",
+   "pairs_with": [
+    "awbac",
+    "awdit",
+    "awdk",
+    "awgit",
+    "awiam",
+    "awnet",
+    "awpermit",
+    "awrelay",
+    "awseal",
+    "awtunnel"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrena",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Put two agents head to head and get a verdict you can check.",
+   "install": "pip install awrena",
+   "module": "awrena",
+   "pairs_with": [
+    "awnboard",
+    "awnest",
+    "awrelay",
+    "awseal"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awnboard",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A front gate you can put in front of anything, and hand someone the key to.",
+   "install": "pip install awnboard",
+   "module": "awnboard",
+   "pairs_with": [
+    "awbac",
+    "awdit",
+    "awdk",
+    "awiam",
+    "awmail",
+    "awnest",
+    "awnet",
+    "awseal",
+    "awshare",
+    "awtunnel"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awcap",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Describe a capability once; call it the same way from CLI, Python, MCP and relay.",
+   "install": "not yet published; builds in-tree",
+   "module": "awcap",
+   "pairs_with": [
+    "awdk",
+    "awflow",
+    "awgit",
+    "awm",
+    "awnode",
+    "awrelay"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awscope",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "One scope graph for work and home, where crossing between them takes consent.",
+   "install": "not yet published; builds in-tree",
+   "module": "awscope",
+   "pairs_with": [
+    "awbac",
+    "awdit",
+    "awnboard",
+    "awseal",
+    "awshare"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awplay",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Stream a game from your own handheld or PC to your phone, over your own network.",
+   "install": "not yet published; builds in-tree",
+   "module": "awplay",
+   "pairs_with": [
+    "awnet",
+    "awnix",
+    "awtunnel"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awnix",
+   "status": "public",
+   "kind": "base",
+   "tagline": "A Linux you can hand to an agent — immutable base, capabilities included.",
+   "install": "podman build -t awnix:latest -f Containerfile .",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awnode",
+    "awrecover"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrecover",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Labelled snapshots with an all-or-nothing restore.",
+   "install": "pip install awrecover",
+   "module": "awrecover",
+   "pairs_with": [
+    "AitherZero",
+    "awnix",
+    "awshare"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awstorage",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Every drive on every node, indexed, classified and diffed -- so you can see what you own before you delete it.",
+   "install": "pip install awstorage",
+   "module": "awstorage",
+   "pairs_with": [
+    "awdit",
+    "awdk",
+    "awgraph",
+    "awm",
+    "awnode",
+    "awrecover",
+    "awrelay",
+    "awrise",
+    "awrtifact",
+    "awseal",
+    "awsh",
+    "awshare"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awsync",
+   "status": "merged",
+   "kind": "tool",
+   "tagline": "Keep one client in step with a platform — and never confuse \"cannot tell\" with \"fine\".",
+   "install": "ships inside AitherConnect",
+   "module": null,
+   "pairs_with": [
+    "awm",
+    "awnode",
+    "awrecover",
+    "awrelay",
+    "awshare",
+    "awtunnel"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrelay",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Portable agent messaging — findings, alerts, coordination.",
+   "install": "pip install awrelay",
+   "module": "awrelay",
+   "pairs_with": [
+    "awdelphi",
+    "awdk",
+    "awgit"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awrelay mcp",
+     "state": "live"
+    },
+    {
+     "harness": "claude-code",
+     "kind": "hook",
+     "run": "awrelay inbox --claude-hook --direct-only",
+     "event": "UserPromptSubmit",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awask",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Your agent asks you a question — and acts on your answer.",
+   "install": "pip install awask",
+   "module": "awask",
+   "pairs_with": [
+    "awdiscord",
+    "awdk",
+    "awmail",
+    "awnest",
+    "awrelay",
+    "awrise",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awmail",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Give an agent an email address — send, and actually receive.",
+   "install": "pip install awmail",
+   "module": "awmail",
+   "pairs_with": [
+    "awdit",
+    "awdk",
+    "awiam",
+    "awnboard",
+    "awnest",
+    "awrelay",
+    "awseal",
+    "awshare"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awdiscord",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Put any agent on Discord as a real bot, with an operator in the loop.",
+   "install": "pip install git+https://github.com/Aitherium/awdiscord.git",
+   "module": "awdiscord",
+   "pairs_with": [
+    "awask",
+    "awdk",
+    "awiam",
+    "awmail",
+    "awrelay"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "mediaforge",
+   "status": "unpublished",
+   "kind": "tool",
+   "tagline": "The creative studio — search the boards, render scenes, keep the character.",
+   "install": "https://mediaforge.aitherium.com",
+   "module": null,
+   "pairs_with": [
+    "AitherConnect",
+    "awdk",
+    "awkit",
+    "awrelay"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awnet",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "The agentic web — agents host a mesh, and agents join one.",
+   "install": "pip install awnet",
+   "module": "awnet",
+   "pairs_with": [
+    "awdk",
+    "awnode",
+    "awrelay",
+    "awswarm",
+    "awwall"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awspaces",
+   "status": "planned",
+   "kind": "runtime",
+   "tagline": "A place, not a page: every human gets a Space -- a hand-made page, files and a companion agent that is theirs -- and Spaces link to Spaces. Early-2000s internet (Neocities, Newgrounds, Neopets, RuneScape) with local-first AI underneath.",
+   "install": "planned -- no package yet",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awiam",
+    "awnboard",
+    "awnode",
+    "awrelay",
+    "awshare",
+    "awsprite",
+    "awstorage"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awswarm",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Run one model too big for any single GPU across a pool of small ones.",
+   "install": "pip install awswarm",
+   "module": "awswarm",
+   "pairs_with": [
+    "awdk",
+    "awnet",
+    "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awcache",
+   "status": "planned",
+   "kind": "runtime",
+   "tagline": "Let a second node skip its prefill because a first node already paid for it.",
+   "install": "builds in-tree -- not on PyPI yet; `pip install awcache` 404s today",
+   "module": null,
+   "pairs_with": [
+    "aitherkvcache",
+    "awnet",
+    "awnode",
+    "awrtifact",
+    "awswarm"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awfind",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A portable search client — query, results, ranking.",
+   "install": "pip install awfind",
+   "module": "awfind",
+   "pairs_with": [
+    "awbrowse",
+    "awdk",
+    "awembed",
+    "awgit",
+    "awgraph",
+    "awindex",
+    "awm",
+    "awsh"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awfind mcp",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awindex",
+   "status": "unpublished",
+   "kind": "tool",
+   "tagline": "A curated, git-backed map of the internet — .aither keywords and trust you can check.",
+   "install": "pip install awindex",
+   "module": "awindex",
+   "pairs_with": [
+    "awbrowse",
+    "awdk",
+    "awfind",
+    "awresearch"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awbrowse",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A portable browser client — navigate, console, network, DOM, screenshot.",
+   "install": "pip install awbrowse",
+   "module": "awbrowse",
+   "pairs_with": [
+    "awdk",
+    "awfind",
+    "awprove",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awprove",
+   "status": "unpublished",
+   "kind": "tool",
+   "tagline": "Drive a page as the real user, check what rendered, and get a test that goes red if it stops being true.",
+   "install": "builds in-tree -- not on PyPI yet; `pip install awprove` 404s today",
+   "module": "awprove",
+   "pairs_with": [
+    "awbrowse",
+    "awdk",
+    "awscreen",
+    "awsh",
+    "awvision"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awdeck",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "An outline becomes a narrated video -- and the file says which voice really spoke it.",
+   "install": "builds in-tree (pip install -e .); not on PyPI yet",
+   "module": "awdeck",
+   "pairs_with": [
+    "awdk",
+    "awrtifact",
+    "awsh",
+    "awvoice",
+    "mediaforge"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awvoice",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Hear and speak — transcribe audio, synthesize a voice.",
+   "install": "pip install awvoice",
+   "module": "awvoice",
+   "pairs_with": [
+    "awask",
+    "awbrowse",
+    "awdeck",
+    "awdesk",
+    "awdk",
+    "awrelay",
+    "awsh"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "hook",
+     "run": "awvoice reply",
+     "event": "Stop",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awvision",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "See an image — describe it, ask it a question, compare two.",
+   "install": "pip install awvision",
+   "module": "awvision",
+   "pairs_with": [
+    "awbrowse",
+    "awcams",
+    "awdesk",
+    "awdk",
+    "awnode",
+    "awscreen",
+    "awtax"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awcams",
+   "status": "unpublished",
+   "kind": "tool",
+   "tagline": "Private camera recording and one-line event summaries, on storage you own.",
+   "install": "builds in-tree -- not on PyPI yet; `pip install awcams` 404s today",
+   "module": "awcams",
+   "pairs_with": [
+    "awnode",
+    "awvision"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awscreen",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "See this machine — what is on screen, and where to click it.",
+   "install": "pip install awscreen",
+   "module": "awscreen",
+   "pairs_with": [
+    "awbrowse",
+    "awdk",
+    "awvision"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awforge",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "A render pipeline you drive from an agent — grade, master, animate, train.",
+   "install": "builds in-tree -- no PyPI package yet; published when it is",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awkit",
+    "awnode",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awkit",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Render an agent panel from a tool result — one component, any React app.",
+   "install": "git clone https://github.com/Aitherium/awkit",
+   "module": null,
+   "pairs_with": [
+    "awbeads",
+    "awdk",
+    "awiam",
+    "awnode"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awbeads",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A spatial canvas for a page — arrange things, connect them, and keep the arrangement.",
+   "install": "git clone https://github.com/Aitherium/awbeads",
+   "module": null,
+   "pairs_with": [
+    "awkit",
+    "awnboard",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awsprite",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Hatch a companion that grows only from what you teach it, then take it home.",
+   "install": "pip install awsprite",
+   "module": "awsprite",
+   "pairs_with": [
+    "awdk",
+    "awm",
+    "awnode",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awbonsai",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "Run a real model in the visitor's own browser — no server round trip, no upload.",
+   "install": "git clone https://github.com/Aitherium/awbonsai",
+   "module": null,
+   "pairs_with": [
+    "AitherConnect",
+    "awasp",
+    "awkit",
+    "awsprite"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awasp",
+   "status": "planned",
+   "kind": "runtime",
+   "tagline": "Stream a multi-gigabyte model onto a device that cannot hold it all at once.",
+   "install": "builds in-tree",
+   "module": null,
+   "pairs_with": [
+    "awbonsai",
+    "awkit",
+    "awrtifact"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awknowledge",
+   "status": "public",
+   "kind": "corpus",
+   "tagline": "How to run a coding agent so the result survives — the laws, with evidence.",
+   "install": "read it — https://aitherium.github.io/awknowledge/",
+   "module": null,
+   "pairs_with": [
+    "awclassify",
+    "awkno",
+    "awskills"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awbrain",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "Your history as a wiki of linked markdown — claims pinned to the evidence.",
+   "install": "pip install awbrain",
+   "module": "awbrain",
+   "pairs_with": [
+    "awdk",
+    "awkno",
+    "awknowledge",
+    "awm",
+    "awnix",
+    "awnode",
+    "awseal"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "gawbbonet",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "GobboNet campaigns with a real agent brain — scoped memory, graph recall.",
+   "install": "pip install gawbbonet",
+   "module": "gawbbonet",
+   "pairs_with": [
+    "awdk",
+    "awm"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "aitherkvcache",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Near-optimal KV cache quantization for LLM inference — sub-byte compression.",
+   "install": "pip install aither-kvcache",
+   "module": null,
+   "pairs_with": [
+    "awnode"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrtifact",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Deliberately chunk artifacts into GitHub release assets — the productized aitherkvcache mirror lane.",
+   "install": "pip install awrtifact",
+   "module": "awrtifact",
+   "pairs_with": [
+    "aitherkvcache",
+    "awdk",
+    "awgit",
+    "awnode",
+    "awrecover",
+    "awseal",
+    "awshare",
+    "awstorage"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "AitherZero",
+   "status": "public",
+   "kind": "corpus",
+   "tagline": "PowerShell 7+ automation framework — numbered, self-describing scripts.",
+   "install": "git clone https://github.com/Aitherium/AitherZero",
+   "module": null,
+   "pairs_with": [
+    "awrecover"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "AitherConnect",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Browser extension — federated AI search, page context, and the Living OS overlay.",
+   "install": "https://chromewebstore.google.com/detail/awconnect/peeojgjhjficedkncdejbfnacooodbak",
+   "module": null,
+   "pairs_with": [
+    "awdk"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awreason",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A portable reasoning client — sessions, phases, thoughts, and the chain that produced the answer.",
+   "install": "pip install awreason",
+   "module": "awreason",
+   "pairs_with": [
+    "awbrowse",
+    "awdk",
+    "awfind",
+    "awm"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrecurse",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Answer a question over a context far larger than the window — recursively, with the trace kept.",
+   "install": "pip install awrecurse",
+   "module": "awrecurse",
+   "pairs_with": [
+    "awembed",
+    "awfind",
+    "awm",
+    "awreason"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awprism",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Turn a failure into ranked hypotheses — and say what would confirm each one.",
+   "install": "pip install awprism",
+   "module": "awprism",
+   "pairs_with": [
+    "awdit",
+    "awgraph",
+    "awreason",
+    "awrepl"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awprism mcp",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awrepl",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "A REPL an agent can actually use — state that survives between turns.",
+   "install": "pip install awrepl",
+   "module": "awrepl",
+   "pairs_with": [
+    "awdk",
+    "awembed",
+    "awnix",
+    "awprism"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awreport",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "File a bug report that has already scrubbed your secrets and collapsed the duplicate.",
+   "install": "pip install awreport",
+   "module": "awreport",
+   "pairs_with": [],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awresearch",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Ask a research question, get a cited report you can check.",
+   "install": "pip install awresearch",
+   "module": "awresearch",
+   "pairs_with": [
+    "awbrowse",
+    "awfind",
+    "awgraph",
+    "awgym",
+    "awreason"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awfocus",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "See, search and steer every Claude session from one command.",
+   "install": "pip install awfocus",
+   "module": "awfocus",
+   "pairs_with": [
+    "awgit",
+    "awgraph",
+    "awm",
+    "awrelay"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "mcp",
+     "run": "awfocus mcp",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awgym",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "An ARC training gym — a game a world model can watch, and six roles that play through it.",
+   "install": "pip install awgym",
+   "module": "awgym",
+   "pairs_with": [
+    "awdk",
+    "awfocus",
+    "awgit",
+    "awgraph",
+    "awm",
+    "awrelay",
+    "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awpredict",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Predict what your environment does next, and how surprised you were.",
+   "install": "pip install git+https://github.com/Aitherium/awpredict.git",
+   "module": "awpredict",
+   "pairs_with": [
+    "awm"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awevolve",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Point an agent at a file and a command that scores it, and let it improve.",
+   "install": "pip install awevolve",
+   "module": "awevolve",
+   "pairs_with": [
+    "awdk",
+    "awgit",
+    "awm",
+    "awpredict",
+    "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awsh",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Your terminal answers you -- type a question where a command would go.",
+   "install": "npm i -g @aitherium/awsh",
+   "module": null,
+   "pairs_with": [
+    "awbrowse",
+    "awdesk",
+    "awdk",
+    "awembed",
+    "awfind",
+    "awrelay",
+    "awvoice"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awlab",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Run one experiment, keep the score, and let a loop decide against it.",
+   "install": "planned -- no package yet (AitherLab.py is 751 lines / 6 imports; the lift is the build)",
+   "module": null,
+   "pairs_with": [
+    "awdata",
+    "awdk",
+    "awevolve",
+    "awrise"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awmine",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Mine what your agents did -- outcomes, lessons and procedures out of the transcripts they left behind.",
+   "install": "pip install git+https://github.com/Aitherium/awmine.git",
+   "module": "awmine",
+   "pairs_with": [
+    "awdata",
+    "awdecide",
+    "awm",
+    "awrise",
+    "awskills",
+    "awtoll"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrise",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Wake an agent on a schedule, let it do one thing, and put it back to sleep.",
+   "install": "pip install awrise",
+   "module": "awrise",
+   "pairs_with": [
+    "awask",
+    "awdecide",
+    "awdesk",
+    "awdk",
+    "awm",
+    "awrelay",
+    "awrun",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awkno",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "The man page for the Aither World — every brick, stack and law, offline.",
+   "install": "pip install awkno",
+   "module": "awkno",
+   "pairs_with": [
+    "awfind",
+    "awm",
+    "awskills"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awwall",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Say what a workload may reach, and watch everything else fail closed.",
+   "install": "pip install awwall",
+   "module": "awwall",
+   "pairs_with": [
+    "awbac",
+    "awdit",
+    "awdk",
+    "awiam",
+    "awnboard",
+    "awnest",
+    "awnet",
+    "awnode",
+    "awtunnel"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awrouter",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "OpenRouter for your own fleet: pick a model backend by cost/latency/ capability, fail over, fit the context window, stream. Standalone, OpenAI-compatible, no Aither-specifics required to be valuable.",
+   "install": "pip install awrouter",
+   "module": "awrouter",
+   "pairs_with": [
+    "awdk",
+    "awnode",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awembed",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Train an embedding model that knows your corpus, and prove it beats the big one.",
+   "install": "pip install awembed",
+   "module": "awembed",
+   "pairs_with": [
+    "awdk",
+    "awfind",
+    "awgraph",
+    "awm",
+    "awrecurse",
+    "awrepl",
+    "awsh",
+    "awskills"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awdata",
+   "status": "planned",
+   "kind": "corpus",
+   "tagline": "Open labelled corpora you can train and measure against, with the code that built them.",
+   "install": "git clone https://github.com/Aitherium/awdata",
+   "module": null,
+   "pairs_with": [
+    "awembed",
+    "awfind",
+    "awgraph",
+    "awgym",
+    "awknowledge"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awmod",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Wire the agent harness you already use into a fleet you already run.",
+   "install": "planned -- no package yet",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awembed",
+    "awgraph",
+    "awm",
+    "awnet",
+    "awpredict",
+    "awrecurse",
+    "awrelay",
+    "awrepl",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awlog",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Ask your logs what is actually failing, instead of grepping them.",
+   "install": "ships with the AitherOS install; run `awlog --help`",
+   "module": null,
+   "pairs_with": [
+    "awgit",
+    "awgraph",
+    "awm",
+    "awrelay"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awtax",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Turn any tax PDF -- returns, W-2, 1099, statements, even scans -- into structured data you can check.",
+   "install": "pip install awtax",
+   "module": "awtax",
+   "pairs_with": [
+    "awdk",
+    "awknowledge",
+    "awpack",
+    "awskills",
+    "awvision"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awflow",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "A deterministic workflow runtime — chain agent calls with journal replay and budget control.",
+   "install": "pip install aitherium-awflow",
+   "module": "awflow",
+   "pairs_with": [
+    "awask",
+    "awdk",
+    "awgraph",
+    "awm",
+    "awrelay",
+    "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awsettings",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Your agent's permissions and config, following you to the next machine.",
+   "install": "pip install awsettings",
+   "module": "awsettings",
+   "pairs_with": [
+    "awdesk",
+    "awdk",
+    "awiam",
+    "awm",
+    "awnix",
+    "awresume",
+    "awseal",
+    "awsh",
+    "awshare"
+   ],
+   "harness_surfaces": [
+    {
+     "harness": "claude-code",
+     "kind": "setting",
+     "run": "awsettings preset apply aitherium-claude",
+     "state": "live"
+    }
+   ]
+  },
+  {
+   "id": "awresume",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "The coding sessions you had open, reopened after the reboot.",
+   "install": "not published yet (pending a public repo)",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awrecover",
+    "awsettings",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awavatar",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "One character spec in, a rigged, animated, multi-style avatar pack out.",
+   "install": "pip install awavatar",
+   "module": "awavatar",
+   "pairs_with": [
+    "awdesk",
+    "awdk",
+    "awrtifact",
+    "awrun",
+    "awsprite"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awsaga",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Start a world from a pack and take one turn the continuity checker can refuse.",
+   "install": "not on PyPI yet (pending publish)",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awnode",
+    "awsprite",
+    "gawbbonet",
+    "mediaforge"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awiris",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Hand it three reference images and get one style card and one critique back.",
+   "install": "not on PyPI yet (pending publish)",
+   "module": null,
+   "pairs_with": [
+    "awdk",
+    "awkit",
+    "awsprite",
+    "mediaforge"
+   ],
+   "harness_surfaces": []
+  }
+ ],
+ "harness": {
+  "name": "awharness",
+  "tagline": "The super agent harness",
+  "status": "partial",
+  "entry_point": "adk harness parts",
+  "what": "One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.",
+  "today": "There is no single install. `pip install awdk` and `npm i -g @aitherium/awsh` are two commands, and each other brick installs on its own line. `adk harness parts` reads this list and reports which parts this machine has, at what version, and the install line for each one it lacks.",
+  "planned": "One install command that brings the composed bricks up together, and one process that starts them. Neither exists; nothing by this name is published.",
+  "composes": [
+   "awdk",
+   "awsh",
+   "awskills",
+   "awm",
+   "awgraph",
+   "awrun",
+   "awrise",
+   "awgit",
+   "awpermit",
+   "awrelay",
+   "awnode"
+  ]
+ }
+}

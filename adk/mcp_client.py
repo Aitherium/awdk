@@ -73,6 +73,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 from dataclasses import dataclass, field
@@ -94,6 +95,14 @@ HANDSHAKE_TIMEOUT = 120.0
 
 CONFIG_ENV = "AITHER_MCP_CONFIG"
 
+#: A server publishing MORE tools than this is exposed as two tools (search +
+#: call) instead of one schema per tool. Measured 2026-11-12: a project
+#: ``.mcp.json`` pointing at the platform gateway registered 1,921 schemas
+#: (about 247k tokens) on the agent, and every turn on a 32k local model failed
+#: with a context overflow before the model saw the question.
+EAGER_MAX_ENV = "AITHER_MCP_EAGER_MAX"
+DEFAULT_EAGER_MAX = 40
+
 
 class MCPClientError(RuntimeError):
     """A user MCP server could not be reached or answered badly."""
@@ -111,6 +120,9 @@ class ServerSpec:
     headers: dict[str, str] = field(default_factory=dict)
     disabled: bool = False
     cwd: str = ""
+    #: Allowlist of the server's own tool names to mount, in this order. Empty =
+    #: every tool the server lists. See :func:`apply_allowlist`.
+    tools: list[str] = field(default_factory=list)
 
     @property
     def transport(self) -> str:
@@ -121,6 +133,47 @@ def _as_str_map(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
     return {str(k): str(v) for k, v in raw.items()}
+
+
+def _as_tool_allowlist(raw: Any, *, source: str, name: str) -> list[str]:
+    """The optional per-server ``"tools": [...]`` allowlist, deduplicated in order.
+
+    Anything that is not a list of non-empty strings is ignored LOUDLY and the
+    server mounts everything: a malformed allowlist must not silently become
+    "no tools", which reads as a server that is down.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(t, str) and t.strip() for t in raw):
+        logger.warning("%s: server %r has a 'tools' allowlist that is not a list of "
+                       "tool names — ignored, every tool is mounted", source, name)
+        return []
+    return list(dict.fromkeys(t.strip() for t in raw))
+
+
+def apply_allowlist(spec: ServerSpec, listed: list[dict]) -> list[dict]:
+    """Keep only the tools ``spec.tools`` names, in the allowlist's order.
+
+    Adopted from Flue's MCP ``tools`` allowlist (Apache-2.0,
+    https://github.com/withastro/flue, guide/mcp.md): a large server costs a
+    small model its whole context, so the agent names the few tools it needs
+    and they mount directly, by name. Without it a server over the eager limit
+    is reached through a search tool and a call tool, which works for any tool
+    but costs a search turn first (measured 2026-11-12 on bonsai2-27b-5090,
+    one question: 3 tool calls with one failure, 4,754 tokens).
+
+    A name the server does not expose raises: a typo must fail loudly, never
+    quietly narrow the tool set to less than the config asked for.
+    """
+    if not spec.tools:
+        return listed
+    by_name = {str(t.get("name") or ""): t for t in listed}
+    missing = [n for n in spec.tools if n not in by_name]
+    if missing:
+        raise MCPClientError(
+            f"'tools' allowlist names {len(missing)} tool(s) the server does not "
+            f"expose: {', '.join(missing)}")
+    return [by_name[n] for n in spec.tools]
 
 
 def parse_config(data: dict, *, source: str = "<memory>") -> dict[str, ServerSpec]:
@@ -165,6 +218,7 @@ def parse_config(data: dict, *, source: str = "<memory>") -> dict[str, ServerSpe
             headers=_as_str_map(raw.get("headers")),
             disabled=bool(raw.get("disabled", False)),
             cwd=str(raw.get("cwd") or ""),
+            tools=_as_tool_allowlist(raw.get("tools"), source=source, name=str(name)),
         )
     return out
 
@@ -587,7 +641,7 @@ class UserMCPManager:
                 client = make_client(spec, self._timeout)
                 await client.start()
                 await client.initialize()
-                raw = await client.list_tools()
+                raw = apply_allowlist(spec, await client.list_tools())
             except Exception as exc:  # noqa: BLE001 - one bad server, not all
                 # BROAD ON PURPOSE. This is somebody else's process: it can
                 # fail in ways no enumerated list predicts, and one server's
@@ -688,6 +742,102 @@ def _make_handler(manager: UserMCPManager, tool: ConnectedTool):
     return _call
 
 
+def eager_max() -> int:
+    try:
+        return max(0, int(os.environ.get(EAGER_MAX_ENV, "") or DEFAULT_EAGER_MAX))
+    except ValueError:
+        return DEFAULT_EAGER_MAX
+
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def rank_tools(tools: list[ConnectedTool], query: str, limit: int = 8) -> list[ConnectedTool]:
+    """The tools that best match ``query`` by name, then description. An empty
+    query lists the first ``limit`` by name."""
+    words = [w for w in _WORD.findall((query or "").lower()) if len(w) > 1]
+    scored: list[tuple[int, str, ConnectedTool]] = []
+    for t in tools:
+        name = t.remote_name.lower()
+        name_words = set(_WORD.findall(name))
+        desc = t.description.lower()
+        score = 0
+        for w in words:
+            if w in name_words:
+                score += 3
+            elif w in name:
+                score += 2
+            elif w in desc:
+                score += 1
+        if score or not words:
+            scored.append((-score, t.remote_name, t))
+    scored.sort(key=lambda row: row[:2])
+    return [row[2] for row in scored[:max(1, int(limit or 8))]]
+
+
+def _register_catalogue_tools(registry, manager: UserMCPManager, server: str,
+                              tools: list[ConnectedTool]) -> int:
+    """Expose one large server as ``mcp__<server>__search_tools`` +
+    ``mcp__<server>__call_tool``. Returns how many tools were registered (0-2)."""
+    by_name = {t.remote_name: t for t in tools}
+    search_name = qualified_name(server, "search_tools")
+    call_name = qualified_name(server, "call_tool")
+    prefix = qualified_name(server, "")
+
+    async def _search(query: str = "", limit: int = 8, **_ignored) -> str:
+        hits = rank_tools(tools, query, limit)
+        return json.dumps({
+            "server": server,
+            "total": len(tools),
+            "count": len(hits),
+            "results": [{"name": t.remote_name, "description": t.description[:400],
+                         "parameters": t.parameters} for t in hits],
+            "next": f"run one with {call_name}(name=..., arguments={{...}})",
+        })
+
+    async def _call(name: str = "", arguments: dict | None = None, **extra) -> str:
+        tool = str(name or "")
+        if tool.startswith(prefix):
+            tool = tool[len(prefix):]
+        if tool not in by_name:
+            return json.dumps({
+                "error": f"no tool named {tool!r} on MCP server {server!r}",
+                "fix": f"find the exact name with {search_name}(query=...)",
+            })
+        if arguments is None and extra:
+            arguments = extra
+        return await manager.call_from_any_loop(server, tool, arguments or {})
+
+    specs = (
+        (_search, search_name,
+         f"Search the {len(tools)} tools MCP server '{server}' offers, by keyword. "
+         f"Returns names, descriptions and argument schemas. Then run one with {call_name}.",
+         {"type": "object",
+          "properties": {"query": {"type": "string", "description": "keywords"},
+                         "limit": {"type": "integer", "description": "how many (default 8)"}},
+          "required": ["query"]}),
+        (_call, call_name,
+         f"Run a tool on MCP server '{server}' by its exact name (find it with {search_name}).",
+         {"type": "object",
+          "properties": {"name": {"type": "string", "description": "tool name"},
+                         "arguments": {"type": "object", "description": "the tool's arguments"}},
+          "required": ["name"]}),
+    )
+    count = 0
+    for fn, tool_name, description, parameters in specs:
+        fn.__name__ = tool_name
+        fn.__doc__ = description
+        try:
+            registry.register(fn, name=tool_name, description=description)
+            registered = getattr(registry, "_tools", {}).get(tool_name)
+            if registered is not None:
+                registered.parameters = parameters
+            count += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp: could not register %s — %s", tool_name, exc)
+    return count
+
+
 def register_user_mcp_tools(agent, *, config: str | Path | None = None,
                             timeout: float = DEFAULT_TIMEOUT) -> int:
     """Register the user's own MCP tools on an agent. Returns how many.
@@ -721,6 +871,19 @@ def register_user_mcp_tools(agent, *, config: str | Path | None = None,
         return 0
 
     count = 0
+    # A server with a catalogue too large for a prompt is searched on demand.
+    limit = eager_max()
+    per_server: dict[str, list[ConnectedTool]] = {}
+    for tool in tools:
+        per_server.setdefault(tool.server, []).append(tool)
+    for server, server_tools in per_server.items():
+        if len(server_tools) > limit:
+            added = _register_catalogue_tools(registry, manager, server, server_tools)
+            count += added
+            logger.info("mcp: %s offers %d tools (more than %s=%d) — registered %d "
+                        "search/call tool(s) instead of every schema",
+                        server, len(server_tools), EAGER_MAX_ENV, limit, added)
+    tools = [t for t in tools if len(per_server[t.server]) <= limit]
     for tool in tools:
         existing = getattr(registry, "_tools", {})
         if tool.name in existing:

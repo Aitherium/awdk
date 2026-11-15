@@ -56,6 +56,7 @@ Deliberate behaviours:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -66,7 +67,6 @@ from adk.decisions.store import (
     CLOSED_STATUSES,
     DecisionCard,
     DecisionStore,
-    is_straggler,
     queue_order,
 )
 
@@ -111,8 +111,27 @@ MONO = "Consolas"
 
 #: The card is wide enough for a full sentence of consequence text without
 #: wrapping every option onto four lines, and narrow enough not to cover a
-#: terminal. Height is computed per card and capped against the screen.
+#: terminal. The HEIGHT is chosen ONCE per session (see ``MAX_HEIGHT``) instead
+#: of measured from each card's content: a frame that grows and shrinks per card
+#: is what made the Next control move out from under the pointer between clicks
+#: (owner, 2026-11-07: "had to manually click the arrow that kept moving").
 WIDTH = 660
+#: Tallest the frame ever gets; on a small screen it is 82% of the display.
+MAX_HEIGHT = 760
+SCREEN_FRACTION = 0.82
+#: Fixed pixel heights of the chrome. Every slot is built once and only its text
+#: changes, so a control keeps its x/y for the life of the window.
+STRIPE_H = 3
+HEADER_H = 44
+FOOTER_H = 30
+ROW_H = 28
+SCROLLBAR_W = 12
+#: Widths (in characters) of the header controls. Fixed so that "List" growing
+#: or "Next" disabling cannot reflow its neighbours.
+CONTROL_WIDTH = {"list": 6, "prev": 3, "next": 3, "pin": 3, "close": 3}
+#: "Not now" is a LOCAL, per-surface hide. It never writes to the store: the card
+#: stays open on every other surface and on this one after the window closes.
+NOT_NOW_SECONDS = 4 * 3600
 #: Rows rendered per expanded context section. The harvester caps at 40; this
 #: caps what is drawn, so one section cannot bury the other five.
 SECTION_ROWS = 12
@@ -212,12 +231,29 @@ class CardWindow:
         self._status_colour: str = MUTED
         self._reply_focused = False
         self._reply_empty = True
-        #: "card" or "explore". The window is one surface with two views rather
-        #: than two windows: a second window for context would have to be found,
-        #: raised and closed separately, which is three more things to do while
-        #: deciding.
-        self._mode = "card"
+        #: "list" (the default), "card" (one card expanded IN PLACE) or
+        #: "explore". One frame, three views -- never a second window.
+        self._mode = "card" if start_id else "list"
         self._context: dict = {}
+        #: Which row the keyboard cursor is on in the list view, by card id.
+        self._cursor_id = ""
+        #: The "Older than N days" group starts collapsed and is only expanded
+        #: by the owner (or by clicking its header).
+        self._older_open = False
+        #: The Needs-you cap; "L" lifts it for this session. Never a silent drop:
+        #: the "N more" row is drawn from the true total either way.
+        self._needs_cap = 5
+        #: "Not now" is a LOCAL hide: id -> time.time() when it comes back. It is
+        #: never written to the store, so the card stays open on every other
+        #: surface -- closing a surface must not look like an answer.
+        self._hidden: dict[str, float] = {}
+        #: The dismissal run, its progress and its Cancel flag. It walks the
+        #: store one audited cancel at a time via after(), so the window stays
+        #: responsive and says how far it has got.
+        self._dismiss_remaining: list = []
+        self._dismiss_total = 0
+        self._dismiss_cancel = False
+        self._dismiss_job = None
         #: Whether the window WANTS to be above everything (on by default; the
         #: pin button owns it). Quiet overrides it for an unpinned window, so a
         #: game started while the card is open is not covered by it.
@@ -237,6 +273,7 @@ class CardWindow:
                     break
         if not self.queue:
             raise RuntimeError("no open cards to show")
+        self._cursor_id = self._mode == "card" and self.card.id or self.queue[0].id
 
         root = tk.Tk()
         self.root = root
@@ -260,10 +297,15 @@ class CardWindow:
         else:
             root.overrideredirect(True)
 
-        self.body_holder = tk.Frame(root, bg=BG)
-        self.body_holder.pack(fill="both", expand=True)
+        # The FRAME is built once. Every later render replaces text inside fixed
+        # slots, so a control keeps its x/y for the life of the window -- the
+        # defect was a per-card geometry() recompute that moved Next between
+        # clicks (owner, 2026-11-07: "the arrow that kept moving").
+        self._build_frame()
+        self._size = self._choose_size()
 
         self._bind_keys()
+        self._place()
         self._render()
         if self._held_reason:
             self._hold_job = root.after(QUIET_POLL_MS, self._release_when_not_quiet)
@@ -276,6 +318,23 @@ class CardWindow:
         if want != self._topmost_applied:
             self.root.attributes("-topmost", want)
             self._topmost_applied = want
+
+    def _toggle_pin(self) -> None:
+        """Keep the window above everything (or stop). Survives quiet.
+
+        The glyph is a FIXED-WIDTH slot like every other control: it changes
+        ``◆``/``◇`` in place, so a pin never moves the buttons beside it.
+        """
+        self._pinned = not self._pinned
+        # Unpin used to be `True if self._pinned else True` -- a no-op that left
+        # the window above everything while saying it was unpinned.
+        self._topmost = self._pinned
+        entry = self._controls.get("pin")
+        if entry is not None:
+            entry["widget"].configure(text="◆" if self._pinned else "◇")
+        self._apply_topmost(is_quiet()[0])
+        self._flash("pinned — stays above everything" if self._pinned
+                    else "unpinned — other windows can cover it", MUTED)
 
     def _release_when_not_quiet(self) -> None:
         """Poll while held; show the window once quiet ends. Never answers anything."""
@@ -308,6 +367,9 @@ class CardWindow:
         Re-reading is what lets one window absorb cards raised while it is up —
         the alternative (snapshot at startup) is how a second window used to get
         spawned for a card that arrived thirty seconds later.
+
+        Cards hidden with "Not now" are filtered HERE, from a local dict -- the
+        store is never told, so the card stays open on every other surface.
         """
         try:
             cards = self.store.list()
@@ -316,6 +378,12 @@ class CardWindow:
         if self._injected:
             known = {c.id for c in cards}
             cards = [c for c in self._injected if c.id not in known] + cards
+        now = time.time()
+        for card_id, until in list(self._hidden.items()):
+            if until <= now:
+                self._hidden.pop(card_id, None)
+        if self._hidden:
+            cards = [c for c in cards if c.id not in self._hidden]
         # One ordering for every surface: credential/blocked asks lead, then
         # urgency; fresh cards before stragglers; oldest first within a tier.
         # Measured 2026-10-07: the queue opened on a 27-day-old card every time.
@@ -345,14 +413,45 @@ class CardWindow:
         root.bind("<Control-e>", lambda _e: (self._close_explore()
                                             if self._mode == "explore"
                                             else self._open_explore()))
-        root.bind("<Control-Right>", lambda _e: self._step(1))
-        root.bind("<Control-Left>", lambda _e: self._step(-1))
+        root.bind("<Control-Right>", lambda _e: (self._move(1), "break")[1])
+        root.bind("<Control-Left>", lambda _e: (self._move(-1), "break")[1])
+        # Arrows and j/k walk the list (and the queue inside an expanded card).
+        for key, delta in (("<Down>", 1), ("<Up>", -1), ("j", 1), ("k", -1)):
+            root.bind(key, lambda _e, d=delta: (self._key_move(d), "break")[1])
+        # n = "Not now": a LOCAL 4h hide that never touches the store.
+        root.bind("n", lambda _e: (self._key_not_now(), "break")[1])
+        # L lifts the Needs-you cap for this session; the true total stays said.
+        root.bind("l", lambda _e: (self._key_show_all(), "break")[1])
         for index in range(1, 10):
             root.bind(str(index), lambda _e, i=index: self._pick_index(i))
 
+    def _key_move(self, delta: int) -> None:
+        if self._typing():
+            return
+        self._move(delta)
+
+    def _key_not_now(self) -> None:
+        if self._typing():
+            return
+        self._not_now()
+
+    def _key_show_all(self) -> None:
+        if self._typing():
+            return
+        self._show_all()
+
     def _on_escape(self, _event=None):
+        """Esc is TWO stages: collapse the card, then close the window.
+
+        Neither stage answers, snoozes or hides a card. The first version
+        destroyed the window on one Esc, which read as "I dealt with it" while
+        the ask was still open.
+        """
         if self._typing():
             self.root.focus_set()          # leave the box, keep the card open
+            return "break"
+        if self._mode != "list":
+            self._show_list()
             return "break"
         self._snooze()
         return "break"
@@ -360,6 +459,11 @@ class CardWindow:
     def _on_return(self, _event=None):
         if self._typing():
             return None                    # a newline in the reply box
+        if self._mode == "list":
+            card = self._cursor_card()
+            if card is not None:
+                self._open_card(card.id)
+            return "break"
         if self._is_credential():
             # A credential card has no recommendation to take; Enter opens
             # its masked field in the desk, the card's one primary action.
@@ -370,39 +474,200 @@ class CardWindow:
 
     # ── layout ────────────────────────────────────────────────────────────────
 
-    def _render(self) -> None:
-        """Rebuild the window for the current card."""
-        for child in self.body_holder.winfo_children():
-            child.destroy()
+    def _choose_size(self) -> tuple[int, int]:
+        """The ONE frame size for this session: 660 x min(760, 82% of the screen).
 
+        Chosen against the SCREEN, never against a card's content. A frame that
+        grew to fit the tallest card and shrank back moved every control below
+        the body between renders -- the Next arrow that kept moving under the
+        pointer (owner, 2026-11-07).
+        """
+        try:
+            screen_h = self.root.winfo_screenheight()
+        except Exception:  # noqa: BLE001 - a withdrawn Tk still answers this
+            screen_h = 1080
+        return WIDTH, max(320, min(MAX_HEIGHT, int(screen_h * SCREEN_FRACTION)))
+
+    def _build_frame(self) -> None:
+        """Build the fixed chrome ONCE: stripe, header slots, body, footer."""
         tk = self.tk
-        card = self.card
-        accent = URGENCY_COLOUR.get(card.urgency, ACCENT)
+        self.body_holder = tk.Frame(self.root, bg=BG)
+        self.body_holder.pack(fill="both", expand=True)
 
         outer = tk.Frame(self.body_holder, bg=EDGE, padx=1, pady=1)
         outer.pack(fill="both", expand=True)
         inner = tk.Frame(outer, bg=BG)
         inner.pack(fill="both", expand=True)
+        self._inner = inner
 
-        self._chrome(inner, card, accent)
-        self._scroll_body(inner, card, accent)
-        self._reply_row(inner, card)
-        self._footer(inner, card)
+        # Urgency stripe: RECOLOURED per card, in the SAME frame -- a critical
+        # card is louder without being a different shape.
+        self.stripe = tk.Frame(inner, bg=ACCENT, height=STRIPE_H)
+        self.stripe.pack(fill="x")
+        self.stripe.pack_propagate(False)
+
+        self._build_header(inner)
+        self._build_footer(inner)
+        self._build_body(inner)
+
+    def _build_header(self, parent) -> None:
+        """Fixed slots: title (clips in place) | count | [List][Prev][Next][Close].
+
+        The controls are created once with fixed character widths and never
+        re-created, so a disable or a changed count cannot move them: that is
+        the whole contract of this header.
+        """
+        tk = self.tk
+        bar = tk.Frame(parent, bg=CHROME, height=HEADER_H, padx=12)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+        bar.grid_propagate(False)
+        bar.columnconfigure(0, weight=1)
+        bar.rowconfigure(0, weight=1)
+
+        self._title = tk.Label(bar, text="", bg=CHROME, fg=TEXT, anchor="w",
+                               font=(UI, 11, "bold"))
+        self._title.grid(row=0, column=0, sticky="ew")
+        self._count = tk.Label(bar, text="", bg=CHROME, fg=MUTED, width=18,
+                               font=(UI, 9), anchor="e")
+        self._count.grid(row=0, column=1, sticky="e", padx=(8, 10))
+
+        controls = tk.Frame(bar, bg=CHROME)
+        controls.grid(row=0, column=2, sticky="e")
+        self._controls: dict[str, dict] = {}
+        for name, glyph, command in (
+            ("list", "List", self._show_list),
+            ("prev", "‹", lambda: self._move(-1)),
+            ("next", "›", lambda: self._move(1)),
+            ("pin", "◇", self._toggle_pin),
+            ("close", "✕", self._snooze),
+        ):
+            widget = tk.Label(controls, text=glyph, width=CONTROL_WIDTH[name],
+                              bg=CHROME, fg=MUTED, font=(UI, 9), cursor="hand2")
+            widget.pack(side="left", padx=(2, 0), fill="y")
+            widget.bind("<Button-1>", lambda _e, n=name: self._control(n))
+            widget.bind("<Enter>", lambda _e, n=name: self._hover(n, True))
+            widget.bind("<Leave>", lambda _e, n=name: self._hover(n, False))
+            self._controls[name] = {"widget": widget, "command": command,
+                                    "glyph": glyph, "enabled": True}
+
+        # Drag by the header: there is no OS frame to grab. The position is
+        # remembered at the END of a drag, never on every motion event.
+        #
+        # The title and count labels fill almost the whole bar (the title is
+        # sticky ew with weight 1), so a click on the header lands on a LABEL,
+        # not the bar -- binding the bar alone left the window impossible to
+        # move (owner, 2026-11-08: "I can't even move them"). The control labels
+        # keep their own click; only the passive text drags.
+        for widget in (bar, self.stripe, self._title, self._count):
+            widget.bind("<Button-1>", self._drag_start)
+            widget.bind("<B1-Motion>", self._drag_move)
+            widget.bind("<ButtonRelease-1>", self._drag_end)
+
+    def _build_footer(self, parent) -> None:
+        """Fixed height. Left = status/timer slot; right = the key hints."""
+        tk = self.tk
+        foot = tk.Frame(parent, bg=CHROME, height=FOOTER_H, padx=12)
+        foot.pack(side="bottom", fill="x")
+        foot.pack_propagate(False)
+        self.countdown = tk.Label(foot, text="", bg=CHROME, fg=MUTED, font=(UI, 8),
+                                  anchor="w")
+        self.countdown.pack(side="left")
+        self._hint = tk.Label(
+            foot, text="↑↓ move · Enter open · 1–9 answer · Esc back",
+            bg=CHROME, fg=MUTED, font=(UI, 8), anchor="e")
+        self._hint.pack(side="right")
+
+    def _build_body(self, parent) -> None:
+        """The ONLY scroll region, with a permanently reserved scrollbar gutter.
+
+        The bar used to pack and unpack itself whenever content crossed the
+        canvas height, narrowing the body by 10px mid-render and reflowing every
+        line under the pointer. It now always occupies its gutter.
+        """
+        tk = self.tk
+        holder = tk.Frame(parent, bg=BG)
+        holder.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, bd=0,
+                           width=WIDTH - SCROLLBAR_W - 6)
+        bar = tk.Scrollbar(holder, orient="vertical", command=canvas.yview,
+                           bg=PANEL, troughcolor=BG, activebackground=EDGE,
+                           relief="flat", bd=0, width=SCROLLBAR_W)
+        bar.pack(side="right", fill="y")      # ALWAYS mapped: the gutter is reserved
+        canvas.pack(side="left", fill="both", expand=True)
+
+        body = tk.Frame(canvas, bg=BG, padx=16, pady=10)
+        window_item = canvas.create_window((0, 0), window=body, anchor="nw",
+                                           width=WIDTH - SCROLLBAR_W - 10)
+        self._canvas = canvas
+        self._scrollbar = bar
+        self._scroll_holder = holder
+        self._content_frame = body
+
+        def resized(event=None):
+            # The embedded frame tracks the canvas WIDTH only (never its height:
+            # height is the content's own). A fixed item id is what keeps the
+            # text from clipping at the gutter when the frame is created at one
+            # width and the canvas settles at another.
+            if event is not None and event.widget is canvas:
+                canvas.itemconfigure(window_item, width=max(1, event.width))
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        body.bind("<Configure>", resized)
+        canvas.bind("<Configure>", resized)
+
+        def wheel(event):
+            try:
+                canvas.yview_scroll(-1 * (event.delta // 120), "units")
+            except Exception:  # noqa: BLE001 - a destroyed canvas must not raise
+                return
+
+        self._wheel = wheel
+        for widget in (canvas, body):
+            widget.bind("<MouseWheel>", wheel)
+
+    def _render(self) -> None:
+        """Repaint the CURRENT view inside the fixed frame.
+
+        NEVER calls geometry(): the frame was sized once in ``_place()``. Every
+        slot here is fixed and only its TEXT changes.
+        """
+        body = self._content_frame
+        for child in body.winfo_children():
+            child.destroy()
+
+        view = self._view()
+        card = self._focus_card()
+        accent = URGENCY_COLOUR.get(card.urgency if card is not None else "normal",
+                                    ACCENT)
+        self.stripe.configure(bg=accent)
+        self._update_header(view, card, accent)
+
         if self._mode == "explore":
-            self._drain_context()
+            self._explore_content(body, self._wheel)
+            if card is not None:
+                self._reply_row(body, card)
+        elif self._mode == "card" and card is not None:
+            self._content(body, card, accent, self._wheel)
+            self._reply_row(body, card)
+        else:
+            self._render_list(body, view)
+        self._reset_scroll()
+        self._update_footer(card)
 
-        self.root.title(f"AitherOS · {KIND_HEADER.get(card.kind, 'DECISION')}")
+        title = (KIND_HEADER.get(card.kind, "DECISION") if card is not None
+                 else "DECISIONS")
+        self.root.title(f"AitherOS · {title}")
         if not self._headless and not self._held_reason:
-            self._place()
-
-            # Never lift or take focus while quiet: a re-render (a new card from
+            # Never lift or focus while quiet: a re-render (a new card from
             # another session, an answer, a steer) used to jump the window back
             # above a full-screen game every time.
             quiet = is_quiet()[0]
             self._apply_topmost(quiet)
             if not quiet:
                 self.root.lift()
-                if card.urgency in ("high", "critical"):
+                if card is not None and card.urgency in ("high", "critical"):
                     self.root.focus_force()
 
         # Always poll, deadline or not. The first version only ticked when the
@@ -412,92 +677,347 @@ class CardWindow:
         # lost-the-race error instead of just closing.
         self._tick()
 
-    def _chrome(self, parent, card, accent) -> None:
-        """Our own title bar: urgency stripe, kind, queue position, pin, close."""
-        tk = self.tk
-        stripe = tk.Frame(parent, bg=accent, height=3)
-        stripe.pack(fill="x")
+    # ── fixed-slot updates ────────────────────────────────────────────────────
 
-        bar = tk.Frame(parent, bg=CHROME, padx=14, pady=8)
-        bar.pack(fill="x")
+    def _focus_card(self) -> Optional[DecisionCard]:
+        """The card the expanded views act on, or None in list mode."""
+        if self._mode == "list" or not self.queue:
+            return None
+        return self.card
 
-        tk.Label(bar, text=KIND_HEADER.get(card.kind, "DECISION NEEDED"),
-                 bg=CHROME, fg=accent, font=(UI, 9, "bold")).pack(side="left")
+    def _view(self) -> dict:
+        """The shared list/ranking partition for the current queue."""
+        from adk.decisions import triage
 
-        if len(self.queue) > 1:
-            tk.Label(bar, text=f"   {self.index + 1} of {len(self.queue)}",
-                     bg=CHROME, fg=MUTED, font=(UI, 9)).pack(side="left")
-            self._chrome_button(bar, "›", lambda: self._step(1), "next card  (Ctrl+→)")
-            self._chrome_button(bar, "‹", lambda: self._step(-1), "previous  (Ctrl+←)")
+        return triage.stale_view(self.queue, cap=self._needs_cap)
 
-        self._chrome_button(bar, "✕", self._snooze, "close — the card stays open  (Esc)")
-        if self._mode == "explore":
-            self._chrome_button(bar, "‹ card", self._close_explore, "back to the decision")
+    def _update_header(self, view: dict, card: Optional[DecisionCard],
+                       accent: str) -> None:
+        """Write the fixed header slots. Nothing here can resize or reflow."""
+        if self._mode == "list":
+            title = "Decisions"
+        elif self._mode == "explore":
+            title = "Context"
         else:
-            self._chrome_button(bar, "⌕ context", self._open_explore,
-                                "explore the evidence behind these facts, live")
-        self._chrome_button(bar, "◆" if self._pinned else "◇", self._toggle_pin,
-                            "keep on top" if not self._pinned else "stop pinning")
-        tk.Label(bar, text=card.id, bg=CHROME, fg=MUTED,
-                 font=(MONO, 9)).pack(side="right", padx=(0, 10))
+            title = KIND_HEADER.get(card.kind if card else "", "DECISION NEEDED")
+        self._title.configure(text=title, fg=accent)
+        self._count.configure(
+            text=f"{view['total_open']} open · {view['needs_you_total']} need you")
+        self._set_control("list", self._mode != "list")
+        self._set_control("prev", bool(view["open"]) and self._mode != "list"
+                          or len(view["open"]) > 1)
+        self._set_control("next", len(view["open"]) > 1)
 
-        # Drag anywhere on the bar — there is no OS frame to grab.
-        for widget in (bar, stripe):
-            widget.bind("<Button-1>", self._drag_start)
-            widget.bind("<B1-Motion>", self._drag_move)
+    def _update_footer(self, card: Optional[DecisionCard]) -> None:
+        if self._status:
+            self.countdown.configure(text=self._status[:160], fg=self._status_colour)
+        elif card is not None:
+            self.countdown.configure(text=_fmt_left(card.seconds_left),
+                                     fg=GOLD if card.deadline is not None else MUTED)
+        else:
+            self.countdown.configure(
+                text=f"{len(self.queue)} open — Enter opens the first",
+                fg=MUTED)
 
-    def _chrome_button(self, parent, glyph: str, command, tooltip: str) -> None:
+    def _set_control(self, name: str, enabled: bool) -> None:
+        """Enable/disable a control IN PLACE: it dims, it never disappears."""
+        entry = self._controls.get(name)
+        if entry is None or entry["enabled"] == bool(enabled):
+            return
+        entry["enabled"] = bool(enabled)
+        entry["widget"].configure(fg=MUTED if enabled else EDGE)
+
+    def _control(self, name: str) -> None:
+        entry = self._controls.get(name)
+        if entry is None or not entry["enabled"]:
+            return
+        if self._typing() and name != "close":
+            return
+        entry["command"]()
+
+    def _hover(self, name: str, inside: bool) -> None:
+        entry = self._controls.get(name)
+        if entry is None:
+            return
+        entry["widget"].configure(
+            bg=EDGE if inside else CHROME,
+            fg=TEXT if inside and entry["enabled"] else
+            (MUTED if entry["enabled"] else EDGE))
+
+    # ── the list view ─────────────────────────────────────────────────────────
+
+    def _render_list(self, body, view: dict) -> None:
+        """Every open card as one fixed-height row, ranked by the store's rule.
+
+        The list is the DEFAULT because "there is no way to list them" was the
+        owner's complaint: the window used to show one card at a time and the
+        only way to see another was to click an arrow, which moved.
+        """
         tk = self.tk
-        button = tk.Label(parent, text=f" {glyph} ", bg=CHROME, fg=MUTED,
-                          font=(UI, 10), cursor="hand2")
-        button.pack(side="right")
-        button.bind("<Button-1>", lambda _e: command())
-        button.bind("<Enter>", lambda _e: (button.configure(fg=TEXT, bg=EDGE),
-                                           self._flash(tooltip, MUTED)))
-        button.bind("<Leave>", lambda _e: button.configure(fg=MUTED, bg=CHROME))
+        wheel = self._wheel
+        ranked = view["open"]
+        self._row_ids = {c.id: i for i, c in enumerate(ranked)}
 
-    def _scroll_body(self, parent, card, accent) -> None:
-        """The card content, in a canvas so a long card scrolls instead of clipping."""
+        if not ranked:
+            tk.Label(body, text="No open cards.", bg=BG, fg=SOFT,
+                     font=(UI, 10), anchor="w").pack(fill="x", pady=6)
+            return
+
+        self._group_label(body, f"Needs you ({view['needs_you_total']})", wheel)
+        if not view["needs_you"]:
+            tk.Label(body, text="  nothing needs you right now", bg=BG, fg=MUTED,
+                     font=(UI, 9), anchor="w").pack(fill="x")
+        for card in view["needs_you"]:
+            self._list_row(body, card, wheel)
+        if view["needs_you_more"]:
+            more = tk.Label(
+                body, text=f"  {view['needs_you_more']} more — press L for the whole "
+                           f"queue (the count above is the true total)",
+                bg=BG, fg=GOLD, font=(UI, 9), anchor="w", cursor="hand2")
+            more.pack(fill="x", pady=(2, 6))
+            more.bind("<Button-1>", lambda _e: self._show_all())
+            more.bind("<MouseWheel>", wheel)
+
+        count = view["older_count"]
+        days = self._stale_days()
+        arrow = "▾" if self._older_open else "▸"
+        head = tk.Label(
+            body,
+            text=f"{arrow}  Older than {days:g} days ({count})"
+                 + ("  ·  collapsed — click to expand" if count and not self._older_open
+                    else ""),
+            bg=BG, fg=MUTED, font=(UI, 9, "bold"), anchor="w", cursor="hand2")
+        head.pack(fill="x", pady=(10, 2))
+        head.bind("<Button-1>", lambda _e: self._toggle_older())
+        head.bind("<MouseWheel>", wheel)
+
+        if count and self._older_open:
+            for card in view["older"]:
+                self._list_row(body, card, wheel)
+            row = tk.Frame(body, bg=BG)
+            row.pack(fill="x", pady=(6, 0))
+            self._plain_button(
+                row, "Dismiss all stale", self._dismiss_all_stale, side="left",
+                hint="cancels each of these in the store, one audited cancel at a "
+                     "time; credential and blocked cards are never eligible")
+            if self._dismiss_remaining or self._dismiss_job is not None:
+                self._plain_button(row, "Cancel", self._cancel_dismiss, side="left",
+                                   hint="stop after the card being cancelled now")
+
+    def _group_label(self, body, text: str, wheel) -> None:
+        label = self.tk.Label(body, text=text, bg=BG, fg=MUTED,
+                              font=(UI, 8, "bold"), anchor="w")
+        label.pack(fill="x", pady=(2, 4))
+        label.bind("<MouseWheel>", wheel)
+
+    def _list_row(self, body, card: DecisionCard, wheel) -> None:
+        """ONE fixed 28px row: urgency dot, title, source, age, recommended key.
+
+        Fixed height and fixed-width trailing slots, so a long title clips in
+        place instead of pushing the row's controls sideways.
+        """
         tk = self.tk
-        holder = tk.Frame(parent, bg=BG)
-        holder.pack(fill="both", expand=True)
+        cursor = card.id == self._cursor_id
+        bg = PANEL if cursor else BG
+        row = tk.Frame(body, bg=bg, height=ROW_H)
+        row.pack(fill="x", pady=(0, 1))
+        row.pack_propagate(False)
 
-        canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, bd=0)
-        canvas.pack(side="left", fill="both", expand=True)
-        bar = tk.Scrollbar(holder, orient="vertical", command=canvas.yview,
-                           bg=PANEL, troughcolor=BG, activebackground=EDGE,
-                           relief="flat", bd=0, width=10)
-        body = tk.Frame(canvas, bg=BG, padx=18, pady=14)
-        window = canvas.create_window((0, 0), window=body, anchor="nw", width=WIDTH - 12)
-        self._canvas = canvas
-        self._scrollbar = bar
-        self._scroll_holder = holder
-        self._content_frame = body
+        urgency = (card.urgency or "normal").strip().lower()
+        dot = tk.Label(row, text="●", bg=bg, fg=URGENCY_COLOUR.get(urgency, ACCENT),
+                       font=(UI, 8), width=2)
+        dot.pack(side="left", fill="y")
 
-        def resized(_event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-            canvas.itemconfigure(window, width=canvas.winfo_width())
-            # The bar appears only when there is something to scroll: a permanent
-            # empty gutter on a short card reads as a broken layout.
-            needed = body.winfo_reqheight() > canvas.winfo_height() + 2
-            if needed and not bar.winfo_ismapped():
-                bar.pack(side="right", fill="y")
-            elif not needed and bar.winfo_ismapped():
-                bar.pack_forget()
+        answer = self._row_answer(row, card, bg)
+        age = tk.Label(row, text=_fmt_age(card.age_seconds), bg=bg, fg=MUTED,
+                       font=(UI, 8), width=8, anchor="e")
+        age.pack(side="right", fill="y", padx=(6, 0))
+        age.bind("<MouseWheel>", wheel)
 
-        body.bind("<Configure>", resized)
-        canvas.bind("<Configure>", resized)
+        source = tk.Label(row, text=self._source_label(card), bg=bg, fg=MUTED,
+                          font=(UI, 8), width=16, anchor="e")
+        source.pack(side="right", fill="y", padx=(6, 0))
+        source.bind("<MouseWheel>", wheel)
 
-        def wheel(event):
-            canvas.yview_scroll(-1 * (event.delta // 120), "units")
+        title = tk.Label(row, text=card.title, bg=bg,
+                         fg=TEXT if cursor else SOFT, font=(UI, 9),
+                         anchor="w")
+        title.pack(side="left", fill="both", expand=True)
 
-        for widget in (canvas, body):
+        for widget in (row, dot, title):
+            widget.bind("<Button-1>", lambda _e, c=card: self._open_card(c.id))
             widget.bind("<MouseWheel>", wheel)
+        if answer is not None:
+            answer.bind("<MouseWheel>", wheel)
 
-        if self._mode == "explore":
-            self._explore_content(body, wheel)
+    def _row_answer(self, parent, card: DecisionCard, bg: str):
+        """The recommended answer, one click, fixed 28px: the row's own Enter."""
+        key = card.recommended_key()
+        text = f"★ {key}" if key else ("Open" if card.kind == "credential" else "Expand")
+        button = self.tk.Label(parent, text=text, bg=bg, fg=ACCENT_DIM if key else MUTED,
+                               font=(UI, 8), width=8, anchor="center", cursor="hand2")
+        button.pack(side="right", fill="y", padx=(6, 0))
+        if key:
+            button.configure(fg=ACCENT)
+            button.bind("<Button-1>",
+                        lambda _e, c=card, k=key: self._answer_card(c, k))
         else:
-            self._content(body, card, accent, wheel)
+            button.bind("<Button-1>", lambda _e, c=card: self._open_card(c.id))
+        return button
+
+    def _source_label(self, card: DecisionCard) -> str:
+        source = card.source
+        name = (source.agent or source.session_id or "").strip()
+        return name[:16]
+
+    def _stale_days(self) -> float:
+        from adk.decisions import store as _store
+
+        return _store.stale_after_seconds() / 86400.0
+
+    def _show_all(self) -> None:
+        if self._typing():
+            return
+        self._needs_cap = len(self.queue) or 5
+        self._status = ""
+        self._render()
+
+    def _toggle_older(self) -> None:
+        self._older_open = not self._older_open
+        self._render()
+
+    def _open_card(self, card_id: str) -> None:
+        """Expand ONE card in place (never a second window)."""
+        self.queue = self._refresh_queue()
+        if not self.queue:
+            self.root.destroy()
+            return
+        self.index = next((i for i, c in enumerate(self.queue) if c.id == card_id),
+                          min(self.index, len(self.queue) - 1))
+        self._cursor_id = card_id
+        self._mode = "card"
+        self._context = {}
+        self._status = ""
+        self._render()
+
+    def _show_list(self) -> None:
+        """Back to the list. Collapsing is NOT answering, snoozing or hiding."""
+        self._mode = "list"
+        self._context = {}
+        self._status = ""
+        self._render()
+
+    # ── "Not now" and "Dismiss all stale" ─────────────────────────────────────
+
+    def _not_now(self) -> None:
+        """"Not now" = a LOCAL 4h hide. Never a store write.
+
+        The card stays open on every other surface and here again after the
+        window closes and reopens, so a surface being in the way can never be
+        mistaken for the owner having answered.
+        """
+        if self._typing():
+            return
+        card = self._focus_card()
+        if card is None and self.queue:
+            card = next((c for c in self.queue if c.id == self._cursor_id),
+                        self.queue[0])
+        if card is None:
+            return
+        self._hidden[card.id] = time.time() + NOT_NOW_SECONDS
+        self._status = (f"“{card.title[:48]}” hidden on THIS surface for 4h — "
+                        f"still open everywhere else")
+        self._status_colour = MUTED
+        self.queue = self._refresh_queue()
+        if not self.queue:
+            self.root.destroy()
+            return
+        self._cursor_id = self.queue[0].id
+        self._mode = "list"
+        self._render()
+
+    def _dismiss_all_stale(self) -> None:
+        """Cancel the stale group ONE audited cancel at a time, with progress.
+
+        A silent bulk delete of the owner's queue is not allowed to exist: this
+        walks the store, names each card, shows "n of N" and offers Cancel.
+        Credential / blocked / blocker cards are not eligible at all.
+        """
+        from adk.decisions.triage import PROTECTED_KINDS
+
+        stale = [c for c in self._view()["older"]
+                 if (c.kind or "").strip().lower() not in PROTECTED_KINDS]
+        if not stale:
+            self._status = "nothing stale to dismiss"
+            self._status_colour = MUTED
+            self._render()
+            return
+        self._dismiss_remaining = list(stale)
+        self._dismiss_total = len(stale)
+        self._dismiss_cancel = False
+        self._status = f"dismissing {len(stale)} stale card(s)… 0 of {len(stale)}"
+        self._status_colour = GOLD
+        self._render()
+        self._dismiss_job = self.root.after(60, self._dismiss_step)
+
+    def _cancel_dismiss(self) -> None:
+        # Take the job BEFORE cancelling: the flag must survive whatever Tk says.
+        job, self._dismiss_job = self._dismiss_job, None
+        if job is not None:
+            # ``suppress``, not ``except: pass``: an already-fired job (ValueError)
+            # or a destroyed interpreter (RuntimeError) means there is nothing to
+            # stop -- and the cancellation below is what the owner asked for, so
+            # it runs either way.
+            with contextlib.suppress(ValueError, RuntimeError):
+                self.root.after_cancel(job)
+        self._dismiss_cancel = True
+        self._finish_dismiss()
+
+    def _reset_scroll(self) -> None:
+        """Back to the top on every view change. No canvas, nothing to reset."""
+        try:
+            self._canvas.yview_moveto(0)
+        except Exception:  # noqa: BLE001 - a destroyed widget during teardown
+            return
+
+    def _dismiss_step(self) -> None:
+        from adk.decisions.store import DecisionError
+
+        self._dismiss_job = None
+        if self._dismiss_cancel or not self._dismiss_remaining:
+            self._finish_dismiss()
+            return
+        card = self._dismiss_remaining.pop(0)
+        done = self._dismiss_total - len(self._dismiss_remaining)
+        try:
+            self.store.cancel(card.id, note="dismissed as stale from the card list",
+                              via="owner")
+            self.handled += 1
+        except DecisionError:
+            # Answered or cancelled on another surface: the card is already off
+            # the queue, which is exactly what "dismiss stale" wanted for it.
+            self.handled += 1
+        except OSError as exc:
+            self._status = f"stopped after {done} of {self._dismiss_total}: {exc}"
+            self._status_colour = RED
+            self._finish_dismiss()
+            return
+        self._status = (f"dismissing {self._dismiss_total} stale card(s)… "
+                        f"{done} of {self._dismiss_total}")
+        self._status_colour = GOLD
+        self.queue = self._refresh_queue()
+        self._render()
+        self._dismiss_job = self.root.after(60, self._dismiss_step)
+
+    def _finish_dismiss(self) -> None:
+        done = self._dismiss_total - len(self._dismiss_remaining)
+        self._dismiss_remaining = []
+        self._dismiss_total = 0
+        self._status = (f"dismissed {done} stale card(s)" if done
+                        else "dismissal cancelled")
+        self._status_colour = MUTED
+        self.queue = self._refresh_queue()
+        self._render()
 
     def _content(self, body, card, accent, wheel) -> None:
         tk = self.tk
@@ -718,7 +1238,6 @@ class CardWindow:
             for child in row["holder"].winfo_children():
                 child.destroy()
             row["open"] = False
-            self._place()
             return
         # Accordion: opening one closes the others. Six sections each capable of
         # forty rows is a scroll, not an explorer — with 2,180 changed files the
@@ -758,11 +1277,9 @@ class CardWindow:
                      wraplength=WIDTH - 90).pack(fill="x", pady=(2, 4))
         row["holder"].pack(fill="x")
         row["open"] = True
-        # Grow to fit what was just revealed. Without this the panel expands
-        # INSIDE a window whose height was computed before the click, so the
-        # rows the owner just opened sit below the bottom edge — an explorer
-        # that hides what you asked it to show.
-        self._place()
+        # The frame is FIXED: what was just revealed scrolls inside it. Growing
+        # the window here is what used to move the header controls. The canvas
+        # scrollregion follows from the <Configure> binding.
 
     def _open_explore(self) -> None:
         """Switch to the context panel and start harvesting in the background."""
@@ -998,75 +1515,51 @@ class CardWindow:
                 side="left", hint="send the text, then take the ★ option",
             )
 
-    def _footer(self, parent, card) -> None:
-        tk = self.tk
-        foot = tk.Frame(parent, bg=CHROME, padx=18, pady=9)
-        foot.pack(fill="x")
-
-        self.countdown = tk.Label(
-            foot, text=(self._status or _fmt_left(card.seconds_left)), bg=CHROME,
-            fg=(self._status_colour if self._status
-                else (GOLD if card.deadline is not None else MUTED)),
-            font=(UI, 8), anchor="w", wraplength=WIDTH - 220, justify="left",
-        )
-        self.countdown.pack(side="left")
-
-        source = card.source
-        where = " · ".join(p for p in (source.agent, source.branch) if p)
-        meta = f"{_fmt_age(card.age_seconds)}" + (f"  ·  {where}" if where else "")
-        if is_straggler(card):
-            meta = "stale  ·  " + meta
-        tk.Label(foot, text=meta, bg=CHROME, fg=MUTED,
-                 font=(UI, 8)).pack(side="right")
-
-        # A resize grip, because a borderless window has no OS edge to drag.
-        grip = tk.Label(parent, text="◢", bg=CHROME, fg=EDGE, font=(UI, 8),
-                        cursor="bottom_right_corner")
-        grip.place(relx=1.0, rely=1.0, anchor="se")
-        grip.bind("<Button-1>", self._resize_start)
-        grip.bind("<B1-Motion>", self._resize_move)
-
     # ── window geometry ───────────────────────────────────────────────────────
 
+    def _pos_path(self):
+        return self.store.path / ".window.pos"
+
+    def _read_position(self) -> Optional[tuple[int, int]]:
+        """The last position the owner dragged this window to, if any."""
+        try:
+            raw = self._pos_path().read_text(encoding="utf-8").strip()
+            x, _, y = raw.partition(",")
+            return int(x), int(y)
+        except (OSError, ValueError):
+            return None
+
     def _place(self) -> None:
-        """Bottom-right for normal cards, centred for the ones that must interrupt."""
+        """Position the frame ONCE: remembered position, else top-right, 24px in.
+
+        Called at init and after a drag. NEVER from ``_render()`` and never with
+        a size computed from a card's content -- that recompute is what moved
+        the controls between cards.
+        """
         root = self.root
-        root.update_idletasks()
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
-        width = WIDTH
-
-        # Size the CANVAS to its content before measuring the window. A canvas
-        # reports its own configured height, not the height of the frame inside
-        # it, so asking the root for its requested size gives tkinter's default
-        # canvas height and the card renders CLIPPED — options cut in half, the
-        # terminal controls off the bottom edge. Measured: 452px for a card that
-        # needs 720.
-        canvas = getattr(self, "_canvas", None)
-        content = getattr(self, "_content_frame", None)
-        if canvas is not None and content is not None:
-            ceiling = int(screen_h * 0.82)
-            overhead = max(0, root.winfo_reqheight() - canvas.winfo_reqheight())
-            canvas.configure(
-                height=max(160, min(content.winfo_reqheight(), ceiling - overhead))
-            )
-            root.update_idletasks()
-
-        # Grow to fit, but never past the screen: a card taller than the display
-        # puts its own buttons off the bottom edge, which is a card that cannot
-        # be answered at all.
-        wanted = root.winfo_reqheight()
-        height = max(320, min(wanted, int(screen_h * 0.82)))
-        if getattr(self, "_manual_size", None):
-            width, height = self._manual_size
-        if self.card.urgency == "critical":
-            x = (screen_w - width) // 2
-            y = max(24, (screen_h - height) // 3)
+        width, height = self._size
+        try:
+            screen_w = root.winfo_screenwidth()
+            screen_h = root.winfo_screenheight()
+        except Exception:  # noqa: BLE001 - a withdrawn root still answers
+            screen_w, screen_h = 1920, 1080
+        remembered = self._read_position()
+        if remembered is None:
+            x = max(0, screen_w - width - 24)
+            y = 24
         else:
-            x = screen_w - width - 24
-            y = max(24, screen_h - height - 72)  # clear of the taskbar
-        root.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
-        root.minsize(420, 300)
+            x, y = remembered
+        x = max(0, min(x, max(0, screen_w - width)))
+        y = max(0, min(y, max(0, screen_h - 60)))
+        root.geometry(f"{width}x{height}+{x}+{y}")
+        root.minsize(320, 240)
+
+    def _save_position(self) -> None:
+        # A read-only or vanished home is not fatal: the remembered corner is a
+        # convenience, and refusing to close over it would cost the owner a window.
+        with contextlib.suppress(Exception):
+            self._pos_path().write_text(
+                f"{self.root.winfo_x()},{self.root.winfo_y()}", encoding="utf-8")
 
     def _drag_start(self, event) -> None:
         self._drag = (event.x_root, event.y_root,
@@ -1076,56 +1569,70 @@ class CardWindow:
         if not getattr(self, "_drag", None):
             return
         start_x, start_y, win_x, win_y = self._drag
+        # Move only: the width/height are never touched here, so the frame
+        # cannot be resized by accident and the header slots cannot reflow.
         self.root.geometry(
             f"+{win_x + event.x_root - start_x}+{win_y + event.y_root - start_y}"
         )
 
-    def _resize_start(self, event) -> None:
-        self._resize = (event.x_root, event.y_root,
-                        self.root.winfo_width(), self.root.winfo_height())
-
-    def _resize_move(self, event) -> None:
-        if not getattr(self, "_resize", None):
-            return
-        start_x, start_y, width, height = self._resize
-        new_w = max(420, width + event.x_root - start_x)
-        new_h = max(300, height + event.y_root - start_y)
-        self._manual_size = (new_w, new_h)
-        self.root.geometry(f"{new_w}x{new_h}")
-
-    def _toggle_pin(self) -> None:
-        self._pinned = not self._pinned
-        # Unpin used to be `True if self._pinned else True` -- a no-op that left
-        # the window above everything while saying it was unpinned.
-        self._topmost = self._pinned
-        self._apply_topmost(is_quiet()[0])
-        self._flash("pinned — stays above everything" if self._pinned
-                    else "unpinned — other windows can cover it", MUTED)
-        self._render()
+    def _drag_end(self, _event=None) -> None:
+        if getattr(self, "_drag", None):
+            self._drag = None
+            self._save_position()
 
     # ── actions ───────────────────────────────────────────────────────────────
 
-    def _step(self, delta: int) -> None:
-        """Walk the queue WITHOUT answering anything."""
+    def _move(self, delta: int) -> None:
+        """Walk the queue WITHOUT answering anything. Clamps; never wraps.
+
+        Wrapping is what made the arrow feel like it moved on its own: at the
+        bottom of the list one more click jumped to the top.
+        """
         self.queue = self._refresh_queue()
         if not self.queue:
             self.root.destroy()
             return
-        self.index = (self.index + delta) % len(self.queue)
+        if self._mode == "list":
+            ranked = self._view()["open"]
+            if not ranked:
+                return
+            here = next((i for i, c in enumerate(ranked) if c.id == self._cursor_id), 0)
+            here = max(0, min(len(ranked) - 1, here + delta))
+            self._cursor_id = ranked[here].id
+            self._render()
+            return
+        here = next((i for i, c in enumerate(self.queue) if c.id == self.card.id),
+                    self.index)
+        self.index = max(0, min(len(self.queue) - 1, here + delta))
+        self._cursor_id = self.card.id
         # The panel is about ONE card's evidence; carrying it to the next card
         # would show the previous card's context under the new card's question.
         self._mode = "card"
         self._context = {}
+        self._status = ""
         self._render()
+
+    def _step(self, delta: int) -> None:
+        self._move(delta)
 
     def _pick_index(self, index: int) -> None:
         if self._typing():
             return
-        if 1 <= index <= len(self.card.options):
-            self._answer(self.card.options[index - 1].key)
+        card = self._cursor_card() if self._mode == "list" else self._focus_card()
+        if card is None:
+            return
+        if 1 <= index <= len(card.options):
+            self._answer_card(card, card.options[index - 1].key,
+                              note=self._reply_text() if self._mode != "list" else "")
+
+    def _cursor_card(self) -> Optional[DecisionCard]:
+        ranked = self._view()["open"]
+        return next((c for c in ranked if c.id == self._cursor_id),
+                    ranked[0] if ranked else None)
 
     def _take_recommended(self) -> None:
-        key = self.card.recommended_key()
+        card = self._focus_card()
+        key = card.recommended_key() if card is not None else ""
         if key:
             self._answer(key)
 
@@ -1133,7 +1640,10 @@ class CardWindow:
         box = getattr(self, "reply", None)
         if box is None or self._reply_empty:
             return ""
-        return box.get("1.0", "end").strip()
+        try:
+            return box.get("1.0", "end").strip()
+        except Exception:  # noqa: BLE001 - a dead widget has no text
+            return ""
 
     def _send(self) -> None:
         """Steer the session with the owner's own words. The card stays open."""
@@ -1166,11 +1676,18 @@ class CardWindow:
         self._take_recommended()
 
     def _answer(self, key: str) -> None:
+        """Answer the card the expanded view is showing."""
+        card = self._focus_card()
+        if card is None:
+            return
+        self._answer_card(card, key, note=self._reply_text())
+
+    def _answer_card(self, card: DecisionCard, key: str, *, note: str = "") -> None:
+        """Answer ONE card, from the list row or the expanded view."""
         from adk.decisions.store import DecisionError
 
-        note = self._reply_text()
         try:
-            self.store.answer(self.card.id, key, note=note, via="popup")
+            self.store.answer(card.id, key, note=note, via="popup")
             self.answered = key
             self.handled += 1
         except DecisionError as exc:
@@ -1178,19 +1695,26 @@ class CardWindow:
             # silently, which would read as "my click worked".
             self._flash(str(exc), RED)
             return
+        self._status = f"answered “{card.title[:48]}” — {key}"
+        self._status_colour = GREEN
         self._advance()
 
     def _dismiss(self) -> None:
         """Close an optionless card for good, rather than leaving it pending."""
         from adk.decisions.store import DecisionError
 
+        card = self._focus_card()
+        if card is None:
+            return
         try:
-            self.store.cancel(self.card.id, note="acknowledged from the card window",
+            self.store.cancel(card.id, note="acknowledged from the card window",
                               via="owner")
             self.handled += 1
         except DecisionError as exc:
             self._flash(str(exc), RED)
             return
+        self._status = f"dismissed “{card.title[:48]}”"
+        self._status_colour = MUTED
         self._advance()
 
     def _rerender_preserving_reply(self) -> None:
@@ -1229,12 +1753,17 @@ class CardWindow:
             return
 
     def _advance(self) -> None:
+        """Move on after an answer: stay in the view the owner was using."""
         self.queue = self._refresh_queue()
         if not self.queue:
             self.root.destroy()
             return
+        if self._mode == "list":
+            self._cursor_id = self.queue[0].id
+            self._render()
+            return
         self.index = min(self.index, len(self.queue) - 1)
-        self._status = ""
+        self._cursor_id = self.card.id
         self._render()
 
     def _focus_terminal(self) -> None:
@@ -1275,10 +1804,10 @@ class CardWindow:
                 ok, why = terminal.focus(pid, hints, raise_on_ui_thread)
             except Exception as exc:  # noqa: BLE001 - reported, never swallowed
                 ok, why = False, f"focusing the terminal failed: {exc}"
-            try:
+            # The card may have closed while we searched; then there is no one
+            # left to tell, and that is not an error.
+            with contextlib.suppress(RuntimeError):
                 self.root.after(0, lambda: self._flash(why, GREEN if ok else GOLD))
-            except RuntimeError:
-                pass  # the card closed while we searched; nothing left to tell
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1359,39 +1888,46 @@ class CardWindow:
             fresh = []
         if fresh and {c.id for c in fresh} != {c.id for c in self.queue}:
             arrived = [c for c in fresh if c.id not in {q.id for q in self.queue}]
-            showing = self.card.id
+            showing = self._cursor_id or (self.card.id if self.queue else "")
             self.queue = fresh
-            self.index = next(
-                (i for i, c in enumerate(fresh) if c.id == showing),
-                min(self.index, len(fresh) - 1),
-            )
+            if self._mode == "card":
+                self.index = next(
+                    (i for i, c in enumerate(fresh) if c.id == showing),
+                    min(self.index, len(fresh) - 1),
+                )
+                self._cursor_id = self.card.id
+            else:
+                self._cursor_id = next(
+                    (c.id for c in fresh if c.id == showing), fresh[0].id)
             if arrived:
                 # Say it rather than silently growing the counter: a card that
                 # arrived behind the one on screen is invisible otherwise.
                 plural = "s" if len(arrived) > 1 else ""
                 self._status = (
                     f"+{len(arrived)} new card{plural} from another session"
-                    f" — Ctrl+→ to see {'them' if plural else 'it'}"
+                    f" — press ↓ / Ctrl+→ to see {'them' if plural else 'it'}"
                 )
                 self._status_colour = GOLD
             # _render() re-arms the tick, so return rather than scheduling a
             # second chain (see the note at the top of this method).
             self._rerender_preserving_reply()
             return
-
-        try:
-            card = self.store.get(self.card.id) or self.card
-        except OSError:
-            # An unreadable store must not close a card window that is showing a
-            # real question. Keep the card on screen and try again next second.
-            card = self.card
-        if card.status in CLOSED_STATUSES:
-            self._advance()
+        if not fresh and not self.queue:
+            self.root.destroy()
             return
-        if not self._status:
-            countdown = getattr(self, "countdown", None)
-            if countdown is not None:
-                countdown.configure(text=_fmt_left(card.seconds_left))
+
+        card = self._focus_card()
+        if card is not None:
+            try:
+                current = self.store.get(card.id) or card
+            except OSError:
+                # An unreadable store must not close a card window that is
+                # showing a real question. Keep it on screen, retry next second.
+                current = card
+            if current.status in CLOSED_STATUSES:
+                self._advance()
+                return
+        self._update_footer(card)
         if not self._headless and not self._held_reason:
             # A game started while the card is open: stop sitting above it
             # (unless pinned), and come back on top when it ends. Never a lift.
@@ -1803,8 +2339,26 @@ def _self_test() -> int:
         joined = "\n".join(rendered)
         if long_fact not in joined:
             problems.append("a long fact was not rendered in full")
-        if "…" in joined or "..." in joined:
-            problems.append("something in the window is still truncated")
+        # The session row shows the REAL terminal tab title, and Windows Terminal
+        # truncates its own titles with an ellipsis before we ever read them
+        # (measured 2026-11-07: "◑ Https://...wave2…"). That string is not card
+        # content and is shown verbatim on purpose -- exempting it keeps this
+        # rule testing OUR truncation instead of the owner's window title.
+        harvested: set[str] = set()
+        with contextlib.suppress(Exception):
+            from adk.decisions import terminal as _terminal
+
+            tab = (_terminal.capabilities(card.source.session_pid,
+                                          card.source.cwd) or {}).get("tab") or ""
+            if tab.strip():
+                harvested.add(tab.strip())
+        truncated = [
+            text for text in rendered
+            if ("…" in text or "..." in text) and text.strip() not in harvested
+        ]
+        if truncated:
+            problems.append(
+                f"something in the window is still truncated: {truncated[0][:80]!r}")
         if card.options[0].label not in joined:
             problems.append("a long option label was not rendered in full")
         if "seventh fact" not in joined:

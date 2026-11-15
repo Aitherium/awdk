@@ -40,6 +40,8 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument("--k", type=int, default=8)
     q.add_argument("--json", action="store_true")
     q.add_argument("--no-live", action="store_true", help="skip the gateway's live search")
+    q.add_argument("--no-refresh", action="store_true",
+                   help="do not rebuild a missing or stale index first")
     q.add_argument("--cwd", default=None)
     c = sub.add_parser("check", help="CD001 stale, CD002 empty probe, CD004 dead source")
     c.add_argument("--max-age", default=f"{int(check_mod.DEFAULT_MAX_AGE_S)}s")
@@ -107,11 +109,17 @@ def main(argv: Optional[list] = None) -> int:
             print(ln)
         return rc
     if args.verb == "query":
-        res = rank.query(args.task, k=args.k, cwd=args.cwd, live=not args.no_live)
+        # A missing or stale index is rebuilt first and its age is always shown:
+        # "0 cards" from an index that does not exist is not an answer.
+        state = index.ensure_fresh(args.cwd, refresh=not args.no_refresh)
+        res = rank.query(args.task, k=args.k, cwd=args.cwd, live=not args.no_live,
+                         merged=state["merged"])
+        res["index"] = {k: state[k] for k in ("age_s", "refreshed", "was", "error")}
         if args.json:
             print(json.dumps(res, indent=2, ensure_ascii=True))
         else:
             _print_cards(res)
+            print(index.describe_age(state))
         return 0 if res["cards"] else 1
     if args.verb == "check":
         try:

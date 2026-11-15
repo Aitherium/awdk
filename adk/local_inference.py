@@ -51,14 +51,14 @@ logger = logging.getLogger("adk.local_inference")
 #   8889  selfhost-bonsai skill
 #   8081  install-bonsai.sh --port 8081 (the port it suggests when 8080 is taken)
 #   8000  bare vllm / adk server
-#   11434 GobboNet's default (any OpenAI-compatible server there)
+#   (11434, the Ollama port, was removed 2026-11-12: Ollama is never a backend here)
 #   1234  LM Studio's local server (OpenAI-compatible; added 2026-09-21 from the
 #         Personal-AI-Router intake -- it was the one desktop engine no ladder here probed)
 #   8199  the awnix image's own local model server (base / ai-full variants)
 #   8089  the appliance variant's llama-server
 # Edit this tuple, not the callers.
 SELFHOST_PORTS: tuple[int, ...] = (
-    8080, 8090, 8092, 8889, 8081, 8000, 11434, 1234, 8199, 8089,
+    8080, 8090, 8092, 8889, 8081, 8000, 1234, 8199, 8089,
 )
 
 
@@ -88,6 +88,62 @@ class LocalInferenceDiscovery:
             f"Local endpoint: {self.endpoint_url} (source: {self.source}, "
             f"model: {self.model})"
         )
+
+
+# The local MicroScheduler (spine). HTTPS ONLY: the spine is a TLS listener, and a
+# plain http:// probe of it hangs or closes the socket and reads as "down" (owner rule
+# 2026-11-12: no fallback to a weaker path). 127.0.0.1, never localhost (::1 refuses).
+SCHEDULER_URLS = ("https://127.0.0.1:8150",)
+
+
+async def _probe_scheduler(scheduler_url: str) -> Optional["LocalInferenceDiscovery"]:
+    """Return a discovery for a MicroScheduler with healthy backends, else None.
+
+    Never raises: a refused, reset or TLS-failed probe is logged at debug and
+    reads as "not here".
+    """
+    logger.debug(f"Probing MicroScheduler at {scheduler_url}")
+    try:
+        async with AsyncClient(timeout=2.0, verify=tls_verify()) as client:
+            resp = await client.get(f"{scheduler_url}/llm/backends/snapshot")
+    except Exception as e:
+        logger.debug(
+            f"MicroScheduler probe failed ({type(e).__name__}): {str(e)[:60]}"
+        )
+        return None
+    if resp.status_code != 200:
+        return None
+    backends = resp.json().get("backends", {})
+    if not backends:
+        logger.debug("MicroScheduler has no healthy backends")
+        return None
+    logger.info(f"MicroScheduler reported {len(backends)} healthy backends")
+    # Route LLM calls through the scheduler; it picks a backend per call.
+    first_backend_name = next(iter(backends.keys()), None)
+    first_backend = backends.get(first_backend_name, {})
+    model = first_backend.get("served_model") or first_backend_name
+    return LocalInferenceDiscovery(
+        found=True,
+        endpoint_url=scheduler_url,
+        model=model,
+        source="microscheduler",
+        details=f"MicroScheduler with {len(backends)} healthy backends",
+    )
+
+
+async def _post_to_scheduler(client, path: str, payload: dict, headers: dict):
+    """POST to the first scheduler URL that accepts a connection (https first).
+
+    Only a transport failure moves on to the next scheme; an HTTP answer of
+    any status is returned as-is. The last transport error is re-raised.
+    """
+    last_error: Exception = ConnectionError("no scheduler URL configured")
+    for base in SCHEDULER_URLS:
+        try:
+            return await client.post(f"{base}{path}", json=payload, headers=headers)
+        except (HTTPError, OSError) as e:
+            last_error = e
+    raise last_error
 
 
 async def _probe_endpoint(
@@ -194,39 +250,15 @@ async def discover_local_endpoint() -> LocalInferenceDiscovery:
             f"AITHER_LOCAL_LLM_URL={env_url} did not respond to health check"
         )
 
-    # 2. Check MicroScheduler (routes to any registered backends, can query models)
-    scheduler_url = "http://127.0.0.1:8150"
-    probed_urls.append(scheduler_url)
-    logger.debug(f"Probing MicroScheduler at {scheduler_url}")
-    try:
-        async with AsyncClient(timeout=2.0, verify=tls_verify()) as client:
-            resp = await client.get(f"{scheduler_url}/llm/backends/snapshot")
-            if resp.status_code == 200:
-                data = resp.json()
-                backends = data.get("backends", {})
-                if backends:
-                    logger.info(
-                        f"MicroScheduler reported {len(backends)} healthy backends"
-                    )
-                    # MicroScheduler is reachable and has backends. Use it as the
-                    # endpoint so LLM calls route through the scheduler.
-                    # The scheduler will pick an available backend for each call.
-                    first_backend_name = next(iter(backends.keys()), None)
-                    first_backend = backends.get(first_backend_name, {})
-                    model = first_backend.get("served_model") or first_backend_name
-                    return LocalInferenceDiscovery(
-                        found=True,
-                        endpoint_url=scheduler_url,
-                        model=model,
-                        source="microscheduler",
-                        details=f"MicroScheduler with {len(backends)} healthy backends",
-                    )
-                logger.debug("MicroScheduler has no healthy backends")
-    except Exception as e:
-        logger.debug(
-            f"MicroScheduler probe failed ({type(e).__name__}): "
-            f"{str(e)[:60]}"
-        )
+    # 2. Check MicroScheduler (routes to any registered backends, can query models).
+    # The fleet spine serves HTTPS only: an http:// request gets an empty reply,
+    # so a fleet host reported "no local endpoint" with the spine up (2026-11-11).
+    # Older installs are plain http. Try https first.
+    for scheduler_url in SCHEDULER_URLS:
+        probed_urls.append(scheduler_url)
+        found = await _probe_scheduler(scheduler_url)
+        if found is not None:
+            return found
 
     # 3. Self-hosted loopback ports (SELFHOST_PORTS). /v1/models must list a
     # model — see _probe_endpoint(require_model=True).
@@ -309,10 +341,8 @@ async def register_with_microscheduler(
             headers["X-Internal-Key"] = internal_key
 
         async with AsyncClient(timeout=timeout, verify=tls_verify()) as client:
-            resp = await client.post(
-                "http://127.0.0.1:8150/llm/backend/register",
-                json=payload,
-                headers=headers,
+            resp = await _post_to_scheduler(
+                client, "/llm/backend/register", payload, headers
             )
 
             if resp.status_code == 200:

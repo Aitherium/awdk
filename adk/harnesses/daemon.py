@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from adk.desk_bridge import get_bridge_url
 from adk.harnesses.character_recall import register as register_character_recall
 from adk.harnesses.manager import ManagerError, SessionManager, default_manager
 from adk.harnesses.models import ProfileError, list_profiles
@@ -692,6 +693,58 @@ def validate_cwd(cwd: str) -> str:
     )
 
 
+SPAWN_PREFLIGHT_ENV = "AITHER_HARNESS_SPAWN_PREFLIGHT"
+
+
+def _spawn_preflight_on(env: Optional[dict] = None) -> bool:
+    env = os.environ if env is None else env
+    return (env.get(SPAWN_PREFLIGHT_ENV) or "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def local_profile_refusal(model_profile: str, env: Optional[dict] = None, check=None) -> str:
+    """Why a session on ``model_profile`` must not start now, or "" when it may.
+
+    Only a LOCAL (bridge) profile whose model the model spine reports as not served
+    is refused; an unreachable spine or an unknown model cannot be judged and starts.
+    ``AITHER_HARNESS_SPAWN_PREFLIGHT=0`` turns the check off.
+    """
+    if not (model_profile or "").strip() or not _spawn_preflight_on(env):
+        return ""
+    if check is None:
+        from adk.harnesses.local_servable import spawn_refusal as check
+    try:
+        return str(check(model_profile) or "")
+    except Exception as exc:  # noqa: BLE001 - a broken preflight never blocks a spawn
+        sys.stderr.write(f"[harness] local-profile preflight failed: {exc}\n")
+        return ""
+
+
+def local_profile_availability(rows: list, env: Optional[dict] = None, annotate=None) -> list:
+    """``/profiles`` rows with ``available`` on each local profile the spine can judge."""
+    if not _spawn_preflight_on(env):
+        return rows
+    if annotate is None:
+        from adk.harnesses.local_servable import annotate_profiles as annotate
+    try:
+        return annotate(rows)
+    except Exception as exc:  # noqa: BLE001 - the list still answers without verdicts
+        sys.stderr.write(f"[harness] local-profile availability failed: {exc}\n")
+        return rows
+
+
+def interrupt_refusal(state: str, transport: str) -> dict[str, str]:
+    """Why ``interrupt`` did nothing, and what stops the session instead."""
+    if state in ("exited", "failed"):
+        reason = f"the session has already ended (state={state})"
+    elif state in ("idle", "ready", "starting"):
+        reason = f"no turn is running to interrupt (state={state})"
+    else:
+        reason = (f"the {transport or 'harness'} transport has no interrupt channel; "
+                  "a running turn cannot be cancelled without ending the session")
+    return {"state": state, "reason": reason,
+            "to_end_it": "DELETE /sessions/{id} (awsh_end) stops the session"}
+
+
 #: Harnesses whose brain is a model THIS box serves (the awdk loop on adk serve).
 LOCAL_MODEL_HARNESSES = ("awdk",)
 MODEL_REQUIRED_ENV = "AITHER_HARNESS_MODEL_REQUIRED"
@@ -983,6 +1036,10 @@ if BaseModel is not None:
         # The universe object this card concerns (``svc:Secrets``, ``platform``).
         # Unrelated to dedupe; an off-grammar value is stored as "".
         subject: str = ""
+        # Generated UI (A2UI v0.9, ``adk.decisions.card_ui``). Every Button must
+        # send ``answer:<an option key>`` of the card it rides on; anything else
+        # is a 422 before the store is touched.
+        ui: Optional[dict[str, Any]] = None
         # provenance — set by the caller that authenticated the raiser
         raised_by: str = ""
         agent: str = ""
@@ -1808,18 +1865,19 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             raw = list_profiles()
         except ProfileError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return {
-            "profiles": [
-                {
-                    "id": name,
-                    "description": p.get("description", ""),
-                    "transport": p.get("transport", ""),
-                    "context_window": p.get("context_window"),
-                    "model": p.get("model", ""),
-                }
-                for name, p in raw.items()
-            ]
-        }
+        rows = [
+            {
+                "id": name,
+                "description": p.get("description", ""),
+                "transport": p.get("transport", ""),
+                "context_window": p.get("context_window"),
+                "model": p.get("model", ""),
+            }
+            for name, p in raw.items()
+        ]
+        # A local (bridge) profile is only real while the active posture serves its
+        # model; say so in the list a caller picks from, not nine seconds into a turn.
+        return {"profiles": local_profile_availability(rows)}
 
     # ── sessions ────────────────────────────────────────────────────────────
 
@@ -1869,6 +1927,13 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     detail=(f"connectors {refused} are never env-injected into a "
                             f"harness child; only {list(ENV_INJECTABLE)} (git/gh)"),
                 )
+        # A LOCAL model profile whose model the active posture does not serve is
+        # refused here, naming the posture note and what IS served (409: the request
+        # is fine, the fleet's current state is not). Not a substitution, not a
+        # posture change -- see adk.harnesses.local_servable.
+        parked = local_profile_refusal(body.model_profile)
+        if parked:
+            raise HTTPException(status_code=409, detail=parked)
         # A relay session that names an agent the roster does not know used to
         # start anyway and answer as aither. Refuse with the roster instead: a
         # wrong name is a typo the caller can fix, a silent fallback is not.
@@ -1884,6 +1949,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     detail=f"unknown agent(s) {unknown}; roster: {', '.join(known)}",
                 )
         fields = body.model_dump(exclude={"skill", "skill_arguments"})
+        # WHO STARTED IT, from the authenticated principal -- CreateSession declares
+        # no such field, so a caller cannot name someone else as the spawner.
+        fields["spawned_by"] = str(principal.id)
         if body.harness == "awdk" and body.agent:
             # adk serve has no identity store, so the roster's persona line is
             # the only way a named agent answers as itself on the local loop.
@@ -2190,6 +2258,16 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             # node_link from a tunnel FRAME field, after the tunnel matched the
             # caller to the USER holding the link (not merely the tenant).
             return text
+        spawned_by = str(getattr(session.config, "spawned_by", "") or "")
+        if spawned_by and spawned_by == str(principal.id):
+            # THE SPAWNER. The principal that started this session chose its harness,
+            # cwd, permission mode, argv and system prompt; typing its task into it
+            # adds no reach it did not already have. Without this a session spawned
+            # with defaults could never be prompted by the agent that spawned it
+            # (measured 2026-11-12: mailbox only, stuck at turn 0), and the only way
+            # through was allow_peer_input=true, which opens the pty to EVERY peer.
+            # Still framed with provenance: the spawner is a peer, not the owner.
+            return frame_peer_text(text, principal.id)
         if not getattr(session.config, "allow_peer_input", False):
             raise HTTPException(
                 status_code=403,
@@ -2841,6 +2919,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         and are never headlined: red has to mean "now".
         """
         from adk.decisions import beam as beam_mod
+        from adk.decisions import surprise_source
         from adk.decisions.liveness import live_waiting_session_ids
         from adk.decisions.store import get_store
 
@@ -2849,6 +2928,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         def snapshot() -> dict[str, Any]:
             cards = get_store().list(status="open")
             now = time.time()
+            # Surprise-bus interrupts join the SAME beam as card-shaped items: one
+            # ranking (beam.ask_rank), never a second list.
+            cards = list(cards) + surprise_source.attention_cards(now=now)
             b = beam_mod.build(cards, now=now, live_session_ids=live_waiting_session_ids())
             fresh = b["fresh"]
             token = hashlib.sha1(
@@ -2857,7 +2939,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             ).hexdigest()[:16]
             items = [{
                 "id": c.id,
-                "key": f"decision:{c.id}",
+                "key": surprise_source.item_key(c),
                 "title": c.title or c.summary or "(untitled)",
                 "kind": c.kind,
                 "urgency": c.urgency,
@@ -2871,7 +2953,8 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 "open": b["open"],
                 "oldest_age_seconds": round(b["oldest_age"], 1),
                 "items": items,
-                "segments": beam_mod.compress(b, now=now, width=width, limit=limit),
+                "segments": surprise_source.rekey(
+                    beam_mod.compress(b, now=now, width=width, limit=limit), fresh),
             }
 
         out = snapshot()
@@ -3169,6 +3252,15 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 )
         return via
 
+    def _require_ui_binds(card: Any) -> None:
+        """422 with every reason when a card's ``ui`` does not bind to its options."""
+        from adk.decisions.card_ui import validate_bindings
+
+        problems = validate_bindings(card)
+        if problems:
+            raise HTTPException(status_code=422,
+                                detail="ui does not bind to this card: " + "; ".join(problems))
+
     def _store_and_notify(card: Any) -> dict[str, Any]:
         """Persist a built card and tell the owner. The tail BOTH raise doors share.
 
@@ -3258,6 +3350,9 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             if (body.subject or "").strip() and hasattr(card, "subject"):
                 card.subject = body.subject.strip()
+            if body.ui is not None:
+                card.ui = dict(body.ui)
+                _require_ui_binds(card)
             return _store_and_notify(card)
 
         kwargs: dict[str, Any] = dict(
@@ -3299,6 +3394,17 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         # where a card is DRAWN, so an older store dropping it loses nothing else.
         if "subject" in _dedupe_fields:
             kwargs["subject"] = (body.subject or "").strip()
+        # A PLAIN card may still carry variables its producer reads back later
+        # (the revenue governor's approved amount) -- without a recipe they map
+        # to no action; they are data, stored verbatim.
+        if body.recipe_vars and "recipe_vars" in _dedupe_fields:
+            kwargs["recipe_vars"] = dict(body.recipe_vars)
+        if body.ui is not None:
+            if "ui" not in _dedupe_fields:
+                raise HTTPException(
+                    status_code=400,
+                    detail="this store build cannot carry card ui; raise without it")
+            kwargs["ui"] = dict(body.ui)
 
         # CREDENTIAL FIELDS ARE OPTIONAL AT THE STORE, AND THIS ROUTE MUST NOT DIE
         # WHEN THEY ARE ABSENT.
@@ -3345,7 +3451,10 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             if _k in _card_fields:
                 kwargs[_k] = _v
 
-        return _store_and_notify(DecisionCard(**kwargs))
+        _card = DecisionCard(**kwargs)
+        if getattr(_card, "ui", None) is not None:
+            _require_ui_binds(_card)
+        return _store_and_notify(_card)
 
     @app.post("/decisions/ask-credential", dependencies=[Depends(auth)])
     def ask_credential_route(body: AskCredential) -> dict[str, Any]:
@@ -4145,7 +4254,19 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     @app.post("/sessions/{session_id}/interrupt", dependencies=[Depends(auth)])
     def interrupt(session_id: str) -> dict[str, Any]:
         try:
-            return {"interrupted": mgr.interrupt(session_id)}
+            done = bool(mgr.interrupt(session_id))
+            out: dict[str, Any] = {"interrupted": done}
+            if not done:
+                # A bare false reads as "wrong id". Say which of the three it was.
+                session = mgr.get_session(session_id)
+                info = session.info()
+                out.update(interrupt_refusal(str(info.get("state") or ""),
+                                             str(info.get("transport") or "")))
+                # A session that TRIED and failed knows why better than the transport.
+                note = str(getattr(session, "interrupt_note", "") or "")
+                if note:
+                    out["reason"] = note
+            return out
         except ManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -4664,10 +4785,15 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     # would convert one bearer into reach over every service on the desk host's
     # loopback, which is a larger hole than the one being closed.
 
-    desk_base = os.environ.get("AWDESK_URL", "http://127.0.0.1:47931").rstrip("/")
+    # This daemon runs ON the desk's host, so it reads the port awdesk actually
+    # bound rather than the constant: %APPDATA%\Desk\bridge-port.txt said 49031 on
+    # 2026-11-07 while every caller knocked on the dead 47931. Resolved per CALL,
+    # not cached here: awdesk's launcher writes that file and both start at logon
+    # with no ordering, so a value read at import can be the previous boot's port.
     desk_surfaces = ("overlay", "app")
 
-    def _desk_call(method: str, path: str, body: Any = None) -> dict[str, Any]:
+    def _desk_call(method: str, path: str, body: Any = None,
+                   timeout: float = 60.0) -> dict[str, Any]:
         """One hop to the desk bridge, carrying this daemon's own bearer.
 
         Never raises: a desk that is not running is a NORMAL state (the owner
@@ -4676,6 +4802,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         import urllib.error  # noqa: PLC0415
         import urllib.request  # noqa: PLC0415
 
+        desk_base = get_bridge_url()
         url = f"{desk_base}{path}"
         data = None
         headers = {"accept": "application/json"}
@@ -4687,7 +4814,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             headers["content-type"] = "application/json"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
                 raw = resp.read().decode("utf-8", "replace")
                 status = resp.status
         except urllib.error.HTTPError as exc:
@@ -4742,6 +4869,48 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                        f"expected one of {list(desk_surfaces)}",
             )
         return _desk_call("POST", f"/desktop/{surface}")
+
+    # The rest of what the gateway's awdesk_* tools ask the desk (2026-11-09). The
+    # fleet cannot reach the desk itself: awdesk binds 127.0.0.1 only, and from
+    # a podman container host.docker.internal reaches 0.0.0.0 listeners like this
+    # daemon's but REFUSES the desk's (measured from aitheros-mcpgateway: :8362
+    # 200, :47931 and :49031 refused). So the gateway goes through these routes,
+    # holding a bearer scoped to /desk (mint_scoped_token), never the root one.
+    #: desk fleet action -> seconds the desk may take (fleet-control.cjs TIMEOUT_MS).
+    #: A segment outside this table is never forwarded.
+    desk_fleet_actions = {
+        "gpu-sleep": 300.0, "gpu-wake": 300.0, "inference-status": 300.0,
+        "inference-on": 3960.0, "inference-dgx": 2460.0, "inference-off": 2460.0,
+    }
+
+    @app.get("/desk/commands", dependencies=[Depends(auth)])
+    def desk_commands() -> dict[str, Any]:
+        """The desk's command palette rows (the tray and Ctrl+K list)."""
+        return _desk_call("GET", "/commands", timeout=15.0)
+
+    @app.post("/desk/commands/run", dependencies=[Depends(auth)])
+    def desk_commands_run(body: dict[str, Any]) -> dict[str, Any]:
+        """Run ONE palette row by id. Only ``id`` and ``arg`` are forwarded."""
+        cid = str((body or {}).get("id") or "").strip()
+        if not cid:
+            raise HTTPException(status_code=400, detail="id is required")
+        out: dict[str, Any] = {"id": cid}
+        arg = (body or {}).get("arg")
+        if arg not in (None, ""):
+            out["arg"] = str(arg)
+        return _desk_call("POST", "/commands/run", out, timeout=15.0)
+
+    @app.post("/desk/fleet/{action}", dependencies=[Depends(auth)])
+    def desk_fleet_action(action: str) -> dict[str, Any]:
+        """One desk fleet verb (GPU sleep/wake, inference modes). VALIDATED."""
+        limit = desk_fleet_actions.get(action)
+        if limit is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown desk fleet action {action!r}; "
+                       f"expected one of {sorted(desk_fleet_actions)}",
+            )
+        return _desk_call("POST", f"/fleet/{action}", timeout=limit)
 
     @app.get("/rooms", dependencies=[Depends(auth)])
     def list_rooms() -> dict[str, Any]:
@@ -5056,6 +5225,11 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     # The host posture (shop / after / game / auto), for the gateway and the phone;
     # the set is owner-gated the same way (adk.harnesses.posture_routes).
     mount_posture(app, auth, owner_verifier)
+    # The Windows desktop tools (adk.desktop.tools.DESKTOP_TOOLS), for the gateway's
+    # mcp_desktop proxy; write-class tools act only with confirm=true.
+    from adk.harnesses.desktop_routes import mount as mount_desktop
+
+    mount_desktop(app, auth)
 
     return app
 

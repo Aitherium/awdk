@@ -17,5 +17,6 @@ public class BootReceiver extends BroadcastReceiver {
         if (cfg.workerOn()) WorkerService.sync(c); // "Help my fleet", when the owner left it on
         ShieldVpnService.sync(c); // Family Shield, when the household turned it on (arms its watch)
         DutyService.sync(c); // on duty for approvals, when this phone's guardian left it on
+        FileIndexJob.sync(c); // "Index my files in Strata", when the owner left it on
     }
 }

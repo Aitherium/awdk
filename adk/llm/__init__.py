@@ -27,6 +27,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger("adk.llm")
 
 
+def __getattr__(name):
+    # Re-exported from openai_compat on first access (PEP 562): that module needs
+    # httpx at import, and httpx is a third of the 150 ms cold-start budget the
+    # stranger-install gate holds ``import adk`` to.
+    if name in ("LLMBackendUnreachable", "backend_unreachable_message"):
+        from . import openai_compat
+
+        value = getattr(openai_compat, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _onboarding_menu() -> str:
     """Guided-backend menu for no-backend errors; never let import issues mask
     the original ConnectionError."""
@@ -38,6 +51,8 @@ def _onboarding_menu() -> str:
 
 __all__ = [
     "DegenerationDetector",
+    "LLMBackendUnreachable",
+    "backend_unreachable_message",
     "LLMProvider",
     "LLMResponse",
     "LLMRouter",
@@ -640,8 +655,14 @@ class LLMRouter:
         from adk._tls import tls_verify
         from adk.config import load_saved_config
 
-        # Check env var first, then saved config
-        desktop_url = os.environ.get("AITHER_CORE_LLM_URL", "")
+        from adk.core.model import INTERACTIVE_MODELS, spine_url_from_env
+
+        # Check env first (AITHER_CORE_LLM_URL, or AITHER_MICROSCHEDULER_URL /
+        # AITHER_LOCAL_LLM_URL when they name the spine), then saved config. Local
+        # first: a configured spine is tried before any scan or key. The daemon
+        # (adk.server) sets AITHER_LOCAL_LLM_URL to this host's spine when nothing is
+        # configured; the library itself does not dial a spine nobody configured.
+        desktop_url = os.environ.get("AITHER_CORE_LLM_URL", "") or spine_url_from_env()
         default_model = self._model or ""
         if not desktop_url:
             try:
@@ -659,6 +680,11 @@ class LLMRouter:
             return None
 
         desktop_url = desktop_url.rstrip("/")
+        # The spine speaks TLS only; plain http:// into it hangs (owner rule: HTTPS only).
+        if desktop_url.startswith("http://") and (
+            ":8150" in desktop_url or "microscheduler" in desktop_url
+        ):
+            desktop_url = "https://" + desktop_url[len("http://"):]
         if not desktop_url.endswith("/v1"):
             desktop_url = f"{desktop_url}/v1"
 
@@ -681,8 +707,13 @@ class LLMRouter:
             if await p.health_check():
                 try:
                     models = await p.list_models()
-                    if models and not self._model:
-                        p.default_model = models[0]
+                    if models and not p.default_model:
+                        # Interactive ladder, all local: never models[0], which can be a
+                        # paid cloud route the spine also lists.
+                        p.default_model = next(
+                            (m for m in INTERACTIVE_MODELS if m in models),
+                            "aither-orchestrator",
+                        )
                 except Exception:
                     pass
                 logger.info("Connected to desktop MicroScheduler at %s (model: %s)", desktop_url, p.default_model)
@@ -835,7 +866,8 @@ class LLMRouter:
         """Try cloud API keys from Config (populated by provider_keys.json).
 
         Returns the first available cloud provider, preferring the order:
-        Anthropic → OpenAI → DeepSeek (matches the quality tier ordering).
+        Anthropic → OpenAI → Moonshot. DeepSeek cloud is never auto-picked; it is
+        reachable only as an explicit backend.
         """
         import os
         if self._config:
@@ -848,15 +880,15 @@ class LLMRouter:
                     "openai", base_url=self._config.openai_base_url,
                     api_key=self._config.openai_api_key,
                 )
-            if self._config.deepseek_api_key:
-                self._provider_name = "deepseek"
-                return self._create_provider("deepseek", api_key=self._config.deepseek_api_key)
+            # DeepSeek cloud is never auto-picked (owner 2026-11-12: the account
+            # answers 402); name it with --backend deepseek to use it.
             if self._config.moonshot_api_key:
                 self._provider_name = "moonshot"
                 return self._create_provider("moonshot", api_key=self._config.moonshot_api_key)
 
         # Fallback: env vars
-        for name, env in [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY"), ("deepseek", "DEEPSEEK_API_KEY"), ("moonshot", "MOONSHOT_API_KEY")]:
+        for name, env in [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY"),
+                          ("moonshot", "MOONSHOT_API_KEY")]:
             key = os.getenv(env, "")
             if key:
                 self._provider_name = name
@@ -1026,43 +1058,41 @@ class LLMRouter:
             except Exception:
                 logger.debug("Gateway not reachable, trying cloud API keys")
 
-        # 4. Cloud API keys (Anthropic/OpenAI direct)
-        if self._config:
-            if self._config.anthropic_api_key:
+        # 4. Cloud API keys (Anthropic/OpenAI/Moonshot) -- ONLY with ADK_ALLOW_PAID_CLOUD=1
+        # (owner 2026-11-12: a key on disk must never route a turn to a paid API;
+        # `adk setup --mode cloud` is the other explicit way in, above).
+        if (os.getenv("ADK_ALLOW_PAID_CLOUD") or "").strip().lower() in ("1", "true", "yes", "on"):
+            if self._config:
+                if self._config.anthropic_api_key:
+                    self._provider_name = "anthropic"
+                    return self._create_provider(
+                        "anthropic", api_key=self._config.anthropic_api_key
+                    )
+                if self._config.openai_api_key:
+                    self._provider_name = "openai"
+                    return self._create_provider(
+                        "openai",
+                        base_url=self._config.openai_base_url,
+                        api_key=self._config.openai_api_key,
+                    )
+
+            if os.getenv("ANTHROPIC_API_KEY"):
                 self._provider_name = "anthropic"
-                return self._create_provider(
-                    "anthropic", api_key=self._config.anthropic_api_key
-                )
-            if self._config.openai_api_key:
+                return self._create_provider("anthropic", api_key=os.getenv("ANTHROPIC_API_KEY"))
+            if os.getenv("OPENAI_API_KEY"):
                 self._provider_name = "openai"
                 return self._create_provider(
                     "openai",
-                    base_url=self._config.openai_base_url,
-                    api_key=self._config.openai_api_key,
+                    base_url=os.getenv("OPENAI_BASE_URL"),
+                    api_key=os.getenv("OPENAI_API_KEY"),
                 )
-
-        if os.getenv("ANTHROPIC_API_KEY"):
-            self._provider_name = "anthropic"
-            return self._create_provider("anthropic", api_key=os.getenv("ANTHROPIC_API_KEY"))
-        if os.getenv("OPENAI_API_KEY"):
-            self._provider_name = "openai"
-            return self._create_provider(
-                "openai",
-                base_url=os.getenv("OPENAI_BASE_URL"),
-                api_key=os.getenv("OPENAI_API_KEY"),
-            )
-        if os.getenv("DEEPSEEK_API_KEY"):
-            self._provider_name = "deepseek"
-            return self._create_provider("deepseek", api_key=os.getenv("DEEPSEEK_API_KEY"))
-        if self._config and self._config.deepseek_api_key:
-            self._provider_name = "deepseek"
-            return self._create_provider("deepseek", api_key=self._config.deepseek_api_key)
-        if os.getenv("MOONSHOT_API_KEY"):
-            self._provider_name = "moonshot"
-            return self._create_provider("moonshot", api_key=os.getenv("MOONSHOT_API_KEY"))
-        if self._config and self._config.moonshot_api_key:
-            self._provider_name = "moonshot"
-            return self._create_provider("moonshot", api_key=self._config.moonshot_api_key)
+            # DeepSeek cloud: explicit --backend deepseek only (never from a key in the env).
+            if os.getenv("MOONSHOT_API_KEY"):
+                self._provider_name = "moonshot"
+                return self._create_provider("moonshot", api_key=os.getenv("MOONSHOT_API_KEY"))
+            if self._config and self._config.moonshot_api_key:
+                self._provider_name = "moonshot"
+                return self._create_provider("moonshot", api_key=self._config.moonshot_api_key)
 
         # 5. PicoLM — edge inference (pure C, zero dependencies)
         picolm_binary = os.getenv("PICOLM_BINARY", "")

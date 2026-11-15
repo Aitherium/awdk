@@ -53,7 +53,6 @@ guarded socket layer and exits 0 only when the guard refuses the dial.
 
 from __future__ import annotations
 
-import argparse
 import errno
 import ipaddress
 import json
@@ -698,6 +697,8 @@ def _probe_sealed(enf: "_air_gap.AirGapEnforcer", as_json: bool) -> int:
 
 
 def main(argv: Optional[list] = None) -> int:
+    import argparse
+
     ap = argparse.ArgumentParser(prog="python -m adk.compliance.egress_guard",
                                  description=__doc__.split("\n\n")[0])
     g = ap.add_mutually_exclusive_group(required=True)

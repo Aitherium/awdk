@@ -455,6 +455,8 @@ def cmd_list(args: argparse.Namespace, store: DecisionStore) -> int:
     status = None if args.all else STATUS_OPEN
     cards = store.list(status=status, session_id=args.session or "",
                        order=getattr(args, "order", "age") or "age")
+    if getattr(args, "group", False):
+        return _print_grouped(cards, as_json=args.json)
     if args.json:
         print(json.dumps([c.to_dict() for c in cards], indent=2))
         return 0
@@ -468,6 +470,42 @@ def cmd_list(args: argparse.Namespace, store: DecisionStore) -> int:
         print()
         print(f"  {render_summary(cards)}")
         print("  answer with:  adk decide answer <id> <option>")
+    return 0
+
+
+def _print_grouped(cards: list[DecisionCard], *, as_json: bool = False) -> int:
+    """``list --group``: the SAME "needs you / older" split the window shows."""
+    from adk.decisions import store as _store
+    from adk.decisions import triage as _triage
+
+    view = _triage.stale_view(cards)
+    if as_json:
+        print(json.dumps({
+            "needs_you": [c.to_dict() for c in view["needs_you"]],
+            "needs_you_total": view["needs_you_total"],
+            "needs_you_more": view["needs_you_more"],
+            "older": [c.to_dict() for c in view["older"]],
+            "older_count": view["older_count"],
+            "total_open": view["total_open"],
+        }, indent=2))
+        return 0
+    colour = colour_enabled(sys.stdout)
+    if not view["total_open"]:
+        print("no decisions waiting")
+        return 0
+    print(f"Needs you ({view['needs_you_total']})")
+    for card in view["needs_you"]:
+        print("  " + render_row(card, colour=colour))
+    if view["needs_you_more"]:
+        print(f"  ... {view['needs_you_more']} more "
+              f"(adk decide list --all --order queue)")
+    days = _store.stale_after_seconds() / 86400
+    print()
+    print(f"Older than {days:g} days ({view['older_count']}, collapsed)")
+    for card in view["older"]:
+        print("  " + render_row(card, colour=colour))
+    if view["older_count"]:
+        print("  dismiss with:  adk decide sweep --stale --apply")
     return 0
 
 
@@ -686,6 +724,10 @@ def cmd_watch(args: argparse.Namespace, store: DecisionStore) -> int:
 
 
 def cmd_sweep(args: argparse.Namespace, store: DecisionStore) -> int:
+    if getattr(args, "stale", False):
+        return _sweep_stale(store, apply=bool(getattr(args, "apply", False)),
+                            max_age_h=float(getattr(args, "max_age_h", 24.0) or 24.0),
+                            as_json=bool(getattr(args, "json", False)))
     try:
         keep = parse_duration(args.keep)
     except ValueError as exc:
@@ -701,6 +743,38 @@ def cmd_sweep(args: argparse.Namespace, store: DecisionStore) -> int:
     busy = getattr(store, "last_sweep_busy", 0)
     tail = f"; {busy} busy, left for next time" if busy else ""
     print(f"swept {removed} closed card(s) older than {args.keep}{where}{tail}")
+    return 0
+
+
+def _sweep_stale(store: DecisionStore, *, apply: bool, max_age_h: float,
+                 as_json: bool = False) -> int:
+    """Retire open cards whose raising session is gone and which nobody waits on.
+
+    Dry by default ON PURPOSE: this closes questions, so a bare ``--stale`` must
+    only ever print what it would do. ``--apply`` is the audited pass the hourly
+    host task runs. Credential, blocked and blocker cards are never eligible --
+    ``retire_stale`` enforces that, this only reports it.
+    """
+    try:
+        cards = store.retire_stale(max_age_h=max_age_h, dry_run=not apply)
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if as_json:
+        print(json.dumps({
+            "applied": apply,
+            "max_age_h": max_age_h,
+            "cards": [c.to_dict() for c in cards],
+        }, indent=2))
+        return 0
+    verb = "retired" if apply else "would retire"
+    print(f"{verb} {len(cards)} open card(s) whose session is gone "
+          f"(older than {max_age_h:g}h)")
+    for card in cards:
+        reason = card.retire_reason or ""
+        print(f"  {card.id}  {card.title[:60]}  — {reason}")
+    if cards and not apply:
+        print("  apply with:  adk decide sweep --stale --apply")
     return 0
 
 
@@ -977,6 +1051,9 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--order", default="age", choices=("age", "queue"),
                          help="age: oldest first; queue: the shared rank "
                               "(credential/blocked, urgency, age)")
+    listing.add_argument("--group", action="store_true",
+                         help="group as Needs you / Older than 7 days, exactly as "
+                              "the window, awdesk, Fairy and Alt+Space do")
     listing.add_argument("--json", action="store_true")
 
     show = sub.add_parser("show", help="one card in full")
@@ -1048,6 +1125,15 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument(
         "--archive", default=None, metavar="DIR",
         help="zip each swept card into DIR/cards-YYYY-MM.zip before removing it (reversible)")
+    sweep.add_argument(
+        "--stale", action="store_true",
+        help="instead of deleting closed cards, RETIRE open cards whose raising "
+             "session is gone and which nobody is waiting on; dry run unless --apply")
+    sweep.add_argument("--apply", action="store_true",
+                       help="with --stale: really retire them (default is a dry run)")
+    sweep.add_argument("--max-age-h", type=float, default=24.0, metavar="H",
+                       help="with --stale: minimum age in hours (default 24)")
+    sweep.add_argument("--json", action="store_true")
 
     return parser
 

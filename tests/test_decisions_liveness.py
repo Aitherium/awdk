@@ -56,3 +56,75 @@ def test_keep_waiting_uses_the_shared_beam_rule(tmp_path):
     kept = liveness.keep_waiting([zombie, live, real], {"sess-live"})
     assert [c["id"] for c in kept] == ["d-b3ef", "d-c4gh"]
     assert len(liveness.keep_waiting([zombie], None)) == 1     # unknown counts it
+
+
+# ── raiser_gone / waiter_alive: the proof rules behind auto-retirement ────────
+#
+# The store retires an open card as ``expired`` only when the session that
+# raised it is PROVABLY dead and nothing is still waiting on it. Both halves must
+# fail closed: an unmeasured session is alive, never gone. A wrong "gone" retires
+# a question out from under a session that was still blocked on it.
+
+
+def _card(session_id: str = "", session_pid: int = 0, waiters=()) -> dict:
+    return {
+        "id": "d-raise",
+        "kind": "decision",
+        "source": {"session_id": session_id, "session_pid": session_pid},
+        "waiters": [dict(w) for w in waiters],
+    }
+
+
+def test_raiser_is_gone_when_the_registry_pid_is_dead(tmp_path):
+    dirpath = tmp_path / "sessions"
+    dirpath.mkdir()
+    _write(dirpath, "1.json", pid=999_999, sessionId="sess-dead", status="idle")
+    assert liveness.raiser_gone(_card("sess-dead"), directory=dirpath) is True
+
+
+def test_raiser_is_not_gone_while_its_registry_pid_runs(tmp_path):
+    dirpath = tmp_path / "sessions"
+    dirpath.mkdir()
+    _write(dirpath, "1.json", pid=os.getpid(), sessionId="sess-live", status="idle")
+    assert liveness.raiser_gone(_card("sess-live"), directory=dirpath) is False
+
+
+def test_a_session_missing_from_the_registry_falls_back_to_the_raise_time_pid(tmp_path):
+    dirpath = tmp_path / "sessions"
+    dirpath.mkdir()
+    # Not listed: the registry may have been cleaned, so the recorded pid decides.
+    assert liveness.raiser_gone(_card(session_id="gone", session_pid=999_999),
+                                directory=dirpath) is True
+    assert liveness.raiser_gone(_card(session_id="live", session_pid=os.getpid()),
+                                directory=dirpath) is False
+
+
+def test_no_usable_pid_is_not_measured_and_never_gone(tmp_path):
+    dirpath = tmp_path / "sessions"
+    dirpath.mkdir()
+    assert liveness.raiser_gone(_card(), directory=dirpath) is False
+    assert liveness.raiser_gone(_card(session_id="unlisted"), directory=dirpath) is False
+    # A registry record with no pid is equally unmeasured.
+    _write(dirpath, "1.json", sessionId="nopid", status="idle")
+    assert liveness.raiser_gone(_card("nopid"), directory=dirpath) is False
+
+
+def test_a_waiter_counts_alive_only_on_proof_of_life(tmp_path):
+    dirpath = tmp_path / "sessions"
+    dirpath.mkdir()
+    _write(dirpath, "1.json", pid=os.getpid(), sessionId="sess-live", status="idle")
+    _write(dirpath, "2.json", pid=999_999, sessionId="sess-dead", status="idle")
+    assert liveness.waiter_alive({"session_id": "sess-live"}, directory=dirpath) is True
+    assert liveness.waiter_alive({"session_id": "sess-dead"}, directory=dirpath) is False
+
+
+def test_an_unmeasured_waiter_counts_as_alive(tmp_path):
+    """Conservative on purpose: a waiter wrongly declared dead retires the card."""
+    dirpath = tmp_path / "sessions"
+    dirpath.mkdir()
+    assert liveness.waiter_alive({"session_id": "unlisted"}, directory=dirpath) is True
+    assert liveness.waiter_alive({}, directory=dirpath) is True
+    assert liveness.waiter_alive({"session_pid": 0}, directory=dirpath) is True
+    # Registry record with a junk pid: alive, not dead.
+    _write(dirpath, "1.json", pid="nonsense", sessionId="junk", status="idle")
+    assert liveness.waiter_alive({"session_id": "junk"}, directory=dirpath) is True

@@ -39,7 +39,8 @@ def home(tmp_path, monkeypatch):
 
 def test_every_supported_size_is_offered_and_pinned():
     assert set(bn.SIZE_ORDER) == set(bn.BONSAI_SIZES) == {
-        "bonsai-1.7b", "bonsai-4b", "bonsai-8b", "bonsai-27b", "bonsai2-27b"}
+        "bonsai-1.7b", "bonsai-4b", "bonsai-8b", "bonsai-27b", "bonsai2-2b", "bonsai2-4b",
+        "bonsai2-9b", "bonsai2-27b"}
     for size in bn.BONSAI_SIZES.values():
         for quant, w in size.weights.items():
             assert re.fullmatch(r"[0-9a-f]{64}", w.sha256), (size.id, quant)
@@ -71,13 +72,16 @@ def test_size_order_is_largest_first():
 
 @pytest.mark.parametrize("hw, want_id, want_quant, want_where, want_build", [
     # CPU only: half the RAM is the pool.
-    (accel("cpu", ram=8), "bonsai-4b", "Q1_0", "cpu", "cpu"),
+    (accel("cpu", ram=8), "bonsai2-4b", "PTQ1_0", "cpu", "cpu"),
     (accel("cpu", ram=16), "bonsai-27b", "Q1_0", "cpu", "cpu"),
     (accel("cpu", ram=32), "bonsai2-27b", "PTQ1_0", "cpu", "cpu"),
     # A 12 GB NVIDIA card holds Bonsai 2 PQ2_0 (the CUDA fast file).
     (accel("cuda", vram=12, ram=32), "bonsai2-27b", "PQ2_0", "gpu", "cuda"),
-    # An 8 GB card: the largest that fits ON THE GPU wins over a bigger size in RAM.
-    (accel("cuda", vram=8, ram=64), "bonsai-8b", "Q1_0", "gpu", "cuda"),
+    # An 8 GB card: the best that fits ON THE GPU wins over a bigger size in RAM. Bonsai 2
+    # 9B ships PTQ1_0 only, so CUDA serves that file -- never the Bonsai 8B that also fits.
+    (accel("cuda", vram=8, ram=64), "bonsai2-9b", "PTQ1_0", "gpu", "cuda"),
+    # A 4 GB card: Bonsai 2 4B.
+    (accel("cuda", vram=4, ram=8), "bonsai2-4b", "PTQ1_0", "gpu", "cuda"),
     # Vulkan serves Bonsai 2 from PTQ1_0, never PQ2_0.
     (accel("vulkan", vram=16, ram=32), "bonsai2-27b", "PTQ1_0", "gpu", "vulkan"),
     # An integrated GPU reports no VRAM: it is a CPU box.
@@ -102,7 +106,7 @@ def test_nothing_fits_a_tiny_machine():
 def test_plan_lists_every_size_with_a_reason():
     plans = bn.plan_sizes(accel("cpu", ram=8))
     assert [p.id for p in plans] == bn.SIZE_ORDER
-    assert [p.fits for p in plans] == [False, False, False, True, True]
+    assert [p.fits for p in plans] == [False, False, False, False, True, True, True, True]
     assert all(p.reason for p in plans)
 
 
@@ -121,7 +125,7 @@ def test_backend_override_moves_bonsai2_to_the_matching_file():
 def test_server_asset_is_the_pinned_prismml_fork():
     url, sha, build = bn.server_asset("windows", "x64", "cuda")
     assert url.endswith(
-        "/prism-b10685-7dffb15/llama-prism-b10685-7dffb15-bin-win-cuda-12.4-x64.zip")
+        "/prism-b12128-d7b2896/llama-prism-b12128-d7b2896-bin-win-cuda-12.4-x64.zip")
     assert re.fullmatch(r"[0-9a-f]{64}", sha) and build == "cuda"
     assert "github.com/PrismML-Eng/llama.cpp/" in url
 
@@ -214,7 +218,7 @@ def test_smoke_test_needs_a_chat_answer_and_a_tool_call():
 
 def test_status_report_is_what_the_desk_reads(home):
     report = bn.status_report(accel("cpu", ram=8), is_serving=lambda port: False)
-    assert report["installed"] is False and report["recommended"] == "bonsai-4b"
+    assert report["installed"] is False and report["recommended"] == "bonsai2-4b"
     assert [s["id"] for s in report["sizes"]] == bn.SIZE_ORDER
     assert report["endpoint"] == "http://127.0.0.1:8090/v1"
     json.dumps(report)  # the Desk parses it as JSON
@@ -285,3 +289,33 @@ def test_windows_autostart_is_a_named_hidden_task(home, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "schtasks /create /tn AitherBonsaiLocal" in out
     assert "wscript.exe //B //Nologo" in out and "AitherBonsaiLocal.cmd" in out
+
+
+def test_auto_never_picks_bonsai_8b():
+    """Bonsai 8B scores below the 4B (AitherBench 0.43 vs 0.53): no machine gets it from
+    --auto, though it stays installable by name."""
+    assert "bonsai-8b" not in bn.AUTO_ORDER and "bonsai-8b" in bn.SIZE_ORDER
+    assert set(bn.AUTO_ORDER) == set(bn.SIZE_ORDER) - {"bonsai-8b"}
+    for kind in ("cpu", "cuda", "vulkan"):
+        for gb in range(1, 65):
+            rec = bn.recommend(accel(kind, vram=gb, ram=gb))
+            assert rec is None or rec.id != "bonsai-8b", (kind, gb)
+
+
+
+def test_bonsai2_small_sizes_serve_ptq1_0_on_every_backend():
+    for sid in ("bonsai2-2b", "bonsai2-4b", "bonsai2-9b"):
+        size = bn.BONSAI_SIZES[sid]
+        assert size.generation == 2 and list(size.weights) == ["PTQ1_0"]
+        for hw in (accel("cuda", vram=24, ram=64), accel("cpu", ram=64),
+                   accel("vulkan", vram=16, ram=32)):
+            assert bn.plan_size(size, hw).quant == "PTQ1_0"
+
+
+def test_the_engine_loads_hadamard_v2():
+    """Bonsai 2 small sizes need Hadamard v2: prism-b12128 or newer. prism-b10685 refused
+    them ("unsupported prism.hadamard.version: 2")."""
+    build = int(bn.PRISM_RELEASE.split("-")[1].lstrip("b"))
+    assert build >= 12128, bn.PRISM_RELEASE
+    for name, sha in bn.PRISM_ASSETS.values():
+        assert bn.PRISM_RELEASE in name and re.fullmatch(r"[0-9a-f]{64}", sha), name

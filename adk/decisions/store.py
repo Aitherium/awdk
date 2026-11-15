@@ -144,6 +144,31 @@ RANK_FIRST_KINDS = ("credential", "blocked")
 
 URGENCY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
+#: A suggested answer that changes nothing. A card carrying one, or carrying a
+#: deadline that will apply its own default, is a card nobody is waiting on: it
+#: yields to every card that needs the owner, whatever its urgency. Measured
+#: 2026-11-10: a 43 h revenue-governor card that keeps "Keep refusing" and streak
+#: cards that pick "Keep it scheduled" in 19 h floated over 99+ waiting cards and
+#: hid a permission grant a live session was stopped on. MUST equal
+#: ``RANK_RULES.noop_labels`` in awdesk's decision-cards.cjs (shared fixture).
+NOOP_SUGGESTION_LABELS = ("skip", "keep refusing", "keep it scheduled")
+
+#: The term's value for a self-answering card (0 = needs the owner).
+AUTO_DEFAULT_RANK = 1
+
+#: Owner ruling, 2026-11-07: a card nobody can act on any more must stop
+#: occupying the queue. An open card whose RAISER session is provably dead and
+#: which has no live waiter is retired as ``expired`` after this many hours, with
+#: its declared default applied and the reason recorded. Never a silent delete.
+#: Override: ``AITHER_DECISIONS_RETIRE_HOURS``.
+RETIRE_AFTER_SECONDS = 24 * 3600
+
+#: Kinds that must NEVER auto-retire, however stale or quiet. A credential ask, a
+#: blocked session and a security blocker are things the owner still has to see;
+#: the whole point of the tier is that it does not go away on its own.
+RETIRE_SKIP_KINDS = frozenset({"credential", "blocked", "blocker"})
+
+
 
 def _env_seconds(name: str, default: float, unit: float) -> float:
     raw = os.getenv(name, "").strip()
@@ -162,29 +187,82 @@ def stale_after_seconds() -> float:
     return _env_seconds("AITHER_DECISIONS_STALE_DAYS", STALE_AFTER_SECONDS, 86400)
 
 
+def retire_after_seconds() -> float:
+    """How long a dead-session card may sit open before the store retires it."""
+    return _env_seconds("AITHER_DECISIONS_RETIRE_HOURS", RETIRE_AFTER_SECONDS, 3600)
+
+
 def is_straggler(card: "DecisionCard", now: Optional[float] = None) -> bool:
     """Open, and older than the staleness line."""
     t = time.time() if now is None else now
     return card.is_open and (t - card.created_at) > stale_after_seconds()
 
 
+def _field(card: Any, name: str) -> Any:
+    """One field from a ``DecisionCard`` OR its ``to_dict()`` shape (tests pass both)."""
+    if isinstance(card, dict):
+        return card.get(name)
+    return getattr(card, name, None)
+
+
+def suggested_label(card: Any) -> str:
+    """The label of the option the card suggests (``default_key``), else ``""``."""
+    key = str(_field(card, "default_key") or "").strip().lower()
+    if not key:
+        return ""
+    for opt in _field(card, "options") or []:
+        opt_key = str(_field(opt, "key") or "").strip().lower()
+        if opt_key == key:
+            return str(_field(opt, "label") or _field(opt, "key") or "")
+    return ""
+
+
+def is_noop_suggestion(card: Any) -> bool:
+    """The suggested answer changes nothing: "Skip", "Keep refusing", "Keep it scheduled"."""
+    label = suggested_label(card).strip().lower()
+    if not label:
+        return False
+    for noop in NOOP_SUGGESTION_LABELS:
+        if not label.startswith(noop):
+            continue
+        rest = label[len(noop):len(noop) + 1]
+        if not rest or not rest.isalnum():
+            return True
+    return False
+
+
+def has_auto_default(card: Any) -> bool:
+    """A future-proof self-answer: a deadline that applies the declared default."""
+    return (float(_field(card, "deadline") or 0) > 0
+            and bool(str(_field(card, "default_key") or "").strip()))
+
+
+def is_self_answering(card: Any) -> bool:
+    """Nobody is waiting on the owner: the card will answer itself, or its answer is a no-op."""
+    return has_auto_default(card) or is_noop_suggestion(card)
+
+
 def rank_key(card: "DecisionCard", now: Optional[float] = None) -> tuple:
     """The sort key of :func:`rank`, exposed so a test can name which term decided.
 
     1. credential / blocked first (a session is stopped on it);
-    2. urgency, critical first (an unknown urgency ranks as normal);
-    3. fresh before straggler (open past :func:`stale_after_seconds`);
-    4. age, oldest first -- the longest-blocking card of a tier leads;
-    5. id, so equal cards order the same way on every surface.
+    2. a card that ANSWERS ITSELF (a deadline applies its declared default) or
+       whose suggestion is a no-op ("Skip") yields to every card needing a human
+       -- whatever its urgency (measured 2026-11-10);
+    3. urgency, critical first (an unknown urgency ranks as normal);
+    4. fresh before straggler (open past :func:`stale_after_seconds`);
+    5. age, oldest first -- the longest-blocking card of a tier leads;
+    6. id, so equal cards order the same way on every surface.
     """
     t = time.time() if now is None else now
-    kind = (card.kind or "").strip().lower()
+    kind = (_field(card, "kind") or "").strip().lower()
     return (
         0 if kind in RANK_FIRST_KINDS else 1,
-        URGENCY_RANK.get((card.urgency or "").strip().lower(), 2),
+        AUTO_DEFAULT_RANK if is_self_answering(card) else 0,
+        URGENCY_RANK.get((_field(card, "urgency") or "").strip().lower(), 2),
         1 if is_straggler(card, t) else 0,
-        float(card.created_at or 0.0),
-        card.id or "",
+        float(_field(card, "created_at") or 0.0),
+        _field(card, "id") or "",
     )
 
 
@@ -266,6 +344,10 @@ class CancelNoteRequiredError(DecisionError, ValueError):
     """A card was withdrawn by someone other than the session that raised it, with
     no reason. Both a ``DecisionError`` (every surface already reports those) and
     a ``ValueError`` (it is a bad argument, not a store failure)."""
+
+
+class StaleCardUIError(DecisionError):
+    """``set_ui`` lost the compare-and-set: the card's text moved since compile."""
 
 
 class CardClosedError(DecisionError):
@@ -817,6 +899,14 @@ class DecisionCard:
     source: DecisionSource = field(default_factory=DecisionSource)
     created_at: float = field(default_factory=time.time)
     deadline: Optional[float] = None
+    # Promise cards (``kind="promise"``, ``awask promise``): who owes it, to whom,
+    # and what must hold for it to count as kept. ``cmd_promise`` has always
+    # passed these; the dataclass had lost the fields, so the command raised
+    # TypeError before it could record anything -- invisible to the promise
+    # sweep, which only reads cards that already reached disk.
+    owed_by: str = ""
+    owed_to: str = ""
+    preconditions: list[str] = field(default_factory=list)
     status: str = STATUS_OPEN
     answer: Optional[str] = None
     answer_note: Optional[str] = None
@@ -873,6 +963,20 @@ class DecisionCard:
     #: identifies the question, not the object. "" = not attached to anything;
     #: anything off-grammar is normalised to "" by :func:`normalize_subject`.
     subject: str = ""
+    #: Why the store closed this card without the owner answering it. Only ever
+    #: set on an auto-retirement (``answered_via="session-gone"``), and only when
+    #: the reason is POSITIVE -- the raiser's process is gone and no waiter is
+    #: left. A card the owner answered never carries one. It is the audit trail
+    #: for the case that otherwise looks silent: "nobody answered this, and it
+    #: closed".
+    retire_reason: Optional[str] = None
+    #: Generated UI: an A2UI v0.9 surface (``adk.decisions.card_ui``) a capable
+    #: surface draws instead of the plain card. PRESENTATION ONLY -- every Button
+    #: must send ``answer:<an option key>`` (validated on every write), so a ``ui``
+    #: can never ask a different question than the card. It records the
+    #: ``card_hash`` it was compiled against; a revised card's stale ``ui`` is
+    #: detectable (``card_ui.is_current``). Never served for a credential card.
+    ui: Optional[dict[str, Any]] = None
 
     # ── derived helpers ────────────────────────────────────────────────────────
 
@@ -940,6 +1044,8 @@ class DecisionCard:
         if data.get("answer"):
             data["answer"] = self.CREDENTIAL_ANSWER
         data["answer_note"] = ""
+        # A credential ask is drawn by awdesk's masked field and nothing else.
+        data["ui"] = None
         data["notes"] = [
             {**note, "text": "[redacted — credential card]"}
             for note in (data.get("notes") or [])
@@ -963,6 +1069,10 @@ class DecisionCard:
             source=DecisionSource.from_dict(raw.get("source") or {}),
             created_at=float(raw.get("created_at") or 0.0),
             deadline=(float(raw["deadline"]) if raw.get("deadline") is not None else None),
+            owed_by=str(raw.get("owed_by") or ""),
+            owed_to=str(raw.get("owed_to") or ""),
+            preconditions=[str(p) for p in (raw.get("preconditions") or [])
+                           if isinstance(p, (str, int, float))],
             status=str(raw.get("status") or STATUS_OPEN),
             answer=raw.get("answer"),
             answer_note=raw.get("answer_note"),
@@ -991,6 +1101,10 @@ class DecisionCard:
             waiters=[DecisionSource.from_dict(w) for w in (raw.get("waiters") or [])
                      if isinstance(w, dict)],
             subject=normalize_subject(raw.get("subject")),
+            retire_reason=(
+                str(raw["retire_reason"]) if raw.get("retire_reason") else None
+            ),
+            ui=(dict(raw["ui"]) if isinstance(raw.get("ui"), dict) else None),
         )
 
 
@@ -1313,6 +1427,11 @@ class DecisionStore:
 
         # Credential-specific validation
         if card.kind == "credential":
+            if card.ui is not None:
+                raise DecisionError(
+                    'kind="credential" must not carry ui; a credential ask is drawn '
+                    'only by the masked field'
+                )
             if card.options:
                 raise DecisionError(
                     'kind="credential" must not have options; '
@@ -1372,6 +1491,12 @@ class DecisionStore:
                 "a card offering options must declare default_key — 'what happens if the owner "
                 "never answers' is the field that makes the card safe to ignore"
             )
+        if card.ui is not None:
+            from adk.decisions.card_ui import validate_bindings
+
+            problems = validate_bindings(card)
+            if problems:
+                raise DecisionError("ui does not bind to this card: " + "; ".join(problems))
 
     # ── reads ─────────────────────────────────────────────────────────────────
 
@@ -1619,17 +1744,125 @@ class DecisionStore:
                 continue  # busy or already gone; the next sweep retries
         return removed
 
+    def _retire_reason_if_gone(self, card: DecisionCard,
+                               now: float) -> Optional[str]:
+        """The audit reason when ``card`` may auto-retire at ``now``, else None.
+
+        POSITIVE proof only: the raising session's process must be gone AND no
+        waiter may still be alive. An unmeasurable session is never "gone", so a
+        card whose liveness cannot be read keeps sitting in the queue -- hiding a
+        real ask is far worse than carrying a dead one for another hour. The
+        protected kinds (credential, blocked, blocker) never auto-retire at all:
+        they are exactly the asks that must not disappear on their own.
+        """
+        if card.kind in RETIRE_SKIP_KINDS:
+            return None
+        threshold = retire_after_seconds()
+        if now < float(card.created_at or 0.0) + threshold:
+            return None
+        try:
+            from adk.decisions import liveness
+        except ImportError:
+            return None
+        if not liveness.raiser_gone(card):
+            return None
+        for waiter in card.waiters or ():
+            if liveness.waiter_alive(waiter):
+                return None
+        session_id = str(getattr(card.source, "session_id", "") or "").strip()
+        who = f"session {session_id}" if session_id else "the raising session"
+        return (f"{who} is gone and no waiter was left after "
+                f"{threshold / 3600:g}h; the declared default applied")
+
+    def _retire(self, card: DecisionCard, reason: str, now: float) -> bool:
+        """Close ``card`` as expired on a dead session. Returns True when it did."""
+        with self._lock:
+            fresh = self.get(card.id)
+            if fresh is None or not fresh.is_open:
+                return False
+            fresh.status = STATUS_EXPIRED
+            fresh.answer = fresh.default_key or None
+            fresh.answered_at = now
+            fresh.answered_via = "session-gone"
+            fresh.answer_note = ("no live session was left to read the answer; "
+                                 "the declared default applied")
+            fresh.retire_reason = reason
+            self._write(fresh)
+            card.status = fresh.status
+            card.answer = fresh.answer
+            card.answered_at = fresh.answered_at
+            card.answered_via = fresh.answered_via
+            card.answer_note = fresh.answer_note
+            card.retire_reason = fresh.retire_reason
+        self._apply_card_recipe(card)
+        self._sync_relay(card)
+        return True
+
+    def retire_stale(self, now: Optional[float] = None,
+                     max_age_h: Optional[float] = None,
+                     *, dry_run: bool = False) -> list[DecisionCard]:
+        """Retire open cards that no session can act on any more.
+
+        The queue accumulates asks raised by sessions that then died: the card
+        stays "open" forever because nothing will ever answer it, and it pins
+        itself above every live ask. This closes exactly those -- an open card,
+        older than ``max_age_h``, whose raising session is PROVABLY gone and
+        which has no live waiter -- as ``expired`` with its declared default
+        applied, ``answered_via="session-gone"`` and the reason on the card.
+        Credential, blocked and blocker cards are never eligible.
+
+        ``dry_run`` returns the cards it WOULD retire and writes nothing.
+
+        ``max_age_h`` defaults to the SAME threshold the eligibility test uses
+        (:func:`retire_after_seconds`), never a second hardcoded 24h: otherwise
+        lowering the threshold changed nothing, because the scan window still
+        refused to look at anything younger.
+        """
+        t = time.time() if now is None else float(now)
+        if max_age_h is None:
+            max_age_h = retire_after_seconds() / 3600.0
+        cutoff = t - max(0.0, float(max_age_h)) * 3600
+        out: list[DecisionCard] = []
+        for target, st in self._scan():
+            card = self._read_file(target, st)
+            if card is None or not card.is_open:
+                continue
+            if float(card.created_at or 0.0) > cutoff:
+                continue
+            reason = self._retire_reason_if_gone(card, t)
+            if reason is None:
+                continue
+            if dry_run:
+                card.retire_reason = reason
+                out.append(card)
+                continue
+            if self._retire(card, reason, t):
+                out.append(card)
+        return out
+
     def _expire_if_due(self, card: DecisionCard) -> bool:
         """Flip an overdue open card to expired, applying its default. Returns True
         if this call performed the transition."""
         if not card.is_open:
             return False
+        now = time.time()
         due = card.deadline
         info_ttl = due is None and card.kind == "info"
+        retirement = False
+        retire_reason: Optional[str] = None
         if info_ttl:
             # Context, not a question: closes on its own (INFO_TTL_SECONDS).
             due = card.created_at + info_ttl_seconds()
-        if due is None or time.time() < due:
+        elif due is None:
+            # No deadline, so nothing would ever close it. Retire it when nobody
+            # is left who could answer -- same rule, same skip list, same audit
+            # trail as the hourly `retire_stale` pass, so the queue looks the
+            # same whether or not the sweep has run.
+            retire_reason = self._retire_reason_if_gone(card, now)
+            if retire_reason is not None:
+                due = card.created_at + retire_after_seconds()
+                retirement = True
+        if due is None or now < due:
             return False
         with self._lock:
             fresh = self.get(card.id)
@@ -1642,6 +1875,11 @@ class DecisionStore:
                 fresh.answered_via = "info-ttl"
                 fresh.answer_note = ("context card closed on its own after "
                                      f"{info_ttl_seconds() / 3600:g}h; it was never a question")
+            elif retirement:
+                fresh.answered_via = "session-gone"
+                fresh.answer_note = ("no live session was left to read the answer; "
+                                     "the declared default applied")
+                fresh.retire_reason = retire_reason
             else:
                 fresh.answered_via = "deadline"
                 fresh.answer_note = "no answer before the deadline; the declared default applied"
@@ -1651,6 +1889,7 @@ class DecisionStore:
             card.answered_at = fresh.answered_at
             card.answered_via = fresh.answered_via
             card.answer_note = fresh.answer_note
+            card.retire_reason = fresh.retire_reason
         # Outside the lock and outside the `if`: an expiry IS an answer (the
         # declared default), so it goes through the same action hook every other
         # answer path does. The default's action is None by construction, so this
@@ -1895,6 +2134,38 @@ class DecisionStore:
             self._write(revised)
         self._sync_relay(revised)
         return revised
+
+    def set_ui(self, card_id: str, ui: Optional[dict[str, Any]],
+               expect_hash: str) -> DecisionCard:
+        """Attach (or with ``ui=None`` clear) an OPEN card's generated UI.
+
+        Compare-and-set on :func:`adk.decisions.card_ui.card_hash`: the caller
+        compiled ``ui`` against a card whose text hashed to ``expect_hash``; if the
+        card was revised since, :class:`StaleCardUIError` is raised and nothing is
+        written, so a slow generator can never pin old text onto a new question.
+        The stored ``ui`` records that hash. Bindings are validated like any write.
+        """
+        from adk.decisions.card_ui import card_hash
+
+        with self._lock:
+            card = self.get(card_id)
+            if card is None:
+                raise DecisionError(f"no such card: {card_id}")
+            if not card.is_open:
+                raise CardClosedError(f"card {card_id} is {card.status}; its ui is final")
+            if (card.kind or "").strip().lower() == "credential":
+                raise DecisionError("a credential card cannot carry ui")
+            current = card_hash(card)
+            if current != (expect_hash or ""):
+                raise StaleCardUIError(
+                    f"card {card_id} changed since the ui was compiled "
+                    f"(expected {str(expect_hash)[:12]}, now {current[:12]})")
+            updated = DecisionCard.from_dict(card.to_dict())
+            updated.ui = None if ui is None else {**dict(ui), "card_hash": current}
+            self._validate(updated)
+            self._write(updated)
+        self._sync_relay(updated)
+        return updated
 
     def _register_steer_waiter(self, card_id: str, src: DecisionSource) -> None:
         """Record a joined session in the steerback waiters file (lock held).

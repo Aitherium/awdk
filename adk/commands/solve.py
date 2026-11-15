@@ -51,7 +51,15 @@ def _arc(args: Any) -> Any:
     return ArcAgi3Environment(args.game, int(args.seed), env_dir=args.env_dir)
 
 
-ENVIRONMENTS.update(counter=_counter, gridwalk=_gridwalk, arc=_arc)
+def _system(args: Any) -> Any:
+    from adk.reasoning.solve.envs.system import SystemEnv
+
+    if not getattr(args, "spec", None):
+        raise ValueError("--env system needs --spec <file.yaml|json> describing the system")
+    return SystemEnv.from_file(args.spec)
+
+
+ENVIRONMENTS.update(counter=_counter, gridwalk=_gridwalk, arc=_arc, system=_system)
 
 
 def register_parser(sub: Any) -> None:
@@ -67,6 +75,12 @@ def register_parser(sub: Any) -> None:
         help="Environment adapter (default: counter)",
     )
     p.add_argument("--game", default=None, help="--env arc: game id (e.g. ls20)")
+    p.add_argument(
+        "--spec",
+        default=None,
+        help="--env system: a YAML/JSON spec (prompt, parameters, tools, resources, skills, "
+        "context, goal) for the system to explore",
+    )
     p.add_argument("--seed", type=int, default=0, help="--env arc: seed (10-69 is held out)")
     p.add_argument(
         "--env-dir", default=None, help="--env arc: games directory (default $ADK_ARC_ENV_DIR)"

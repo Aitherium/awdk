@@ -263,6 +263,11 @@ class SessionConfig:
     #: (tier 1)? Default off; the owner still lands immediately either way. A peer's
     #: text arrives framed with its provenance whichever tier carries it.
     allow_peer_input: bool = False
+    #: The daemon principal that started this session (``owner``, ``agent:<label>``).
+    #: Set by the daemon from the AUTHENTICATED caller at ``POST /sessions`` and never
+    #: read from the request body: it is what lets a spawner prompt and end the
+    #: session it started without that session opting in to every peer.
+    spawned_by: str = ""
     #: Opt-in connector env for this child. Only ``["github"]`` is accepted: the
     #: connected GitHub account reaches git and gh (``adk.connectors.resolve_git_env``,
     #: held server-side to the agent's ``git`` grant). Default empty: the child gets
@@ -975,6 +980,7 @@ class HarnessSession:
             "owner": self.config.owner,
             # Echoed so a caller can see which tabs opted in to peer input at spawn.
             "allow_peer_input": bool(self.config.allow_peer_input),
+            "spawned_by": str(getattr(self.config, "spawned_by", "") or ""),
             "created_at": self.created_at,
             "turn": self.turn,
             "last_seq": self.last_seq,

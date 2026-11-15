@@ -4,6 +4,16 @@
 
 ## Installation
 
+Windows with nothing installed (no Python, no admin, no account), in PowerShell --
+it gets Python (via uv), installs awdk and runs `adk` once:
+
+```powershell
+$env:AITHER_INSTALL='toolkit'; irm https://aitherium.com/install.ps1 | iex
+```
+
+Any OS with Python 3.10+:
+
+
 ```bash
 pip install awdk
 ```

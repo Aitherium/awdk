@@ -15,6 +15,12 @@ if not (os.environ.get("AITHER_AIR_GAP_CONFIG") or os.environ.get("AITHER_AIR_GA
     os.environ["AITHER_AIR_GAP_CONFIG"] = os.path.join(
         tempfile.mkdtemp(prefix="adk-test-airgap-"), "air_gap.yaml")
 
+# Every ToolRegistry.execute appends a training row (adk.tool_capture). A test run
+# must not write thousands of fixture calls into the developer's real
+# ~/.aither/tool_calls corpus; tests that exercise capture switch it back on with a
+# tmp AITHER_TOOL_CALLS_DIR.
+os.environ.setdefault("AITHER_TOOL_CAPTURE", "0")
+
 from adk.config import load_saved_config as _real_load_saved_config  # noqa: E402
 
 # Env vars that ADK classes auto-read from the environment.
@@ -182,6 +188,14 @@ def _no_real_beat_autostart(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_file_index_install(monkeypatch):
+    """`adk pair` / `adk enroll` install the file-index job (adk.file_index): pip and a
+    real scheduler. No test may do that to the machine running it; tests of
+    adk.file_index pass a recording ``run`` and clear this."""
+    monkeypatch.setenv("AITHER_NO_FILE_INDEX", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_tailscale_in_beats(monkeypatch):
     """Every heartbeat reports this device's tailnet IPs (adk.enrollment._tailnet_ips),
     which asks the host's real tailscale. Tests never do: none by default; a test of
@@ -191,3 +205,16 @@ def _no_real_tailscale_in_beats(monkeypatch):
     except Exception:  # noqa: BLE001 -- a test tree without adk.enrollment
         return
     monkeypatch.setattr(_en, "_tailnet_ips", lambda now=None: [], raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_addon_lock(monkeypatch, tmp_path):
+    """Every install path writes the add-on lock (adk.addon_lock); no test may write the
+    developer's real ~/.aither/addons.lock.json, and the resolver's listing cache must
+    not carry one test's sources into the next."""
+    monkeypatch.setenv("AITHER_ADDON_LOCK", str(tmp_path / "addons.lock.json"))
+    try:
+        from adk import addons as _addons
+    except Exception:  # noqa: BLE001 -- a test tree without adk.addons
+        return
+    _addons.clear_cache()

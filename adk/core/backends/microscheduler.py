@@ -149,6 +149,8 @@ class MicroSchedulerBackend:
         source: str = "adk.reasoning",
         allow_cross_model: bool = True,
         local_only: bool = True,
+        prefer: Optional[Sequence[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.base_url = (base_url or default_scheduler_url()).rstrip("/")
         self.timeout = float(timeout)
@@ -171,6 +173,12 @@ class MicroSchedulerBackend:
         # slot queues or fails retryably), so refusing a cross-model reply after
         # the fact is the backstop, not the guard -- by then the call was paid.
         self.local_only = bool(local_only)
+        #: ``"auto"`` takes the first of these the scheduler serves (default
+        #: :data:`PREFERRED_MODELS`; interactive callers pass a faster ladder).
+        self.prefer: tuple = tuple(prefer) if prefer else PREFERRED_MODELS
+        #: Extra scheduler hints sent on every call (e.g. ``{"priority": "user"}``).
+        #: ``source`` and ``local_only`` are set from the constructor, never dropped.
+        self.metadata: Dict[str, Any] = dict(metadata or {})
         self._client: Any = None
 
     # -- transport -------------------------------------------------------------
@@ -246,14 +254,14 @@ class MicroSchedulerBackend:
         if self.model != "auto":
             return self.model
         served = self.list_models()
-        for name in PREFERRED_MODELS:
+        for name in self.prefer:
             if name in served:
                 self.model = name
                 self.model_source = "auto: first preferred model in /v1/models"
                 return name
         raise SchedulerUnavailableError(
             "MicroScheduler at %s serves none of %s (it lists %s); pass model="
-            % (self.base_url, list(PREFERRED_MODELS), served[:12])
+            % (self.base_url, list(self.prefer), served[:12])
         )
 
     # -- the blocking call -----------------------------------------------------
@@ -271,7 +279,7 @@ class MicroSchedulerBackend:
             "max_tokens": int(max_tokens),
             "temperature": float(temperature),
             "stream": False,
-            "metadata": {"source": self.source},
+            "metadata": {**self.metadata, "source": self.metadata.get("source") or self.source},
         }
         if self.local_only:
             payload["metadata"]["local_only"] = True

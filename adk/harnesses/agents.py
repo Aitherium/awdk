@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from typing import Any, Iterable, Optional
 
 from adk.harnesses.events import (
@@ -592,6 +593,13 @@ class AgentRelaySession(HarnessSession):
         # host's awdk loop, with the agent's persona, when Genesis refuses.
         self._may_fall_back = not base_url and not genesis_url_configured()
         self._on_local_loop = False
+        self._turn_active = False
+        self._stream_opened = False
+        # A RESUMED session continues the agent's own conversation: the id the
+        # caller named is the id every turn carries. Without this a resume was a
+        # new conversation under a new id (measured 2026-11-12).
+        if self.config.resume_session_id and not self.harness_session_id:
+            self.harness_session_id = self.config.resume_session_id
 
     def start(self) -> None:
         self._emit(
@@ -615,6 +623,7 @@ class AgentRelaySession(HarnessSession):
             self.turn += 1
             turn = self.turn
         self._emit(HarnessEvent(kind=EventKind.TURN_STARTED, text=text, turn=turn))
+        self._turn_active = True
         self.state = SessionState.BUSY
         thread = threading.Thread(
             target=self._run_turn, args=(text, turn), name=f"relay-{self.id}", daemon=True
@@ -623,11 +632,60 @@ class AgentRelaySession(HarnessSession):
         self._threads.append(thread)
         return True
 
+    def _observe(self, event: HarnessEvent) -> None:
+        """A relay turn OPENS with the agent's ``session_start``, which the base
+        class reads as "the harness is ready" and marks the session idle -- so a
+        session streaming a turn reported ``state=idle`` and ``awsh_interrupt``
+        refused it as "no turn is running" (measured 2026-11-12). While a turn is
+        running the session is busy, and an agent that names no session id does
+        not erase the one this session already carries."""
+        carried = self.harness_session_id
+        super()._observe(event)
+        if not self.harness_session_id:
+            self.harness_session_id = carried
+        if self._turn_active and event.kind == EventKind.SESSION_READY:
+            self.state = SessionState.BUSY
+
+    def interrupt(self) -> bool:
+        """Cancel the running turn at the agent (``POST /chat/steer`` cancel).
+
+        ``interrupt_note`` says why when it did not work: the daemon's generic
+        refusal ("no interrupt channel") is wrong for a relay that has one."""
+        self.interrupt_note = ""
+        if not self._turn_active:
+            return False
+        try:
+            import httpx
+
+            from adk.local_auth import headers_for
+
+            url = f"{self.base_url}/chat/steer"
+            response = httpx.post(
+                url, json={"session_id": self.harness_session_id or self.id,
+                           "action": "cancel", "message": ""},
+                headers=headers_for(url), timeout=10.0)
+            done = response.status_code == 200 and bool(response.json().get("cancelled"))
+        except Exception as exc:  # noqa: BLE001 -- an honest "could not", never a raise
+            self.interrupt_note = (
+                f"the cancel did not reach agent {self.agent} at {self.base_url} "
+                f"({type(exc).__name__}); a step that blocks the agent's loop (a "
+                "synchronous tool such as a shell command) holds it until it returns")
+            self._emit(notice(self.interrupt_note))
+            return False
+        if done:
+            self._emit(notice("turn interrupted"))
+        else:
+            self.interrupt_note = (f"agent {self.agent} did not cancel the turn "
+                                   f"(HTTP {response.status_code})")
+            self._emit(notice(self.interrupt_note))
+        return done
+
     def _run_turn(self, text: str, turn: int) -> None:
         try:
             import httpx
         except ImportError:
             self._emit(error("httpx is required for agent sessions: pip install httpx"))
+            self._turn_active = False
             self.state = SessionState.IDLE
             return
 
@@ -642,6 +700,9 @@ class AgentRelaySession(HarnessSession):
         # ``system_additions``; without this line it was accepted and never sent.
         if self.config.system_prompt_append:
             body["system_additions"] = [self.config.system_prompt_append]
+        # The spawn cwd: the awdk loop binds it for the turn's tools (adk.turn_cwd).
+        if self.config.cwd:
+            body["cwd"] = self.config.cwd
         try:
             try:
                 self._stream_turn(httpx, body, turn)
@@ -661,6 +722,8 @@ class AgentRelaySession(HarnessSession):
                 self.base_url = ADK_URL.rstrip("/")
                 self._stream_turn(httpx, body, turn)
         except Exception as exc:  # noqa: BLE001 — network/transport of any shape
+            if self._collect_resumed_turn(httpx, text, turn, exc):
+                return
             # An agent turn that dies must reach the UI. A swallowed exception
             # here is a stream that silently stops, which reads as a hung model.
             self._emit(error(f"agent {self.agent} turn failed: {type(exc).__name__}: {exc}"))
@@ -668,10 +731,84 @@ class AgentRelaySession(HarnessSession):
                 HarnessEvent(kind=EventKind.TURN_COMPLETED, data={"is_error": True}, turn=turn)
             )
         finally:
+            self._turn_active = False
             self.state = SessionState.IDLE
+
+    def _collect_resumed_turn(self, httpx: Any, text: str, turn: int,
+                              exc: BaseException) -> bool:
+        """The stream broke MID-TURN: the awdk loop was killed under it.
+
+        The loop journals every turn and runs an interrupted one again when it
+        comes back (``adk.turn_journal``), so the answer still arrives -- on the
+        loop, not on this dead connection. Wait for the loop to return, read the
+        turn's outcome from ``GET /sessions/{id}/turns`` and emit it as this
+        turn's answer. True when the turn was closed here (answer or a recorded
+        failure); False leaves the caller to report the transport error.
+        Only for a stream that had opened, and only against the awdk loop.
+        """
+        transport = getattr(httpx, "TransportError", None)
+        if not (self._stream_opened and isinstance(transport, type)
+                and isinstance(exc, transport)
+                and (self.spec.id == "awdk" or self._on_local_loop)):
+            return False
+        from adk.local_auth import headers_for
+
+        try:
+            budget = float(os.environ.get("AITHER_RELAY_RESUME_WAIT_S", "180"))
+        except ValueError:
+            budget = 180.0
+        sid = self.harness_session_id or self.id
+        url = f"{self.base_url}/sessions/{sid}/turns"
+        self._emit(notice(
+            f"the awdk loop at {self.base_url} dropped the connection mid-turn "
+            f"({type(exc).__name__}); waiting up to {int(budget)}s for it to come "
+            "back and resume the turn from its journal",
+            stage="awdk_loop_dropped"))
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline and not self._closed.is_set():
+            try:
+                reply = httpx.get(url, params={"wait": 20, "agent": self.agent},
+                                  headers=headers_for(url),
+                                  timeout=httpx.Timeout(60.0, connect=3.0))
+            except Exception:  # noqa: BLE001 -- still down: try again shortly
+                time.sleep(2.0)
+                continue
+            if reply.status_code != 200:
+                return False        # a loop without the journal (older build)
+            turns = [t for t in (reply.json().get("turns") or [])
+                     if str(t.get("message") or "") == text[:500]]
+            if not turns:
+                return False        # it never accepted this turn: nothing to wait for
+            last = turns[-1]
+            outcome = str(last.get("outcome") or "")
+            if outcome == "open":
+                continue
+            if outcome in ("resumed", "finished"):
+                try:
+                    httpx.get(url, params={"ack": last.get("turn_id"), "agent": self.agent},
+                              headers=headers_for(url), timeout=10.0)
+                except Exception:  # noqa: BLE001 -- the answer is in hand either way
+                    pass
+                answer = str(last.get("result") or "")
+                if answer:
+                    self._emit(text_delta(answer))
+                self._emit(HarnessEvent(
+                    kind=EventKind.TURN_COMPLETED, text=answer, turn=turn,
+                    data={"is_error": False, "resumed_after_kill": outcome == "resumed",
+                          "turn_outcome": outcome, "attempts": last.get("attempts")}))
+                return True
+            self._emit(error(
+                f"agent {self.agent} turn ended as {outcome} after the loop "
+                f"restarted: {last.get('reason') or 'no reason recorded'}",
+                turn_outcome=outcome))
+            self._emit(HarnessEvent(kind=EventKind.TURN_COMPLETED, turn=turn,
+                                    data={"is_error": True, "turn_outcome": outcome}))
+            return True
+        return False
 
     def _stream_turn(self, httpx: Any, body: dict[str, Any], turn: int) -> None:
         """POST one turn to ``self.base_url`` and emit its events."""
+        self._stream_opened = False
         if self._on_local_loop:
             # adk serve has no identity store: the roster persona is how the
             # agent answers as itself there (what the `awdk` harness gets).
@@ -703,6 +840,7 @@ class AgentRelaySession(HarnessSession):
                         )
                     )
                     return
+                self._stream_opened = True
                 streamed = False
                 for name, payload in _iter_sse(response):
                     if name == "token":

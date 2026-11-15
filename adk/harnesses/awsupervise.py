@@ -66,7 +66,9 @@ L1 steer  A peer-authority note in the session's steer mailbox (~/.aither/steer/
           lead what to do with it.
 L2 relay  awrelay send '#agents' "<text>" --kind finding --to <session prefix>
           (queued on disk and exit 0 when the relay is down).
-L3 card   adk decide ask ... --session <sid>, with three options: stop it, re-run it on
+L3 card   OFF by default (owner 2026-11-12: a stuck agent is agent work, not an owner
+          decision); the ladder tops out at L2. With AWSUPERVISE_OWNER_CARDS=1:
+          adk decide ask ... --session <sid>, with three options: stop it, re-run it on
           Opus 5.5 ("fable"), or let it continue. The owner's answer lands in that
           session's mailbox with owner authority. A card with options also rides the
           existing Discord DM fanout (AitherOS-Awask-Card-Fanout); no new secret.
@@ -164,6 +166,10 @@ CONFIG: dict = {
     "max_steers_per_session_per_hour": 6,
     "max_relays_per_hour": 12,
     "max_cards_per_hour": 3,
+    # L3 raises an owner card only when this is on (AWSUPERVISE_OWNER_CARDS=1). A stuck
+    # agent is agent work, not a B2/B3 owner decision (owner 2026-11-12), so by default
+    # the ladder tops out at the #agents relay.
+    "owner_cards": os.environ.get("AWSUPERVISE_OWNER_CARDS", "") == "1",
     "relay_channel": "#agents",
     "card_urgency": "normal",
     "card_deadline": "2h",
@@ -1219,7 +1225,8 @@ def steer_text(sid: str, items: list, sessions: dict, cfg: dict,
                   "- Any other agent in this session: ignore this note."]
     else:
         lines.append("- You: change approach now, or report BLOCKED with what you tried.")
-    lines.append(f"(next: #agents in {cfg['climb_minutes']} min, then a card to the owner)")
+    lines.append(f"(next: #agents in {cfg['climb_minutes']} min"
+                 + (", then a card to the owner)" if cfg.get("owner_cards") else ")"))
     return lines
 
 
@@ -1366,6 +1373,9 @@ class Actuator:
             rc, out, err = self.runner(argv, self.cfg["subprocess_timeout_s"])
             note = clip(redact((err or out).strip()), 200)
             rec.update(result=f"exit {rc}" + (f": {note}" if note else ""), advance=rc == 0)
+        elif not self.cfg.get("owner_cards"):
+            rec.update(result="no card: owner cards are off; #agents carries it",
+                       advance=True)
         else:
             open_card = self.state.get("cards", {}).get(sid)
             if open_card and card_status(self.paths, open_card.get("id", "")) == "open":
@@ -1863,7 +1873,7 @@ def _self_test(quiet: bool = False) -> int:
         for p in (paths.sessions, paths.trace, paths.decisions, paths.labels):
             p.mkdir(parents=True)
         cfg = copy.deepcopy(CONFIG)
-        cfg.update(upstream_recent_minutes=180, max_cards_per_hour=1)
+        cfg.update(upstream_recent_minutes=180, max_cards_per_hour=1, owner_cards=True)
         s1, s2 = "11111111-aaaa-4bbb-8ccc-000000000001", "22222222-aaaa-4bbb-8ccc-000000000002"
         proj = paths.projects / "C--work-repo"
         ds, opus = "deepseek-v4-flash", "claude-opus-5-5"

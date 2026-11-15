@@ -25,6 +25,8 @@ public class SettingsActivity extends Activity {
     private TextView nodeStatus;
     private TextView alertsStatus;
     private TextView workerStatus;
+    private TextView fileIndexStatus;
+    private Switch fileIndex;
     private Switch alerts;
     private TextView connected;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -112,6 +114,18 @@ public class SettingsActivity extends Activity {
             refreshConnected();
         }
         col.addView(acct);
+
+        // ---- Files: this phone's file list in Strata, only the folders the owner picks
+        if (!lite) {
+            col.addView(Ui.section(this, "Files"));
+            LinearLayout files = Ui.card(this);
+            row(files, fileIndexToggle(), FILE_INDEX_EXPLAIN);
+            row(files, Ui.action(this, "Add a folder", v -> pickFolder()),
+                    "Pick another folder to include (Android shows you exactly which).");
+            fileIndexStatus = dim();
+            files.addView(fileIndexStatus);
+            col.addView(files);
+        }
 
         // ---- Updates
         col.addView(Ui.section(this, "Updates"));
@@ -284,6 +298,76 @@ public class SettingsActivity extends Activity {
                         + "Tap the switch again to open Android's settings.", android.widget.Toast.LENGTH_LONG).show();
             }
         }
+    }
+
+    /** What turning on "Index my files in Strata" means, in plain words, under its switch. */
+    static final String FILE_INDEX_EXPLAIN =
+            "Off unless you turn it on. You pick the folders; Aither sends their file names, sizes and "
+            + "dates to your Strata so you can find them from any of your devices. Never the files "
+            + "themselves. Runs while charging on Wi-Fi, about every 6 hours. Off forgets the folders; "
+            + "the list already sent stays in Strata.";
+
+    static final int PICK_FOLDER = 7;
+
+    /** "Index my files in Strata": on asks Android's folder picker first; nothing without a pick. */
+    private View fileIndexToggle() {
+        fileIndex = Ui.style(new Switch(this));
+        fileIndex.setText("Index my files in Strata");
+        fileIndex.setChecked(FileIndexJob.enabled(this));
+        fileIndex.setOnCheckedChangeListener((v, checked) -> {
+            if (v.getTag() != null) return;
+            if (!checked) {
+                FileIndexJob.setOn(this, false);
+                return;
+            }
+            if (FileIndexJob.grants(this).isEmpty()) pickFolder();
+            else {
+                FileIndexJob.setOn(this, true);
+                FileIndexJob.runSoon(this);
+            }
+        });
+        return fileIndex;
+    }
+
+    /** Android's own folder picker (Storage Access Framework): read access to that folder only. */
+    private void pickFolder() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(i, PICK_FOLDER);
+        } catch (RuntimeException e) {
+            android.widget.Toast.makeText(this, "This phone has no folder picker", android.widget.Toast.LENGTH_LONG).show();
+            syncFileIndexSwitch();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code != PICK_FOLDER) return;
+        Uri tree = result == RESULT_OK && data != null ? data.getData() : null;
+        if (tree != null) {
+            if (!FileIndex.AUTHORITY.equals(tree.getAuthority())
+                    || FileIndex.pathOf(android.provider.DocumentsContract.getTreeDocumentId(tree)) == null) {
+                android.widget.Toast.makeText(this, "Pick a folder on this phone's own storage",
+                        android.widget.Toast.LENGTH_LONG).show();
+            } else {
+                getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                FileIndexJob.setOn(this, true);
+                FileIndexJob.runSoon(this);
+            }
+        }
+        syncFileIndexSwitch();
+    }
+
+    private void syncFileIndexSwitch() {
+        if (fileIndex == null) return;
+        boolean on = FileIndexJob.enabled(this);
+        if (fileIndex.isChecked() == on) return;
+        // a cancelled picker leaves it off; setOn(false) would forget the folders already granted
+        fileIndex.setTag(Boolean.TRUE); // the listener skips a change made here
+        fileIndex.setChecked(on);
+        fileIndex.setTag(null);
     }
 
     /** Settings > Alerts > "Send a test alert". */
@@ -505,6 +589,9 @@ public class SettingsActivity extends Activity {
             alertsStatus.setText(!cfg.approvalsOnDuty() ? "Off · each check-in · " + Notices.last
                     : !FamilyNotices.allowed(SettingsActivity.this) ? "Notifications are off for Aither: tap the switch"
                     : "On · " + DutyService.state);
+            if (fileIndexStatus != null) {
+                fileIndexStatus.setText("Files in Strata: " + FileIndexJob.status(SettingsActivity.this));
+            }
             if (workerStatus != null) {
                 workerStatus.setText("Fleet worker: " + (cfg.workerOn() ? WorkerService.state : "off"));
             }

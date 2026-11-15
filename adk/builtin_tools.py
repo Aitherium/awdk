@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from adk.agent import AitherAgent
 
+from adk.turn_cwd import current as _turn_cwd, in_turn_cwd
+
 logger = logging.getLogger("adk.builtin_tools")
 
 # Safety: directories agents can access (expandable via AITHER_ALLOWED_ROOTS).
@@ -49,12 +51,97 @@ _DEFAULT_ALLOWED_ROOTS = [os.getcwd()] + (
 )
 _ALLOWED_ROOTS: list[str] | None = None
 
+# A PROJECT agent (a folder scaffolded by `adk init`: agent.py + config.yaml) gets
+# the project folder as its only default root -- NOT the home folder. Measured
+# 2026-11-12 (adk 3.8.105): a scaffolded agent asked to read a canary file beside
+# its project folder read it, because on a desktop every agent inherited the
+# signed-in user's whole home. The home default above stays for the personal
+# assistant, which is not run from a project folder.
+#
+# Project config (config.yaml):
+#     files:
+#       allowed_roots: ["../shared-data", "D:/datasets"]   # extra folders
+#       full_machine: false   # true = no boundary at all; announced loudly
+PROJECT_AGENT_FILE = "agent.py"
+PROJECT_CONFIG_FILE = "config.yaml"
+FULL_MACHINE_ENV = "AITHER_FILES_FULL_MACHINE"
+_FULL_MACHINE: bool | None = None
+_FULL_MACHINE_ANNOUNCED = False
+
+
+def _project_dir() -> Path | None:
+    """The scaffolded project this process serves, or None.
+
+    The working directory when it holds ``agent.py`` (``adk run`` and
+    ``python agent.py`` are both documented as run from the project folder),
+    else the folder of the ``agent.py`` being run as the main script.
+    """
+    try:
+        cwd = Path.cwd()
+        if (cwd / PROJECT_AGENT_FILE).is_file():
+            return cwd
+        main = getattr(sys.modules.get("__main__"), "__file__", "") or ""
+        if main and Path(main).name == PROJECT_AGENT_FILE and Path(main).is_file():
+            return Path(main).resolve().parent
+    except Exception:  # noqa: BLE001 -- no project is the safe answer's input, not its result
+        return None
+    return None
+
+
+def _project_files_config(project: Path | None) -> dict:
+    """The ``files:`` mapping of the project's config.yaml ({} when absent/unreadable)."""
+    if project is None:
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load((project / PROJECT_CONFIG_FILE).read_text(encoding="utf-8")) or {}
+        files = data.get("files") if isinstance(data, dict) else None
+        return files if isinstance(files, dict) else {}
+    except Exception as exc:  # noqa: BLE001 -- an unreadable config grants nothing
+        if (project / PROJECT_CONFIG_FILE).exists():
+            logger.warning("config.yaml `files:` not read (%s); no extra file roots", exc)
+        return {}
+
+
+def _default_roots() -> list[str]:
+    """The project folder for a project agent; else the historical defaults."""
+    project = _project_dir()
+    if project is None:
+        return list(_DEFAULT_ALLOWED_ROOTS)
+    roots = [str(project)]
+    for extra in _project_files_config(project).get("allowed_roots") or []:
+        if not extra:
+            continue
+        p = Path(os.path.expanduser(str(extra)))
+        roots.append(str(p if p.is_absolute() else project / p))
+    return roots
+
+
+def _full_machine() -> bool:
+    """The explicit opt-out: no file boundary at all. Off unless asked for."""
+    global _FULL_MACHINE, _FULL_MACHINE_ANNOUNCED
+    if _FULL_MACHINE is None:
+        env = os.getenv(FULL_MACHINE_ENV, "").strip().lower()
+        if env:
+            _FULL_MACHINE = env in ("1", "true", "yes", "on")
+        else:
+            _FULL_MACHINE = _project_files_config(_project_dir()).get("full_machine") is True
+    if _FULL_MACHINE and not _FULL_MACHINE_ANNOUNCED:
+        _FULL_MACHINE_ANNOUNCED = True
+        msg = ("FILE BOUNDARY OFF: this agent's file tools can read and write ANY file "
+               "this user account can (files.full_machine / "
+               f"{FULL_MACHINE_ENV}). Remove the setting to confine it to its folder.")
+        logger.warning(msg)
+        print(f"\n!!! {msg}\n", file=sys.stderr, flush=True)
+    return bool(_FULL_MACHINE)
+
 
 def _get_allowed_roots() -> list[str]:
     global _ALLOWED_ROOTS
     if _ALLOWED_ROOTS is None:
         extra = os.getenv("AITHER_ALLOWED_ROOTS", "")
-        _ALLOWED_ROOTS = _DEFAULT_ALLOWED_ROOTS + [r for r in extra.split(";") if r]
+        _ALLOWED_ROOTS = _default_roots() + [r for r in extra.split(";") if r]
     return _ALLOWED_ROOTS
 
 
@@ -63,7 +150,7 @@ def set_allowed_roots(roots: list[str]) -> None:
     cache so it takes effect immediately (env-only binding is a no-op after
     the first file-tool call, which memoizes _ALLOWED_ROOTS)."""
     global _ALLOWED_ROOTS
-    _ALLOWED_ROOTS = list(_DEFAULT_ALLOWED_ROOTS) + [r for r in roots if r]
+    _ALLOWED_ROOTS = _default_roots() + [r for r in roots if r]
 
 
 def _outside_roots(path: str) -> str:
@@ -77,9 +164,29 @@ def _outside_roots(path: str) -> str:
         roots = [str(r) for r in _get_allowed_roots()]
     except Exception:  # noqa: BLE001 -- the refusal still stands
         roots = []
-    return json.dumps({"error": f"Path outside allowed roots: {path}",
-                       "allowed_roots": roots,
-                       "hint": "re-issue with a path under one of allowed_roots"})
+    return json.dumps({
+        "error": (f"Path outside allowed roots: {path} -- this agent's files are "
+                  f"confined to {', '.join(roots) or '(no root)'}. To allow another "
+                  "folder, add it to files.allowed_roots in config.yaml "
+                  "(or AITHER_ALLOWED_ROOTS)."),
+        "allowed_roots": roots,
+        "hint": "re-issue with a path under one of allowed_roots"})
+
+
+def _real(path: str | os.PathLike) -> str:
+    """Fully resolved, case-folded spelling: symlinks and junctions followed,
+    ``..`` collapsed, Windows 8.3 short names expanded, ``\\\\?\\`` stripped."""
+    return os.path.normcase(os.path.realpath(os.fspath(path)))
+
+
+def _under(real_path: str, root: str | os.PathLike) -> bool:
+    """Component-wise containment (never a string prefix: ``C:/Users/al`` is not
+    inside ``C:/Users/a``). Another drive or a UNC share is simply not inside."""
+    try:
+        real_root = _real(root)
+        return os.path.commonpath([real_path, real_root]) == real_root
+    except (ValueError, OSError):
+        return False
 
 
 def _is_safe_path(path: str) -> bool:
@@ -87,7 +194,8 @@ def _is_safe_path(path: str) -> bool:
 
     When a pack scope is active (pack-UI bridge invocation), the ONLY allowed
     root is that pack's data dir — fail-closed so a pack UI can never read the
-    owner's unrelated files through the built-in file tools.
+    owner's unrelated files through the built-in file tools. The full-machine
+    opt-out never widens a pack scope.
     """
     try:
         from adk.pack_scope import get_pack_scope, path_in_scope
@@ -96,16 +204,44 @@ def _is_safe_path(path: str) -> bool:
     except ImportError:
         pass
     try:
-        resolved = str(Path(path).resolve())
-        return any(resolved.startswith(str(Path(r).resolve())) for r in _get_allowed_roots())
+        text = os.fspath(path)
+        if not text or "\x00" in text:
+            return False
+        if _full_machine():
+            return True
+        # The Win32 device namespace (\\.\PhysicalDrive0, \\.\pipe\x) is not a file tree.
+        if text.replace("/", "\\").startswith("\\\\.\\"):
+            return False
+        real = _real(text)
+        return any(_under(real, r) for r in _get_allowed_roots())
     except Exception:
         return False
+
+
+def _safe_entries(items, base: Path):
+    """Only the entries of a glob that really live inside the allowed roots.
+
+    A pattern may carry ``..`` and a tree may hold a link that points elsewhere;
+    either would list or read files the boundary check on ``base`` never saw.
+    """
+    verdicts: dict = {}
+    for item in items:
+        parent = item.parent
+        ok = verdicts.get(parent)
+        if ok is None:
+            ok = verdicts[parent] = _is_safe_path(str(parent))
+        if not ok:
+            continue
+        if item.is_symlink() and not _is_safe_path(str(item)):
+            continue                              # a link: judged by where it lands
+        yield item
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # File I/O Tools
 # ─────────────────────────────────────────────────────────────────────────────
 
+@in_turn_cwd
 def file_read(path: str, start_line: int = 0, end_line: int = 0, **_ignored) -> str:
     """Read a file from disk. Returns file contents.
 
@@ -157,6 +293,7 @@ CR_LF = "\r\n"
 LF = "\n"
 
 
+@in_turn_cwd
 def file_write(path: str, content: str, mode: str = "overwrite", **_ignored) -> str:
     """Write content to a file on disk.
 
@@ -294,6 +431,7 @@ def _edit_miss_diagnosis(content: str, old_text: str, max_chars: int = 700) -> d
                      "old_text must match the file byte for byte.")}
 
 
+@in_turn_cwd
 def file_edit(path: str, old_text: str, new_text: str, **_ignored) -> str:
     """Edit a file by replacing old_text with new_text (exact string match).
 
@@ -341,6 +479,7 @@ def file_edit(path: str, old_text: str, new_text: str, **_ignored) -> str:
         return json.dumps({"error": str(e)})
 
 
+@in_turn_cwd
 def file_list(path: str = ".", pattern: str = "*", **_ignored) -> str:
     """List files in a directory.
 
@@ -354,7 +493,7 @@ def file_list(path: str = ".", pattern: str = "*", **_ignored) -> str:
         if not p.is_dir():
             return json.dumps({"error": f"Not a directory: {path}"})
         entries = []
-        for item in sorted(p.glob(pattern))[:200]:
+        for item in sorted(_safe_entries(p.glob(pattern), p))[:200]:
             entries.append({
                 "name": item.name,
                 "type": "dir" if item.is_dir() else "file",
@@ -365,6 +504,7 @@ def file_list(path: str = ".", pattern: str = "*", **_ignored) -> str:
         return json.dumps({"error": str(e)})
 
 
+@in_turn_cwd
 def file_search(path: str = ".", pattern: str = "", content_pattern: str = "",
                 max_results: int = 50, file_glob: str = "",
                 query: str = "", **_ignored) -> str:
@@ -404,7 +544,7 @@ def file_search(path: str = ".", pattern: str = "", content_pattern: str = "",
     try:
         p = Path(path)
         matches = []
-        for item in p.glob(pattern):
+        for item in _safe_entries(p.glob(pattern), p):
             if not item.is_file():
                 continue
             if content_pattern:
@@ -509,7 +649,7 @@ def shell_exec(command: str, timeout: int = 30) -> str:
             return json.dumps({"error": f"Blocked: dangerous pattern '{pat}'"})
     if "git" in cmd_lower and "commit" in cmd_lower:
         from adk.git_guards import ensure_for_command
-        ensure_for_command(command, os.getcwd())  # awgit commit guards; fail-soft inside
+        ensure_for_command(command, _turn_cwd())  # awgit commit guards; fail-soft inside
 
     try:
         # On Unix, avoid shell=True to prevent injection. On Windows, PowerShell
@@ -523,7 +663,7 @@ def shell_exec(command: str, timeout: int = 30) -> str:
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
-            cwd=os.getcwd(),
+            cwd=_turn_cwd(),
             stdin=subprocess.DEVNULL,
             # PowerShell 7 colours table headers with ANSI escapes the model then has to
             # read around; NO_COLOR makes it render plain text (measured 2026-10-05).
@@ -1077,6 +1217,7 @@ def image_smart(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@in_turn_cwd
 def git_status(path: str = ".") -> str:
     """Show working tree status (modified, staged, untracked files)."""
     try:
@@ -1089,6 +1230,7 @@ def git_status(path: str = ".") -> str:
         return f"Error: {e}"
 
 
+@in_turn_cwd
 def git_diff(path: str = ".", staged: bool = False) -> str:
     """Show file changes. Set staged=true for staged changes only."""
     cmd = ["git", "diff"]
@@ -1101,6 +1243,7 @@ def git_diff(path: str = ".", staged: bool = False) -> str:
         return f"Error: {e}"
 
 
+@in_turn_cwd
 def git_log(path: str = ".", count: int = 10) -> str:
     """Show recent commit history."""
     try:
@@ -1113,6 +1256,7 @@ def git_log(path: str = ".", count: int = 10) -> str:
         return f"Error: {e}"
 
 
+@in_turn_cwd
 def git_add(files: str, path: str = ".") -> str:
     """Stage files for commit. Use '.' for all changes."""
     try:
@@ -1125,6 +1269,7 @@ def git_add(files: str, path: str = ".") -> str:
         return f"Error: {e}"
 
 
+@in_turn_cwd
 def git_commit(message: str, path: str = ".") -> str:
     """Create a commit with the given message."""
     from adk.git_guards import ensure_repo
@@ -1139,6 +1284,7 @@ def git_commit(message: str, path: str = ".") -> str:
         return f"Error: {e}"
 
 
+@in_turn_cwd
 def git_branch_list(path: str = ".") -> str:
     """List all branches, marking the current one."""
     try:
@@ -1156,6 +1302,7 @@ def git_branch_list(path: str = ".") -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@in_turn_cwd
 def code_search(pattern: str, path: str = ".", file_glob: str = "", max_results: int = 50) -> str:
     """Search code for a regex pattern. Uses ripgrep if available, falls back to grep.
 
@@ -2428,6 +2575,24 @@ def _init_nest_tools():
 # awbrowse — portable browser client for agents
 # ─────────────────────────────────────────────────────────────────────────
 
+def _awbrowse_client():
+    """awbrowse's BrowseClient for AWBROWSE_URL, or a JSON error string to return as-is.
+
+    awbrowse exports ``BrowseClient(base_url, token)``; there is no ``Browser`` class, and
+    the tools that imported one failed on every call with ImportError disguised as
+    "awbrowse not available" even when it was installed.
+    """
+    try:
+        from awbrowse import BrowseClient
+    except ImportError:
+        return json.dumps({"error": "awbrowse not available", "fix": "pip install awdk[senses]"})
+    base = os.environ.get("AWBROWSE_URL", "").strip()
+    if not base:
+        return json.dumps({"error": "no browser service configured",
+                           "fix": "set AWBROWSE_URL to an AitherBrowser-shaped service"})
+    return BrowseClient(base, os.environ.get("AWBROWSE_TOKEN") or None)
+
+
 def browse_page(url: str, action: str = "read") -> str:
     """Navigate and inspect a web page.
 
@@ -2437,26 +2602,26 @@ def browse_page(url: str, action: str = "read") -> str:
 
     This tool requires pip install awdk[senses] and an AitherBrowser-shaped service.
     """
+    client = _awbrowse_client()
+    if isinstance(client, str):
+        return client
     try:
-        from awbrowse import Browser
-    except ImportError:
-        return json.dumps({"error": "awbrowse not available", "fix": "pip install awdk[senses]"})
-
-    browser = Browser()
-    try:
-        browser.navigate(url)
         if action == "read":
-            return json.dumps({"url": url, "content": browser.get_text()})
+            page = client.browse(url)
+            return json.dumps({"url": page.url or url, "content": page.text})
         elif action == "screenshot":
-            return json.dumps({"url": url, "screenshot": browser.screenshot()})
+            page = client.browse(url, text=False, screenshot=True)
+            return json.dumps({"url": page.url or url, "screenshot": page.screenshot})
         elif action == "dom":
-            return json.dumps({"url": url, "dom": browser.get_dom()})
+            # The /browse route returns text, not markup; `dom` is the session's
+            # observation of the rendered page (role tree + visible text).
+            with client.open_session(url=url) as session:
+                obs = session.observe()
+            return json.dumps({"url": url, "dom": getattr(obs, "raw", obs)})
         else:
             return json.dumps({"error": f"unknown action: {action}"})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - returned to the agent as data
         return json.dumps({"error": str(e), "url": url})
-    finally:
-        browser.close()
 
 
 def browse_fill_form(url: str, fields: dict) -> str:
@@ -2466,22 +2631,18 @@ def browse_fill_form(url: str, fields: dict) -> str:
         url: The page containing the form
         fields: Dict of field names and values to fill
     """
+    client = _awbrowse_client()
+    if isinstance(client, str):
+        return client
     try:
-        from awbrowse import Browser
-    except ImportError:
-        return json.dumps({"error": "awbrowse not available", "fix": "pip install awdk[senses]"})
-
-    browser = Browser()
-    try:
-        browser.navigate(url)
-        for field_name, value in fields.items():
-            browser.fill_field(field_name, value)
-        browser.submit()
-        return json.dumps({"url": url, "submitted": True, "result": browser.get_text()})
-    except Exception as e:
+        with client.open_session(url=url) as session:
+            for field_name, value in fields.items():
+                session.fill(field_name, value)
+            session.act("submit")
+            obs = session.observe()
+        return json.dumps({"url": url, "submitted": True, "result": getattr(obs, "text", "")})
+    except Exception as e:  # noqa: BLE001 - returned to the agent as data
         return json.dumps({"error": str(e), "url": url})
-    finally:
-        browser.close()
 
 
 _BROWSE_TOOLS = [browse_page, browse_fill_form]
@@ -4129,6 +4290,9 @@ TOOL_INTENT_CATEGORIES = {
 # Agent Notebook tools are registered lazily (they proxy the Genesis /notebooks/*
 # router) — their intent categories are attached in _init_notebook_tools().
 
+# Every Windows desktop tool with its action class (adk/desktop/tools.py).
+from adk.desktop.tools import DESKTOP_TOOLS  # noqa: E402
+
 # Vectorless tree search over long Markdown documents (PageIndex-style; adk/graph_rag).
 from adk.graph_rag.page_index import doc_tree_search  # noqa: E402
 from adk.quarantine import quarantine_fetch  # noqa: E402 -- joins the web category
@@ -4165,6 +4329,9 @@ TOOL_CATEGORIES: dict = {
     "browse": [],  # populated lazily by _init_browse_tools()
     "find": [],  # populated lazily by _init_find_tools()
     "instruments": [],  # populated lazily by _init_instruments_tools()
+    # Registered by register_desktop_tools(agent) (the write-class ones keep their
+    # action_class); listed here so category counts and env selection see them.
+    "desktop": [fn for fn, _cls in DESKTOP_TOOLS],
     # Per-agent tenant-bound closures, registered by _register_strata_tools(agent) —
     # never a flat list, so the tenant cannot come from anywhere but the agent.
     "strata": [],
@@ -4198,7 +4365,7 @@ def categories_from_env(value: str) -> list[str] | None:
     for name in names:
         if name in TOOLPACK_ALIASES:
             out.extend(c for c in TOOLPACK_ALIASES[name] if c not in out)
-        elif name in TOOL_CATEGORIES or name in ("self", "storage"):
+        elif name in TOOL_CATEGORIES or name in ("self", "storage", "packs"):
             if name not in out:
                 out.append(name)
         else:
@@ -4211,9 +4378,12 @@ IDENTITY_DEFAULTS = {
     "adk-daemon": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
         "workspace", "notebooks", "models", "safety", "self", "decisions", "instruments",
+        "desktop",
         # browse/find were initialised and installed but in no identity's list, so the
         # awsh agent never had them; skills/a2a are the skill library and peer reach.
         "browse", "find", "skills", "a2a",
+        # search_packs/install_pack: add a capability mid-task (third-party asks first).
+        "packs",
     ],
     "demiurge": [
         "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
@@ -4228,7 +4398,7 @@ IDENTITY_DEFAULTS = {
         "self", "decisions"
     ],
     "aither": ["file_io", "shell", "web", "creative", "models", "self", "decisions",
-               "instruments", "browse", "find", "skills", "a2a"],
+               "instruments", "browse", "find", "skills", "a2a", "packs"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self", "decisions"],
     "hydra": [
         "file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety",
@@ -4443,10 +4613,21 @@ def register_builtin_tools(
 
             count += register_storage_tools(agent)
             continue
+        if cat == "packs":
+            # Closure-based: install_pack activates onto THIS agent.
+            from adk.pack_tools import register_pack_tools
+
+            count += register_pack_tools(agent)
+            continue
         if cat == "strata":
             # Closure-based: the tenant is bound from THIS agent's identity, so no
             # tool argument can point a call at another tenant's namespace.
             count += _register_strata_tools(agent)
+            continue
+        if cat == "desktop":
+            from adk.desktop.tools import register_desktop_tools
+
+            count += register_desktop_tools(agent)
             continue
         fns = TOOL_CATEGORIES.get(cat)
         if fns is None:
@@ -4462,6 +4643,40 @@ def register_builtin_tools(
         logger.info("Registered %d built-in tools (%s) on agent %s",
                      count, ", ".join(categories), agent.name)
     return count
+
+
+_LAZY_INITS = (
+    "_init_graph_tools", "_init_workspace_tools", "_init_voice_tools",
+    "_init_formbridge_tools", "_init_notebook_tools", "_init_persona_tools",
+    "_init_decision_tools", "_init_relay_tools", "_init_queue_tools", "_init_nest_tools",
+    "_init_browse_tools", "_init_find_tools", "_init_instruments_tools",
+)
+
+
+def get_builtin_registry():
+    """A fresh ``ToolRegistry`` holding every flat built-in tool (all categories).
+
+    For listing (``adk tools list``) and inspection. Closure categories (``self``,
+    ``storage``, ``strata``, ``packs``) bind to one live agent and are not included.
+
+    Returns:
+        adk.tools.ToolRegistry: a registry no agent shares.
+    """
+    from adk.tools import ToolRegistry
+
+    for name in _LAZY_INITS:
+        try:
+            globals()[name]()
+        except Exception:  # noqa: BLE001 - one optional category never hides the rest
+            logger.debug("builtin registry: %s failed", name, exc_info=True)
+    reg = ToolRegistry()
+    for fns in TOOL_CATEGORIES.values():
+        for fn in fns:
+            try:
+                reg.register(fn, intent_categories=TOOL_INTENT_CATEGORIES.get(fn, []))
+            except Exception:  # noqa: BLE001 - an unintrospectable fn is skipped, logged
+                logger.debug("builtin registry: cannot register %r", fn, exc_info=True)
+    return reg
 
 
 def register_tool_packs(

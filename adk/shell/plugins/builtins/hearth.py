@@ -22,7 +22,8 @@ Usage:
                                  [--due YYYY-MM-DD] [--yes] [-- <title>]
                                | announce <class> [--yes] -- <text>
                                | draft <class> [--minutes N] [--grade G] [--yes] -- <topic>
-                               assign, announce and draft send NOTHING until you repeat
+                               | plan <lesson> | edit <lesson> --sha S [--yes] -- <ops JSON>
+                               assign, announce, draft and edit send NOTHING until you repeat
                                the command with --yes; first they show what would go out.
 
 The token and the port are read from ``<home>/local.token``, which the running
@@ -68,12 +69,15 @@ TEACH_USAGE = """\
     assign <class> [lesson] [--skills a,b] [--to member] [--due YYYY-MM-DD] [--yes] [-- title]
     announce <class> [--yes] -- <text>
     draft <class> [--minutes N] [--grade G] [--yes] -- <topic>
-assign, announce and draft send nothing without --yes: they show what would go out."""
+    plan <lesson>                             a saved lesson plan and its sha256
+    edit <lesson> --sha <sha256> [--yes] -- <ops JSON>
+                                              e.g. -- [{"op":"remove","path":"steps[2]"}]
+assign, announce, draft and edit send nothing without --yes: they show what would go out."""
 
 #: The write verbs: each needs ``--yes`` before anything leaves this machine.
 _TEACH_WRITES = {"assign": "classroom_assign", "announce": "classroom_announce",
-                 "draft": "classroom_draft_lesson"}
-_TEACH_FLAGS = {"--skills", "--to", "--due", "--minutes", "--grade"}
+                 "draft": "classroom_draft_lesson", "edit": "classroom_edit_lesson_plan"}
+_TEACH_FLAGS = {"--skills", "--to", "--due", "--minutes", "--grade", "--sha"}
 
 
 def _teach_call(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -148,6 +152,8 @@ def _teach_plan(verb: str, rest: List[str]
     pos, flags, yes, text = _split_teach(rest)
     if verb == "classes" and not pos and not flags and not text:
         return "classroom_list_classes", {}, _render_classes, False
+    if not pos and verb in ("plan", "edit"):
+        raise ValueError(f"{verb} needs a lesson id (lesson.id from draft)")
     if not pos:
         raise ValueError(f"{verb} needs a class id (see /hearth teach classes)")
     cid, more = pos[0], pos[1:]
@@ -197,6 +203,24 @@ def _teach_plan(verb: str, rest: List[str]
         if flags.get("grade"):
             args["grade_level"] = flags["grade"]
         return "classroom_draft_lesson", args, _render_json, yes
+    if verb == "plan" and not more and not flags and not text:
+        return "classroom_lesson_plan", {"lesson_id": cid}, _render_json, False
+    if verb == "edit" and not more and set(flags) == {"sha"}:
+        if not text:
+            raise ValueError("usage: /hearth teach edit <lesson> --sha <sha256> [--yes] "
+                             "-- <ops JSON>")
+        try:
+            ops = json.loads(text)
+        except ValueError as exc:
+            raise ValueError("the text after -- must be a JSON list of ops") from exc
+        if isinstance(ops, dict):
+            ops = [ops]
+        if not isinstance(ops, list) or not ops:
+            raise ValueError("the text after -- must be a JSON list of ops")
+        # The gateway takes the ops as JSON text and re-checks every one.
+        return ("classroom_edit_lesson_plan",
+                {"lesson_id": cid, "expected_sha256": flags["sha"],
+                 "ops": json.dumps(ops)}, _render_json, yes)
     raise ValueError(f"unknown or malformed teach verb {' '.join([verb] + rest)!r}")
 
 

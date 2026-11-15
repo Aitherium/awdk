@@ -1,0 +1,20 @@
+# Auto-generated from _nvidia_spec/nvidia-components.yaml — do not hand-edit.
+id: nvidia_nim
+name: NVIDIA NIM (hosted build.nvidia.com API)
+version: 1.0.0
+description: "Hosted, OpenAI-compatible inference through build.nvidia.com. Free with an NGC API key and rate-limited. This is the hosted API lane only: self-hosted NIM requires NVIDIA AI Enterprise."
+category: tool_packs
+author: Aitherium
+icon: zap
+tags: [nvidia, nim, toolpack]
+license_class: mixed
+requires_auth: true
+available: true
+requires_nvaie: false
+self_hosted_requires_nvaie: true
+
+mcp_tools:
+  - "nim_*"
+tool_modules: []
+entitlements: []
+skills: []

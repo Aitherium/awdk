@@ -41,6 +41,7 @@ from adk.steering import (
     unregister_steering_queue,
 )
 from adk.tools import ToolDef, ToolRegistry
+from adk.turn_journal import journaled
 from adk.trace import get_trace_id
 
 logger = logging.getLogger("adk.agent")
@@ -1042,6 +1043,7 @@ class AitherAgent:
 
         # Tools
         self._tools = ToolRegistry()
+        self._tools.agent_name = self.name  # stamped on captured tool-call rows
         if self.credential_grants:
             self._wrap_tools_with_agent_credential()
         if getattr(self, "crystal", None) is not None:
@@ -1748,7 +1750,7 @@ class AitherAgent:
             self._strata = get_strata()
         return self._strata
 
-    def tool(self, fn=None, *, name=None, description=None):
+    def tool(self, fn=None, *, name=None, description=None, repeat_safe=False):
         """Decorator to register a tool function on this agent.
 
         Usage:
@@ -1756,9 +1758,13 @@ class AitherAgent:
             def search(query: str) -> str:
                 '''Search the web.'''
                 return "results..."
+
+        ``repeat_safe=True`` declares the tool idempotent or read-only: a turn
+        resumed after a kill runs it again if it was in flight (adk.turn_journal).
         """
         def decorator(f):
-            self._tools.register(f, name=name, description=description)
+            extra = {"repeat_safe": True} if repeat_safe else {}
+            self._tools.register(f, name=name, description=description, **extra)
             return f
 
         if fn is not None:
@@ -2068,6 +2074,7 @@ class AitherAgent:
 
         self._tools.execute = _execute_as_agent
 
+    @journaled("chat")
     async def chat(
         self,
         message: str,
@@ -2175,18 +2182,21 @@ class AitherAgent:
         messages = None
         if self._context_mgr:
             try:
+                # The manager is ONE object per agent and two turns can run at once
+                # (two sessions on one server; turns resumed together at startup).
+                # History is read BEFORE the manager is touched, so nothing awaits
+                # between clear() and build(). With the await inside, the second
+                # turn's clear() landed mid-assembly and a session's prompt carried
+                # the other session's user message (measured 2026-11-12: two
+                # concurrent sessions, one ran the other's tool).
+                _prior = history or await self.memory.get_history(sid, limit=20)
                 self._context_mgr.clear()
                 # Make intent available to context assembly (add_system uses it
                 # to skip the heavy technical system-facts block on chit-chat).
                 self._context_mgr.set_intent(self._current_intent)
                 self._context_mgr.add_system(_turn_sys_prompt)
-                if history:
-                    for h in history:
-                        self._context_mgr.add(h["role"], h["content"])
-                else:
-                    stored = await self.memory.get_history(sid, limit=20)
-                    for h in stored:
-                        self._context_mgr.add(h["role"], h["content"])
+                for h in _prior:
+                    self._context_mgr.add(h["role"], h["content"])
                 self._context_mgr.add_user(_user_turn)
                 msg_dicts = self._context_mgr.build()
                 messages = [Message(role=d["role"], content=d["content"]) for d in msg_dicts]
@@ -3605,6 +3615,7 @@ class AitherAgent:
                 logger.warning("[CRYSTAL] crystallize failed: %s", exc)
         return text
 
+    @journaled("stream_react")
     async def stream_react(
         self,
         message: str,

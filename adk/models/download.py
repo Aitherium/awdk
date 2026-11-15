@@ -27,6 +27,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+from adk._tls import urllib_context
+
 CHUNK = 4 * 1024 * 1024
 # Cloudflare answers the default Python-urllib agent with 403 (error 1010).
 UA = "awdk-models/1 (+https://aitherium.com)"
@@ -52,7 +54,7 @@ def head(url: str, timeout: float = TIMEOUT) -> Optional[int]:
     """The size the server states for ``url``, or None when it will not say."""
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": UA})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=urllib_context()) as resp:
             length = resp.headers.get("Content-Length")
             return int(length) if length and int(length) > 0 else None
     except (urllib.error.URLError, OSError, ValueError):
@@ -76,7 +78,7 @@ def _attempt(url: str, part: Path, expected: int, timeout: float,
         headers["Range"] = f"bytes={have}-"
     req = urllib.request.Request(url, headers=headers)
     ranged = True
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=urllib_context()) as resp:
         status = getattr(resp, "status", 200)
         if have and status != 206:
             # The server ignored the Range and is sending byte 0 again. Appending would

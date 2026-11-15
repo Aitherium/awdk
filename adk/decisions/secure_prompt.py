@@ -564,6 +564,125 @@ def resolve_card(card_id: str, store: DecisionStore) -> DecisionCard:
     return card
 
 
+# -- verify BEFORE store: a refused value never overwrites a working one --------
+#
+# 2026-11-09: the Bridge-refused card stored WHATEVER was typed. The vault held
+# Bridge's 22-char mailbox password (it logged in); the owner answered a stale
+# card with his 14-char Proton LOGIN, which overwrote the good value, Bridge
+# refused it, and a new card was raised a minute later -- five times in three
+# days, each "stored" answer breaking mail again. A recipe that sets
+# ``verify_before_store`` runs its probe against the CANDIDATE first; only a value
+# the provider accepts is written.
+
+#: credential_recipes.yaml keys that make the door strict for one family.
+VERIFY_BEFORE_STORE = "verify_before_store"
+CLOSE_WHEN_VERIFIED = "close_when_verified"
+
+#: ``probe(recipe, value, user) -> verdict``; None = ``recipes.run_verify`` with
+#: ``candidate=value``. Raises ``RecipeError`` when it cannot run. Tests replace it.
+candidate_probe: Any = None
+#: ``verify(recipe, user) -> True | False | None`` for the STORED value; None =
+#: ``recipes.run_verify``. None means "could not tell" and never closes a card.
+stored_probe: Any = None
+
+
+def _load_recipes_quiet() -> "tuple[dict[str, dict[str, Any]], Optional[Path]]":
+    try:
+        from adk.decisions.recipes import RecipeError, load_recipes, recipes_path
+    except ImportError:
+        return {}, None
+    try:
+        path = recipes_path()
+        return load_recipes(path), path
+    except RecipeError as exc:
+        logger.warning("credential recipes unreadable (%s) -- no verify-before-store",
+                       str(exc)[:160])
+        return {}, None
+
+
+def recipe_for_card(card: DecisionCard, recipes: dict[str, dict[str, Any]],
+                    recipes_file: Optional[Path]) -> "tuple[str, dict[str, Any], str]":
+    """``(recipe_id, recipe, user)`` that owns ``card``'s secret, or ``("", {}, "")``.
+
+    ``credential_recipe`` on the card first; else the recipe whose canonical name
+    template (``proton_bridge_pw_{user}``) or alias the card's secret matches --
+    the mail poller's card reaches the daemon without its recipe id, and a card
+    already open must be judged by the same rule as a new one.
+    """
+    own = (card.secret_name or "").strip()
+    rid = (card.credential_recipe or "").strip()
+    order = ([rid] if rid in recipes else []) + [k for k in recipes if k != rid]
+    for key in order:
+        recipe = recipes[key]
+        cfg_user = _recipe_user(recipe, recipes_file)
+        if key == rid:
+            return key, recipe, _user_from_name(recipe, own) or cfg_user
+        user = _user_from_name(recipe, own)
+        if user:
+            return key, recipe, user
+        if own and own in {str(a) for a in (recipe.get("aliases") or [])}:
+            return key, recipe, cfg_user
+        if own and own == str(recipe.get("vault_name") or "") and "{" not in own:
+            return key, recipe, cfg_user
+    return "", {}, ""
+
+
+def _user_from_name(recipe: dict[str, Any], own: str) -> str:
+    tmpl = str(recipe.get("vault_name") or "")
+    if "{user}" not in tmpl or not own:
+        return ""
+    head, _, tail = tmpl.partition("{user}")
+    if own.startswith(head) and own.endswith(tail) and len(own) > len(head + tail):
+        return own[len(head):len(own) - len(tail)]
+    return ""
+
+
+def fingerprint(value: str) -> str:
+    """``N chars, sha256 xxxxxxxx`` -- what a refusal may show. Never the value."""
+    return f"{len(value)} chars, sha256 {hashlib.sha256(value.encode('utf-8')).hexdigest()[:8]}"
+
+
+def verify_before_store(card: DecisionCard, value: str, *,
+                        recipes: Optional[dict[str, dict[str, Any]]] = None,
+                        recipes_file: Optional[Path] = None) -> "tuple[bool, str]":
+    """``(may_store, note)`` for ``value`` on ``card``. ``note`` never holds the value.
+
+    True with ``""`` for a family that does not demand it. For one that does,
+    True only when the probe ACCEPTED the candidate; a refusal, or a probe that
+    could not run, is False -- nothing is written and the card stays open.
+    """
+    if recipes is None:
+        recipes, recipes_file = _load_recipes_quiet()
+    rid, recipe, user = recipe_for_card(card, recipes or {}, recipes_file)
+    if not recipe or not recipe.get(VERIFY_BEFORE_STORE):
+        return True, ""
+    provider = str(recipe.get("provider") or rid)
+    fp = fingerprint(value)
+    try:
+        if candidate_probe is not None:
+            verdict = candidate_probe(recipe, value, user)
+        else:
+            from adk.decisions.recipes import run_verify
+
+            verdict = run_verify(recipe, user=user, candidate=value)
+    except Exception as exc:  # noqa: BLE001 - RecipeError and any transport failure
+        return False, (f"NOT stored: {provider} could not be reached to check the value "
+                       f"({fp}; {type(exc).__name__}: {str(exc)[:160]}). The card stays "
+                       "open; try again when the fleet is up.")
+    if verdict.get("ok"):
+        return True, f"{provider} accepted it ({fp})"
+    typical = int(recipe.get("typical_length") or 0)
+    looks = str(recipe.get("short_value_hint") or "").strip()
+    hint = str(recipe.get("refused_hint") or "").strip()
+    parts = [f"{provider} refused that ({fp})."]
+    if looks and typical and len(value) < typical - 4:
+        parts.append(looks)
+    if hint:
+        parts.append(hint)
+    parts.append("Nothing was stored; the card stays open.")
+    return False, " ".join(parts)
+
+
 def vault_credential(card_id: str, store: DecisionStore, value: str,
                      *, via: str = "cli-masked",
                      host_only: bool = False) -> tuple[int, str]:
@@ -578,8 +697,9 @@ def vault_credential(card_id: str, store: DecisionStore, value: str,
     marker and nothing else, so an entry point that forgot the push would
     close the ask having stored nothing, reporting success.
 
-    Returns ``(code, detail)``: 0 vaulted and closed · 1 vault write FAILED
-    (card left OPEN, so the ask is not lost) · 2 empty input refused (card
+    Returns ``(code, detail)``: 0 vaulted and closed · 1 vault write FAILED, or
+    the recipe's verify-before-store probe refused the value or could not run
+    (card left OPEN, nothing written, so the ask is not lost) · 2 empty input refused (card
     left OPEN). ``detail`` names the leg that succeeded, or every leg that was
     tried and why each was shut. The VALUE is never returned, logged, printed
     or placed in ``detail``.
@@ -587,6 +707,12 @@ def vault_credential(card_id: str, store: DecisionStore, value: str,
     card = resolve_card(card_id, store)
     if not value:
         return 2, "nothing entered"
+    # BEFORE any write: a family whose recipe says verify_before_store stores only
+    # a value its provider accepts (the refused value never reaches the vault).
+    may_store, verified = verify_before_store(card, value)
+    if not may_store:
+        store.add_facts(card_id, [verified])
+        return 1, verified
     label = card.secret_name or card.id
     scope = (card.credential_scope or SCOPE_PLATFORM).strip().lower()
     # THE ONLY frame that holds the value. The digest is taken here so the
@@ -618,7 +744,7 @@ def vault_credential(card_id: str, store: DecisionStore, value: str,
     # "stored, N chars" the standalone GUI writes, never the value.
     store.answer(card_id, DecisionCard.CREDENTIAL_ANSWER, note=f"stored, {chars} chars",
                  via=via, receipt=receipt)
-    return 0, detail + ("" if receipt.get("signed")
+    return 0, (f"{verified}; " if verified else "") + detail + ("" if receipt.get("signed")
                         else " — receipt UNSIGNED (" + str(receipt.get("reason")) + ")")
 
 
@@ -787,10 +913,39 @@ def _recipe_name_sets(card: DecisionCard, recipes: dict[str, dict[str, Any]],
     return sets
 
 
+#: ``(card_id, stored length) -> (verdict, at)``: the stored value is probed again
+#: only when its length changes or after this many seconds. A refused probe is a
+#: LOGIN attempt, and Bridge locks the account after repeated ones.
+VERIFIED_PROBE_EVERY_S = 1800
+_verified_memo: "dict[tuple[str, int], tuple[Optional[bool], float]]" = {}
+
+
+def _stored_value_works(card: DecisionCard, recipe: dict[str, Any], user: str,
+                        length: int, verify: Any) -> Optional[bool]:
+    """True/False: the CURRENT vault value passes/fails the recipe probe. None: unknown."""
+    key = (card.id, length)
+    hit = _verified_memo.get(key)
+    if hit and time.time() - hit[1] < VERIFIED_PROBE_EVERY_S:
+        return hit[0]
+    try:
+        if verify is not None:
+            verdict: Optional[bool] = verify(recipe, user)
+        else:
+            from adk.decisions.recipes import run_verify
+
+            verdict = bool(run_verify(recipe, user=user).get("ok"))
+    except Exception as exc:  # noqa: BLE001 - could not tell is never "it works"
+        logger.info("reconcile: verify for %s could not run (%s)", card.id,
+                    type(exc).__name__)
+        verdict = None
+    _verified_memo[key] = (verdict, time.time())
+    return verdict
+
+
 def reconcile_present(store: DecisionStore, *, presence: PresenceFn = None,
                       recipes: Optional[dict[str, dict[str, Any]]] = None,
                       recipes_file: Optional[Path] = None,
-                      log: Any = None) -> list[tuple[str, str, int]]:
+                      log: Any = None, verify: Any = None) -> list[tuple[str, str, int]]:
     """Close every open credential card whose secret is ALREADY in the vault.
 
     For each open credential card, ask ``presence`` (names and lengths only —
@@ -801,6 +956,12 @@ def reconcile_present(store: DecisionStore, *, presence: PresenceFn = None,
 
     A presence answer of <0 ("could not tell") never closes anything: an
     unreachable vault must not read as a full one.
+
+    A family whose recipe sets ``close_when_verified`` (the Bridge password) is
+    judged by its probe instead of by presence, refused-title cards included:
+    present is not enough (the stored value may be the refused one), and a
+    refused card whose CURRENT value logs in is stale and closes. ``verify``
+    ``(recipe, user) -> True | False | None`` replaces the in-fleet probe in tests.
     """
     probe = presence or _host_presence
     say = log or (lambda msg: logger.info("%s", msg))
@@ -817,6 +978,31 @@ def reconcile_present(store: DecisionStore, *, presence: PresenceFn = None,
     for card in store.list(status="open"):
         if (card.kind or "").strip().lower() != "credential":
             continue
+        scope = (card.credential_scope or SCOPE_PLATFORM).strip().lower()
+        _rid, owner_recipe, user = recipe_for_card(card, recipes, recipes_file)
+        if owner_recipe.get(CLOSE_WHEN_VERIFIED):
+            # The probe reads the CANONICAL name, so presence is asked of it too.
+            name = str(owner_recipe.get("vault_name") or "").replace("{user}", user)
+            if "{" in name or not name:
+                continue
+            n = probe(name, scope)
+            if n <= 0 or not _stored_value_works(card, owner_recipe, user, n, verify):
+                continue
+            receipt = _sign_receipt({
+                "card_id": card.id, "secret_name": name, "scope": scope,
+                "present": {name: n}, "verified": True, "via": "reconcile",
+                "answered_at": time.time(),
+            })
+            try:
+                store.resolve(card.id, note=f"the stored value works (len {n}, verified)",
+                              receipt=receipt)
+            except DecisionError as exc:
+                say("reconcile: " + card.id + " not closed: " + str(exc)[:160])
+                continue
+            say("reconcile: closed " + card.id + " -- the stored " + name
+                + f" passes its probe (len {n})")
+            closed.append((card.id, name, n))
+            continue
         if _REPLACE_ASK.search(card.title or ""):
             # TITLE only: summaries carry boilerplate ("a refused write leaves
             # the card open") that would match every card.
@@ -824,7 +1010,6 @@ def reconcile_present(store: DecisionStore, *, presence: PresenceFn = None,
             # premise of the card, not its answer. Leaving it open is today's
             # behaviour; closing it would silently drop a rotation.
             continue
-        scope = (card.credential_scope or SCOPE_PLATFORM).strip().lower()
         for names in _recipe_name_sets(card, recipes, recipes_file):
             lengths = {n: probe(n, scope) for n in names}
             if not lengths or any(v <= 0 for v in lengths.values()):

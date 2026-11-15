@@ -70,6 +70,14 @@ QUEUE = {"responses": [
 ]}
 LESSON = {"id": "lsn_1", "class_id": "cls_room4", "topic": "Short vowels",
           "grade_level": "K-2", "status": "draft", "research_context": "Warm-up: chant."}
+SHA = "a" * 64
+PLAN = {"title": "Short vowels", "objective": "Read CVC words.", "warm_up": "Chant.",
+        "steps": ["Model", "Practice"], "check_for_understanding": ["Read 3 words"],
+        "materials": ["cards"], "grade_level": "K-2", "duration_minutes": 30,
+        "standards": []}
+QUIZ = {"id": "chl_1", "title": "Check quiz", "challenge_type": "multiple-choice",
+        "questions": [{"prompt": "Which word has a short a?", "options": ["cat", "cake"],
+                       "correct_answer": "cat", "answer_key": 0}]}
 NO_ID_ARG = re.compile(r"tenant|user|guardian|teacher|owner|uid|account", re.I)
 
 
@@ -115,6 +123,29 @@ class Genesis:
                 return httpx.Response(200, json=LESSON)
             if m == "PATCH":
                 return httpx.Response(200, json={**LESSON, **(body or {})})
+        if p == "/api/v1/classroom/lessons/lsn_1/studio/plan":
+            if m == "GET":
+                return httpx.Response(200, json={"lesson_id": "lsn_1", "status": "draft",
+                                                 "artifact_id": "art_1", "sha256": SHA,
+                                                 "plan": PLAN})
+            if m == "PATCH":
+                if (body or {}).get("expected_sha256") != SHA:
+                    return httpx.Response(409, json={
+                        "detail": "The plan changed since you read it; read it again"})
+                return httpx.Response(200, json={
+                    "lesson": {**LESSON, "status": "draft"}, "plan": PLAN,
+                    "artifact_id": "art_1", "sha256": "b" * 64, "tiers_dropped": 3})
+        if p == "/api/v1/classroom/lessons/lsn_1/studio/quiz" and m == "POST":
+            return httpx.Response(201, json={"ai": "on", "reason": "ok", "lesson_id": "lsn_1",
+                                             "challenge": QUIZ})
+        if p == "/api/v1/classroom/lessons/lsn_1/studio/deck" and m == "POST":
+            return httpx.Response(201, json={"ai": "off", "reason": "model offline",
+                                             "lesson_id": "lsn_1", "deck": None,
+                                             "artifact_id": None})
+        if p == "/api/v1/classroom/classes/cls_room4/responses/rsp_1/suggest" and m == "POST":
+            return httpx.Response(200, json={
+                "response_id": "rsp_1", "suggested_score": 2.0, "suggested_at": "t",
+                "suggested_comment": "Names the vowel sound. Ana has ADHD.", "reason": "ok"})
         if re.search(r"/room/threads/[^/]+/messages$", p) and m == "POST":
             return httpx.Response(201, json={"sent": True, "id": "m1"})
         return httpx.Response(404, json={"detail": "Not Found"})
@@ -155,10 +186,10 @@ def _model(reply: str):
 
 # ── the contract ────────────────────────────────────────────────────────────────
 
-def test_seven_tools_named_safely(genesis):
+def test_eleven_tools_named_safely(genesis):
     tools = _tools(genesis)
     assert set(tools) == TEACHER_READERS | TEACHER_WRITERS
-    assert len(tools) == 7                                   # Bonsai 8B tool budget
+    assert len(tools) == 11                 # small-model tool budget: quiz+deck share one
     for name, fn in tools.items():
         assert not name.startswith(("file_", "shell")), name
         assert (fn.__doc__ or "").strip(), name
@@ -216,7 +247,12 @@ def test_network_failure_is_error_json_not_exception():
                        ("lesson_draft", ("Room 4", "vowels")), ("differentiate", ("lsn_1",)),
                        ("grade_assist", ("Room 4", "Ana", "rsp_1")),
                        ("parent_note_draft", ("Ana",)),
-                       ("parent_note_send", ("Ana", "Hello"))):
+                       ("parent_note_send", ("Ana", "Hello")),
+                       ("lesson_plan", ("lsn_1",)),
+                       ("lesson_plan_edit", ("lsn_1", SHA, [{"op": "remove",
+                                                             "path": "steps[1]"}])),
+                       ("lesson_extra", ("lsn_1", "quiz")),
+                       ("suggest_score", ("Room 4", "Ana", "rsp_1"))):
         out = _run(tools[name], *args)
         assert "unreachable" in out["error"], name
 
@@ -683,3 +719,95 @@ def test_setup_keep_model_refuses_a_byo_model(tmp_path, monkeypatch):
     out = teach_setup.setup(BASE, root=root, probe=lambda u: {"online": True, "url": u},
                             signed_in=lambda: True, out=lambda s: None)
     assert out["model"] == "bonsai" and models.is_local(hc.load_config(root).model)
+
+
+# ── the lesson studio routes ─────────────────────────────────────────────────
+
+def test_lesson_draft_sends_sources_and_keeps_the_grounding(genesis):
+    gen = _model("Objective: read CVC words.")
+    out = _run(_tools(genesis, gen)["lesson_draft"], "Room 4", "Short vowels",
+               sources=[{"name": "My notes", "text": "cat, hat, mat"}, "pasted page"])
+    (post,) = genesis.writes()                              # no local research_context PATCH
+    assert post["body"]["sources"] == [{"name": "My notes", "text": "cat, hat, mat"},
+                                       {"name": "source 2", "text": "pasted page"}]
+    assert out["local_plan"].startswith("skipped") and gen.seen == []
+
+
+@pytest.mark.parametrize("bad", [["x"] * 6, [{"name": "n"}], [{"text": "t", "x": 1}],
+                                 ["y" * 50_001], 7])
+def test_lesson_draft_refuses_bad_sources_without_calling(genesis, bad):
+    out = _run(_tools(genesis)["lesson_draft"], "Room 4", "Short vowels", sources=bad)
+    assert "error" in out and genesis.calls == []
+
+
+def test_lesson_plan_reads_the_plan_and_its_sha(genesis):
+    out = _run(_tools(genesis)["lesson_plan"], "lsn_1")
+    assert out["sha256"] == SHA and out["plan"]["steps"] == ["Model", "Practice"]
+    assert genesis.writes() == []
+
+
+def test_lesson_plan_edit_patches_with_the_sha_and_ops(genesis):
+    ops = [{"op": "set", "path": "steps[1]", "value": "Pair practice"}]
+    out = _run(_tools(genesis)["lesson_plan_edit"], "lsn_1", SHA, json.dumps(ops))
+    (patch,) = genesis.writes()
+    assert patch["method"] == "PATCH"
+    assert patch["path"] == "/api/v1/classroom/lessons/lsn_1/studio/plan"
+    assert patch["body"] == {"expected_sha256": SHA, "ops": ops}
+    assert out["status"] == "draft" and out["tiers_dropped"] == 3
+
+
+def test_lesson_plan_edit_stale_sha_says_read_again(genesis):
+    out = _run(_tools(genesis)["lesson_plan_edit"], "lsn_1", "c" * 64,
+               [{"op": "remove", "path": "steps[1]"}])
+    assert out["status"] == 409 and "lesson_plan" in out["hint"]
+
+
+@pytest.mark.parametrize("sha, ops", [
+    ("short", [{"op": "remove", "path": "steps[1]"}]),
+    (SHA, []), (SHA, "not json"), (SHA, [{"op": "delete", "path": "steps[1]"}]),
+    (SHA, [{"op": "set", "path": "steps[1]", "value": 3}]),
+    (SHA, [{"op": "set", "path": "steps[1]", "value": "v", "extra": "x"}]),
+    (SHA, [{"op": "remove", "path": "s" * 49}]),
+    (SHA, [{"op": "remove", "path": "steps[0]"}] * 21),
+])
+def test_lesson_plan_edit_refuses_malformed_input_without_calling(genesis, sha, ops):
+    out = _run(_tools(genesis)["lesson_plan_edit"], "lsn_1", sha, ops)
+    assert "error" in out and genesis.calls == []
+
+
+def test_lesson_extra_quiz_saves_and_hides_the_key(genesis):
+    out = _run(_tools(genesis)["lesson_extra"], "lsn_1", "quiz")
+    (post,) = genesis.writes()
+    assert post["path"] == "/api/v1/classroom/lessons/lsn_1/studio/quiz"
+    assert out["saved"] is True
+    assert out["challenge"]["questions"] == ["Which word has a short a?"]
+    text = json.dumps(out)
+    assert "correct_answer" not in text and "answer_key" not in text and "cake" not in text
+
+
+def test_lesson_extra_deck_reports_nothing_saved(genesis):
+    out = _run(_tools(genesis)["lesson_extra"], "lsn_1", "Deck")
+    (post,) = genesis.writes()
+    assert post["path"] == "/api/v1/classroom/lessons/lsn_1/studio/deck"
+    assert out["saved"] is False and out["reason"] == "model offline"
+
+
+def test_lesson_extra_refuses_an_unknown_kind(genesis):
+    assert "error" in _run(_tools(genesis)["lesson_extra"], "lsn_1", "video")
+    assert genesis.calls == []
+
+
+def test_suggest_score_posts_once_and_never_confirms(genesis):
+    out = _run(_tools(genesis)["suggest_score"], "Room 4", "Ana", "rsp_1")
+    (post,) = genesis.writes()
+    assert post["path"] == "/api/v1/classroom/classes/cls_room4/responses/rsp_1/suggest"
+    assert post["body"] is None                              # nothing but the bearer
+    assert not [c for c in genesis.calls if c["path"].endswith("/review")]
+    assert out["suggested_score"] == 2.0 and out["scored"] is False
+    assert "ADHD" not in out["suggested_comment"] and out["filtered"] == 1
+    assert "confirm" not in json.dumps(out).lower()
+
+
+def test_suggest_score_refuses_another_students_response(genesis):
+    out = _run(_tools(genesis)["suggest_score"], "Room 4", "Ben", "rsp_1")
+    assert "error" in out and genesis.writes() == []

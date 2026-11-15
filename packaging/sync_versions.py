@@ -100,47 +100,57 @@ def get_version() -> str:
 
 
 def sync_server_json(version: str, check: bool) -> bool:
-    """Update server.json — the MCP Registry entry.
+    """Update every server.json — the GitHub and the domain-auth MCP Registry entries.
 
-    TWO versions live in this file and BOTH must match the package: the server
+    TWO versions live in EACH file and both must match the package: the server
     version and `packages[0].version`. The registry rejects a package version
     that is not on PyPI, so a half-bumped file fails the publish with a message
     about the registry rather than about us.
 
-    Also asserts the ownership marker in README.md still names this server. The
+    Two entries exist on purpose: the root `server.json` is `io.github.*`
+    (GitHub auth, a stdio package only), and `packaging/mcp-registry/server.json`
+    is `com.aitherium/aitheros` (aitherium.com domain auth, with the remote at
+    mcp.aitherium.com/mcp). Both are bumped here so neither can drift, and
+    `check_mcp_registry_entry.py` asserts the domain-auth one in CI.
+
+    Also asserts the ownership marker in README.md still names each server. The
     registry proves ownership by fetching the PUBLISHED PyPI description and
     looking for `mcp-name: <name>`; if the two drift, publishing fails with an
     opaque verification error and nothing local shows a problem.
     """
     root = Path(__file__).parent.parent
-    path = root / "server.json"
-    if not path.exists():
-        print("  server.json: absent (skipped)")
-        return True
-    data = json.loads(path.read_text(encoding="utf-8"))
-    pkgs = data.get("packages") or [{}]
+    readme = root / "README.md"
+    readme_text = readme.read_text(encoding="utf-8") if readme.exists() else ""
 
     ok = True
-    marker = f"mcp-name: {data.get('name', '')}"
-    readme = root / "README.md"
-    if readme.exists() and marker not in readme.read_text(encoding="utf-8"):
-        print(f"  server.json: README.md has no '{marker}' — MCP Registry "
-              f"ownership verification WILL fail")
-        ok = False
+    for rel in ("server.json", "packaging/mcp-registry/server.json"):
+        path = root / rel
+        if not path.exists():
+            print(f"  {rel}: absent (skipped)")
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pkgs = data.get("packages") or [{}]
 
-    if data.get("version") == version and pkgs[0].get("version") == version:
-        print(f"  server.json: already {version}")
-        return ok
-    if check:
-        print(f"  server.json: {data.get('version')}/{pkgs[0].get('version')} "
-              f"-> {version} (needs update)")
-        return False
-    data["version"] = version
-    if pkgs and pkgs[0]:
-        pkgs[0]["version"] = version
-        data["packages"] = pkgs
-    path.write_text(json.dumps(data, indent=2) + chr(10), encoding="utf-8")
-    print(f"  server.json: updated to {version}")
+        marker = f"mcp-name: {data.get('name', '')}"
+        if readme_text and marker not in readme_text:
+            print(f"  {rel}: README.md has no '{marker}' — MCP Registry "
+                  f"ownership verification WILL fail")
+            ok = False
+
+        if data.get("version") == version and pkgs[0].get("version") == version:
+            print(f"  {rel}: already {version}")
+            continue
+        if check:
+            print(f"  {rel}: {data.get('version')}/{pkgs[0].get('version')} "
+                  f"-> {version} (needs update)")
+            ok = False
+            continue
+        data["version"] = version
+        if pkgs and pkgs[0]:
+            pkgs[0]["version"] = version
+            data["packages"] = pkgs
+        path.write_text(json.dumps(data, indent=2) + chr(10), encoding="utf-8")
+        print(f"  {rel}: updated to {version}")
     return ok
 
 

@@ -50,6 +50,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from adk._tls import urllib_context
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -84,7 +86,81 @@ DEFAULT_CTX = 8192
 # build list. Measured 2026-08-22: that one line broke install on EVERY
 # platform, and reported it as 'no matching build for linux/cpu/x64', which
 # sent the investigation at the matcher instead of the URL.
-LLAMACPP_RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
+#
+# AND NOT "the newest build" either (2026-11-14). llama.cpp is semver from v1.0.0 on:
+# a MAJOR breaks the public C API / server flags (v1 removed --defrag-thold and 35
+# deprecated functions, and tightened mmproj loading). Following the newest nightly
+# meant every first-run install could land on a breaking MAJOR nobody here had tried.
+# The install is now PINNED to a named release, and the archive is verified before it
+# is extracted (see verify_llamacpp_asset).
+#
+# v1.0.0 itself carries NO binaries (one asset, nightly-tag.txt, which reads "b12359");
+# nightly b12359 is the same commit (b1b770d90d94cad9e9ea5b993bdbc383a522fb28,
+# `compare b12359...v1.0.0` = identical), so its assets ARE the v1.0.0 build.
+# Bump: change these three, regenerate LLAMACPP_ASSET_SHA256 from the release's asset
+# `digest` fields (`gh api repos/ggml-org/llama.cpp/releases/tags/<tag>`), and check
+# docs/plans/2026-11-14-llamacpp-v1.md for flags/API that the new MAJOR removed.
+LLAMACPP_REPO = "ggml-org/llama.cpp"
+LLAMACPP_RELEASE_NAME = "v1.0.0"
+LLAMACPP_PINNED_TAG = "b12359"
+LLAMACPP_PINNED_COMMIT = "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"
+#: An operator can point at another build (AITHER_LLAMACPP_TAG=b12400). There is no
+#: recorded sha256 for an unpinned tag, so such an install REQUIRES a passing
+#: `gh attestation verify` and refuses without one.
+LLAMACPP_RELEASE_TAG = os.environ.get("AITHER_LLAMACPP_TAG", "").strip() or LLAMACPP_PINNED_TAG
+LLAMACPP_RELEASES_API = (
+    f"https://api.github.com/repos/{LLAMACPP_REPO}/releases/tags/{LLAMACPP_RELEASE_TAG}")
+
+#: sha256 of every b12359 asset this installer can pick, read 2026-11-14 from the
+#: release API's `digest` field and spot-checked locally (win-cpu-x64 hashed and
+#: `gh attestation verify --repo ggml-org/llama.cpp` passed; a one-byte-appended copy
+#: was refused with 404 no attestation). llama.cpp publishes no checksum files.
+LLAMACPP_ASSET_SHA256 = {
+    "llama-b12359-bin-win-cpu-x64.zip":
+        "837c1655e87df3b66989f4be33a792a1399c785bf259038dc75c900096683e69",
+    "llama-b12359-bin-win-cpu-arm64.zip":
+        "d27564c754478d2832789dfcebfc5ace018e36a224c41d810b7cbc1ba8243ec0",
+    "llama-b12359-bin-win-cuda-12.4-x64.zip":
+        "e9c0abf442e8339c06728366c1ad2c711332f9939c0c00603fb75d85fd44c914",
+    "llama-b12359-bin-win-cuda-13.5-x64.zip":
+        "1de9ca1ff408d6e348ea0007c6880ad2393311a02e7799bcde26dc16daef03dd",
+    "llama-b12359-bin-win-cuda-13.5-arm64.zip":
+        "f40398808e74b88c3ccee904824667ef9825692843533e7fc22881ab2e4de9da",
+    "llama-b12359-bin-win-vulkan-x64.zip":
+        "e8d18c6e4210cca87e7307c2ea78363ac8d158e4e1397358ec96ab70b53a0d5e",
+    "llama-b12359-bin-win-vulkan-arm64.zip":
+        "62cd50089cffdd825524a91c5a8819041eb75d8e2beacd6eca68194dba50574f",
+    "cudart-llama-bin-win-cuda-12.4-x64.zip":
+        "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+    "cudart-llama-bin-win-cuda-13.5-x64.zip":
+        "c2bf4cc202bfbaaa7a0b75f5082457c3811326947bb216059b72839d844e9cba",
+    "cudart-llama-bin-win-cuda-13.5-arm64.zip":
+        "f89e7b2457f627d052dd99f42205ddfd01964454809754cdc649cffc74320dca",
+    "llama-b12359-bin-ubuntu-x64.tar.gz":
+        "0bc1f091e8916102b6d8f2cf944233a620e90a0f856c72d0ce41150c65c2e72e",
+    "llama-b12359-bin-ubuntu-arm64.tar.gz":
+        "dc7aa17a67884619b7223870aca9fd6addbc01717713b04a714add1c31137359",
+    "llama-b12359-bin-ubuntu-vulkan-x64.tar.gz":
+        "19b60f00395a3f4954e46a5037695bc1d843404fc9d3124f82a612ecd8fbe9f0",
+    "llama-b12359-bin-ubuntu-vulkan-arm64.tar.gz":
+        "3f8ae812a58ac92e5a596ca9fbc988f52854d147c5a7fe1264dddc90c1d085b4",
+    "llama-b12359-bin-ubuntu-cuda-12.8-x64.tar.gz":
+        "50c937bec5bbd9f74c99138034f7403283ee21f1943f2429d7b1e4c079eafc11",
+    "llama-b12359-bin-ubuntu-cuda-13.5-x64.tar.gz":
+        "9440f417615bed0e191acef03bff0249117d2be74335358265a6d28475a9baf0",
+    "llama-b12359-bin-ubuntu-cuda-13.5-arm64.tar.gz":
+        "e12fd3ca9a599349cac5ec767825e17f8cab9dc2dab8d8e5b85d50ce21ef6d7d",
+    "cudart-llama-b12359-bin-ubuntu-cuda-12.8-x64.tar.gz":
+        "75a12d227f44a391608992329241765343bd143ee9445b90dc62e154ee726e5d",
+    "cudart-llama-b12359-bin-ubuntu-cuda-13.5-x64.tar.gz":
+        "976a9146bb8a487a6ea701224d7fb14b05e494ab3c8f5c1799ffc4e5805d640c",
+    "cudart-llama-b12359-bin-ubuntu-cuda-13.5-arm64.tar.gz":
+        "998f62318999710d398dad40821d1d037731f360791e41628d9dfcde207909d1",
+    "llama-b12359-bin-macos-arm64.tar.gz":
+        "82b00abc740160e1b9980e6cc79c117345fa34af058c80e6c0a69aa8ddccde75",
+    "llama-b12359-bin-macos-x64.tar.gz":
+        "25320d529077ef5a3d16e7b5da26438f221d88c8c0930a32b0c79457f5eede56",
+}
 HF_RESOLVE_BASE = "https://huggingface.co/{repo}/resolve/main/{filename}"
 
 # Quant catalog with approximate sizes (orchestrator 8B; v18 publishes Q8_0 + Q4_K_M)
@@ -320,6 +396,33 @@ def _is_plain_cpu_build(name: str) -> bool:
     return not any(tok in name for tok in _ACCEL_TOKENS)
 
 
+def _version_tuple(text: str) -> Optional[tuple]:
+    m = re.search(r"(\d+)(?:\.(\d+))?", text or "")
+    return (int(m.group(1)), int(m.group(2) or 0)) if m else None
+
+
+def _cuda_toolkit_score(name: str, driver_cuda: str) -> int:
+    """Rank CUDA builds by whether this driver can load them.
+
+    v1 ships cuda-12.x AND cuda-13.5 builds per OS. A toolkit newer than the
+    driver's `CUDA Version` cannot initialise, and ggml then falls back to the
+    CPU backend with no error (the same silent shape as the missing cudart
+    below). So: the newest toolkit the driver supports wins; one it does not
+    support is still a candidate (better than nothing) but always loses; with
+    no driver version known, the OLDEST toolkit wins because it loads on more
+    drivers. The old `cu12` bonus never matched an asset name (`cuda-12.4`).
+    """
+    tk = _version_tuple(name.split("cuda", 1)[-1]) if "cuda" in name else None
+    if tk is None:
+        return 0
+    drv = _version_tuple(driver_cuda)
+    if drv is None:
+        return 50 - tk[0]
+    if tk <= drv:
+        return 50 + tk[0]
+    return -50
+
+
 def _pick_release_asset(assets: list, accel: AccelInfo) -> Optional[str]:
     """Pick the right llama.cpp release asset for this platform/accelerator.
 
@@ -364,8 +467,8 @@ def _pick_release_asset(assets: list, accel: AccelInfo) -> Optional[str]:
         else:
             if accel.kind in name:
                 score = 100
-                if accel.kind == "cuda" and "cu12" in name:
-                    score += 5
+                if accel.kind == "cuda":
+                    score += _cuda_toolkit_score(name, accel.cuda_version)
         if score:
             candidates.append((score, a.get("browser_download_url")))
 
@@ -423,14 +526,79 @@ def verify_sha256(path: Path, expected: str, label: str = "artifact") -> bool:
     return False
 
 
+def _gh_attestation_verify(path: Path) -> Optional[bool]:
+    """`gh attestation verify <file> --repo ggml-org/llama.cpp`.
+
+    None when gh is not installed (the caller then relies on the sha256 pin);
+    True/False otherwise. A file whose digest has no attestation answers
+    `HTTP 404` and exits 1 -- measured on a one-byte-appended b12359 zip.
+    """
+    gh = shutil.which("gh")
+    if not gh:
+        return None
+    try:
+        proc = subprocess.run(
+            [gh, "attestation", "verify", str(path), "--repo", LLAMACPP_REPO],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"  WARNING: gh attestation verify could not run: {e}", file=sys.stderr)
+        return False
+    if proc.returncode == 0:
+        print(f"  attestation OK: {path.name} was built by {LLAMACPP_REPO} CI")
+        return True
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:] or ["no output"]
+    print(f"  WARNING: gh attestation verify failed for {path.name}: {tail[0]}",
+          file=sys.stderr)
+    return False
+
+
+def verify_llamacpp_asset(path: Path, asset_name: str, tag: str = "") -> bool:
+    """Verify a llama.cpp release archive BEFORE it is extracted. Fail closed.
+
+    llama.cpp ships no checksum files; it does publish a GitHub artifact
+    attestation for every asset. Order of trust:
+      1. the sha256 we RECORDED for the pinned tag -- a mismatch deletes the file;
+      2. `gh attestation verify` when gh is on PATH (both run when both exist);
+      3. no pin (AITHER_LLAMACPP_TAG override) -> the attestation is REQUIRED.
+    """
+    tag = tag or LLAMACPP_RELEASE_TAG
+    pin = LLAMACPP_ASSET_SHA256.get(asset_name, "") if tag == LLAMACPP_PINNED_TAG else ""
+    if pin and not verify_sha256(path, pin, asset_name):
+        return False
+    attested = _gh_attestation_verify(path)
+    if pin:
+        if attested is None:
+            print("  (gh not installed: the recorded sha256 pin is the integrity check)")
+        elif attested is False:
+            print("  NOTE: attestation not confirmed, but the recorded sha256 pin "
+                  "matched -- accepting the pinned artifact")
+        return True
+    if attested:
+        return True
+    print(f"  ERROR: {asset_name} (tag {tag}) has no recorded sha256 pin and no "
+          f"verified attestation{' (gh not installed)' if attested is None else ''}.\n"
+          f"  Refusing an unverified llama.cpp binary. Install gh and `gh auth login`, "
+          f"or unset AITHER_LLAMACPP_TAG to use the pinned {LLAMACPP_RELEASE_NAME} "
+          f"build ({LLAMACPP_PINNED_TAG}).", file=sys.stderr)
+    path.unlink(missing_ok=True)
+    return False
+
+
 def _download(
-    url: str, dest: Path, label: str = "download", expected_sha256: str = ""
+    url: str, dest: Path, label: str = "download", expected_sha256: str = "",
+    verifier=None,
 ) -> bool:
+    """Download `url` to `dest`, then verify it.
+
+    `verifier(dest) -> bool` replaces the sha256 check when given (llama.cpp
+    archives use verify_llamacpp_asset: pin + attestation).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"  Downloading {label}: {url}")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "AitherADK-LocalOrchestrator/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=60, context=urllib_context()) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             written = 0
             chunk = 256 * 1024
@@ -446,10 +614,99 @@ def _download(
                         print(f"\r    {pct:5.1f}%  ({written / 1e6:.1f} / {total / 1e6:.1f} MB)",
                               end="", flush=True)
             print()
+        if verifier is not None:
+            return bool(verifier(dest))
         return verify_sha256(dest, expected_sha256, label)
     except Exception as e:
         print(f"  ERROR: download failed: {e}", file=sys.stderr)
         return False
+
+
+_RELEASE_MARKER = "LLAMACPP_RELEASE"
+
+
+def _installed_release_tag() -> str:
+    try:
+        return (LLAMACPP_DIR / _RELEASE_MARKER).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_installed_release_tag(tag: str) -> None:
+    try:
+        (LLAMACPP_DIR / _RELEASE_MARKER).write_text(tag + "\n", encoding="utf-8")
+    except OSError as e:
+        # Only the "which build is installed" note depends on it; the install stands.
+        print(f"  WARNING: could not record the installed llama.cpp build: {e}",
+              file=sys.stderr)
+
+
+def _extract(archive: Path, dest: Path, flatten: bool = False) -> None:
+    """Extract a .zip / .tar.gz into dest; `flatten` drops member directories."""
+    import tarfile
+    import zipfile
+    dest.mkdir(parents=True, exist_ok=True)
+    if archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "r:gz") as tf:
+            members = None
+            if flatten:
+                members = [m for m in tf.getmembers() if not m.isdir()]
+                for m in members:
+                    m.name = Path(m.name).name
+            kwargs = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+            tf.extractall(dest, members=members, **kwargs)
+        return
+    with zipfile.ZipFile(archive) as z:
+        if not flatten:
+            z.extractall(dest)
+            return
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            with z.open(info) as src, open(dest / Path(info.filename).name, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+
+def _pick_cudart_asset(assets: list, accel: AccelInfo, server_asset: str) -> Optional[dict]:
+    """The cudart archive for THIS os/arch, exact toolkit version preferred.
+
+    The old loop took the first cudart asset of any OS/arch as its fallback, so
+    a Windows x64 box could be handed the arm64 runtime.
+    """
+    os_tag = {"windows": "win", "linux": "ubuntu"}.get(accel.os_family, "ubuntu")
+    arch = (accel.arch or "x64").lower()
+    want = re.search(r"cuda-([\d.]+)-", server_asset.lower())
+    best = None
+    for a in assets:
+        name = a.get("name", "").lower()
+        if "cudart" not in name or f"-{os_tag}-" not in name or f"-{arch}." not in name:
+            continue
+        if want and f"cuda-{want.group(1)}-" in name:
+            return a
+        best = best or a
+    return best
+
+
+def _install_cudart(release: dict, accel: AccelInfo, server_asset: str, bin_dir: Path) -> None:
+    lib_glob = "cudart64*.dll" if accel.os_family == "windows" else "libcudart.so*"
+    cudart = _pick_cudart_asset(release.get("assets", []), accel, server_asset)
+    if cudart:
+        name = cudart.get("name", "")
+        archive = LLAMACPP_DIR / name
+        if _download(cudart.get("browser_download_url", ""), archive, "CUDA runtime",
+                     verifier=lambda p: verify_llamacpp_asset(p, name)):
+            try:
+                _extract(archive, bin_dir, flatten=True)
+                archive.unlink(missing_ok=True)
+            except Exception as e:
+                print(f"  WARNING: cudart extract failed ({e}) -- server will "
+                      f"run CPU-only until {lib_glob} is placed beside it",
+                      file=sys.stderr)
+    if not list(bin_dir.glob(lib_glob)):
+        print(f"  WARNING: CUDA build without {lib_glob} -- llama-server "
+              "will SILENTLY run CPU-only. Extract the matching cudart-llama-*-cuda "
+              f"archive from release {LLAMACPP_RELEASE_TAG} into {bin_dir}",
+              file=sys.stderr)
 
 
 def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
@@ -459,30 +716,34 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
     existing = list(LLAMACPP_DIR.rglob(binary_name))
     if existing:
         print(f"  Found existing llama-server: {existing[0]}")
+        installed = _installed_release_tag()
+        if installed != LLAMACPP_RELEASE_TAG:
+            # Not replaced in place: the running service holds the binary open
+            # (Windows refuses the overwrite) and a MAJOR bump changes flags.
+            print(f"  NOTE: it is build {installed or 'unknown (pre-pin install)'}; "
+                  f"the pinned build is {LLAMACPP_RELEASE_NAME} ({LLAMACPP_RELEASE_TAG}). "
+                  f"Stop the service and delete {LLAMACPP_DIR} to move to it.")
         return existing[0]
 
     if dry_run:
-        print(f"  [DRY] Would download llama.cpp for {accel.os_family}/{accel.kind}")
+        print(f"  [DRY] Would download llama.cpp {LLAMACPP_RELEASE_TAG} for "
+              f"{accel.os_family}/{accel.kind}")
         return LLAMACPP_DIR / binary_name
 
-    print("  Querying llama.cpp latest release...")
+    pinned = LLAMACPP_RELEASE_TAG == LLAMACPP_PINNED_TAG
+    print(f"  Fetching pinned llama.cpp release {LLAMACPP_RELEASE_TAG} "
+          f"({LLAMACPP_RELEASE_NAME if pinned else 'operator override'})...")
     try:
         req = urllib.request.Request(LLAMACPP_RELEASES_API,
                                      headers={"User-Agent": "AitherADK/1.0",
                                               "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            releases = json.loads(resp.read())
-        # A list now, not one release. Take the first one that actually
-        # carries builds: a tag with no llama-*-bin-* asset is a UI or
-        # framework release, not a server release.
-        release = next(
-            (r for r in releases
-             if any(a.get("name", "").startswith("llama-") and "-bin-" in a.get("name", "")
-                    for a in r.get("assets", []))),
-            None)
-        if release is None:
-            print("  ERROR: none of the recent releases carries a server build",
-                  file=sys.stderr)
+        with urllib.request.urlopen(req, timeout=15, context=urllib_context()) as resp:
+            release = json.loads(resp.read())
+        if not any(a.get("name", "").startswith("llama-") and "-bin-" in a.get("name", "")
+                   for a in release.get("assets", [])):
+            # A semver tag (v1.0.0) carries no binaries -- only its bNNNNN twin does.
+            print(f"  ERROR: release {LLAMACPP_RELEASE_TAG} carries no server build "
+                  f"(a vX.Y.Z tag has none; use its bNNNNN nightly)", file=sys.stderr)
             return None
         print(f"  Release: {release.get('tag_name')}")
     except Exception as e:
@@ -490,21 +751,23 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
         return None
 
     asset_url = _pick_release_asset(release.get("assets", []), accel)
-    # SAY when the accelerator the user has is not the build they got. llama.cpp
-    # ships no Linux CUDA binary, so a CUDA box lands on the CPU build -- which
-    # is the right fallback, but reads as 'my GPU is not being used' unless it is
-    # stated here, where the decision was made.
+    # SAY when the accelerator the user has is not the build they got (e.g. a ROCm
+    # box mapped to vulkan on an OS with no vulkan build). The CPU fallback is
+    # right, but reads as 'my GPU is not being used' unless it is stated here,
+    # where the decision was made.
     if asset_url and accel.kind != "cpu" and accel.kind not in asset_url.lower():
         print(f"  NOTE: no {accel.kind} build for {accel.os_family}; using the CPU "
-              f"build. For GPU on Linux, install a vulkan-capable driver or build "
+              f"build. For GPU, install a vulkan-capable driver or build "
               f"llama.cpp from source.")
     if not asset_url:
         print(f"  ERROR: no matching llama.cpp build for "
               f"{accel.os_family}/{accel.kind}/{accel.arch}", file=sys.stderr)
         return None
 
-    zip_path = LLAMACPP_DIR / "llama-cpp.zip"
-    if not _download(asset_url, zip_path, "llama.cpp"):
+    asset_name = asset_url.rsplit("/", 1)[-1]
+    archive = LLAMACPP_DIR / asset_name
+    if not _download(asset_url, archive, "llama.cpp",
+                     verifier=lambda p: verify_llamacpp_asset(p, asset_name)):
         return None
 
     print("  Extracting...")
@@ -512,56 +775,27 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
         # .zip on Windows, .tar.gz on Linux and macOS. zipfile alone meant a
         # correctly chosen Linux asset still failed here, one step after the
         # matcher was fixed -- the fourth bug hiding behind the third.
-        if asset_url.endswith(".tar.gz"):
-            import tarfile
-            with tarfile.open(zip_path, "r:gz") as tf:
-                tf.extractall(LLAMACPP_DIR)
-        else:
-            import zipfile
-            with zipfile.ZipFile(zip_path) as z:
-                z.extractall(LLAMACPP_DIR)
-        zip_path.unlink(missing_ok=True)
+        _extract(archive, LLAMACPP_DIR)
+        archive.unlink(missing_ok=True)
     except Exception as e:
         print(f"  ERROR: extract failed: {e}", file=sys.stderr)
         return None
-
-    # A Windows CUDA build ships WITHOUT the CUDA runtime — the release has a
-    # separate cudart-llama-bin-win-cuda-*.zip. Without it ggml-cuda.dll fails
-    # to load and llama-server SILENTLY runs CPU-only: measured 2026-08-09,
-    # Bonsai-27B at 3.85 tok/s on a 32GB-VRAM box, healthy and error-free.
-    if accel.os_family == "windows" and "cuda" in asset_url.lower():
-        import re as _re
-        want_ver = _re.search(r"cuda[-_]?([\d.]+)", asset_url.lower())
-        cudart_url = None
-        for a in release.get("assets", []):
-            name = a.get("name", "").lower()
-            if "cudart" not in name:
-                continue
-            cudart_url = cudart_url or a.get("browser_download_url")
-            if want_ver and want_ver.group(1) in name:
-                cudart_url = a.get("browser_download_url")  # exact toolkit match wins
-        if cudart_url:
-            cudart_zip = LLAMACPP_DIR / "cudart.zip"
-            if _download(cudart_url, cudart_zip, "CUDA runtime"):
-                try:
-                    import zipfile
-                    with zipfile.ZipFile(cudart_zip) as z:
-                        z.extractall(LLAMACPP_DIR)
-                    cudart_zip.unlink(missing_ok=True)
-                except Exception as e:
-                    print(f"  WARNING: cudart extract failed ({e}) — server will "
-                          "run CPU-only until cudart64*.dll is placed beside it",
-                          file=sys.stderr)
-        if not list(LLAMACPP_DIR.glob("cudart64*.dll")):
-            print("  WARNING: CUDA build without cudart64*.dll — llama-server "
-                  "will SILENTLY run CPU-only. Download the matching "
-                  "cudart-llama-bin-win-cuda zip from the same release into "
-                  f"{LLAMACPP_DIR}", file=sys.stderr)
 
     found = list(LLAMACPP_DIR.rglob(binary_name))
     if not found:
         print("  ERROR: llama-server binary not found after extract", file=sys.stderr)
         return None
+
+    # A CUDA build ships WITHOUT the CUDA runtime -- the release has a separate
+    # cudart-llama-*-cuda-* archive (Windows zip; Linux tar.gz since v1 ships Linux
+    # CUDA builds). Without it ggml-cuda fails to load and llama-server SILENTLY
+    # runs CPU-only: measured 2026-08-09, Bonsai-27B at 3.85 tok/s on a 32GB-VRAM
+    # box, healthy and error-free. The runtime goes BESIDE the binary: the v1
+    # Linux tarball nests everything under llama-bNNNNN/.
+    if "cuda" in asset_name.lower() and accel.os_family in ("windows", "linux"):
+        _install_cudart(release, accel, asset_name, found[0].parent)
+
+    _write_installed_release_tag(LLAMACPP_RELEASE_TAG)
 
     # Mark executable on POSIX
     if accel.os_family != "windows":
@@ -671,7 +905,7 @@ def _hf_list_gguf_files(repo: str, hf_token: str = "") -> Optional[list]:
             "User-Agent": "AitherADK/1.0",
             **({"Authorization": f"Bearer {hf_token}"} if hf_token else {}),
         })
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=20, context=urllib_context()) as resp:
             data = json.loads(resp.read())
     except Exception:
         return None

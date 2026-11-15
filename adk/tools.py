@@ -77,6 +77,11 @@ class ToolDef:
     action_class: str = ""  # Action class (e.g., "write", "delete", "admin")
     intent_categories: list[str] = field(default_factory=list)  # Intent types this tool is available for (empty=all)
     expose_to_a2a: bool = False  # Opt-in: remotely invokable over A2A skills/invoke (default: local-only)
+    #: Safe to run a second time with the same arguments (idempotent or a pure
+    #: read). A turn resumed after a kill re-runs such a call that was in flight;
+    #: any other tool is NOT re-run and the model is told its outcome is unknown
+    #: (adk.turn_journal). Default: not safe.
+    repeat_safe: bool = False
 
 
 class ToolRegistry:
@@ -84,6 +89,8 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, ToolDef] = {}
+        #: Name of the agent that owns this registry; stamped on captured rows.
+        self.agent_name: str = ""
 
     def register(
         self,
@@ -94,6 +101,7 @@ class ToolRegistry:
         action_class: str = "",
         intent_categories: list[str] | None = None,
         expose_to_a2a: bool = False,
+        repeat_safe: bool = False,
     ) -> ToolDef:
         """Register a function as a tool.
 
@@ -106,6 +114,8 @@ class ToolRegistry:
             intent_categories: Intent types this tool is available for (default None=all intents).
             expose_to_a2a: Allow remote invocation via A2A skills/invoke (default False =
                 local-only). A remote peer can only reach tools explicitly opted in here.
+            repeat_safe: Declare the tool safe to run again with the same arguments
+                (idempotent or read-only). See :meth:`repeat_safe`.
         """
         tool_name = name or fn.__name__
         tool_desc = description or fn.__doc__ or f"Tool: {tool_name}"
@@ -124,9 +134,26 @@ class ToolRegistry:
             action_class=action_class,
             intent_categories=intent_categories or [],
             expose_to_a2a=expose_to_a2a,
+            repeat_safe=repeat_safe,
         )
         self._tools[tool_name] = td
         return td
+
+    def repeat_safe(self, name: str) -> bool:
+        """Whether a call to ``name`` that was in flight when the process died may
+        simply be run again.
+
+        Only what a tool DECLARES: ``repeat_safe=True`` at registration, or a
+        declared read ``action_class``. The name's verb is not consulted here
+        (unlike :meth:`parallel_safe`): a wrong guess there costs ordering, a
+        wrong guess here runs a side effect twice. Unknown tool: not safe.
+        """
+        td = self._tools.get(name)
+        if td is None:
+            return False
+        if td.repeat_safe:
+            return True
+        return bool(td.action_class) and td.action_class.lower() in _READ_ACTION_CLASSES
 
     def unregister(self, name: str) -> bool:
         """Remove a tool. Returns whether it was there.
@@ -202,14 +229,29 @@ class ToolRegistry:
 
         Returns:
             JSON string with tool result or error dict.
+
+        Every call -- refused, failed or successful -- is appended as one redacted
+        row by :mod:`adk.tool_capture` (off with ``AITHER_TOOL_CAPTURE=0``; private
+        mode writes nothing). The capture never raises into this path.
         """
+        t0 = time.perf_counter()
+        text, error_kind = await self._execute(name, arguments, auth)
+        if not error_kind and text.lstrip().startswith('{"error"'):
+            error_kind = "error_envelope"
+        _capture(getattr(self, "agent_name", ""), name, arguments, text, error_kind,
+                 (time.perf_counter() - t0) * 1000.0)
+        return text
+
+    async def _execute(self, name: str, arguments: dict,
+                       auth: AuthContext | None) -> tuple[str, str]:
+        """The tool call itself. Returns ``(result text, error kind or "")``."""
         td = self._tools.get(name)
         if not td:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps({"error": f"Unknown tool: {name}"}), "unknown_tool"
         if _backend_down(name):
             return json.dumps({
                 "error": f"{name} is unavailable: its backend refused the last calls. "
-                         "Do not retry it; answer from what you already have."})
+                         "Do not retry it; answer from what you already have."}), "backend_down"
 
         # Authorization check: if auth is provided, enforce it
         if auth is not None:
@@ -228,7 +270,7 @@ class ToolRegistry:
                     "error": "forbidden",
                     "tool": name,
                     "reason": "principal not authorized",
-                })
+                }), "forbidden"
 
         try:
             # Coerce LLM-supplied args toward each parameter's annotated type. Models
@@ -244,12 +286,24 @@ class ToolRegistry:
 
             text = result if isinstance(result, str) else json.dumps(result, default=str)
             _note_result(name, text)
-            return _compact_result(name, arguments, text)
+            return _compact_result(name, arguments, text), ""
         except Exception as e:
             logger.error(f"Tool {name} failed: {e}")
             text = json.dumps({"error": str(e)})
             _note_result(name, text)
-            return text
+            return text, type(e).__name__
+
+
+def _capture(agent: str, name: str, arguments: Any, text: str, error_kind: str,
+             latency_ms: float) -> None:
+    """Hand one call to :mod:`adk.tool_capture`; nothing here may raise."""
+    try:
+        from adk import tool_capture
+        tool_capture.record_tool_call(
+            tool=name, args=arguments, result=text, ok=not error_kind,
+            error_kind=error_kind, latency_ms=latency_ms, agent=agent)
+    except Exception as exc:  # noqa: BLE001 -- capture must never break a tool call
+        logger.debug("tool capture skipped for %s: %s", name, type(exc).__name__)
 
 
 #: Compaction at the ONE point every tool result passes on its way into the
@@ -295,6 +349,7 @@ def tool(
     name: str | None = None,
     description: str | None = None,
     intent_categories: list[str] | None = None,
+    repeat_safe: bool = False,
 ):
     """Decorator to register a function as an agent tool.
 
@@ -319,6 +374,7 @@ def tool(
             name=name,
             description=description,
             intent_categories=intent_categories,
+            repeat_safe=repeat_safe,
         )
         f._tool_def = td
         f.name = td.name

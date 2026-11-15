@@ -1,0 +1,25 @@
+id: flow
+name: Flow — journaled, resumable workflows (awflow)
+version: 0.1.0
+description: >-
+  Run, list and resume awflow workflow scripts. Every agent() call a workflow makes
+  is hashed into an fsynced per-run journal, so flow_resume continues a run without
+  paying for the calls it already answered. flow_run executes the named script in
+  this process (code execution) and is never exposed over A2A. Needs
+  `pip install awdk[flow]`; without awflow every tool answers ok:false naming it.
+category: tool_packs
+tier: free
+author: Aitherium
+icon: git-branch
+tags: [workflow, journal, replay, resume, budget, awflow, free]
+
+mcp_tools:
+  - "flow_*"
+
+# Empty -> the loader file-loads this pack's __init__.py by path and calls register().
+tool_modules: []
+
+entitlements: []
+
+skills:
+  - awflow

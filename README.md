@@ -11,6 +11,7 @@
 <!-- aither-header:end -->
 
 <!-- mcp-name: io.github.Aitherium/awdk -->
+<!-- mcp-name: com.aitherium/aitheros -->
 
 [![PyPI](https://img.shields.io/pypi/v/awdk)](https://pypi.org/project/awdk/)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL--1.1-blue)](LICENSE)
@@ -19,6 +20,15 @@
 **3 lines of code. Any backend. Local or cloud. Zero lock-in.**
 
 Aither ADK is a Python SDK + CLI for building AI agents that run on **your** hardware — a single helpful agent or a coordinated fleet that delegates work to each other. Agents get tools, persistent knowledge-graph memory, safety filtering, and effort-based model routing out of the box. Swap the LLM backend at runtime — your GPU, llama.cpp, or any cloud API — **same code, same agents.**
+
+**Windows with nothing installed** (no Python, no admin, no account) — one line in PowerShell;
+it gets Python (via uv), installs awdk and runs `adk` once:
+
+```powershell
+$env:AITHER_INSTALL='toolkit'; irm https://aitherium.com/install.ps1 | iex
+```
+
+Any OS with Python 3.10+:
 
 ```bash
 pip install awdk
@@ -35,6 +45,39 @@ Add it once, then open a new terminal:
 $s = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 [Environment]::SetEnvironmentVariable('Path', "$([Environment]::GetEnvironmentVariable('Path','User'));$s", 'User')
 ```
+
+---
+
+## Where awdk sits: the harness
+
+<!-- aither-harness:start GENERATED from ecosystem.yaml `harness:` by gen_brick_map.py. Edits between these markers are overwritten; change the registry. -->
+> **`awdk` is part of `awharness` — the super agent harness.** One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.
+>
+> **Today:** There is no single install. `pip install awdk` and `npm i -g @aitherium/awsh` are two commands, and each other brick installs on its own line. `adk harness parts` reads this list and reports which parts this machine has, at what version, and the install line for each one it lacks.
+>
+> **Planned, not built:** One install command that brings the composed bricks up together, and one process that starts them. Neither exists; nothing by this name is published.
+>
+> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 93 bricks, in layers: https://aitherium.github.io/#map
+<!-- aither-harness:end -->
+
+A bare agent loop is a model, a prompt and a `while` over tool calls. This is what
+the harness adds to one, and where to check each line. Every command below exists
+today; none of them needs the others.
+
+| a bare loop | with the harness | check it |
+|---|---|---|
+| talks to one model API | drives other agent products as they ship (Claude Code, Codex, Gemini CLI, aider, a real terminal) through one session API | `adk harness harnesses` prints what this machine can drive; the table is `adk/harnesses/registry.py` |
+| dies with its terminal | a daemon owns the session, so you can leave, attach again, resume and wake it | `adk harness serve`, then `adk harness list` and `adk harness attach <id>`; `awsh_resume` and `awsh_session_wake` in `adk/harnesses/mcp_stdio.py` |
+| is one agent | a session can start, message, wait on and end other sessions | `awsh_spawn`, `awsh_send`, `awsh_wait`, `awsh_end` in the same file |
+| forgets between runs | scoped memory, recalled when a session starts | `awm recall --claude-hook` |
+| runs when you run it | a priority queue and a clock | `awrun submit`, `awrun queue`; `awrise add`, `awrise run-due` |
+| edits whatever it can reach | file leases, so two agents do not write the same file | `awgit lease acquire <path>` |
+| has the access its process has | a signed permit with a scope, checked at the door | `awpermit mint`, `awpermit verify` |
+| has the tools you wrote | the platform's MCP gateway, after one sign-in | `adk login`, then `adk connect` |
+
+What it is not: one process, or one install. `adk harness parts` prints which of
+the composed bricks this machine has, at what version, and the install line for
+each one it lacks; it installs and starts nothing.
 
 ---
 
@@ -372,6 +415,38 @@ adk volunteer start                    # loop: claim batches → embed → submi
 Reputation, verified batches and earnings show in the Volunteer Compute panel of
 the tenant workspace (dgg.aitherium.com) and in `adk volunteer status`.
 
+`adk volunteer` needs this machine to be a mesh peer first: `adk login`, then
+`adk mesh join` (the join saves the peer id). `adk mesh ls` lists the machines on
+your account.
+
+### 5. Add a machine to the fleet
+
+One path, the same one `adk mesh onboard --help`, `adk volunteer --help` and the
+platform's MCP tools (`mint_node_token`, `fleet_placement_mint_token`,
+`list_cluster_nodes`) print:
+
+1. On the machine: sign in and join the tailnet, so the fleet host can reach it over ssh.
+
+   ```bash
+   adk login && adk mesh join
+   ```
+2. Declare the machine in your fleet's `nodes.yaml` (`config/nodes.yaml` on the fleet host) under an id (`<node>`): its tailnet address, a bash ssh shell, the vault secret for its key.
+3. **(human: the owner)** Join it, from the owner's own shell on the fleet host (awiam session in AITHER_SESSION_BEARER, subject listed in AWRUN_NODE_OP_OPERATORS). Add --node-dry-run to see the plan and change nothing.
+
+   ```bash
+   awrun submit --kind node-op --node <node> --action fleet-join
+   ```
+4. *(automatic)* awrun mints a 600 s token bound to `<node>`, pushes node-install.sh over ssh, enrolls the node with the placement controller, approves it and reads it back. The token is never printed.
+5. Check it (same shell): status `approved`, and the node is listed by `fleet_placement_nodes` / `list_cluster_nodes`.
+
+   ```bash
+   awrun submit --kind node-op --node <node> --action fleet-status
+   ```
+
+An agent session cannot take step 3: minting a join token needs the platform owner
+(a passkey/TOTP sign-in for the MCP tools, the owner's own awiam session for
+`awrun`). Everything after it runs by itself.
+
 ### Why Aither?
 
 | Locked appliances | Aither ADK |
@@ -424,7 +499,7 @@ sessions and more than one agent at a time. Full guide: [docs/agent-home.md](doc
 
 ## Bonsai: an agent on literally anything
 
-**No GPU. No API key. No account. Nothing leaves your machine.**
+**No GPU. No API key. No account. Your prompts and files stay on your machine.**
 
 Bonsai is Aitherium's family of ultra-compact models built to make agents *sovereign by default* — they run on hardware everyone already owns. The 1-bit Bonsai-27B runs on a plain CPU with 4 GB of RAM; Bonsai-4B runs in 2 GB (Android via Termux, Raspberry Pi Zero). Agents on Bonsai get the **full harness** — tool calling, memory, safety, fleets — not a demo mode.
 
@@ -438,7 +513,7 @@ Why this matters, concretely:
 
 - **Free forever, offline after setup** — one network pull for the model/image, then a fully working agent with zero external dependencies. Air-gapped targets work too: fetch the artifacts on a connected machine and sideload them.
 - **Tool calling works** — Bonsai drives the same `@tool` functions, `ask_agent` delegation, and pack skills as the big models.
-- **Private by construction** — no key means no telemetry decision to trust; there is simply no wire out.
+- **Private by construction** — with no key, nothing about your prompts, files or answers is sent anywhere. Two things can touch the network, and both are yours to refuse: a once-a-day version check to PyPI that sends no data (off with `AITHER_NO_UPDATE_CHECK=1`, and off when `AITHER_OFFLINE=1`), and a crash report that is sent only if you type `y` when asked.
 - **A floor, not a ceiling** — start on Bonsai today, add a GPU tier or a cloud reasoning backend later; your agent code does not change.
 
 When you outgrow it, effort routing lets you keep Bonsai for the cheap calls and send only the hard ones somewhere bigger — see [hybrid profiles](#hardware-profiles).
@@ -886,6 +961,13 @@ Both transports work: **stdio** (`command` + `args`, which is what most communit
 servers use) and **HTTP** (`url`). Tools arrive named `mcp__<server>__<tool>` — the
 same spelling Claude Code shows — so two servers that both ship a `search` cannot
 shadow each other.
+
+A server with more tools than a model's context holds (the platform gateway lists
+about 1,900) is reached through one search tool and one call tool. To mount a few
+tools directly instead, name them: `"tools": ["time_now", "catalog_browse"]` on
+the server entry. Only those are registered, in that order, and a name the server
+does not expose fails that server with an error rather than mounting less than you
+asked for.
 
 ```python
 from adk.agent import AitherAgent

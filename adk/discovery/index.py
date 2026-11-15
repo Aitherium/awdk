@@ -31,7 +31,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from adk.discovery import scope, sources
 
@@ -249,6 +249,12 @@ def build_part(part: str, cwd: "os.PathLike[str] | str | None" = None, force: bo
     previous = read_part(path)
     if table is None:
         table = sources.USER_SOURCES if part == "user" else sources.CWD_SOURCES
+        # The unified catalog is local files and belongs to both parts; appending
+        # it after the specific sources keeps `pack_catalog`/`toolpacks` first in
+        # the (domain, name) dedupe, so its cards do not displace theirs. An
+        # explicit `table=` is the caller's and is used exactly as given.
+        table = list(table) + [s for s in sources.CATALOG_SOURCES
+                               if s[0] not in {sid for sid, _ in table}]
     with _Lock(path.with_suffix(".lock")) as lock:
         if not lock.held:
             return previous or {}
@@ -387,7 +393,68 @@ def is_stale(part_meta: Optional[dict], max_age_s: float, now: Optional[float] =
     return t - float(part_meta.get("built_at") or 0) > max_age_s
 
 
-__all__ = ["REFRESH_EVERY_S", "build", "build_part", "cwd_key", "default_cwd",
-           "detach_build", "index_dir", "is_stale", "known_cwds", "load_merged",
+def age_s(merged: dict, now: Optional[float] = None) -> Optional[float]:
+    """Seconds since the OLDEST part of a merged index was built; None when a part
+    is missing (there is then no index for this caller and directory to age)."""
+    t = time.time() if now is None else now
+    parts = (merged or {}).get("parts") or {}
+    built = [float((parts.get(p) or {}).get("built_at") or 0) for p in ("cwd", "user")]
+    if not all(built):
+        return None
+    return max(0.0, t - min(built))
+
+
+def ensure_fresh(cwd: "os.PathLike[str] | str | None" = None,
+                 max_age_s: float = 2 * REFRESH_EVERY_S, refresh: bool = True,
+                 builder: Optional[Callable] = None) -> dict:
+    """The merged index for this caller and directory, rebuilt first when it is
+    missing or older than ``max_age_s``. For an interactive command only.
+
+    The index is keyed on the session bearer's fingerprint and on the directory,
+    and only the hourly wake refreshes it. Measured 2026-11-12 that wake had not
+    run for 15 days and the bearer had rotated, so ``adk discover query`` read an
+    index that did not exist for this caller and reported "0 cards", while
+    ``adk catalog stats`` counted the newest FILE in the directory (a cwd part:
+    skills only) and reported "tools 0, packs 0" without saying either was stale.
+
+    Returns ``{"merged", "age_s", "refreshed", "was", "error"}`` -- ``was`` is
+    ``"missing"``, ``"stale"`` or ``"fresh"`` (the state before any rebuild).
+    """
+    merged = load_merged(cwd)
+    age = age_s(merged)
+    was = "missing" if age is None else ("stale" if age > max_age_s else "fresh")
+    out = {"merged": merged, "age_s": age, "refreshed": False, "was": was, "error": ""}
+    if was == "fresh" or not refresh:
+        return out
+    try:
+        (builder or build)(cwd)
+    except Exception as exc:  # noqa: BLE001 - reported; the old index still answers
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    out["merged"] = load_merged(cwd)
+    out["age_s"] = age_s(out["merged"])
+    out["refreshed"] = True
+    return out
+
+
+def describe_age(state: dict) -> str:
+    """One line for a person: how old the index is and whether it was just rebuilt."""
+    age = state.get("age_s")
+    human = "no index for this caller and directory" if age is None else (
+        f"{int(age)}s old" if age < 3600 else
+        f"{age / 3600:.1f}h old" if age < 86400 else f"{age / 86400:.1f}d old")
+    if state.get("refreshed"):
+        return f"discovery index: rebuilt just now (it was {state.get('was')}); {human}"
+    if state.get("error"):
+        return (f"discovery index: {state.get('was')} and the rebuild failed "
+                f"({state['error'][:120]}); {human}. Retry: adk discover build")
+    if state.get("was") != "fresh":
+        return f"discovery index: {state.get('was')}; {human}. Refresh: adk discover build"
+    return f"discovery index: {human}"
+
+
+__all__ = ["REFRESH_EVERY_S", "age_s", "build", "build_part", "cwd_key", "default_cwd",
+           "describe_age", "detach_build", "ensure_fresh", "index_dir", "is_stale",
+           "known_cwds", "load_merged",
            "part_path", "pid_alive", "read_part", "read_receipt", "receipt_path",
            "user_key"]

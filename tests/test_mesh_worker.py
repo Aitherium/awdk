@@ -124,7 +124,7 @@ def test_steam_deck_runs_bonsai_8b():
                                      board="Jupiter", cpu="")
     assert mesh_worker.is_steam_deck(_accel(), os_release="ID=arch", board="",
                                      cpu="model name: AMD Custom APU 0405")
-    assert mesh_worker.choose_model(deck, deck=True) == "bonsai-8b"
+    assert mesh_worker.choose_model(deck, deck=True) == "bonsai-4b"
 
 
 def test_laptop_runs_bonsai_1_7b():

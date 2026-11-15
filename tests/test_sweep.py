@@ -8,10 +8,18 @@ re-roles a node in place (edges survive, UPDATE ledgered, sweep-immunity when
 promoted to permanent).
 """
 
+import json
+import os
 import time
 
 import pytest
 
+from adk.decisions.store import (
+    DecisionCard,
+    DecisionOption,
+    DecisionSource,
+    DecisionStore,
+)
 from adk.graph_memory import GraphMemory
 from adk.unified_contract import MemoryRecord, Role, Tier
 
@@ -217,3 +225,141 @@ class TestPromote:
         # node untouched
         fetched = await ugraph.get_node(node.id)
         assert fetched.tier == Tier.PERSISTENT.value
+
+
+# ── the decision store's hourly stale pass ──────────────────────────
+#
+# The queue filled with asks raised by sessions that then died: nothing will
+# ever answer them and they pin themselves above every live ask. The store
+# retires exactly those -- open, older than the threshold, raiser PROVABLY gone,
+# no live waiter -- as ``expired`` with the declared default applied and the
+# reason on the card. It must never retire on an unknown, and never a
+# credential / blocked / blocker.
+
+HOUR = 3600.0
+DEAD_PID = 999_999
+
+
+@pytest.fixture
+def sessions(tmp_path, monkeypatch):
+    """A private session registry, so no real running session is consulted."""
+    directory = tmp_path / "sessions"
+    directory.mkdir()
+    monkeypatch.setenv("AITHER_CLAUDE_SESSIONS_DIR", str(directory))
+    return directory
+
+
+def _register(directory, session_id: str, pid: int) -> None:
+    (directory / f"{session_id}.json").write_text(
+        json.dumps({"sessionId": session_id, "pid": pid, "status": "idle"}),
+        encoding="utf-8",
+    )
+
+
+def _dcard(store: DecisionStore, title: str, *, kind: str = "decision",
+           age_h: float = 30.0, session_id: str = "sess-dead",
+           session_pid: int = 0, waiters=(), dedupe: str = "") -> DecisionCard:
+    common = dict(id="", title=title, kind=kind, dedupe_key=dedupe,
+                  source=DecisionSource(session_id=session_id,
+                                        session_pid=session_pid),
+                  created_at=time.time() - age_h * HOUR,
+                  waiters=list(waiters))
+    if kind == "credential":
+        return store.create(DecisionCard(
+            **common, credential_format="custom",
+            credential_description="need it", secret_name=f"SECRET_{title}",
+        ))
+    if kind in ("blocked", "blocker"):
+        return store.create(DecisionCard(**common))
+    return store.create(DecisionCard(
+        **common, default_key="a",
+        options=[DecisionOption(key="a", label="Accept", recommended=True),
+                 DecisionOption(key="b", label="Decline")],
+    ))
+
+
+@pytest.fixture
+def decisions(tmp_path):
+    return DecisionStore(tmp_path / "cards")
+
+
+class TestDecisionStaleSweep:
+    def test_a_dead_sessions_card_retires_with_the_default_applied(self, decisions, sessions):
+        _register(sessions, "sess-dead", DEAD_PID)
+        card = _dcard(decisions, "orphan")
+        retired = decisions.retire_stale()
+        assert [c.id for c in retired] == [card.id]
+        after = decisions.get(card.id)
+        assert after.status == "expired"
+        assert after.answer == "a"                      # the declared default
+        assert after.answered_via == "session-gone"
+        assert after.retire_reason and "gone" in after.retire_reason
+        assert after.is_open is False
+
+    def test_a_live_sessions_card_is_untouched(self, decisions, sessions):
+        _register(sessions, "sess-live", os.getpid())
+        card = _dcard(decisions, "still wanted", session_id="sess-live")
+        assert decisions.retire_stale() == []
+        assert decisions.get(card.id).status == "open"
+
+    def test_an_unmeasurable_session_is_never_retired(self, decisions, sessions):
+        # No registry record and no recorded pid: "not measured", never "gone".
+        card = _dcard(decisions, "unknown raiser")
+        assert decisions.retire_stale() == []
+        assert decisions.get(card.id).status == "open"
+
+    def test_protected_kinds_never_auto_retire(self, decisions, sessions):
+        _register(sessions, "sess-dead", DEAD_PID)
+        kept = [
+            _dcard(decisions, "cred", kind="credential"),
+            _dcard(decisions, "blocked", kind="blocked"),
+            _dcard(decisions, "blocker", kind="blocker"),
+        ]
+        assert decisions.retire_stale() == []
+        for card in kept:
+            assert decisions.get(card.id).status == "open"
+
+    def test_a_live_waiter_keeps_the_card_open(self, decisions, sessions):
+        _register(sessions, "sess-dead", DEAD_PID)
+        _register(sessions, "sess-live", os.getpid())
+        card = _dcard(decisions, "two sessions", dedupe="wait-one",
+                      waiters=[DecisionSource(session_id="sess-live")])
+        assert decisions.retire_stale() == []
+        assert decisions.get(card.id).status == "open"
+
+    def test_a_card_younger_than_the_threshold_is_untouched(self, decisions, sessions):
+        _register(sessions, "sess-dead", DEAD_PID)
+        card = _dcard(decisions, "only two hours old", age_h=2)
+        assert decisions.retire_stale() == []
+        assert decisions.get(card.id).status == "open"
+
+    def test_dry_run_reports_without_writing(self, decisions, sessions):
+        _register(sessions, "sess-dead", DEAD_PID)
+        card = _dcard(decisions, "would retire")
+        would = decisions.retire_stale(dry_run=True)
+        assert [c.id for c in would] == [card.id]
+        assert would[0].retire_reason
+        still = decisions.get(card.id)
+        assert still.status == "open"
+        assert still.retire_reason is None
+
+    def test_an_already_closed_card_is_not_swept_again(self, decisions, sessions):
+        _register(sessions, "sess-dead", DEAD_PID)
+        card = _dcard(decisions, "answered before the sweep")
+        decisions.answer(card.id, "a")
+        assert decisions.retire_stale() == []
+        assert decisions.get(card.id).status == "answered"
+
+    def test_the_threshold_is_configurable(self, decisions, sessions, monkeypatch):
+        _register(sessions, "sess-dead", DEAD_PID)
+        monkeypatch.setenv("AITHER_DECISIONS_RETIRE_HOURS", "1")
+        card = _dcard(decisions, "past an hour", age_h=2)
+        assert [c.id for c in decisions.retire_stale()] == [card.id]
+        assert "1h" in (decisions.get(card.id).retire_reason or "")
+
+    def test_the_sweep_scales_to_the_whole_queue(self, decisions, sessions):
+        _register(sessions, "sess-dead", DEAD_PID)
+        cards = [_dcard(decisions, f"orphan {i}", dedupe=f"orphan-{i}") for i in range(5)]
+        retired = decisions.retire_stale()
+        assert {c.id for c in retired} == {c.id for c in cards}
+        assert all(decisions.get(c.id).status == "expired" for c in cards)

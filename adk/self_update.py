@@ -544,6 +544,24 @@ class UpdateWatcher:
         self._halt.set()
 
 
+MAIN_DAEMON_PORT = 9001
+
+
+def daemon_name_for_port(port: int) -> str:
+    """The run-record name for an adk server on ``port``.
+
+    Only the main daemon (:9001) is ``adk-daemon``. Any other server gets its own
+    name, so it never overwrites the main daemon's record in ``run/`` nor consumes
+    a one-time ``adk-daemon.apply`` meant for it (2026-11-09: a second server on
+    :8079 did both and restarted itself onto new code with auto-update OFF).
+    """
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return "adk-daemon"
+    return "adk-daemon" if port == MAIN_DAEMON_PORT else f"adk-daemon-{port}"
+
+
 def start(name: str, is_idle: Callable[[], bool], interval: Optional[float] = None,
           health_url: str = "") -> UpdateWatcher:
     """Register this daemon and start its watcher. Never raises."""

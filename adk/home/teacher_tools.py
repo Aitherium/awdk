@@ -1,18 +1,28 @@
 """Aither Classroom tools for the home agent: a teacher asks about their class.
 
-Seven tools over the Genesis classroom router (``/api/v1/classroom/*``, plus the
+Eleven tools over the Genesis classroom router (``/api/v1/classroom/*``, plus the
 Academy lesson PATCH for local drafts), called with the TEACHER's bearer so the
 router's teacher-of-record scoping applies exactly as it does in the console::
 
     class_brief(class_name)                         roster, "hard now", assignments
     struggle_report(class_name, student='')         observations for a class or a child
-    lesson_draft(class_name, topic, grade, minutes) a DRAFT lesson (asks the owner first)
+    lesson_draft(class_name, topic, grade, minutes, sources)
+                                                    a DRAFT lesson (asks the owner first)
+    lesson_plan(lesson_id)                          a saved studio plan + its sha256
+    lesson_plan_edit(lesson_id, expected_sha256, ops)
+                                                    edit that plan in place (asks first)
+    lesson_extra(lesson_id, kind)                   a check quiz or a slide deck (asks first)
     differentiate(lesson_id)                        A/B/C tiers on a draft (asks first)
     grade_assist(class_name, student, response_id)  suggested rubric notes; writes nothing
+    suggest_score(class_name, student, response_id) the server's score suggestion (asks
+                                                    first: one model call, stored as a
+                                                    suggestion only)
     parent_note_draft(student)                      a note to a parent, as a draft only
     parent_note_send(student, text)                 posts to the parent thread (asks first)
 
-Seven, not more: a Bonsai 8B home model loses tool accuracy past about eight.
+Eleven, held there: the home model runs locally and can be a small one, and a
+short tool list is easier for a small model to choose from, so the quiz and the
+deck share ``lesson_extra`` rather than adding two more.
 
 Rules these tools keep (classroom plan, P5):
 
@@ -30,7 +40,10 @@ Rules these tools keep (classroom plan, P5):
   and its screening, so this is the only screen on what it writes.
 * Nothing grades a child: ``grade_assist`` only reads (no write verb is ever
   issued); any sentence of model text carrying a score, a percentage or a letter
-  grade is dropped (``grade_assist`` and ``parent_note_draft``).
+  grade is dropped (``grade_assist`` and ``parent_note_draft``). ``suggest_score``
+  is the one exception the teacher asks for by name: the SERVER's suggestion, stored
+  as a suggestion only. Nothing here confirms it; the teacher accepts one by
+  scoring the response themselves (an override) in the console.
 * Student text is data: submitted answers are screened and fenced before the model
   sees them (:func:`screen_student_text`).
 * Real data only: a reader whose source is offline returns the error.
@@ -57,6 +70,19 @@ MAX_MESSAGE = 1000
 #: academy LessonPatch.research_context max_length.
 MAX_PLAN = 8000
 MAX_TOPIC = 200
+#: The studio router's limits (sources and plan edits, mirrored here so a bad
+#: argument is refused before anything is sent).
+MAX_SOURCES = 5
+MAX_SOURCE_NAME = 120
+MAX_SOURCE_CHARS = 50_000
+MAX_PLAN_OPS = 20
+MAX_OP_PATH = 48
+MAX_OP_TEXT = 400
+_PLAN_OP_KINDS = ("set", "str_replace", "insert", "remove")
+_PLAN_OP_KEYS = frozenset({"op", "path", "value", "old", "new"})
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+#: lesson_extra kinds -> the studio route that drafts them.
+EXTRA_KINDS = {"quiz": "quiz", "deck": "deck"}
 #: Classes scanned when a lesson id has to be found (differentiate).
 _MAX_CLASSES = 20
 _HARD_ROWS = 8
@@ -271,6 +297,59 @@ def _pick(rows: List[Dict[str, Any]], want: str, key: str, id_key: str) -> List[
     # "Ana" finds "Ana Lopez"; "Room 9" never finds "Room 4".
     return [r for r in rows
             if str(r.get(key) or "").strip().lower().startswith(w + " ")]
+
+
+def parse_sources(value: Any) -> Tuple[Optional[List[Dict[str, str]]], str]:
+    """The teacher's own material for a draft -> ([{name, text}], "") or (None, why).
+
+    A home model passes a pasted string, a list of strings, or a list of
+    ``{name, text}``; each becomes one source, held to the router's limits."""
+    if value is None or value == "" or value == []:
+        return [], ""
+    items = [value] if isinstance(value, (str, dict)) else value
+    if not isinstance(items, list):
+        return None, "sources must be text or a list of {name, text}"
+    if len(items) > MAX_SOURCES:
+        return None, f"at most {MAX_SOURCES} sources"
+    out: List[Dict[str, str]] = []
+    for i, item in enumerate(items, 1):
+        if isinstance(item, str):
+            name, text = f"source {i}", item
+        elif isinstance(item, dict) and set(item) <= {"name", "text"}:
+            name, text = str(item.get("name") or f"source {i}"), item.get("text")
+        else:
+            return None, "each source is text or {name, text}"
+        if not isinstance(text, str) or not text.strip():
+            return None, f"source {i} has no text"
+        if len(text) > MAX_SOURCE_CHARS:
+            return None, f"a source is at most {MAX_SOURCE_CHARS} characters"
+        name = " ".join(_CONTROL_RE.sub(" ", name).split())[:MAX_SOURCE_NAME] or f"source {i}"
+        out.append({"name": name, "text": text})
+    return out, ""
+
+
+def parse_plan_ops(value: Any) -> Optional[List[Dict[str, str]]]:
+    """Plan edit ops (a list, or its JSON text) shape-checked as the gateway's
+    classroom_edit_lesson_plan does; None when malformed. Genesis re-checks all."""
+    data = value
+    if isinstance(value, str):
+        try:
+            data = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list) or not 1 <= len(data) <= MAX_PLAN_OPS:
+        return None
+    for op in data:
+        if (not isinstance(op, dict) or not set(op) <= _PLAN_OP_KEYS
+                or op.get("op") not in _PLAN_OP_KINDS
+                or not isinstance(op.get("path"), str)
+                or not 1 <= len(op["path"]) <= MAX_OP_PATH
+                or any(not isinstance(op[k], str) or len(op[k]) > MAX_OP_TEXT
+                       for k in ("value", "old", "new") if k in op)):
+            return None
+    return data
 
 
 def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = None,
@@ -530,6 +609,52 @@ def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = No
             out["filtered"] = n
         return json.dumps(out, default=str)
 
+    async def suggest_score(class_name: str, student: str, response_id: str) -> str:
+        """Ask the server for a SUGGESTED score and comment on one written answer
+        waiting for your review (asks the owner first: it runs a model). It is stored
+        as a suggestion only; the response stays unscored until you score it in the
+        console. There is nothing to confirm: to accept it, score it yourself.
+
+        class_name: the class's name (e.g. Room 4)
+        student: the student's name on that roster
+        response_id: the response id from the review queue
+        """
+        rid = str(response_id or "").strip()
+        if not rid:
+            return _err("response_id is required")
+        cls, err = await asyncio.to_thread(_class, class_name)
+        if cls is None:
+            return err
+        stu, err = await asyncio.to_thread(_student, cls, student)
+        if stu is None:
+            return err
+        cid = _seg(cls.get("class_id", ""))
+        data, raw = await _aget(f"{PREFIX}/classes/{cid}/review-queue")
+        if data is None:
+            return raw
+        rows = [r for r in (data.get("responses") or []) if isinstance(r, dict)]
+        row = next((r for r in rows if str(r.get("response_id")) == rid), None)
+        if row is None or (row.get("student_id") not in (None, stu.get("student_row_id"))):
+            return _err(f"no response {rid} from {stu.get('alias')} waiting for review")
+        raw = await asyncio.to_thread(_call, "POST",
+                                      f"{PREFIX}/classes/{cid}/responses/{_seg(rid)}/suggest")
+        got = json.loads(raw)
+        if not isinstance(got, dict) or "error" in got:
+            return raw
+        # The comment is model prose about a child's work: a sentence that labels the
+        # child is dropped. The score itself is the suggestion the teacher asked for.
+        comment, n = _scrub_text(str(got.get("suggested_comment") or ""))
+        out: Dict[str, Any] = {
+            "student": stu.get("alias"), "response_id": rid,
+            "suggested_score": got.get("suggested_score"),
+            "suggested_comment": comment, "reason": got.get("reason"),
+            "scored": False,
+            "note": ("A suggestion only; the response is still unscored. To use it, "
+                     "score the response yourself in the console.")}
+        if n:
+            out["filtered"] = n
+        return json.dumps(out, default=str)
+
     async def parent_note_draft(student: str, class_name: str = "") -> str:
         """Draft (do NOT send) a short note to a student's parent from this week's
         observations. Show it to the teacher; parent_note_send sends it.
@@ -566,7 +691,7 @@ def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = No
     # ── writers (ALWAYS_ASK) ─────────────────────────────────────────────────
 
     async def lesson_draft(class_name: str, topic: str, grade: str = "",
-                           minutes: int = 45) -> str:
+                           minutes: int = 45, sources: Any = None) -> str:
         """Draft a lesson for a class on this computer's model and save it as a DRAFT
         (asks the owner first). Nothing is published.
 
@@ -574,6 +699,8 @@ def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = No
         topic: what the lesson is about (200 characters max)
         grade: grade or band, e.g. 2, K, 6-8 (default: the class's band)
         minutes: lesson length, 15-180 (default 45)
+        sources: optional, the teacher's own material to ground the draft in: pasted
+            text, or up to 5 items of {name, text}
         """
         text = str(topic or "").strip()
         if not text or len(text) > MAX_TOPIC:
@@ -582,6 +709,9 @@ def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = No
             mins = max(15, min(180, int(minutes or 45)))
         except (TypeError, ValueError):
             return _err("minutes must be a number")
+        grounding, why = parse_sources(sources)
+        if grounding is None:
+            return _err(why)
         cls, err = await asyncio.to_thread(_class, class_name)
         if cls is None:
             return err
@@ -589,7 +719,9 @@ def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = No
         if not band:
             return _err("grade is required (e.g. 2, K, 6-8): the class has no grade band")
         cid = _seg(cls.get("class_id", ""))
-        body = {"topic": text, "grade_level": band, "minutes": mins}
+        body: Dict[str, Any] = {"topic": text, "grade_level": band, "minutes": mins}
+        if grounding:
+            body["sources"] = grounding
         raw = await asyncio.to_thread(_call, "POST", f"{PREFIX}/classes/{cid}/studio/draft",
                                       body)
         data = json.loads(raw)
@@ -597,20 +729,124 @@ def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = No
             return raw
         lesson = data.get("lesson") or {}
         lid = str(lesson.get("id") or "")
-        raw_plan = await _raw_local(LESSON_SYSTEM, f"Topic: {text}\nGrade band: {band}\n"
-                                                   f"Length: {mins} minutes")
-        plan = _scrub_text(raw_plan)[0]
-        # "filtered": the model answered, and every sentence was a label.
-        local = "filtered" if raw_plan and not plan else "offline"
-        if plan and lid:
-            patch = await asyncio.to_thread(
-                _call, "PATCH", f"{ACADEMY}/classes/{cid}/lessons/{_seg(lid)}",
-                {"research_context": plan[:MAX_PLAN]})
-            local = "saved" if "error" not in json.loads(patch) else "not_saved"
-        return json.dumps({"lesson_id": lid, "class": cls.get("name"), "topic": text,
-                           "grade_level": band, "minutes": mins, "status": "draft",
-                           "server_ai": data.get("ai"), "local_plan": local,
-                           "note": "Draft only: review and publish it in the console."})
+        if grounding:
+            # The server stored the grounding bundle in research_context; a local
+            # plan written there would erase what the draft was grounded in.
+            local = "skipped: grounded in your sources"
+        else:
+            raw_plan = await _raw_local(LESSON_SYSTEM, f"Topic: {text}\nGrade band: {band}\n"
+                                                       f"Length: {mins} minutes")
+            plan = _scrub_text(raw_plan)[0]
+            # "filtered": the model answered, and every sentence was a label.
+            local = "filtered" if raw_plan and not plan else "offline"
+            if plan and lid:
+                patch = await asyncio.to_thread(
+                    _call, "PATCH", f"{ACADEMY}/classes/{cid}/lessons/{_seg(lid)}",
+                    {"research_context": plan[:MAX_PLAN]})
+                local = "saved" if "error" not in json.loads(patch) else "not_saved"
+        out = {"lesson_id": lid, "class": cls.get("name"), "topic": text,
+               "grade_level": band, "minutes": mins, "status": "draft",
+               "server_ai": data.get("ai"), "local_plan": local,
+               "note": "Draft only: review and publish it in the console."}
+        if grounding:
+            out["sources"] = [str(s.get("name") if isinstance(s, dict) else s)
+                              for s in (data.get("sources") or [])][:MAX_SOURCES]
+            out["sources_truncated"] = bool(data.get("sources_truncated"))
+        return json.dumps(out, default=str)
+
+    def lesson_plan(lesson_id: str) -> str:
+        """Read a lesson's saved studio plan (title, objective, warm_up, steps,
+        check_for_understanding, materials) and the sha256 lesson_plan_edit needs.
+
+        lesson_id: the lesson id lesson_draft returned
+        """
+        lsid = str(lesson_id or "").strip()
+        if not lsid:
+            return _err("lesson_id is required")
+        data, raw = _get(f"{PREFIX}/lessons/{_seg(lsid)}/studio/plan")
+        if not isinstance(data, dict):
+            return raw
+        return json.dumps(strip_keys({k: data.get(k) for k in ("lesson_id", "status",
+                                                               "sha256", "plan")}),
+                          default=str)
+
+    def lesson_plan_edit(lesson_id: str, expected_sha256: str, ops: Any) -> str:
+        """Edit part of a saved lesson plan in place (asks the owner first). No model
+        runs. Read it with lesson_plan first; all ops apply or none do. An approved
+        lesson goes back to draft and its A/B/C tiers are dropped.
+
+        lesson_id: the lesson id
+        expected_sha256: the sha256 lesson_plan returned (a changed plan is refused)
+        ops: 1-20 edits, e.g. [{"op": "set", "path": "steps[1]", "value": "..."},
+            {"op": "str_replace", "path": "objective", "old": "...", "new": "..."},
+            {"op": "insert", "path": "materials[0]", "value": "..."},
+            {"op": "remove", "path": "steps[2]"}]; a path is title, objective,
+            warm_up, or one item of steps, check_for_understanding or materials
+        """
+        lsid = str(lesson_id or "").strip()
+        if not lsid:
+            return _err("lesson_id is required")
+        sha = str(expected_sha256 or "").strip().lower()
+        if not _SHA256_RE.match(sha):
+            return _err("expected_sha256 is required (the sha256 lesson_plan returned)")
+        parsed = parse_plan_ops(ops)
+        if parsed is None:
+            return _err(f"ops must be 1-{MAX_PLAN_OPS} edits, each with op "
+                        f"({', '.join(_PLAN_OP_KINDS)}), path and its value/old/new text")
+        raw = _call("PATCH", f"{PREFIX}/lessons/{_seg(lsid)}/studio/plan",
+                    {"expected_sha256": sha, "ops": parsed})
+        data = json.loads(raw)
+        if not isinstance(data, dict) or "error" in data:
+            if isinstance(data, dict) and data.get("status") == 409:
+                data["hint"] = "read the plan again with lesson_plan"
+                return json.dumps(data, default=str)
+            return raw
+        lesson = data.get("lesson") or {}
+        return json.dumps(strip_keys({"lesson_id": lsid, "status": lesson.get("status"),
+                                      "sha256": data.get("sha256"), "plan": data.get("plan"),
+                                      "tiers_dropped": data.get("tiers_dropped"),
+                                      "note": "Saved as a draft; approve it in the console."}),
+                          default=str)
+
+    def lesson_extra(lesson_id: str, kind: str) -> str:
+        """Draft a check quiz or a narrated slide deck for a lesson that is not yet
+        published, on the server's studio, and save it to the lesson (asks the owner
+        first). Students see it only once the lesson is published and assigned.
+
+        lesson_id: the lesson id
+        kind: "quiz" (multiple-choice check) or "deck" (slides, replaces any earlier deck)
+        """
+        lsid = str(lesson_id or "").strip()
+        if not lsid:
+            return _err("lesson_id is required")
+        what = EXTRA_KINDS.get(str(kind or "").strip().lower())
+        if what is None:
+            return _err('kind must be "quiz" or "deck"')
+        raw = _call("POST", f"{PREFIX}/lessons/{_seg(lsid)}/studio/{what}")
+        data = json.loads(raw)
+        if not isinstance(data, dict) or "error" in data:
+            return raw
+        out: Dict[str, Any] = {"lesson_id": lsid, "kind": what, "server_ai": data.get("ai"),
+                               "reason": data.get("reason")}
+        if what == "quiz":
+            ch = data.get("challenge")
+            out["saved"] = isinstance(ch, dict)
+            if isinstance(ch, dict):
+                # Answer keys never reach the model (strip_keys), even the teacher's.
+                out["challenge"] = {"id": ch.get("id"), "title": ch.get("title"),
+                                    "questions": [q.get("prompt") for q in
+                                                  (ch.get("questions") or [])
+                                                  if isinstance(q, dict)]}
+        else:
+            deck = data.get("deck")
+            out["saved"] = bool(data.get("artifact_id"))
+            out["artifact_id"] = data.get("artifact_id")
+            if isinstance(deck, dict):
+                out["slides"] = [s.get("title") for s in (deck.get("slides") or [])
+                                 if isinstance(s, dict)]
+        out["note"] = ("Saved to the draft lesson; review it in the console."
+                       if out["saved"] else "Nothing was saved: see reason.")
+        return json.dumps(strip_keys(out), default=str)
 
     async def differentiate(lesson_id: str) -> str:
         """Write A/B/C versions (more support / on target / more challenge) of a
@@ -697,15 +933,18 @@ def build_teacher_tools(base_url: str, token: str, *, client: Optional[Any] = No
         return _call("POST", f"{PREFIX}/classes/{_seg(cls.get('class_id', ''))}/room/threads/"
                              f"{_seg(stu.get('member_id', ''))}/messages", body={"text": body})
 
-    return [class_brief, struggle_report, lesson_draft, differentiate, grade_assist,
-            parent_note_draft, parent_note_send]
+    return [class_brief, struggle_report, lesson_draft, lesson_plan, lesson_plan_edit,
+            lesson_extra, differentiate, grade_assist, suggest_score, parent_note_draft,
+            parent_note_send]
 
 
 #: Readers (hearth.READ_ONLY_TOOLS) and writers (life_tools.ALWAYS_ASK); a test pins
-#: these to the built set.
+#: these to the built set. ``suggest_score`` writes only a suggestion but runs a
+#: model on a child's work, so it asks like a writer.
 TEACHER_READERS = frozenset({"class_brief", "struggle_report", "grade_assist",
-                             "parent_note_draft"})
-TEACHER_WRITERS = frozenset({"lesson_draft", "differentiate", "parent_note_send"})
+                             "parent_note_draft", "lesson_plan"})
+TEACHER_WRITERS = frozenset({"lesson_draft", "differentiate", "parent_note_send",
+                             "lesson_plan_edit", "lesson_extra", "suggest_score"})
 
 
 def llm_generate(llm: Any, local: bool = False) -> Optional[Generate]:

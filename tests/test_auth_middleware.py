@@ -71,12 +71,13 @@ class TestAuthMiddleware:
         resp = client.get("/health")
         assert resp.status_code == 200
 
-    def test_docs_skips_auth(self):
-        """Docs endpoint skips auth."""
-        app = self._make_app(api_key="secret123")
-        client = TestClient(app)
-        resp = client.get("/docs")
-        assert resp.status_code == 200
+    def test_docs_follow_the_server_key(self):
+        """Schema routes are open on an ungated daemon and gated with the routes they
+        describe once a server key is set (tests/test_twin_self_service.py)."""
+        assert TestClient(self._make_app(api_key="")).get("/docs").status_code == 200
+        gated = TestClient(self._make_app(api_key="secret123"))
+        assert gated.get("/docs").status_code == 401
+        assert gated.get("/docs", headers={"Authorization": "Bearer secret123"}).status_code == 200
 
     def test_metrics_skips_auth(self):
         """Metrics endpoint skips auth."""

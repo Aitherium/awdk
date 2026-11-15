@@ -49,6 +49,7 @@ _AGENT_TEMPLATE = '''\
 """My AitherADK agent."""
 
 from adk import AitherAgent, tool
+from adk.llm import LLMBackendUnreachable
 
 agent = AitherAgent("{name}")
 
@@ -60,7 +61,10 @@ def hello(name: str) -> str:
 
 
 async def main():
-    response = await agent.chat("Say hello to the world")
+    try:
+        response = await agent.chat("Say hello to the world")
+    except LLMBackendUnreachable as exc:
+        raise SystemExit(f"error: {{exc}}")
     print(response.content)
 
 
@@ -90,8 +94,18 @@ safety: true
 
 # Required tool packs (auto-loaded at startup)
 # required_packs:
-#   - git-github
-#   - codegraph
+#   - codegraph      # free: adk pack install codegraph
+#   - git-github     # paid pack: adk pack buy git-github --install
+
+# File tools (file_read / file_write / file_edit / file_list / file_search) are
+# confined to THIS folder. List extra folders here to allow them (relative paths
+# are relative to this folder):
+# files:
+#   allowed_roots:
+#     - ../shared-data
+#   # No boundary at all -- the agent can read and write any file your account
+#   # can. Off by default; announced loudly at startup when on.
+#   full_machine: false
 """
 
 _TOOLS_TEMPLATE = '''\
@@ -171,6 +185,11 @@ def cmd_init(args):
     return 0
 
 
+#: A template directory may carry this file: its lines are printed as the
+#: "Next steps" of `adk new <template>` and the file itself is not copied.
+_TEMPLATE_NEXT_STEPS = ".adk-next-steps"
+
+
 def cmd_new(args):
     """Scaffold a complete project from a bundled template — e.g. `adk new deep-research`.
 
@@ -184,7 +203,7 @@ def cmd_new(args):
     if not src.is_dir() or not any(src.iterdir()):
         available = sorted(
             p.name for p in templates_dir.iterdir()
-            if p.is_dir() and (p / "serve.py").exists()
+            if p.is_dir() and ((p / "serve.py").exists() or (p / _TEMPLATE_NEXT_STEPS).exists())
         ) if templates_dir.is_dir() else []
         print(f"Unknown template '{args.template}'.")
         if available:
@@ -197,13 +216,22 @@ def cmd_new(args):
         return 1
 
     shutil.copytree(src, target, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "node_modules",
+                                                  _TEMPLATE_NEXT_STEPS))
     print(f"Created '{args.template}' at {target}/")
     print()
     print("Next steps:")
     print(f"  cd {target}")
-    print("  pip install -r requirements.txt")
-    print("  python serve.py        # opens a browser; paste your LLM key in the UI")
+    # A template that is not a Python app (flue is a Node project) names its own
+    # commands; printing `pip install -r requirements.txt` for it would be a lie.
+    steps_file = src / _TEMPLATE_NEXT_STEPS
+    if steps_file.is_file():
+        for line in steps_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                print(f"  {line.rstrip()}")
+    else:
+        print("  pip install -r requirements.txt")
+        print("  python serve.py        # opens a browser; paste your LLM key in the UI")
     return 0
 
 
@@ -653,8 +681,37 @@ def cmd_workspace(args):
 
 
 def cmd_run(args):
-    """Start the agent server."""
+    """Start the agent server.
+
+    In a project directory (``agent.py`` from ``adk init``) this serves THAT
+    project's agent with the tools it registers. An explicit ``--identity`` that
+    names a different agent, ``--fleet`` and ``--agents`` keep their old meaning.
+    """
+    from adk.project import ProjectAgentError, load_project_agent, project_agent_path
     from adk.server import main as server_main
+
+    project_agent = None
+    if not args.fleet and not args.agents and project_agent_path() is not None:
+        # The project agent builds its own Config at import, so the overrides have
+        # to be in the environment before agent.py runs.
+        if args.backend:
+            os.environ["AITHER_LLM_BACKEND"] = args.backend
+        if args.model:
+            os.environ["AITHER_MODEL"] = args.model
+        try:
+            project_agent = load_project_agent(want=args.identity or "")
+        except ProjectAgentError as exc:
+            print(f"Error: {exc}")
+            return 1
+        if project_agent is not None:
+            try:
+                _count = len(project_agent._tools.list_tools())
+            except Exception:  # noqa: BLE001 - the count is a courtesy line
+                _count = 0
+            print(f"Project agent: {project_agent.name} (from agent.py, {_count} tools)")
+        else:
+            print(f"Note: agent.py does not define an agent named {args.identity!r}; "
+                  "serving that identity without the project's tools.")
     # Re-inject args into sys.argv for server's argparse
     sys_args = ["aither-serve"]
     if args.identity:
@@ -674,7 +731,7 @@ def cmd_run(args):
     _export_crystal_env(args)
 
     sys.argv = sys_args
-    server_main()
+    server_main(agent=project_agent)
 
 
 def _export_crystal_env(args) -> None:
@@ -1094,7 +1151,9 @@ def cmd_up(args):
         cand = provider
         if not cand:
             _pk = _load_provider_keys()
-            for p in ("deepseek", "openai", "anthropic"):
+            # Paid keys only; DeepSeek cloud is never auto-picked from a saved key
+            # (owner 2026-11-12) -- pass --provider deepseek to use it.
+            for p in ("openai", "anthropic"):
                 if _pk.get(p) or os.environ.get(_KNOWN_PROVIDERS[p]["env"]):
                     cand = p
                     break
@@ -1822,7 +1881,8 @@ BONSAI_LOCAL_MODELS: dict[str, dict[str, str]] = {
 #: `--model` choices: the native sizes (adk.bonsai_native.BONSAI_SIZES) plus the
 #: container-only entries above. "" = --auto (native) / bonsai2-27b (--container).
 BONSAI_LOCAL_MODEL_CHOICES = ("", "bonsai-1.7b", "bonsai-4b", "bonsai-8b", "bonsai-27b",
-                              "bonsai2-27b", "ling-tiny-8b")
+                              "bonsai2-2b", "bonsai2-4b", "bonsai2-9b", "bonsai2-27b",
+                              "ling-tiny-8b")
 
 
 def _bonsai_local_gguf_path(spec: dict[str, str]) -> str:
@@ -2030,7 +2090,8 @@ def _cmd_bonsai_local_container(args) -> int:
 
     model = getattr(args, "model", "") or os.environ.get("AITHER_BONSAI_MODEL", "bonsai2-27b")
     spec = BONSAI_LOCAL_MODELS.get(model)
-    if spec is None and model in ("bonsai-1.7b", "bonsai-4b", "bonsai-8b"):
+    if spec is None and model in ("bonsai-1.7b", "bonsai-4b", "bonsai-8b", "bonsai2-2b",
+                                  "bonsai2-4b", "bonsai2-9b"):
         print(f"  [!] {model} runs natively only; drop --container.")
         return 1
     if spec is None:
@@ -3681,7 +3742,10 @@ def _strip_think_tags(text: str) -> str:
 def cmd_ui(args):
     """Manage the agent's swappable web UI pack (ls / set / path)."""
     from adk.server import (
-        list_ui_packs, load_ui_pack, resolve_ui_pack_name, _ui_packs_dir,
+        _ui_packs_dir,
+        list_ui_packs,
+        load_ui_pack,
+        resolve_ui_pack_name,
     )
     action = getattr(args, "ui_command", None) or "ls"
 
@@ -3752,6 +3816,11 @@ async def _stream_to_agent(ref, message: str) -> None:
             # replies; fall back to a non-streaming completion so the user sees output.
             resp = await prov.chat([Message(role="user", content=message)], max_tokens=1024)
             sys.stdout.write(getattr(resp, "content", "") or "(no content)")
+        print()
+    elif ref.chat_protocol == "aitheros":
+        # An AitherOS platform service (Atlas): POST /chat, one JSON reply.
+        from adk.aitheros_chat import chat as _aitheros_chat
+        sys.stdout.write(await _aitheros_chat(ref.invoke_url, message))
         print()
     else:
         # A full adk agent server — its own /chat/stream, its own backend.
@@ -4011,7 +4080,15 @@ def cmd_chat(args) -> int:
         tag = ref.model or ref.provider_hint or ref.chat_protocol
         print(f"  → {ref.name}  [{tag} @ {ref.invoke_url}]\n")
         if message:
-            await _stream_to_agent(ref, message)
+            from adk.aitheros_chat import AitherOSChatError
+            try:
+                await _stream_to_agent(ref, message)
+            except AitherOSChatError as exc:
+                # One line and a non-zero exit: a queue runner (awrun kind=agent)
+                # reads the exit code, and a turn with no reply must not count as done.
+                import sys
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
             return 0
         # interactive loop
         while True:
@@ -4878,6 +4955,14 @@ def _ensure_enroll_heartbeat(args) -> str:
     return f"Heartbeat: every 60s, kept running at login ({how})"
 
 
+def _ensure_file_index(args) -> str:
+    """The enrolled machine's files, indexed in Strata as its REGISTERED node id on a
+    recurring job (awstorage files schedule). One line; never raises. Owner 2026-11-07."""
+    from adk.file_index import install, summary_line
+
+    return summary_line(install(args))
+
+
 #: `adk enroll` exit code: signed in (and any invite accepted), but Identity did not
 #: register this machine (refused -- 402 no plan, 403 quota -- unavailable after
 #: retries, or the legacy hub only). Distinct from 1 so the setup page can say it
@@ -4977,6 +5062,7 @@ def cmd_enroll(args) -> int:
             print(f"  Inference: {existing.get('inference_kind', 'none')} "
                   f"{existing.get('inference_url') or '-'}")
             print(f"  {_ensure_enroll_heartbeat(args)}")
+            print(f"  {_ensure_file_index(args)}")
             print()
             print("To re-enroll, use: adk enroll --force")
             return 0
@@ -5053,6 +5139,7 @@ def cmd_enroll(args) -> int:
         if result.get("public_url"):
             print(f"  Public URL: {result['public_url']}")
         print(f"  {_ensure_enroll_heartbeat(args)}")
+        print(f"  {_ensure_file_index(args)}")
         # REACH, said plainly. "Enrolled" and "reachable from your browser" are
         # different states, and every prior version of this output conflated them.
         reach = result.get("reach_kind", "none")
@@ -5296,45 +5383,55 @@ def cmd_host(args):
     print()
 
     # ── 1. Provider + model key (local store, never an env var the user types) ──
+    # Default: "aither" = the local AitherOS spine (MicroScheduler, https, no key).
+    # A paid provider is used only when named (owner 2026-11-12: no DeepSeek default).
     if not provider:
         try:
-            provider = (input("  Model provider [deepseek/openai/anthropic]: ").strip().lower()
-                        or "deepseek")
+            provider = (input("  Model provider [aither/openai/anthropic/deepseek]: ")
+                        .strip().lower() or "aither")
         except (EOFError, KeyboardInterrupt):
             print()
             return 1
-    if provider not in _KNOWN_PROVIDERS:
-        print(f"  Unknown provider '{provider}'. Known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
-        return 1
-
-    keys = _load_provider_keys()
-    env_name = _KNOWN_PROVIDERS[provider]["env"]
-    key = keys.get(provider, "") or os.environ.get(env_name, "")
-    if key:
-        print(f"  [+] {_KNOWN_PROVIDERS[provider]['label']} key found: {_mask_key(key)}")
+    backend_arg = provider
+    if provider in _LOCAL_SPINE_PROVIDERS:
+        provider, backend_arg = "aither", "auto"
+        spine = _use_local_spine_env()
+        print(f"  [+] Local AitherOS spine: {spine} (no key; user priority)")
     else:
-        print(f"  Enter your {_KNOWN_PROVIDERS[provider]['label']} API key.")
-        print("  It is stored locally (~/.aither/provider_keys.json) and NEVER sent to AitherOS.")
-        try:
-            key = getpass.getpass(f"  {_KNOWN_PROVIDERS[provider]['label']} API key: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
+        if provider not in _KNOWN_PROVIDERS:
+            print(f"  Unknown provider '{provider}'. Known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
             return 1
-        if not key:
-            print("  No key entered — aborting.")
-            return 1
-        ok, msg = _test_provider_key(provider, key)
-        print(f"  [{'+' if ok else 'x'}] {msg}")
-        if not ok:
-            print("  Key failed validation — aborting (not saved).")
-            return 1
-        keys[provider] = key
-        _save_provider_keys(keys)
-        print(f"  Saved to {_keys_path()} (local only).")
-    # Make the key available to the child server without the user ever exporting it.
-    os.environ[env_name] = key
+
+        keys = _load_provider_keys()
+        env_name = _KNOWN_PROVIDERS[provider]["env"]
+        key = keys.get(provider, "") or os.environ.get(env_name, "")
+        if key:
+            print(f"  [+] {_KNOWN_PROVIDERS[provider]['label']} key found: {_mask_key(key)}")
+        else:
+            print(f"  Enter your {_KNOWN_PROVIDERS[provider]['label']} API key.")
+            print("  It is stored locally (~/.aither/provider_keys.json) and NEVER sent"
+                  " to AitherOS.")
+            try:
+                key = getpass.getpass(f"  {_KNOWN_PROVIDERS[provider]['label']} API key: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 1
+            if not key:
+                print("  No key entered — aborting.")
+                return 1
+            ok, msg = _test_provider_key(provider, key)
+            print(f"  [{'+' if ok else 'x'}] {msg}")
+            if not ok:
+                print("  Key failed validation — aborting (not saved).")
+                return 1
+            keys[provider] = key
+            _save_provider_keys(keys)
+            print(f"  Saved to {_keys_path()} (local only).")
+        # Make the key available to the child server without the user ever exporting it.
+        os.environ[env_name] = key
 
     _default_models = {
+        "aither": "aither-orchestrator",
         "deepseek": "deepseek-chat",
         "openai": "gpt-4o-mini",
         "anthropic": "claude-sonnet-4-6",
@@ -5399,7 +5496,7 @@ def cmd_host(args):
     if dry_run:
         print()
         print("  [dry-run] would:")
-        print(f"    1. aither-serve --backend {provider} --port {port} --identity {identity}")
+        print(f"    1. aither-serve --backend {backend_arg} --port {port} --identity {identity}")
         print(f"    2. cloudflared tunnel --url http://localhost:{port}")
         reg = register_url or f"{portal}/api/genesis/v1/agent/fleet/register"
         from adk.a2a_identity import get_a2a_public_key
@@ -5427,7 +5524,7 @@ def cmd_host(args):
         child_env["AITHER_SERVER_API_KEY"] = auth_token
         child_env["AITHER_TOOL_APPROVAL"] = approval or ""
         server = subprocess.Popen(
-            [sys.executable, "-m", "adk.server", "--backend", provider,
+            [sys.executable, "-m", "adk.server", "--backend", backend_arg,
              "--port", str(port), "--identity", identity],
             env=child_env,
         )
@@ -7435,6 +7532,26 @@ def cmd_contribute(args) -> int:
 
 # ── Phase 1: aither keys — API key management ─────────────────────────────
 
+#: Names that mean "the local AitherOS spine" (MicroScheduler :8150, no key).
+_LOCAL_SPINE_PROVIDERS = ("aither", "spine", "local")
+
+
+def _use_local_spine_env() -> str:
+    """Point this process (and the child server) at the local spine; return its URL.
+
+    Never overrides a configured value. HTTPS only, 127.0.0.1 (``localhost`` is ::1,
+    which the spine refuses); the scheduler hint defaults to user priority.
+    """
+    from adk.core.model import SPINE_HOST_URL, spine_url_from_env
+
+    spine = os.environ.get("AITHER_CORE_LLM_URL") or spine_url_from_env() or SPINE_HOST_URL
+    os.environ.setdefault("AITHER_CORE_LLM_URL", spine)
+    os.environ.setdefault(
+        "ADK_SCHEDULER_METADATA", '{"priority": "user", "source": "adk.host"}'
+    )
+    return spine
+
+
 _KNOWN_PROVIDERS = {
     "openai": {"env": "OPENAI_API_KEY", "test_url": "https://api.openai.com/v1/models", "label": "OpenAI"},
     "anthropic": {"env": "ANTHROPIC_API_KEY", "test_url": "https://api.anthropic.com/v1/messages", "label": "Anthropic"},
@@ -8155,7 +8272,9 @@ def _mesh_join_signed_in(args) -> int:
         return _mesh_join_fail("this device is not signed in to an Aitherium account.",
                                "adk login ; adk mesh join", code=5)
     from adk.server import (
-        _remember_node_registration, _update_node_record, identity_base_for_profile,
+        _remember_node_registration,
+        _update_node_record,
+        identity_base_for_profile,
     )
     idp = identity_base_for_profile(prof)
     # The node `adk pair`/`adk enroll` registered stays the node: one machine, one entry.
@@ -8338,17 +8457,25 @@ def cmd_mesh(args) -> int:
 
             try:
                 import httpx
+                from adk import mesh_directory
                 from adk.mesh import _headers, _verify
 
-                # Query AitherMesh /nodes endpoint for peer directory
-                url = mesh_url.rstrip("/") + "/nodes"
+                # The public default has no peer directory behind it (it is the MCP
+                # gateway): a signed-in machine reads its ACCOUNT's node registry with
+                # the login session; mesh-core on the overlay serves /nodes for the
+                # PSK. mesh_directory picks the registry and the credential
+                # (2026-11-12: the old one-size request was a 401 for everyone).
                 async with httpx.AsyncClient(timeout=10.0, verify=_verify()) as c:
-                    r = await c.get(url, headers=_headers(None))
-                    r.raise_for_status()
-                    nodes = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
-
-                if not isinstance(nodes, list):
-                    nodes = nodes.get("nodes", []) if isinstance(nodes, dict) else []
+                    got = await mesh_directory.fetch(
+                        mesh_url, _headers(None),
+                        lambda url, headers: c.get(url, headers=headers))
+                if not got["ok"]:
+                    print(f"ERROR: {got['error']}", file=sys.stderr)
+                    return 1
+                nodes = got["nodes"]
+                if fmt != "json":
+                    print()
+                    print(f"  Registry: {got['registry']}")
 
                 if fmt == "json":
                     print(json.dumps(nodes, indent=2))
@@ -10002,6 +10129,23 @@ def _show_local_costs(mode: str, period: str):
     print(f"  Local reqs:   {local_count}")
 
 
+def _mcp_tool_row(tool) -> tuple:
+    """(name, description, tier) for one MCP tool.
+
+    ``MCPBridge.list_tools()`` returns ``MCPTool`` dataclasses; older callers and
+    raw manifests hand over dicts. Reading only ``.get`` printed
+    "MCP: not available ('MCPTool' object has no attribute 'get')" for every
+    signed-in user (measured 2026-11-12).
+    """
+    if isinstance(tool, dict):
+        get = tool.get
+    else:
+        def get(key, default=""):
+            return getattr(tool, key, default)
+    return (str(get("name", "") or "?"), str(get("description", "") or ""),
+            str(get("tier", "") or ""))
+
+
 def cmd_tools(args):
     """Dispatch tools subcommands (list, sync)."""
     # Dispatch to sync subcommand if specified
@@ -10038,12 +10182,10 @@ def cmd_tools(args):
                 mcp_tools = await bridge.list_tools()
                 print("\nMCP Tools (cloud)")
                 print("=" * 50)
-                for t in sorted(mcp_tools, key=lambda x: x.get("name", ""))[:20]:
-                    name = t.get("name", "?")
-                    desc = t.get("description", "")[:50]
-                    tier = t.get("tier", "")
+                rows = sorted((_mcp_tool_row(t) for t in mcp_tools), key=lambda r: r[0])
+                for name, desc, tier in rows[:20]:
                     marker = f" [{tier}]" if tier else ""
-                    print(f"  {name:30s} {desc}{marker}")
+                    print(f"  {name:30s} {desc[:50]}{marker}")
                 print(f"\n  Total: {len(mcp_tools)} MCP tools")
                 if getattr(args, "upgrade", False):
                     print("\n  Upgrade at: https://api.aitherium.com/pricing")
@@ -10099,10 +10241,24 @@ def cmd_tools_sync(args):
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Fetch tools manifest
+        # Fetch tools manifest. The active profile's token can be a kind this route
+        # refuses while the `adk login` session on the same machine is accepted
+        # (measured 2026-11-12: 401 for the profile key, 200 for the session), so a
+        # 401 is retried with each other stored credential before giving up.
+        tokens = [creds.access_token]
+        try:
+            from adk.mcp_setup import auth_candidates, may_try_every_credential
+            if may_try_every_credential(url):
+                tokens += [tok for tok, _ in auth_candidates() if tok not in tokens]
+        except Exception:  # noqa: BLE001 - the first credential still gets its try
+            pass
         try:
             async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as client:
-                response = await client.get(url, headers=headers)
+                for token in tokens:
+                    headers["Authorization"] = f"Bearer {token}"
+                    response = await client.get(url, headers=headers)
+                    if response.status_code != 401:
+                        break
         except Exception as e:
             print(f"Error: Failed to fetch tools manifest: {e}")
             return 1
@@ -10113,7 +10269,8 @@ def cmd_tools_sync(args):
             print("Tools manifest is up to date (cached).")
             return 0
         elif response.status_code == 401:
-            print("Error: Authentication failed. Check your API key (adk login).")
+            print(f"Error: Authentication failed. {gateway_url} refused every stored "
+                  "credential. Check your API key (adk login).")
             return 1
         elif response.status_code == 503:
             print("Error: Platform unavailable. Please try again later.")
@@ -11377,20 +11534,38 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
         # 2026-09-10: vendor ids are `deepseek-flash` (V4.1 Flash) + `deepseek-v4-pro`;
         # `deepseek-v4-flash` is a temporary alias and `deepseek-v4-pro` is routed to
         # V4.1 Flash from 2026-09-14 (vendor changelog) — both shortcuts land on it.
-        "deepseek-flash": ("deepseek", "deepseek-flash"),
-        "deepseek-pro": ("deepseek", "deepseek-flash"),
-        "deepseek": ("deepseek", "deepseek-flash"),
+        # 2026-11-12 (owner): the DeepSeek API answers 402; DeepSeek-V4 runs LOCALLY on
+        # the DGX pool behind the spine. The model shortcuts land there; only
+        # `--provider deepseek` reaches the paid API.
+        "deepseek-flash": ("aither", "deepseek-v4-flash-pool"),
+        "deepseek-pro": ("aither", "deepseek-v4-flash-pool"),
+        "deepseek": ("aither", "deepseek-v4-flash-pool"),
         "openrouter": ("openrouter", "deepseek/deepseek-v4-flash"),
         "local": ("local", ""),
         "llamacpp": ("local", ""),
+        "aither": ("aither", ""),
+        "spine": ("aither", ""),
     }
 
     if model and model in shortcuts:
         provider, model = shortcuts[model]
+    if provider == "spine":
+        provider = "aither"
     if not provider:
-        provider = "deepseek"
+        # Local first (owner 2026-11-12): a bare --model goes to the AitherOS spine,
+        # never to the paid DeepSeek API.
+        provider = "aither"
 
     configs = {
+        "aither": {
+            # The AitherOS spine (MicroScheduler): https + AitherNet CA, 127.0.0.1.
+            # `vllm` is the provider that speaks its TLS; `openai` would refuse the cert.
+            "provider": "vllm",
+            "base_url": "https://127.0.0.1:8150/v1",
+            "api_key": "not-needed",
+            "model": model or "aither-orchestrator",
+            "display": f"AitherOS spine ({model or 'aither-orchestrator'})",
+        },
         "deepseek": {
             "provider": "openai",
             "base_url": "https://api.deepseek.com/v1",
@@ -11427,10 +11602,39 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
         },
     }
 
-    info = configs.get(provider, configs["deepseek"])
-    if not info.get("api_key") and provider not in ("local",):
+    info = configs.get(provider, configs["aither"])
+    if not info.get("api_key") and provider not in ("local", "aither"):
         info["display"] += " [NO KEY — run: adk keys set " + provider + "]"
     return info
+
+
+def _spine_info(label: str) -> dict:
+    from adk.core.model import SPINE_HOST_URL, spine_url_from_env
+    base = (spine_url_from_env() or SPINE_HOST_URL).rstrip("/")
+    return {
+        "provider": "vllm",
+        "base_url": f"{base}/v1",
+        "api_key": "not-needed",
+        "model": "aither-orchestrator",
+        "display": f"{label} -- {base}",
+    }
+
+
+def _probe_spine_backend():
+    """The spine's connection info when its /health answers 200, else ``None``.
+
+    TLS is checked against the AitherNet CA via ``adk._tls.tls_verify``.
+    """
+    try:
+        import httpx
+
+        from adk._tls import tls_verify
+        info = _spine_info("AitherOS spine")
+        base = info["base_url"][: -len("/v1")]
+        resp = httpx.get(f"{base}/health", timeout=2.0, verify=tls_verify())
+        return info if resp.status_code == 200 else None
+    except Exception:
+        return None
 
 
 def _detect_llm_backend():
@@ -11482,6 +11686,11 @@ def _detect_llm_backend():
     except Exception:
         pass
 
+    # 1. The AitherOS spine (MicroScheduler) on this host: https + AitherNet CA.
+    _spine = _probe_spine_backend()
+    if _spine:
+        return _spine
+
     # 2. Check for vLLM
     try:
         import httpx
@@ -11523,20 +11732,17 @@ def _detect_llm_backend():
             "display": "Elysium Cloud (aither-orchestrator)",
         }
 
-    # 4. Check for provider keys (DeepSeek, OpenRouter, etc.)
+    # 4. Paid provider keys join auto-detect ONLY with ADK_ALLOW_PAID_CLOUD=1, and the
+    # DeepSeek API never does (owner 2026-11-12: its account answers 402). Name it
+    # with `--provider deepseek` to reach it.
+    _paid = (os.environ.get("ADK_ALLOW_PAID_CLOUD") or "").strip().lower()
+    if _paid not in ("1", "true", "yes", "on"):
+        return _spine_info("AitherOS spine (not answering yet)")
     provider_keys_path = Path.home() / ".aither" / "provider_keys.json"
     if provider_keys_path.exists():
         try:
             import json as _j
             pkeys = _j.loads(provider_keys_path.read_text(encoding="utf-8"))
-            if pkeys.get("deepseek"):
-                return {
-                    "provider": "openai",
-                    "base_url": "https://api.deepseek.com/v1",
-                    "api_key": pkeys["deepseek"],
-                    "model": "deepseek-flash",
-                    "display": "DeepSeek V4.1 Flash (1M context, multimodal)",
-                }
             if pkeys.get("openrouter"):
                 return {
                     "provider": "openai",
@@ -12332,20 +12538,20 @@ def _load_pack_catalog(genesis_url: str) -> list[dict]:
     even without internet or a running Genesis.
     """
     catalog: list[dict] = []
+    receipt = {"source": "", "tried": [], "bundled_at": 0.0}
 
-    # Try Genesis API
+    # Try Genesis: every candidate base, with the caller's bearer. The old call
+    # sent no credential and asked one host; behind the bridge that is a 401, and
+    # the 401 was swallowed, so `pack list` silently showed the bundled catalogue
+    # (23 packs, each "available") while the live one held 58.
     try:
-        import httpx
-        with httpx.Client(base_url=genesis_url, timeout=5) as c:
-            resp = c.get("/api/v1/catalog/packs")
-            if resp.status_code == 200:
-                catalog = resp.json().get("packs", [])
-            else:
-                resp = c.get("/v1/packs/catalog")
-                if resp.status_code == 200:
-                    catalog = resp.json().get("packs", [])
-    except Exception:
-        pass
+        from adk import pack_remote
+        catalog, source, tried = pack_remote.fetch_catalog(genesis_url)
+        receipt["tried"] = tried
+        if source:
+            receipt["source"] = f"live:{source}"
+    except Exception as exc:  # noqa: BLE001 - the bundled catalogue still answers
+        receipt["tried"] = [f"{type(exc).__name__}: {exc}"]
 
     # Fallback: bundled offline catalog
     if not catalog:
@@ -12353,10 +12559,162 @@ def _load_pack_catalog(genesis_url: str) -> list[dict]:
             bundled = Path(__file__).parent / "data" / "packs_catalog.json"
             if bundled.exists():
                 catalog = json.loads(bundled.read_text(encoding="utf-8")).get("packs", [])
+                receipt["source"] = "bundled"
+                receipt["bundled_at"] = bundled.stat().st_mtime
         except Exception:
             pass
 
+    _PACK_CATALOG_RECEIPT.clear()
+    _PACK_CATALOG_RECEIPT.update(receipt)
     return catalog
+
+
+#: Where the last ``_load_pack_catalog`` answer came from: ``source`` is
+#: ``live:<base>``, ``bundled`` or "" (nothing), ``tried`` one line per attempt.
+_PACK_CATALOG_RECEIPT: dict = {}
+
+
+def _pack_catalog_source_line() -> str:
+    """One line saying what the pack listing counted and how fresh it is."""
+    import time as _time
+    rec = _PACK_CATALOG_RECEIPT
+    source = str(rec.get("source") or "")
+    if source.startswith("live:"):
+        return f"source: live catalogue at {source[5:]}"
+    why = "; ".join(str(t) for t in (rec.get("tried") or [])[-2:]) or "no catalogue host answered"
+    if source == "bundled":
+        age = max(0, int(_time.time() - float(rec.get("bundled_at") or 0)))
+        return (f"source: the catalogue bundled with this kit ({age // 86400}d old), "
+                f"NOT the live one ({why}). Sign in with `adk login` to read it.")
+    return f"source: none ({why})"
+
+
+def _record_pack_lock(pack_id: str, **row) -> None:
+    """Write the add-on lock row for a Library install. A lock failure is reported, never
+    fatal: the pack is already on disk, and refusing it now would leave it installed AND
+    unrecorded."""
+    try:
+        from adk.addon_lock import record_install
+        record_install("library", pack_id, **row)
+    except (OSError, ValueError) as exc:
+        print(f"warning: could not record {pack_id!r} in the pack lockfile: {exc}")
+
+
+def _local_marker_sha(target: Path) -> str:
+    """The sha256 ``install_local`` wrote into the pack's local-install marker."""
+    from adk.pack_author import LOCAL_MARKER
+    try:
+        text = (target / LOCAL_MARKER).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for word in text.split():
+        if word.startswith("sha256="):
+            return word[len("sha256="):]
+    return ""
+
+
+def _local_pack_manifests() -> dict:
+    """Every pack the loader can see on THIS machine (bundled, in-repo, installed)."""
+    try:
+        from adk.tool_pack_loader import ToolPackLoader
+        return dict(ToolPackLoader(enforce_entitlements=False).discover())
+    except Exception:  # noqa: BLE001 - no loader = nothing local, never a crash
+        return {}
+
+
+def _addons_install(ref: str, *, replace: bool = False, allow_community: bool = False):
+    """adk.addons.install -- the one resolver every surface uses (seam for tests)."""
+    from adk import addons
+    return addons.install(ref, replace=replace, allow_community=allow_community)
+
+
+def _print_addon_result(res, as_json: bool = False) -> int:
+    """Print an :class:`adk.addons.Result` (one JSON object with *as_json*).
+
+    Returns the exit code: 0 ok, 1 not.
+    """
+    if as_json:
+        print(json.dumps(res.to_dict(), default=str))
+        return 0 if res.ok else 1
+    if res.ok:
+        row = res.record or {}
+        print(f"{res.kind}:{res.id} {res.detail}")
+        if row:
+            print(f"  recorded: v{row.get('version')} ({row.get('trust')}) from "
+                  f"{row.get('source')}, sha256 {str(row.get('sha256'))[:16]}... "
+                  f"({row.get('hash_of')})")
+        if res.next:
+            print("Next:")
+            for line in str(res.next).splitlines():
+                print(f"  {line}")
+        return 0
+    print(f"{res.kind + ':' if res.kind else ''}{res.id}: {res.detail}")
+    if res.next:
+        print(f"  hint: {res.next}")
+    return 1
+
+
+def _cmd_pack_enable(pack_id: str, *, enable: bool, allow_community: bool = False) -> int:
+    """``adk pack enable|disable <id>``.
+
+    Enable resolves the id across awpack, Library and awnode ext (``adk.addons``),
+    installs it through that brick when it is not installed, then turns it on: a Library
+    or awpack pack joins the agent's ``required_packs``; an awnode extension is started.
+    So the command ``adk discover`` suggests always works: search -> install -> enable.
+    """
+    from adk.addon_lock import lookup
+    saved = load_saved_config()
+    enabled = [p for p in (saved.get("required_packs") or []) if p]
+    bare = pack_id.split(":", 1)[1] if pack_id.split(":", 1)[0] in (
+        "awpack", "library", "ext", "awnode-ext") else pack_id
+    if not enable:
+        if bare not in enabled:
+            print(f"Pack '{bare}' is not enabled")
+            return 1
+        save_saved_config({"required_packs": [p for p in enabled if p != bare]})
+        print(f"Pack '{bare}' disabled. Restart the agent to drop its tools.")
+        return 0
+    row = lookup(bare)
+    kind = (row or {}).get("kind")
+    if row is None and bare not in _local_pack_manifests():
+        print(f"'{bare}' is not installed; installing it first.")
+        res = _addons_install(pack_id, allow_community=allow_community)
+        if _print_addon_result(res):
+            return 1
+        kind = res.kind
+    if kind == "awnode-ext":
+        from adk.addons import _brick
+        rc, out, err = _brick("awnode", ["ext", "start", bare], timeout=300)
+        print((out or err).strip())
+        return 0 if rc == 0 else 1
+    if bare not in enabled:
+        enabled.append(bare)
+        save_saved_config({"required_packs": enabled})
+    print(f"Pack '{bare}' enabled. Its tools load on the agent's next start or "
+          "`adk pack` reload.")
+    return 0
+
+
+def _pack_info_offline(pack_id: str, genesis_url: str) -> "dict | None":
+    """``adk pack info`` without the per-pack route: the catalog ``pack list`` reads
+    (Genesis, then the bundled catalog), then the manifest of a pack on this machine."""
+    for entry in _load_pack_catalog(genesis_url):
+        if entry.get("id") == pack_id:
+            return dict(entry)
+    m = _local_pack_manifests().get(pack_id)
+    if m is None:
+        # Not a Library pack: awpack or an awnode extension (the same resolver).
+        from adk import addons as _addons
+        hit, _down = _addons.resolve(pack_id)
+        if hit is None:
+            return None
+        return {"id": hit.id, "name": hit.id, "version": hit.version or "?",
+                "type": hit.kind, "tier": "free", "category": hit.kind,
+                "description": hit.summary, "price_monthly_usd": 0}
+    return {"id": m.id, "name": m.name, "version": m.version or "?",
+            "type": "tool_pack", "tier": m.tier, "category": m.category,
+            "description": m.description, "price_monthly_usd": 0,
+            "mcp_modules": list(getattr(m, "mcp_tools", []) or [])}
 
 
 def _cmd_fleet(args) -> int:
@@ -12573,9 +12931,11 @@ def _cmd_pack(args) -> int:
         # Fetch catalog: Genesis API → bundled offline catalog fallback
         catalog = _load_pack_catalog(genesis_url)
 
-        # Check local packs
+        # Check local packs: everything the loader can see on this machine
+        # (bundled with the kit, in a monorepo beside it, installed under
+        # ~/.aitheros/packs), not only the last of those.
         packs_dir = Path.home() / ".aitheros" / "packs"
-        local_ids = set()
+        local_ids = set(_local_pack_manifests())
         if packs_dir.is_dir():
             for child in packs_dir.iterdir():
                 if child.is_dir() and (child / ".toolpack.yaml").exists():
@@ -12605,71 +12965,35 @@ def _cmd_pack(args) -> int:
             status = "installed" if installed else "available"
 
             print(f"{pid:<25} {ptype:<12} {tier:<14} {status:<12} {ver}")
-        print(f"\n{len(catalog)} pack(s) total")
+        n_here = sum(1 for p in catalog if p.get("installed"))
+        print(f"\n{len(catalog)} pack(s): {len(catalog) - n_here} available in the "
+              f"catalogue, {n_here} installed on this machine")
+        print(_pack_catalog_source_line())
+        print("(`adk catalog stats` shows catalogue, installed and gateway counts side by side)")
         return 0
 
     if sub == "search":
-        query = getattr(args, "query", "")
-        if not query:
-            print("Usage: adk pack search <query>")
-            return 1
-
-        catalog = _load_pack_catalog(genesis_url)
-
-        q = query.lower()
-        matches = [
-            p for p in catalog
-            if q in p.get("name", "").lower()
-            or q in p.get("description", "").lower()
-            or q in p.get("id", "").lower()
-            or any(q in tag.lower() for tag in p.get("tags", []))
-        ]
-
+        query = getattr(args, "query", "") or ""
+        # One resolver across awpack, Library and awnode ext (adk.addons): what search
+        # shows is exactly what `adk pack install <id>` will find, in the same order.
+        from adk import addons as _addons
+        hits, down = _addons.search(query)
         if getattr(args, "json_output", False):
-            print(json.dumps({"query": query, "count": len(matches), "packs": matches}, indent=2))
+            print(json.dumps({"query": query, "count": len(hits),
+                              "packs": [a.to_dict() for a in hits],
+                              "unavailable": down}, indent=2))
             return 0
-
-        if not matches:
+        for kind, why in down.items():
+            print(f"  ({kind} unavailable: {why})")
+        if not hits:
             print(f"No packs matching '{query}'")
             return 0
-
-        print(f"{'Pack':<25} {'Version':<10} {'Status':<14} {'Price'}")
-        print("-" * 65)
-
-        # Check local packs
-        packs_dir = Path.home() / ".aitheros" / "packs"
-        local_ids = set()
-        if packs_dir.is_dir():
-            for child in packs_dir.iterdir():
-                if child.is_dir() and (child / ".toolpack.yaml").exists():
-                    local_ids.add(child.name)
-
-        for p in matches:
-            pid = p.get("id", "?")
-            ver = p.get("version", "?")
-            pricing = p.get("pricing", {})
-            is_free = not pricing
-            installed = p.get("installed", False) or pid in local_ids
-            licensed = p.get("licensed", False)
-
-            if installed and (is_free or licensed):
-                status = "installed"
-            elif licensed:
-                status = "licensed"
-            elif installed:
-                status = "installed"
-            else:
-                status = "available"
-
-            if is_free:
-                price = "free"
-            else:
-                cents = pricing.get("subscription_cents", 0)
-                price = f"${int(cents) / 100:.0f}/mo" if cents else "paid"
-
-            print(f"{pid:<25} {ver:<10} {status:<14} {price}")
-
-        print(f"\n{len(matches)} pack(s) matching '{query}'")
+        print(f"{'Kind':<11} {'Pack':<25} {'Version':<10} {'Trust':<10} {'Status'}")
+        print("-" * 72)
+        for a in hits:
+            status = "installed" if a.installed else "available"
+            print(f"{a.kind:<11} {a.id:<25} {a.version or '?':<10} {a.trust:<10} {status}")
+        print(f"\n{len(hits)} pack(s) matching '{query}'. Install: adk pack install <id>")
         return 0
 
     if sub == "sync":
@@ -12743,6 +13067,10 @@ def _cmd_pack(args) -> int:
             print(f"ERROR: {type(e).__name__}: {e}")
             return 1
 
+    if sub in ("enable", "disable"):
+        return _cmd_pack_enable(args.pack_id, enable=(sub == "enable"),
+                                 allow_community=bool(getattr(args, "allow_community", False)))
+
     if sub == "install":
         pack_id = args.pack_id
 
@@ -12754,9 +13082,20 @@ def _cmd_pack(args) -> int:
             except (OSError, ValueError) as exc:
                 print(f"install failed: {exc}")
                 return 1
+            _record_pack_lock(target.name, version="local",
+                              source=f"file:{Path(pack_id).name}",
+                              sha256=_local_marker_sha(target), trust="local",
+                              hash_of="tarball", dest=str(target))
             print(f"Pack installed from {Path(pack_id).name} to {target}")
             print("Restart `adk mcp serve` to load new tools.")
             return 0
+
+        if not getattr(args, "library_only", False):
+            # One resolver for every surface: awpack -> Library -> awnode ext (adk.addons).
+            return _print_addon_result(_addons_install(
+                pack_id, replace=bool(getattr(args, "replace", False)),
+                allow_community=bool(getattr(args, "allow_community", False))),
+                as_json=bool(getattr(args, "json_output", False)))
 
         if pack_id.startswith("community:"):
             return _cmd_pack_install_community(pack_id[len("community:"):], genesis_url)
@@ -12788,11 +13127,30 @@ def _cmd_pack(args) -> int:
 
         try:
             # Genesis checks the pack licence against the CALLER (_verify_pack_license),
-            # so an unauthenticated download fails for every licensed pack. Send the
-            # saved bearer the same way the training calls do.
-            with httpx.Client(base_url=genesis_url, timeout=60,
-                              headers=_train_headers()) as c:
-                resp = c.get(f"/v1/packs/{pack_id}/download")
+            # so an unauthenticated download fails for every licensed pack. Every
+            # candidate base is asked with the saved bearer (adk.pack_remote): an
+            # override that names a host without the pack routes falls through to
+            # the portal bridge instead of reading as "not found".
+            from adk import pack_remote
+            resp, used_base, tried = pack_remote.download(pack_id, genesis_url)
+            if resp is None:
+                print(f"Cannot reach the pack catalogue for '{pack_id}'. Tried:")
+                for line in tried:
+                    print(f"  {line}")
+                print("Set AITHER_GENESIS_URL to a Genesis base, or check the network.")
+                return 1
+            genesis_url = used_base or genesis_url
+
+            if resp.status_code == 401:
+                print(f"Not signed in: the catalogue at {used_base} needs your account "
+                      "to deliver a pack. Run `adk login`, then install again.")
+                return 2
+
+            if resp.status_code == 403:
+                print(f"'{pack_id}' needs a license this account does not hold.")
+                print(f"  Buy it:      adk pack buy {pack_id} --install")
+                print("  Free packs:  adk pack list   (Tier column)")
+                return 2
 
             if resp.status_code == 402:
                 detail = resp.json().get("detail", "License required")
@@ -12803,7 +13161,7 @@ def _cmd_pack(args) -> int:
                 return 2
 
             if resp.status_code == 404:
-                print(f"Pack '{pack_id}' not found")
+                print(f"Pack '{pack_id}' not found at {used_base}")
                 return 1
 
             resp.raise_for_status()
@@ -12811,7 +13169,7 @@ def _cmd_pack(args) -> int:
             print(f"Download failed: {e}")
             return 1
         except Exception as e:
-            print(f"Cannot reach Genesis: {e}")
+            print(f"Cannot reach Genesis at {genesis_url}: {e}")
             return 1
 
         # Verify SHA
@@ -12847,8 +13205,16 @@ def _cmd_pack(args) -> int:
                     print(f"Unsafe path in archive: {member.name}")
                     return 1
             tar.extractall(target, filter="data")
+        # Genesis nests every member under `<pack>-<version>/`; the loader reads
+        # `<pack>/.toolpack.yaml` one level down, so flatten what was extracted.
+        pack_remote.hoist_single_root(target)
 
         version = resp.headers.get("X-Pack-Version", "unknown")
+        _record_pack_lock(pack_id, version=version, source=f"genesis:{genesis_url}",
+                          sha256=actual_sha, trust="official", hash_of="tarball",
+                          signature=("verified" if resp.headers.get("X-Aither-Pack-Signature")
+                                     else "absent"),
+                          dest=str(target))
 
         # Trigger MCP reload so new tools appear without manual restart
         mcp_reloaded = False
@@ -12885,6 +13251,11 @@ def _cmd_pack(args) -> int:
 
         return 0
 
+    if sub == "remove" and not getattr(args, "library_only", False):
+        from adk import addons as _addons
+        return _print_addon_result(_addons.remove(args.pack_id),
+                                   as_json=bool(getattr(args, "json_output", False)))
+
     if sub == "remove":
         import shutil
         target = Path.home() / ".aitheros" / "packs" / args.pack_id
@@ -12892,6 +13263,8 @@ def _cmd_pack(args) -> int:
             print(f"Pack '{args.pack_id}' is not installed")
             return 1
         shutil.rmtree(target)
+        from adk.addon_lock import forget_install
+        forget_install("library", args.pack_id)
 
         # Trigger MCP reload so removed tools disappear without manual restart
         mcp_reloaded = False
@@ -12911,24 +13284,36 @@ def _cmd_pack(args) -> int:
     if sub == "info":
         import httpx
         pack_id = args.pack_id
-        try:
-            with httpx.Client(base_url=genesis_url, timeout=10) as c:
-                # Try new catalog API first
-                resp = c.get(f"/api/v1/catalog/packs/{pack_id}")
-                if resp.status_code == 404:
-                    # Fallback to old API
-                    resp = c.get(f"/v1/packs/{pack_id}/manifest")
-                if resp.status_code == 404:
-                    print(f"Pack '{pack_id}' not found")
-                    return 1
-                resp.raise_for_status()
-                data = resp.json()
-                # New API wraps in {"pack": {...}}
-                if "pack" in data:
-                    data = data["pack"]
-        except Exception as e:
-            print(f"Cannot fetch pack info: {e}")
-            return 1
+        data = None
+        why = ""
+        from adk import pack_remote
+        for base in pack_remote.bases(genesis_url):
+            try:
+                with httpx.Client(base_url=base, timeout=10,
+                                  headers=pack_remote.auth_headers()) as c:
+                    # Try new catalog API first
+                    resp = c.get(f"/api/v1/catalog/packs/{pack_id}")
+                    if resp.status_code == 404:
+                        # Fallback to old API
+                        resp = c.get(f"/v1/packs/{pack_id}/manifest")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        # New API wraps in {"pack": {...}}
+                        if isinstance(data, dict) and "pack" in data:
+                            data = data["pack"]
+                        break
+                    why = f"HTTP {resp.status_code} from {base}"
+            except Exception as e:  # noqa: BLE001 - fall back exactly like `pack list`
+                why = f"{type(e).__name__}: {e}"
+        if not isinstance(data, dict):
+            # The per-pack route 401s for an anonymous caller while the list route does
+            # not; `pack list`/`search` fall back, so `info` must too.
+            data = _pack_info_offline(pack_id, genesis_url)
+            if data is None:
+                print(f"Pack '{pack_id}' not found" + (f" (catalog: {why})" if why else ""))
+                return 1
+        from adk.addon_lock import lookup as _lock_lookup
+        lock_row = _lock_lookup(pack_id)
 
         print(f"Pack:        {data.get('name', pack_id)}")
         print(f"ID:          {data.get('id', pack_id)}")
@@ -12937,6 +13322,10 @@ def _cmd_pack(args) -> int:
         print(f"Tier:        {data.get('tier', 'free')}")
         print(f"Category:    {data.get('category', '?')}")
         print(f"Description: {data.get('description', '')}")
+        if lock_row:
+            print(f"Installed:   v{lock_row.get('version')} ({lock_row.get('trust')}) from "
+                  f"{lock_row.get('source')}, sha256 {str(lock_row.get('sha256'))[:16]}..., "
+                  f"signature {lock_row.get('signature')}")
 
         price = data.get("price_monthly_usd")
         if price is None:
@@ -13007,15 +13396,14 @@ def _cmd_pack(args) -> int:
         packs_dir = Path.home() / ".aitheros" / "packs"
 
         if pack_id:
-            # Update specific pack
+            # Update specific pack (any kind the add-on lock knows, else a Library dir)
+            from adk.addon_lock import lookup as _lk
             target = packs_dir / pack_id
-            if not target.is_dir():
+            if _lk(pack_id) is None and not target.is_dir():
                 print(f"Pack '{pack_id}' is not installed")
                 return 1
             print(f"Updating {pack_id}...")
-            args.pack_id = pack_id
-            # Re-use install logic
-            return _cmd_pack(type("Args", (), {"pack_command": "install", "pack_id": pack_id})())
+            return _print_addon_result(_addons_install(pack_id, replace=True))
         else:
             # Update all installed packs
             if not packs_dir.is_dir():
@@ -13029,11 +13417,16 @@ def _cmd_pack(args) -> int:
                 print("No packs installed")
                 return 0
             print(f"Updating {len(installed)} pack(s)...")
-            for pid in installed:
-                print(f"  Updating {pid}...")
-                _cmd_pack(type("Args", (), {"pack_command": "install", "pack_id": pid})())
-            print("All packs updated.")
-            return 0
+            from adk.addon_lock import installs as _all_installs
+            refs = [f"{r['kind']}:{r['id']}" if r["kind"] != "library" else r["id"]
+                    for r in _all_installs() if r.get("kind") != "skill"]
+            refs += [pid for pid in installed if pid not in refs]
+            failed = 0
+            for ref in refs:
+                print(f"  Updating {ref}...")
+                failed += 1 if _print_addon_result(_addons_install(ref, replace=True)) else 0
+            print("All packs updated." if not failed else f"{failed} update(s) failed.")
+            return 1 if failed else 0
 
     if sub == "export":
         pack_ids = getattr(args, "pack_ids", "").split(",")
@@ -13210,25 +13603,69 @@ def _cmd_skills(args) -> int:
 
     store = SkillStore()
 
+    from adk import addons as _addons
+    from adk.addon_lock import installs as _installs
+
+    if sub in ("install", "update", "remove"):
+        target = getattr(args, "target", "claude")
+        if sub == "remove":
+            res = _addons.remove_skill(args.name)
+        elif _addons.is_remote_skill(args.name):
+            res = _addons.install_remote_skill(
+                args.name, target=target, replace=(sub == "update"),
+                allow_community=bool(getattr(args, "allow_community", False)))
+        else:
+            from adk.addon_lock import lookup as _lk
+            row = _lk(args.name, "skill") if sub == "update" else None
+            for _tname, _root in (_addons.skill_targets().items() if row else ()):
+                if Path(str(row.get("dest", ""))).parent.parent == _root:
+                    target = _tname  # update in place, wherever it was installed
+            if row and _addons.is_remote_skill(str(row.get("source", ""))):
+                # Updating a third-party skill re-fetches the SAME source it was approved
+                # from; a different source is a new install and asks again.
+                res = _addons.install_remote_skill(str(row["source"]), target=target,
+                                                   replace=True, allow_community=True)
+            else:
+                res = _addons.install_skill(args.name, target=target,
+                                            replace=(sub == "update"))
+        return _print_addon_result(res, as_json=bool(getattr(args, "json_output", False)))
+
     if sub == "list" or sub is None:
         skills = store.list_all()
+        installed = _installs("skill")
+        print("Learned skills (saved from past runs):")
         if not skills:
-            print("No skills learned yet.")
-            return 0
-        print(f"{'Name':<30} {'Uses':<8} {'Tags'}")
-        print("-" * 60)
+            print("  none yet")
         for s in skills:
             tags = ", ".join(s.tags[:3]) if s.tags else ""
-            print(f"{s.name:<30} {s.success_count:<8} {tags}")
+            print(f"  {s.name:<30} {s.success_count:<8} {tags}")
+        print("\nInstalled skills (adk skills install):")
+        if not installed:
+            print("  none -- find one with `adk skills search <query>`")
+        for r in installed:
+            print(f"  {r['id']:<30} {r.get('dest', '')}")
         return 0
 
     if sub == "search":
         results = store.search(args.query)
-        if not results:
+        shelf, down = _addons.search(args.query, kinds=("skill",))
+        if getattr(args, "json_output", False):
+            print(_json.dumps({"query": args.query,
+                               "learned": [{"name": s.name, "description": s.description}
+                                           for s in results],
+                               "installable": [a.to_dict() for a in shelf],
+                               "unavailable": down}, indent=2))
+            return 0
+        if not results and not shelf:
             print(f"No skills matching '{args.query}'")
+            for kind, why in down.items():
+                print(f"  ({kind} unavailable: {why})")
             return 0
         for s in results:
-            print(f"  {s.name}: {s.description}")
+            print(f"  learned  {s.name}: {s.description}")
+        for a in shelf:
+            mark = "installed" if a.installed else "install: adk skills install " + a.id
+            print(f"  awskills {a.id}: {a.summary[:70]}  [{mark}]")
         return 0
 
     if sub == "export":
@@ -13506,6 +13943,10 @@ def _cmd_pack_install_community(listing_id: str, genesis_url: str) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"install failed: {exc}")
         return 1
+    _record_pack_lock(Path(target).name, version=dl.version or "unknown",
+                      source=f"community:{listing_id}", sha256=dl.sha256, trust="community",
+                      hash_of="tarball", signature="verified" if dl.signature else "absent",
+                      dest=str(target))
     print(f"installed {listing_id} v{dl.version or '?'} to {target} "
           f"(sha256 {dl.sha256[:16]}..., signature {'verified' if dl.signature else 'absent'})")
     print("Restart `adk mcp serve` to load new tools.")
@@ -13518,10 +13959,15 @@ def _get_genesis_url() -> str:
     Priority:
     1. AITHER_GENESIS_URL env var (explicit Genesis)
     2. elysium_url from saved config (remote connected desktop)
-    3. Local Genesis on :8001 (if reachable)
-    4. Local ADK server on configured port (if reachable)
-    5. Aitherium cloud gateway (if API key available)
-    6. Fallback to localhost:8001 (user gets a clear error)
+    3. Local ADK server on configured port (if reachable)
+    4. The portal's Genesis bridge (``adk.control_plane.genesis_data_base``)
+
+    ``http://localhost:8001`` is never probed or returned: Genesis publishes no
+    host port (it sits behind the fleet load balancer and speaks TLS), so that
+    address answered nothing on an owner machine and nothing for an outside
+    user. Measured 2026-11-12 it was still the final fallback here, which is why
+    ``adk pack install`` said "Cannot reach Genesis" on a machine where the
+    bridge answers.
     """
     import urllib.request
     import urllib.error
@@ -13538,15 +13984,6 @@ def _get_genesis_url() -> str:
     if elysium:
         return elysium.rstrip("/")
 
-    # Probe local Genesis
-    try:
-        req = urllib.request.Request("http://localhost:8001/health")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            if resp.status == 200:
-                return "http://localhost:8001"
-    except (urllib.error.URLError, ConnectionError, OSError):
-        pass
-
     # Probe local ADK server
     server_port = cfg.get("server_port", 8080)
     try:
@@ -13560,13 +13997,11 @@ def _get_genesis_url() -> str:
     # Cloud (no local Genesis): the portal's Genesis bridge. This used to return
     # gateway.aitherium.com, which is the MCP gateway -- it has none of the
     # training or pack routes, so every cloud `adk train` / `adk pack` call 404'd.
-    api_key = cfg.get("api_key") or os.environ.get("AITHER_API_KEY", "")
-    if api_key:
-        from adk.control_plane import genesis_data_base
-        return genesis_data_base()
-
-    # Fallback — will produce a clear error when the call fails
-    return "http://localhost:8001"
+    # With or without a saved key: an anonymous caller gets the bridge's own
+    # 401 ("run `adk login`"), which is a true statement, instead of a refused
+    # connection to a port nothing listens on.
+    from adk.control_plane import genesis_data_base
+    return genesis_data_base()
 
 
 def _train_headers() -> dict:
@@ -13922,7 +14357,8 @@ def _register_commands(sub):
     start_p = sub.add_parser("start", help="Start chatting with your codebase (zero config)")
     start_p.add_argument("path", nargs="?", default=".", help="Project directory (default: current)")
     start_p.add_argument("--model", help="Model: deepseek-flash, deepseek-pro, local, openrouter, or a model slug")
-    start_p.add_argument("--provider", help="Provider: deepseek, openrouter, local, openai, anthropic")
+    start_p.add_argument("--provider", help="Provider: local (the AitherOS spine, default), "
+                         "openai, anthropic, openrouter, deepseek")
     start_p.add_argument("--mcp", action="store_true", help="Connect to AitherOS MCP gateway (1200+ tools)")
 
     # aither init
@@ -13931,8 +14367,9 @@ def _register_commands(sub):
     init_p.add_argument("-d", "--directory", help="Target directory (default: ./<name>)")
 
     # aither new <template> — scaffold a full template app (e.g. deep-research)
-    new_p = sub.add_parser("new", help="Scaffold a full template app (e.g. deep-research)")
-    new_p.add_argument("template", help="Template name, e.g. deep-research")
+    new_p = sub.add_parser("new", help="Scaffold a full template app (e.g. deep-research, flue)")
+    new_p.add_argument("template", help="Template name: deep-research, or flue (a Flue "
+                                        "TypeScript agent wired to the platform)")
     new_p.add_argument("-d", "--directory", help="Target directory (default: ./<template>)")
 
     # aither run
@@ -13990,7 +14427,8 @@ def _register_commands(sub):
                       help="brain_pack.yaml (or a directory holding one) the agent loads; "
                            "default: ./brain_pack.yaml when present")
     up_p.add_argument("--name", help="Fleet label for this agent (default: <hostname>-adk)")
-    up_p.add_argument("--provider", help="Cloud provider if no local LLM: deepseek/openai/anthropic")
+    up_p.add_argument("--provider", help="Cloud provider if no local LLM: "
+                      "openai/anthropic/deepseek (never auto-picked)")
     up_p.add_argument("--model", help="Model name (default: the provider's default)")
     up_p.add_argument("--port", type=int, default=8080, help="Local port for aither-serve (default: 8080)")
     up_p.add_argument("--yes", "--non-interactive", action="store_true", dest="yes",
@@ -14359,6 +14797,16 @@ def _register_commands(sub):
     discover_p.add_argument("discover_args", nargs=argparse.REMAINDER,
                             help="build | query \"<task>\" | check | --self-test")
 
+    # adk catalog -- the unified catalog (packs, agents, brain packs, awpacks,
+    # bundles), read from local files; adk.catalog parses every flag itself.
+    catalog_p = sub.add_parser(
+        "catalog",
+        help="Browse and install catalog entries: packs, agents, bundles (list | get | install)",
+        add_help=False,
+    )
+    catalog_p.add_argument("catalog_args", nargs=argparse.REMAINDER,
+                           help="list | get ID | install ID")
+
     # adk mobile — Android/iOS end-to-end tests (Maestro) that keep a proof dir.
     mobile_p = sub.add_parser(
         "mobile",
@@ -14474,6 +14922,13 @@ def _register_commands(sub):
                              "smoke (two real Claude Code runs; spends tokens)")
     sh_mod.add_argument("--harness", default="opencode",
                         help="smoke: which harness the live run must be answered by")
+
+    # adk harness parts -- the composed harness, as this machine has it. Reads the
+    # umbrella block from the vendored family.json; needs no daemon and no network.
+    sh_parts = shell_sub.add_parser(
+        "parts", help="Which parts of the composed harness are installed here, at "
+                      "what version, and the install line for each missing one")
+    sh_parts.add_argument("--json", action="store_true", help="machine-readable output")
 
     sh_pair = shell_sub.add_parser(
         "pair", help="Pair the awconnect browser extension: approve a code, list, revoke")
@@ -14619,6 +15074,9 @@ def _register_commands(sub):
     # adk agent-prompt
     ap_p = sub.add_parser("agent-prompt", help="Print the setup prompt for AI coding agents")
     ap_p.add_argument("--raw", action="store_true", help="Print raw prompt without footer")
+    ap_p.add_argument("--start", action="store_true",
+                      help="Print the short one-prompt on-ramp instead: paste it into a coding "
+                           "agent and it ends with a running agent that called a gateway tool")
 
     # aither connect
     connect_p = sub.add_parser("connect", help="Connect to AitherOS — detect LLMs, set up gateway, or join desktop mesh")
@@ -15079,7 +15537,8 @@ def _register_commands(sub):
         "host",
         help="Host a self-hosted agent (your model key) + connect it to your fleet — one command",
     )
-    host_p.add_argument("--provider", help="Model provider: deepseek/openai/anthropic (prompted if omitted)")
+    host_p.add_argument("--provider", help="Model provider: aither (local spine, default)/"
+                        "openai/anthropic/deepseek (prompted if omitted)")
     host_p.add_argument("--model", help="Model name (default: the provider's default)")
     host_p.add_argument("--name", help="Fleet label for this agent (default: <hostname>-adk)")
     host_p.add_argument("--identity", default="aither", help="Agent identity to load (default: aither)")
@@ -15439,9 +15898,11 @@ def _register_commands(sub):
                        "(on | off | status; tailnet only, keyed)")
     from adk.mesh_worker import add_arguments as _worker_args
     _worker_args(mesh_worker_p)
+    from adk.node_join_path import join_help as _join_help
     mesh_onboard_p = mesh_sub.add_parser(
         "onboard", help="Onboard this node into AitherMesh overlay (operator path; a signed-in "
-                        "laptop uses 'adk mesh join')")
+                        "laptop uses 'adk mesh join')",
+        epilog=_join_help(), formatter_class=argparse.RawDescriptionHelpFormatter)
     mesh_onboard_p.add_argument(
         "--conductor",
         # conductor., not gateway.: gateway answers 404 for /v1/mesh/onboard
@@ -15719,11 +16180,12 @@ def _register_commands(sub):
 
     # adk volunteer — volunteer embedding compute for DGG
     volunteer_p = sub.add_parser(
-        "volunteer", help="Volunteer embedding compute for DGG (enroll, serve, start)")
+        "volunteer", help="Volunteer embedding compute for DGG (enroll, serve, start)",
+        epilog=_join_help(), formatter_class=argparse.RawDescriptionHelpFormatter)
     volunteer_sub = volunteer_p.add_subparsers(dest="volunteer_command")
 
     volunteer_enroll_p = volunteer_sub.add_parser(
-        "enroll", help="Enroll as a volunteer (mesh onboard + consent + trust)")
+        "enroll", help="Enroll as a volunteer (adk mesh join + consent + trust)")
     volunteer_enroll_p.add_argument(
         "--tenant", default=None,
         help="Owner tenant id (default: the tenant saved by 'adk login', e.g. tnt_dgg)")
@@ -15932,12 +16394,33 @@ def _register_commands(sub):
     cron_rm_p.add_argument("name", help="Job name to remove")
 
     # adk skills — skill management
-    skills_p = sub.add_parser("skills", help="Manage learned skills")
+    skills_p = sub.add_parser(
+        "skills", help="Skills: learned (saved prompts) and installable (awskills)")
     skills_sub = skills_p.add_subparsers(dest="skills_command")
-    skills_sub.add_parser("list", help="List all learned skills")
-    skills_search_p = skills_sub.add_parser("search", help="Search skills")
+    skills_sub.add_parser("list", help="Learned skills and installed skills")
+    skills_search_p = skills_sub.add_parser(
+        "search", help="Search learned skills and the installable awskills shelf")
     skills_search_p.add_argument("query", help="Search query")
+    skills_search_p.add_argument("--json", dest="json_output", action="store_true",
+                                 help="One JSON object on stdout")
     skills_sub.add_parser("export", help="Export skills in agentskills.io format")
+    for _verb, _help in (("install", "Install an awskills skill into a harness skills dir"),
+                         ("update", "Re-install an installed skill from the shelf"),
+                         ("remove", "Remove a skill adk installed")):
+        _sp = skills_sub.add_parser(_verb, help=_help)
+        _sp.add_argument("name", help="Skill name (e.g. acp-drive), or a third-party "
+                                      "hermes:<owner>/<repo>/<skill> / "
+                                      "agentskills:<owner>/<repo>/<path>")
+        _sp.add_argument("--json", dest="json_output", action="store_true",
+                         help="One JSON object on stdout")
+        if _verb == "install":
+            _sp.add_argument("--allow-community", action="store_true",
+                             help="Install a third-party skill nobody at Aitherium reviewed")
+        if _verb != "remove":
+            _sp.add_argument("--target", default="claude",
+                             choices=["claude", "project", "adk"],
+                             help="claude = ~/.claude/skills (Claude Code and awsh), "
+                                  "project = ./.claude/skills, adk = ~/.aither/skills")
 
     # adk addon — self-hosted addon management
     # `component`/`components` are ALIASES, not a second implementation: an addon
@@ -16013,17 +16496,27 @@ def _register_commands(sub):
     contribute_sub.add_parser("solo", help="Print the one-command self-host (train YOUR own model)")
 
     # adk pack — tool pack management
-    pack_p = sub.add_parser("pack", help="Manage ToolPack extensions (list, search, install, remove, info)")
+    pack_p = sub.add_parser(
+        "pack", help="Manage ToolPack extensions (list, search, install, enable, remove, info)")
     pack_sub = pack_p.add_subparsers(dest="pack_command")
     pack_sub.add_parser("list", help="List available and installed packs")
     pack_search_p = pack_sub.add_parser("search", help="Search packs by name, description, or tags")
-    pack_search_p.add_argument("query", help="Search query")
+    pack_search_p.add_argument("query", nargs="?", default="",
+                               help="Search query (empty: every add-on)")
     pack_search_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     pack_install_p = pack_sub.add_parser(
         "install", help="Install a tool pack (a bought listing: community:<listing-id>; "
                         "a local bundle: <path>.tar.gz)")
     pack_install_p.add_argument("pack_id",
-                                help="Pack ID, community:<listing-id>, or a .tar.gz bundle path")
+                                help="Pack ID (resolved across awpack, Library, awnode ext), "
+                                     "<kind>:<id> (awpack:, library:, ext:, skill:), "
+                                     "community:<listing-id>, or a .tar.gz bundle path")
+    pack_install_p.add_argument("--allow-community", action="store_true",
+                                help="Install a community pack nobody at Aitherium reviewed")
+    pack_install_p.add_argument("--replace", action="store_true",
+                                help="Replace an installed copy (what update does)")
+    pack_install_p.add_argument("--json", dest="json_output", action="store_true",
+                                help="One JSON object on stdout")
     pack_sync_p = pack_sub.add_parser(
         "sync", help="Install every entitled pack not already present (license-driven)")
     pack_sync_p.add_argument("--dry-run", "-n", action="store_true",
@@ -16038,8 +16531,17 @@ def _register_commands(sub):
     pack_neg_p.add_argument("pack_id", help="Listing id to negotiate")
     pack_neg_p.add_argument("--offer", type=int, required=True, help="Your offer in Aitherium credits")
     pack_neg_p.add_argument("--why", default="", help="Optional rationale for the Broker")
+    pack_enable_p = pack_sub.add_parser(
+        "enable", help="Enable a pack on this agent (installs it first when missing)")
+    pack_enable_p.add_argument("pack_id", help="Pack ID to enable")
+    pack_enable_p.add_argument("--allow-community", action="store_true",
+                               help="Allow installing a community pack first")
+    pack_disable_p = pack_sub.add_parser("disable", help="Disable an enabled pack")
+    pack_disable_p.add_argument("pack_id", help="Pack ID to disable")
     pack_remove_p = pack_sub.add_parser("remove", help="Remove an installed pack")
     pack_remove_p.add_argument("pack_id", help="Pack ID to remove")
+    pack_remove_p.add_argument("--json", dest="json_output", action="store_true",
+                               help="One JSON object on stdout")
     pack_update_p = pack_sub.add_parser("update", help="Update one or all installed packs")
     pack_update_p.add_argument("pack_id", nargs="?", help="Pack ID to update (omit for all)")
     pack_export_p = pack_sub.add_parser("export", help="Export offline bundle (.tar.gz)")
@@ -16699,6 +17201,18 @@ def _register_commands(sub):
     gs_purge_p.add_argument("--older-than", type=int, default=7, help="Days old (default: 7)")
     gs_purge_p.add_argument("--json", action="store_true", help="JSON output")
 
+    # adk baseline -- the ready-to-code component table. A NEW verb, deliberately
+    # not `adk doctor`: doctor is generated by gen_aw_doctor.py and a hand-edit
+    # there is reverted on the next regeneration.
+    baseline_p = sub.add_parser(
+        "baseline",
+        help="Report the ready-to-code component baseline (--json, --sync)")
+    baseline_p.add_argument("--json", action="store_true", help="Emit rows as JSON")
+    baseline_p.add_argument(
+        "--sync", action="store_true",
+        help="Compare installed components with ~/.aither/baseline.json "
+             "(0 match, 1 drift, 2 no record)")
+
 
 # ── Forge subcommand handler ─────────────────────────────────────────────
 
@@ -17147,8 +17661,19 @@ def _cmd_acp_config(args) -> int:
 
 
 def _cmd_mcp_setup(args) -> int:
-    """Generate IDE MCP config with OAuth-first auth."""
-    from adk.mcp_setup import resolve_auth, resolve_gateway_url, generate_config, write_config, probe_gateway
+    """Generate IDE MCP config with OAuth-first auth.
+
+    ``--bake-token`` bakes only a credential the gateway has just accepted on a
+    real authenticated ``tools/list``. If the gateway answers and refuses every
+    credential on this machine, nothing is written and the exit code is 1.
+    """
+    from adk.mcp_setup import (
+        generate_config,
+        probe_gateway,
+        resolve_gateway_url,
+        select_working_auth,
+        write_config,
+    )
 
     mode = getattr(args, "mode", "local")
     ide = getattr(args, "ide", "claude-code")
@@ -17156,16 +17681,30 @@ def _cmd_mcp_setup(args) -> int:
     bake_token = getattr(args, "bake_token", False)
 
     url = resolve_gateway_url(mode)
-    token, source = resolve_auth()
+    picked = None
 
     if bake_token:
-        if token:
-            print(f"  Auth: baking token from {source}")
-        else:
+        picked = select_working_auth(url)
+        if picked["verdict"] == "none":
             print("  Auth: no token found for --bake-token")
             print("  Run 'adk login' first, then re-run this command.")
             return 1
-        config = generate_config(ide, url, token=token)
+        if picked["verdict"] == "rejected":
+            print(f"  Auth: FAILED - the gateway at {url} rejected every credential on this machine:")
+            for source, why in picked["tried"]:
+                print(f"    - {source}: {why}")
+            print("  Fix: run 'adk login' (it writes the session the gateway accepts to")
+            print("       ~/.aither/session-bearer), then re-run this command.")
+            print("  No config was written.")
+            return 1
+        if picked["verdict"] == "ok":
+            print(f"  Auth: baking token from {picked['source']} "
+                  f"(verified: tools/list returned {picked['tool_count']} tools)")
+        else:  # unverified: the gateway could not be asked
+            why = picked["tried"][0][1] if picked["tried"] else "gateway unreachable"
+            print(f"  Auth: baking token from {picked['source']}")
+            print(f"  Auth: NOT VERIFIED ({why}). Run 'adk mcp status' once the gateway is up.")
+        config = generate_config(ide, url, token=picked["token"])
     else:
         print("  Auth: OAuth (IDE will handle via /authenticate)")
         config = generate_config(ide, url, token=None)
@@ -17175,12 +17714,17 @@ def _cmd_mcp_setup(args) -> int:
     print(f"  Gateway: {url}")
 
     if mode == "local":
-        status = probe_gateway(url, token)
-        if status["connected"]:
-            print(f"  Status: connected ({status['status']})")
-        else:
+        status = probe_gateway(url)
+        if not status["connected"]:
             print("  Status: not reachable")
             print("  Tip: Run 'adk mcp node' for a lightweight local server.")
+        elif picked and picked["verdict"] == "ok":
+            print(f"  Status: connected, authenticated ({picked['tool_count']} tools)")
+        elif picked:
+            print("  Status: reachable, authentication NOT verified")
+        else:
+            print("  Status: reachable (health only; sign-in happens in the IDE, "
+                  "so tool access is not verified here)")
 
         from adk.mcp_setup import ensure_local_ca_trust
         ca_result = ensure_local_ca_trust()
@@ -17209,25 +17753,46 @@ def _cmd_mcp_node(args) -> int:
 
 
 def _cmd_mcp_status(args) -> int:
-    """Check MCP gateway connectivity and tier."""
-    from adk.mcp_setup import resolve_auth, probe_gateway, _GATEWAY_URLS
+    """Check MCP gateway connectivity AND that a stored credential can list tools.
 
-    token, source = resolve_auth()
-    print(f"  Auth source: {source}")
+    ``[OK]`` means an authenticated ``tools/list`` succeeded, not that ``/health``
+    answered. Exit 0 when at least one gateway is usable, else 1.
+    """
+    from adk.mcp_setup import _GATEWAY_URLS, auth_candidates, probe_gateway, select_working_auth
 
+    candidates = auth_candidates()
+    usable = 0
     for mode_name, url in _GATEWAY_URLS.items():
-        result = probe_gateway(url, token)
-        icon = "[OK]" if result["connected"] else "[--]"
-        print(f"  {icon} {mode_name:8s} {url}")
-        if result["connected"]:
+        health = probe_gateway(url)
+        if not health["connected"]:
+            print(f"  [--] {mode_name:8s} {url}")
+            if health.get("error"):
+                print(f"           {health['error']}")
+            continue
+        picked = select_working_auth(url, candidates)
+        if picked["verdict"] == "ok":
+            usable += 1
+            print(f"  [OK] {mode_name:8s} {url}")
+            print(f"           auth: accepted ({picked['source']}), tools={picked['tool_count']}")
+            result = probe_gateway(url, picked["token"])
             if result.get("tier"):
-                print(f"           tier={result['tier']}  tools={result['tool_count']}  "
-                      f"balance={result['balance']}")
+                print(f"           tier={result['tier']}  balance={result['balance']}")
             if result.get("user"):
                 print(f"           user={result['user']}")
-        elif result.get("error"):
-            print(f"           {result['error']}")
-    return 0
+        elif picked["verdict"] == "none":
+            print(f"  [!!] {mode_name:8s} {url}")
+            print("           reachable, but there is no credential on this machine: run 'adk login'")
+        elif picked["verdict"] == "rejected":
+            print(f"  [!!] {mode_name:8s} {url}")
+            print("           reachable, but AUTH REJECTED for every stored credential:")
+            for source, why in picked["tried"]:
+                print(f"             - {source}: {why}")
+            print("           fix: run 'adk login', then 'adk mcp setup --bake-token'")
+        else:
+            why = picked["tried"][0][1] if picked["tried"] else "no answer"
+            print(f"  [??] {mode_name:8s} {url}")
+            print(f"           reachable, but authentication could not be verified ({why})")
+    return 0 if usable else 1
 
 
 def _fleet_summary(doc: dict) -> str:
@@ -17482,6 +18047,7 @@ _PASSTHROUGH_VERBS = {
     "link": ("adk.link", "main"),
     "autoupdate": ("adk.self_update", "main"),
     "discover": ("adk.discovery.cli", "main"),
+    "catalog": ("adk.catalog", "cli_main"),
     "approvals": ("adk.approvals_cmd", "main"),
 }
 
@@ -17806,6 +18372,9 @@ def main():
     elif args.command == "doctor":
         from adk.doctor import cmd_doctor
         sys.exit(cmd_doctor(args))
+    elif args.command == "baseline":
+        from adk.baseline import main as _baseline_main
+        sys.exit(_baseline_main(args))
     elif args.command == "gobbonet":
         from adk.packs.gobbonet.launch import cmd_gobbonet
         sys.exit(cmd_gobbonet(args))
