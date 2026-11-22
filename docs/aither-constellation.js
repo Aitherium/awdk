@@ -31,6 +31,7 @@
     { id: "awnode", label: "awnode", blurb: "A lightweight local gateway — bridges your..." },
     { id: "awrun", label: "awrun", blurb: "A priority-aware queue and dispatcher for..." },
     { id: "awpool", label: "awpool", blurb: "The free half of the elastic work pool:..." },
+    { id: "awedgerunner", label: "awedgerunner", blurb: "Run agent and CI work on edge runners nobody..." },
     { id: "awgraph", label: "awgraph", blurb: "A semantic code graph for agents — AST +..." },
     { id: "awgit", label: "awgit", blurb: "Semantic version control on top of git —..." },
     { id: "awdelphi", label: "awdelphi", blurb: "Anonymous multi-round expert panels — a..." },
