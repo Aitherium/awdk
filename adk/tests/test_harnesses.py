@@ -175,6 +175,29 @@ def test_gemini_argv_skips_trust_and_env_uses_harness_home(tmp_path, monkeypatch
     assert "GEMINI_CLI_HOME" not in explicit
 
 
+def test_gemini_env_hands_the_home_key_to_the_child(tmp_path, monkeypatch):
+    """A project .env without the key shadows the home's .env (the CLI stops at the
+    first one it finds walking up from cwd), so the key must travel in the env."""
+    from adk.harnesses.registry import SPECS
+    spec = SPECS["gemini"]
+    monkeypatch.setenv("AITHER_GEMINI_HOME", str(tmp_path))
+    (tmp_path / ".gemini").mkdir()
+    (tmp_path / ".gemini" / "settings.json").write_text("{}")
+    env: dict = {}
+    spec.child_env(env)
+    assert "GEMINI_API_KEY" not in env  # no .env provisioned -> nothing invented
+    (tmp_path / ".gemini" / ".env").write_text(
+        "# harness key\nOTHER=1\nGEMINI_API_KEY='from-the-home'\n", encoding="utf-8"
+    )
+    env = {}
+    spec.child_env(env)
+    assert env["GEMINI_API_KEY"] == "from-the-home"
+    assert env["GEMINI_CLI_HOME"] == str(tmp_path)
+    explicit = {"GEMINI_API_KEY": "set-by-caller"}
+    spec.child_env(explicit)
+    assert explicit == {"GEMINI_API_KEY": "set-by-caller"}  # the caller's key wins
+
+
 # ── 2. model binding clears before it overlays ──────────────────────────────
 
 def test_apply_binding_clears_every_managed_var_first():

@@ -256,12 +256,32 @@ def gemini_home() -> Path:
     return Path(raw) if raw else Path.home() / ".aither" / "harness-homes" / "gemini"
 
 
+def _gemini_home_key(home: Path) -> str:
+    """``GEMINI_API_KEY`` from the harness home's ``.gemini/.env`` ("" when absent)."""
+    try:
+        lines = (home / ".gemini" / ".env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        name, sep, value = line.strip().partition("=")
+        if sep and name.strip() == "GEMINI_API_KEY":
+            return value.strip().strip("\"'")
+    return ""
+
+
 def _gemini_env(env: dict[str, str]) -> None:
     if env.get("GEMINI_CLI_HOME") or env.get("GEMINI_API_KEY"):
         return  # the caller chose an auth path; respect it
     home = gemini_home()
     if (home / ".gemini" / "settings.json").is_file():
         env["GEMINI_CLI_HOME"] = str(home)
+        # Gemini CLI loads the FIRST .env it finds walking up from the working
+        # directory and never reaches the home's. A project .env without the key
+        # therefore shadows it and the turn exits 41 "must specify GEMINI_API_KEY".
+        # Hand the key to the child directly so the session's cwd cannot matter.
+        key = _gemini_home_key(home)
+        if key:
+            env["GEMINI_API_KEY"] = key
 
 
 def _gemini_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
