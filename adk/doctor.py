@@ -467,7 +467,56 @@ def check_autostart() -> bool:
 #: passed" above 10 visible lines, with two of the three failures invisible.
 #: tests/test_doctor_summary_reconciles.py iterates THIS list and asserts each
 #: entry says something; keeping it inline in cmd_doctor let the test drift.
+def check_brain() -> bool:
+    """Ask the router which backend it would use, then health-check that one.
+
+    The per-backend checks below each probe one way of getting a brain; a
+    newcomer with exactly one working brain used to see the other four or five
+    as failures ("7 checks failing") and go fix things that did not need it.
+    This check answers the question they actually have: does a brain answer?
+    """
+    import asyncio
+
+    async def _probe():
+        from adk.config import Config
+        from adk.llm import LLMRouter
+        router = LLMRouter(config=Config.from_env())
+        provider = await router.get_provider()
+        ok = await provider.health_check()
+        name = router.provider_name or type(provider).__name__
+        where = getattr(provider, "base_url", "") or ""
+        return ok, f"{name} {where}".strip()
+
+    def _run():
+        return asyncio.run(asyncio.wait_for(_probe(), 20))
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            ok, label = _run()  # normal CLI path: no loop running
+        else:  # called from async code: asyncio.run would refuse here
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                ok, label = pool.submit(_run).result()
+    except Exception as e:  # noqa: BLE001 -- unreachable is the answer, not a crash
+        _fail(f"Brain: no backend answers ({type(e).__name__}: {e})")
+        return False
+    if ok:
+        _ok(f"Brain: {label} answers")
+        return True
+    _fail(f"Brain: {label} did not pass its health check")
+    return False
+
+
+#: Checks that are each one way of getting a brain. When the Brain check
+#: passes they are alternatives, not failures, and are reported as such.
+BRAIN_ALTERNATIVES = frozenset(
+    {"Docker", "llama.cpp", "vLLM", "DGX/Remote", "API Key", "Cloud APIs"})
+
+
 DOCTOR_CHECKS: list[tuple[str, object]] = [
+    ("Brain", check_brain),
     ("Python", check_python),
     ("Version", check_version),
     ("GPU", check_gpu),
@@ -488,6 +537,7 @@ DOCTOR_CHECKS: list[tuple[str, object]] = [
 #: A count on screen is always paired with one of these (see adk._attention).
 DOCTOR_REMEDIES: dict[str, str] = {
     "Python": "install Python >= 3.10, then reinstall awdk",
+    "Brain": "run `adk setup`, then `adk backend test`",
     "Version": "run `pip install --upgrade awdk`",
     "GPU": "run `adk setup` (it picks a CPU or cloud backend)",
     "Docker": "install Docker and start its daemon",
@@ -592,12 +642,25 @@ def render_doctor(results: list[dict], version: str, show_all: bool = False) -> 
     return out
 
 
+def mark_brain_alternatives(results: list[dict]) -> list[dict]:
+    """When a brain answers, the other ways of getting one stop counting as failing."""
+    brain = next((r for r in results if r["name"] == "Brain"), None)
+    if not brain or not brain["passed"]:
+        return results
+    for r in results:
+        if r["name"] in BRAIN_ALTERNATIVES and not r["passed"]:
+            r["passed"], r["severity"] = True, 0
+            r["summary"] = f"{r['name']}: not needed (a brain already answers)"
+    return results
+
+
 def cmd_doctor(_args=None) -> int:
     """Run all health checks; print the next action first (``--all`` = everything)."""
     from adk import __version__
 
     show_all = bool(getattr(_args, "all", False))
-    results = [_run_check(name, fn) for name, fn in DOCTOR_CHECKS]
+    results = mark_brain_alternatives(
+        [_run_check(name, fn) for name, fn in DOCTOR_CHECKS])
     for line in render_doctor(results, __version__, show_all=show_all):
         print(line)
     return 0

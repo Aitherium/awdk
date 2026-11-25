@@ -1,0 +1,21 @@
+{
+  "name": "awdk",
+  "displayName": "AitherOS / awdk",
+  "version": "4.0.0",
+  "description": "Two-way Google Antigravity integration for awdk, awsh, awnode, and the aw* brick family: MCP hub bridge, hookd/awgov lifecycle hooks, aw delegation subagent, platform-first rules, and Aither World skills.",
+  "author": {
+    "name": "Aitherium",
+    "url": "https://aitherium.com"
+  },
+  "homepage": "https://github.com/Aitherium/awdk",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aitherium/awdk"
+  },
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Run adk antigravity doctor and summarize the health of awsh, hookd, and aw-hub",
+    "Recall project context from awm and check the awrelay #agents inbox",
+    "Delegate a parallel coding task to awsh or aither-local via the local router"
+  ]
+}

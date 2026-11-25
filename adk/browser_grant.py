@@ -29,14 +29,24 @@ from typing import Any, Dict, Optional, Tuple
 
 from adk import node_commands
 
-__all__ = ["GRANT_FIELDS", "new_nonce", "verify_grant", "verify_extension_grant",
-           "issue_token", "token_allows", "TOKEN_TTL_S", "EXTENSION_SCOPE"]
+__all__ = ["GRANT_FIELDS", "IDENTITY_READ_PATHS", "new_nonce", "verify_grant",
+           "verify_extension_grant", "issue_token", "token_allows", "TOKEN_TTL_S",
+           "EXTENSION_SCOPE"]
 
 GRANT_FIELDS = ("kind", "node_id", "tenant_id", "user_id", "origin", "nonce", "scope",
                 "issued_at", "expires_at")
 NONCE_TTL_S = 180
 TOKEN_TTL_S = 8 * 3600
 FIRST_PARTY_ORIGIN = re.compile(r"^https://([a-z0-9-]+\.)*aitherium\.(com|org)$")
+#: The READ-ONLY routes the "This device" page needs to say who is signed in on this
+#: machine and what it is registered as. Each returns names and ids, never a credential
+#: (server.py ``_whoami_guard``). Under AITHER_LOCAL_AUTH=required a page cannot read
+#: ~/.aither/daemon-token, so without these in a grant the page read 401 and printed
+#: "awdk did not say who is signed in" on a daemon that was up and signed in (measured
+#: 2026-11-16 on the owner's offline daemon). They ride the existing ``node`` scope, which
+#: Identity already signs, so no Identity change is needed. ``/identity/handoff`` and
+#: ``/mesh/join`` are deliberately NOT here: they spend the account and keep the token.
+IDENTITY_READ_PATHS = ("/identity/whoami", "/node/status", "/mesh/overlay", "/stack/links")
 #: The scopes a grant can carry, and the paths each opens.
 #: ``node``: the owner's page lists this machine's models and runs PLAIN completions on
 #: them. Plain only -- server.py forces ``plain`` for a browser-token request, so a page
@@ -44,7 +54,8 @@ FIRST_PARTY_ORIGIN = re.compile(r"^https://([a-z0-9-]+\.)*aitherium\.(com|org)$"
 #: ``contribute``: the owner's settings page reads and flips THIS machine's data-
 #: contribution consent and shows the redacted preview (adk.contribute). It never
 #: uploads -- sending stays an explicit ``adk contribute upload`` on the machine.
-SCOPE_PATHS = {"kvholder": ("/kvholder/",), "node": ("/v1/models", "/v1/chat/completions"),
+SCOPE_PATHS = {"kvholder": ("/kvholder/",),
+               "node": ("/v1/models", "/v1/chat/completions", *IDENTITY_READ_PATHS),
                "contribute": ("/local/contribute",)}
 
 _lock = threading.Lock()

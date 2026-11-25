@@ -52,6 +52,10 @@ class DiscoveredSession:
     bridge_session_id: str = ""
     #: What a "waiting" session waits for, e.g. "permission prompt" ("" otherwise).
     waiting_for: str = ""
+    #: Originating harness id ("claude" | "antigravity" | ...).
+    harness: str = "claude"
+    #: Human-readable harness label.
+    harness_label: str = "Claude Code"
 
 
 def _encode_cwd(cwd: str) -> str:
@@ -312,4 +316,54 @@ def discover_live_sessions(
     except OSError as exc:
         logger.warning(f"Error discovering sessions: {exc}")
 
+    live_sessions.extend(discover_antigravity_sessions())
     return live_sessions
+
+
+def discover_antigravity_sessions(
+    sessions_dir: Optional[Path] = None,
+    *,
+    max_age_seconds: float = 86400.0,
+) -> list[DiscoveredSession]:
+    """Discover live Google Antigravity conversations recorded by antigravity_hooks."""
+    import time as _time
+
+    raw_dir = os.environ.get("AITHER_ANTIGRAVITY_SESSIONS_DIR", "").strip()
+    base = sessions_dir or (
+        Path(raw_dir) if raw_dir else Path.home() / ".aither" / "antigravity_sessions"
+    )
+    if not base.is_dir():
+        return []
+    now = _time.time()
+    out: list[DiscoveredSession] = []
+    try:
+        for state_file in base.glob("*.json"):
+            try:
+                state = json.loads(state_file.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(state, dict):
+                continue
+            cid = str(state.get("sessionId") or state.get("id") or "").strip()
+            if not cid:
+                continue
+            updated = float(state.get("updatedTs") or 0.0)
+            if updated and (now - updated) > max_age_seconds:
+                continue
+            out.append(
+                DiscoveredSession(
+                    id=cid,
+                    cwd=str(state.get("cwd") or ""),
+                    name=str(state.get("title") or f"Antigravity {cid[:8]}"),
+                    pid=_try_parse_int(state.get("pid")) or 0,
+                    entrypoint="antigravity",
+                    kind="interactive",
+                    status=str(state.get("status") or "idle"),
+                    transcript_path=str(state.get("transcriptPath") or ""),
+                    harness="antigravity",
+                    harness_label="Antigravity",
+                )
+            )
+    except OSError as exc:
+        logger.debug(f"Error discovering Antigravity sessions: {exc}")
+    return out

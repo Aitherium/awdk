@@ -107,6 +107,37 @@ def test_load_agent_pack_all_protocols(temp_pack_dir, protocol):
     assert manifest.protocol == protocol
 
 
+def test_model_endpoint_default_honors_aither_llm_base_url(temp_pack_dir, monkeypatch):
+    """A pack that names no model_endpoint reaches the box's own served model.
+
+    Appliance images set AITHER_LLM_BASE_URL in /usr/lib/awdk/awdk.env (e.g.
+    127.0.0.1:8199 for the served model). Before this the AgentPack fell back to
+    :8150 -- a second server nobody started -- so an agent on such a box had no
+    single coherent "find the local model" path. The env must win over the :8150
+    default, and an explicit manifest value must still win over both.
+    """
+    manifest_data = {
+        "id": "test_endpoint",
+        "name": "Test endpoint",
+        "framework": "native",
+        "runtime": {"type": "python", "cmd": "agent:main"},
+        "entrypoint": "agent:main",
+        "protocol": "acp",
+    }
+    _write_manifest(temp_pack_dir, manifest_data)
+
+    monkeypatch.delenv("AITHER_LLM_BASE_URL", raising=False)
+    assert load_agent_pack(temp_pack_dir).model_endpoint == "http://localhost:8150"
+
+    monkeypatch.setenv("AITHER_LLM_BASE_URL", "http://127.0.0.1:8199/v1")
+    assert load_agent_pack(temp_pack_dir).model_endpoint == "http://127.0.0.1:8199/v1"
+
+    # An explicit manifest value still wins over the environment default.
+    manifest_data["model_endpoint"] = "http://127.0.0.1:9999/v1"
+    _write_manifest(temp_pack_dir, manifest_data)
+    assert load_agent_pack(temp_pack_dir).model_endpoint == "http://127.0.0.1:9999/v1"
+
+
 # ============================================================================
 # Test: Bad framework raises ValidationError
 # ============================================================================

@@ -1,7 +1,7 @@
 {
   "name": "awsh",
-  "version": "0.2.2",
-  "description": "awsh for Claude Code: an `aw` subagent type whose model steps are answered by a session on the local awsh harness daemon, so any harness and any backend the daemon can drive runs as a native Claude Code subagent, streamed live. Also carries the Aither World skills, the `aither` output style, MCP servers for installed bricks and portable brick hooks.",
+  "version": "0.2.3",
+  "description": "awsh for Claude Code: an `aw` subagent type whose model steps are answered by a session on the local awsh harness daemon, so any harness and any backend the daemon can drive runs as a native Claude Code subagent, streamed live. Also carries the Aither World skills, the `aither` output style, MCP servers for installed bricks and portable brick hooks -- including the platform-first PreToolUse gate that delegates to awsettings-guard instead of shipping a second rules copy.",
   "author": {
     "name": "Aitherium"
   },

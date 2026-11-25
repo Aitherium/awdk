@@ -18,6 +18,9 @@ import types
 
 import pytest
 from adk import cli
+from adk.local_backends import bonsai_container_name
+
+CONTAINER = bonsai_container_name()
 
 
 def _args(**kw):
@@ -87,7 +90,7 @@ def test_dry_run_mounts_the_gguf_and_passes_server_args(cpu_docker, capsys, monk
     spec = cli.BONSAI_LOCAL_MODELS["ling-tiny-8b"]
     f = spec["gguf_file"]
     assert _command_line(capsys.readouterr().out) == [
-        "docker", "run", "-d", "--name", "aither-bonsai-local", "--restart", "unless-stopped",
+        "docker", "run", "-d", "--name", CONTAINER, "--restart", "unless-stopped",
         "-v", f"{tmp_path / 'model.gguf'}:/models/{f}:ro",
         "-p", "127.0.0.1:8090:8090", spec["image"],
         "-m", f"/models/{f}", "--host", "0.0.0.0", "--port", "8090", "-ngl", "0", "-c", "8192",
@@ -105,7 +108,7 @@ def test_the_mounted_tier_stays_cpu_even_when_docker_has_nvidia(nvidia_docker, c
 def test_the_baked_command_is_exactly_what_it_was_on_cpu(cpu_docker, capsys, model):
     assert cli.cmd_bonsai_local(_args(model=model)) == 0
     assert _command_line(capsys.readouterr().out) == [
-        "docker", "run", "-d", "--name", "aither-bonsai-local", "--restart", "unless-stopped",
+        "docker", "run", "-d", "--name", CONTAINER, "--restart", "unless-stopped",
         "-p", "127.0.0.1:8090:8090", cli.BONSAI_LOCAL_MODELS[model]["image"],
     ]
 
@@ -114,7 +117,7 @@ def test_the_baked_command_is_exactly_what_it_was_on_cpu(cpu_docker, capsys, mod
 def test_the_baked_command_is_exactly_what_it_was_on_gpu(nvidia_docker, capsys, model):
     assert cli.cmd_bonsai_local(_args(model=model)) == 0
     assert _command_line(capsys.readouterr().out) == [
-        "docker", "run", "-d", "--name", "aither-bonsai-local", "--restart", "unless-stopped",
+        "docker", "run", "-d", "--name", CONTAINER, "--restart", "unless-stopped",
         "--gpus", "all", "-p", "127.0.0.1:8090:8090", cli.BONSAI_LOCAL_MODELS[model]["image"],
     ]
 
@@ -204,7 +207,7 @@ def test_a_real_run_refuses_to_start_on_a_bad_download(cpu_docker, monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp(b"not the model"))
     assert cli.cmd_bonsai_local(_args(dry_run=False)) == 1
     assert _docker_runs(cpu_docker) == []
-    assert ["docker", "rm", "-f", "aither-bonsai-local"] not in cpu_docker, \
+    assert ["docker", "rm", "-f", CONTAINER] not in cpu_docker, \
         "a failed download must not remove the container that was there before"
 
 

@@ -4782,8 +4782,15 @@ class AitherAgent:
             pending=list(_pending_approvals) if _paused else [],
         )
 
-    async def classify_intent(self, message: str, history: list[dict] | None = None):
+    async def classify_intent(self, message: str, history: list[dict] | None = None,
+                              effort: int | None = None):
         """Canonical LLM intent routing (``adk.intent``).
+
+        ``effort`` (1-10): the caller already decided how hard this turn is, so the
+        extra routing LLM call is skipped -- it would only re-answer a question the
+        caller settled, at one more round trip per turn (plan B8, 2026-11-14). The
+        keyword router still supplies intent / agentic / grounding; effort and its
+        reasoning depth are the caller's.
 
         Decides intent / effort / whether the agentic tool-loop is warranted, via
         a SINGLE fast effort-2 call on this agent's own LLM (keyword fallback if
@@ -4792,6 +4799,19 @@ class AitherAgent:
         carrying a divergent keyword classifier.
         """
         from adk.intent import classify_intent as _classify
+
+        if effort is not None:
+            from adk.intent import depth_for_effort, keyword_intent
+            try:
+                level = max(1, min(10, int(effort)))
+            except (TypeError, ValueError):
+                level = None
+            if level is not None:
+                decision = keyword_intent(message)
+                decision.effort = level
+                decision.reasoning_depth = depth_for_effort(level)
+                decision.source = "caller"
+                return self._ground_image_turn(message, decision)
 
         async def _complete(messages: list) -> str:
             msgs = [Message(role=m["role"], content=m["content"]) for m in messages]
@@ -4810,6 +4830,9 @@ class AitherAgent:
             pass
         decision = await _classify(message, llm_complete=_complete, tool_hint=tool_hint,
                                    history=history)
+        return self._ground_image_turn(message, decision)
+
+    def _ground_image_turn(self, message: str, decision):
         # A named image file can only be answered by LOOKING at it: measured 2026-10-05,
         # the 8B router called "what is in the image D:\...\x.png ?" plain chat and the
         # turn answered "I can't view images" without ever reaching look_at.
@@ -4825,8 +4848,12 @@ class AitherAgent:
         on_event,
         history: list[dict] | None = None,
         session_id: str | None = None,
+        effort: int | None = None,
     ) -> AgentResponse:
         """Instant-response → background-enrich → auto-continue (``adk.responder``).
+
+        ``effort`` set by the caller skips the routing LLM call (see
+        :meth:`classify_intent`).
 
         Streams a fast first-pass answer IMMEDIATELY (no dead air), runs the full
         grounded ReAct loop (:meth:`stream_react`) CONCURRENTLY, and
@@ -4841,7 +4868,7 @@ class AitherAgent:
 
         sid = session_id or self._session_id
         TOOL_SESSION_CTX.set(sid or "")  # conversation scope for stateful tools (repl)
-        decision = await self.classify_intent(message, history=history)
+        decision = await self.classify_intent(message, history=history, effort=effort)
 
         async def _first_pass():
             # If the grounded loop will run (agentic) or the answer needs data we

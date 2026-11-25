@@ -280,9 +280,88 @@ def claim_lease(facet: str, interval: float, *, pid: Optional[int] = None,
         outranks = FACET_PRIORITY.get(facet, 0) > FACET_PRIORITY.get(str(lease.get("facet")), 0)
         if not (stale or outranks):
             return False
-    data["leader"] = {"facet": facet, "pid": pid, "ts": now, "interval": interval}
+    entry = {"facet": facet, "pid": pid, "ts": now, "interval": interval}
+    if mine and lease.get("ok_at"):
+        entry["ok_at"] = lease["ok_at"]  # a renewal must not forget the last ACCEPTED beat
+        if lease.get("node_id"):
+            entry["node_id"] = lease["node_id"]
+    data["leader"] = entry
     save_device(data, path)
     return True
+
+
+def note_beat_ok(facet: str, *, pid: Optional[int] = None, now: Optional[float] = None,
+                 node_id: str = "", path: Optional[Path] = None) -> None:
+    """Record, on the lease this process holds, that Identity ACCEPTED a beat just now.
+
+    The lease says a process is trying to beat; this says the platform heard it. Other
+    processes on the machine (the daemon's /node/status, the This device page) read it
+    through :func:`leader_beat`, so a node whose beat is held by ``adk.node_beat`` or
+    ``awnode`` is not reported "not beating" just because the daemon is not the holder.
+    """
+    pid = os.getpid() if pid is None else pid
+    data = load_device(path)
+    lease = data.get("leader") if isinstance(data.get("leader"), dict) else {}
+    if lease.get("pid") == pid and lease.get("facet") == facet:
+        lease["ok_at"] = time.time() if now is None else now
+        if node_id:
+            # WHICH node the accepted beat was for. device.json's top-level node_id is only the
+            # last facet that recorded, and a machine can hold two registrations (2026-11-16 on
+            # the owner's PC: device.json said ...-b5efa661, node_auth.json said ...-e4b01ad2).
+            lease["node_id"] = str(node_id)
+        data["leader"] = lease
+        save_device(data, path)
+
+
+def leader_beat(*, now: Optional[float] = None, path: Optional[Path] = None) -> Optional[dict]:
+    """What the device's heartbeat holder is doing, from device.json; None when no beater
+    holds a fresh lease (nothing is beating for this device, or the holder died).
+
+    ``{"facet", "pid", "node_id", "known_ids", "interval", "lease_age", "ok_age"}``;
+    ``node_id`` is the node the holder's last accepted beat was for ("" from an older adk),
+    ``known_ids`` every node id this machine's device.json names; ``ok_age`` is
+    seconds since an accepted beat, None when this holder never recorded one (an older
+    adk): callers must not call that "online".
+    """
+    t = time.time() if now is None else now
+    data = load_device(path)
+    lease = data.get("leader") if isinstance(data.get("leader"), dict) else {}
+    if not lease:
+        return None
+    try:
+        interval = float(lease.get("interval") or 60)
+        lease_age = t - float(lease.get("ts") or 0)
+    except (TypeError, ValueError):
+        return None
+    if lease_age > interval * LEASE_MISSED:
+        return None
+    ok_at = lease.get("ok_at")
+    try:
+        ok_age = round(t - float(ok_at), 1) if ok_at else None
+    except (TypeError, ValueError):
+        ok_age = None
+    known = {str(data.get("node_id") or ""), str(lease.get("node_id") or "")}
+    facets = data.get("facets") if isinstance(data.get("facets"), dict) else {}
+    for rec in facets.values():
+        if isinstance(rec, dict):
+            known.add(str(rec.get("node_id") or ""))
+    known.discard("")
+    return {"facet": str(lease.get("facet") or ""), "pid": lease.get("pid"),
+            "node_id": str(lease.get("node_id") or ""), "known_ids": sorted(known),
+            "interval": interval, "lease_age": round(lease_age, 1), "ok_age": ok_age}
+
+
+def beat_is_for(beat: Optional[dict], node_id: str) -> bool:
+    """Is the lease holder's beat this machine's beat for ``node_id`` (the id in node_auth.json)?
+
+    device.json is per machine, so a fresh lease in it IS this machine's beat; the node id only
+    rules out a lease that names a DIFFERENT node than any this machine has registered. A holder
+    that never wrote one (an older adk) is not ruled out.
+    """
+    if not beat:
+        return False
+    named = beat.get("node_id") or ""
+    return not named or named == node_id or node_id in (beat.get("known_ids") or [])
 
 
 def release_lease(facet: str, *, pid: Optional[int] = None,

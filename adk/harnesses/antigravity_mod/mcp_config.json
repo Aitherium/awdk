@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "awdk-awsh": {
+      "command": "python3",
+      "args": ["-m", "adk.harnesses.mcp_stdio"]
+    },
+    "awdk-local": {
+      "command": "python3",
+      "args": ["-S", "-m", "adk.awdelegate", "--mcp"]
+    },
+    "aitherium": {
+      "url": "https://mcp.aitherium.com/mcp"
+    }
+  }
+}

@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "3.8.107"
+version = "4.0.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -409,6 +409,9 @@ artifacts = [
     # manifest lives in a DOT directory (.claude-plugin/) the default walk skips.
     # Without this the wheel imports fine and `mod status` reports mod_present=false.
     "adk/harnesses/claude_mod/**/*",
+    # The Google Antigravity plugin bundle (`adk antigravity setup`): manifest, SVG logo,
+    # hooks.json, mcp_config.json, rules, aw subagent, and skill markdown.
+    "adk/harnesses/antigravity_mod/**/*",
     # The Flue-on-Aitherium template (`adk new flue`): a Node project whose
     # .env.example, .gitignore and .adk-next-steps are dotfiles. Named here so a
     # wheel cannot ship the template without them.

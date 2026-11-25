@@ -637,6 +637,15 @@ def _release_lease(facet: str) -> None:
         log.debug("device lease release failed: %s", e)
 
 
+def _note_lease_ok(facet: str, node_id: str = "") -> None:
+    """Tell the other programs on this machine that Identity accepted this beat."""
+    try:
+        from adk.device_identity import note_beat_ok
+        note_beat_ok(facet, node_id=node_id)
+    except Exception as e:  # noqa: BLE001 -- bookkeeping never breaks a beat
+        log.debug("lease ok-note failed: %s", e)
+
+
 def _effective_facet(facet: str) -> str:
     try:
         from adk.device_identity import effective_facet
@@ -1080,11 +1089,13 @@ async def _heartbeat_beats(
                 again_status = int(getattr(again, "status_code", 0) or 0)
                 if again_status == 200:
                     _record_beat(again_status, "reregistered")
+                    _note_lease_ok(facet, node_id)
                 else:
                     _record_beat(again_status, "refused",
                                  f"re-register answered HTTP {again_status}")
             elif status == 200:
                 _record_beat(status, "ok")
+                _note_lease_ok(facet, node_id)
                 cmds = resp.json().get("commands")
                 if cmds:
                     await _run_delivered_commands(client, base, headers, node_id, reg, cmds,

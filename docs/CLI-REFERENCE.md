@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**144 commands.**
+**145 commands.**
 
 | command | what it does |
 |---|---|
@@ -90,6 +90,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk install`](#adk-install) | Install an agent pack (e.g. adk install pack:openclaw) |
 | [`adk instance`](#adk-instance) | Create & manage Aitherium Instances (always-on agent with a stable URL) |
 | [`adk integrate`](#adk-integrate) | Connect external tools (OpenClaw, etc.) |
+| [`adk intel`](#adk-intel) | Contribute open-source intel from feeds you choose (scout, schedule) |
 | [`adk invoke`](#adk-invoke) | Invoke a tool on a mesh agent over signed A2A (adk invoke <agent> <skill>) |
 | [`adk jobs`](#adk-jobs) | Manage background jobs — LOCAL by default, --remote for the portal/cloud |
 | [`adk join`](#adk-join) | One-command community node onboarding (GitHub auth + hardware detection + serve + mesh join + earnings) |
@@ -414,6 +415,18 @@ Run scoped headless Claude Code subagents (serve/spawn/runs/kill)
 - `adk claude setup` — Install the awsh plugin + apply the awsettings preset
 - `adk claude doctor` — Audit Claude Code settings/hooks/MCP (CCD001-006)
 - `adk claude hookd` — Run hooks in-process, no spawn per hook: serve\|ensure\|health\|convert\|revert
+
+## `adk antigravity`
+
+- `adk antigravity setup` — Install the AitherOS Antigravity plugin (MCP hub bridge, `antigravity_hooks` bridge to `hookd`/`awgov`, rules, `aw` subagent, skills) and optional workspace `.agents/hooks.json`
+- `adk antigravity doctor` — Audit the Antigravity AitherOS plugin, MCP servers, hook bridge latency, and local AitherOS services (`AGD001`-`AGD006`)
+
+## `adk harness up`
+
+- `adk harness up` — Bring up the local Aither World harness stack in one command: inspect installed `aw*` bricks, ensure `hookd` (:8369), `awsh` daemon (:8362), and `aw-hub` (:47933), auto-wire detected coding agents (Google Antigravity, Claude Code), and print a live readiness summary
+- `adk harness up --status` — Read-only health check across bricks, daemons, and agent plugins
+- `adk harness up --dry-run` — Preview what `adk harness up` would start and wire without touching disk or processes
+- `adk harness up --down` — Stop daemons started by `adk harness up`
 
 ## `adk claude-account`
 
@@ -1034,6 +1047,15 @@ Connect external tools (OpenClaw, etc.)
 | `--dry-run` | str |  | `false` | Show config without writing |
 | `--force` | str |  | `false` | Overwrite existing integration config |
 
+## `adk intel`
+
+Contribute open-source intel from feeds you choose (scout, schedule)
+
+**Subcommands**
+
+- `adk intel scout` — Read your RSS/Atom feeds politely and contribute new items
+- `adk intel schedule` — Register 'intel scout --once' as an awrise wake
+
 ## `adk invoke`
 
 Invoke a tool on a mesh agent over signed A2A (adk invoke <agent> <skill>)
@@ -1345,12 +1367,17 @@ Manage ToolPack extensions (list, search, install, enable, remove, info)
 - `adk pack update` — Update one or all installed packs
 - `adk pack export` — Export offline bundle (.tar.gz)
 - `adk pack info` — Show pack details
+- `adk pack show` — Show the v2 (aither.pack/v2) view of a pack: kind, distribution, provides, facets, requires
+- `adk pack apply` — Resolve a collection (Phase 1: dry-run only)
 - `adk pack customize` — Customize installed pack (system_prompt, capabilities, domains)
 - `adk pack import` — Import an external agent (e.g., Eve) to AitherADK pack
 - `adk pack new` — Scaffold a working tool pack (manifest, tool, test, README)
 - `adk pack validate` — Static checks on a pack folder -- imports nothing
 - `adk pack dev` — Load a pack through the real loader and list its tools
 - `adk pack build` — Reproducible .tar.gz + .sha256 ready to publish
+- `adk pack keygen` — Ed25519 signing keypair for pack releases (private key, mode 600)
+- `adk pack sign` — Build if needed, then sign the bundle (.sig sidecar)
+- `adk pack verify` — Check a bundle against its .sig before installing it
 - `adk pack publish` — Build, submit and upload a pack to the community marketplace
 
 ## `adk packs`

@@ -34,6 +34,7 @@ drive it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
 import io
 import json
@@ -47,6 +48,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -709,6 +711,67 @@ def merge(event: str, results: list) -> dict:
     return resp
 
 
+# ---------------------------------------------------------------- /pdp (awgov PDP)
+
+#: `mode=shadow|enforce`. Shadow is the P1 default and can never answer a decision.
+_PDP_MODES = ("shadow", "enforce")
+#: `agent:<name>` / `tainted:<name>`, the shape a daemon-minted principal has. Anything
+#: else is not a principal: an arbitrary header cannot promote a session.
+_PRINCIPAL_RE = re.compile(r"^(agent|tainted):[a-z0-9_.-]{1,40}$")
+_PDP: dict = {"loaded": False, "api": None}
+
+
+def resolve_principal(headers, payload) -> str:
+    """Who is calling: a well-formed principal header, else the owner's own TTY.
+
+    P3 replaces this with a daemon-minted token checked against the session record; the
+    shape test lives here so only this function changes. `payload` is accepted already
+    because the daemon record will key on the payload's session id.
+    """
+    raw = str(headers.get("X-Aither-Principal") or "").strip() if headers is not None else ""
+    return raw if _PRINCIPAL_RE.match(raw) else "owner-tty"
+
+
+class _ClassifierDenial:
+    """The audit row for a PermissionDenied event: a fact about Claude's own classifier,
+    not a verdict this route made. The audit chain needs only these fields."""
+
+    decision = "classifier_denied"
+    rule_id = "classifier"
+    b_code = ""
+    descriptors: tuple = ()
+
+
+def _deny_response(reason: str) -> dict:
+    """The documented PreToolUse deny shape, for the enforce+fail=closed paths."""
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                   "permissionDecision": "deny",
+                                   "permissionDecisionReason": reason}}
+
+
+def _pdp_api():
+    """awgov's entry points, imported on first use and cached for the process.
+
+    Lazy because hookd runs in sessions where awgov is not installed, and a failure is
+    cached and logged ONCE: a missing package costs one log line, not one per call. The
+    route then answers {} (or denies only when the caller asked for fail=closed).
+    """
+    if not _PDP["loaded"]:
+        _PDP["loaded"] = True
+        try:
+            from awgov import evaluate, hook_response
+            from awgov.ask_lane import maybe_raise
+            from awgov.audit import record
+        except Exception as exc:  # noqa: BLE001 -- /pdp must answer, never crash hookd
+            _log("awgov import failed; /pdp answers {} unless enforce+fail=closed "
+                 "(%s: %s)" % (type(exc).__name__, exc))
+            _PDP["api"] = None
+        else:
+            _PDP["api"] = {"evaluate": evaluate, "hook_response": hook_response,
+                           "record": record, "maybe_raise": maybe_raise}
+    return _PDP["api"]
+
+
 # ---------------------------------------------------------------- http
 
 
@@ -719,6 +782,9 @@ class _Stats:
         self.requests = 0
         self.hooks = 0
         self.errors = 0
+        self.pdp_requests = 0
+        self.pdp_denies_shadow = 0  # verdicts shadow WOULD have denied (deny or needs_owner)
+        self.pdp_errors = 0  # requests answered without a decision (import/route failure)
 
 
 def _log(line: str) -> None:
@@ -750,13 +816,97 @@ def make_handler(pool: Pool, stats: _Stats):
                     self._send(200, {"ok": True, "pid": os.getpid(),
                                      "uptime_s": int(time.time() - stats.started),
                                      "requests": stats.requests, "hooks": stats.hooks,
-                                     "errors": stats.errors, "workers_spawned": pool.spawned})
+                                     "errors": stats.errors, "workers_spawned": pool.spawned,
+                                     "pdp_requests": stats.pdp_requests,
+                                     "pdp_denies_shadow": stats.pdp_denies_shadow,
+                                     "pdp_errors": stats.pdp_errors})
             else:
                 self._send(404, {"error": "not found"})
 
+        def _pdp(self, url) -> None:
+            """POST /pdp — awgov's Policy Decision Point, evaluated in THIS thread.
+
+            No worker is spawned: a decision is one mtime-cached YAML read plus a pure
+            parse, and in shadow it must cost the caller nothing. Shadow answers {} on
+            every path, including a failed import. Only mode=enforce can deny, and an
+            import/route failure fails closed only for enforce+fail=closed.
+            """
+            t0 = time.monotonic()
+            query = urllib.parse.parse_qs(url.query)
+            mode = (query.get("mode", ["shadow"])[0] or "shadow").strip().lower()
+            if mode not in _PDP_MODES:
+                mode = "shadow"
+            fail_closed = (query.get("fail", [""])[0] or "").strip().lower() == "closed"
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            try:
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("payload is not an object")
+            except ValueError:
+                payload = {}
+            event = str(payload.get("hook_event_name") or "")
+            session = str(payload.get("session_id") or "")
+            principal = resolve_principal(self.headers, payload)
+            decision, rule_id, resp, failed = "", "", {}, False
+            api = _pdp_api()
+            try:
+                if api is None:
+                    failed = True
+                    decision, rule_id = "import_error", "awgov"
+                    if mode == "enforce" and fail_closed and event == "PreToolUse":
+                        resp = _deny_response(
+                            "awgov is unavailable (the PDP import failed); failing closed")
+                elif event == "PreToolUse":
+                    verdict = api["evaluate"](payload, principal=principal)
+                    decision, rule_id = str(verdict.decision), str(verdict.rule_id)
+                    api["record"](verdict, payload, principal, mode)
+                    resp = api["hook_response"](verdict, mode)
+                    if mode == "enforce" and verdict.decision == "needs_owner":
+                        # A B2/B3 deny with no card is a deny the owner cannot answer.
+                        # Measured 2026-11-20: this route answered "raise a card" and
+                        # raised none, because only awgov.hook carried the wiring.
+                        card = api["maybe_raise"](verdict, payload, principal)
+                        out = resp.get("hookSpecificOutput")
+                        if card and out:
+                            out["permissionDecisionReason"] += " | card: %s" % card
+                elif event == "PermissionDenied":
+                    # Claude's own classifier refused a call: audit the fact, decide nothing.
+                    decision, rule_id = "classifier_denied", "classifier"
+                    api["record"](_ClassifierDenial(), payload, principal, mode)
+                else:
+                    decision = "ignored"
+            except Exception as exc:  # noqa: BLE001 -- a PDP fault is logged, never a 500
+                failed = True
+                decision, rule_id = "error", "exception"
+                _log("pdp %s failed: %s: %s" % (event or "-", type(exc).__name__, exc))
+                resp = (_deny_response("awgov could not judge the call; failing closed")
+                        if mode == "enforce" and fail_closed
+                        and event == "PreToolUse" else {})
+            ms = int((time.monotonic() - t0) * 1000)
+            with stats.lock:
+                stats.pdp_requests += 1
+                stats.pdp_errors += int(failed)
+                if mode == "shadow" and decision in ("deny", "needs_owner"):
+                    stats.pdp_denies_shadow += 1
+            _log("pdp %s %s %s/%s %dms" % (event or "-", session[:8] or "-",
+                                           decision or "-", rule_id or "-", ms))
+            self._send(200, resp)
+
         def do_POST(self) -> None:
             url = urllib.parse.urlsplit(self.path)
-            if url.path != "/run" or self.headers.get("X-Hookd") != "1":
+            if self.headers.get("X-Hookd") != "1":
+                # Drain the (small) body first: answering before the client finishes
+                # sending aborts the connection on Windows, and the caller sees a
+                # reset instead of the 403 that says why it was refused.
+                length = int(self.headers.get("Content-Length") or 0)
+                if 0 < length <= 1_048_576:
+                    self.rfile.read(length)
+                self._send(403, {"error": "forbidden"})
+                return
+            if url.path == "/pdp":
+                self._pdp(url)
+                return
+            if url.path != "/run":
                 self._send(403, {"error": "forbidden"})
                 return
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -882,6 +1032,23 @@ def serve(port: int, workers: int) -> int:
     _log("serving on 127.0.0.1:%d with %d workers (pid %d)" % (port, workers, os.getpid()))
     srv.serve_forever()
     return 0
+
+
+def ephemeral_server(workers: int = 1):
+    """A hookd server on an OS-assigned port, for --self-test and the tests.
+
+    Returns (server, stats), or (None, None) when the host refuses to bind. The caller
+    shuts it down with server.shutdown() + server.server_close(); the worker processes
+    are daemons and die with this process. It NEVER binds the daemon's :8369, so a test
+    cannot land on the owner's live hookd.
+    """
+    srv = _bind(0)
+    if srv is None:
+        return None, None
+    stats = _Stats()
+    srv.RequestHandlerClass = make_handler(Pool(workers), stats)
+    threading.Thread(target=srv.serve_forever, name="hookd-ephemeral", daemon=True).start()
+    return srv, stats
 
 
 def health(port: int, timeout: float = 2.0):
@@ -1172,6 +1339,11 @@ def _self_test_pool_and_net(check, d: Path, hook: Path) -> None:
         except ConnectionRefusedError as exc:
             check("a marked endpoint is skipped at once", "hookd:" in str(exc)
                   and time.monotonic() - t0 < 0.2)
+        # The FIRST urlopen in a process builds urllib's global opener (Windows proxy
+        # lookup; measured 1.5 s idle and unbounded on a loaded host). That cost is not
+        # the read cap this check exists to measure, so pay it before the clock starts.
+        with contextlib.suppress(OSError):  # a refused connect is the expected outcome
+            urllib.request.urlopen("http://127.0.0.1:1/", timeout=1.0)
         # 4. an endpoint that accepts and never answers: the read cap ends it, then marks it
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))
@@ -1193,6 +1365,94 @@ def _self_test_pool_and_net(check, d: Path, hook: Path) -> None:
     finally:
         _NET["event"] = ""
         g["DOWN_FILE"], g["NET_READ_S"] = saved[0], saved[1]
+
+
+def _self_test_pdp(check, home: Path) -> None:
+    """POST /pdp over a real ephemeral server.
+
+    Shadow must answer {} and still audit; enforce must deny a .git recursive delete and
+    not deny a read probe; a malformed principal header is the owner's TTY; the X-Hookd
+    header is required; and a classifier denial is audited without a decision.
+    """
+    global STATE_DIR
+    root = Path(__file__).resolve().parents[3]
+    for pkg_name in ("awgov", "awbac"):
+        for candidate in root.glob(f"*/packages/{pkg_name}"):
+            pkg = str(candidate)
+            if candidate.is_dir() and pkg not in sys.path:
+                sys.path.insert(0, pkg)
+    saved_home = os.environ.get("AWGOV_HOME")
+    saved_state = STATE_DIR
+    os.environ["AWGOV_HOME"] = str(home / "awgov")
+    STATE_DIR = home / "hookd"  # keep the real daemon's log untouched
+    srv, stats = None, None
+    try:
+        srv, stats = ephemeral_server(1)
+        if srv is None:
+            check("/pdp: an ephemeral test server bound", False)
+            return
+        port = srv.server_address[1]
+        audit = Path(os.environ["AWGOV_HOME"]) / "audit.jsonl"
+
+        def post(query: str, payload: dict, headers: dict):
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d/pdp%s" % (port, query),
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json", **headers}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return resp.status, json.loads(resp.read() or b"{}")
+            except urllib.error.HTTPError as exc:
+                return exc.code, {}
+
+        def call(command: str, session: str, headers: dict, query: str):
+            return post(query, {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                "tool_input": {"command": command},
+                                "session_id": session, "cwd": str(root)}, headers)
+
+        def last_line() -> dict:
+            lines = (audit.read_text(encoding="utf-8").splitlines()
+                     if audit.is_file() else [])
+            return json.loads(lines[-1]) if lines else {}
+
+        code, resp = call("rm -rf /c/x/.git", "s-shadow", {"X-Hookd": "1"}, "?mode=shadow")
+        check("/pdp shadow answers {} for a dangerous command", code == 200 and resp == {})
+        check("/pdp shadow still audits the denial",
+              last_line().get("decision") == "deny" and last_line().get("rule_id") == "G1")
+        code, resp = call("rm -rf /c/x/.git", "s-enforce", {"X-Hookd": "1"}, "?mode=enforce")
+        check("/pdp enforce denies a .git recursive delete",
+              code == 200 and resp.get("hookSpecificOutput", {}).get(
+                  "permissionDecision") == "deny")
+        code, resp = call("git status", "s-safe", {"X-Hookd": "1"}, "?mode=enforce")
+        check("/pdp enforce does not deny a read probe",
+              code == 200 and resp.get("hookSpecificOutput", {}).get(
+                  "permissionDecision") != "deny")
+        code, resp = call("git status", "s-bad-principal",
+                          {"X-Hookd": "1", "X-Aither-Principal": "Admin"}, "?mode=shadow")
+        check("/pdp falls back to owner-tty for a malformed principal header",
+              code == 200 and last_line().get("principal") == "owner-tty"
+              and last_line().get("session") == "s-bad-principal")
+        check("/pdp keeps a well-formed principal",
+              resolve_principal({"X-Aither-Principal": "agent:atlas"}, {}) == "agent:atlas")
+        code, _ = call("git status", "s-no-header", {}, "?mode=shadow")
+        check("/pdp requires the X-Hookd header", code == 403)
+        code, resp = post("?mode=shadow", {"hook_event_name": "PermissionDenied",
+                                           "tool_name": "Bash", "session_id": "s-denied"},
+                          {"X-Hookd": "1"})
+        check("/pdp audits a classifier denial and answers {}",
+              code == 200 and resp == {} and last_line().get("decision") == "classifier_denied")
+        check("/pdp counted five requests and one shadow deny",
+              stats.pdp_requests == 5 and stats.pdp_denies_shadow == 1
+              and stats.pdp_errors == 0)
+    finally:
+        if srv is not None:
+            srv.shutdown()
+            srv.server_close()
+        if saved_home is None:
+            os.environ.pop("AWGOV_HOME", None)
+        else:
+            os.environ["AWGOV_HOME"] = saved_home
+        STATE_DIR = saved_state
 
 
 def _self_test() -> int:
@@ -1277,6 +1537,7 @@ def _self_test() -> int:
         check("a worker left over the memory cap is recycled",
               MAX_WORKER_GB <= 0 or (pool.spawned == before + 1 and light["code"] == 0))
         _self_test_pool_and_net(check, Path(d), hook)
+    _self_test_pdp(check, Path(tmp_down))
     with tempfile.TemporaryDirectory() as d:
         hooks_dir = Path(d) / ".claude" / "hooks"
         hooks_dir.mkdir(parents=True)

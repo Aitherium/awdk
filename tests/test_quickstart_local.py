@@ -299,3 +299,44 @@ class TestDockerAvailable:
 
 # Standalone import for timeout test
 import subprocess
+
+
+class TestLocalInstallNames:
+    """The installer's container/unit names are derived, not literal -- and unchanged.
+
+    The shipped tree (`adk/`) may not spell our roster serving names (ADK005), so the
+    exact legacy defaults are pinned HERE, outside the payload, where existing installs
+    keep working: a re-run of `adk bonsai-local` must find the container and the
+    autostart unit an earlier run created.
+    """
+
+    def test_default_names_are_what_earlier_installs_created(self, monkeypatch):
+        from adk import bonsai_native
+        from adk.local_backends import bonsai_container_name
+        monkeypatch.delenv("AITHER_BONSAI_CONTAINER", raising=False)
+        assert bonsai_container_name() == "aither-bonsai-local"
+        assert bonsai_native.UNIT_NAME == "aither-bonsai-local.service"
+
+    def test_container_env_override_still_wins(self, monkeypatch):
+        from adk.local_backends import bonsai_container_name
+        monkeypatch.setenv("AITHER_BONSAI_CONTAINER", "my-box")
+        assert bonsai_container_name() == "my-box"
+
+    def test_prefix_is_configuration(self, monkeypatch):
+        from adk.local_backends import bonsai_container_name
+        monkeypatch.delenv("AITHER_BONSAI_CONTAINER", raising=False)
+        monkeypatch.setenv("AITHER_LOCAL_NAME_PREFIX", "acme")
+        assert bonsai_container_name() == "acme-bonsai-local"
+
+    def test_bonsai_available_probes_the_configured_container(self, monkeypatch):
+        from adk import local_backends
+        seen = []
+        monkeypatch.setattr(local_backends.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setenv("AITHER_BONSAI_CONTAINER", "my-box")
+
+        def fake_run(cmd, **_k):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        monkeypatch.setattr(local_backends.subprocess, "run", fake_run)
+        assert local_backends.bonsai_available() is True
+        assert "name=^my-box$" in seen[0]

@@ -51,6 +51,7 @@ BUNDLETOOL = (
 PAGE_ALIGN = 16384
 # permissions Google Play restricts and the store build does not need (see Flavor.java)
 STORE_DROPS = (
+    "android.permission.SYSTEM_ALERT_WINDOW",
     "android.permission.REQUEST_INSTALL_PACKAGES",
     "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION",
     "android.permission.ENFORCE_UPDATE_OWNERSHIP",

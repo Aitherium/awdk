@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
-from adk.decisions.notify import notify
+from adk.decisions.delivery import deliver_on_raise as notify
 from adk.decisions.render import (
     colour_enabled,
     print_card,
@@ -53,6 +53,22 @@ def parse_duration(text: str) -> float:
     if not match:
         raise ValueError(f"not a duration: {text!r} (use 90s, 30m, 2h, 1d)")
     return float(match.group(1)) * _UNITS[match.group(2).lower()]
+
+
+def _parse_action_check(name: str, on: str) -> Optional[dict]:
+    """``--check ID --check-on a,b`` → the card's ``action_check`` spec, or None.
+
+    Only the NAME is stored. The registry that turns a name into a probe is the
+    operator's file, so a card can never carry a command.
+    """
+    check = (name or "").strip()
+    if not check:
+        return None
+    keys = [k.strip() for k in (on or "").split(",") if k.strip()]
+    spec: dict = {"name": check}
+    if keys:
+        spec["on"] = keys
+    return spec
 
 
 def parse_option(spec: str) -> DecisionOption:
@@ -356,6 +372,8 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
                                 if args.credential else None),
         credential_recipe=(recipe_id or None) if args.credential else None,
         subject=(getattr(args, "subject", "") or "").strip(),
+        action_check=_parse_action_check(getattr(args, "check", "") or "",
+                                         getattr(args, "check_on", "") or ""),
     )
 
     try:
@@ -1024,6 +1042,14 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--subject", default="", metavar="ID",
                      help="the object this card concerns, e.g. svc:Secrets, "
                           "secret:NAME, repo:owner/name, platform (off-grammar = none)")
+    ask.add_argument("--check", default="", metavar="CHECK_ID",
+                     help="an ACTION card: the name of a check in the host registry "
+                          "(~/.aither/decisions/checks.json). When the owner answers "
+                          "one of --check-on, the store runs it and steers this "
+                          "session with the result. The card names a check, never a command.")
+    ask.add_argument("--check-on", default="", metavar="KEYS",
+                     help="comma-separated answer keys that trigger --check "
+                          "(default: done,did_it,fixed,retry,check_now)")
     ask.add_argument("--session", default="", help="session id the answer routes back to")
     ask.add_argument("--transcript", default="", metavar="PATH",
                      help="the session transcript, so the card's context panel can show "

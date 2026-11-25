@@ -58,7 +58,7 @@ deployment:
   # The delegate DOES exist — it lives fleet-side (not in this public pack) at
   # .DEPLOYMENT/scripts/optiplex-node/deploy-bonsai-node.sh, and it is what
   # actually provisions the node: it builds the PrismML fork on the node, fetches
-  # the GGUF, and installs the `aither-bonsai-llama` systemd unit. That unit's
+  # the GGUF, and installs the node's llama.cpp systemd unit. That unit's
   # ExecStart — NOT these serve_args — is the live configuration. Keep the two in
   # sync by hand until a recipe->unit renderer exists; the script's CTX and
   # THINK_BUDGET env vars are the knobs that correspond to --ctx-size and

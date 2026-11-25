@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 import subprocess
 import sys
@@ -72,6 +73,20 @@ class RuntimeConfig(BaseModel):
             raise ValueError(f"runtime.cmd required when type={self.type}")
 
 
+#: Default LLM endpoint for a pack that names none. ``AITHER_LLM_BASE_URL`` (the
+#: variable an appliance image sets in /usr/lib/awdk/awdk.env to point at the box's
+#: own loopback llama.cpp) wins over the historical :8150 so a pack started on such a
+#: box reaches the model the image actually serves instead of a second server nobody
+#: started. Reading it lazily (a function, not a constant) keeps a per-process
+#: override honest.
+DEFAULT_MODEL_ENDPOINT = "http://localhost:8150"
+
+
+def _default_model_endpoint() -> str:
+    """The pack's LLM endpoint when the manifest names none (env-aware)."""
+    return os.environ.get("AITHER_LLM_BASE_URL") or DEFAULT_MODEL_ENDPOINT
+
+
 class AgentPackManifest(BaseModel):
     """Metadata + startup instructions for an agent pack.
 
@@ -107,7 +122,7 @@ class AgentPackManifest(BaseModel):
         )
     )
     model_endpoint: str = Field(
-        default="http://localhost:8150", description="LLM inference endpoint"
+        default_factory=_default_model_endpoint, description="LLM inference endpoint"
     )
     mcp: str | None = Field(
         None, description="Optional MCP server configuration path or inline"
@@ -460,7 +475,7 @@ def load_agent_pack(path: Path | str) -> AgentPackManifest:
             runtime=runtime,
             entrypoint=data.get("entrypoint", ""),
             protocol=data.get("protocol"),
-            model_endpoint=data.get("model_endpoint", "http://localhost:8150"),
+            model_endpoint=data.get("model_endpoint", _default_model_endpoint()),
             mcp=data.get("mcp"),
             skills=data.get("skills") or [],
             entitlements=data.get("entitlements") or [],

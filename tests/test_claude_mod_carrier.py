@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,8 +57,30 @@ def test_public_marketplace_points_at_the_plugin():
 def test_mcp_servers_all_go_through_the_tolerant_wrapper():
     servers = _json(MOD / ".mcp.json")["mcpServers"]
     assert servers
+    launcher = "${CLAUDE_PLUGIN_ROOT}/scripts/brick_mcp_launch.py"
     for name, spec in servers.items():
-        assert spec["args"] == ["-m", "adk.harnesses.brick_mcp", name], name
+        assert spec["args"] == [launcher, name], name
+    assert (MOD / "scripts" / "brick_mcp_launch.py").is_file()
+
+
+def test_light_launcher_answers_initialize_without_importing_adk(tmp_path):
+    """The launcher runs the stdlib wrapper by path: no ``adk`` import (36.8 -> 13.1 MB
+    private per idle brick child, measured 2026-11-16)."""
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"aitheros": {"args": ["--hub"]}}}), encoding="utf-8")
+    probe = ("import atexit,runpy,sys;"
+             "atexit.register(lambda: sys.stderr.write('ADK=%s' % ('adk' in sys.modules)));"
+             "sys.argv=[sys.argv[1],'awfind'];runpy.run_path(sys.argv[0],run_name='__main__')")
+    req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                      "params": {"protocolVersion": "2025-06-18"}}) + "\n"
+    r = subprocess.run([sys.executable, "-c", probe,
+                        str(MOD / "scripts" / "brick_mcp_launch.py")],
+                       input=req, capture_output=True, text=True, timeout=60,
+                       encoding="utf-8", errors="replace",
+                       cwd=tmp_path, env={**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout.splitlines()[0])["result"]["serverInfo"]["name"] == "awfind"
+    assert "ADK=False" in r.stderr
 
 
 def test_portable_hooks_are_by_path_and_never_fail():

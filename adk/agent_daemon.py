@@ -413,7 +413,12 @@ def _install_windows_task(up_argv: list[str], dry_run: bool) -> Optional[str]:
     reboot persistence) if ``schtasks`` is unavailable.
     """
     wrapper = AITHER_HOME / "aither-agent.cmd"
-    log_out = LOG_DIR / "agent.log"
+    # NOT agent.log: `adk up` (this wrapper's payload) opens agent.log for the detached
+    # server, and cmd keeps its own `1>>` handle on whatever file it redirects to for as
+    # long as `adk up` runs. Both on agent.log was a sharing violation, so at EVERY logon
+    # `adk up` died with PermissionError and the agent never came back after a reboot
+    # (measured 2026-11-16 in a clean Windows Sandbox: task Last Result 1).
+    log_out = LOG_DIR / "agent-launch.log"
     cmd_line = " ".join(_quote(c) for c in up_argv)
     wrapper.write_text(
         f'@echo off\r\ncd /d "%~dp0"\r\n{cmd_line} 1>>"{log_out}" 2>&1\r\n',
@@ -468,13 +473,13 @@ def _install_hkcu_run(wrapper: Path) -> bool:
     machines where schtasks was denied, i.e. exactly the unattended ones nobody
     is watching. It gets the same shim.
     """
-    from adk.llamacpp_setup import write_hidden_launch_shim
+    from adk.llamacpp_setup import hidden_launch_command, write_hidden_launch_shim
 
     try:
         import winreg
 
         shim = write_hidden_launch_shim(AITHER_HOME)
-        value = f'wscript.exe //B //Nologo "{shim}" "{wrapper}"'
+        value = hidden_launch_command(shim, Path(wrapper))
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",

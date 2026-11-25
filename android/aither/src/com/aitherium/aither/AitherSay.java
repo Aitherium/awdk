@@ -44,6 +44,9 @@ final class AitherSay {
     private final ExecutorService fetcher = Executors.newFixedThreadPool(3);
     private volatile int gen;
     private volatile MediaPlayer playing;
+    /** Is Aither talking on this phone right now? Process-wide (one voice), so the floating
+     *  fairy overlay can pulse while she speaks without a second audio path. */
+    static volatile boolean speaking;
 
     AitherSay(Context c) { ctx = c.getApplicationContext(); }
 
@@ -100,6 +103,7 @@ final class AitherSay {
         gen++;
         MediaPlayer m = playing;
         playing = null;
+        speaking = false;
         if (m != null) try { m.stop(); } catch (Exception e) { /* done */ }
     }
 
@@ -163,6 +167,7 @@ final class AitherSay {
             m.prepare();
             if (at != gen) return true;
             playing = m;
+            speaking = true;
             m.start();
             done.await(Math.max(5, m.getDuration() / 1000 + 5), TimeUnit.SECONDS);
             return true;
@@ -170,7 +175,7 @@ final class AitherSay {
             android.util.Log.w("AitherSay", "could not play: " + e);
             return false;
         } finally {
-            if (playing == m) playing = null;
+            if (playing == m) { playing = null; speaking = false; }
             try { m.release(); } catch (Exception e) { /* released */ }
         }
     }

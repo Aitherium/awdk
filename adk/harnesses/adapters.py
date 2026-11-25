@@ -176,6 +176,59 @@ def translate_gemini(obj: Any) -> list[HarnessEvent]:
         return [raw(str(obj))]
 
     etype = obj.get("type")
+
+    # Gemini CLI native stream-json (measured on 0.70.0, 2026-11-23):
+    # init / message{role,content,delta} / tool_use / tool_result / error /
+    # result{status,stats}. Its `result` carries `status`, not Claude's `subtype`,
+    # so handing it to translate_claude marked every Gemini turn as failed.
+    if etype == "init":
+        return [HarnessEvent(
+            kind=EventKind.SESSION_READY,
+            text=f"model={obj.get('model', '?')}",
+            data={"model": obj.get("model", ""),
+                  "harness_session_id": obj.get("session_id", "")},
+        )]
+    if etype == "message":
+        if obj.get("role") != "assistant":
+            return [notice(f"gemini/{obj.get('role', 'message')}", payload=obj)]
+        content = obj.get("content")
+        if isinstance(content, str):
+            return [text_delta(content)] if content else []
+        return translate_claude({"type": "assistant", "message": {"content": content}})
+    if etype == "tool_use":
+        params = obj.get("parameters", obj.get("args"))
+        return [tool_call(
+            str(obj.get("tool_name") or obj.get("name") or "?"),
+            str(obj.get("tool_id") or obj.get("id") or ""),
+            params if isinstance(params, dict) else {"value": params},
+        )]
+    if etype == "tool_result":
+        return [tool_result(
+            str(obj.get("tool_id") or obj.get("id") or ""),
+            obj.get("output", obj.get("error")),
+            is_error=obj.get("status") not in (None, "success"),
+        )]
+    if etype == "error":
+        return [error(str(obj.get("message") or obj.get("error") or "gemini error"),
+                      severity=obj.get("severity"))]
+    if etype == "result" and "status" in obj and "subtype" not in obj:
+        ok = obj.get("status") == "success"
+        stats = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
+        events = [
+            HarnessEvent(kind=EventKind.USAGE,
+                         data={"usage": stats, "cost_usd": None,
+                               "duration_ms": stats.get("duration_ms"),
+                               "num_turns": None}),
+            HarnessEvent(kind=EventKind.TURN_COMPLETED, text="",
+                         data={"is_error": not ok, "subtype": obj.get("status"),
+                               "harness_session_id": obj.get("session_id", "")}),
+        ]
+        if not ok:
+            err = obj.get("error")
+            msg = err.get("message") if isinstance(err, dict) else err
+            events.insert(0, error(str(msg or obj.get("status") or "turn failed")))
+        return events
+
     if etype in ("assistant", "user", "system", "result"):
         return translate_claude(obj)
 
@@ -405,11 +458,54 @@ def translate_codex(obj: Any) -> list[HarnessEvent]:
     return [raw(json.dumps(obj)[:2000], event_type=etype)]
 
 
+def translate_antigravity(obj: Any) -> list[HarnessEvent]:
+    """Translate Google Antigravity agentapi / agy output (JSON or plain text)."""
+    if isinstance(obj, str):
+        text = obj.strip()
+        if not text:
+            return []
+        if text.startswith("{"):
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                return [text_delta(obj)]
+        else:
+            return [text_delta(obj)]
+    if not isinstance(obj, dict):
+        return [raw(str(obj))]
+    conv = obj.get("conversation") if isinstance(obj.get("conversation"), dict) else None
+    if conv and conv.get("id"):
+        return [
+            HarnessEvent(
+                kind=EventKind.SESSION_READY,
+                text=f"antigravity conversation {conv.get('id')}",
+                data={"harness_session_id": str(conv["id"]), "conversation": conv},
+            )
+        ]
+    if obj.get("conversationId") or obj.get("conversation_id"):
+        cid = str(obj.get("conversationId") or obj.get("conversation_id") or "")
+        return [
+            HarnessEvent(
+                kind=EventKind.SESSION_READY,
+                text=f"antigravity conversation {cid}",
+                data={"harness_session_id": cid, "payload": obj},
+            )
+        ]
+    if obj.get("type"):
+        return translate_gemini(obj)
+    if obj.get("error"):
+        return [error(str(obj.get("error")), payload=obj)]
+    if obj.get("text"):
+        return [text_delta(str(obj["text"]))]
+    return [raw(json.dumps(obj)[:2000])]
+
+
 #: Adapters by harness id. Registry entries reference these by name so a spec
 #: stays declarative and serializable.
 ADAPTERS = {
     "claude": translate_claude,
     "gemini": translate_gemini,
+    "antigravity": translate_antigravity,
     "text": translate_text,
     "opencode": translate_opencode,
     "codex": translate_codex,

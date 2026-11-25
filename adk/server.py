@@ -1497,9 +1497,15 @@ def create_app(
         # (adk.turn_journal). In the background: startup never waits on a model.
         _state["turn_resume_task"] = asyncio.create_task(_resume_interrupted_turns())
 
+        # Claude Code runs as an awsh session in the harness daemon; this daemon keeps that
+        # daemon up so a machine where only awdk came up still has a host (adk.harness_supervisor).
+        from adk import harness_supervisor as _harness_supervisor
+        if _harness_supervisor.autostart_enabled():
+            _state["harness_supervisor_task"] = asyncio.create_task(_harness_supervisor.supervise())
+
         yield
         # ── Shutdown cleanup ──
-        for _task_key in ("heartbeat_task", "workflow_mirror_task"):
+        for _task_key in ("heartbeat_task", "workflow_mirror_task", "harness_supervisor_task"):
             _bg_task = _state.get(_task_key)
             if _bg_task and not _bg_task.done():
                 _bg_task.cancel()
@@ -1565,7 +1571,7 @@ def create_app(
     # user's own tools attached, so the set of origins that may talk to it is a security
     # decision. allow_credentials stays OFF, so no ambient cookie rides along.
     # 🚨 THIS LIST MUST COVER EVERY ORIGIN THE ADAPTER RUNS ON, and until 2026-08-24
-    # it covered four of twelve. `aither-bonsai-adapter.js` carries its own
+    # it covered four of twelve. the Bonsai adapter script carries its own
     # ALLOWED_HOSTS -- the surfaces where the page may run at all -- and the two were
     # hand-maintained separately, so the page ran on origins this daemon refused.
     #
@@ -2871,6 +2877,37 @@ def create_app(
         rec = _stored_node_record()
         return {**st, "registered": bool(rec), "node_id": str(rec.get("node_id") or "")}
 
+    def _lease_heartbeat(node_id: str) -> Optional[dict[str, Any]]:
+        """The heartbeat as the device's lease holder reports it, or None."""
+        try:
+            from adk.device_identity import beat_is_for, leader_beat
+            lb = leader_beat()
+        except Exception:  # noqa: BLE001 -- no lease file is "nothing is beating"
+            return None
+        if not lb or not beat_is_for(lb, node_id):
+            return None
+        fresh = lb["ok_age"] is not None and lb["ok_age"] <= lb["interval"] * 3
+        return {
+            "running": True,
+            "online": bool(fresh),
+            "age_seconds": lb["ok_age"],
+            "last_result": "ok" if fresh else ("unconfirmed" if lb["ok_age"] is None else "stale"),
+            "held_by": lb["facet"],
+        }
+
+    @app.get("/stack/links")
+    async def stack_links(request: Request):
+        """Is each Aither program on this machine linked to the Aither ID and to the others.
+
+        Names and counts only, never a credential; same guard as ``/identity/whoami``
+        (adk/stack_links.py has the why). Measured off the event loop: it dials loopback
+        services and may run ``awsettings``.
+        """
+        _whoami_guard(request)
+        from adk import stack_links as _stack_links
+
+        return await asyncio.to_thread(_stack_links.measure)
+
     @app.get("/node/status")
     async def node_status(request: Request):
         """What this device is registered as — for the page that registered it.
@@ -2889,6 +2926,18 @@ def create_app(
         hb = _enrollment.heartbeat_status()
         # The beat this process runs must be THIS node's to count.
         mine = hb.get("node_id") == rec["node_id"]
+        heartbeat = {
+            "running": bool(mine and hb.get("running")),
+            "online": bool(mine and hb.get("online")),
+            "age_seconds": hb.get("age_seconds") if mine else None,
+            "last_result": str(hb.get("last_result") or "") if mine else "never",
+        }
+        if not heartbeat["running"]:
+            # One heartbeat per device: when adk.node_beat / awnode / the desk holds the
+            # device lease this process stands by, and its own loop is rightly idle. The
+            # node IS beating; reporting "not reporting" made the page contradict the
+            # device list on a machine that was online (measured 2026-11-16).
+            heartbeat = _lease_heartbeat(str(rec["node_id"])) or heartbeat
         return {
             "registered": True,
             "node_id": str(rec["node_id"]),
@@ -2896,12 +2945,7 @@ def create_app(
             "tenant_id": str(rec.get("tenant_id") or ""),
             "node_class": str(rec.get("node_class") or ""),
             "overlay_ip": str(rec.get("overlay_ip") or ""),
-            "heartbeat": {
-                "running": bool(mine and hb.get("running")),
-                "online": bool(mine and hb.get("online")),
-                "age_seconds": hb.get("age_seconds") if mine else None,
-                "last_result": str(hb.get("last_result") or "") if mine else "never",
-            },
+            "heartbeat": heartbeat,
             "harness_link": _rc.harness_link_status(),
         }
 

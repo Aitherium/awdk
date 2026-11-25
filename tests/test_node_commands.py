@@ -307,7 +307,8 @@ def test_a_paired_machine_signed_in_later_still_holds_the_link(monkeypatch):
         return None
 
     async def rich(base, token, node_id, **kw):
-        started.update(base=base, token=token, device=kw.get("device"))
+        started.update(base=base, token=token, device=kw.get("device"),
+                       fallback=kw.get("device_fallback_token"))
 
     async def legacy(*a, **kw):
         started["legacy"] = True
@@ -320,6 +321,9 @@ def test_a_paired_machine_signed_in_later_still_holds_the_link(monkeypatch):
     assert "legacy" not in started
     assert links == [(NODE, "owner-tok")]          # the owner's sign-in holds the link
     assert (started["token"], started["device"]) == ("owner-tok", False)
+    # The owner's sign-in expires; the beat must be able to fall back to the device's own
+    # token or the node reads offline for days (the DGX Spark, 2026-11-16, 5 days).
+    assert started["fallback"] == "device-tok"
 
 
 def _drive(coro):
@@ -404,6 +408,8 @@ def test_node_beat_resumes_as_the_device_when_nobody_is_signed_in(monkeypatch):
     from adk import fleet_enroll, node_beat
 
     seen = {}
+    # Hermetic: a live node_beat on the machine running the suite holds the real lock.
+    monkeypatch.setattr(node_beat, "acquire_singleton", lambda *a, **kw: object())
     monkeypatch.setattr(fleet_enroll, "_load_auth_config", lambda: {})
     monkeypatch.setattr(enrollment, "resume_heartbeat",
                         lambda tok, default_base_url, **kw: seen.update(

@@ -1231,9 +1231,34 @@ def write_hidden_launch_shim(directory: Path) -> Path:
     return shim
 
 
+def vbscript_available() -> bool:
+    """True when this Windows can run a .vbs (the VBScript feature is installed).
+
+    VBScript is an optional Windows feature and newer builds ship without it (measured
+    2026-11-16 on Windows build 26300: no vbscript.dll, ``wscript.exe run-hidden.vbs`` fails
+    with "There is no script engine for file extension .vbs" and Last Result 1). A logon task
+    built on the shim then does nothing at every logon, silently.
+    """
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    return (Path(root) / "System32" / "vbscript.dll").exists()
+
+
+def hidden_launch_command(shim: Path, payload: Path) -> str:
+    """The command line (a task's ``/tr``, a Run value) that starts *payload* with no window.
+
+    Through the VBScript shim when VBScript exists. Without it, ``conhost.exe --headless``:
+    a GUI-subsystem program (so no console is ever allocated to take the desktop's focus)
+    that runs the payload under cmd. Measured working through Task Scheduler with no
+    VBScript installed, Last Result 0.
+    """
+    if vbscript_available():
+        return f'wscript.exe //B //Nologo "{shim}" "{payload}"'
+    return f'conhost.exe --headless cmd.exe /d /c ""{payload}""'
+
+
 def hidden_task_run(shim: Path, payload: Path) -> str:
     """The ``schtasks /tr`` value that launches *payload* with no visible window."""
-    value = f'wscript.exe //B //Nologo "{shim}" "{payload}"'
+    value = hidden_launch_command(shim, payload)
     if len(value) > _SCHTASKS_TR_MAX:
         raise ValueError(
             f"schtasks /tr would be {len(value)} chars, over the {_SCHTASKS_TR_MAX} "

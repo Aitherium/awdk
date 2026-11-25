@@ -1,19 +1,22 @@
 package com.aitherium.aither;
 
 import java.net.URI;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 
 /**
- * What the app shell shows, by who uses this phone: the bottom tabs, the Home grid's apps,
- * where a link opens and what Android back does. Pure Java (no android.*), so
- * test/AppTabsCheck.java runs it on a desktop JVM.
+ * What the app shell does, by who uses this phone: where a link opens, which links a child
+ * may follow, what Android back does and what the user agent says. Pure Java (no android.*),
+ * so test/AppTabsCheck.java runs it on a desktop JVM.
+ *
+ * EVERY phone is the AitherOS desktop (0.5.0): one WebView on the OS. A child's phone is the
+ * same OS with a child profile on top (owner 2026-11-19, overruling the 10-19 classroom
+ * frame): its user agent adds {@link #KID_UA}, the page shows only the kid-safe apps (Veil
+ * lib/kid-os-profile.ts, which also maps a child's `?app=` ids to their child pages), the
+ * child edge (child-lockdown.ts) keeps the session on the child pages, and a link off the
+ * classroom's host never opens ({@link #link}: "Ask a grown-up").
  *
  * Every path is a real route of the AitherOS web app on the app origin (a monorepo test
- * fails on one that is not), and every `?app=` id is an OS app in app-registry.tsx. A child's `?app=` ids resolve through CHILD_APP_HOMES, the copy of
- * aither-app-entries.ts CHILD_SHORTCUT_HOMES (the same test pins the two).
- *
- * A tab with an empty path is native: Home is the grid, Settings opens SettingsActivity.
+ * fails on one that is not), and every `?app=` id is an OS app in app-registry.tsx.
  */
 final class AppTabs {
     static final String ORIGIN = "https://app.aitherium.com";
@@ -22,40 +25,39 @@ final class AppTabs {
     /** You > My account: the workspace settings profile tab (/profile is retired). */
     static final String ACCOUNT_PATH = "/workspace/settings?tab=profile";
 
-    /** A grown-up's phone IS the AitherOS desktop (0.4.0): ONE full-screen WebView on the
-     *  OS, phone-shaped (its own home screen, dock, windows and Back). This is that surface. */
+    /** Every phone IS the AitherOS desktop: ONE full-screen WebView on the OS, phone-shaped
+     *  (its own home screen, dock, windows and Back). This is that surface. */
     static final String OS = "os";
     static final String OS_PATH = "/?host=android-os";
     static final String OS_HOME = ORIGIN + OS_PATH;
 
-    /** id, label, root path ("" = native), icon (Shell.iconRes: the app's glyph
-     *  res/drawable/ic_app_*, "gear" = settings, "mark" = the Aither mark).
+    /** The child profile, in the user agent of every WebView on a child's phone, after
+     *  " AitherOS". Veil reads it (lib/kid-os-profile.ts: the kid-safe app set) and so does
+     *  the child edge (child-lockdown.ts childOsShell: a child's session may load the OS
+     *  page itself and nothing more). It only ever RESTRICTS what the page offers: a forged
+     *  token narrows its forger's own OS. */
+    static final String KID_UA = " AitherKid";
+
+    /** id, label, root path, icon ("mark" = the Aither mark).
      *
-     *  A grown-up's phone draws NO native bar (0.4.0): the one row is the one WebView, the
-     *  OS. Its dock, home screen and Settings ("You", which reaches this phone's native
-     *  settings through window.AitherApp.openNativeSettings()) are the web's. Kept as a table
-     *  so the screen checks keep reading the grown-up's surfaces from one place. Pinned
-     *  against the nav manifest (profiles.adult.android: shell os, no tabs). */
+     *  A phone draws NO native bar: the one row is the one WebView, the OS. Its dock, home
+     *  screen and Settings ("You", which reaches this phone's native settings through
+     *  window.AitherApp.openNativeSettings()) are the web's. Kept as a table so the screen
+     *  checks keep reading the grown-up's surfaces from one place. Pinned against the nav
+     *  manifest (profiles.adult.android and profiles.child.android: shell os, no tabs). */
     static final String[][] ADULT_TABS = {
         {"os", "Aither", "/?host=android-os", "mark"},
     };
-    /** A child's bar is ONE tab, their classroom (kids-suite S4): every child page opens in
-     *  it, so the room is the menu and there is nothing else to wander into. Shell turns a
-     *  long-press on it into the phone's lite Settings, for a grown-up. Asserted with the nav
-     *  manifest (config/nav/aither-nav.yaml profiles.child.android) by check_child_nav.py. */
-    static final String[][] CHILD_TABS = {
-        {"learn", "Classroom", "/learn", "learn"},
-    };
 
-    /** id, label, one plain line, path, icon, tab it opens in ("" = its own window), and
-     *  (grown-ups only) the bead-space cluster Home files it under
+    /** id, label, one plain line, path, icon, tab it opens in ("" = its own window), and the
+     *  bead-space cluster the catalogue files it under
      *  (docs/plans/2026-10-13-bead-space-navigation.md).
      *
-     *  Since 0.4.0 the app draws no grown-up Home grid: the OS home screen lists the apps
-     *  from the web's own registry. ADULT_APPS stays the catalogue of what a grown-up's
-     *  phone offers (the nav manifest and the screen checks read it); the shell never draws
-     *  it. CHILD_APPS is still the child's grid. One row per destination: what a
-     *  tab already opens (Learn, Family, Talk to Aither, This phone), what lives inside
+     *  The app draws no Home grid: the OS home screen lists the apps from the web's own
+     *  registry (a child's: the kid-safe set, Veil lib/kid-os-profile.ts). ADULT_APPS stays
+     *  the catalogue of what a grown-up's phone offers (the nav manifest and the screen
+     *  checks read it); the shell never draws it. One row per destination: what the OS
+     *  already opens (Learn, Family, Talk to Aither, This phone), what lives inside
      *  another row (Packs & skills is a tab of My agents, My account is in You) and the
      *  owner's second image tool (Media Forge; Image Studio is the one on a phone) are not
      *  repeated here. */
@@ -76,17 +78,6 @@ final class AppTabs {
     };
     /** The order Home shows the clusters in. */
     static final String[] CLUSTERS = {"Home", "Agents", "Make", "Community", "You", "Fleet", "Market", "More"};
-    static final String[][] CHILD_APPS = {
-        {"learn", "Classroom", "Your room: lessons, stories, art and games", "/learn", "learn", "learn"},
-        // the Nest: the child's own Sprite to talk to (never Aither's general chat)
-        {"nest", "Talk with my Sprite", "Your Sprite, in the Nest", "/learn?talk=1", "sprite", "learn"},
-        {"sprite", "My Sprite", "Your learning buddy", "/learn/sprite", "sprite", "learn"},
-        {"quests", "Quests", "Quests with your Sprite", "/learn/sprite#quests", "quests", "learn"},
-        // the agents a grown-up turned on (or "Ask a grown-up"): lib/family/kid_grants.py
-        {"helpers", "My helpers", "Helpers your grown-up turned on", "/learn/agents", "agents", "learn"},
-        {"room", "Room", "Your family room", "/hearth#room", "room", "learn"},
-        {"space", "My Space", "Your own space", "/hearth", "space", "learn"},
-    };
 
     /** Grown-up apps only the platform owner is offered (the web gate refuses everyone
      *  else too: app-gating.ts rbac system:admin). Empty since Media Forge left the phone
@@ -99,27 +90,12 @@ final class AppTabs {
      *  for digital goods (Purchases). */
     static final String[] NOT_IN_STORE = {"shop"};
 
-    /** aither-app-entries.ts CHILD_SHORTCUT_HOMES: where a child lands for `?app=<id>`. */
-    static final String[][] CHILD_APP_HOMES = {
-        {"hearth", "/learn"},
-        {"learn", "/learn"},
-        {"family", "/hearth"},
-        {"room", "/hearth#room"},
-        {"spaces", "/hearth"},
-        {"myspace", "/hearth"},
-        {"sprite", "/learn/sprite"},
-        {"quests", "/learn/sprite#quests"},
-        {"avatar", "/learn/sprite"},
-        {"persona", "/learn/sprite"},
-        {"academy", "/learn"},
-        {"classroom", "/learn"},
-    };
-
     /** A web page that IS an OS app on the phone OS: a link to exactly that page (trailing
      *  slash aside, no query, no fragment) opens the app as an OS window,
      *  /?host=android-os&app=<id>. A deeper page, or one with a query or a fragment (a join
      *  code, #room), loads as itself so nothing it carries is lost. Every id is an OS app in
-     *  app-registry.tsx (the monorepo test pins it). */
+     *  app-registry.tsx (the monorepo test pins it). On a child's phone the page's child
+     *  profile maps `learn` and `family` to the child's own pages (kid-os-profile.ts). */
     static final String[][] ADULT_OS_PAGES = {
         {"/chat", "aeon"},
         {"/learn", "learn"},
@@ -133,15 +109,11 @@ final class AppTabs {
 
     private AppTabs() {}
 
-    static String[][] tabs(boolean child) { return child ? CHILD_TABS : ADULT_TABS; }
-
-    static String[][] apps(boolean child) { return child ? CHILD_APPS : ADULT_APPS; }
-
-    /** The Home grid for this phone: owner-only apps for the platform owner, no Shop in
-     *  the Play build. */
-    static String[][] apps(boolean child, boolean owner, boolean store) {
+    /** The grown-up catalogue for this phone: owner-only apps for the platform owner, no
+     *  Shop in the Play build. */
+    static String[][] apps(boolean owner, boolean store) {
         java.util.List<String[]> out = new java.util.ArrayList<>();
-        for (String[] app : apps(child)) {
+        for (String[] app : ADULT_APPS) {
             if (!owner && has(OWNER_APPS, app[0])) continue;
             if (owner && has(NOT_FOR_OWNER, app[0])) continue;
             if (store && has(NOT_IN_STORE, app[0])) continue;
@@ -186,79 +158,48 @@ final class AppTabs {
         return out.toArray(new String[0][]);
     }
 
-    /** Where the app opens and where back ends: the OS for a grown-up, Learn for a child. */
-    static String homeTab(boolean child) { return child ? "learn" : OS; }
-
-    static String[] tab(boolean child, String id) {
-        for (String[] t : tabs(child)) if (t[0].equals(id)) return t;
-        return null;
-    }
-
-    static boolean isNative(String[] tab) { return tab != null && tab[2].isEmpty(); }
-
-    /** A tab's root page, or "" for a native tab. */
-    static String rootUrl(boolean child, String id) {
-        String[] t = tab(child, id);
-        return t == null || isNative(t) ? "" : ORIGIN + t[2];
-    }
-
-    /** Where a link opens: a tab (url "" = its root / a native screen) or its own window. */
+    /** Where a link opens: always the one surface, the OS (`url` is what it loads). */
     static final class Route {
         final String tab;
         final String url;
-        final boolean window;
 
-        Route(String tab, String url, boolean window) {
+        Route(String tab, String url) {
             this.tab = tab;
             this.url = url;
-            this.window = window;
         }
 
         @Override
-        public String toString() { return window ? "window " + url : "tab " + tab + (url.isEmpty() ? "" : " " + url); }
+        public String toString() { return "tab " + tab + (url.isEmpty() ? "" : " " + url); }
     }
 
     /**
      * The route for an aitherium.com link (a shortcut, a notification, an App Link, a QR).
      *
-     * A grown-up's phone has ONE surface, the OS: every link loads into it ({@link #osUrl}),
-     * never a native window. A child's phone: a bare origin goes to the classroom, `?app=<id>`
-     * to that app's child home, a path under the tab's root opens in the tab (keeping its
-     * query and fragment); anything else opens in a window over the tab.
+     * Every phone has ONE surface, the OS: every link loads into it ({@link #osUrl}), never a
+     * native window. A child's phone loads only the app origin there: any other host (the
+     * shop, a tenant's site, the manual) is the OS home, never loaded in place.
      */
     static Route route(String url, boolean child) {
-        if (!child) return new Route(OS, osUrl(url), false);
-        URI u;
-        try {
-            u = new URI(url);
-        } catch (Exception e) {
-            return new Route(homeTab(child), "", false);
-        }
-        String path = u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath();
-        String query = u.getRawQuery() == null ? "" : u.getRawQuery();
-        String frag = u.getRawFragment() == null ? "" : u.getRawFragment();
-        String app = "/".equals(path) ? param(query, "app") : "";
-        if (!app.isEmpty()) {
-            String home = "/learn";
-            for (String[] r : CHILD_APP_HOMES) if (r[0].equals(app)) home = r[1];
-            return route(ORIGIN + home, true);
-        }
-        if ("/".equals(path) && query.isEmpty() && frag.isEmpty()) return new Route(homeTab(child), "", false);
-        String tab = childTabFor(path, frag);
-        if (tab.isEmpty()) return new Route("", url, true);
-        return new Route(tab, isRoot(url, tab(child, tab)[2]) && sameFragment(frag, tab(child, tab)[2]) ? "" : url, false);
+        return new Route(OS, osUrl(url, child));
+    }
+
+    /** {@link #osUrl(String, boolean)} for a grown-up's phone. */
+    static String osUrl(String url) {
+        return osUrl(url, false);
     }
 
     /**
-     * Where a link loads in a grown-up's one WebView, the OS:
+     * Where a link loads in the one WebView, the OS:
      *   - the app origin's `/` (or the apex's, a static copy of the same app) is the OS, with
      *     `host=android-os` first and every other parameter and the fragment kept
      *     (`/?app=hearth` -> `/?host=android-os&app=hearth`);
      *   - a page that is an OS app (ADULT_OS_PAGES, exactly) opens that app's window;
      *   - any other app page loads as itself (the apex's on the app origin);
+     *   - another aitherium.com host (the manual, the journal) loads as itself for a
+     *     grown-up; on a child's phone it is the OS home (CHILD_HOSTS only);
      *   - anything unparseable, or not ours, is the OS home.
      */
-    static String osUrl(String url) {
+    static String osUrl(String url, boolean child) {
         URI u;
         try {
             u = new URI(url == null ? "" : url);
@@ -272,7 +213,7 @@ final class AppTabs {
         }
         boolean app = host.equals("app.aitherium.com") || host.equals("aitherium.com")
                 || host.equals("www.aitherium.com");
-        if (!app) return url; // the manual, the journal: ours, not the OS
+        if (!app) return child ? OS_HOME : url; // the manual, the journal: ours, not the OS
         String path = u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath();
         String query = u.getRawQuery() == null ? "" : u.getRawQuery();
         String frag = u.getRawFragment() == null ? "" : u.getRawFragment();
@@ -301,13 +242,6 @@ final class AppTabs {
         } catch (Exception e) {
             return false;
         }
-    }
-
-    private static String childTabFor(String path, String frag) {
-        // one tab: the child edge sends a child's / to /learn, and the classroom's own pages
-        // (their Sprite, the family room, their space) all open inside it
-        if ("/".equals(path) || under(path, "/learn") || under(path, "/hearth")) return "learn";
-        return "";
     }
 
     /** What a tapped link does: stay in the app, open the browser, or -- on a child's phone,
@@ -360,22 +294,21 @@ final class AppTabs {
     enum Nav {
         /** let the WebView load it where it is */
         LOAD,
-        /** a tap on a link that belongs to another tab, Home, or its own window:
-         *  Shell.openFromLink puts it there */
+        /** a tap on a link that belongs to an OS app: Shell.openFromLink loads its OS URL */
         ROUTE,
         /** a web page off the app: a Chrome Custom Tab, whose X comes back here */
         CUSTOM_TAB,
         /** mailto:, tel:, intent:... the phone's app for it */
         EXTERNAL,
-        /** a child's phone: never leaves the classroom */
+        /** a child's phone: never leaves the classroom's host */
         ASK_GROWNUP
     }
 
     /**
      * The one navigation rule. `gesture` = the person tapped (WebResourceRequest.hasGesture),
-     * `redirect` = a server redirect. Only a tap that is not a redirect is ever moved to
-     * another tab or window, so a sign-in or OAuth chain runs through uninterrupted.
-     * `currentTab` is the tab the WebView belongs to ("" for the window over the tabs).
+     * `redirect` = a server redirect. Only a tap that is not a redirect is ever moved, so a
+     * sign-in or OAuth chain runs through uninterrupted. `currentTab` is the surface the
+     * WebView belongs to ("os", or "" for the out-of-sight pairing hand-off).
      */
     static Nav navigate(boolean child, String url, boolean gesture, boolean redirect, String currentTab) {
         Link l = link(child, url);
@@ -409,7 +342,12 @@ final class AppTabs {
     }
 
     /** The OAuth providers' own sign-in pages (the app's /api/auth/oauth/<p> redirects to
-     *  them): they stay in the app, or the session would land in Chrome instead. */
+     *  them): they stay in the app, or the session would land in Chrome instead.
+     *
+     *  Google is DELIBERATELY absent: accounts.google.com refuses its sign-in inside an
+     *  embedded WebView ("disallowed_useragent"), so it must be a Custom Tab
+     *  ({@link Nav#CUSTOM_TAB}). Its session comes back as an Identity hand-back code the
+     *  app redeems once, not as a cookie the Custom Tab's jar would hold. */
     static boolean signInPage(String host, String path) {
         String p = path == null ? "" : path;
         if (host.equals("github.com")) {
@@ -422,23 +360,9 @@ final class AppTabs {
         return false;
     }
 
-    /** The native bar's title: the tab's name at its root, else the page's own title
-     *  ("Shop · AitherOS" -> "Shop"); "Aither" for an empty or URL-shaped title. */
-    static String barTitle(String tabLabel, boolean atRoot, String pageTitle) {
-        if (atRoot && tabLabel != null && !tabLabel.isEmpty()) return tabLabel;
-        String t = pageTitle == null ? "" : pageTitle.trim();
-        if (t.isEmpty() || t.startsWith("http") || t.contains("aitherium.com/")) {
-            return tabLabel == null || tabLabel.isEmpty() ? "Aither" : tabLabel;
-        }
-        for (String sep : new String[] {" · ", " | ", " — ", " - "}) {
-            int i = t.indexOf(sep);
-            if (i > 0) t = t.substring(0, i);
-        }
-        return t.length() > 32 ? t.substring(0, 31) + "…" : t;
-    }
-
-    /** The only host a child's phone NAVIGATES to in the app: the classroom pages
-     *  (app.aitherium.com, {@link #ORIGIN}). Everything else is "Ask a grown-up".
+    /** The only host a child's phone NAVIGATES to in the app: the app origin
+     *  (app.aitherium.com, {@link #ORIGIN}), where the OS and the child pages live.
+     *  Everything else is "Ask a grown-up".
      *  Not here, on purpose: the apex (a static marketing export that 307s to the app host;
      *  the app opens its start URL with loadUrl, which this rule never sees), api. (data is
      *  fetched by the page, and fetches never reach shouldOverrideUrlLoading) and idp. (a
@@ -495,38 +419,6 @@ final class AppTabs {
         return path.equals(prefix) || path.startsWith(prefix + "/");
     }
 
-    private static boolean sameFragment(String frag, String root) {
-        int i = root.indexOf('#');
-        return frag.equals(i < 0 ? "" : root.substring(i + 1));
-    }
-
-    private static String param(String query, String name) {
-        for (String kv : query.split("&")) {
-            int i = kv.indexOf('=');
-            String k = i < 0 ? kv : kv.substring(0, i);
-            if (!k.equals(name)) continue;
-            try {
-                return URLDecoder.decode(i < 0 ? "" : kv.substring(i + 1), StandardCharsets.UTF_8.name()).trim();
-            } catch (Exception e) {
-                return "";
-            }
-        }
-        return "";
-    }
-
-    /** Is this page the tab's root (same path, trailing slash aside, and same query)? */
-    static boolean isRoot(String url, String rootPath) {
-        if (url == null || rootPath == null || rootPath.isEmpty()) return false;
-        try {
-            URI a = new URI(url);
-            URI b = new URI(ORIGIN + rootPath);
-            return trim(a.getRawPath()).equals(trim(b.getRawPath()))
-                    && String.valueOf(a.getRawQuery()).equals(String.valueOf(b.getRawQuery()));
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     private static String trim(String p) {
         if (p == null || p.isEmpty()) return "/";
         return p.length() > 1 && p.endsWith("/") ? p.substring(0, p.length() - 1) : p;
@@ -564,7 +456,7 @@ final class AppTabs {
         return child ? ORIGIN + KID_DOOR : signInUrl(returnUrl);
     }
 
-    /** Is this the sign-in page (where a tab lands when its page found no session)? */
+    /** Is this the sign-in page (where a page lands when it found no session)? */
     static boolean isSignIn(String url) {
         try {
             URI u = new URI(url == null ? "" : url);
@@ -574,12 +466,8 @@ final class AppTabs {
         }
     }
 
-    /** What Android back does, in order: the window's page, the window, the tab's page
-     *  history, the tab's root, Home, then leave the app. */
-    enum Back { WINDOW_BACK, WINDOW_CLOSE, WEB_BACK, TAB_ROOT, HOME, EXIT }
-
-    /** Android back on a grown-up's phone asks the OS first: it closes the top window, then
-     *  Recents or the Apps sheet, then goes home, and answers false at the home screen. */
+    /** Android back asks the OS first: it closes the top window, then Recents or the Apps
+     *  sheet, then goes home, and answers false at the home screen. */
     static final String OS_BACK_JS =
             "(window.aitherOs&&window.aitherOs.back)?window.aitherOs.back():false";
     /** How long the OS gets to answer Back before the app leaves (a page still loading, or
@@ -596,10 +484,10 @@ final class AppTabs {
     }
 
     /**
-     * Android back on a grown-up's phone. The OS handled it: done. Not handled on the OS
-     * itself (its home screen, or no answer in time): leave the app. Not handled on a page
-     * that is not the OS (a deep link that loaded as itself, the sign-in page): that page's
-     * history, else the OS home -- a link never strands anyone outside the desktop.
+     * Android back. The OS handled it: done. Not handled on the OS itself (its home screen,
+     * or no answer in time): leave the app. Not handled on a page that is not the OS (a deep
+     * link that loaded as itself, the sign-in page): that page's history, else the OS home --
+     * a link never strands anyone outside the desktop.
      */
     static OsBack osBack(String jsResult, String url, boolean canGoBack) {
         if (osBackHandled(jsResult)) return OsBack.HANDLED;
@@ -607,12 +495,12 @@ final class AppTabs {
         return canGoBack ? OsBack.WEB_BACK : OsBack.OS_HOME;
     }
 
-    /** The user agent's app token. `AitherOS` marks the phone-OS shell (0.4.0) for the web's
-     *  host detection; ` Play` stays RIGHT after the version, where the web's Play check
-     *  (AitherAndroid/<v> Play) looks. A child's phone does not say AitherOS: its pages are
-     *  the classroom, never the desktop. */
-    static String uaToken(String version, boolean store, boolean osShell) {
-        return " AitherAndroid/" + version + (store ? " Play" : "") + (osShell ? " AitherOS" : "");
+    /** The user agent's app token. `AitherOS` marks the phone-OS shell for the web's host
+     *  detection, on every phone; a child's adds {@link #KID_UA}, the child profile the page
+     *  reads. ` Play` stays RIGHT after the version, where the web's Play check
+     *  (AitherAndroid/<v> Play) looks. */
+    static String uaToken(String version, boolean store, boolean child) {
+        return " AitherAndroid/" + version + (store ? " Play" : "") + " AitherOS" + (child ? KID_UA : "");
     }
 
     /**
@@ -637,14 +525,5 @@ final class AppTabs {
                 + "window.dispatchEvent(new CustomEvent('aither:insets',{detail:{native:n,env:e}}));"
                 + "return JSON.stringify({env:e,native:n});}catch(x){return 'error '+x}})(["
                 + top + "," + right + "," + bottom + "," + left + "])";
-    }
-
-    static Back back(boolean windowOpen, boolean windowCanGoBack, boolean webCanGoBack,
-                     boolean atTabRoot, boolean onHomeTab) {
-        if (windowOpen) return windowCanGoBack ? Back.WINDOW_BACK : Back.WINDOW_CLOSE;
-        if (webCanGoBack) return Back.WEB_BACK;
-        if (!atTabRoot) return Back.TAB_ROOT;
-        if (!onHomeTab) return Back.HOME;
-        return Back.EXIT;
     }
 }

@@ -115,6 +115,9 @@ def _isolate_env(monkeypatch, tmp_path):
     # Enrollment records the machine id and the heartbeat claims the device lease in
     # ~/.aither/device.json (adk.device_identity); a test must not write the real one.
     monkeypatch.setenv("AITHER_DEVICE_FILE", str(tmp_path / ".aither" / "device.json"))
+    # adk.choose asks the owner's node decider first when ~/.aither/node-decider.json opts
+    # in; on a dev box that has it on, every decide() test would reach the live :8298 door.
+    monkeypatch.setenv("AITHER_DECIDE_NODE", "0")
 
     # Isolate the operator-blind companion vault: tests must NOT read the dev
     # machine's ~/.aither persona, which would swap every agent's identity into

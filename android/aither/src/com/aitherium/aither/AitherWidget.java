@@ -12,8 +12,9 @@ import android.widget.RemoteViews;
  * The "Aither" home-screen widget (2x1, stretches to 4x1): Talk to Aither opens the
  * assistant (AssistActivity), Hearth opens its window and Family its tab. They go the way a
  * launcher shortcut goes (Shortcuts.ADULT's ?app= paths into MainActivity), so on a
- * child's phone AppTabs.route sends them to the child's homes (CHILD_APP_HOMES) and the
- * assistant says itself that it is off (Config.localAiBlocked).
+ * child's phone they load in the OS, whose child profile opens the child's homes (Veil
+ * kid-os-profile.ts kidOsOpen, the CHILD_SHORTCUT_HOMES table), and the assistant says
+ * itself that it is off (Config.localAiBlocked).
  *
  * Three fixed buttons, nothing to refresh: no update period, no state, nothing exported
  * (the system delivers APPWIDGET_UPDATE to a receiver that is not).

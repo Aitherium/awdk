@@ -124,6 +124,70 @@ def _post(path: str, body: Dict[str, Any], timeout: float = 30.0) -> Dict[str, A
         raise DecideUnavailableError(f"decide door unreachable at {url}: {e}") from None
 
 
+# --------------------------------------------------------------------- node
+# The node decider (the awnode node door) answers cheap decisions on
+# THIS box with the small model it already runs, and abstains below its confidence
+# floor. Owner opt-in only: {"enabled": true} in ~/.aither/node-decider.json or
+# AITHER_NODE_DECIDER=1 -- the same switch the node door reads. When it is on and no
+# door was named, decide()/decide_batch() ask the node first (route=node: answer or
+# abstain, never a second fleet call from the node) and send only what it abstained on
+# down the usual path. Every node attempt lands in the node's route log, which is what
+# `GET /decide/route/stats` reports as the offload share. AITHER_DECIDE_NODE=0 skips it.
+NODE_DOOR_PORT = 8298
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _node_cfg() -> Dict[str, Any]:
+    path = Path(os.environ.get("AITHER_HOME") or Path.home() / ".aither") / "node-decider.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _node_door() -> str:
+    """The node decider's loopback door when the owner opted in here, else ''."""
+    flag = os.environ.get("AITHER_DECIDE_NODE", "").strip().lower()
+    if flag in ("0", "off", "no", "false", "never") or _raw_url():
+        return ""  # a NAMED door is a promise about who answers; keep it
+    cfg = _node_cfg()
+    env_on = os.environ.get("AITHER_NODE_DECIDER", "").strip().lower() in _TRUTHY
+    if not (env_on or cfg.get("enabled") is True):
+        return ""
+    try:
+        port = int(os.environ.get("AITHER_NODE_DECIDER_PORT") or cfg.get("port") or NODE_DOOR_PORT)
+    except (TypeError, ValueError):
+        port = NODE_DOOR_PORT
+    return f"http://127.0.0.1:{port}"
+
+
+def _node_post(path: str, body: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+    """POST to the node door; None when it is off, down, or abstained (any non-200)."""
+    door = _node_door()
+    if not door:
+        return None
+    req = urllib.request.Request(
+        door + path,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8") or "{}")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None  # 502 = the node abstained; refused/timeout = no node here
+
+
+def _node_timeout(timeout: float) -> float:
+    try:
+        cap = float(os.environ.get("AITHER_DECIDE_NODE_TIMEOUT_S", "10"))
+    except ValueError:
+        cap = 10.0
+    return max(0.5, min(timeout, cap))
+
+
 def _domain(fork: str) -> str:
     fork = fork.strip()
     return fork if fork.startswith("decide.") else f"decide.{fork}"
@@ -368,6 +432,9 @@ def decide(
         body["options"] = [str(o) if kind != "score" or options else o for o in options]
     if _local_only():
         return _local_decide(fork, body)
+    node = _node_post("/decide", {**body, "route": "node"}, _node_timeout(timeout))
+    if node and "answer" in node:
+        return _shape(node)
     try:
         return _shape(_post("/decide", body, timeout))
     except DecideUnavailableError as down:
@@ -405,15 +472,33 @@ def decide_batch(
     ]
     if _local_only():
         return _local_batch(fork, items)
+    # The node answers what it is sure of; only the rest makes the usual trip.
+    out: List[Optional[Decision]] = [None] * len(payload)
+    if payload and _node_door():
+        node = _node_post(
+            "/decide/batch",
+            {"items": [{**p, "route": "node"} for p in payload]},
+            _node_timeout(timeout),
+        )
+        answers = (node or {}).get("answers") or []
+        for i, a in enumerate(answers[: len(payload)]):
+            if isinstance(a, dict) and "answer" in a and "status" not in a:
+                out[i] = _shape(a)
+    rest = [i for i, d in enumerate(out) if d is None]
+    if not rest:
+        return [d for d in out if d is not None]
     try:
-        return [
-            _shape(a)
-            for a in _post("/decide/batch", {"items": payload}, timeout).get("answers", [])
-        ]
+        got = _post("/decide/batch", {"items": [payload[i] for i in rest]}, timeout).get(
+            "answers", []
+        )
+        for i, a in zip(rest, got):
+            out[i] = _shape(a)
     except DecideUnavailableError as down:
         if not _local_allowed():
             raise
-        return _local_batch(fork, items, down)
+        for i, d in zip(rest, _local_batch(fork, [items[i] for i in rest], down)):
+            out[i] = d
+    return [d for d in out if d is not None]
 
 
 @dataclass
@@ -496,6 +581,12 @@ def outcome(decision_id: str, reward: float, *, timeout: float = 15.0) -> Dict[s
     did = str(decision_id)
     if _local_only() or did in _LOCAL_IDS:
         return _local_outcome(did, reward)
+    if did.startswith("node-"):
+        # only the node that issued it knows its (domain, state, answer); it relays a teach
+        node = _node_post("/decide/outcome", {"decision_id": did, "reward": float(reward)},
+                          _node_timeout(timeout))
+        if node is not None:
+            return node
     try:
         return _post("/decide/outcome", {"decision_id": did, "reward": float(reward)}, timeout)
     except DecideUnavailableError as down:

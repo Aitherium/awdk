@@ -92,6 +92,15 @@ public class SettingsActivity extends Activity {
         if (!lite) {
             row(acct, Ui.action(this, "Make Aither this phone's assistant", v -> askAssistantRole()),
                     "Hold the home button (or your assistant gesture) to ask Aither anything.");
+            if (!Flavor.STORE) { // the Play build drops SYSTEM_ALERT_WINDOW (build.py STORE_DROPS)
+                Switch fairy = Ui.style(new Switch(this));
+                fairy.setText("Floating fairy over other apps");
+                fairy.setChecked(getSharedPreferences("fairy", MODE_PRIVATE).getBoolean("on", false)
+                        && Settings.canDrawOverlays(this));
+                fairy.setOnCheckedChangeListener((v, checked) -> setFairy(fairy, checked));
+                row(acct, fairy, "A small Aither bubble that stays on screen over any app; tap it "
+                        + "to talk. Android asks you once to let Aither draw over other apps.");
+            }
             Switch cal = Ui.style(new Switch(this));
             cal.setText("Agents may read my calendar");
             cal.setChecked(cfg.toolCalendar());
@@ -131,10 +140,20 @@ public class SettingsActivity extends Activity {
         col.addView(Ui.section(this, "Updates"));
         LinearLayout upd = Ui.card(this);
         if (!Flavor.STORE) { // the Play build is updated by Google Play
-            row(upd, Ui.action(this, "Check for an update", v -> new Thread(() -> {
-                Updater.Check c = new Updater(this).check(false);
-                if (c.apk != null) startActivity(new Intent(this, UpdateActivity.class));
-            }, "aither-update").start()), "Aither also checks by itself and tells you when one is ready.");
+            // [update-feedback 11-19] the button always answers. It used to say nothing unless an update
+            // was ready, so "up to date" and a failed check both looked like a dead button (owner, 11-19).
+            TextView updState = dim();
+            updState.setText("Version " + Config.VERSION);
+            row(upd, Ui.action(this, "Check for an update", v -> {
+                updState.setText("Checking…");
+                new Thread(() -> {
+                    Updater.Check c = new Updater(this).check(false);
+                    String said = UpdateAnswer.of(c.apk != null, c.latest, c.state);
+                    runOnUiThread(() -> updState.setText(said));
+                    if (c.apk != null) startActivity(new Intent(this, UpdateActivity.class));
+                }, "aither-update").start();
+            }), "Aither also checks by itself and tells you when one is ready.");
+            upd.addView(updState);
         } else {
             row(upd, Ui.text(this, "Google Play keeps Aither up to date", 16, Ui.INK), "Nothing to do here.");
         }
@@ -391,6 +410,31 @@ public class SettingsActivity extends Activity {
     }
 
     /** A control and the one plain line under it that says what it does. */
+    /** The floating fairy (FairyOverlayService). Drawing over other apps needs the person's
+     *  own grant in Android's settings; until it is given the switch stays off, and the
+     *  person flips it again after granting. */
+    private void setFairy(Switch sw, boolean on) {
+        if (on && !Settings.canDrawOverlays(this)) {
+            sw.setChecked(false);
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName())));
+            } catch (RuntimeException e) {
+                // no overlay settings screen on this device: nothing to open
+            }
+            return;
+        }
+        getSharedPreferences("fairy", MODE_PRIVATE).edit().putBoolean("on", on).apply();
+        Intent i = new Intent(this, FairyOverlayService.class)
+                .setAction(on ? FairyOverlayService.ACTION_SHOW : FairyOverlayService.ACTION_HIDE);
+        try {
+            if (on) startForegroundService(i);
+            else startService(i);
+        } catch (RuntimeException e) {
+            // a refused foreground start: the stored switch is the record; it starts next time
+        }
+    }
+
     private void row(LinearLayout card, View control, String explain) {
         card.addView(control);
         card.addView(Ui.note(this, explain));

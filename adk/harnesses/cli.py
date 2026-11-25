@@ -79,6 +79,7 @@ def cmd_shell(args: Any) -> int:
         "mod": _cmd_mod,
         "pair": _cmd_pair,
         "parts": _cmd_parts,
+        "up": _cmd_up,
     }.get(command)
     if handler is None:
         print(f"Unknown subcommand: {command}", file=sys.stderr)
@@ -91,6 +92,12 @@ def _cmd_parts(args: Any) -> int:
     """The composed harness as this machine has it. No daemon involved."""
     from adk.harness_parts import main as parts_main
     return parts_main(["--json"] if getattr(args, "json", False) else [])
+
+
+def _cmd_up(args: Any) -> int:
+    """Bring up the local Aither World harness stack (bricks, daemons, agent plugins)."""
+    from adk.up import cmd_up
+    return cmd_up(args)
 
 
 def _cmd_pair(args: Any) -> int:

@@ -2,7 +2,32 @@
 
 All notable changes to aither-adk will be documented in this file.
 
-## [Unreleased]
+## [4.0.0] - 2026-11-25
+
+### Headline — The Open Harness Above Every Coding Agent
+- **`adk harness up`** (`adk/up.py`): one command to bring up the local Aither World harness stack —
+  inspects installed `aw*` bricks, starts `hookd` (:8369), `awsh` harness daemon (:8362), and
+  `aw-hub` (:47933 when `awnode` is installed), auto-wires detected coding agents (Google
+  Antigravity and Claude Code), and prints a live readiness report. Supports `--status`,
+  `--dry-run`, `--down`, `--repo <dir>`, and `--json`.
+- **Two-way Google Antigravity integration**:
+  - `adk antigravity setup` / `adk antigravity doctor` (`AGD001`–`AGD006` + `--self-test`):
+    installs and audits the reversible Antigravity plugin (MCP hub bridge, `awdelegate` local
+    router offload, `hooks.json`, rules, `aw` subagent, SVG logo, and portable skills) plus
+    optional workspace `.agents/hooks.json`.
+  - `adk.harnesses.antigravity_hooks`: stdlib-only lifecycle bridge translating Antigravity
+    camelCase events/tools ↔ `hookd` (`:8369/pdp` `awgov` PDP + `/run`), `awsettings-guard`,
+    `awm`, `awrelay`, `awvoice`, `~/.aither/steer/` mailbox draining, live session presence,
+    and `~/.aither/agent-trace/antigravity-*.jsonl` telemetry.
+  - Registered `antigravity` in `adk.harnesses.registry` + `translate_antigravity` in
+    `adk.harnesses.adapters` (`agentapi` / `agy`) and `discover_antigravity_sessions()` in
+    `adk.harnesses.discovery` so live Antigravity conversations appear in `GET /sessions/unified`
+    (`awsh`, `awdesk`, `awconnect`, `awfocus`).
+  - Bundled `adk/harnesses/antigravity_mod/` in the PyPI wheel, mirrored standalone at
+    `plugins/antigravity/`, and added the `antigravity` toolpack (`antigravity_sessions`,
+    `antigravity_spawn`, `antigravity_steer`, `antigravity_doctor`, `antigravity_setup_status`).
+- **Google Managed Agents BYOK**: `adk agent managed byok --provider google` alongside
+  Anthropic Managed Agents (`--provider anthropic`).
 
 ### Changed
 - `adk quickstart-local` / `llamacpp_setup` install a PINNED llama.cpp release instead
@@ -17,6 +42,20 @@ All notable changes to aither-adk will be documented in this file.
   and 13.5; a toolkit newer than the driver silently runs on CPU). Linux now gets the
   Linux CUDA build v1 ships, with its cudart archive placed beside `llama-server`; the
   cudart pick is matched to OS and arch (it could hand an x64 box the arm64 runtime).
+
+## [3.8.108] - 2026-11-17
+
+### Added
+- `adk pack keygen`, `adk pack sign` and `adk pack verify`. `build` produced a hash, and a
+  hash proves the bytes are unchanged but says nothing about who made them — anyone can
+  rebuild and re-hash. `sign` writes the `.sig` sidecar that `adk pack install <bundle>`
+  already verifies, in the same ed25519 format, so a machine that has never met the
+  publisher can decide whether to run their code. `sign <dir>` builds first, so a signature
+  can never describe bytes a rebuild would not produce. `keygen` writes the private key
+  mode 600 and refuses to replace an existing one: regenerating it silently invalidates
+  every signature already published under the old key, and that failure would surface at a
+  customer's install instead. It prints a grouped 16-hex fingerprint, which is what an
+  operator actually compares, rather than a 64-character key.
 
 ## [3.8.107] - 2026-11-13
 

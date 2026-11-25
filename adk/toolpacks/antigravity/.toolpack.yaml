@@ -1,0 +1,27 @@
+id: antigravity
+name: Google Antigravity — Two-Way Harness, Steering & Doctor Pack
+version: 1.0.0
+description: >-
+  Two-way integration pack between awdk/awsh/AitherOS agents and Google
+  Antigravity 2.0 / CLI. Inspect live Antigravity conversations recorded by
+  antigravity_hooks, spawn new Antigravity conversations via agentapi/agy,
+  steer running conversations via the unified ~/.aither/steer mailbox or
+  agentapi send-message, and run adk antigravity doctor audits. All tools are
+  fail-soft dict-returners.
+category: orchestration
+tier: free
+author: Aitherium
+icon: sparkles
+tags: [antigravity, google, awsh, harness, steering, doctor, plugin]
+
+mcp_tools:
+  - "antigravity_*"
+
+tool_modules: []
+
+entitlements: []
+
+skills: []
+
+persona_fragments:
+  - "Google Antigravity pack: you have antigravity_* tools for 2-way orchestration with Google Antigravity 2.0 / CLI. antigravity_sessions() lists live Antigravity conversations; antigravity_spawn(prompt, model='flash', title='') launches a new conversation via agentapi/agy; antigravity_steer(conversation_id, message, mode='mailbox') delivers an owner/peer steer into ~/.aither/steer/<id>/ (or direct via agentapi send-message); antigravity_doctor(config_dir='') audits the installed plugin, MCP config, hooks.json, and hook bridge; antigravity_setup_status() reports installed plugin/hooks/MCP state."

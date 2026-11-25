@@ -1,7 +1,7 @@
 {
  "schema": "aither-family/1",
  "generated_by": "gen_ecosystem.py --emit (from ecosystem.yaml); do not edit",
- "count": 93,
+ "count": 99,
  "bricks": [
   {
    "id": "awdk",
@@ -47,6 +47,31 @@
      "harness": "claude-code",
      "kind": "mcp",
      "run": "python -m adk.harnesses.mcp_stdio",
+     "state": "live"
+    },
+    {
+     "harness": "antigravity",
+     "kind": "plugin",
+     "run": "aitheros",
+     "state": "live"
+    },
+    {
+     "harness": "antigravity",
+     "kind": "command",
+     "run": "adk antigravity setup",
+     "state": "live"
+    },
+    {
+     "harness": "antigravity",
+     "kind": "command",
+     "run": "adk antigravity doctor",
+     "state": "live"
+    },
+    {
+     "harness": "antigravity",
+     "kind": "hook",
+     "run": "python -S -m adk.harnesses.antigravity_hooks",
+     "event": "PreToolUse",
      "state": "live"
     }
    ]
@@ -210,6 +235,28 @@
     "awdk",
     "awnet",
     "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awedgerunner",
+   "status": "public",
+   "kind": "runtime",
+   "tagline": "Run agent and CI work on edge runners nobody has to rack -- a volunteer's idle GPU, a phone on your own mesh, an edge worker, a free or spot CI runner -- under a lease with a hard budget cap, a named payer and an expiry.",
+   "install": "pip install awedgerunner",
+   "module": "awedgerunner",
+   "pairs_with": [
+    "awbac",
+    "awdit",
+    "awiam",
+    "awnet",
+    "awnix",
+    "awpool",
+    "awrise",
+    "awrun",
+    "awseal",
+    "awtunnel",
+    "awwall"
    ],
    "harness_surfaces": []
   },
@@ -507,6 +554,24 @@
    "harness_surfaces": []
   },
   {
+   "id": "awexpress",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "One expression pack of stickers, emoji, captions and sounds, compiled for every app.",
+   "install": "not yet published; builds in-tree",
+   "module": "awexpress",
+   "pairs_with": [
+    "AitherConnect",
+    "awdesk",
+    "awdiscord",
+    "awdk",
+    "awpack",
+    "awrtifact",
+    "awsh"
+   ],
+   "harness_surfaces": []
+  },
+  {
    "id": "awscope",
    "status": "planned",
    "kind": "tool",
@@ -519,6 +584,20 @@
     "awnboard",
     "awseal",
     "awshare"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awgather",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Community events that live in your calendar and your Discord at once.",
+   "install": "not yet published; builds in-tree",
+   "module": "awgather",
+   "pairs_with": [
+    "awdiscord",
+    "awrelay",
+    "awrise"
    ],
    "harness_surfaces": []
   },
@@ -682,6 +761,24 @@
     "awiam",
     "awmail",
     "awrelay"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awcrowd",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "Ask your crowd, keep every answer, and ask the answers a question.",
+   "install": "not yet published; builds in-tree",
+   "module": "awcrowd",
+   "pairs_with": [
+    "AitherConnect",
+    "awask",
+    "awdata",
+    "awdiscord",
+    "awdk",
+    "awgraph",
+    "awm"
    ],
    "harness_surfaces": []
   },
@@ -920,6 +1017,8 @@
    "pairs_with": [
     "awbrowse",
     "awdk",
+    "awpredict",
+    "awrun",
     "awvision"
    ],
    "harness_surfaces": []
@@ -1582,16 +1681,48 @@
     "mediaforge"
    ],
    "harness_surfaces": []
+  },
+  {
+   "id": "awgov",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "One policy decision for every agent tool call -- allow, deny with the lane to use, or needs-owner.",
+   "install": "not yet published; builds in-tree",
+   "module": "awgov",
+   "pairs_with": [
+    "awbac",
+    "awdecide",
+    "awdit",
+    "awdk",
+    "awpermit",
+    "awrise",
+    "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awbench",
+   "status": "planned",
+   "kind": "tool",
+   "tagline": "A hard-oracle benchmark for a served model -- no LLM judge, and no comparison across different item sets.",
+   "install": "not on PyPI yet (pending publish); builds in-tree",
+   "module": "awbench",
+   "pairs_with": [
+    "awdk",
+    "awevolve",
+    "awrun"
+   ],
+   "harness_surfaces": []
   }
  ],
  "harness": {
   "name": "awharness",
   "tagline": "The super agent harness",
   "status": "partial",
-  "entry_point": "adk harness parts",
-  "what": "One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.",
-  "today": "There is no single install. `pip install awdk` and `npm i -g @aitherium/awsh` are two commands, and each other brick installs on its own line. `adk harness parts` reads this list and reports which parts this machine has, at what version, and the install line for each one it lacks.",
-  "planned": "One install command that brings the composed bricks up together, and one process that starts them. Neither exists; nothing by this name is published.",
+  "entry_point": "adk harness up",
+  "what": "One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Google Antigravity, Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.",
+  "today": "`adk harness up` brings up the local harness daemons (`hookd`, `awsh`, `aw-hub`), checks installed bricks (`adk harness parts`), and auto-wires detected coding agents (`adk antigravity setup`, `adk claude setup`). Each optional brick still installs on its own line (`pip install awdk`, `npm i -g @aitherium/awsh`).",
+  "planned": "One umbrella installer package that installs every composed brick together under the `awharness` name. Nothing by that package name is published yet.",
   "composes": [
    "awdk",
    "awsh",

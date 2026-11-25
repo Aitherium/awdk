@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "awrelay": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awrelay"] },
-    "awfind": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awfind"] },
-    "awgraph": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awgraph"] },
-    "awdecide": { "command": "python", "args": ["-m", "adk.harnesses.brick_mcp", "awdecide"] }
+    "awrelay": { "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brick_mcp_launch.py", "awrelay"] },
+    "awfind": { "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brick_mcp_launch.py", "awfind"] },
+    "awgraph": { "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brick_mcp_launch.py", "awgraph"] },
+    "awdecide": { "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brick_mcp_launch.py", "awdecide"] }
   }
 }

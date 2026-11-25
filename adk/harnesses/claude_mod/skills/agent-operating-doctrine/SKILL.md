@@ -17,6 +17,14 @@ contact with your own measurements; the hook pack in `../hooks/` carries the gat
 
 ## Standing instructions
 
+**Platform first — never hand-roll.** Before you run a command, run the platform lane
+that already does it (`awrun`, `awgit`, `awsettings`, `awkno`, `awrelay`, `awm`, or the
+MCP capability that wraps it); when you are unsure, ask the capability list or the package
+registry. A missing or broken capability is PRIORITY 1: build or repair it in its own
+repository before the job that needed it, then run the job. Never author an ad-hoc script
+beside the platform and never start a bare or detached process; extend what exists and say
+which lane you used.
+
 **No false blockers.** An item is blocked ONLY if you can name the code:
 **B1** physically impossible (credential exists nowhere you can reach, hardware off,
 every path 404s) · **B2** irreversible AND destructive (deletes customer data, spends
@@ -42,6 +50,9 @@ No introduction, recap, reassurance, or explaining code visible in the diff.
 
 ## Tools, in this order
 
+- **Before inventing a script or a process → check the lanes.** Ask the platform first:
+  the MCP capability list, `awkno -k <verb>` and the package registry answer "does this
+  already exist?"; a missing lane is priority 1 to build, never a reason to hand-roll.
 - **Code search → `rg` first**, scoped with `--type` and a directory. Graph tools only
 - **Fleet, memory, delegation → the AitherOS MCP gateway** (`127.0.0.1:8182`, never
   `localhost`). `recall`/`query_memory` before deep debugging — most failures here have a
@@ -80,21 +91,26 @@ ones a stranger can run (standard library only). Wiring, by event and matcher:
 | PreToolUse | `Write` | `pre-edit-running-script.ps1` |
 | PreToolUse | `MultiEdit` | `pre-edit-running-script.ps1` |
 | PreToolUse | `Bash` | `pre-bash-git.py`, `pre-bash-all.ps1`, `pre-bash-qa-gate.py`, `pre-bash-awdecide.py` |
+| PreToolUse | `Bash|PowerShell` | `pre-bash-platform-first.py` |
 | PreToolUse | `Edit` | `pre-edit-awgit-lease.py` |
 | PreToolUse | `Write` | `pre-edit-awgit-lease.py` |
 | PreToolUse | `MultiEdit` | `pre-edit-awgit-lease.py` |
 | PreToolUse | `Workflow` | `pre-workflow-mirror.py` |
 | SessionStart | `*` | `aeon-well-context.py`, `session-start.ps1`, `session-tool-card.py` |
+| SessionStart | `*` | `session-focus.py --start` |
 | Stop | `*` | `stop-self-review.ps1`, `stop-lint-gate.ps1`, `stop-tech-debt-ledger.ps1`, `stop_live_proof.py`, `stop-automation-gap.py`, `stop-open-items.py`, `session-stop.ps1`, `stop-decision-cards.py` |
 | Stop | `*` | `stop-deploy-readiness.py` |
 | Stop | `*` | `stop-executive-brief.py` |
 | Stop | `*` | `stop-auto-capture.py` |
 | Stop | `*` | `steer-mailbox-drain.py --stop` |
+| Stop | `*` | `session-focus.py --stop` |
 | TaskCompleted | `*` | `aeon-team-events.py --event task_completed` |
 | TaskCreated | `*` | `aeon-team-events.py --event task_created` |
 | TeammateIdle | `*` | `aeon-team-events.py --event teammate_idle` |
+| UserPromptSubmit | `*` | `recent-screenshots.py` |
 | UserPromptSubmit | `*` | `user-prompt-submit.ps1`, `steer-mailbox-drain.py`, `record-owner-reply.py` |
 | UserPromptSubmit | `*` | `prompt-recall.py` |
+| UserPromptSubmit | `*` | `session-focus.py --deliver` |
 
 ## Adopt it
 

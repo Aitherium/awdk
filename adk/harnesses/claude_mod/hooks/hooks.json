@@ -1,4 +1,4 @@
 {
-  "description": "Answers an Agent call on the aw subagent type from a session on the awsh harness daemon, recorded as the Agent tool's own result",
+  "description": "Answers an Agent call on the aw subagent type from a session on the awsh harness daemon, recorded as the Agent tool's own result. This file is the function-hooks MODULE manifest only; the plugin's PreToolUse/PostToolUse/Stop command hooks -- including the platform-first gate -- live in portable.json, which plugin.json names as its hooks file.",
   "modules": ["./register.ts"]
 }

@@ -9,7 +9,7 @@
       "name": "awsh",
       "source": "./adk/harnesses/claude_mod",
       "description": "An `aw` subagent answered by the local awsh harness daemon, plus Aither World skills, the aither output style, brick MCP servers and portable brick hooks.",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "author": {
         "name": "Aitherium"
       },

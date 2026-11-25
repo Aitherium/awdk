@@ -12,9 +12,10 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 /**
- * Aither on Android: AitherOS itself (the aitherium.com app). On a grown-up's phone it IS
- * the AitherOS desktop, one full-screen WebView edge to edge (Shell); a child's phone keeps
- * its one-tab classroom frame. Plus this phone's
+ * Aither on Android: AitherOS itself (the aitherium.com app). On EVERY phone it IS the
+ * AitherOS desktop, one full-screen WebView edge to edge (Shell); a child's phone is the same
+ * OS with the child profile on top (UA_TOKEN_CHILD: the kid-safe apps, the child edge, "Ask a
+ * grown-up" for off-site links, the guardian's switches in SettingsActivity). Plus this phone's
  * extras running beside it: the model on this phone (LlmService, 127.0.0.1:8486), lending
  * memory (HolderService) and the household check-in (HeartbeatJob). One app, one icon.
  *
@@ -31,19 +32,14 @@ public class MainActivity extends Activity implements Shell.Host {
     static final String FIRST_RUN = HOME + "?firstrun=1&source=android";
     static final String FIRST_RUN_SEEN = "first_run_seen";
     /** The page hides its own install cards for this (localapp); one app, one icon. The Play
-     *  build adds " Play": the page then offers no purchase (Play's payments policy). A
-     *  grown-up's phone adds " AitherOS": the page is the phone OS (host android-os) and
-     *  draws its own chrome. A child's phone never says AitherOS (AppTabs.uaToken). */
-    static final String UA_TOKEN = AppTabs.uaToken(Config.VERSION, Flavor.STORE, true);
-    static final String UA_TOKEN_CHILD = AppTabs.uaToken(Config.VERSION, Flavor.STORE, false);
+     *  build adds " Play": the page then offers no purchase (Play's payments policy). Every
+     *  phone adds " AitherOS": the page is the phone OS (host android-os) and draws its own
+     *  chrome. A child's phone adds " AitherKid" too: the OS's child profile (AppTabs.uaToken). */
+    static final String UA_TOKEN = AppTabs.uaToken(Config.VERSION, Flavor.STORE, false);
+    static final String UA_TOKEN_CHILD = AppTabs.uaToken(Config.VERSION, Flavor.STORE, true);
 
-    /** The frame: the OS for a grown-up, the one-tab classroom for a child (Shell). */
+    /** The frame: the OS, on every phone (Shell). */
     private Shell shell;
-    /** The theme's bar colours, restored when a phone becomes a child's (the OS draws under
-     *  transparent bars; the classroom frame keeps the theme's). */
-    private int themeStatusBar;
-    private int themeNavBar;
-    private boolean themeSaved;
     /** Every page WebView, so a call can tell each of them to stop listening (Calls). */
     private final java.util.List<java.lang.ref.WeakReference<WebView>> webs = new java.util.ArrayList<>();
     private Object callWatch;
@@ -86,7 +82,7 @@ public class MainActivity extends Activity implements Shell.Host {
     }
 
     /** The first launch's page, or null (seen before, or a child's phone: a child's first
-     *  page is their classroom, never the grown-up onboarding). */
+     *  page is their OS, never the grown-up onboarding). */
     static String firstRunUrl(boolean seen, boolean child) {
         return seen || child ? null : FIRST_RUN;
     }
@@ -129,11 +125,6 @@ public class MainActivity extends Activity implements Shell.Host {
         web.addJavascriptInterface(new DeskLinkBridge(this, web), "AitherDeskLink");
         web.setWebChromeClient(new android.webkit.WebChromeClient() {
             @Override
-            public void onReceivedTitle(WebView v, String t) {
-                shell.titleChanged(v); // the native bar names the page: one header, not two
-            }
-
-            @Override
             public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
                 // Only the voice's own line (awkit learnVoice): the exact text handed to
                 // text-to-speech, so "nothing like *blinks* is read aloud" can be checked on a
@@ -175,9 +166,9 @@ public class MainActivity extends Activity implements Shell.Host {
                             android.widget.Toast.LENGTH_LONG).show();
                     return true;
                 }
-                // docs/plans/2026-10-17-mobile-shell.md: app pages stay in the app (a tap that
-                // belongs to another tab or a window goes there), sign-in runs in place, every
-                // other web page opens in a Custom Tab, a child's phone never leaves the app.
+                // docs/plans/2026-10-17-mobile-shell.md: app pages stay in the app (a tap on
+                // an OS app's page opens its OS window), sign-in runs in place, every other web
+                // page opens in a Custom Tab, a child's phone never leaves the app origin.
                 switch (AppTabs.navigate(cfg.childDevice(), u.toString(), r.hasGesture(),
                         r.isRedirect(), shell.tabOf(v))) {
                     case LOAD:
@@ -313,35 +304,24 @@ public class MainActivity extends Activity implements Shell.Host {
     }
 
     @Override
-    public void openSettings() {
-        startActivity(new Intent(this, SettingsActivity.class));
-    }
-
-    @Override
     public void exit() {
         moveTaskToBack(true); // what Android does for a launcher activity's last back
     }
 
     /**
-     * Edge to edge for the OS: transparent status and navigation bars, the window drawn
-     * under them (the page reads the safe areas). A child's classroom frame keeps the
-     * theme's bars and fits inside them, as before 0.4.0. Called from the Shell's
-     * constructor too, before `shell` is set: touches only the window.
+     * Edge to edge for the OS, on every phone: transparent status and navigation bars, the
+     * window drawn under them (the page reads the safe areas). Called from the Shell's
+     * constructor, before `shell` is set: touches only the window.
      */
     @Override
-    public void modeChanged(boolean child) {
+    public void edgeToEdge() {
         if (android.os.Build.VERSION.SDK_INT < 30) return; // edge to edge needs Android 11+
         android.view.Window w = getWindow();
-        if (!themeSaved) {
-            themeStatusBar = w.getStatusBarColor();
-            themeNavBar = w.getNavigationBarColor();
-            themeSaved = true;
-        }
-        w.setDecorFitsSystemWindows(child);
-        w.setStatusBarColor(child ? themeStatusBar : android.graphics.Color.TRANSPARENT);
-        w.setNavigationBarColor(child ? themeNavBar : android.graphics.Color.TRANSPARENT);
-        w.setNavigationBarContrastEnforced(child);
-        w.setStatusBarContrastEnforced(child);
+        w.setDecorFitsSystemWindows(false);
+        w.setStatusBarColor(android.graphics.Color.TRANSPARENT);
+        w.setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+        w.setNavigationBarContrastEnforced(false);
+        w.setStatusBarContrastEnforced(false);
         w.getDecorView().requestApplyInsets();
     }
 
@@ -383,7 +363,7 @@ public class MainActivity extends Activity implements Shell.Host {
                             cfg.set("child_device", child);
                             Shortcuts.apply(MainActivity.this, child);
                             AitherFunctionService.sync(MainActivity.this, AitherFunctionService.child(cfg));
-                            ticks.post(() -> shell.setChild(child)); // the tabs follow the role
+                            ticks.post(() -> shell.setChild(child)); // the OS reloads with the child profile
                         }
                         if (!cfg.familyDevice().isEmpty()) askBatteryOnce();
                     } catch (Exception e) { /* nothing stored yet */ }
@@ -445,10 +425,10 @@ public class MainActivity extends Activity implements Shell.Host {
     }
 
     /**
-     * What the frame shows for an answer. Signed out: the Sign in bar (Shell). Signed in
-     * after a sign-out or an outage, or with a tab left on the sign-in page: keep the
-     * cookie, close the sign-in window, reload every tab, check in. No answer: nothing
-     * changes; an outage never signs anyone out.
+     * What the frame shows for an answer. Signed out: the OS's own sign-in, or on a child's
+     * phone the kid door (Shell.signedOut). Signed in after a sign-out or an outage, or with
+     * the OS left on the sign-in page: keep the cookie, load the OS again, check in. No
+     * answer: nothing changes; an outage never signs anyone out.
      */
     private void applySession(Session.State s) {
         if (s == Session.State.OUT) shell.signedOut(true);
@@ -500,7 +480,7 @@ public class MainActivity extends Activity implements Shell.Host {
     protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
         Uri t = target(i);
-        if (t != null && !linkDevice(t)) shell.open(t.toString()); // into the right tab
+        if (t != null && !linkDevice(t)) shell.open(t.toString()); // into the OS
     }
 
     @Override
@@ -509,7 +489,7 @@ public class MainActivity extends Activity implements Shell.Host {
     }
 
     private void back() {
-        shell.back(); // the OS answers first (AppTabs.osBack); a child: AppTabs.back
+        shell.back(); // the OS answers first (AppTabs.osBack), on every phone
     }
 
     @Override

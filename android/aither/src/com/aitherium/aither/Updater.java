@@ -118,6 +118,10 @@ final class Updater {
         SharedPreferences.Editor e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putInt("attempt_status", status)
                 .putString("attempt_message", UpdatePolicy.clean(msg))
+                // which path this session took ("silent"/"tap"/"blocked"): the check-in
+                // reports it fleet-wide, so a phone that needs a hand is visible without
+                // anyone running a command against it
+                .putString("attempt_path", UpdatePolicy.path(status, msg, quiet))
                 .putLong("attempt_status_at", System.currentTimeMillis());
         if (status == UpdatePolicy.STATUS_SUCCESS) {
             e.putString("installed_version", UpdatePolicy.clean(version))
@@ -127,6 +131,36 @@ final class Updater {
         // commit, not apply: a successful install kills this process right after
         e.commit();
     }
+
+    /**
+     * How this phone's self-update is going, for its check-in: which path the last attempt
+     * took, why a silent one is not possible here, and what is installed. Small and bounded
+     * -- this rides every check-in, so it is a verdict, not a log.
+     */
+    static JSONObject report(Context ctx) {
+        UpdatePolicy.Facts f = facts(ctx);
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String path = p.getString("attempt_path", "");
+        boolean has = p.contains("attempt_status");
+        JSONObject o = new JSONObject();
+        try {
+            o.put("path", path.isEmpty() ? UpdatePolicy.PATH_NONE : path)
+                    .put("silent_available", UpdatePolicy.whyNotSilent(f).isEmpty())
+                    .put("why", UpdatePolicy.whyNotSilent(f))
+                    .put("status", has ? UpdatePolicy.statusName(p.getInt("attempt_status", 0)) : "")
+                    .put("version", UpdatePolicy.clean(p.getString("attempt_version", "")))
+                    .put("at", p.getLong("attempt_status_at", 0))
+                    .put("installed", UpdatePolicy.clean(p.getString("installed_version", "")))
+                    .put("installed_quiet", p.getBoolean("installed_quiet", false))
+                    .put("installer", UpdatePolicy.clean(f.installer))
+                    .put("update_owner", UpdatePolicy.clean(f.updateOwner));
+        } catch (org.json.JSONException e) {
+            // no report is better than a broken beat; the beat itself must still go
+            return new JSONObject();
+        }
+        return o;
+    }
+
 
     static void remember(Context ctx, String state) {
         last = state + " · " + new java.util.Date();

@@ -48,8 +48,14 @@ def _control_plane() -> str:
 _AGENT_TEMPLATE = '''\
 """My AitherADK agent."""
 
+import sys
+
 from adk import AitherAgent, tool
 from adk.llm import LLMBackendUnreachable
+
+# Windows consoles default to cp1252; a reply with an emoji would crash print().
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 agent = AitherAgent("{name}")
 
@@ -118,7 +124,7 @@ from adk import tool
 def search_docs(query: str) -> str:
     """Search project documentation."""
     # Replace with your actual implementation
-    return f"Found docs matching: {{query}}"
+    return f"Found docs matching: {query}"
 
 
 @tool
@@ -970,6 +976,15 @@ def _email_tunnel_link(to: str, name: str, phone_url: str, public_url: str,
         return False
 
 
+def _up_health_timeout() -> float:
+    """Seconds `adk up` waits for the new agent to answer /health (ADK_UP_HEALTH_TIMEOUT)."""
+    try:
+        value = float(os.environ.get("ADK_UP_HEALTH_TIMEOUT", "") or 240)
+    except ValueError:
+        return 240.0
+    return value if value > 0 else 240.0
+
+
 def cmd_up(args):
     """One command: run a persistent agent connected to your AitherOS fleet.
 
@@ -1302,10 +1317,15 @@ def cmd_up(args):
     # pid + not_before: only OUR child counts as healthy. A foreign daemon that
     # grabbed the port first answers /health with an older started_at, and a
     # child that lost the bind exits — both fail here instead of "healthy".
-    if not daemon.wait_for_health(port, timeout=60, pid=server_pid,
+    # A first start on a new computer is slow: the server compiles its modules, then makes
+    # a run of cloud calls before it answers (measured 2026-11-16, clean Windows Sandbox,
+    # cloud reachable: ~105 s; the old 60 s limit killed it, so `adk up` failed on first
+    # use and again at every logon). ADK_UP_HEALTH_TIMEOUT overrides the 240 s default.
+    health_wait = _up_health_timeout()
+    if not daemon.wait_for_health(port, timeout=health_wait, pid=server_pid,
                                   not_before=spawned_at):
         daemon.kill_pid(server_pid)
-        return _fail(1, f"agent did not become healthy on :{port} in 60s "
+        return _fail(1, f"agent did not become healthy on :{port} in {health_wait:g}s "
                         "(or another server answered that port)",
                      f"see {agent_log}")
     if not non_interactive:
@@ -2099,7 +2119,8 @@ def _cmd_bonsai_local_container(args) -> int:
               + ", ".join(sorted(BONSAI_LOCAL_MODELS)))
         return 1
     image = os.environ.get("AITHER_BONSAI_IMAGE", spec["image"])
-    name = os.environ.get("AITHER_BONSAI_CONTAINER", "aither-bonsai-local")
+    from adk.local_backends import bonsai_container_name
+    name = bonsai_container_name()
     port = int(
         getattr(args, "port", 0)
         or os.environ.get("AITHER_BONSAI_PORT", str(BONSAI_LOCAL_PORT))
@@ -7214,15 +7235,15 @@ def cmd_backend(args):
 
     elif sub == "test":
         async def _test():
-            from adk.llm import LLMRouter
             from adk.config import Config
+            from adk.llm import LLMRouter, Message
             cfg = Config.from_env()
             router = LLMRouter(config=cfg)
             try:
                 await router.get_provider()
                 print(f"Provider: {router.provider_name}")
                 resp = await router.chat(
-                    [{"role": "user", "content": "Say 'hello' in one word."}],
+                    [Message(role="user", content="Say 'hello' in one word.")],
                     effort=3,
                 )
                 print(f"Model: {resp.model}")
@@ -12918,10 +12939,25 @@ def _cmd_instance(args) -> int:
 def _cmd_pack(args) -> int:
     """Handle `adk pack` subcommands."""
     sub = getattr(args, "pack_command", None)
-    if sub in ("new", "validate", "dev", "build"):
+    if sub in ("new", "validate", "dev", "build", "keygen", "sign", "verify"):
         # Author verbs are local: no Genesis lookup, no network.
         from adk.pack_author import cli as _pack_author_cli
         return _pack_author_cli(sub, args)
+    if sub in ("show", "apply"):
+        # The v2 pack model is local: one loader reads every legacy shape on
+        # disk (lib/packs/manifest.py). No Genesis lookup, no network.
+        try:
+            from lib.packs import manifest as _pack_manifest
+        except Exception as exc:  # noqa: BLE001
+            print(f"pack {sub} unavailable: {exc}")
+            return 1
+        if sub == "show":
+            return _pack_manifest.show(getattr(args, "pack_id", ""))
+        return _pack_manifest.apply_dry_run(
+            getattr(args, "collection", ""),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            as_json=bool(getattr(args, "json_output", False)),
+        )
     genesis_url = _get_genesis_url()
 
     if sub == "publish":
@@ -14930,6 +14966,9 @@ def _register_commands(sub):
                       "what version, and the install line for each missing one")
     sh_parts.add_argument("--json", action="store_true", help="machine-readable output")
 
+    from adk.up import add_parser as _add_harness_up_parser
+    _add_harness_up_parser(shell_sub)
+
     sh_pair = shell_sub.add_parser(
         "pair", help="Pair the awconnect browser extension: approve a code, list, revoke")
     sh_pair.add_argument("pair_action", nargs="?", default="pending",
@@ -15070,6 +15109,15 @@ def _register_commands(sub):
         "hookd", help="Run hooks in-process, no spawn per hook: serve|ensure|health|convert|revert"
     )
     cl_hookd_p.add_argument("hookd_args", nargs=argparse.REMAINDER)
+
+    # adk antigravity — Google Antigravity 2.0 / CLI integration (setup/doctor)
+    ag_p = sub.add_parser(
+        "antigravity",
+        help="Install and audit the Google Antigravity AitherOS integration (setup/doctor)",
+    )
+    ag_sub = ag_p.add_subparsers(dest="antigravity_command")
+    from adk.antigravity_setup import add_parsers as _add_antigravity_parsers
+    _add_antigravity_parsers(ag_sub)
 
     # adk agent-prompt
     ap_p = sub.add_parser("agent-prompt", help="Print the setup prompt for AI coding agents")
@@ -16209,6 +16257,31 @@ def _register_commands(sub):
     volunteer_status_p.add_argument(
         "--peer-id", help="Peer ID (default: auto-resolved)")
 
+    # adk intel — crowdsourced OSINT scout (your feeds, your machine, your credential)
+    intel_p = sub.add_parser(
+        "intel", help="Contribute open-source intel from feeds you choose (scout, schedule)")
+    intel_sub = intel_p.add_subparsers(dest="intel_command")
+    intel_scout_p = intel_sub.add_parser(
+        "scout", help="Read your RSS/Atom feeds politely and contribute new items")
+    intel_scout_p.add_argument(
+        "--feeds", action="append", required=True,
+        help="A file (one feed URL per line) or comma-separated feed URLs; repeatable")
+    intel_scout_p.add_argument("--once", action="store_true", help="One pass, then exit")
+    intel_scout_p.add_argument(
+        "--interval", type=int, default=900, help="Seconds between passes (default: 900)")
+    intel_scout_p.add_argument(
+        "--min-host-interval", type=float, default=30.0,
+        help="Minimum seconds between requests to one host (default: 30)")
+    intel_scout_p.add_argument(
+        "--dry-run", action="store_true", help="Collect and print; upload nothing")
+    intel_schedule_p = intel_sub.add_parser(
+        "schedule", help="Register 'intel scout --once' as an awrise wake")
+    intel_schedule_p.add_argument(
+        "--feeds", action="append", required=True,
+        help="A file (one feed URL per line) or comma-separated feed URLs; repeatable")
+    intel_schedule_p.add_argument(
+        "--every", default="15m", help="awrise interval (default: 15m)")
+
     # adk routing — per-intent model routing
     routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
     routing_sub = routing_p.add_subparsers(dest="routing_command")
@@ -16549,6 +16622,21 @@ def _register_commands(sub):
     pack_export_p.add_argument("-o", "--output", default=".", help="Output directory")
     pack_info_p = pack_sub.add_parser("info", help="Show pack details")
     pack_info_p.add_argument("pack_id", help="Pack ID to inspect")
+    # adk pack show|apply -- the ONE v2 manifest model (lib/packs/manifest.py).
+    # `show` reads the synthesized v2 view of ANY legacy shape; `apply` resolves
+    # a logical collection and, in Phase 1, only prints (dry-run).
+    pack_show_p = pack_sub.add_parser(
+        "show", help="Show the v2 (aither.pack/v2) view of a pack: kind, "
+                     "distribution, provides, facets, requires")
+    pack_show_p.add_argument("pack_id", help="Pack ID (or a manifest path)")
+    pack_apply_p = pack_sub.add_parser(
+        "apply", help="Resolve a collection (Phase 1: dry-run only)")
+    pack_apply_p.add_argument("collection", help="Collection id or path, e.g. osint-intel")
+    pack_apply_p.add_argument("--dry-run", action="store_true",
+                              help="Required in this phase: print tools grouped by "
+                                   "gate + the mount list, change nothing")
+    pack_apply_p.add_argument("--json", dest="json_output", action="store_true",
+                              help="One JSON object on stdout")
     pack_customize_p = pack_sub.add_parser("customize", help="Customize installed pack (system_prompt, capabilities, domains)")
     pack_customize_p.add_argument("pack_id", help="Pack name to customize")
     pack_customize_p.add_argument("--system-prompt", help="Override system prompt")
@@ -16579,6 +16667,22 @@ def _register_commands(sub):
     pack_build_p.add_argument("pack_dir", help="Pack directory")
     pack_build_p.add_argument("-o", "--output", default=None,
                               help="Output directory (default: <pack>/dist)")
+    pack_keygen_p = pack_sub.add_parser(
+        "keygen", help="Ed25519 signing keypair for pack releases (private key, mode 600)")
+    pack_keygen_p.add_argument("-o", "--output", default=None,
+                               help="Key directory (default: ~/.aither)")
+    pack_sign_p = pack_sub.add_parser(
+        "sign", help="Build if needed, then sign the bundle (.sig sidecar)")
+    pack_sign_p.add_argument("pack_dir", help="Pack directory or an existing .tar.gz")
+    pack_sign_p.add_argument("--key", default=None,
+                             help="Private key file (default: ~/.aither/pack-signing.key)")
+    pack_sign_p.add_argument("-o", "--output", default=None,
+                             help="Where to build/sign (default: <pack>/dist)")
+    pack_verify_p = pack_sub.add_parser(
+        "verify", help="Check a bundle against its .sig before installing it")
+    pack_verify_p.add_argument("bundle", help="Path to the .tar.gz")
+    pack_verify_p.add_argument("--public-key", dest="public_key", default=None,
+                               help="Public key as hex (default: AITHER_PACK_PUBLIC_KEY)")
     pack_pub_p = pack_sub.add_parser(
         "publish", help="Build, submit and upload a pack to the community marketplace")
     pack_pub_p.add_argument("pack_dir", help="Pack directory")
@@ -18238,6 +18342,9 @@ def main():
     elif args.command == "claude":
         from adk.claude_runner import cmd_claude
         sys.exit(cmd_claude(args))
+    elif args.command == "antigravity":
+        from adk.antigravity_setup import cmd_antigravity
+        sys.exit(cmd_antigravity(args))
     elif args.command == "agent-prompt":
         from adk.agent_prompt import cmd_agent_prompt
         sys.exit(cmd_agent_prompt(args))
@@ -18338,6 +18445,9 @@ def main():
         sys.exit(cmd_mesh(args))
     elif args.command == "volunteer":
         sys.exit(cmd_volunteer(args))
+    elif args.command == "intel":
+        from adk.commands.intel import cmd_intel
+        sys.exit(cmd_intel(args))
     elif args.command == "costs":
         sys.exit(cmd_costs(args))
     elif args.command == "tools":

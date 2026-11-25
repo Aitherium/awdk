@@ -36,70 +36,44 @@ public class AppTabsCheck {
 
     public static void main(String[] a) {
         // a grown-up's phone IS the AitherOS desktop: ONE surface, no native bar (0.4.0)
-        eq("adult surface", ids(AppTabs.tabs(false)), Arrays.asList("os"));
-        eq("adult home", AppTabs.homeTab(false), "os");
+        eq("adult surface", ids(AppTabs.ADULT_TABS), Arrays.asList("os"));
         eq("os home", AppTabs.OS_HOME, "https://app.aitherium.com/?host=android-os");
-        eq("os root", AppTabs.rootUrl(false, "os"), AppTabs.OS_HOME);
-        eq("no adult tabs left", AppTabs.tab(false, "home") == null && AppTabs.tab(false, "family") == null
-                && AppTabs.tab(false, "aither") == null && AppTabs.tab(false, "settings") == null, true);
         // the catalogue search still works (the screen checks read the catalogue)
         eq("search all", AppTabs.search(AppTabs.ADULT_APPS, "").length, AppTabs.ADULT_APPS.length);
         eq("search label", ids(AppTabs.search(AppTabs.ADULT_APPS, "hearth")), Arrays.asList("hearth"));
         eq("search words", ids(AppTabs.search(AppTabs.ADULT_APPS, "  IMAGE   credits ")), Arrays.asList("image-studio"));
         eq("search none", AppTabs.search(AppTabs.ADULT_APPS, "zzz").length, 0);
-        // a child's bar is ONE tab, the classroom (kids-suite S4)
-        eq("child tabs", ids(AppTabs.tabs(true)), Arrays.asList("learn"));
-        eq("child home", AppTabs.homeTab(true), "learn");
-        eq("no child settings tab", AppTabs.tab(true, "settings"), null);
-        // a child's bar and grid never reach a grown-up surface
-        for (String[][] rows : new String[][][] {AppTabs.CHILD_TABS, AppTabs.CHILD_APPS}) {
-            for (String[] r : rows) {
-                for (String s : r) {
-                    if (s.contains("?app=") || s.contains("/learn/parent") || s.startsWith("/chat")
-                            || s.contains("shell=")) {
-                        System.out.println("FAIL child row " + r[0] + " reaches " + s);
-                        bad++;
-                    }
-                }
-            }
-        }
-        // every child app opens in the child's tab (or a window); a grown-up's open in the OS
-        for (boolean child : new boolean[] {true}) {
-            for (String[] app : AppTabs.apps(child)) {
-                if (!app[5].isEmpty() && AppTabs.tab(child, app[5]) == null) {
-                    System.out.println("FAIL app " + app[0] + " opens in missing tab " + app[5]);
-                    bad++;
-                }
-                if (app[5].isEmpty() && app[3].isEmpty()) {
-                    System.out.println("FAIL app " + app[0] + " has neither a tab nor a page");
-                    bad++;
-                }
-            }
-        }
+
+        // A CHILD'S PHONE IS THE SAME OS (owner 2026-11-19, overruling the 10-19 classroom
+        // frame): the one WebView on the OS host, with the child profile on top. Every child
+        // link lands in the OS surface, never a native tab or window.
+        eq("child home is the os", AppTabs.route(AppTabs.ORIGIN + "/", true), "tab os " + AppTabs.OS_HOME);
+        eq("child bare origin", AppTabs.route(AppTabs.ORIGIN, true), "tab os " + AppTabs.OS_HOME);
+        eq("child os host", AppTabs.route(AppTabs.ORIGIN + "/learn", true).url.startsWith(AppTabs.OS_HOME), true);
+        // the page reads the child profile from the user agent: AitherOS AND AitherKid
+        eq("kid token", AppTabs.KID_UA, " AitherKid");
+        eq("child ua says the os and the kid profile",
+                AppTabs.uaToken("0.5.0", false, true).endsWith(" AitherOS" + AppTabs.KID_UA), true);
+        eq("adult ua has no kid profile", AppTabs.uaToken("0.5.0", false, false).contains("AitherKid"), false);
 
         // ONE images tile per person (2026-10-18 app audit): the owner's Media Forge, everyone
         // else's Image Studio; never both, never neither
-        eq("member grid", ids(AppTabs.apps(false, false, false)).contains("mediaforge"), false);
-        eq("owner grid", ids(AppTabs.apps(false, true, false)).contains("mediaforge"), true);
-        eq("member image studio", ids(AppTabs.apps(false, false, false)).contains("image-studio"), true);
-        eq("owner image studio", ids(AppTabs.apps(false, true, false)).contains("image-studio"), false);
+        eq("member grid", ids(AppTabs.apps(false, false)).contains("mediaforge"), false);
+        eq("owner grid", ids(AppTabs.apps(true, false)).contains("mediaforge"), true);
+        eq("member image studio", ids(AppTabs.apps(false, false)).contains("image-studio"), true);
+        eq("owner image studio", ids(AppTabs.apps(true, false)).contains("image-studio"), false);
         for (boolean owner : new boolean[] {false, true}) {
-            java.util.List<String> g = ids(AppTabs.apps(false, owner, false));
+            java.util.List<String> g = ids(AppTabs.apps(owner, false));
             eq("one images tile, owner=" + owner,
                     (g.contains("mediaforge") ? 1 : 0) + (g.contains("image-studio") ? 1 : 0), 1);
         }
         // My account opens the live settings page, never the retired /profile
         eq("account path", AppTabs.ACCOUNT_PATH, "/workspace/settings?tab=profile");
-        eq("play image studio", ids(AppTabs.apps(false, false, true)).contains("image-studio"), true);
-        eq("child image studio", ids(AppTabs.apps(true, true, false)).contains("image-studio"), false);
-        eq("play grid", ids(AppTabs.apps(false, true, true)).contains("shop"), false);
-        eq("direct grid", ids(AppTabs.apps(false, false, false)).contains("shop"), true);
-        for (String id : new String[] {"agents", "packs", "mediaforge", "shop"}) {
-            eq("child grid " + id, ids(AppTabs.apps(true, true, false)).contains(id), false);
-        }
-        // a child's helpers: only the agents a grown-up granted (kid lanes), in the Learn tab
-        eq("child grid helpers", ids(AppTabs.apps(true, false, true)).contains("helpers"), true);
-        route(true, "/learn/agents", "tab learn " + AppTabs.ORIGIN + "/learn/agents");
+        eq("play image studio", ids(AppTabs.apps(false, true)).contains("image-studio"), true);
+        eq("play grid", ids(AppTabs.apps(true, true)).contains("shop"), false);
+        eq("direct grid", ids(AppTabs.apps(false, false)).contains("shop"), true);
+        // a child's helpers page (kid lanes) loads as itself in the one WebView
+        route(true, "/learn/agents", "tab os " + AppTabs.ORIGIN + "/learn/agents");
         eq("platform owner", AppTabs.platformOwner(Arrays.asList("owner"), "platform"), true);
         eq("customer owner", AppTabs.platformOwner(Arrays.asList("owner", "admin"), "tnt_acme"), false);
         eq("super admin", AppTabs.platformOwner(Arrays.asList("Super_Admin"), "tnt_acme"), true);
@@ -179,15 +153,21 @@ public class AppTabsCheck {
         eq("off-os page to os", AppTabs.osBack(null, O + "/learn/join?code=1", false), AppTabs.OsBack.OS_HOME);
         eq("sign-in to os", AppTabs.osBack("false", O + "/login", false), AppTabs.OsBack.OS_HOME);
 
-        // the user agent: AitherOS for a grown-up's phone, never a child's; Play right after
-        // the version, where the web's Play check (AitherAndroid/<v> Play) looks
-        eq("ua", AppTabs.uaToken("0.4.0", false, true), " AitherAndroid/0.4.0 AitherOS");
-        eq("ua play", AppTabs.uaToken("0.4.0", true, true), " AitherAndroid/0.4.0 Play AitherOS");
-        eq("ua child", AppTabs.uaToken("0.4.0", false, false), " AitherAndroid/0.4.0");
-        eq("ua child play", AppTabs.uaToken("0.4.0", true, false), " AitherAndroid/0.4.0 Play");
+        // the user agent: AitherOS on EVERY phone (the page is the phone OS), AitherKid on a
+        // child's; Play right after the version, where the web's Play check looks
+        eq("ua", AppTabs.uaToken("0.5.0", false, false), " AitherAndroid/0.5.0 AitherOS");
+        eq("ua play", AppTabs.uaToken("0.5.0", true, false), " AitherAndroid/0.5.0 Play AitherOS");
+        eq("ua child", AppTabs.uaToken("0.5.0", false, true), " AitherAndroid/0.5.0 AitherOS AitherKid");
+        eq("ua child play", AppTabs.uaToken("0.5.0", true, true), " AitherAndroid/0.5.0 Play AitherOS AitherKid");
         java.util.regex.Pattern play = java.util.regex.Pattern.compile("AitherAndroid/\\S+ Play\\b");
-        eq("ua play seen", play.matcher(AppTabs.uaToken("0.4.0", true, true)).find(), true);
-        eq("ua direct not play", play.matcher(AppTabs.uaToken("0.4.0", false, true)).find(), false);
+        eq("ua play seen", play.matcher(AppTabs.uaToken("0.5.0", true, true)).find(), true);
+        eq("ua direct not play", play.matcher(AppTabs.uaToken("0.5.0", false, true)).find(), false);
+        // the web's own detectors (Veil host-chrome.ts / kid-os-profile.ts / child-lockdown.ts)
+        java.util.regex.Pattern osUa = java.util.regex.Pattern.compile("AitherAndroid/\\S+.* AitherOS\\b");
+        java.util.regex.Pattern kidUa = java.util.regex.Pattern.compile("AitherAndroid/\\S+.*\\sAitherKid\\b");
+        eq("web sees the os on a child phone", osUa.matcher(AppTabs.uaToken("0.5.0", true, true)).find(), true);
+        eq("web sees the kid profile", kidUa.matcher(AppTabs.uaToken("0.5.0", false, true)).find(), true);
+        eq("web sees no kid on an adult phone", kidUa.matcher(AppTabs.uaToken("0.5.0", true, false)).find(), false);
 
         // the safe areas reach the page as CSS px, under the web's own variable names
         String js = AppTabs.insetsJs(24, 0, 48, 0);
@@ -196,26 +176,26 @@ public class AppTabsCheck {
             if (!js.contains(want)) { System.out.println("FAIL insets js lacks " + want); bad++; }
         }
 
-        // links: child (the launcher's child set and the PWA's ?app= ids)
-        // every child page opens in the one classroom tab
-        route(true, "/", "tab learn");
-        route(true, "/learn", "tab learn");
-        route(true, "/learn?talk=1", "tab learn " + AppTabs.ORIGIN + "/learn?talk=1");
-        route(true, "/learn/sprite", "tab learn " + AppTabs.ORIGIN + "/learn/sprite");
-        route(true, "/learn/sprite#quests", "tab learn " + AppTabs.ORIGIN + "/learn/sprite#quests");
-        route(true, "/hearth#room", "tab learn " + AppTabs.ORIGIN + "/hearth#room");
-        route(true, "/hearth", "tab learn " + AppTabs.ORIGIN + "/hearth");
-        route(true, "/?app=hearth", "tab learn");
-        route(true, "/?app=quests", "tab learn " + AppTabs.ORIGIN + "/learn/sprite#quests");
-        route(true, "/?app=room", "tab learn " + AppTabs.ORIGIN + "/hearth#room");
-        route(true, "/?app=family", "tab learn " + AppTabs.ORIGIN + "/hearth");
-        route(true, "/?app=avatar", "tab learn " + AppTabs.ORIGIN + "/learn/sprite");
-        route(true, "/?app=control", "tab learn");
-        route(true, "/classroom/x", "window " + AppTabs.ORIGIN + "/classroom/x");
-        // the Nest tile is the child's own Sprite, never Aither's general chat
-        for (String[] app : AppTabs.CHILD_APPS) {
-            if (app[0].equals("nest")) eq("nest tile", app[3], "/learn?talk=1");
-        }
+        // links: child (the launcher's child set and the PWA's ?app= ids). Every one loads in
+        // the OS; the page's child profile picks the kid-safe app (Veil kid-os-profile.ts),
+        // and the child edge (child-lockdown.ts) still holds the session to the child pages
+        route(true, "/", "tab os " + H);
+        route(true, "/learn", "tab os " + H + "&app=learn");
+        route(true, "/learn?talk=1", "tab os " + O + "/learn?talk=1");
+        route(true, "/learn/sprite", "tab os " + O + "/learn/sprite");
+        route(true, "/learn/sprite#quests", "tab os " + O + "/learn/sprite#quests");
+        route(true, "/hearth#room", "tab os " + O + "/hearth#room");
+        route(true, "/hearth", "tab os " + H + "&app=family");
+        route(true, "/?app=hearth", "tab os " + H + "&app=hearth");
+        route(true, "/?app=quests", "tab os " + H + "&app=quests");
+        route(true, "/?app=control", "tab os " + H + "&app=control");
+        // a child's phone never loads another aitherium.com host in place: the OS home
+        eq("child shop host", AppTabs.route("https://shop.aitherium.com/x", true), "tab os " + H);
+        eq("child tenant host", AppTabs.route("https://acme.aitherium.com/", true), "tab os " + H);
+        eq("child manual host", AppTabs.route("https://docs.aitherium.com/x", true), "tab os " + H);
+        eq("child off-site", AppTabs.route("https://example.com/", true), "tab os " + H);
+        eq("adult manual host", AppTabs.route("https://docs.aitherium.com/x", false),
+                "tab os https://docs.aitherium.com/x");
 
         // a link outside aitherium.com: the browser for a grown-up; never for a child
         eq("adult off-site", AppTabs.link(false, "https://example.com/x"), AppTabs.Link.BROWSER);
@@ -272,33 +252,19 @@ public class AppTabsCheck {
         eq("ask body mailto", AppTabs.linkRequestBody("mailto:x@example.com"), "");
         eq("ask body garbage", AppTabs.linkRequestBody("http://[bad"), "");
         eq("ask body cap", AppTabs.linkRequestBody("https://example.com/" + "a".repeat(400)).length(), 300 + 10);
-        // the launcher shortcuts (Shortcuts.java rows, passed in as c:/path or a:/path): a
-        // child's opens one of their tabs, a grown-up's never just lands on Home
+        // the launcher shortcuts (Shortcuts.java rows, passed in as c:/path or a:/path): every
+        // one loads in the OS on the app origin; a grown-up's never just lands on Home
         for (String arg : a) {
             boolean child = arg.startsWith("c:");
             AppTabs.Route r = AppTabs.route(AppTabs.ORIGIN + arg.substring(2), child);
-            if (child && r.window) { System.out.println("FAIL child shortcut " + arg + " opens a window"); bad++; }
+            if (!AppTabs.OS.equals(r.tab) || !r.url.startsWith(AppTabs.ORIGIN + "/")) {
+                System.out.println("FAIL shortcut " + arg + " -> " + r + ": not in the OS"); bad++;
+            }
             // a grown-up's pin opens an OS app, never just the OS home
-            if (!child && (r.window || !r.url.startsWith(AppTabs.OS_HOME + "&app="))) {
+            if (!child && !r.url.startsWith(AppTabs.OS_HOME + "&app=")) {
                 System.out.println("FAIL shortcut " + arg + " -> " + r + ": not an OS app"); bad++;
             }
         }
-
-        // the tab root
-        eq("root slash", AppTabs.isRoot(AppTabs.ORIGIN + "/learn/parent", "/learn/parent/"), true);
-        eq("root fragment", AppTabs.isRoot(AppTabs.ORIGIN + "/hearth#x", "/hearth#room"), true);
-        eq("root deeper", AppTabs.isRoot(AppTabs.ORIGIN + "/learn/parent/kid", "/learn/parent/"), false);
-        eq("root query", AppTabs.isRoot(AppTabs.ORIGIN + "/chat?x=1", "/chat"), false);
-        eq("root null", AppTabs.isRoot(null, "/chat"), false);
-
-        // Android back: window, page history, tab root, Home, leave
-        eq("back window page", AppTabs.back(true, true, true, false, false), AppTabs.Back.WINDOW_BACK);
-        eq("back window close", AppTabs.back(true, false, true, false, false), AppTabs.Back.WINDOW_CLOSE);
-        eq("back web", AppTabs.back(false, false, true, false, false), AppTabs.Back.WEB_BACK);
-        eq("back to root", AppTabs.back(false, false, false, false, false), AppTabs.Back.TAB_ROOT);
-        eq("back to home", AppTabs.back(false, false, false, true, false), AppTabs.Back.HOME);
-        eq("back exits", AppTabs.back(false, false, false, true, true), AppTabs.Back.EXIT);
-        eq("home with history", AppTabs.back(false, false, true, false, true), AppTabs.Back.WEB_BACK);
 
         // the one sign-in page comes back to the page you were on, never to itself
         eq("sign in from learn", AppTabs.signInUrl(AppTabs.ORIGIN + "/learn/parent/"),
@@ -340,6 +306,14 @@ public class AppTabsCheck {
         nav("github oauth", false, "https://github.com/login/oauth/authorize?client_id=x", false, true, "", AppTabs.Nav.LOAD);
         nav("github session", false, "https://github.com/session", true, false, "", AppTabs.Nav.LOAD);
         nav("linkedin oauth", false, "https://www.linkedin.com/oauth/v2/authorization", false, true, "", AppTabs.Nav.LOAD);
+        // Google REFUSES its sign-in inside an embedded WebView (disallowed_useragent): it
+        // must open in a Custom Tab, never load in the app's WebView. The app then gets its
+        // session from the Identity hand-back code (POST /auth/oauth/app-handback/redeem),
+        // not from a cookie the Custom Tab's jar would hold.
+        nav("google oauth", false, "https://accounts.google.com/o/oauth2/v2/auth?client_id=x",
+                false, true, "", AppTabs.Nav.CUSTOM_TAB);
+        nav("google oauth tap", false, "https://accounts.google.com/o/oauth2/v2/auth?client_id=x",
+                true, false, "", AppTabs.Nav.CUSTOM_TAB);
         // everything else on the web is a Custom Tab (never a page inside a tab)
         nav("github repo", false, "https://github.com/Aitherium/awdk", true, false, "aither", AppTabs.Nav.CUSTOM_TAB);
         nav("off-site", false, "https://example.com/x", true, false, "aither", AppTabs.Nav.CUSTOM_TAB);
@@ -357,27 +331,25 @@ public class AppTabsCheck {
             "intent://x#Intent;end", "https://acme.aitherium.com/", "http://[bad"};
         for (String u : childUrls) {
             for (boolean g : new boolean[] {true, false}) {
-                AppTabs.Nav n = AppTabs.navigate(true, u, g, false, "learn");
+                AppTabs.Nav n = AppTabs.navigate(true, u, g, false, "os");
                 if (n != AppTabs.Nav.LOAD && n != AppTabs.Nav.ASK_GROWNUP) {
                     System.out.println("FAIL child " + u + " -> " + n); bad++;
                 }
             }
         }
-        nav("child classroom", true, O + "/learn/x", true, false, "learn", AppTabs.Nav.LOAD);
-        nav("child off-site", true, "https://example.com/", true, false, "learn", AppTabs.Nav.ASK_GROWNUP);
-        nav("child github", true, "https://github.com/login/oauth/authorize", false, true, "learn", AppTabs.Nav.ASK_GROWNUP);
+        // the same rules on the OS surface the child now has (the one WebView is "os")
+        nav("child classroom", true, O + "/learn/x", true, false, "os", AppTabs.Nav.LOAD);
+        nav("child os", true, H + "&app=learn", true, false, "os", AppTabs.Nav.LOAD);
+        nav("child off-site", true, "https://example.com/", true, false, "os", AppTabs.Nav.ASK_GROWNUP);
+        nav("child apex", true, "https://aitherium.com/", true, false, "os", AppTabs.Nav.ASK_GROWNUP);
+        nav("child manual", true, "https://docs.aitherium.com/", true, false, "os", AppTabs.Nav.ASK_GROWNUP);
+        nav("child shop", true, "https://shop.aitherium.com/", true, false, "os", AppTabs.Nav.ASK_GROWNUP);
+        nav("child github", true, "https://github.com/login/oauth/authorize", false, true, "os", AppTabs.Nav.ASK_GROWNUP);
+        nav("child mailto", true, "mailto:a@b.c", true, false, "os", AppTabs.Nav.ASK_GROWNUP);
         // where a routed link lands: the OS, never a native window
         eq("link apex", AppTabs.linkRoute("https://aitherium.com/"), "tab os " + H);
         eq("link family", AppTabs.linkRoute(O + "/learn/parent/"), "tab os " + H + "&app=learn");
         eq("link shop", AppTabs.linkRoute(O + "/shop"), "tab os " + H + "&app=shop");
-
-        // one header: the native bar names the page
-        eq("title root", AppTabs.barTitle("Family", true, "Guardian · AitherOS"), "Family");
-        eq("title page", AppTabs.barTitle("Family", false, "Household · AitherOS"), "Household");
-        eq("title pipe", AppTabs.barTitle("Aither", false, "Shop | Aitherium"), "Shop");
-        eq("title url", AppTabs.barTitle("Aither", false, "https://app.aitherium.com/chat"), "Aither");
-        eq("title empty window", AppTabs.barTitle("", false, ""), "Aither");
-        eq("title long", AppTabs.barTitle("", false, "A very long page title that goes on and on").length() <= 32, true);
 
         System.out.println(bad == 0 ? "OK" : bad + " FAILED");
         System.exit(bad == 0 ? 0 : 1);

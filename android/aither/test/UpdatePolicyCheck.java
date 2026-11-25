@@ -103,6 +103,21 @@ public class UpdatePolicyCheck {
         eq("status name", UpdatePolicy.statusName(-1), "PENDING_USER_ACTION");
         eq("status name unknown", UpdatePolicy.statusName(42), "STATUS_42");
 
+        // which path each outcome reports on the check-in (Updater.recordStatus -> report)
+        eq("a quiet success reports silent",
+                UpdatePolicy.path(UpdatePolicy.STATUS_SUCCESS, "", true), UpdatePolicy.PATH_SILENT);
+        eq("a tapped success reports tap",
+                UpdatePolicy.path(UpdatePolicy.STATUS_SUCCESS, "", false), UpdatePolicy.PATH_TAP);
+        eq("Android asking reports tap",
+                UpdatePolicy.path(UpdatePolicy.STATUS_PENDING_USER_ACTION, "", true), UpdatePolicy.PATH_TAP);
+        eq("the verifier refusing reports blocked",
+                UpdatePolicy.path(UpdatePolicy.STATUS_FAILURE, vf, true), UpdatePolicy.PATH_BLOCKED);
+        eq("a blocked status reports blocked",
+                UpdatePolicy.path(UpdatePolicy.STATUS_FAILURE_BLOCKED, "", false), UpdatePolicy.PATH_BLOCKED);
+        eq("a plain failure names no path by itself",
+                UpdatePolicy.path(UpdatePolicy.STATUS_FAILURE_INVALID, "", true), "");
+        eq("nothing attempted yet is none", UpdatePolicy.PATH_NONE, "none");
+
         if (bad > 0) System.exit(1);
         System.out.println("UpdatePolicyCheck ok");
     }

@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 
 _RAW = """
-<!-- reasoning-doctrine:begin v2 -->
+<!-- reasoning-doctrine:begin v3 -->
 ## How to reason (the Six Pillars as habits, not modules)
 
 The task is how you practise reasoning. Solving it is only part of the job. Keep the
@@ -36,6 +36,13 @@ through these six moves, in order:
 6. **Learning: compare the result with your prediction.** Where they differ, you are
    looking at the lesson. Record the transferable rule ("when X, check Y first"),
    not the one-off answer, so the next problem starts from it.
+
+**Platform first, before every move.** Before you type a command, ask the platform
+whether it already does this (the capability list, the op catalogue, `awkno -k <verb>`,
+the registry). If it does, use it. If it does not, or it is broken, building or
+repairing it in its own repository IS the job — priority 1, before the task that needed
+it. Never hand-roll a script beside the platform and never start a bare or detached
+process; extend what exists and say which lane you used.
 
 Being stuck is data. Say which move failed, try the next reversible step, and ask for
 help only when you are truly blocked.

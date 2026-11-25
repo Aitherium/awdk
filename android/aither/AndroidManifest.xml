@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="42"
-    android:versionName="0.4.4">
+    android:versionCode="44"
+    android:versionName="0.5.1">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
 
@@ -14,6 +14,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- the floating fairy over other apps (FairyOverlayService): asked for only when the
+         owner turns it on, dropped from the store build (Play restricts it too) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- self-update of the verified, release-signed APK: silent when Android allows it
          (Updater.installQuietly), else the one-tap notification (the store build drops both) -->
@@ -273,6 +276,15 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs the owner's small AI model for the owner's own devices over the owner's private mesh, turned on by the owner" />
+        </service>
+
+        <service
+            android:name=".FairyOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="The fairy floating over other apps: a draggable Aither shortcut the owner turns on in settings, never started by itself" />
         </service>
 
         <service

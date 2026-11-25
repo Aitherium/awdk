@@ -141,3 +141,125 @@ def test_install_local_refuses_bad_sum_unsigned_and_foreign_target(tmp_path, mon
     side.write_text("0" * 64 + "  x\n", encoding="utf-8")
     with pytest.raises(ValueError, match="sha256 mismatch"):
         pa.install_local(res.tarball, tmp_path / "other")
+
+
+def test_keygen_sign_and_verify_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.delenv("AITHER_PACK_PUBLIC_KEY", raising=False)
+    kp = pa.keygen(tmp_path / "keys")
+    assert kp.private_path.is_file() and kp.public_path.is_file()
+    assert kp.public_path.read_text("utf-8").strip() == kp.public_key_hex
+    assert len(kp.fingerprint.split(":")) == 4
+
+    pack = pa.scaffold("dev.signed", tmp_path)
+    res = pa.sign(pack, key_path=kp.private_path, out_dir=tmp_path / "out")
+    assert res.signature_path.name == res.tarball.name + ".sig"
+    assert res.fingerprint == kp.fingerprint
+
+    ok, why = pa.verify(res.tarball, public_key=kp.public_key_hex)
+    assert ok, why
+
+
+def test_verify_rejects_tampering_and_a_foreign_key(tmp_path):
+    kp = pa.keygen(tmp_path / "keys")
+    other = pa.keygen(tmp_path / "other-keys")
+    pack = pa.scaffold("dev.tamper", tmp_path)
+    res = pa.sign(pack, key_path=kp.private_path, out_dir=tmp_path / "out")
+
+    # the same bytes verify under the key that signed them
+    assert pa.verify(res.tarball, public_key=kp.public_key_hex)[0]
+
+    # one changed byte in the bundle fails
+    blob = bytearray(res.tarball.read_bytes())
+    blob[-1] ^= 0xFF
+    res.tarball.write_bytes(bytes(blob))
+    ok, _ = pa.verify(res.tarball, public_key=kp.public_key_hex)
+    assert not ok, "a tampered bundle verified"
+
+    # a bundle signed by a different key fails the first key
+    res2 = pa.sign(pa.scaffold("dev.tamper2", tmp_path), key_path=other.private_path,
+                   out_dir=tmp_path / "out2")
+    ok, _ = pa.verify(res2.tarball, public_key=kp.public_key_hex)
+    assert not ok, "a foreign key's signature verified"
+
+    # and no sidecar at all is a refusal, never a pass
+    res2.signature_path.unlink()
+    ok, why = pa.verify(res2.tarball, public_key=kp.public_key_hex)
+    assert not ok and "signature" in why.lower()
+
+
+def test_keygen_refuses_to_replace_an_existing_key(tmp_path):
+    pa.keygen(tmp_path / "keys")
+    with pytest.raises(FileExistsError):
+        pa.keygen(tmp_path / "keys")
+
+
+def test_signed_bundle_installs_under_required_signing(tmp_path, monkeypatch):
+    kp = pa.keygen(tmp_path / "keys")
+    pack = pa.scaffold("dev.installable", tmp_path)
+    res = pa.sign(pack, key_path=kp.private_path, out_dir=tmp_path / "out")
+
+    monkeypatch.setenv("AITHER_PACK_PUBLIC_KEY", kp.public_key_hex)
+    monkeypatch.setenv("AITHER_PACK_REQUIRE_SIGNING", "true")
+    target = pa.install_local(res.tarball, tmp_path / "packs")
+    assert target == (tmp_path / "packs" / "dev.installable").resolve()
+    assert (target / pa.LOCAL_MARKER).is_file()
+
+
+def test_verify_returns_a_verdict_when_the_sidecar_is_unreadable(tmp_path, monkeypatch):
+    """`verify` promises it never raises. An unreadable .sig is a verdict, not a crash."""
+    kp = pa.keygen(tmp_path / "keys")
+    res = pa.sign(pa.scaffold("dev.unreadable", tmp_path), key_path=kp.private_path,
+                  out_dir=tmp_path / "out")
+    real = Path.read_text
+
+    def boom(self, *a, **k):
+        if self.name.endswith(".sig"):
+            raise PermissionError("denied")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    ok, why = pa.verify(res.tarball, public_key=kp.public_key_hex)
+    assert not ok, "an unreadable sidecar verified"
+    assert "cannot read" in why
+
+
+def test_sign_reports_an_unwritable_output_instead_of_crashing(tmp_path, monkeypatch):
+    """A read-only dist directory must be a clean error the CLI can print, not a traceback."""
+    kp = pa.keygen(tmp_path / "keys")
+    pack = pa.scaffold("dev.readonly", tmp_path)
+    real = Path.write_text
+
+    def boom(self, *a, **k):
+        if self.name.endswith(".sig"):
+            raise PermissionError("read-only file system")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    with pytest.raises(ValueError, match="cannot write the signature"):
+        pa.sign(pack, key_path=kp.private_path, out_dir=tmp_path / "out")
+
+
+def test_sign_refuses_bytes_that_are_not_a_tarball(tmp_path):
+    """Signing junk produces a signature that verifies perfectly and installs nothing."""
+    kp = pa.keygen(tmp_path / "keys")
+    junk = tmp_path / "not-a-bundle.tar.gz"
+    junk.write_bytes(b"this is not a tar archive")
+    with pytest.raises(ValueError, match="not a readable tar.gz"):
+        pa.sign(junk, key_path=kp.private_path)
+
+
+def test_verify_returns_a_verdict_when_the_bundle_is_unreadable(tmp_path, monkeypatch):
+    """The last way `verify` could still raise: the bundle itself cannot be read."""
+    kp = pa.keygen(tmp_path / "keys")
+    res = pa.sign(pa.scaffold("dev.unreadable-bundle", tmp_path), key_path=kp.private_path,
+                  out_dir=tmp_path / "out")
+    real = Path.read_bytes
+
+    def boom(self):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    ok, why = pa.verify(res.tarball, public_key=kp.public_key_hex)
+    assert not ok, "an unreadable bundle verified"
+    assert "cannot read" in why
+    monkeypatch.setattr(Path, "read_bytes", real)

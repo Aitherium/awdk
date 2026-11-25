@@ -1,0 +1,56 @@
+{
+  "awdk-bridge": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python3 -S -m adk.harnesses.antigravity_hooks SessionStart",
+        "timeout": 15
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 -S -m adk.harnesses.antigravity_hooks PreInvocation",
+        "timeout": 15
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S -m adk.harnesses.antigravity_hooks PreToolUse",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S -m adk.harnesses.antigravity_hooks PostToolUse",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python3 -S -m adk.harnesses.antigravity_hooks PostInvocation",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 -S -m adk.harnesses.antigravity_hooks Stop",
+        "timeout": 20
+      }
+    ]
+  }
+}

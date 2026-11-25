@@ -1,5 +1,5 @@
 {
-  "description": "Portable brick hooks: the awrelay inbox (via hookgate), awm recall, awvoice reply and session-focus (cross-session focus records). Each is a silent no-op when its brick is not installed; session-focus also stands down when the project settings already declare it. awgit-ensure installs awgit's commit guards (stale-revert, mass-delete) into a repo before the session's first git commit there, and into the session's own repo at start; a silent no-op without awgit.",
+  "description": "Portable brick hooks: the platform-first gate (platform_first.py delegates to awsettings-guard, so a hand-rolled script or a bare process is denied with the platform lane named -- silent without awsettings, and it carries NO rules of its own), the awrelay inbox (via hookgate), awm recall, awvoice reply and session-focus (cross-session focus records). Each is a silent no-op when its brick is not installed; session-focus also stands down when the project settings already declare it. awgit-ensure installs awgit's commit guards (stale-revert, mass-delete) into a repo before the session's first git commit there, and into the session's own repo at start; a silent no-op without awgit.",
   "hooks": {
     "PreToolUse": [
       {
@@ -14,6 +14,15 @@
               "pre-bash"
             ],
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "-S",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/platform_first.py"
+            ],
+            "timeout": 10
           }
         ]
       }

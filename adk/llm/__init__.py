@@ -85,9 +85,11 @@ _EFFORT_MODELS = {
         "large": "o1",
     },
     "anthropic": {
-        "small": "claude-haiku-4-5-20251001",
-        "medium": "claude-sonnet-4-6",
-        "large": "claude-opus-4-6",
+        # Current ids (2026-11): the 4.x ids answered, but at effort 7-10 awdk now
+        # asks for adaptive thinking + output_config.effort, which these take.
+        "small": "claude-haiku-5-5",
+        "medium": "claude-sonnet-5-5",
+        "large": "claude-opus-5-5",
     },
     "deepseek": {
         "small": "deepseek-chat",
@@ -354,7 +356,7 @@ class LLMRouter:
             from .anthropic import AnthropicProvider
             return AnthropicProvider(
                 api_key=api_key or "",
-                default_model=self._model or "claude-sonnet-4-6",
+                default_model=self._model or "claude-sonnet-5-5",
             )
         elif name == "gemini":
             from .gemini import GeminiProvider
@@ -1359,6 +1361,15 @@ class LLMRouter:
             return models["max"]
         return models.get(tier) or self._model or self._provider_default_model()
 
+    @staticmethod
+    def _effort_kw(prov: object, effort: "int | None") -> dict:
+        """``{"effort": n}`` for a provider that maps effort onto the request itself
+        (``accepts_effort``, today the Anthropic provider: thinking + output_config),
+        else nothing -- other providers forward unknown kwargs to their APIs."""
+        if effort is None or not getattr(prov, "accepts_effort", False):
+            return {}
+        return {"effort": effort}
+
     def _provider_default_model(self) -> str:
         """The model the active provider was configured with (config.json default_model)."""
         for prov in (self._remote_provider, getattr(self, "_provider", None), self._local_provider):
@@ -1521,6 +1532,7 @@ class LLMRouter:
                 resp = await cluster_prov.chat(
                     messages, model=cluster_model, tool_choice=tool_choice,
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                    **self._effort_kw(cluster_prov, effort),
                 )
                 resp.effort_level = effort
                 self._log_cost(resp, "cluster")
@@ -1540,6 +1552,7 @@ class LLMRouter:
                 resp = await reasoning_prov.chat(
                     messages, model=reasoning_model, tool_choice=tool_choice,
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                    **self._effort_kw(reasoning_prov, effort),
                 )
                 resp.effort_level = effort
                 self._log_cost(resp, self._reasoning_provider_name)
@@ -1560,6 +1573,7 @@ class LLMRouter:
                 resp = await local.chat(
                     messages, model=model, tool_choice=tool_choice,
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                    **self._effort_kw(local, effort),
                 )
                 resp.effort_level = effort
                 self._log_cost(resp, "local")
@@ -1577,6 +1591,7 @@ class LLMRouter:
                 resp = await self._remote_provider.chat(
                     messages, model=model, tool_choice=tool_choice,
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                    **self._effort_kw(self._remote_provider, effort),
                 )
                 resp.effort_level = effort
                 self._log_cost(resp, self._remote_provider_name)
@@ -1589,6 +1604,7 @@ class LLMRouter:
             resp = await provider.chat(
                 messages, model=model, tool_choice=tool_choice,
                 top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                **self._effort_kw(provider, effort),
             )
             if effort is not None:
                 resp.effort_level = effort
@@ -1607,6 +1623,7 @@ class LLMRouter:
                     resp = await fb_provider.chat(
                         messages, model=None, tool_choice=tool_choice,
                         top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                        **self._effort_kw(fb_provider, effort),
                     )
                     if effort is not None:
                         resp.effort_level = effort
@@ -1686,6 +1703,7 @@ class LLMRouter:
                 async for chunk in tier_prov.chat_stream(
                     messages, model=tier_model, tool_choice=tool_choice,
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                    **self._effort_kw(tier_prov, effort),
                 ):
                     started = True
                     if chunk.content and detector.feed(chunk.content):

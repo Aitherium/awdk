@@ -282,23 +282,23 @@ a:focus-visible, .jump a:focus-visible {
     <p class="eyebrow">An agent pack for <b>bead-space</b></p>
     <h1>bead-space</h1>
     <p class="lede">An interactive D3 work graph rendered as a tiny space universe</p>
-    <nav class="jump"><a href="https://pages.bernting.se/bead-space/">Project site</a><a href="https://github.com/wbern/bead-space">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v3.8.107/bead-space-3.8.107.tar.gz">Download</a></nav>
+    <nav class="jump"><a href="https://pages.bernting.se/bead-space/">Project site</a><a href="https://github.com/wbern/bead-space">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/bead-space-4.0.0.tar.gz">Download</a></nav>
   </header>
 
   <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">bead-space — install</span></div><pre class="term-body"><span class="c"># one command each; nothing else to configure</span>
-<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.107/bead-space-3.8.107.tar.gz
-<span class="p">$</span> tar xzf bead-space-3.8.107.tar.gz
+<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/bead-space-4.0.0.tar.gz
+<span class="p">$</span> tar xzf bead-space-4.0.0.tar.gz
 <span class="p">$</span> python bead-space/install.py
 <span class="o">installed bead-space -&gt; ~/.aither/packs/bead-space</span>
 <span class="o">verified: adk discovers &#x27;bead-space&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">bead-space — install</span></div><pre class="term-body"><span class="c"># PowerShell. curl.exe and tar ship with Windows 10 1803+</span>
-<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.107/bead-space-3.8.107.tar.gz
-<span class="p">$</span> tar -xzf bead-space-3.8.107.tar.gz
+<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/bead-space-4.0.0.tar.gz
+<span class="p">$</span> tar -xzf bead-space-4.0.0.tar.gz
 <span class="p">$</span> python bead-space\install.py
 <span class="o">installed bead-space -&gt; ~\.aither\packs\bead-space</span>
 <span class="o">verified: adk discovers &#x27;bead-space&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.8.107</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>e47fe5ceaf72961d…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>4.0.0</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>204e55f140f9197b…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,13 +314,13 @@ not affiliated with or endorsed by them.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>e47fe5ceaf72961d207294ebb968576e16c7b9a6aee0d43d7f0f963eac2720d9</code></p>
+    <p class="sub">sha256 <code>204e55f140f9197bfe2811f41b93d98045a7c149bf63f81970c0412a154a8c3a</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
-<span class="p">$</span> sha256sum -c bead-space-3.8.107.sha256
-<span class="o">bead-space-3.8.107.tar.gz: OK</span>
+<span class="p">$</span> sha256sum -c bead-space-4.0.0.sha256
+<span class="o">bead-space-4.0.0.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;E47FE5CEAF72961D207294EBB968576E16C7B9A6AEE0D43D7F0F963EAC2720D9&#x27;
-<span class="p">$</span> (Get-FileHash bead-space-3.8.107.tar.gz -Algorithm SHA256).Hash -eq $want
+<span class="p">$</span> $want = &#x27;204E55F140F9197BFE2811F41B93D98045A7C149BF63F81970C0412A154A8C3A&#x27;
+<span class="p">$</span> (Get-FileHash bead-space-4.0.0.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
   </section>
@@ -328,11 +328,11 @@ not affiliated with or endorsed by them.</p></div></section>
   <div class="colophon"><p><a href="https://github.com/wbern/bead-space">bead-space</a> is created by <strong>wbern</strong>. Licensed MIT. This pack is an engine that runs behind it — their application is not modified, not redistributed here, and not affiliated with us. If you like what you see, the credit belongs upstream.</p></div>
 
   <footer>
-    Built from <code>v3.8.107</code> · adk 3.8.107 ·
+    Built from <code>v4.0.0</code> · adk 4.0.0 ·
     <a href="../packs.html">All packs</a> ·
     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a><br>bead-space is an independent project. This page links to it; it does not speak for it.
   <!-- aither-about:start GENERATED from the ecosystem registry built_on -->
-<p class="aither-built-on fk-built-on" style="font-size:.85rem;opacity:.75;margin:.75rem 0">Built on <a href="https://www.blender.org/" rel="noopener">Blender + Rigify</a> &middot; <a href="https://www.centos.org/centos-stream/" rel="noopener">CentOS Stream</a> &middot; <a href="https://www.chromium.org/" rel="noopener">Chromium</a> &middot; <a href="https://github.com/comfyanonymous/ComfyUI" rel="noopener">ComfyUI</a> &middot; <a href="https://github.com/moby/moby" rel="noopener">Docker</a> &middot; <a href="https://ffmpeg.org/" rel="noopener">FFmpeg</a> &middot; <a href="https://github.com/headroomlabs-ai/headroom" rel="noopener">headroom</a> &middot; <a href="https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1" rel="noopener">Hunyuan3D</a> &middot; <a href="https://github.com/lancedb/lancedb" rel="noopener">LanceDB</a> &middot; <a href="https://github.com/ggml-org/llama.cpp" rel="noopener">llama.cpp</a> &middot; <a href="https://github.com/vercel/next.js" rel="noopener">Next.js</a> &middot; <a href="https://github.com/microsoft/playwright" rel="noopener">Playwright</a> &middot; <a href="https://github.com/containers/podman" rel="noopener">Podman</a> &middot; <a href="https://github.com/morluto/rea" rel="noopener">REA (Reverse Engineer Anything)</a> &middot; <a href="https://github.com/facebook/react" rel="noopener">React</a> &middot; <a href="https://github.com/repowise-dev/repowise" rel="noopener">repowise</a> &middot; <a href="https://github.com/NVlabs/Sana" rel="noopener">SANA</a> &middot; <a href="https://github.com/vllm-project/vllm" rel="noopener">vLLM</a> &middot; <a href="https://www.wireguard.com/" rel="noopener">WireGuard</a></p>
+<p class="aither-built-on fk-built-on" style="font-size:.85rem;opacity:.75;margin:.75rem 0">Built on <a href="https://www.blender.org/" rel="noopener">Blender + Rigify</a> &middot; <a href="https://www.centos.org/centos-stream/" rel="noopener">CentOS Stream</a> &middot; <a href="https://www.chromium.org/" rel="noopener">Chromium</a> &middot; <a href="https://github.com/comfyanonymous/ComfyUI" rel="noopener">ComfyUI</a> &middot; <a href="https://github.com/moby/moby" rel="noopener">Docker</a> &middot; <a href="https://ffmpeg.org/" rel="noopener">FFmpeg</a> &middot; <a href="https://github.com/headroomlabs-ai/headroom" rel="noopener">headroom</a> &middot; <a href="https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1" rel="noopener">Hunyuan3D</a> &middot; <a href="https://github.com/lancedb/lancedb" rel="noopener">LanceDB</a> &middot; <a href="https://github.com/ggml-org/llama.cpp" rel="noopener">llama.cpp</a> &middot; <a href="https://github.com/vercel/next.js" rel="noopener">Next.js</a> &middot; <a href="https://github.com/storytold/photocraft" rel="noopener">PhotoCraft</a> &middot; <a href="https://github.com/microsoft/playwright" rel="noopener">Playwright</a> &middot; <a href="https://github.com/containers/podman" rel="noopener">Podman</a> &middot; <a href="https://github.com/morluto/rea" rel="noopener">REA (Reverse Engineer Anything)</a> &middot; <a href="https://github.com/facebook/react" rel="noopener">React</a> &middot; <a href="https://github.com/repowise-dev/repowise" rel="noopener">repowise</a> &middot; <a href="https://github.com/NVlabs/Sana" rel="noopener">SANA</a> &middot; <a href="https://github.com/vllm-project/vllm" rel="noopener">vLLM</a> &middot; <a href="https://www.wireguard.com/" rel="noopener">WireGuard</a></p>
 <!-- aither-about:end -->
 </footer>
 

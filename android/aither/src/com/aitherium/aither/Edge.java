@@ -26,22 +26,16 @@ final class Edge {
     }
 
     /**
-     * The app's main frame (Shell). A child's frame pads like every other screen ({@link #fit}).
-     * A grown-up's OS draws edge to edge under transparent bars: the frame pads for the
-     * keyboard only, hands the page its safe areas in CSS px (Shell.insets, AppTabs.insetsJs)
-     * and passes the bars on to the WebView so env(safe-area-inset-*) can see them where
-     * WebView supports it. With the keyboard up the bottom bar is under it: bottom inset 0.
+     * The app's main frame (Shell). The OS draws edge to edge under transparent bars on
+     * every phone, a child's included: the frame pads for the keyboard only, hands the page
+     * its safe areas in CSS px (Shell.insets, AppTabs.insetsJs) and passes the bars on to the
+     * WebView so env(safe-area-inset-*) can see them where WebView supports it. With the
+     * keyboard up the bottom bar is under it: bottom inset 0.
      */
     static void fitShell(View v, Shell s) {
         if (Build.VERSION.SDK_INT < 30) return;
         int l = v.getPaddingLeft(), t = v.getPaddingTop(), r = v.getPaddingRight(), b = v.getPaddingBottom();
         v.setOnApplyWindowInsetsListener((view, ins) -> {
-            if (s.child()) {
-                Insets i = ins.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
-                        | WindowInsets.Type.ime());
-                view.setPadding(l + i.left, t + i.top, r + i.right, b + i.bottom);
-                return WindowInsets.CONSUMED;
-            }
             Insets bars = ins.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             Insets ime = ins.getInsets(WindowInsets.Type.ime());
             boolean keyboard = ime.bottom > 0;

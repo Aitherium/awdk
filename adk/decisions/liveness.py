@@ -27,8 +27,19 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Iterable, Optional
+
+#: Parsed registry per directory, keyed by the (name, mtime, size) signature of
+#: its files. The RETIREMENT sweep asks "is this card's raiser gone?" once per
+#: open card, and reading ~30 session files per card per sweep is pure waste --
+#: but a cache with a time TTL would make a just-dead pid read as alive for its
+#: lifetime, which is exactly the bug retirement exists to fix. Keying on the
+#: files' own signature refreshes the instant anything is written and never
+#: serves a stale verdict.
+_REGISTRY_LOCK = threading.Lock()
+_REGISTRY_CACHE: dict[str, tuple[tuple, dict[str, dict]]] = {}
 
 
 def sessions_dir() -> Path:
@@ -65,23 +76,54 @@ def _is_gone_on_windows(pid: int) -> bool:
         return False
 
 
-def live_waiting_session_ids(directory: Optional[Path] = None) -> Optional[set[str]]:
-    """Session ids that are alive and not busy, or ``None`` when not measurable."""
+def _registry(directory: Optional[Path] = None) -> tuple[Optional[dict[str, dict]], bool]:
+    """``(session_id -> record, measured)`` for the registry, parsed from a cache.
+
+    ``measured`` is False when the directory cannot be listed: "not measured"
+    must stay distinguishable from "measured, and it is not there", because only
+    the latter is evidence a session is gone.
+    """
     root = directory or sessions_dir()
+    key = str(root)
     try:
-        names = list(root.iterdir())
+        names = sorted(p.name for p in root.iterdir() if p.suffix == ".json")
     except OSError:
-        return None
-    out: set[str] = set()
-    for path in names:
-        if path.suffix != ".json":
-            continue
+        return None, False
+    sig_parts: list[tuple[str, int, int]] = []
+    for name in names:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            st = (root / name).stat()
+        except OSError:
+            continue
+        sig_parts.append((name, st.st_mtime_ns, st.st_size))
+    sig = tuple(sig_parts)
+    with _REGISTRY_LOCK:
+        hit = _REGISTRY_CACHE.get(key)
+        if hit is not None and hit[0] == sig:
+            return hit[1], True
+    entries: dict[str, dict] = {}
+    for name, _mtime, _size in sig_parts:
+        try:
+            raw = json.loads((root / name).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if not isinstance(raw, dict):
             continue
+        sid = raw.get("sessionId")
+        if isinstance(sid, str) and sid:
+            entries[sid] = raw
+    with _REGISTRY_LOCK:
+        _REGISTRY_CACHE[key] = (sig, entries)
+    return entries, True
+
+
+def live_waiting_session_ids(directory: Optional[Path] = None) -> Optional[set[str]]:
+    """Session ids that are alive and not busy, or ``None`` when not measurable."""
+    entries, measured = _registry(directory)
+    if not measured or entries is None:
+        return None
+    out: set[str] = set()
+    for sid, raw in entries.items():
         try:
             pid = int(raw.get("pid") or 0)
         except (TypeError, ValueError):
@@ -90,9 +132,7 @@ def live_waiting_session_ids(directory: Optional[Path] = None) -> Optional[set[s
             continue
         if not pid_alive(pid):
             continue
-        sid = raw.get("sessionId")
-        if isinstance(sid, str) and sid:
-            out.add(sid)
+        out.add(sid)
     return out
 
 
@@ -137,23 +177,36 @@ def session_entry(session_id: str, directory: Optional[Path] = None) -> Optional
     want = str(session_id or "").strip()
     if not want:
         return None
-    root = directory or sessions_dir()
+    entries, _measured = _registry(directory)
+    return (entries or {}).get(want)
+
+
+def requester_session(card) -> str:
+    """The id of the session that raised ``card``, or "" when none was recorded."""
+    return str(_field(card, "session_id") or "").strip()
+
+
+def requester_pid(card) -> int:
+    """The long-lived pid recorded at raise time (0 = not measured).
+
+    ``session_pid`` is the process that OWNS the tab, resolved at raise time;
+    ``pid`` alone is not used because for a hook-raised card it is a helper that
+    exits in milliseconds, and a dead helper says nothing about the session.
+    """
     try:
-        names = list(root.iterdir())
-    except OSError:
-        return None
-    for path in names:
-        if path.suffix != ".json":
-            continue
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(raw, dict):
-            continue
-        if str(raw.get("sessionId") or "") == want:
-            return raw
-    return None
+        return int(_field(card, "session_pid") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def requester_label(card) -> str:
+    """``session <id> (pid <n>)`` -- the audit line a retired card carries."""
+    sid, pid = requester_session(card), requester_pid(card)
+    if sid and pid > 0:
+        return f"session {sid} (pid {pid})"
+    if sid:
+        return f"session {sid}"
+    return f"pid {pid}" if pid > 0 else ""
 
 
 def raiser_gone(card, *, directory: Optional[Path] = None) -> bool:
@@ -213,6 +266,9 @@ __all__ = [
     "live_waiting_session_ids",
     "pid_alive",
     "raiser_gone",
+    "requester_label",
+    "requester_pid",
+    "requester_session",
     "session_entry",
     "sessions_dir",
     "waiter_alive",

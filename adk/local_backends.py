@@ -26,13 +26,28 @@ from typing import Optional
 BONSAI_LOCAL_PORT = 8090
 
 
+def local_install_name(role: str) -> str:
+    """Name of a local artefact adk installs on the user's machine: ``<prefix>-<role>``.
+
+    The prefix is configuration (``AITHER_LOCAL_NAME_PREFIX``), not a literal at each
+    call site, so the container / unit names the installer creates and the code that
+    later finds or stops them are derived in ONE place and cannot drift apart.
+    """
+    return f"{os.environ.get('AITHER_LOCAL_NAME_PREFIX', 'aither')}-{role}"
+
+
+def bonsai_container_name() -> str:
+    """The local Bonsai container: ``AITHER_BONSAI_CONTAINER`` or the installer's default."""
+    return os.environ.get("AITHER_BONSAI_CONTAINER", local_install_name("bonsai-local"))
+
+
 def bonsai_available() -> bool:
     """Check if the Bonsai local container is running or the GGUF is present."""
     # Check running container
     if shutil.which("docker"):
         try:
             result = subprocess.run(
-                ["docker", "ps", "-q", "-f", "name=^aither-bonsai-local$"],
+                ["docker", "ps", "-q", "-f", f"name=^{bonsai_container_name()}$"],
                 capture_output=True, text=True, timeout=5,
             )
             if (result.stdout or "").strip():

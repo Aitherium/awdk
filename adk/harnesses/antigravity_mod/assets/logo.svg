@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="AitherOS awdk">
+  <defs>
+    <linearGradient id="awg" x1="14" y1="14" x2="114" y2="114" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="55%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="46" fill="none" stroke="url(#awg)" stroke-width="6"/>
+  <ellipse cx="64" cy="64" rx="46" ry="18" fill="none" stroke="#38BDF8" stroke-width="3.5" stroke-opacity="0.85" transform="rotate(-28 64 64)"/>
+  <path d="M64 26 L90 88 L76 88 L70 72 L58 72 L52 88 L38 88 Z M64 46 L60 60 L68 60 Z" fill="url(#awg)" fill-rule="evenodd"/>
+  <circle cx="96" cy="40" r="5.5" fill="#38BDF8"/>
+</svg>

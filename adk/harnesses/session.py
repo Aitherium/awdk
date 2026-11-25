@@ -508,6 +508,8 @@ class HarnessSession:
             git_child_env(token, env)
         # After the scrub, which removes the very variable this sets.
         apply_mod_to_launch(self.spec.id, self.config.owner, env, [])
+        if self.spec.child_env is not None:
+            self.spec.child_env(env)
         return env
 
     def _launch_spec(self, prompt: str = "") -> LaunchSpec:

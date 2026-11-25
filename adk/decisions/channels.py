@@ -276,6 +276,9 @@ def render_for_chat(card: DecisionCard) -> str:
         lines += ["", f"_No answer → `{card.default_key}` in {human_age(left)}._"]
     elif card.default_key:
         lines += ["", f"_No answer → `{card.default_key}` (no deadline)._"]
+    # WHERE to answer when a chat reply cannot (a signed grant needs the passkey
+    # page): the link on every card, so the DM is never a dead end.
+    lines += ["", f"Open: {decide_link(card.id)}"]
     lines.append(f"\n`{card.id}`")
     return "\n".join(lines)
 
@@ -362,10 +365,15 @@ class DecisionChannelBridge:
             # owner is "at the desk" by input time, but the popup is HELD, so
             # nothing on screen has them. popup_enabled() is False while quiet,
             # which is what lets the DM through here.
+            #
+            # And the FAIRY is not a window (2026-11-19): while the desk claims the
+            # card ("attention": "fairy") or .desk-only holds, no window spawns, so
+            # window_will_show() is False and the DM goes out. With the claim held
+            # and the fairy silent, two high cards reached nobody for hours.
             try:
-                from adk.decisions.notify import popup_enabled
+                from adk.decisions.notify import window_will_show
                 from adk.decisions.presence import is_at_desk, presence_note
-                if is_at_desk() and popup_enabled():
+                if is_at_desk() and window_will_show():
                     # Logged, not silent: a notification that did not happen is
                     # otherwise indistinguishable from one that failed.
                     print(f"[decisions] {card.id}: {presence_note()}")

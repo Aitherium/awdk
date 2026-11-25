@@ -1044,6 +1044,16 @@ if BaseModel is not None:
         raised_by: str = ""
         agent: str = ""
         session_id: str = ""
+        #: The RAISING process and the LONG-LIVED process that owns its terminal
+        #: tab. Both are recorded so a card is bound to the session's life: when
+        #: ``session_pid`` is gone, nobody is left to read the answer and the
+        #: store's requester-gone sweep retires the card instead of leaving a
+        #: zombie the owner can never answer (2026-11-20). ``0`` = not measured,
+        #: which is never read as "gone". Until these fields existed every card
+        #: raised through this route stored the DAEMON's own pid (the
+        #: DecisionSource default), so the one honest liveness signal was lost.
+        pid: int = 0
+        session_pid: int = 0
         cwd: str = ""
         via: str = "api"
 
@@ -2870,11 +2880,21 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         elif not open_queue:
             limit = _DECISIONS_HISTORY_LIMIT
         # ``order=queue``: the shared rank (store.rank -- credential/blocked,
-        # urgency, age), the order the desk and the card window walk.
-        queue = order == "queue"
+        # urgency, age), the order a LIST walks. ``order=surface``: the ONE-CARD
+        # order (store.surface_order -- needs-you kinds, then urgency, then
+        # NEWEST first), which the desk's Inbox/Now stage and its "Needs you"
+        # strip request so a live ask is never left behind a stale one.
+        queue = order in ("queue", "surface")
         cards = store.list(status=wanted, session_id=session_id,
                            newest_first=not open_queue,
-                           order="queue" if queue else "age")
+                           order=order if queue else "age")
+        if open_queue:
+            # ONLY ACTIONABLE CARDS. A permission grant whose session is provably
+            # gone can never be answered into anything (see store.is_actionable);
+            # counting it is what kept the desk at "58 decisions waiting" with a
+            # dead session on top. The retirement sweep closes it, but a surface
+            # must not have to wait for a sweep to stop counting it.
+            cards = [c for c in cards if store.is_actionable(c)]
         if not open_queue and not queue:
             # History is ranked by when the card CLOSED (answered/expired/cancelled),
             # falling back to created_at for open cards under ``all``. Ranking by
@@ -2926,7 +2946,11 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         deadline = time.time() + max(0, min(wait, 25))
 
         def snapshot() -> dict[str, Any]:
-            cards = get_store().list(status="open")
+            store = get_store()
+            # A card nobody can answer is not "what needs this person now": the
+            # beam is the one read every surface headlines, so an unanswerable
+            # permission grant must not be its first item.
+            cards = [c for c in store.list(status="open") if store.is_actionable(c)]
             now = time.time()
             # Surprise-bus interrupts join the SAME beam as card-shaped items: one
             # ranking (beam.ask_rank), never a second list.
@@ -2968,10 +2992,16 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     @app.get("/decisions/count", dependencies=[Depends(auth)])
     def count_decisions() -> dict[str, Any]:
-        """Cheap enough for a browser badge to poll on a timer."""
+        """Cheap enough for a browser badge to poll on a timer.
+
+        Counts ONLY actionable cards (``store.is_actionable``): a permission
+        grant for a provably dead session is not waiting on anybody, and
+        including it is the "58 decisions waiting" the owner was staring at.
+        """
         from adk.decisions.store import get_store
 
-        cards = get_store().list()
+        store = get_store()
+        cards = [c for c in store.list() if store.is_actionable(c)]
         urgent = [c for c in cards if c.urgency in ("high", "critical")]
         oldest = max((c.age_seconds for c in cards), default=0.0)
         return {
@@ -2993,7 +3023,8 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         from adk.decisions.store import get_store
         from adk.decisions.triage import triage
 
-        cards = get_store().list()
+        store = get_store()
+        cards = [c for c in store.list() if store.is_actionable(c)]
         decisions = []
         for card in cards:
             classification, reason = triage(card.to_dict())
@@ -3287,19 +3318,27 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         if created is not card:
             return {**created.to_dict(), "deduped": True}
 
-        # Raise the window/toast exactly as a local `adk decide ask` would. Without
-        # this a remotely-raised card lands in the store and the owner is never told —
-        # the silent no-op this whole channel exists to prevent.
+        # Deliver AND record, exactly as a local `adk decide ask` would. A bare
+        # notify() only ATTEMPTED the channels; a high-urgency card whose every
+        # channel was skipped (desk inbox only, popup off, no relay env) landed in
+        # the store and reached nobody -- measured 2026-11-18 on d-43nk. The
+        # delivery guarantee re-posts to the relay when no real push landed and
+        # writes a receipt either way, which is what the daemon sweep reads.
         try:
-            from adk.decisions.notify import notify
+            from adk.decisions.delivery import HIGH_URGENCY, deliver_on_raise
 
-            notify(created)
+            result = deliver_on_raise(created)
         except Exception as exc:  # noqa: BLE001
             # The card IS stored; failing the request now would make the caller retry
             # and duplicate it. Report the degradation in the response instead of
             # swallowing it, so "raised but nobody was told" is visible.
             return {**created.to_dict(), "notify_error": f"{type(exc).__name__}: {exc}"}
-        return created.to_dict()
+        body = created.to_dict()
+        if not result.ok and str(getattr(created, "urgency", "")).lower() in HIGH_URGENCY:
+            # A high-urgency miss is a stated verdict, not silence: the card is in
+            # the store and the delivery sweep will keep re-pushing it.
+            body["delivery_error"] = result.describe()[:600]
+        return body
 
     @app.post("/decisions", dependencies=[Depends(auth)])
     def raise_decision(body: RaiseDecision,
@@ -3317,10 +3356,17 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         """
         from adk.decisions.store import DecisionCard, DecisionOption, DecisionSource
 
+        # Provenance is a contract, not decoration: ``session_id`` + the pid that
+        # owns the session are what the requester-gone sweep proves death with.
+        # ``pid`` defaults to 0 (not measured) rather than DecisionSource's
+        # os.getpid() default, which here would record the DAEMON -- a process
+        # that outlives every session and would make every card look alive.
         _source = DecisionSource(
             session_id=(body.session_id or "").strip(),
             agent=(body.raised_by or body.agent or "api").strip(),
             cwd=(body.cwd or "").strip(),
+            pid=max(0, int(body.pid or 0)),
+            session_pid=max(0, int(body.session_pid or 0)),
         )
 
         # ---- the RECIPE door -------------------------------------------------
@@ -5231,6 +5277,11 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     mount_desktop(app, auth)
 
+    # Create -> Plan -> Deploy: the same six-pillar engine Genesis runs, on this host.
+    from adk.harnesses.create_routes import mount as mount_create
+
+    mount_create(app, auth)
+
     return app
 
 
@@ -5300,6 +5351,12 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     from adk.decisions.secure_prompt import start_reconcile_sweep
 
     start_reconcile_sweep()
+    # A high-urgency card that reached no real push surface on raise is re-pushed
+    # here. This process serves the ONE store, so the sweep covers cards from ANY
+    # raiser -- including a local `awask ask` that ran while this daemon was down.
+    from adk.decisions.delivery import start_delivery_sweep
+
+    start_delivery_sweep()
     # Claude Code's http hooks fail OPEN when hookd is down (every guard silently
     # skipped), so this daemon keeps it up: one probe a minute, a start when it is deaf.
     from adk.harnesses import hookd

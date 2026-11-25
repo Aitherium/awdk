@@ -9,10 +9,18 @@ is that missing half, as four verbs:
     adk pack validate <dir>    static checks -- nothing is imported or executed
     adk pack dev <dir>         load it through the REAL loader into a REAL ToolRegistry
     adk pack build <dir>       a reproducible .tar.gz + .sha256 ready to publish
+    adk pack keygen            an ed25519 signing keypair (private key mode 600)
+    adk pack sign <dir|tgz>    build if needed, then write the .sig sidecar
+    adk pack verify <tgz>      check a bundle against its .sig before you install it
 
 ``validate`` never imports the pack: a manifest check that runs the code under test
 is a check an author cannot safely run on someone else's pack. ``dev`` is the one
 verb that executes it, and says so.
+
+``build`` produced a hash, and a hash cannot tell you who made the bytes -- anyone
+can rebuild and re-hash. ``sign`` is what lets a machine that has never met the
+publisher decide whether to run their code, and it is the same ed25519 format
+``adk pack install`` already verifies.
 
 Every verb exits 0 clean, 1 on a finding, 2 when it could not judge.
 """
@@ -521,6 +529,164 @@ def install_local(bundle: str | Path, packs_dir: str | Path | None = None) -> Pa
     return target
 
 
+# ── signing: ed25519, the exact format adk.pack_verifier already checks ─────────
+#
+# `build` produced a hash. A hash proves the bytes are unchanged; it proves nothing
+# about who made them, because anyone can rebuild and re-hash. A signature is what
+# lets a machine that has never met you decide whether to install your code, which
+# is the difference between "a good OS" and "a platform with an ecosystem".
+#
+# The verifier side is `adk.pack_verifier.verify_pack_tarball`, which `adk pack
+# install <bundle>` already calls on a `.sig` sidecar. Nothing here changes what it
+# accepts: hex ed25519 over the tarball bytes.
+
+
+@dataclass
+class KeyPair:
+    private_path: Path
+    public_path: Path
+    public_key_hex: str
+    fingerprint: str
+
+
+def fingerprint(public_key_hex: str) -> str:
+    """Sixteen hex characters of the key's own hash, grouped: what an operator reads out.
+
+    A full public key is 64 characters nobody will compare by eye. This is short enough
+    to say on a call and long enough that two keys cannot be confused.
+    """
+    raw = bytes.fromhex(public_key_hex)
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    return ":".join(digest[i:i + 4] for i in range(0, 16, 4))
+
+
+def keygen(out_dir: str | Path | None = None) -> KeyPair:
+    """Create an ed25519 signing keypair. The private key is written mode 600.
+
+    Refuses to overwrite an existing key: regenerating one silently invalidates every
+    signature already published under the old key, and the failure shows up at the
+    customer's install, not here.
+    """
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError as exc:
+        raise ImportError(
+            "signing needs the `cryptography` package: pip install cryptography"
+        ) from exc
+
+    out = Path(out_dir).expanduser() if out_dir else Path.home() / ".aither"
+    out.mkdir(parents=True, exist_ok=True)
+    private_path = out / "pack-signing.key"
+    public_path = out / "pack-signing.pub"
+    for path in (private_path, public_path):
+        if path.exists():
+            raise FileExistsError(f"{path} exists; refusing to replace a signing key")
+
+    key = Ed25519PrivateKey.generate()
+    seed_hex = key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).hex()
+    public_hex = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    ).hex()
+
+    private_path.write_text(seed_hex + "\n", encoding="utf-8", newline="\n")
+    if os.name == "posix":
+        os.chmod(private_path, 0o600)
+    public_path.write_text(public_hex + "\n", encoding="utf-8", newline="\n")
+    return KeyPair(private_path, public_path, public_hex, fingerprint(public_hex))
+
+
+@dataclass
+class SignResult:
+    tarball: Path
+    signature_path: Path
+    fingerprint: str
+
+
+def sign(pack_dir_or_bundle: str | Path, *, key_path: str | Path | None = None,
+         out_dir: str | Path | None = None) -> SignResult:
+    """Sign a bundle, writing the ``.sig`` sidecar installation verifies.
+
+    Given a directory it BUILDS first, so a signature can never describe bytes that
+    differ from what a rebuild would produce -- signing a stale tarball is the one
+    mistake that makes the whole mechanism a lie.
+    """
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError as exc:
+        raise ImportError(
+            "signing needs the `cryptography` package: pip install cryptography"
+        ) from exc
+
+    target = Path(pack_dir_or_bundle).expanduser().resolve()
+    if target.is_dir():
+        bundle = build(target, out_dir).tarball
+    elif target.name.endswith((".tar.gz", ".tgz")):
+        # Signing bytes that are not a bundle produces a valid signature over garbage,
+        # which verifies perfectly and installs nothing. Cheap to refuse here.
+        try:
+            with tarfile.open(target) as tf:
+                tf.getmembers()
+        except (tarfile.TarError, OSError) as exc:
+            raise ValueError(f"{target.name} is not a readable tar.gz: {exc}") from exc
+        bundle = target
+    else:
+        raise ValueError("expected a pack directory or a .tar.gz bundle")
+
+    key_file = (Path(key_path).expanduser() if key_path
+                else Path.home() / ".aither" / "pack-signing.key")
+    if not key_file.is_file():
+        raise ValueError(f"no signing key at {key_file}; run `adk pack keygen` first")
+    seed_hex = key_file.read_text(encoding="utf-8").strip()
+    try:
+        key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed_hex))
+    except ValueError as exc:
+        raise ValueError(f"{key_file} is not a hex ed25519 private key") from exc
+
+    signature = key.sign(bundle.read_bytes()).hex()
+    sig_path = bundle.with_name(bundle.name + ".sig")
+    try:
+        sig_path.write_text(signature + "\n", encoding="utf-8", newline="\n")
+    except OSError as exc:
+        # A read-only dist directory is the common case. The CLI catches ValueError and
+        # reports it; an OSError would escape as a traceback and read as a crash.
+        raise ValueError(f"cannot write the signature to {sig_path}: {exc}") from exc
+    public_hex = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    ).hex()
+    return SignResult(bundle, sig_path, fingerprint(public_hex))
+
+
+def verify(bundle: str | Path, *, public_key: str | None = None) -> tuple[bool, str]:
+    """Check a bundle against its ``.sig`` sidecar. ``(ok, why)``; never raises."""
+    from adk.pack_verifier import verify_pack_tarball
+
+    path = Path(bundle).expanduser().resolve()
+    if not path.is_file():
+        return False, f"no bundle at {path}"
+    sig_path = path.with_name(path.name + ".sig")
+    sig = None
+    if sig_path.is_file():
+        try:
+            sig = sig_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            # "never raises" is a contract, so an unreadable sidecar is a verdict, not a
+            # crash: the caller gets (False, why) and can say so.
+            return False, f"cannot read {sig_path}: {exc}"
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return False, f"cannot read {path}: {exc}"
+    return verify_pack_tarball(data, sig, public_key)
+
+
 # ── CLI glue (called from adk.cli._cmd_pack) ─────────────────────────────────────
 
 
@@ -558,6 +724,23 @@ def cli(sub: str, args) -> int:
             print(f"built {res.tarball} ({res.files} files, {res.size} bytes)")
             print(f"sha256 {res.sha256}")
             return 0
+        if sub == "keygen":
+            kp = keygen(getattr(args, "output", None))
+            print(f"created {kp.private_path} (private, mode 600) and {kp.public_path}")
+            print(f"fingerprint {kp.fingerprint}")
+            print("read the fingerprint to the machine's operator; never send the .key file")
+            return 0
+        if sub == "sign":
+            res = sign(args.pack_dir, key_path=getattr(args, "key", None),
+                       out_dir=getattr(args, "output", None))
+            print(f"signed {res.tarball.name} -> {res.signature_path.name}")
+            print(f"key fingerprint {res.fingerprint}")
+            print("ship the .tar.gz, the .sha256 and the .sig together; install checks all three")
+            return 0
+        if sub == "verify":
+            ok, why = verify(args.bundle, public_key=getattr(args, "public_key", None))
+            print(("OK " if ok else "FAIL ") + why)
+            return 0 if ok else 1
     except (ValueError, FileExistsError) as exc:
         print(f"error: {exc}")
         return 1

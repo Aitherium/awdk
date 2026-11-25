@@ -308,16 +308,26 @@ class TestDecisionStaleSweep:
         assert decisions.retire_stale() == []
         assert decisions.get(card.id).status == "open"
 
-    def test_protected_kinds_never_auto_retire(self, decisions, sessions):
+    def test_a_credential_ask_never_auto_retires_but_a_dead_blocked_one_does(
+            self, decisions, sessions):
+        """Owner 2026-11-20: a card whose REQUESTER is gone retires at its
+        kind's TTL, blocked included -- a session stopped 30 h ago is not
+        stopped any more, and it must not pin the queue above a live ask. A
+        credential ask is the exception: the secret outlives the session that
+        first wanted it."""
         _register(sessions, "sess-dead", DEAD_PID)
-        kept = [
-            _dcard(decisions, "cred", kind="credential"),
-            _dcard(decisions, "blocked", kind="blocked"),
-            _dcard(decisions, "blocker", kind="blocker"),
-        ]
-        assert decisions.retire_stale() == []
-        for card in kept:
-            assert decisions.get(card.id).status == "open"
+        credential = _dcard(decisions, "cred", kind="credential")
+        blocked = _dcard(decisions, "blocked", kind="blocked")
+        blocker = _dcard(decisions, "blocker", kind="blocker")
+
+        retired = decisions.retire_stale()
+
+        assert {c.id for c in retired} == {blocked.id, blocker.id}
+        assert decisions.get(credential.id).status == "open"
+        for card in (blocked, blocker):
+            after = decisions.get(card.id)
+            assert after.status == "expired"
+            assert "requester gone" in (after.retire_reason or "")
 
     def test_a_live_waiter_keeps_the_card_open(self, decisions, sessions):
         _register(sessions, "sess-dead", DEAD_PID)

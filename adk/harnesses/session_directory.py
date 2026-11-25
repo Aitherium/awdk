@@ -851,8 +851,8 @@ class SessionDirectory:
                                                 claude_name=disc.name, status=status,
                                                 prompt_scan=prompt_scan),
                     cwd=disc.cwd,
-                    harness="claude",  # Discovered sessions are always Claude
-                    harness_label="Claude Code",
+                    harness=getattr(disc, "harness", "claude") or "claude",
+                    harness_label=getattr(disc, "harness_label", "Claude Code") or "Claude Code",
                     origin="discovered",
                     status=status,
                     last_activity_at=activity_at,

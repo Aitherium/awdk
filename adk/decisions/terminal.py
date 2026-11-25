@@ -315,6 +315,152 @@ def _persisted_console_input() -> bool:
     )
 
 
+#: How long the owner must have been away from the keyboard, and how long the
+#: session must have been quiet, before a card may type into its console.
+#:
+#: Owner, 2026-11-23: answers were "popping into the chat window but not
+#: entering" while he was using it — the console tier was typing into a prompt he
+#: was mid-sentence in. A card is allowed to reach an IDLE session, never an
+#: in-use one; until that is proven on the box the default stays off.
+CONSOLE_IDLE_SECONDS = float(os.getenv("AITHER_DECISIONS_CONSOLE_IDLE_SECONDS", "20"))
+
+#: Prompt furniture that is not owner input: Claude Code's ❯, a shell's $/#/>,
+#: box-drawing and the usual filler. Everything else on the line is text someone
+#: typed and is therefore a hard NO.
+_PROMPT_GLYPHS = set("❯>$#│┃╭╮╰╯─ \t·…*")
+#: Rows above the cursor to inspect before admitting "no visible text".
+_PROMPT_ROWS = 5
+
+
+def prompt_text(line: str) -> str:
+    """The owner-typed part of a console line ("" when only prompt furniture)."""
+    mapped = "".join(" " if ch in _PROMPT_GLYPHS else ch for ch in (line or ""))
+    return " ".join(mapped.split())
+
+
+def system_idle_seconds() -> float:
+    """Seconds since the last keyboard/mouse input ANYWHERE on the box.
+
+    Deliberately system-wide, not per-window: "the owner is not typing" is the
+    property that matters, and a click in another window is still a human at the
+    machine whose next keystroke may land here.
+    """
+    if os.name != "nt":
+        return 0.0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _LII(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        info = _LII()
+        info.cbSize = ctypes.sizeof(_LII)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        elapsed = ctypes.windll.kernel32.GetTickCount() - int(info.dwTime)
+        return max(0.0, float(elapsed) / 1000.0)
+    except Exception:  # noqa: BLE001 - an unreadable idle clock fails CLOSED below
+        return 0.0
+
+
+def console_last_line(pid: int) -> "str | None":
+    """The console's last non-blank line at/above the cursor, or ``None``.
+
+    ``None`` means "could not look" and every caller treats it as NOT idle: the
+    cost of a missed wake is a later mailbox delivery, the cost of typing into a
+    live prompt is corrupting what the owner is writing.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _COORD(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class _SMALL(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class _INFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", _COORD), ("dwCursorPosition", _COORD),
+                ("wAttributes", wintypes.WORD), ("srWindow", _SMALL),
+                ("dwMaximumWindowSize", _COORD),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.FreeConsole()
+        if not kernel32.AttachConsole(int(pid)):
+            return None
+        try:
+            handle = kernel32.CreateFileW(
+                "CONOUT$", 0x80000000 | 0x40000000, 0x1 | 0x2, None, 3, 0, None)
+            if handle in (-1, 0):
+                return None
+            try:
+                info = _INFO()
+                if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+                    return None
+                width = int(info.dwSize.X)
+                if width <= 0:
+                    return None
+                cursor_y = int(info.dwCursorPosition.Y)
+                for row in range(cursor_y, max(cursor_y - _PROMPT_ROWS, -1), -1):
+                    buf = (ctypes.c_wchar * width)()
+                    read = wintypes.DWORD(0)
+                    ok = kernel32.ReadConsoleOutputCharacterW(
+                        handle, buf, width, _COORD(0, row), ctypes.byref(read))
+                    if not ok:
+                        return None
+                    text = "".join(buf[: int(read.value)]).rstrip()
+                    if text.strip():
+                        return text
+                return ""
+            finally:
+                kernel32.CloseHandle(handle)
+        finally:
+            kernel32.FreeConsole()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def console_is_idle(pid: int, *, transcript: str = "",
+                    seconds: "float | None" = None) -> tuple[bool, str]:
+    """Is it safe to type into this session? ``(idle, why)``.
+
+    Three independent signals, all required:
+      1. nobody has touched keyboard or mouse for ``seconds`` (system-wide);
+      2. the session's transcript has not changed for ``seconds`` (not mid-turn);
+      3. the console's visible prompt line carries no owner text.
+
+    Any unreadable signal is a NO. This is the guard that makes the console tier
+    safe to leave enabled: it can only ever reach a session nobody is using.
+    """
+    limit = CONSOLE_IDLE_SECONDS if seconds is None else float(seconds)
+    if os.name != "nt":
+        return False, "console idle check is Windows-only"
+    idle = system_idle_seconds()
+    if idle < limit:
+        return False, (f"the owner was at the keyboard {idle:.0f}s ago "
+                       f"(need {limit:.0f}s)")
+    if transcript:
+        try:
+            age = time.time() - os.path.getmtime(transcript)
+        except OSError:
+            age = None
+        if age is not None and age < limit:
+            return False, f"the session wrote output {age:.0f}s ago (mid-turn)"
+    line = console_last_line(pid)
+    if line is None:
+        return False, "could not read the prompt (fail closed)"
+    typed = prompt_text(line)
+    if typed:
+        return False, f"the prompt is not empty: {typed[:60]!r}"
+    return True, f"idle {idle:.0f}s and the prompt is empty"
+
+
 def key_payload(text: str, *, submit: bool = True) -> str:
     """The characters :func:`type_into_console` turns into key events.
 
@@ -325,7 +471,8 @@ def key_payload(text: str, *, submit: bool = True) -> str:
     return text + "\r" if submit else text
 
 
-def type_into_console(pid: int, text: str, *, submit: bool = True) -> tuple[bool, str]:
+def type_into_console(pid: int, text: str, *, submit: bool = True,
+                      transcript: str = "") -> tuple[bool, str]:
     """Write ``text`` into ``pid``'s console input buffer, as if typed.
 
     This is the only path INTO an interactive TUI that has no IPC. It works by
@@ -346,6 +493,11 @@ def type_into_console(pid: int, text: str, *, submit: bool = True) -> tuple[bool
         return False, "console typing is implemented for Windows only"
     if not winproc.pid_alive(pid):
         return False, f"session process {pid} has exited"
+    idle, why = console_is_idle(pid, transcript=transcript)
+    if not idle:
+        # Never type into a session in use. The answer still reaches it through
+        # the mailbox and the Stop-hook wait; this tier is an optimisation only.
+        return False, f"session is in use, not typed into: {why}"
 
     import ctypes
     from ctypes import wintypes
@@ -708,6 +860,14 @@ def _self_test() -> int:
     check("typing at a dead pid is refused", not ok, why)
     ok, why = type_into_console(os.getpid(), "   ")
     check("typing whitespace is refused", not ok and "nothing to send" in why, why)
+
+    # The idle gate: prompt furniture is not owner text, and owner text is seen.
+    check("prompt furniture is not owner text", prompt_text("❯ │ > # ") == "")
+    check("owner text in a prompt IS seen", prompt_text("❯ rm -rf build") == "rm -rf build")
+    check("prompt_text keeps word spacing",
+          prompt_text("❯ run the tests") == "run the tests", prompt_text("❯ run the tests"))
+    # A live probe of the idle clock: it must answer a number, never raise.
+    check("the system idle clock answers", isinstance(system_idle_seconds(), float))
     if previous is None:
         os.environ.pop("AITHER_DECISIONS_CONSOLE_INPUT", None)
     else:

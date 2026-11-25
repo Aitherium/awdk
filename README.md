@@ -32,9 +32,12 @@ Any OS with Python 3.10+:
 
 ```bash
 pip install awdk
+adk harness up                                    # boot local harness stack + auto-wire Antigravity / Claude Code
 adk quickstart                                    # auto-detect hardware, set up inference
 adk init my-agent && cd my-agent && python agent.py
 ```
+
+**What's new in 4.0:** one-command harness boot (`adk harness up` / `--status` / `--down`), first-class two-way **Google Antigravity** + **Claude Code** plugins sharing one `hookd` / `awgov` policy plane, live cross-harness session discovery (`awsh` / `awdesk` / `awconnect` / `awfocus`), Google & Anthropic Managed Agent BYOK, durable crash-proof turns, verified self-improving lessons, Ed25519-signed agent packs, and pinned/attested `llama.cpp v1.0.0`.
 
 The package is `awdk`; the command is `adk` (`awdk` is the same command, and
 `python -m adk` always works). **Windows, "adk is not recognized"?** pip put the
@@ -51,13 +54,13 @@ $s = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 ## Where awdk sits: the harness
 
 <!-- aither-harness:start GENERATED from ecosystem.yaml `harness:` by gen_brick_map.py. Edits between these markers are overwritten; change the registry. -->
-> **`awdk` is part of `awharness` — the super agent harness.** One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.
+> **`awdk` is part of `awharness` — the super agent harness.** One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Google Antigravity, Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.
 >
-> **Today:** There is no single install. `pip install awdk` and `npm i -g @aitherium/awsh` are two commands, and each other brick installs on its own line. `adk harness parts` reads this list and reports which parts this machine has, at what version, and the install line for each one it lacks.
+> **Today:** `adk harness up` brings up the local harness daemons (`hookd`, `awsh`, `aw-hub`), checks installed bricks (`adk harness parts`), and auto-wires detected coding agents (`adk antigravity setup`, `adk claude setup`). Each optional brick still installs on its own line (`pip install awdk`, `npm i -g @aitherium/awsh`).
 >
-> **Planned, not built:** One install command that brings the composed bricks up together, and one process that starts them. Neither exists; nothing by this name is published.
+> **Planned, not built:** One umbrella installer package that installs every composed brick together under the `awharness` name. Nothing by that package name is published yet.
 >
-> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 93 bricks, in layers: https://aitherium.github.io/#map
+> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 99 bricks, in layers: https://aitherium.github.io/#map
 <!-- aither-harness:end -->
 
 A bare agent loop is a model, a prompt and a `while` over tool calls. This is what

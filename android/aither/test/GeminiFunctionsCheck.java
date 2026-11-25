@@ -68,8 +68,12 @@ public class GeminiFunctionsCheck {
                 "tab os " + AppTabs.OS_HOME + "&app=family");
         eq("route adult hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", false), false),
                 "tab os " + AppTabs.OS_HOME + "&app=hearth");
-        eq("route child learn", AppTabs.route(GeminiFunctions.appUrl("learn", true), true), "tab learn");
-        eq("route child hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", true), true), "tab learn " + AppTabs.ORIGIN + "/hearth"); // one child tab, the classroom
+        // a child's phone is the same OS (0.5.0): its child profile opens the kid window
+        // (Veil kid-os-profile.ts maps learn -> /learn, family -> /hearth)
+        eq("route child learn", AppTabs.route(GeminiFunctions.appUrl("learn", true), true),
+                "tab os " + AppTabs.OS_HOME + "&app=learn");
+        eq("route child hearth", AppTabs.route(GeminiFunctions.appUrl("hearth", true), true),
+                "tab os " + AppTabs.OS_HOME + "&app=family");
         // the Hearth draft survives the shell: the OS opens Hearth with the full draft
         String draft = GeminiFunctions.hearthUrl("water the plants", false);
         eq("route hearth draft", AppTabs.route(draft, false),

@@ -1,12 +1,12 @@
 # Claude Code Studio
 
-`claude-code` · version `3.8.107` · 5.0 KB
+`claude-code` · version `4.0.0` · 5.0 KB
 
-**[Download claude-code-3.8.107.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.107/claude-code-3.8.107.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.8.107/claude-code-3.8.107.sha256)
+**[Download claude-code-4.0.0.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/claude-code-4.0.0.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/claude-code-4.0.0.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.8.107/claude-code-3.8.107.tar.gz
-tar xzf claude-code-3.8.107.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/claude-code-4.0.0.tar.gz
+tar xzf claude-code-4.0.0.tar.gz
 python claude-code/install.py
 ```
 
@@ -40,5 +40,5 @@ skills/feature-development.md
 
 ---
 
-sha256 `9de8f98427f1a2665c3d57bb2f2c485cd4d322d6cccb59e8c0d274134af4a94e`  
-Built from `v3.8.107` (adk 3.8.107). [All packs](../packs.md)
+sha256 `92346982883a3734093d9739e31d324d86751db1b496947d0af4cf0306481e1d`  
+Built from `v4.0.0` (adk 4.0.0). [All packs](../packs.md)

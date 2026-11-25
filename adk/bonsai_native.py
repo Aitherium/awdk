@@ -44,6 +44,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from adk import llamacpp_setup as lcs
 from adk._tls import urllib_context
+from adk.local_backends import local_install_name
 
 # ---------------------------------------------------------------------------
 # What we serve
@@ -660,7 +661,7 @@ def smoke_test(port: int, timeout: float = 600.0,
 # ---------------------------------------------------------------------------
 
 TASK_NAME = "AitherBonsaiLocal"
-UNIT_NAME = "aither-bonsai-local.service"
+UNIT_NAME = f"{local_install_name('bonsai-local')}.service"
 LAUNCHD_LABEL = "com.aitherium.bonsai-local"
 
 

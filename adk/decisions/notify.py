@@ -697,6 +697,127 @@ def _webhook_post(card: DecisionCard, open_count: int) -> Optional[str]:
     return None
 
 
+# ── the attention layer: a card nobody saw was never raised (owner, 2026-11-19) ──
+#
+# "fairies still aren't getting my attention to approve this". Measured that day:
+# a permission-grant card (high) and a scheduled-job card (high) sat open for hours.
+# At raise time this module marked "awdesk" and "awdesk fairy" delivered and posted
+# the relay; Discord, email and phone lived ONLY in the 15-minute escalation cycle,
+# and a 46-minute backup job froze that cycle, so for 48 minutes nothing else ran.
+# The desk then died 41 s after the second raise and nothing restarted it.
+#
+# So a raise now does two more things, both detached and both fail-soft:
+#   * a high/critical (or blocked/credential) card is DMed to the owner AT RAISE
+#     TIME through the Discord fanout lane, not 20 minutes later on a schedule;
+#   * a desk that is down is STARTED (its own logon launcher), unless the owner is
+#     quiet -- a card raised into a dead desk is a card raised into nothing.
+
+#: Points at the DM fanout script. Written by the escalation cycle on every pass
+#: (it runs from a tree that follows the trunk, so the path follows it too); the
+#: env var wins. ``{"script": <path>, "python": <interpreter>, "at": <epoch>}``.
+DM_FANOUT_FILENAME = ".dm-fanout.json"
+DM_FANOUT_ENV = "AITHER_DECISIONS_DM_FANOUT"
+
+#: Kinds whose raise is DMed whatever their urgency: a session is stopped on them
+#: (``blocked``) or only the owner can type the answer (``credential``).
+DM_NOW_KINDS = frozenset({"blocked", "credential"})
+DM_NOW_URGENCIES = frozenset({"high", "critical"})
+
+#: Never kick the desk launcher more often than this from raise paths.
+DESK_KICK_MIN_GAP_SECONDS = 120.0
+
+
+def dm_now(card: DecisionCard) -> bool:
+    """Should this raise reach the owner's DM immediately? Pure.
+
+    High/critical cards and blocked/credential kinds: the owner's 2026-08-31 floor
+    (DMs only for high and above) still holds for ordinary normal cards, which reach
+    the DM through the escalator's re-ping instead (30 minutes unanswered).
+    """
+    if not card.is_open:
+        return False
+    if (card.kind or "").strip().lower() in DM_NOW_KINDS:
+        return True
+    return (card.urgency or "normal").strip().lower() in DM_NOW_URGENCIES
+
+
+def dm_fanout_argv(card_id: str, *, env: Optional[dict] = None,
+                   store_dir: Optional[Path] = None) -> Optional[list[str]]:
+    """The argv that DMs ONE card, or None when no fanout is registered. Never raises."""
+    env = os.environ if env is None else env
+    script = (env.get(DM_FANOUT_ENV) or "").strip()
+    python = sys.executable
+    if not script:
+        try:
+            base = Path(store_dir) if store_dir is not None else decisions_dir()
+            raw = json.loads((base / DM_FANOUT_FILENAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        script = str(raw.get("script") or "").strip()
+        python = str(raw.get("python") or "").strip() or python
+    if not script or not Path(script).is_file():
+        return None
+    return [python, script, "--card", card_id]
+
+
+def dm_card(card: DecisionCard, *, spawn=None) -> Optional[str]:
+    """Spawn the DM fanout for ``card``, detached. An error string, or None.
+
+    ``spawn`` is for tests; without it a test run never reaches the owner's Discord.
+    """
+    if spawn is None and (os.environ.get("PYTEST_CURRENT_TEST")
+                          or os.environ.get("AITHER_NO_GUI_PROMPT")):
+        return "DM not sent under test"
+    argv = dm_fanout_argv(card.id)
+    if argv is None:
+        return (f"no DM fanout registered ({DM_FANOUT_ENV} unset and no "
+                f"{DM_FANOUT_FILENAME}; the escalation cycle writes it)")
+    return (spawn or _spawn_detached)(argv)
+
+
+def kick_desk(*, state: Optional[dict] = None, spawn=None, now: Optional[float] = None,
+              launcher: Optional[DeskLauncher] = None) -> Optional[str]:
+    """Start a desk that is down, without waiting for it. An error string, or None.
+
+    Held while the owner is quiet (a full-screen game gets no desk thrown over it) and
+    rate-limited, so a burst of raises runs the launcher once.
+    """
+    if spawn is None and (os.environ.get("PYTEST_CURRENT_TEST")
+                          or os.environ.get("AITHER_NO_GUI_PROMPT")):
+        return "desk start suppressed under test"
+    held = quiet_reason()
+    if held:
+        return f"held while quiet: {held}"
+    state = state if state is not None else {}
+    now = time.time() if now is None else now
+    if now - float(state.get("last_desk_kick_at") or 0.0) < DESK_KICK_MIN_GAP_SECONDS:
+        return "launcher ran moments ago"
+    found = launcher if launcher is not None else desk_launcher()
+    if found is None:
+        return "awdesk is not installed on this machine (no launcher found)"
+    error = (spawn or _spawn_detached)(list(found.argv))
+    if error is None:
+        state["last_desk_kick_at"] = now
+    return error
+
+
+def window_will_show() -> bool:
+    """Will a raise put the card WINDOW on screen right now?
+
+    False while the desk fairy claims the card or ``.desk-only`` holds: those spawn
+    no window, so "the popup already has him" is not true and the at-desk DM
+    suppression in ``channels`` must not apply (2026-11-19: the claim held, the fairy
+    was silent, the DM was suppressed, and nothing reached the owner).
+    """
+    if not popup_enabled():
+        return False
+    if desk_alive() and (desk_only() or desk_attention_claim() == DESK_ATTENTION_FAIRY):
+        return False
+    return True
+
+
 # ── the entry point ─────────────────────────────────────────────────────────────
 
 
@@ -717,6 +838,20 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     except OSError as exc:
         open_cards = [card]
         errors.append(f"could not count open cards: {exc}")
+    else:
+        # "N decisions waiting" must mean N cards someone can still act on. A
+        # permission grant for a provably dead session is not waiting on anybody
+        # (store.is_actionable) and inflating the number with it is the "58
+        # decisions waiting" the owner was staring at (2026-11-20).
+        actionable = getattr(store, "is_actionable", None)
+        if callable(actionable):
+            try:
+                open_cards = [c for c in open_cards if actionable(c)]
+            except Exception as exc:  # noqa: BLE001 - a count must never fail a notify
+                # Said out loud rather than swallowed: the count now includes
+                # cards a surface may have dropped, and "N decisions waiting" is
+                # the number the owner acts on.
+                errors.append(f"could not filter actionable cards: {exc}")
 
     state = _read_state()
     last = float(state.get("last_toast_at") or 0.0)
@@ -766,6 +901,13 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     fairy = desk_up and desk_attention_claim() == DESK_ATTENTION_FAIRY
     if desk_up:
         delivered.append("awdesk")
+    else:
+        kick_error = kick_desk(state=state)
+        if kick_error is None:
+            _write_state(state)
+            skipped.append("awdesk (down: its launcher was started)")
+        else:
+            skipped.append(f"awdesk (down; not started: {kick_error})")
     if fairy:
         delivered.append("awdesk fairy")
     if desk_up and desk_only():
@@ -818,6 +960,15 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
         delivered.append("relay")
     else:
         skipped.append(f"relay ({relay_error})")
+
+    # The DM, at raise time. "Queued" is what this says: the fanout is detached and
+    # records its own verdict (delivered or failed) where the attention check reads it.
+    if dm_now(card):
+        dm_error = dm_card(card)
+        if dm_error is None:
+            delivered.append("discord DM (queued)")
+        else:
+            skipped.append(f"discord DM ({dm_error})")
 
     return NotifyResult(delivered=delivered, skipped=skipped, errors=errors)
 

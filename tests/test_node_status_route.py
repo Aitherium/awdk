@@ -45,6 +45,9 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(enrollment, "_heartbeat_task", None)
     monkeypatch.setattr(enrollment, "_heartbeat_state", enrollment._new_heartbeat_state())
     monkeypatch.setattr(rc, "_held_readiness", None)
+    # Hermetic: /node/status also reads the device lease; never the real ~/.aither/device.json.
+    from adk import device_identity
+    monkeypatch.setenv(device_identity.DEVICE_FILE_ENV, str(tmp_path / "device.json"))
     for var in ("AITHER_BROWSER_HANDOFF", "AITHER_HARNESS_LINK", "AITHER_HARNESS_URL",
                 "AITHER_HARNESS_PORT", "AITHER_IDP_URL", "AITHER_IDP_BASE_URL"):
         monkeypatch.delenv(var, raising=False)

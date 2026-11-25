@@ -93,6 +93,28 @@ final class UpdatePolicy {
         return sdk - 4; // 34 -> 30, 35 -> 31, 36 -> 32, 37 -> 33 (at least as strict as Android)
     }
 
+    // What the LAST update attempt did. Reported on the device check-in (Updater.report) so
+    // the fleet can see, per phone, whether updates land without a tap -- and which phones
+    // need a hand (a supervised child phone whose verifier refused it).
+    static final String PATH_NONE = "none";
+    static final String PATH_SILENT = "silent";
+    static final String PATH_TAP = "tap";
+    static final String PATH_BLOCKED = "blocked";
+
+    /**
+     * The path one session's outcome names: "silent" and "tap" are how it installed;
+     * "blocked" is the verifier (Play Protect / on a supervised child account the parent's
+     * Family Link) refusing the APK. "" when a plain failure names no path by itself (the
+     * retry-or-ask decision that follows does, and it records its own result).
+     */
+    static String path(int status, String msg, boolean quiet) {
+        if (verifierRefused(status, msg)) return PATH_BLOCKED;
+        if (status == STATUS_SUCCESS) return quiet ? PATH_SILENT : PATH_TAP;
+        if (status == STATUS_PENDING_USER_ACTION) return PATH_TAP;
+        if (status == STATUS_FAILURE_BLOCKED) return PATH_BLOCKED;
+        return "";
+    }
+
     /** True when this app is already the installer of record and no other app owns updates. */
     static boolean ownsUpdates(Facts f) {
         return f.me.equals(f.installer) && (f.updateOwner.isEmpty() || f.updateOwner.equals(f.me));

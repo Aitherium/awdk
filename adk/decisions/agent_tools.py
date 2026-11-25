@@ -140,7 +140,7 @@ def raise_card(
     cwd: str = "",
 ) -> DecisionCard:
     """Raise a card from library code. The synchronous core of every tool here."""
-    from adk.decisions.notify import notify
+    from adk.decisions.delivery import deliver_on_raise
 
     parsed = parse_options(options)
     if recommend:
@@ -185,7 +185,9 @@ def raise_card(
         deadline=(time.time() + deadline_seconds) if deadline_seconds > 0 else None,
     ))
     _relay_card_if_configured(card)
-    notify(card, store)
+    # Deliver AND record: a high-urgency card with no real push surface is forced
+    # to the relay and, delivered or not, leaves a receipt the sweep can act on.
+    deliver_on_raise(card, store)
     return card
 
 
@@ -237,6 +239,11 @@ def _relay_post(card: DecisionCard, relay_url: str) -> None:
             "raised_by": card.source.agent or "",
             "agent": card.source.agent or "",
             "session_id": card.source.session_id or None,
+            # The requester's life travels with the card: the owner's plane
+            # retires a card whose session is gone instead of showing a zombie
+            # ask nobody can answer (2026-11-20).
+            "session_pid": int(card.source.session_pid or 0),
+            "pid": int(card.source.pid or 0),
             "cwd": card.source.cwd or None,
             "via": "awdk",
         }

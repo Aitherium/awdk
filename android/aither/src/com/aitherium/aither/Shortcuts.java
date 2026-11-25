@@ -12,8 +12,8 @@ import java.util.List;
 
 /**
  * The launcher shortcuts (long-press the icon), by who uses this phone. One app, one icon:
- * every shortcut opens a page of AitherOS in MainActivity (which routes it to the right
- * tab, AppTabs.route), or this phone's settings.
+ * every shortcut opens a page of AitherOS in MainActivity (which loads it in the OS,
+ * AppTabs.route), or this phone's settings.
  *
  * The rows mirror the AitherOS page's own shortcut table; a test on that side reads this
  * file and fails when the two drift. A child gets

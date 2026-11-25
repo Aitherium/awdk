@@ -124,6 +124,57 @@ def test_gemini_reuses_claude_shapes_when_they_match():
     assert [e.kind for e in events] == [EventKind.TEXT_DELTA]
 
 
+# Gemini CLI 0.70.0 stream-json, lines captured verbatim 2026-11-23.
+def test_gemini_070_native_turn_is_text_then_a_successful_completion():
+    lines = [
+        {"type": "init", "session_id": "5e89", "model": "auto"},
+        {"type": "message", "role": "user", "content": "reply PONG"},
+        {"type": "message", "role": "assistant", "content": "PONG", "delta": True},
+        {"type": "result", "status": "success",
+         "stats": {"total_tokens": 17308, "duration_ms": 9073}},
+    ]
+    events = [e for line in lines for e in translate_gemini(line)]
+    kinds = [e.kind for e in events]
+    assert kinds[0] == EventKind.SESSION_READY
+    assert events[0].data["harness_session_id"] == "5e89"
+    assert [e.text for e in events if e.kind == EventKind.TEXT_DELTA] == ["PONG"]
+    done = [e for e in events if e.kind == EventKind.TURN_COMPLETED]
+    # Mutation guard: routing `result` through translate_claude reads the missing
+    # `subtype` as failure -- that is the bug this pins.
+    assert done and done[0].data["is_error"] is False
+    assert EventKind.ERROR not in kinds
+
+
+def test_gemini_070_failed_result_and_tools():
+    call = translate_gemini({"type": "tool_use", "tool_name": "read_file",
+                             "tool_id": "t1", "parameters": {"path": "a"}})
+    assert call[0].kind == EventKind.TOOL_CALL and call[0].tool == "read_file"
+    res = translate_gemini({"type": "tool_result", "tool_id": "t1",
+                            "status": "error", "output": "nope"})
+    assert res[0].kind == EventKind.TOOL_RESULT and res[0].data["is_error"] is True
+    bad = translate_gemini({"type": "result", "status": "error",
+                            "error": {"message": "quota"}})
+    assert bad[0].kind == EventKind.ERROR and "quota" in bad[0].text
+    assert bad[-1].data["is_error"] is True
+
+
+def test_gemini_argv_skips_trust_and_env_uses_harness_home(tmp_path, monkeypatch):
+    from adk.harnesses.registry import SPECS, LaunchSpec
+    spec = SPECS["gemini"]
+    assert "--skip-trust" in spec.argv(LaunchSpec(prompt="hi"))
+    monkeypatch.setenv("AITHER_GEMINI_HOME", str(tmp_path))
+    env: dict = {}
+    spec.child_env(env)
+    assert "GEMINI_CLI_HOME" not in env  # no profile provisioned -> untouched
+    (tmp_path / ".gemini").mkdir()
+    (tmp_path / ".gemini" / "settings.json").write_text("{}")
+    spec.child_env(env)
+    assert env["GEMINI_CLI_HOME"] == str(tmp_path)
+    explicit = {"GEMINI_API_KEY": "set-by-caller"}
+    spec.child_env(explicit)
+    assert "GEMINI_CLI_HOME" not in explicit
+
+
 # ── 2. model binding clears before it overlays ──────────────────────────────
 
 def test_apply_binding_clears_every_managed_var_first():

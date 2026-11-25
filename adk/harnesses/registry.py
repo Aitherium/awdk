@@ -24,6 +24,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from adk.harnesses.adapters import ADAPTERS
@@ -129,6 +130,9 @@ class HarnessSpec:
     #: Install locations to try when ``binary`` is not on PATH (an installer that edits
     #: the user PATH does not reach processes started before it ran).
     fallback_paths: list[str] = field(default_factory=list)
+    #: Adjusts the child env in place after the session has scrubbed it (an auth
+    #: profile, a config home). Never puts a secret VALUE in the env itself.
+    child_env: Optional[Callable[[dict[str, str]], None]] = None
 
     def translate(self, obj: Any) -> list[HarnessEvent]:
         return ADAPTERS[self.adapter](obj)
@@ -239,14 +243,67 @@ def _claude_tty_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
     return argv
 
 
+def gemini_home() -> Path:
+    """The harness's own Gemini CLI home (``AITHER_GEMINI_HOME`` overrides).
+
+    Google retired Gemini CLI on personal OAuth ("no longer supported for Gemini
+    Code Assist for individuals", measured on 0.70.0, 2026-11-23) while API-key auth
+    keeps working. The user's ``~/.gemini`` stays on OAuth for the Antigravity IDE;
+    this home holds ``.gemini/settings.json`` (selectedType gemini-api-key) and
+    ``.gemini/.env`` (the key), so the harness never inherits the dead profile.
+    """
+    raw = os.environ.get("AITHER_GEMINI_HOME", "").strip()
+    return Path(raw) if raw else Path.home() / ".aither" / "harness-homes" / "gemini"
+
+
+def _gemini_env(env: dict[str, str]) -> None:
+    if env.get("GEMINI_CLI_HOME") or env.get("GEMINI_API_KEY"):
+        return  # the caller chose an auth path; respect it
+    home = gemini_home()
+    if (home / ".gemini" / "settings.json").is_file():
+        env["GEMINI_CLI_HOME"] = str(home)
+
+
 def _gemini_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
-    argv = [spec.binary, "-o", "stream-json", "-p", launch.prompt]
+    # --skip-trust: headless runs exit 55 in any folder not trusted interactively.
+    argv = [spec.binary, "--skip-trust", "-o", "stream-json", "-p", launch.prompt]
     if launch.model:
         argv += ["-m", launch.model]
     if launch.resume_session_id:
         argv += ["-r", launch.resume_session_id]
     if launch.allowed_tools:
         argv += ["--allowed-tools", *launch.allowed_tools]
+    argv += launch.extra_args
+    return argv
+
+
+def _antigravity_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """Drive Google Antigravity via ``agentapi`` (Antigravity 2.0) or ``agy`` (CLI).
+
+    When ``resume_session_id`` is set under ``agentapi``, sends the turn to the
+    existing conversation via ``send-message``; otherwise opens a new conversation
+    via ``new-conversation``. When pointed at ``agy``, runs ``agy -p <prompt>``.
+    """
+    exe = os.path.basename(spec.binary or "").lower()
+    if exe.startswith("agy"):
+        argv = [spec.binary, "-p", launch.prompt]
+        if launch.model:
+            argv += ["--model", launch.model]
+        argv += launch.extra_args
+        return argv
+    if launch.resume_session_id:
+        argv = [spec.binary, "send-message"]
+        if launch.title:
+            argv += [f"--title={launch.title}"]
+        argv += [launch.resume_session_id, launch.prompt]
+        argv += launch.extra_args
+        return argv
+    argv = [spec.binary, "new-conversation"]
+    if launch.model:
+        argv += [f"--model={launch.model}"]
+    if launch.title:
+        argv += [f"--title={launch.title}"]
+    argv += [launch.prompt]
     argv += launch.extra_args
     return argv
 
@@ -318,6 +375,27 @@ register(
         supports_resume=True,
         json_lines=True,
         build_argv=_gemini_argv,
+        child_env=_gemini_env,
+    )
+)
+
+register(
+    HarnessSpec(
+        id="antigravity",
+        prompt_carries_context=True,
+        label="Google Antigravity",
+        description="Google Antigravity 2.0 / CLI — spawns or messages conversations via agentapi / agy",
+        transport=Transport.ONESHOT_PER_TURN,
+        binary="agentapi",
+        version_argv=["--help"],
+        install_hint="Install Google Antigravity 2.0 (agentapi in ~/.gemini/antigravity/bin) or agy CLI",
+        adapter="antigravity",
+        supports_resume=True,
+        build_argv=_antigravity_argv,
+        fallback_paths=[
+            os.path.expanduser("~/.gemini/antigravity/bin/agentapi"),
+            os.path.expanduser("~/.local/bin/agy"),
+        ],
     )
 )
 

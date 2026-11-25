@@ -813,6 +813,15 @@ async def enroll_on_boot(
                         (lambda: (harness_url, bool(harness_url))) if harness_url else None
                     ),
                     device=paired,
+                    # A code-paired box that someone later signed in on beats with that
+                    # PERSON's token; when it expires every beat answers 401 and the node
+                    # reads offline for days (measured 2026-11-16: the DGX Spark, last seen
+                    # 5 days ago while serving). The loop switches once to the device's
+                    # own token on a 401 -- but only if it is handed one.
+                    device_fallback_token=(
+                        str(node_auth.get("bearer_token") or "")
+                        if node_auth.get("enrolled_via") == "pairing-code" and not paired else ""
+                    ),
                 ))
             else:
                 _start_heartbeat_task(_heartbeat_loop(

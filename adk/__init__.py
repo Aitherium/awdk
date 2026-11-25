@@ -14,7 +14,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("awdk")
     except PackageNotFoundError:  # running from a source checkout without install
-        __version__ = "3.8.107"  # kept in sync by packaging/sync_versions.py
+        __version__ = "4.0.0"  # kept in sync by packaging/sync_versions.py
         return __version__
 
 

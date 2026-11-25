@@ -73,7 +73,9 @@ def add_parsers(agent_sub: Any) -> None:
     rs.add_argument("--model", default="")
     rs.add_argument("--system-prompt", dest="system_prompt", default="")
     rs.add_argument("--json", dest="json_output", action="store_true")
-    by = msub.add_parser("byok", help="Store your Anthropic API key (read from --from-env or a hidden prompt)")
+    by = msub.add_parser("byok", help="Store your provider API key (Anthropic or Google; read from --from-env or a hidden prompt)")
+    by.add_argument("--provider", default="anthropic", choices=("anthropic", "google"),
+                    help="Managed agent provider (anthropic | google)")
     by.add_argument("--from-env", dest="from_env", default="",
                     help="Name of an environment variable holding the key")
     by.add_argument("--environment-id", dest="environment_id", default="")
@@ -161,9 +163,15 @@ def build_request(args: Any, prompt: Optional[Callable[[str], str]] = None
     if prompt is None:
         import getpass
         prompt = getpass.getpass
+    provider = (getattr(args, "provider", "anthropic") or "anthropic").strip().lower()
     api_key = _read_byok_key(args, prompt)
     if not api_key:
-        raise ValueError("no Anthropic key supplied (use --from-env VAR or the prompt)")
+        label = "Google" if provider == "google" else "Anthropic"
+        raise ValueError(f"no {label} key supplied (use --from-env VAR or the prompt)")
+    if provider == "google":
+        return method, path, _drop_empty({"provider": "google",
+                                          "google_api_key": api_key,
+                                          "environment_id": args.environment_id}), None
     return method, path, _drop_empty({"anthropic_api_key": api_key,
                                       "environment_id": args.environment_id}), None
 

@@ -38,6 +38,38 @@ from adk.decisions.store import DecisionCard
 #: of a mailbox write that already succeeded; it must never hold up a click.
 TIMEOUT_SECONDS = float(os.getenv("AITHER_DECISIONS_STEER_TIMEOUT", "3"))
 
+#: An answer whose ``via`` carries one of these is a TEST, never the owner.
+#:
+#: Measured 2026-11-23: a delivery-path proof answered cards raised by tooling,
+#: and the console tier typed "done — check again" into the owner's live
+#: terminal, where the session acted on it as a real answer. The mailbox was
+#: isolated; the LIVE tiers were not, and a card's ``source.session_pid`` is the
+#: owner's process by design. A test-marked answer must therefore never reach a
+#: live tier — no harness PTY, no in-flight steer, no console keystrokes, no
+#: resume of an ended session. The mailbox write (which the caller isolates) is
+#: the whole delivery.
+_TEST_VIA_MARKERS = ("(test)", "simulated", "synthetic")
+
+
+def is_test_answer(via: Any) -> bool:
+    """True when an answer's ``via`` marks it as a test/proof, not the owner.
+
+    Convention (set by proof tooling): ``--via "prove (test)"``. Also accepted:
+    the words ``simulated``/``synthetic``, and the bare legacy proof marker
+    ``prove``.
+
+    A bare ``test`` is deliberately NOT a marker: existing suites answer with
+    ``via="test"`` as a neutral caller label and assert the real delivery
+    contract, so matching it would change what those tests mean. Proof tooling
+    must spell the marker (``prove (test)``).
+    """
+    text = str(via or "").strip().lower()
+    if not text:
+        return False
+    if text == "prove":
+        return True
+    return any(marker in text for marker in _TEST_VIA_MARKERS)
+
 
 def harness_url() -> str:
     explicit = os.getenv("AITHER_HARNESS_URL", "").strip()
@@ -121,8 +153,13 @@ def try_chat_steer(session_id: str, text: str) -> tuple[bool, str]:
     return ok, ("injected into the running turn" if ok else f"steer refused ({detail})")
 
 
-def try_console(session_pid: int, text: str) -> tuple[bool, str]:
-    """Type into the session's console. Opt-in; see ``adk.decisions.terminal``."""
+def try_console(session_pid: int, text: str, transcript: str = "") -> tuple[bool, str]:
+    """Type into the session's console. Opt-in; see ``adk.decisions.terminal``.
+
+    ``transcript`` lets the terminal tier apply its idle gate: the session must
+    have been quiet for a while AND its prompt must be empty before a keystroke
+    is written. A session in use is never typed into.
+    """
     if not session_pid:
         return False, "no session process recorded"
     try:
@@ -131,7 +168,7 @@ def try_console(session_pid: int, text: str) -> tuple[bool, str]:
         return False, f"terminal module unavailable: {exc}"
     if not terminal.console_input_enabled():
         return False, "console typing is off"
-    return terminal.type_into_console(session_pid, text)
+    return terminal.type_into_console(session_pid, text, transcript=transcript)
 
 
 def deliver(card: DecisionCard, text: str) -> tuple[bool, str]:
@@ -142,6 +179,13 @@ def deliver(card: DecisionCard, text: str) -> tuple[bool, str]:
     and callers must not render it as one; they must also not render it as
     delivery, which is the whole reason this returns a bool instead of None.
     """
+    via = getattr(card, "answered_via", "") or ""
+    if is_test_answer(via):
+        # A test answer must not reach ANY live tier. The console tier is the one
+        # that actually did damage (2026-11-23): the card's session_pid is the
+        # owner's process, so a keystroke injection lands in whatever prompt they
+        # are typing in and the session treats it as them.
+        return False, f"test answer (via {via!r}): live tiers skipped, mailbox only"
     session = (card.source.session_id or "").strip()
     attempts: list[str] = []
 
@@ -155,7 +199,8 @@ def deliver(card: DecisionCard, text: str) -> tuple[bool, str]:
     if landed:
         return True, why
 
-    landed, why = try_console(card.source.session_pid, text)
+    landed, why = try_console(card.source.session_pid, text,
+                              transcript=card.source.transcript or "")
     attempts.append(f"console: {why}")
     if landed:
         return True, why
@@ -399,6 +444,7 @@ def deliver_waiters(store: Any, card: DecisionCard) -> list:
     from adk.decisions.store import write_steer
 
     text = waiter_text(card)
+    test_answer = is_test_answer(getattr(card, "answered_via", ""))
     rows: list = []
     waiters = load_waiters(store, card.id)
     source = (card.source.session_id or "").strip()
@@ -418,6 +464,17 @@ def deliver_waiters(store: Any, card: DecisionCard) -> list:
         session = str(waiter.get("session_id") or "").strip()
         probe = DecisionCard(id=card.id, title=card.title, source=type(card.source)(
             session_id=session, session_pid=int(waiter.get("session_pid") or 0)))
+        if test_answer:
+            # No live tier for a test answer — not even resuming an ended
+            # session, which is a live action too. The mailbox is the only
+            # channel a test may use, whatever the waiter's liveness.
+            if session:
+                write_steer(session, [f"# {text}", ""], suffix="answer",
+                            sender="the owner", authority="owner",
+                            origin_id=card.id, kind="decision_card")
+            mark_waiter(store, card.id, key, "delivered")
+            rows.append({"key": key, "how": "mailbox (test answer: no live tier)"})
+            continue
         if session_live(waiter):
             landed, how = deliver(probe, text)
             state = "delivered"
@@ -459,6 +516,27 @@ def _self_test() -> int:
 
     landed, why = try_harness("", "hello")
     check("no session id cannot land on the harness", not landed and bool(why), why)
+
+    # A TEST answer is never a live delivery: the console tier types into the
+    # owner's own process, which is how a proof answer became a "real" one
+    # (2026-11-23). Both directions are asserted.
+    check("a (test) marker IS a test answer", is_test_answer("prove (test)"))
+    check("a bare 'test' is a NEUTRAL caller label, not a marker",
+          not is_test_answer("test"))
+    check("a 'simulated' via IS a test answer", is_test_answer("simulated-run"))
+    check("the legacy 'prove' marker IS a test answer", is_test_answer("prove"))
+    check("a desk answer is NOT a test answer", not is_test_answer("desk"))
+    check("a terminal answer is NOT a test answer", not is_test_answer("terminal"))
+    check("an empty via is NOT a test answer", not is_test_answer(""))
+
+    from adk.decisions.store import DecisionCard
+
+    c = DecisionCard(id="d-test", title="t",
+                     source=DecisionSource(session_id="s", session_pid=os.getpid()))
+    c.answered_via = "prove (test)"
+    landed, why = deliver(c, "hello")
+    check("deliver() refuses EVERY live tier for a test answer",
+          not landed and "live tiers skipped" in why, why)
 
     landed, why = try_harness("definitely-not-a-session", "hello")
     check("an unknown session is a miss, not a claim", not landed, why)

@@ -436,7 +436,7 @@
         "standalone"
       ],
       "install_method": "aitherzero_playbook",
-      "install_command": "adk deploy edge-voice",
+      "install_command": "aitherzero playbook run deploy-edge-voice",
       "pricing": {
         "free_tier": true,
         "subscription_cents": 0

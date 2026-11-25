@@ -10,7 +10,7 @@ import org.json.JSONObject;
 /** What this phone knows: the relay, its device id, the owner's cap and its lending policy. */
 final class Config {
     /** The app's version; build.py refuses a manifest whose versionName differs. */
-    static final String VERSION = "0.4.4";
+    static final String VERSION = "0.5.1";
 
     private final SharedPreferences p;
 
@@ -129,7 +129,7 @@ final class Config {
         return t;
     }
     boolean llmPaired() { return p.getBoolean("llm_paired", false); }
-    /** "owner" | "child" | "" (not known yet), from the family registry's heartbeat. */
+    /** "owner" | "member" | "child" | "" (not known yet), from the family registry's heartbeat. */
     String profileKind() { return p.getString("profile_kind", ""); }
     String familyDevice() { return p.getString("family_device", ""); }
     // ---- "Help my fleet" (WorkerService / Worker): off unless the owner turns it on
@@ -153,11 +153,13 @@ final class Config {
     /** Has this app asked Android to stop battery-optimizing it (once, for a household phone)? */
     boolean batteryAsked() { return p.getBoolean("battery_asked", false); }
 
-    /** May this phone run the owner's local model? Never a child's; and only once the
-     *  workspace has vouched for it (registry says owner, or the owner paired it). */
+    /** May this phone run the local model? Never a child's; and only once the workspace
+     *  has vouched for it: the registry says owner, or member (an adult the owner invited
+     *  into the household, on a device they enrolled themselves), or the owner paired it. */
     String localAiBlocked() {
-        if ("child".equals(profileKind())) return "not on a child's phone";
-        if ("owner".equals(profileKind()) || paired()) return "";
+        String kind = profileKind();
+        if ("child".equals(kind)) return "not on a child's phone";
+        if ("owner".equals(kind) || "member".equals(kind) || paired()) return "";
         return "connect this phone to your workspace first";
     }
 

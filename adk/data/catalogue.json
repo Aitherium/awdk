@@ -1,10 +1,10 @@
 {
  "counts": {
   "app": 2,
-  "brick": 71,
+  "brick": 72,
   "integration": 5,
   "product": 14,
-  "skill": 104,
+  "skill": 105,
   "stack": 30
  },
  "entries": [
@@ -3565,6 +3565,41 @@
    "what": "Deploy a website as code - GitHub Pages frontend + Cloudflare Tunnel backend on any machine + an automated never-show-a-raw-error fallback."
   },
   {
+   "add": "aither add skill:windows-goodbye",
+   "add_steps": [
+    [
+     "adk",
+     "skills",
+     "install",
+     "windows-goodbye"
+    ]
+   ],
+   "aliases": [],
+   "detect": [],
+   "gap": "",
+   "id": "skill:windows-goodbye",
+   "kind": "skill",
+   "price": "free",
+   "public": true,
+   "remove": "aither remove skill:windows-goodbye",
+   "remove_steps": [
+    [
+     "adk",
+     "skills",
+     "remove",
+     "windows-goodbye"
+    ]
+   ],
+   "requires": [],
+   "see": "~/.claude/skills/windows-goodbye/SKILL.md",
+   "size": "1 file",
+   "source": "https://github.com/Aitherium/awskills/blob/main/skills/windows-goodbye.md",
+   "status": "available",
+   "title": "windows-goodbye",
+   "verified": "",
+   "what": "Install awnix on a Windows PC with Windows Goodbye - one PowerShell line imports awnix as its own WSL2 distro from one SHA-256-checked..."
+  },
+  {
    "add": "aither add skill:windows-kernel-leak",
    "add_steps": [
     [
@@ -4216,6 +4251,41 @@
    "title": "awdk",
    "verified": "install line checked against the public index in CI",
    "what": "Build AI agent fleets - 3 lines, any backend, local or cloud."
+  },
+  {
+   "add": "aither add awedgerunner",
+   "add_steps": [
+    [
+     "pip",
+     "install",
+     "awedgerunner"
+    ]
+   ],
+   "aliases": [],
+   "detect": [],
+   "first_step": "Open a lease with a one-dollar cap and a thirty-minute expiry, run one job under it, and watch the charge that would...",
+   "gap": "",
+   "id": "awedgerunner",
+   "kind": "brick",
+   "price": "free",
+   "public": true,
+   "remove": "aither remove awedgerunner",
+   "remove_steps": [
+    [
+     "pip",
+     "uninstall",
+     "-y",
+     "awedgerunner"
+    ]
+   ],
+   "requires": [],
+   "see": "awedgerunner --help",
+   "size": "",
+   "source": "https://github.com/Aitherium/awedgerunner",
+   "status": "available",
+   "title": "awedgerunner",
+   "verified": "install line checked against the public index in CI",
+   "what": "Run agent and CI work on edge runners nobody has to rack -- a volunteer's idle GPU, a phone on your own mesh, an edge worker, a free or..."
   },
   {
    "add": "aither add awembed",
@@ -7168,6 +7238,11 @@
      "pip",
      "install",
      "awwall"
+    ],
+    [
+     "pip",
+     "install",
+     "awedgerunner"
     ]
    ],
    "aliases": [],
@@ -7226,6 +7301,12 @@
      "uninstall",
      "-y",
      "awwall"
+    ],
+    [
+     "pip",
+     "uninstall",
+     "-y",
+     "awedgerunner"
     ]
    ],
    "requires": [
@@ -7238,7 +7319,8 @@
     "aitherkvcache",
     "awrtifact",
     "awtunnel",
-    "awwall"
+    "awwall",
+    "awedgerunner"
    ],
    "see": "aither find inference-commons",
    "size": "",

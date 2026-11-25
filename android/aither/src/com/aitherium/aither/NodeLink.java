@@ -179,7 +179,13 @@ final class NodeLink {
                     .put("available_models", cfg.localAiBlocked().isEmpty()
                             ? new JSONArray().put(LlmService.MODEL_ID) : new JSONArray())
                     .put("inference_kind", cfg.llmEnabled() ? "llama-server" : "none")
-                    .put("reach_kind", "none");
+                    .put("reach_kind", "none")
+                    // what this phone runs, so Identity's release auto-deploy can skip a
+                    // device already on the newest release
+                    .put("app_version", Config.VERSION)
+                    // which self-update path ran (silent / tap / blocked) and why: the
+                    // fleet sees per phone whether updates land without a tap
+                    .put("update", Updater.report(ctx));
             String worker = WorkerService.url;
             if (WorkerService.serving && !worker.isEmpty()) {
                 // "Help my fleet": the fleet may send this phone small jobs at its tailnet
