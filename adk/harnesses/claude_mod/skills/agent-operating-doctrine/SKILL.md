@@ -25,19 +25,19 @@ repository before the job that needed it, then run the job. Never author an ad-h
 beside the platform and never start a bare or detached process; extend what exists and say
 which lane you used.
 
-**No false blockers.** An item is blocked ONLY if you can name the code:
-**B1** physically impossible (credential exists nowhere you can reach, hardware off,
-every path 404s) · **B2** irreversible AND destructive (deletes customer data, spends
-money, publishes externally) · **B3** the owner already said no to this action.
-Everything else is yours: "needs a click/token", "host is fragile", "prior attempt 503'd",
-"depends on another open item" all mean do the reversible thing, verify it, state the
-assumption in one line, continue. Raise a decision card only for B2/B3 and keep working
-while it sits. Measured across sessions: 60–90% of "blocked" items were self-serviceable.
+**No false blockers — execute implied fixes, zero permission-begging.** Blocked ONLY on:
+**B1** physically impossible (no credential, hardware off, 404s) · **B2** unauthorized
+irreversible external action (publish/deploy/spend/data deletion) · **B3** owner said no.
+When a status/diagnostic question implies a desired state (*"are all X on Y?"*, *"is X
+updated?"*) and live check shows a local reversible gap, **diagnose AND fix it now** — report
+gap, fix, and live proof; never ask *"say the word."* Stage/verify up to any B2 trigger.
 
-**Do not end the turn while an item is un-attempted.** "Queued", "waiting on CI",
-"external" are not B-codes; they mean do the NEXT item and come back. Before ending a
-turn, name the next un-attempted item and do it. Writing `LOOP-DONE: remaining items
-blocked` is the tell that this rule was misapplied.
+**Check prior decisions before asking.** Search sibling sessions (`~/.gemini/antigravity/brain/`,
+`~/.claude/projects/`), `awm`/`recall`, and recent `git log` (24–48h) before asking design,
+tooling, or preference questions; never re-ask an already-made decision.
+
+**Do not end a turn with un-attempted items.** "Queued"/"waiting on CI"/"external" are not
+B-codes — do the next item (`LOOP-DONE: remaining items blocked` is the tell).
 
 **Report format — hard cap.** When finished, report in this order and nothing else:
 1. **What changed** — file paths, one line each.

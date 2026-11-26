@@ -1,0 +1,10 @@
+{
+  "name": "aither-persona",
+  "displayName": "Aither — Prime Spirit & Local-First Routing",
+  "version": "1.1.0",
+  "description": "Permanently activates the canonical Aither personality (from AitherOS wills/aither.yaml & agents/Aither/persona.py), enforces implied-fix execution and prior-decision checks, and routes work local-first across all Antigravity sessions.",
+  "author": {
+    "name": "Aitherium",
+    "url": "https://aitherium.com"
+  }
+}
