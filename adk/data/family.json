@@ -1,7 +1,7 @@
 {
  "schema": "aither-family/1",
  "generated_by": "gen_ecosystem.py --emit (from ecosystem.yaml); do not edit",
- "count": 96,
+ "count": 97,
  "bricks": [
   {
    "id": "awdk",
@@ -1666,6 +1666,22 @@
     "awseal",
     "awtunnel",
     "awwall"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awboot",
+   "status": "unpublished",
+   "kind": "tool",
+   "tagline": "Verifiable PXE, iPXE, UEFI HTTP Boot, and in-place bootc bare-metal provisioning for x86_64 and aarch64 fleets.",
+   "install": "not on PyPI yet (pending publish); builds in-tree",
+   "module": "awboot",
+   "pairs_with": [
+    "awnet",
+    "awnix",
+    "awseal",
+    "awsettings",
+    "awshare"
    ],
    "harness_surfaces": []
   }

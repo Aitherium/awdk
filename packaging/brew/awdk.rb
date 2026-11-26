@@ -36,7 +36,7 @@ class Awdk < Formula
   # workflow's "Fill the brew sha256 from the published sdist" step then commits the
   # real digest (packaging/sync_versions.py --digests). Do not hand-edit it.
   url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-4.0.1.tar.gz"
-  sha256 "PLACEHOLDER_SHA256" # replaced after upload by pypi-publish.yml step "Fill the brew sha256 from the published sdist"; RH002 (check_adk_release_health.py) fails a release where it survives
+  sha256 "5b52a9a744918b68c43a4b6457b8f4d148e008edfd1e44c005b53ad7c43875e1" # replaced after upload by pypi-publish.yml step "Fill the brew sha256 from the published sdist"; RH002 (check_adk_release_health.py) fails a release where it survives
   # SPDX. "Proprietary" is not an SPDX identifier and `brew audit` rejects it;
   # the LICENSE file is Business Source License 1.1.
   license "BUSL-1.1"

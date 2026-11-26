@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**145 commands.**
+**146 commands.**
 
 | command | what it does |
 |---|---|
@@ -30,6 +30,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk agent-prompt`](#adk-agent-prompt) | Print the setup prompt for AI coding agents |
 | [`adk agents`](#adk-agents) | Discover agents in the mesh (ls) |
 | [`adk ambient`](#adk-ambient) | Make the agent an expert on what you're doing in this terminal |
+| [`adk antigravity`](#adk-antigravity) | Install and audit the Google Antigravity AitherOS integration (setup/doctor) |
 | [`adk approvals`](#adk-approvals) | List/approve/deny A2A permission cards blocking federated agents |
 | [`adk autoupdate`](#adk-autoupdate) | opt in/out of daemons restarting onto validated new code (status\|on\|off\|apply) |
 | [`adk awconnect`](#adk-awconnect) | Install / check the Awconnect browser extension |
@@ -55,7 +56,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk create-app`](#adk-create-app) | Scaffold a awkit workspace app |
 | [`adk cron`](#adk-cron) | Manage scheduled tasks |
 | [`adk crypto`](#adk-crypto) | Crypto payment settings (platform receiving wallet) |
-| [`adk decide`](#adk-decide) | Decision cards — raise a structured ask, list what is waiting, answer it |
+| [`adk decide`](#adk-decide) | Human Decision Cards — raise/list/answer structured asks (automated typed-decision ladder + Brier ledger: use `awdecide`) |
 | [`adk deploy`](#adk-deploy) | Deploy AitherOS components or agents |
 | [`adk desk`](#adk-desk) | Interact with awdesk bridge: send commands, view history |
 | [`adk devices`](#adk-devices) | List, add, inspect and remove the devices enrolled in your workspace |
@@ -260,6 +261,15 @@ Make the agent an expert on what you're doing in this terminal
 - `adk ambient brief` — What does the agent already know about this?
 - `adk ambient status` — Show ambient loop stats and engine health
 
+## `adk antigravity`
+
+Install and audit the Google Antigravity AitherOS integration (setup/doctor)
+
+**Subcommands**
+
+- `adk antigravity setup` — Install the AitherOS Antigravity plugin (MCP, hooks, rules, skills)
+- `adk antigravity doctor` — Audit the Antigravity AitherOS plugin and hook bridge
+
 ## `adk approvals`
 
 List/approve/deny A2A permission cards blocking federated agents
@@ -416,18 +426,6 @@ Run scoped headless Claude Code subagents (serve/spawn/runs/kill)
 - `adk claude doctor` — Audit Claude Code settings/hooks/MCP (CCD001-006)
 - `adk claude hookd` — Run hooks in-process, no spawn per hook: serve\|ensure\|health\|convert\|revert
 
-## `adk antigravity`
-
-- `adk antigravity setup` — Install the AitherOS Antigravity plugin (MCP hub bridge, `antigravity_hooks` bridge to `hookd`/`awgov`, rules, `aw` subagent, skills) and optional workspace `.agents/hooks.json`
-- `adk antigravity doctor` — Audit the Antigravity AitherOS plugin, MCP servers, hook bridge latency, and local AitherOS services (`AGD001`-`AGD006`)
-
-## `adk harness up`
-
-- `adk harness up` — Bring up the local Aither World harness stack in one command: inspect installed `aw*` bricks, ensure `hookd` (:8369), `awsh` daemon (:8362), and `aw-hub` (:47933), auto-wire detected coding agents (Google Antigravity, Claude Code), and print a live readiness summary
-- `adk harness up --status` — Read-only health check across bricks, daemons, and agent plugins
-- `adk harness up --dry-run` — Preview what `adk harness up` would start and wire without touching disk or processes
-- `adk harness up --down` — Stop daemons started by `adk harness up`
-
 ## `adk claude-account`
 
 Manage multiple Claude Code (Anthropic) account profiles
@@ -581,7 +579,7 @@ Crypto payment settings (platform receiving wallet)
 
 ## `adk decide`
 
-Decision cards — raise a structured ask, list what is waiting, answer it
+Human Decision Cards — raise/list/answer structured asks (automated typed-decision ladder + Brier ledger: use `awdecide`)
 
 | option | type | required | default | description |
 |---|---|---|---|---|
@@ -875,6 +873,9 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 **Subcommands**
 
 - `adk harness serve` — Run the harness daemon
+- `adk harness ensure` — Idempotently start local loopback harness daemon
+- `adk harness health` — Read-only health probe of the harness daemon
+- `adk harness status` — Read-only health probe of the harness daemon
 - `adk harness harnesses` — What this box can drive
 - `adk harness agents` — Sovereign agent roster
 - `adk harness skills` — Skills and slash commands a session can be handed (<cwd>/.claude then ~/.claude)
@@ -888,12 +889,15 @@ AitherShell — drive Claude Code, other coding harnesses, agents and real termi
 - `adk harness wrap` — Terminal-resident daemon session (bridge stdin/stdout to daemon)
 - `adk harness mod` — The Claude Code mod: run any harness as a native Claude Code subagent
 - `adk harness parts` — Which parts of the composed harness are installed here, at what version, and the install line for each missing one
+- `adk harness up` — Bring up the local Aither World harness stack (bricks, daemons, agent plugins)
 - `adk harness pair` — Pair the awconnect browser extension: approve a code, list, revoke
 
 | option | type | required | default | description |
 |---|---|---|---|---|
 | `--url` | str |  |  | Harness daemon URL (default 127.0.0.1:8362) |
 | `--token` | str |  |  | Daemon bearer token |
+| `--auto-start` | str |  | `false` | Auto-start local loopback daemon on cold start (default on) |
+| `--no-auto-start` | str |  | `false` | Do not auto-start local loopback daemon when unreachable |
 
 ## `adk home`
 
@@ -1221,6 +1225,7 @@ MCP server, IDE setup, and cloud gateway connection
 - `adk mcp setup` — Generate IDE config (.mcp.json) for MCP gateway
 - `adk mcp node` — Start lightweight local MCP server
 - `adk mcp status` — Check MCP gateway connectivity and tier
+- `adk mcp sync-routed` — Configure routed AitherOS MCP (3 meta-tools) across all detected coding agents & IDEs
 
 ## `adk memory`
 

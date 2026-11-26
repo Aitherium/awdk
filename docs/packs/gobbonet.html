@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed gobbonet -&gt; ~\.aither\packs\gobbonet</span>
 <span class="o">verified: adk discovers &#x27;gobbonet&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>4.0.1</dd></div><div><dt>Size</dt><dd>66 KB</dd></div><div><dt>Licence</dt><dd>MIT through 1.5.3; AGPL-3.0 from 1.7 (adk gobbonet clones the MIT fork, wizzense/GobboNet)</dd></div><div><dt>sha256</dt><dd>9347af4c79d04bcb…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>4.0.1</dd></div><div><dt>Size</dt><dd>66 KB</dd></div><div><dt>Licence</dt><dd>MIT through 1.5.3; AGPL-3.0 from 1.7 (adk gobbonet clones the MIT fork, wizzense/GobboNet)</dd></div><div><dt>sha256</dt><dd>694e4d5f209a0291…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -326,12 +326,12 @@ than a broken feature.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>9347af4c79d04bcbc554c17fb72d957f574685d392f6d995bf8a8e34e005ad4f</code></p>
+    <p class="sub">sha256 <code>694e4d5f209a0291db532a260aff4e3e07cf74a7c74c64bb853ee7771266eace</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c gobbonet-4.0.1.sha256
 <span class="o">gobbonet-4.0.1.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;9347AF4C79D04BCBC554C17FB72D957F574685D392F6D995BF8A8E34E005AD4F&#x27;
+<span class="p">$</span> $want = &#x27;694E4D5F209A0291DB532A260AFF4E3E07CF74A7C74C64BB853EE7771266EACE&#x27;
 <span class="p">$</span> (Get-FileHash gobbonet-4.0.1.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
