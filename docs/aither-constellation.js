@@ -106,14 +106,15 @@
     "  border:1px solid var(--line,var(--ac-line));border-radius:14px;overflow:hidden;",
     "  background:var(--panel,#12121a)}",
     "#aither-constellation canvas{display:block;width:100%;height:clamp(260px,38vh,380px);cursor:default}",
-    "#aither-constellation .ac-head{position:absolute;top:.85rem;left:1rem;right:1rem;",
-    "  display:flex;justify-content:space-between;gap:1rem;pointer-events:none;",
+    "#aither-constellation .ac-head{position:relative;padding:.85rem 1rem;",
+    "  display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.5rem 1rem;",
     "  font:600 .82rem/1.3 var(--sans,system-ui);color:var(--ink,#e8e8ef)}",
     "#aither-constellation .ac-head small{display:block;font-weight:400;font-size:.74rem;",
     "  color:var(--dim,#9a9aad)}",
     "#aither-constellation .ac-cards{display:grid;gap:0;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));",
     "  border-top:1px solid var(--line,var(--ac-line))}",
     "#aither-constellation .ac-card{padding:.7rem .9rem;border-right:1px solid var(--line,var(--ac-line));",
+    "  border-bottom:1px solid var(--line,var(--ac-line));",
     "  font:400 .78rem/1.45 var(--sans,system-ui);color:var(--dim,#9a9aad);text-decoration:none;display:block}",
     "#aither-constellation .ac-card:last-child{border-right:none}",
     "#aither-constellation .ac-card:hover{background:rgba(140,160,255,.07)}",
@@ -161,7 +162,7 @@
     right.innerHTML = '<small id="ac-status">reading manifests…</small>';
     head.appendChild(left); head.appendChild(right);
     var cards = el("div", "ac-cards");
-    mount.appendChild(canvas); mount.appendChild(head); mount.appendChild(cards);
+    mount.appendChild(head); mount.appendChild(canvas); mount.appendChild(cards);
 
     var stars = REPOS.map(function (r, i) {
       return {
@@ -202,7 +203,8 @@
         a.appendChild(el("div", null, s.repo.blurb));
         if (s.state === "live") {
           topMetrics(s.manifest, 2).forEach(function (m) {
-            a.appendChild(el("div", "ac-m", m.text + "  " + m.label));
+            var lbl = (m.text === "1" && m.label.slice(-1) === "s") ? m.label.slice(0, -1) : m.label;
+            a.appendChild(el("div", "ac-m", m.text + "  " + lbl));
           });
         } else if (s.state === "unknown") {
           // Never a zero. A repo that publishes nothing says so.
