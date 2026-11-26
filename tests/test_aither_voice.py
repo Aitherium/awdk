@@ -15,7 +15,12 @@ import wave
 
 import pytest
 
-from adk.home import aither_voice_runtime as rt
+# The runtime is a shim over the `awvoice` brick, which ships only in the optional
+# `senses` extra (awdk/pyproject.toml). A clean `pip install awdk` (the payload test
+# venv) has no awvoice, so without this the whole file errors at collection (rc=2).
+pytest.importorskip("awvoice", reason="needs the `senses` extra (awvoice)")
+
+from adk.home import aither_voice_runtime as rt  # noqa: E402
 from adk.home import voice
 from adk.models import catalogue, serve
 
