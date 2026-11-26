@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.aitherium.aither"
-    android:versionCode="44"
-    android:versionName="0.5.1">
+    android:versionCode="46"
+    android:versionName="0.5.3">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
 
@@ -53,6 +53,10 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
+        <package android:name="org.openaw.app" />
+        <package android:name="com.aitherium.aionyn" />
+        <package android:name="org.wesyn.app" />
+        <package android:name="com.eusyra.studio" />
     </queries>
 
     <application
@@ -119,6 +123,23 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="aitherkv" android:host="pair" />
+            </intent-filter>
+        </activity>
+
+        <!-- AitherMesh nodes, voice routing, and model posture controls (DGX Spark, PC 5090, OptiPlex).
+             Accepts aither://mesh?hub=...&token=... pairing links from awnix-voice-remote. -->
+        <activity
+            android:name=".MeshActivity"
+            android:label="AitherMesh nodes"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="aither" android:host="mesh" />
             </intent-filter>
         </activity>
 
@@ -419,6 +440,8 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <receiver android:name=".FamilyInstallResult" android:exported="false" />
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

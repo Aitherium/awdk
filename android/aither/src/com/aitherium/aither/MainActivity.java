@@ -123,6 +123,8 @@ public class MainActivity extends Activity implements Shell.Host {
         web.addJavascriptInterface(new NearbyDevices.Bridge(this, web), "AitherNearby");
         // window.AitherDeskLink: drive the owner's PC over the USB cable (DeskLink, adb reverse)
         web.addJavascriptInterface(new DeskLinkBridge(this, web), "AitherDeskLink");
+        // window.AitherMesh: inspect AitherMesh peers and switch model postures (MeshBridge)
+        web.addJavascriptInterface(new MeshBridge(this, web), "AitherMesh");
         web.setWebChromeClient(new android.webkit.WebChromeClient() {
             @Override
             public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {

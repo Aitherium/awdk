@@ -26,6 +26,7 @@ public class SettingsActivity extends Activity {
     private TextView alertsStatus;
     private TextView workerStatus;
     private TextView fileIndexStatus;
+    private TextView meshStatus;
     private Switch fileIndex;
     private Switch alerts;
     private TextView connected;
@@ -179,6 +180,11 @@ public class SettingsActivity extends Activity {
             row(ai, Ui.action(this, "Ask about a picture", v ->
                     startActivity(new Intent(this, DescribeActivity.class))),
                     "Take or choose a picture and ask what is in it.");
+            row(ai, Ui.action(this, "AitherMesh nodes & voice", v ->
+                    startActivity(new Intent(this, MeshActivity.class))),
+                    "Route voice to DGX Spark, 5090 PC or OptiPlex and switch model postures over Tailscale.");
+            meshStatus = dim();
+            ai.addView(meshStatus);
             row(ai, toggle("Lend memory to my models", "enabled", cfg.enabled()),
                     "Your own models may keep part of their memory on this phone.");
             row(ai, toggle("Only while charging", "only_charging", cfg.onlyCharging()),
@@ -638,6 +644,9 @@ public class SettingsActivity extends Activity {
             }
             if (workerStatus != null) {
                 workerStatus.setText("Fleet worker: " + (cfg.workerOn() ? WorkerService.state : "off"));
+            }
+            if (meshStatus != null) {
+                meshStatus.setText("AitherMesh: " + new MeshClient(SettingsActivity.this).statusSummary());
             }
             NodeLink n = new NodeLink(SettingsActivity.this);
             nodeStatus.setText("Version " + Config.VERSION

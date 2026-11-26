@@ -55,6 +55,7 @@ public class WearActivity extends Activity {
     static final String TALK_ALIAS = "com.aitherium.aither.TalkToAither";
 
     private WearApi api;
+    private WearMesh mesh;
     private WearTheme th;
     private SharedPreferences prefs;
     private LinearLayout col;
@@ -103,6 +104,7 @@ public class WearActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         api = new WearApi(this);
+        mesh = new WearMesh(this);
         voice = new WearVoice(this, api);
         android.content.IntentFilter off = new android.content.IntentFilter(Intent.ACTION_SCREEN_OFF);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenOff, off, RECEIVER_NOT_EXPORTED);
@@ -391,6 +393,10 @@ public class WearActivity extends Activity {
         who.setOnClickListener(v -> agents());
         who.setMinHeight(Ui.dp(this, 40));
         who.setGravity(Gravity.CENTER);
+        TextView nodeChip = line("Node: " + mesh.targetLabel() + "  ›", 12, th.dim);
+        nodeChip.setOnClickListener(v -> meshScreen());
+        nodeChip.setMinHeight(Ui.dp(this, 36));
+        nodeChip.setGravity(Gravity.CENTER);
         voiceOffNote("home");
 
         label("Quick asks");
@@ -403,6 +409,7 @@ public class WearActivity extends Activity {
                 ask(q[1], q[2].isEmpty() ? agent() : q[2]);
             });
         }
+        button("Mesh & posture  ›", false, v -> meshScreen());
 
         label("Waiting for you");
         TextView count = line("Checking…", 13, th.dim);
@@ -504,10 +511,96 @@ public class WearActivity extends Activity {
             confirm("Turn off spoken answers?", "Answers will only show on screen.", "Turn off",
                     () -> { voice.setOn(false, "settings (confirmed)"); settings(); });
         });
+        label("Updates");
+        String ver = "0.5.3";
+        try {
+            ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) { /* fallback */ }
+        TextView updState = line("Version " + ver + " · " + WearUpdater.last, 11, th.dim);
+        button("Check for update", false, v -> {
+            updState.setText("Checking for update…");
+            int at = screen;
+            work(() -> {
+                new WearUpdater(this).check();
+                onUi(at, () -> updState.setText(WearUpdater.last));
+            });
+        });
         label("Account");
         button("Sign out", false, v -> confirm("Sign out of Aither on this watch?",
                 "You'll need your phone to sign in again.", "Sign out",
                 () -> { endConversation("sign out"); api.signOut("Sign out in Settings (confirmed)"); render(); }));
+        button("Back", false, v -> render());
+    }
+
+    /** AitherMesh target picker, live node status, posture switcher, and hub pairing on the wrist. */
+    private void meshScreen() {
+        int at = clear(false);
+        label("Voice target");
+        String cur = mesh.target();
+        for (String[] t : WearMesh.TARGETS) {
+            button(t[1] + (t[0].equals(cur) ? "  ✓" : ""), t[0].equals(cur), v -> {
+                mesh.setTarget(t[0]);
+                meshScreen();
+            });
+        }
+        label("Switch posture");
+        TextView posState = line(mesh.paired() ? "Applies to selected node (default DGX Spark)."
+                : "Pair mesh token below to switch postures directly.", 11, th.dim);
+        String posNode = ("cloud".equals(cur) || "auto".equals(cur)) ? "dgx-spark" : cur;
+        for (String[] p : MeshRemote.POSTURES) {
+            button(p[1], false, v -> {
+                posState.setText("Applying " + p[0] + " on " + MeshRemote.nodeLabel(posNode) + "…");
+                work(() -> {
+                    String res = mesh.setPosture(p[0], posNode);
+                    onUi(at, () -> posState.setText(res));
+                });
+            });
+        }
+        label("Live mesh nodes");
+        TextView nodeState = line(mesh.paired() ? "Checking…" : "Not paired yet.", 11, th.dim);
+        LinearLayout nodeBox = new LinearLayout(this);
+        nodeBox.setOrientation(LinearLayout.VERTICAL);
+        col.addView(nodeBox);
+        if (mesh.paired()) {
+            work(() -> {
+                String[] err = {""};
+                List<WearMesh.Node> list = mesh.nodes(err);
+                onUi(at, () -> {
+                    nodeBox.removeAllViews();
+                    if (!err[0].isEmpty()) { nodeState.setText(err[0]); return; }
+                    nodeState.setText(list.size() + " node(s):");
+                    for (WearMesh.Node n : list) {
+                        TextView row = Ui.text(this, n.line(), 12, n.online ? th.ink : th.faint);
+                        row.setGravity(Gravity.CENTER_HORIZONTAL);
+                        row.setPadding(0, Ui.dp(this, 3), 0, Ui.dp(this, 3));
+                        nodeBox.addView(row);
+                    }
+                });
+            });
+        }
+        label("Pair mesh hub");
+        EditText hubIn = new EditText(this);
+        hubIn.setHint("https://100.64.0.38:9448");
+        hubIn.setText(mesh.hub());
+        hubIn.setTextColor(th.ink);
+        hubIn.setHintTextColor(th.faint);
+        hubIn.setSingleLine(true);
+        col.addView(hubIn);
+        EditText tokIn = new EditText(this);
+        tokIn.setHint("Mesh token or pairing URL");
+        tokIn.setText(mesh.token());
+        tokIn.setTextColor(th.ink);
+        tokIn.setHintTextColor(th.faint);
+        tokIn.setSingleLine(true);
+        col.addView(tokIn);
+        TextView pairMsg = line("", 11, th.accent);
+        button("Save mesh", true, v -> {
+            if (mesh.save(hubIn.getText().toString(), tokIn.getText().toString())) {
+                meshScreen();
+            } else {
+                pairMsg.setText("Need a private Tailscale/LAN https:// hub and valid token.");
+            }
+        });
         button("Back", false, v -> render());
     }
 
@@ -1083,6 +1176,34 @@ public class WearActivity extends Activity {
         });
         TextView[] after = new TextView[1];
         work(() -> {
+            MeshRemote.IntentRoute intent = MeshRemote.routeIntent(q);
+            String target = mesh.target();
+            boolean useMesh = mesh.paired() && (!"cloud".equals(target) || intent.meshRelevant);
+            if (useMesh) {
+                String routeNode = !intent.node.isEmpty() ? intent.node
+                        : ("cloud".equals(target) ? "auto" : target);
+                WearMesh.Reply mr = mesh.chat(q, routeNode, speaking);
+                if (mr.ok && !mr.reply.isEmpty()) {
+                    onUi(at, () -> {
+                        who.setText(MeshRemote.nodeLabel(mr.node)
+                                + (mr.model.isEmpty() ? "" : " · " + mr.model));
+                        List<WearFeed.Sentence> done = feed.last(mr.reply);
+                        if (mr.audio != null && mr.audio.length > 32 && !done.isEmpty()) {
+                            String txt = feed.text();
+                            WearFeed.Sentence whole = new WearFeed.Sentence(
+                                    0, txt.length(), feed.gen(), txt, Talk.spoken(txt));
+                            voice.addPreRendered(whole, mr.audio);
+                        } else {
+                            voice.addAll(done);
+                        }
+                        paint.run();
+                        closed[0] = true;
+                        maybeFinish.run();
+                        showAfter(at, after);
+                    });
+                    return;
+                }
+            }
             Log.i(LAT, "ask agent=" + agentId + " chars=" + q.length() + " turn=" + turn
                     + (session.isEmpty() ? "" : " (conversation)"));
             String[] err = {null};

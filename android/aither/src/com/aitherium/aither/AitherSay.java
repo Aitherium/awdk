@@ -99,6 +99,20 @@ final class AitherSay {
         }, "aither-say").start();
     }
 
+    /** Play pre-rendered Aither voice audio (e.g. local:aither WAV/Opus from an AitherMesh node). */
+    void playAudio(byte[] audio, Listener l) {
+        if (audio == null || audio.length < 32) {
+            if (l != null) l.onUnavailable();
+            return;
+        }
+        stop();
+        int at = gen;
+        new Thread(() -> {
+            if (at != gen) return;
+            if (!play(at, audio) && at == gen && l != null) l.onUnavailable();
+        }, "aither-say-mesh").start();
+    }
+
     void stop() {
         gen++;
         MediaPlayer m = playing;

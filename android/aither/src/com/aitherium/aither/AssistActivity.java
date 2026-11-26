@@ -77,6 +77,8 @@ public class AssistActivity extends Activity {
     private SpeechRecognizer recognizer;
     /** Aither's own voice, never the phone's built-in TTS (owner: "NO FALLBACKS"). */
     private AitherSay voice;
+    private MeshClient mesh;
+    private TextView targetBar;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -91,6 +93,38 @@ public class AssistActivity extends Activity {
         title.setText("Ask Aither");
         title.setTextSize(22);
         col.addView(title);
+        mesh = new MeshClient(this);
+        if (mesh.allowed()) {
+            LinearLayout chips = new LinearLayout(this);
+            chips.setOrientation(LinearLayout.HORIZONTAL);
+            chips.setPadding(0, pad / 2, 0, 0);
+            String[][] picks = {
+                {"phone", "Phone"},
+                {"auto", "Mesh"},
+                {"dgx-spark", "Spark"},
+                {"pc", "PC"},
+            };
+            for (String[] pk : picks) {
+                Button chip = new Button(this);
+                chip.setText(pk[1]);
+                chip.setTextSize(12);
+                chip.setOnClickListener(v -> {
+                    mesh.setTarget(pk[0]);
+                    refreshTargetBar();
+                });
+                chips.addView(chip, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            }
+            Button cfgBtn = new Button(this);
+            cfgBtn.setText("Nodes");
+            cfgBtn.setTextSize(12);
+            cfgBtn.setOnClickListener(v -> startActivity(new Intent(this, MeshActivity.class)));
+            chips.addView(cfgBtn);
+            col.addView(chips);
+            targetBar = new TextView(this);
+            targetBar.setTextSize(12);
+            refreshTargetBar();
+            col.addView(targetBar);
+        }
         log = new TextView(this);
         log.setTextSize(16);
         log.setPadding(0, pad, 0, pad);
@@ -242,6 +276,14 @@ public class AssistActivity extends Activity {
                 Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this));
     }
 
+    private void refreshTargetBar() {
+        if (targetBar == null || mesh == null) return;
+        String t = mesh.target();
+        String label = "Target: " + MeshRemote.nodeLabel(t);
+        if (!"phone".equals(t) && !mesh.paired()) label += " (tap Nodes to pair AitherMesh)";
+        targetBar.setText(label);
+    }
+
     private void say(String answer) {
         if (voice == null || !resumed || !speak.isChecked()) return;
         String s = Talk.spoken(answer);
@@ -363,7 +405,36 @@ public class AssistActivity extends Activity {
         log.append("…");
         StringBuilder streamed = new StringBuilder();
         boolean foreground = resumed;
+        boolean wantSpeak = speak.isChecked();
         new Thread(() -> {
+            MeshRemote.IntentRoute intent = MeshRemote.routeIntent(q);
+            String target = mesh != null && mesh.allowed() ? mesh.target() : "phone";
+            boolean useMesh = mesh != null && mesh.paired()
+                    && (!"phone".equals(target) || intent.meshRelevant);
+            if (useMesh) {
+                String routeNode = !intent.node.isEmpty() ? intent.node
+                        : ("phone".equals(target) ? "auto" : target);
+                MeshClient.ChatReply mr = mesh.chat(q, routeNode, wantSpeak);
+                if (mr.ok && !mr.reply.isEmpty()) {
+                    String tag = "  [" + MeshRemote.nodeLabel(mr.node)
+                            + (mr.model.isEmpty() ? "" : " · " + mr.model) + "]";
+                    main.post(() -> {
+                        lastAnswer = "Q: " + q + "\nA: " + mr.reply;
+                        log.setText(before + "Aither: " + mr.reply + tag);
+                        busy = false;
+                        send.setEnabled(true);
+                        mic.setEnabled(true);
+                        if (!isDestroyed() && resumed && speak.isChecked()) {
+                            if (mr.audio != null && mr.audio.length > 32 && voice != null) {
+                                voice.playAudio(mr.audio, () -> say(mr.reply));
+                            } else {
+                                say(mr.reply);
+                            }
+                        }
+                    });
+                    return;
+                }
+            }
             Agent.Turn t = new Agent(this, false, page).ask(q, foreground, chunk -> main.post(() -> {
                 streamed.append(chunk);
                 if (busy) log.setText(before + "Aither: " + streamed + " …");
@@ -390,6 +461,7 @@ public class AssistActivity extends Activity {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        refreshTargetBar();
     }
 
     @Override

@@ -161,6 +161,13 @@ final class WearVoice {
         for (WearFeed.Sentence s : list) add(s);
     }
 
+    /** Queue pre-rendered Aither voice audio (e.g. local:aither WAV from an AitherMesh node). */
+    void addPreRendered(WearFeed.Sentence s, byte[] audio) {
+        LinkedBlockingQueue<Line> q = queue;
+        if (q == null || s == null || audio == null || audio.length < 32 || !on()) return;
+        q.add(new Line(s, java.util.concurrent.CompletableFuture.completedFuture(audio)));
+    }
+
     /** No more lines for this answer: done() comes once the queue is said. */
     void finish() {
         LinkedBlockingQueue<Line> q = queue;
