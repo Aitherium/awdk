@@ -14313,6 +14313,135 @@ def _extract_arg(act) -> dict:
     return ai
 
 
+_CLI_HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Quickstart & Coding", (
+        "start", "init", "new", "run", "chat", "shell", "harness", "up", "down",
+        "stack", "wizard", "setup", "setup-all", "quickstart", "quickstart-local",
+        "onboard", "onboard-remote", "learn", "gobbonet", "solve", "bonsai",
+        "bonsai-local",
+    )),
+    ("Agents, Packs & Tools", (
+        "agent", "agents", "invoke", "aeon", "create-app", "pack", "packs",
+        "skills", "tools", "mcp", "acp", "addon", "component", "components",
+        "install", "publish", "publish-preflight", "bricks", "connectors",
+        "forge", "soul", "doc", "notebook", "briefs", "contribute",
+    )),
+    ("Harnesses, Decisions & Workflows", (
+        "decide", "approvals", "claude", "claude-model", "claude-account",
+        "antigravity", "agent-prompt", "sandbox", "workflow", "jobs", "cron",
+        "eval", "test", "explore", "wm", "train", "baseline",
+    )),
+    ("Local Models, Memory & Knowledge", (
+        "models", "backend", "image", "voice", "memory", "kb", "embed",
+        "ingest", "graph", "index", "patterns", "spec", "routing",
+        "free-cloud", "gpu", "inference", "kvholder",
+    )),
+    ("Mesh, Grid & Sync", (
+        "mesh", "grid", "join", "link", "pair", "pair-mode", "awconnect",
+        "relay", "mail", "listen", "sync", "storage", "family-drive", "backup",
+        "devices", "discover", "catalog", "lookout", "mothership", "mobile",
+        "desk", "home", "ui", "workspace", "rc", "ssh", "ssh-cert", "fleet",
+        "fleet-host", "instance", "volunteer", "intel", "ambient", "x-session",
+    )),
+    ("Auth, Security & Diagnostics", (
+        "login", "logout", "register", "reregister", "whoami", "keys", "secret",
+        "vault", "license", "balance", "wallet", "costs", "spend", "crypto",
+        "tenant", "operator", "host", "admin", "status", "doctor", "upgrade",
+        "autoupdate", "connect", "disconnect", "deploy", "gateway", "integrate",
+        "feedback", "support", "platform",
+    )),
+)
+
+_CLI_HELP_EPILOG = (
+    "Disambiguation:\n"
+    "  adk decide   Human Decision Cards (raise/list/answer structured asks)\n"
+    "  awdecide     Automated Typed-Decision Ladder + Brier Ledger (separate brick)\n"
+    "\n"
+    "Run `adk <command> --help` for flags on any command."
+)
+
+
+class _GroupedArgumentParser(argparse.ArgumentParser):
+    """Top-level ``adk`` parser that renders subcommands in topical groups
+    while keeping 100% flat ``adk <command>`` dispatch unchanged."""
+
+    def format_help(self) -> str:
+        sub_action = next(
+            (a for a in self._actions if isinstance(a, argparse._SubParsersAction)),
+            None,
+        )
+        if sub_action is None:
+            return super().format_help()
+
+        helps: dict[str, str] = {}
+        order: list[str] = []
+        for ca in getattr(sub_action, "_choices_actions", ()):
+            name = str(ca.dest)
+            helps[name] = str(ca.help or "")
+            order.append(name)
+        for name in getattr(sub_action, "choices", ()):
+            if name not in helps:
+                helps[name] = ""
+                order.append(name)
+
+        lines = [
+            f"usage: {self.prog} [-h] [--version] [--self-test] <command> [args ...]",
+            "",
+        ]
+        if self.description:
+            lines.append(self.description)
+            lines.append("")
+        lines.append("options:")
+        lines.append("  -h, --help                 show this help message and exit")
+        lines.append("  --version                  show program's version number and exit")
+        lines.append("  --self-test, --selftest    run offline CLI and package self-test")
+
+        seen: set[str] = set()
+        for group_title, cmds in _CLI_HELP_GROUPS:
+            present = [c for c in cmds if c in helps and c not in seen]
+            if not present:
+                continue
+            lines.append("")
+            lines.append(f"{group_title}:")
+            for cmd in present:
+                seen.add(cmd)
+                desc = helps[cmd]
+                lines.append(f"  {cmd:<22} {desc}" if desc else f"  {cmd}")
+
+        leftover = [c for c in order if c not in seen]
+        if leftover:
+            lines.append("")
+            lines.append("Other Commands:")
+            for cmd in leftover:
+                desc = helps[cmd]
+                lines.append(f"  {cmd:<22} {desc}" if desc else f"  {cmd}")
+
+        lines.append("")
+        lines.append(_CLI_HELP_EPILOG)
+        lines.append("")
+        return "\n".join(lines)
+
+
+def _cli_self_test() -> int:
+    """Offline CLI self-test: prove parser construction, grouped help, and passthrough verbs."""
+    parser = get_parser()
+    help_text = parser.format_help()
+    if "Quickstart & Coding:" not in help_text or "awdecide" not in help_text:
+        print("adk --self-test FAIL: grouped help or disambiguation missing", file=sys.stderr)
+        return 1
+    sub_action = next(
+        (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
+        None,
+    )
+    choices = set(getattr(sub_action, "choices", {}).keys())
+    missing = [v for v in _PASSTHROUGH_VERBS if v not in choices]
+    if missing:
+        print(f"adk --self-test FAIL: unregistered passthrough verbs: {missing}", file=sys.stderr)
+        return 1
+    print(f"adk --self-test OK ({len(choices)} commands across {len(_CLI_HELP_GROUPS)} groups)")
+    return 0
+
+
 _cached_parser: argparse.ArgumentParser | None = None
 
 
@@ -14330,9 +14459,15 @@ def get_parser() -> argparse.ArgumentParser:
     """
     global _cached_parser
     if _cached_parser is None:
-        _cached_parser = argparse.ArgumentParser(
+        _cached_parser = _GroupedArgumentParser(
             prog="adk",
             description="AitherADK — Build AI agent fleets with any LLM backend",
+        )
+        from adk import __version__ as _adk_version
+        _cached_parser.add_argument("--version", action="version", version=f"adk {_adk_version}")
+        _cached_parser.add_argument(
+            "--self-test", "--selftest", dest="self_test", action="store_true",
+            help="Run offline CLI and package self-test",
         )
         _register_commands(_cached_parser.add_subparsers(dest="command"))
     return _cached_parser
@@ -14770,7 +14905,7 @@ def _register_commands(sub):
     # flag that silently does nothing is worse than a flag that does not exist.
     decide_p = sub.add_parser(
         "decide",
-        help="Decision cards — raise a structured ask, list what is waiting, answer it",
+        help="Human Decision Cards — raise/list/answer structured asks (automated typed-decision ladder + Brier ledger: use `awdecide`)",
         add_help=False,
     )
     decide_p.add_argument("decide_args", nargs=argparse.REMAINDER,
@@ -14880,11 +15015,23 @@ def _register_commands(sub):
     )
     shell_p.add_argument("--url", default="", help="Harness daemon URL (default 127.0.0.1:8362)")
     shell_p.add_argument("--token", default="", help="Daemon bearer token")
+    shell_p.add_argument("--auto-start", dest="auto_start", action="store_true",
+                         help="Auto-start local loopback daemon on cold start (default on)")
+    shell_p.add_argument("--no-auto-start", dest="no_auto_start", action="store_true",
+                         help="Do not auto-start local loopback daemon when unreachable")
     shell_sub = shell_p.add_subparsers(dest="shell_command")
 
     sh_serve = shell_sub.add_parser("serve", help="Run the harness daemon")
     sh_serve.add_argument("--host", default="", help="Bind host (default 127.0.0.1)")
     sh_serve.add_argument("--port", type=int, default=0, help="Bind port (default 8362)")
+
+    sh_ensure = shell_sub.add_parser("ensure", help="Idempotently start local loopback harness daemon")
+    sh_ensure.add_argument("--timeout", type=float, default=20.0, help="Health-wait timeout in seconds")
+    sh_ensure.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    for _hname in ("health", "status"):
+        sh_health = shell_sub.add_parser(_hname, help="Read-only health probe of the harness daemon")
+        sh_health.add_argument("--json", action="store_true", help="Machine-readable output")
 
     sh_harnesses = shell_sub.add_parser("harnesses", help="What this box can drive")
     sh_harnesses.add_argument("--versions", action="store_true", help="Probe versions too")
@@ -16877,6 +17024,21 @@ def _register_commands(sub):
     mcp_node_p.add_argument("-p", "--port", type=int, default=8182, help="Port (default: 8182)")
     # adk mcp status — check gateway connectivity
     mcp_sub.add_parser("status", help="Check MCP gateway connectivity and tier")
+    # adk mcp sync-routed — wire routed AitherOS stdio bridge into all detected harnesses
+    mcp_sync_p = mcp_sub.add_parser(
+        "sync-routed",
+        help="Configure routed AitherOS MCP (3 meta-tools) across all detected coding agents & IDEs",
+    )
+    mcp_sync_p.add_argument("--home", default="", help="Override user home directory")
+    mcp_sync_p.add_argument("--repo", default="", help="Optional repo root containing .mcp.json")
+    mcp_sync_p.add_argument("--python-exe", default="", help="Override Python executable for MCP commands")
+    mcp_sync_p.add_argument("--bridge-script", default="", help="Override path to mcp_stdio_bridge.py")
+    mcp_sync_p.add_argument("--awdelegate-script", default="", help="Override path to awdelegate.py")
+    mcp_sync_p.add_argument("--targets", default="", help="Comma-separated subset of harnesses to update")
+    mcp_sync_p.add_argument("--flat", action="store_true", help="Write flat bridge args without --routed")
+    mcp_sync_p.add_argument("--win-style", action="store_true", help="Format paths for Windows host")
+    mcp_sync_p.add_argument("--dry-run", action="store_true", help="Preview updates without writing")
+    mcp_sync_p.add_argument("--json", action="store_true", help="Print JSON summary")
 
     # adk eval — MCP evaluation harness. Test tools and packs against a gateway.
     eval_p = sub.add_parser(
@@ -18196,7 +18358,7 @@ def main():
         _mod, _fn = _PASSTHROUGH_VERBS[sys.argv[1]]
         sys.exit(getattr(importlib.import_module(_mod), _fn)(sys.argv[2:]))
 
-    parser = argparse.ArgumentParser(
+    parser = _GroupedArgumentParser(
         prog="adk",
         description="AitherADK — Build AI agent fleets with any LLM backend",
     )
@@ -18204,11 +18366,17 @@ def main():
     # `adk --version`; without this flag argparse exits 2 on a good install.
     from adk import __version__ as _adk_version
     parser.add_argument("--version", action="version", version=f"adk {_adk_version}")
+    parser.add_argument(
+        "--self-test", "--selftest", dest="self_test", action="store_true",
+        help="Run offline CLI and package self-test",
+    )
     sub = parser.add_subparsers(dest="command")
     _register_commands(sub)
     _cached_parser = parser
 
     args = parser.parse_args()
+    if getattr(args, "self_test", False):
+        sys.exit(_cli_self_test())
 
     # Non-blocking update check (once per day)
     _check_for_updates()
@@ -18540,14 +18708,40 @@ def main():
             sys.exit(_cmd_mcp_node(args))
         elif mcp_cmd == "status":
             sys.exit(_cmd_mcp_status(args))
+        elif mcp_cmd == "sync-routed":
+            from pathlib import Path as _Path
+            import json as _json
+            from adk.mcp_setup import sync_routed_mcp_all_harnesses
+
+            targets = [t.strip() for t in (getattr(args, "targets", "") or "").split(",") if t.strip()] or None
+            res = sync_routed_mcp_all_harnesses(
+                home=_Path(args.home) if getattr(args, "home", "") else None,
+                repo_root=_Path(args.repo) if getattr(args, "repo", "") else None,
+                python_exe=getattr(args, "python_exe", "") or None,
+                bridge_script=getattr(args, "bridge_script", "") or None,
+                awdelegate_script=getattr(args, "awdelegate_script", "") or None,
+                routed=not getattr(args, "flat", False),
+                win_style=True if getattr(args, "win_style", False) else None,
+                targets=targets,
+                dry_run=getattr(args, "dry_run", False),
+            )
+            if getattr(args, "json", False):
+                print(_json.dumps(res, indent=2))
+            else:
+                for name, info in sorted(res.get("harnesses", {}).items()):
+                    print(f"  {info['status']:12s} {name:12s} -> {info['path']} (routed={info['routed']})")
+                if not res.get("harnesses"):
+                    print("  no target harness configs detected")
+            sys.exit(0)
         else:
-            print("Usage: adk mcp [serve|config|setup|node|status]")
+            print("Usage: adk mcp [serve|config|setup|node|status|sync-routed]")
             print()
-            print("  serve    Start stdio MCP server (pipe into Claude Code)")
-            print("  config   Print MCP client configuration JSON")
-            print("  setup    Generate IDE config for MCP gateway (OAuth-first)")
-            print("  node     Start lightweight local MCP server")
-            print("  status   Check MCP gateway connectivity and tier")
+            print("  serve        Start stdio MCP server (pipe into Claude Code)")
+            print("  config       Print MCP client configuration JSON")
+            print("  setup        Generate IDE config for MCP gateway (OAuth-first)")
+            print("  node         Start lightweight local MCP server")
+            print("  status       Check MCP gateway connectivity and tier")
+            print("  sync-routed  Wire routed AitherOS MCP across all detected coding agents & IDEs")
             sys.exit(1)
     elif args.command == "eval":
         import asyncio

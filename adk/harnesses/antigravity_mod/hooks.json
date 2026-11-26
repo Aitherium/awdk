@@ -16,24 +16,24 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "*",
+        "matcher": "run_command|edit_file|write_file|call_mcp_tool",
         "hooks": [
           {
             "type": "command",
             "command": "python3 -S -m adk.harnesses.antigravity_hooks PreToolUse",
-            "timeout": 15
+            "timeout": 10
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "*",
+        "matcher": "run_command|edit_file|write_file",
         "hooks": [
           {
             "type": "command",
             "command": "python3 -S -m adk.harnesses.antigravity_hooks PostToolUse",
-            "timeout": 15
+            "timeout": 10
           }
         ]
       }

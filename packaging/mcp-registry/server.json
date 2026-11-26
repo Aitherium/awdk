@@ -3,7 +3,7 @@
   "name": "com.aitherium/aitheros",
   "title": "AitherOS",
   "description": "AitherOS platform MCP: agents, code, memory and infrastructure tools over one endpoint",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "websiteUrl": "https://aitherium.com",
   "repository": {
     "url": "https://github.com/Aitherium/awdk",
@@ -27,7 +27,7 @@
     {
       "registryType": "pypi",
       "identifier": "awdk",
-      "version": "4.0.0",
+      "version": "4.0.1",
       "transport": {
         "type": "stdio"
       },

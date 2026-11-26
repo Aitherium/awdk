@@ -171,9 +171,12 @@ def _default_mcp_config() -> dict[str, Any]:
               / "mcp_stdio_bridge.py")
     if not bridge.exists():
         return {"mcpServers": {}}
+    args = [str(bridge), "--name", "aitheros-run"]
+    if os.getenv("AITHER_CLAUDE_RUNNER_FLAT_MCP", "0").strip().lower() not in ("1", "true", "yes"):
+        args.append("--routed")
     return {"mcpServers": {"aitheros": {
         "type": "stdio", "command": sys.executable,
-        "args": [str(bridge), "--name", "aitheros-run"],
+        "args": args,
     }}}
 
 

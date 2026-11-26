@@ -23,7 +23,7 @@ import pytest
 from adk import family_drive_cli as cli
 from adk import family_drive_files as files
 from adk import family_vault as fv
-from adk.tests.test_family_drive_files import Household
+from tests.test_family_drive_files import Household
 
 T, W = "fam", "ws_fam"
 

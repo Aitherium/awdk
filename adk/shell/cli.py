@@ -2462,7 +2462,7 @@ def serve(mode):
     asyncio.run(serve_mcp(mode=mode or "auto"))
 
 
-@mcp.command()
+@mcp.command("setup")
 @click.option("--mode", type=click.Choice(["local", "remote"]), default="local",
               help="local = Docker gateway (8182), remote = mcp.aitherium.com")
 @click.option("--ide", type=click.Choice(["claude-code", "cursor", "windsurf", "vscode"]),
@@ -2471,7 +2471,7 @@ def serve(mode):
               help="Project directory for config file")
 @click.option("--bake-token", is_flag=True, default=False,
               help="Bake auth token into config headers (fallback for IDEs without OAuth)")
-def setup(mode, ide, project_dir, bake_token):
+def mcp_setup(mode, ide, project_dir, bake_token):
     """Generate MCP config for your IDE.
 
     The gateway supports OAuth (RFC 9728) — IDEs like Claude Code and Cursor

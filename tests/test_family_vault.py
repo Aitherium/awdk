@@ -85,7 +85,7 @@ def test_the_vault_never_reads_the_master_key():
 # --- the CLI: the key travels only wrapped ---------------------------------------------
 
 def test_init_share_accept_moves_the_key_only_wrapped(home, monkeypatch, capsys):
-    from adk.tests.test_family_key_rotation import ChainHousehold
+    from tests.test_family_key_rotation import ChainHousehold
 
     house = ChainHousehold()
     wire = []

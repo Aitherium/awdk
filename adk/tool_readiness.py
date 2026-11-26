@@ -72,33 +72,7 @@ def check_tool_readiness_adk(
                 ),
             )
 
-    # Use a tool-dependency registry if one is installed (optional add-on),
-    # otherwise fall back to the built-in heuristic.
-    try:
-        from adk.tool_deps import get_tool_deps
-        deps = get_tool_deps(tool_name, module_name)
-    except ImportError:
-        return _heuristic_check(tool_name, module_name, mode)
-
-    if mode not in deps.deployment_modes:
-        return ADKReadinessReport(
-            broken=True,
-            reason=(
-                f"Tool '{tool_name}' not available in {mode} mode "
-                f"(requires: {', '.join(deps.deployment_modes)})"
-            ),
-        )
-
-    if mode == "standalone" and not deps.standalone_safe:
-        return ADKReadinessReport(
-            broken=True,
-            reason=(
-                f"Tool '{tool_name}' requires platform services "
-                f"({', '.join(deps.services)})"
-            ),
-        )
-
-    return ADKReadinessReport()
+    return _heuristic_check(tool_name, module_name, mode)
 
 
 def _check_sandbox_proven(tool_name: str) -> bool:

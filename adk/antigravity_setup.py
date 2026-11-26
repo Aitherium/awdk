@@ -46,6 +46,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 DEFAULT_PLUGIN_NAME = "aitheros"
+DEFAULT_PRE_TOOL_MATCHER = "run_command|edit_file|write_file|call_mcp_tool"
+DEFAULT_POST_TOOL_MATCHER = "run_command|edit_file|write_file"
 VALID_HOOK_EVENTS = frozenset(
     {"SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"}
 )
@@ -141,21 +143,28 @@ def build_mcp_config(
     mcp_bridge_script: Optional[str] = None,
     awdelegate_script: Optional[str] = None,
     include_cloud: bool = True,
+    routed_mcp: bool = True,
 ) -> dict[str, Any]:
     servers: dict[str, Any] = {}
     if mcp_bridge_script:
+        bridge_args = [
+            mcp_bridge_script,
+            "--name",
+            "aitheros",
+            "--mount",
+            "aitheros=http://127.0.0.1:8182/mcp",
+            "--mount",
+            "desk=http://127.0.0.1:47931/mcp",
+            "--hub",
+        ]
+        if routed_mcp:
+            # Expose 3 meta-tools (aither_find_tools, aither_call, aither_gateway_status)
+            # instead of 2,000+ flat tools so Antigravity does not prompt per tool
+            # or bloat every turn's tool list.
+            bridge_args.append("--routed")
         servers["aitheros"] = {
             "command": python_exe,
-            "args": [
-                mcp_bridge_script,
-                "--name",
-                "aitheros",
-                "--mount",
-                "aitheros=http://127.0.0.1:8182/mcp",
-                "--mount",
-                "desk=http://127.0.0.1:47931/mcp",
-                "--hub",
-            ],
+            "args": bridge_args,
         }
     else:
         servers["aitheros-awsh"] = {
@@ -197,17 +206,17 @@ def build_hooks_config(
             ],
             "PreToolUse": [
                 {
-                    "matcher": "*",
+                    "matcher": DEFAULT_PRE_TOOL_MATCHER,
                     "hooks": [
-                        {"type": "command", "command": cmd("PreToolUse"), "timeout": 15}
+                        {"type": "command", "command": cmd("PreToolUse"), "timeout": 10}
                     ],
                 }
             ],
             "PostToolUse": [
                 {
-                    "matcher": "*",
+                    "matcher": DEFAULT_POST_TOOL_MATCHER,
                     "hooks": [
-                        {"type": "command", "command": cmd("PostToolUse"), "timeout": 15}
+                        {"type": "command", "command": cmd("PostToolUse"), "timeout": 10}
                     ],
                 }
             ],
@@ -224,7 +233,9 @@ def build_hooks_config(
 def _default_rules_markdown() -> str:
     return """# Aither World & AitherOS Rules (Antigravity)
 
-- **Platform first — never hand-roll.** Use the existing `aw*` lane (`awrun`, `awgit`, `awsettings`, `awkno`, `awrelay`, `awm`, `awsh`, `awfocus`, `awdecide`, `awask`, or MCP tools via `aitheros` / `aither-local`) before authoring ad-hoc scripts or bare background processes.
+- **Platform first — never hand-roll.** Use the existing `aw*` lane (`awrise`, `awrun`, `awgit`, `awsettings`, `awkno`, `awrelay`, `awm`, `awsh`, `awfocus`, `awdecide`, `awask`, or MCP tools via `aitheros` / `aither-local`) before authoring ad-hoc scripts or bare background processes.
+- **Routed AitherOS MCP.** The `aitheros` MCP server runs in `--routed` mode (3 tools instead of 2,000+): call `aither_find_tools(query=...)` to discover any gateway/desk/aw-hub tool and its schema, then `aither_call(tool=..., arguments={...})` to run it.
+- **Scheduled automations → `awrise` by default.** Use `awrise` (`awrise add`, defaulting to `--executor agent` or `--executor session` with `--report-relay "#decisions"` and `--card-after 1`) as the default scheduler for recurring/automated tasks rather than Antigravity sidecar schedules, unless the user explicitly asks for an Antigravity sidecar automation.
 - **Git in shared worktrees → `awgit`.** Never run raw `git merge`, `git rebase`, `git pull`, `git stash`, `git clean`, bare `git reset`, or pathspec-less `git commit` in a concurrent worktree. Acquire leases with `awgit lease acquire <paths>` and commit scoped paths with `awgit blob-commit`.
 - **Local router & delegation.** Use `aither-local` (`awdelegate`) and `awsh` MCP tools to delegate sub-tasks to local/DeepSeek/vLLM models or peer harnesses while keeping Antigravity as the primary orchestrator.
 - **Secrets.** Read/store secrets only through the platform secrets lane; never print tokens, API keys, or credentials into prose, logs, or commits.
@@ -328,6 +339,7 @@ def setup_antigravity(
     extra_skill_dirs: Optional[list[Path]] = None,
     extra_command_files: Optional[list[Path]] = None,
     include_bundled_skills: bool = True,
+    routed_mcp: bool = True,
     win_style: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -346,6 +358,7 @@ def setup_antigravity(
         python_exe=py,
         mcp_bridge_script=mcp_bridge_script,
         awdelegate_script=delegate,
+        routed_mcp=routed_mcp,
     )
     hooks_cfg = build_hooks_config(
         python_exe=py,
@@ -586,6 +599,32 @@ def doctor_antigravity(
     if missing_clis:
         rep.add("AGD006", f"optional aw* CLIs not on PATH: {', '.join(missing_clis)}", severity="warning")
 
+    # AGD007: ergonomics & latency hygiene (routed MCP bridge + scoped hook matchers)
+    for sname, scfg in servers.items():
+        if not isinstance(scfg, dict):
+            continue
+        sargs = [str(a) for a in (scfg.get("args") or [])]
+        if any("mcp_stdio_bridge" in a for a in sargs):
+            if "--routed" not in sargs and "--allowlist" not in sargs:
+                rep.add(
+                    "AGD007",
+                    f"MCP server {sname!r} runs mcp_stdio_bridge.py flat without --routed or --allowlist "
+                    "(exposes 2,000+ tools and causes per-tool approval prompts); re-run `adk antigravity setup`",
+                    severity="warning",
+                )
+    for hname, hspec in hooks_doc.items():
+        if not isinstance(hspec, dict):
+            continue
+        for ev in ("PreToolUse", "PostToolUse"):
+            for grp in hspec.get(ev) or []:
+                if isinstance(grp, dict) and str(grp.get("matcher") or "").strip() in ("*", ""):
+                    rep.add(
+                        "AGD007",
+                        f"hook {hname!r}.{ev} uses wildcard matcher {grp.get('matcher')!r} "
+                        "(spawns Python on every read/UI tool call); re-run `adk antigravity setup` to scope it",
+                        severity="warning",
+                    )
+
     return rep
 
 
@@ -645,6 +684,7 @@ def add_parsers(ag_sub: Any) -> None:
     st.add_argument("--plugin-name", default=DEFAULT_PLUGIN_NAME, help="Plugin directory & manifest name")
     st.add_argument("--repo", default="", help="Also write workspace <repo>/.agents/hooks.json")
     st.add_argument("--mcp-bridge", default="", help="Absolute path to mcp_stdio_bridge.py")
+    st.add_argument("--flat-mcp", action="store_true", help="Expose all 2,000+ gateway tools flat instead of --routed 3-tool mode")
     st.add_argument("--dry-run", action="store_true", help="Print plan without writing files")
     st.add_argument("--json", dest="json_output", action="store_true")
 
@@ -667,6 +707,7 @@ def cmd_antigravity(args: Any) -> int:
             plugin_name=getattr(args, "plugin_name", DEFAULT_PLUGIN_NAME),
             mcp_bridge_script=mcp_bridge,
             repo_root=repo,
+            routed_mcp=not bool(getattr(args, "flat_mcp", False)),
             dry_run=bool(getattr(args, "dry_run", False)),
         )
         if getattr(args, "json_output", False):

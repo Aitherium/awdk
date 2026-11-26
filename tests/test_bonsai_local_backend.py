@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-CLI = Path(__file__).resolve().parents[1] / "cli.py"
+CLI = Path(__file__).resolve().parents[1] / "adk" / "cli.py"
 
 
 @pytest.fixture(scope="module")

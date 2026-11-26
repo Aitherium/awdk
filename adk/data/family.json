@@ -1,7 +1,7 @@
 {
  "schema": "aither-family/1",
  "generated_by": "gen_ecosystem.py --emit (from ecosystem.yaml); do not edit",
- "count": 99,
+ "count": 96,
  "bricks": [
   {
    "id": "awdk",
@@ -97,6 +97,7 @@
    "install": "git clone https://github.com/Aitherium/awpack",
    "module": null,
    "pairs_with": [
+    "awcap",
     "awdk",
     "awsh",
     "awskills",
@@ -197,8 +198,7 @@
    "module": "awnode",
    "pairs_with": [
     "aitherkvcache",
-    "awdk",
-    "awspaces"
+    "awdk"
    ],
    "harness_surfaces": []
   },
@@ -434,7 +434,9 @@
    "install": "pip install awbac",
    "module": "awbac",
    "pairs_with": [
-    "awdit"
+    "awdit",
+    "awgov",
+    "awscope"
    ],
    "harness_surfaces": []
   },
@@ -538,10 +540,10 @@
   },
   {
    "id": "awcap",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "Describe a capability once; call it the same way from CLI, Python, MCP and relay.",
-   "install": "not yet published; builds in-tree",
+   "install": "pip install awcap",
    "module": "awcap",
    "pairs_with": [
     "awdk",
@@ -555,10 +557,10 @@
   },
   {
    "id": "awexpress",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "One expression pack of stickers, emoji, captions and sounds, compiled for every app.",
-   "install": "not yet published; builds in-tree",
+   "install": "pip install awexpress",
    "module": "awexpress",
    "pairs_with": [
     "AitherConnect",
@@ -573,10 +575,10 @@
   },
   {
    "id": "awscope",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "One scope graph for work and home, where crossing between them takes consent.",
-   "install": "not yet published; builds in-tree",
+   "install": "pip install awscope",
    "module": "awscope",
    "pairs_with": [
     "awbac",
@@ -589,10 +591,10 @@
   },
   {
    "id": "awgather",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "Community events that live in your calendar and your Discord at once.",
-   "install": "not yet published; builds in-tree",
+   "install": "pip install awgather",
    "module": "awgather",
    "pairs_with": [
     "awdiscord",
@@ -603,10 +605,10 @@
   },
   {
    "id": "awplay",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "Stream a game from your own handheld or PC to your phone, over your own network.",
-   "install": "not yet published; builds in-tree",
+   "install": "pip install awplay",
    "module": "awplay",
    "pairs_with": [
     "awnet",
@@ -619,7 +621,7 @@
    "id": "awnix",
    "status": "public",
    "kind": "base",
-   "tagline": "A Linux you can hand to an agent — immutable base, capabilities included.",
+   "tagline": "A Linux you can hand to an agent — immutable x86_64 & ARM64 (aarch64) base, capabilities included.",
    "install": "podman build -t awnix:latest -f Containerfile .",
    "module": null,
    "pairs_with": [
@@ -753,28 +755,30 @@
    "status": "public",
    "kind": "tool",
    "tagline": "Put any agent on Discord as a real bot, with an operator in the loop.",
-   "install": "pip install git+https://github.com/Aitherium/awdiscord.git",
+   "install": "pip install awdiscord",
    "module": "awdiscord",
    "pairs_with": [
     "awask",
+    "awcrowd",
     "awdk",
+    "awgather",
     "awiam",
     "awmail",
-    "awrelay"
+    "awrelay",
+    "awstream"
    ],
    "harness_surfaces": []
   },
   {
    "id": "awcrowd",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "Ask your crowd, keep every answer, and ask the answers a question.",
-   "install": "not yet published; builds in-tree",
+   "install": "pip install awcrowd",
    "module": "awcrowd",
    "pairs_with": [
     "AitherConnect",
     "awask",
-    "awdata",
     "awdiscord",
     "awdk",
     "awgraph",
@@ -807,28 +811,10 @@
    "pairs_with": [
     "awdk",
     "awnode",
+    "awplay",
     "awrelay",
     "awswarm",
     "awwall"
-   ],
-   "harness_surfaces": []
-  },
-  {
-   "id": "awspaces",
-   "status": "planned",
-   "kind": "runtime",
-   "tagline": "A place, not a page: every human gets a Space -- a hand-made page, files and a companion agent that is theirs -- and Spaces link to Spaces. Early-2000s internet (Neocities, Newgrounds, Neopets, RuneScape) with local-first AI underneath.",
-   "install": "planned -- no package yet",
-   "module": null,
-   "pairs_with": [
-    "awdk",
-    "awiam",
-    "awnboard",
-    "awnode",
-    "awrelay",
-    "awshare",
-    "awsprite",
-    "awstorage"
    ],
    "harness_surfaces": []
   },
@@ -843,22 +829,6 @@
     "awdk",
     "awnet",
     "awrun"
-   ],
-   "harness_surfaces": []
-  },
-  {
-   "id": "awcache",
-   "status": "planned",
-   "kind": "runtime",
-   "tagline": "Let a second node skip its prefill because a first node already paid for it.",
-   "install": "builds in-tree -- not on PyPI yet; `pip install awcache` 404s today",
-   "module": null,
-   "pairs_with": [
-    "aitherkvcache",
-    "awnet",
-    "awnode",
-    "awrtifact",
-    "awswarm"
    ],
    "harness_surfaces": []
   },
@@ -890,7 +860,7 @@
   },
   {
    "id": "awindex",
-   "status": "unpublished",
+   "status": "public",
    "kind": "tool",
    "tagline": "A curated, git-backed map of the internet — .aither keywords and trust you can check.",
    "install": "pip install awindex",
@@ -920,12 +890,13 @@
   },
   {
    "id": "awprove",
-   "status": "unpublished",
+   "status": "public",
    "kind": "tool",
    "tagline": "Drive a page as the real user, check what rendered, and get a test that goes red if it stops being true.",
-   "install": "builds in-tree -- not on PyPI yet; `pip install awprove` 404s today",
+   "install": "pip install awprove",
    "module": "awprove",
    "pairs_with": [
+    "awbench",
     "awbrowse",
     "awdk",
     "awscreen",
@@ -936,10 +907,10 @@
   },
   {
    "id": "awdeck",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "An outline becomes a narrated video -- and the file says which voice really spoke it.",
-   "install": "builds in-tree (pip install -e .); not on PyPI yet",
+   "install": "pip install awdeck",
    "module": "awdeck",
    "pairs_with": [
     "awdk",
@@ -996,10 +967,10 @@
   },
   {
    "id": "awcams",
-   "status": "unpublished",
+   "status": "public",
    "kind": "tool",
    "tagline": "Private camera recording and one-line event summaries, on storage you own.",
-   "install": "builds in-tree -- not on PyPI yet; `pip install awcams` 404s today",
+   "install": "pip install awcams",
    "module": "awcams",
    "pairs_with": [
     "awnode",
@@ -1099,10 +1070,10 @@
   },
   {
    "id": "awasp",
-   "status": "planned",
+   "status": "public",
    "kind": "runtime",
    "tagline": "Stream a multi-gigabyte model onto a device that cannot hold it all at once.",
-   "install": "builds in-tree",
+   "install": "git clone https://github.com/Aitherium/awasp",
    "module": null,
    "pairs_with": [
     "awbonsai",
@@ -1349,7 +1320,7 @@
    "status": "public",
    "kind": "tool",
    "tagline": "Predict what your environment does next, and how surprised you were.",
-   "install": "pip install git+https://github.com/Aitherium/awpredict.git",
+   "install": "pip install awpredict",
    "module": "awpredict",
    "pairs_with": [
     "awm"
@@ -1391,29 +1362,13 @@
    "harness_surfaces": []
   },
   {
-   "id": "awlab",
-   "status": "planned",
-   "kind": "tool",
-   "tagline": "Run one experiment, keep the score, and let a loop decide against it.",
-   "install": "planned -- no package yet (AitherLab.py is 751 lines / 6 imports; the lift is the build)",
-   "module": null,
-   "pairs_with": [
-    "awdata",
-    "awdk",
-    "awevolve",
-    "awrise"
-   ],
-   "harness_surfaces": []
-  },
-  {
    "id": "awmine",
    "status": "public",
    "kind": "tool",
    "tagline": "Mine what your agents did -- outcomes, lessons and procedures out of the transcripts they left behind.",
-   "install": "pip install git+https://github.com/Aitherium/awmine.git",
+   "install": "pip install awmine",
    "module": "awmine",
    "pairs_with": [
-    "awdata",
     "awdecide",
     "awm",
     "awrise",
@@ -1471,6 +1426,7 @@
     "awnest",
     "awnet",
     "awnode",
+    "awport",
     "awtunnel"
    ],
    "harness_surfaces": []
@@ -1505,43 +1461,6 @@
     "awrepl",
     "awsh",
     "awskills"
-   ],
-   "harness_surfaces": []
-  },
-  {
-   "id": "awdata",
-   "status": "planned",
-   "kind": "corpus",
-   "tagline": "Open labelled corpora you can train and measure against, with the code that built them.",
-   "install": "git clone https://github.com/Aitherium/awdata",
-   "module": null,
-   "pairs_with": [
-    "awembed",
-    "awfind",
-    "awgraph",
-    "awgym",
-    "awknowledge"
-   ],
-   "harness_surfaces": []
-  },
-  {
-   "id": "awmod",
-   "status": "planned",
-   "kind": "tool",
-   "tagline": "Wire the agent harness you already use into a fleet you already run.",
-   "install": "planned -- no package yet",
-   "module": null,
-   "pairs_with": [
-    "awdk",
-    "awembed",
-    "awgraph",
-    "awm",
-    "awnet",
-    "awpredict",
-    "awrecurse",
-    "awrelay",
-    "awrepl",
-    "awsh"
    ],
    "harness_surfaces": []
   },
@@ -1606,7 +1525,6 @@
     "awiam",
     "awm",
     "awnix",
-    "awresume",
     "awseal",
     "awsh",
     "awshare"
@@ -1621,21 +1539,6 @@
    ]
   },
   {
-   "id": "awresume",
-   "status": "planned",
-   "kind": "tool",
-   "tagline": "The coding sessions you had open, reopened after the reboot.",
-   "install": "not published yet (pending a public repo)",
-   "module": null,
-   "pairs_with": [
-    "awdk",
-    "awrecover",
-    "awsettings",
-    "awsh"
-   ],
-   "harness_surfaces": []
-  },
-  {
    "id": "awavatar",
    "status": "public",
    "kind": "tool",
@@ -1645,6 +1548,7 @@
    "pairs_with": [
     "awdesk",
     "awdk",
+    "awexpress",
     "awrtifact",
     "awrun",
     "awsprite"
@@ -1684,10 +1588,10 @@
   },
   {
    "id": "awgov",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "One policy decision for every agent tool call -- allow, deny with the lane to use, or needs-owner.",
-   "install": "not yet published; builds in-tree",
+   "install": "pip install awgov",
    "module": "awgov",
    "pairs_with": [
     "awbac",
@@ -1702,15 +1606,66 @@
   },
   {
    "id": "awbench",
-   "status": "planned",
+   "status": "public",
    "kind": "tool",
    "tagline": "A hard-oracle benchmark for a served model -- no LLM judge, and no comparison across different item sets.",
-   "install": "not on PyPI yet (pending publish); builds in-tree",
+   "install": "pip install awbench",
    "module": "awbench",
    "pairs_with": [
     "awdk",
     "awevolve",
     "awrun"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awstream",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Dual-stream producer for YouTube Live and Discord Voice with OBS control and a live 1080p Browser Source HUD.",
+   "install": "pip install awstream",
+   "module": "awstream",
+   "pairs_with": [
+    "awdesk",
+    "awdiscord",
+    "awdk",
+    "awvoice"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awlert",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Tamper-evident, Ed25519-signed and AES-256-GCM encrypted lifecycle alerts for services, container updates and atomic OS transitions.",
+   "install": "pip install awlert",
+   "module": "awlert",
+   "pairs_with": [
+    "awdiscord",
+    "awdit",
+    "awnix",
+    "awrelay",
+    "awseal",
+    "awshare",
+    "awtunnel"
+   ],
+   "harness_surfaces": []
+  },
+  {
+   "id": "awport",
+   "status": "public",
+   "kind": "tool",
+   "tagline": "Leased, firewall-gated, forward-secret encrypted TCP/UDP port forwarding across overlay meshes and untrusted hops.",
+   "install": "pip install awport",
+   "module": "awport",
+   "pairs_with": [
+    "awdit",
+    "awlert",
+    "awnet",
+    "awnix",
+    "awseal",
+    "awtunnel",
+    "awwall"
    ],
    "harness_surfaces": []
   }
@@ -1721,7 +1676,7 @@
   "status": "partial",
   "entry_point": "adk harness up",
   "what": "One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Google Antigravity, Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.",
-  "today": "`adk harness up` brings up the local harness daemons (`hookd`, `awsh`, `aw-hub`), checks installed bricks (`adk harness parts`), and auto-wires detected coding agents (`adk antigravity setup`, `adk claude setup`). Each optional brick still installs on its own line (`pip install awdk`, `npm i -g @aitherium/awsh`).",
+  "today": "Turnkey one-line installers (`curl -fsSL https://aitherium.com/install.sh | sh` on macOS/Linux, `irm https://aitherium.com/install.ps1 | iex` on Windows, or zero-Python `uv` via `awdk/install/install.{sh,ps1}`) install `awdk`, wire the wizard, and `adk harness up` brings up the local harness daemons (`hookd`, `awsh`, `aw-hub`), checks installed bricks (`adk harness parts`), and auto-wires detected coding agents (`adk antigravity setup`, `adk claude setup`). Individual optional bricks also install standalone (`pip install awdk`, `npm i -g @aitherium/awsh`).",
   "planned": "One umbrella installer package that installs every composed brick together under the `awharness` name. Nothing by that package name is published yet.",
   "composes": [
    "awdk",

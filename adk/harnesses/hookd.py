@@ -70,6 +70,79 @@ MAX_WORKER_GB = float(os.environ.get("AITHER_HOOKD_MAX_WORKER_GB", "0.75") or 0)
 #: its promise turned a fail-soft hook into one that blocks: `awsettings --quiet push
 #: --debounce || true` folded to a hook that exits 2, silently, whenever the hub is down.
 SOFT = "~"
+#: Persistent hookd configuration (e.g. ``{"fail_closed": true}``).
+CONFIG_FILE = STATE_DIR / "config.json"
+_TRUTHY = ("1", "true", "yes", "on", "closed")
+_FALSY = ("0", "false", "no", "off", "open")
+
+
+def _config_path() -> Path:
+    override = (os.environ.get("AITHER_HOOKD_CONFIG") or "").strip()
+    if override:
+        return Path(override)
+    return STATE_DIR / "config.json"
+
+
+def load_config() -> dict:
+    """Read hookd's JSON config (or ``{}`` if absent/unreadable)."""
+    path = _config_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(updates: dict) -> dict:
+    """Persist hookd config atomically under STATE_DIR (or AITHER_HOOKD_CONFIG)."""
+    path = _config_path()
+    data = load_config()
+    data.update(updates)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+    return data
+
+
+def is_fail_closed(query: "dict | None" = None) -> bool:
+    """Whether PreToolUse guards and enforce-mode /pdp must fail closed on error.
+
+    Precedence:
+      1. Explicit query parameter ``fail=closed`` or ``fail=open``
+      2. Env var ``AITHER_HOOKD_FAIL_CLOSED`` (``1/true/yes/on`` vs ``0/false/no/off``)
+      3. Persistent setting ``fail_closed`` in ``~/.aither/hookd/config.json``
+      4. Default ``False`` (preserves legacy shadow/open behavior unless opted in)
+    """
+    if isinstance(query, dict):
+        qval = (query.get("fail", [""])[0] or "").strip().lower()
+        if qval in ("closed", "1", "true", "yes", "on"):
+            return True
+        if qval in ("open", "0", "false", "no", "off"):
+            return False
+    env = (os.environ.get("AITHER_HOOKD_FAIL_CLOSED") or "").strip().lower()
+    if env in _TRUTHY:
+        return True
+    if env in _FALSY:
+        return False
+    return bool(load_config().get("fail_closed", False))
+
+
+def convert_pretooluse_fail_closed() -> bool:
+    """Default fail-closed policy when folding PreToolUse hooks for Claude Code.
+
+    PreToolUse guards default to fail-closed (``True``) unless explicitly opted out
+    via ``AITHER_HOOKD_FAIL_CLOSED=0`` or ``{"fail_closed": false}`` in config.json.
+    """
+    env = (os.environ.get("AITHER_HOOKD_FAIL_CLOSED") or "").strip().lower()
+    if env in _TRUTHY:
+        return True
+    if env in _FALSY:
+        return False
+    cfg = load_config()
+    if "fail_closed" in cfg:
+        return bool(cfg["fail_closed"])
+    return True
 
 
 def allowed_roots(project_dir: str) -> list:
@@ -640,8 +713,13 @@ def soften(r: dict, soft: bool) -> dict:
     return r
 
 
-def merge(event: str, results: list) -> dict:
-    """Fold command-hook results into one http-hook response (same JSON schema)."""
+def merge(event: str, results: list, *, fail_closed: bool = False) -> dict:
+    """Fold command-hook results into one http-hook response (same JSON schema).
+
+    When ``fail_closed=True`` and ``event == "PreToolUse"``, any non-soft hook
+    crash, timeout (code 124), or pool error denies the tool call instead of
+    silently failing open.
+    """
     resp: dict = {}
     hso: dict = {}
     ctx, reasons, sysmsg = [], [], []
@@ -665,7 +743,13 @@ def merge(event: str, results: list) -> dict:
                 reasons.append(why)
             continue
         if code != 0:
-            continue  # non-blocking error: the command semantics show it to nobody
+            if fail_closed and event == "PreToolUse" and not r.get("soft_code"):
+                detail = err or out or f"exit {code}"
+                set_perm(
+                    "deny",
+                    f"hookd fail-closed: PreToolUse hook failed (exit {code}): {detail}",
+                )
+            continue  # non-blocking error when not fail-closed on PreToolUse
         data = None
         if out.startswith("{"):
             try:
@@ -836,7 +920,7 @@ def make_handler(pool: Pool, stats: _Stats):
             mode = (query.get("mode", ["shadow"])[0] or "shadow").strip().lower()
             if mode not in _PDP_MODES:
                 mode = "shadow"
-            fail_closed = (query.get("fail", [""])[0] or "").strip().lower() == "closed"
+            fail_closed = is_fail_closed(query)
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             try:
                 payload = json.loads(body or b"{}")
@@ -953,8 +1037,9 @@ def make_handler(pool: Pool, stats: _Stats):
                 t.start()
             for t in threads:
                 t.join()
-            resp = merge(event, results)
-            if urllib.parse.parse_qs(url.query).get("raw") == ["1"]:
+            qparams = urllib.parse.parse_qs(url.query)
+            resp = merge(event, results, fail_closed=is_fail_closed(qparams))
+            if qparams.get("raw") == ["1"]:
                 resp["_raw"] = results  # per-hook code/out/err for the equivalence check
             with stats.lock:
                 stats.requests += 1
@@ -1015,7 +1100,9 @@ def _bind(port: int) -> "_ExclusiveServer | None":
         return None
 
 
-def serve(port: int, workers: int) -> int:
+def serve(port: int, workers: int, *, fail_closed: bool = False) -> int:
+    if fail_closed and not (os.environ.get("AITHER_HOOKD_FAIL_CLOSED") or "").strip():
+        os.environ["AITHER_HOOKD_FAIL_CLOSED"] = "1"
     workers = max(workers, _MIN_WORKERS)
     # Bind BEFORE the pool starts. Spawning 24 workers takes seconds on a loaded host;
     # with the port still free in that window, a second `ensure` saw nothing there and
@@ -1124,7 +1211,7 @@ class _EnsureLock:
         return False
 
 
-def ensure(port: int, workers: int) -> int:
+def ensure(port: int, workers: int, *, fail_closed: bool = False) -> int:
     """Start hookd detached and console-less unless it already answers. 0 up, 1 failed.
 
     A BOUND PORT THAT DOES NOT ANSWER /health IS A WEDGED DAEMON, NOT A MISSING ONE.
@@ -1149,6 +1236,8 @@ def ensure(port: int, workers: int) -> int:
         pyw = exe.with_name("pythonw.exe")
         argv = [str(pyw if pyw.exists() else exe), os.path.abspath(__file__), "serve",
                 "--port", str(port), "--workers", str(workers)]
+        if fail_closed:
+            argv.append("--fail-closed")
         flags = CREATE_NO_WINDOW | 0x00000008 | 0x00000200 if os.name == "nt" else 0
         subprocess.Popen(argv, creationflags=flags, close_fds=True,  # console-ok: flags set
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1158,6 +1247,109 @@ def ensure(port: int, workers: int) -> int:
             if health(port, 0.5):
                 return 0
     return 1
+
+
+def call_hookd(
+    port: int,
+    query: str,
+    stdin_bytes: bytes,
+    *,
+    project_dir: str = "",
+    fail_closed: "bool | None" = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    auto_ensure: bool = True,
+) -> tuple[int, str, str]:
+    """Fail-closed client bridge for folded hooks: HTTP fast path, heal once, direct fallback.
+
+    Eliminates Claude Code's fail-open HTTP-hook gap when ``hookd`` is dead:
+      1. POSTs ``stdin_bytes`` to ``http://127.0.0.1:<port>/run?<query>`` (zero-spawn fast path).
+      2. On transport refusal/timeout, optionally runs ``ensure(port, 6)`` once and retries.
+      3. If ``hookd`` is still unreachable, executes the allowlisted specs directly in-process
+         via ``_run_one`` + ``merge(..., fail_closed=fc)``.
+      4. If even direct fallback cannot run (e.g., bad root/module or unexpected error) and
+         ``fail_closed`` is active on ``PreToolUse``, emits a structured ``permissionDecision:
+         "deny"`` JSON so a dead daemon can never silently bypass a PreToolUse guard.
+    """
+    try:
+        event_json = json.loads(stdin_bytes or b"{}")
+        if not isinstance(event_json, dict):
+            event_json = {}
+    except ValueError:
+        event_json = {}
+    event = str(event_json.get("hook_event_name") or "")
+    qparams = urllib.parse.parse_qs(query, keep_blank_values=False)
+    fc = is_fail_closed(qparams) if fail_closed is None else bool(fail_closed)
+    effective_query = query
+    if fc and "fail" not in qparams:
+        effective_query = (query + "&" if query else "") + "fail=closed"
+
+    cands = project_candidates(project_dir, str(event_json.get("cwd") or ""))
+    proj_hdr = cands[0] if cands else ""
+
+    def _post() -> tuple[int, str]:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/run?{effective_query}",
+            data=stdin_bytes,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Hookd": "1",
+                "X-Project-Dir": proj_hdr,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")
+
+    last_exc: "Exception | None" = None
+    for attempt in range(2):
+        try:
+            code, body = _post()
+            if code == 200:
+                return 0, body, ""
+            last_exc = RuntimeError(f"hookd returned HTTP {code}")
+            break
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            break
+        except (OSError, urllib.error.URLError) as exc:
+            last_exc = exc
+            if attempt == 0 and auto_ensure:
+                ensure(port, 6)
+                continue
+            break
+
+    # hookd unreachable or rejected: run the allowlisted hooks directly in-process.
+    project, specs, refused = proj_hdr, None, None
+    for cand in cands or [""]:
+        try:
+            specs = parse_specs(query, cand)
+            project = cand
+            break
+        except PermissionError as exc:
+            refused = refused or exc
+    if specs is None:
+        reason = f"hookd unreachable ({last_exc}) and fallback refused ({refused}); failing closed"
+        if fc and event == "PreToolUse":
+            return 0, json.dumps(_deny_response(reason)), ""
+        return 0, "{}", reason
+
+    env = {"CLAUDE_PROJECT_DIR": project}
+    sid = str(event_json.get("session_id") or "")
+    if sid:
+        env["CLAUDE_CODE_SESSION_ID"] = sid
+    results = []
+    for path, args, soft in specs:
+        res = _run_one({
+            "path": path,
+            "args": args,
+            "stdin": stdin_bytes,
+            "cwd": project,
+            "env": env,
+            "event": event,
+        })
+        results.append(soften(res, soft))
+    resp = merge(event, results, fail_closed=fc)
+    return 0, json.dumps(resp), ""
 
 
 # ---------------------------------------------------------------- convert
@@ -1218,10 +1410,23 @@ def hook_spec(h: dict, project_dir: str, scripts: dict):
     return "|".join([target.replace("\\", "/"), *rest])
 
 
-def convert_hooks(hooks: dict, project_dir: str, port: int = PORT):
+def convert_hooks(
+    hooks: dict,
+    project_dir: str,
+    port: int = PORT,
+    *,
+    fail_closed: "bool | None" = None,
+):
     """Fold every in-process-able command hook into one http hook per (event, matcher).
 
+    When ``fail_closed`` is True (or ``None`` and :func:`convert_pretooluse_fail_closed`
+    is True, the default), ``PreToolUse`` groups are emitted as exec-form
+    ``hookd call --fail-closed`` commands instead of plain ``type: http`` hooks so that
+    a dead ``hookd`` daemon auto-heals, falls back to direct execution, and fails closed
+    rather than silently allowing tool calls.
+
     Returns (new_hooks, folded_count). Pure; hooks that must stay commands keep their group."""
+    fc = convert_pretooluse_fail_closed() if fail_closed is None else bool(fail_closed)
     scripts = _console_scripts()
     out, n = {}, 0
     for event, groups in hooks.items():
@@ -1246,10 +1451,31 @@ def convert_hooks(hooks: dict, project_dir: str, port: int = PORT):
                 new_groups.append({**g, "hooks": keep})
         for key, f in folded.items():
             q = urllib.parse.urlencode([("t", f["t"])] + [("h", s) for s in f["specs"]])
-            grp = {"hooks": [{"type": "http", "url": "http://127.0.0.1:%d/run?%s" % (port, q),
-                              "timeout": f["t"] + 10,
-                              "headers": {"X-Hookd": "1", "X-Project-Dir": "$CLAUDE_PROJECT_DIR"},
-                              "allowedEnvVars": ["CLAUDE_PROJECT_DIR"]}]}
+            if fc and event == "PreToolUse":
+                entry: dict = {
+                    "type": "command",
+                    "command": sys.executable,
+                    "args": [
+                        "-S",
+                        os.path.abspath(__file__),
+                        "call",
+                        "--fail-closed",
+                        "--port",
+                        str(port),
+                        "--query",
+                        q,
+                    ],
+                    "timeout": f["t"] + 10,
+                }
+            else:
+                entry = {
+                    "type": "http",
+                    "url": "http://127.0.0.1:%d/run?%s" % (port, q),
+                    "timeout": f["t"] + 10,
+                    "headers": {"X-Hookd": "1", "X-Project-Dir": "$CLAUDE_PROJECT_DIR"},
+                    "allowedEnvVars": ["CLAUDE_PROJECT_DIR"],
+                }
+            grp: dict = {"hooks": [entry]}
             if key:
                 grp["matcher"] = key
             new_groups.append(grp)
@@ -1265,12 +1491,12 @@ def default_settings_paths(cwd: str = "") -> list:
     return [p for p in paths if p.is_file()]
 
 
-def convert_file(path: Path, write: bool) -> int:
+def convert_file(path: Path, write: bool, *, fail_closed: "bool | None" = None) -> int:
     """Convert one settings file (backup first, kept from the FIRST conversion). Returns folded."""
     data = json.loads(path.read_text(encoding="utf-8"))
     root = path.parent.parent
     project = str(root) if path.parent.name == ".claude" and root != HOME else ""
-    data["hooks"], n = convert_hooks(data.get("hooks") or {}, project)
+    data["hooks"], n = convert_hooks(data.get("hooks") or {}, project, fail_closed=fail_closed)
     if write and n:
         bak = path.with_name(path.name + BACKUP_SUFFIX)
         if not bak.exists():
@@ -1596,25 +1822,71 @@ def main(argv=None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--port", type=int, default=PORT)
         p.add_argument("--workers", type=int, default=6)
+        p.add_argument("--fail-closed", dest="fail_closed", action="store_true",
+                       help="run hookd with PreToolUse fail-closed enabled unless overridden by env")
     p = sub.add_parser("health")
     p.add_argument("--port", type=int, default=PORT)
+    p_call = sub.add_parser("call", help="fail-closed client bridge to hookd /run with direct fallback")
+    p_call.add_argument("--port", type=int, default=PORT)
+    p_call.add_argument("--query", required=True, help="URL query string (t=...&h=...)")
+    p_call.add_argument("--fail-closed", dest="fail_closed", action="store_true",
+                        help="deny PreToolUse if hookd and direct fallback fail")
+    p_call.add_argument("--no-ensure", dest="no_ensure", action="store_true",
+                        help="do not auto-start hookd on connection refused")
+    p_call.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    p_cfg = sub.add_parser("config", help="read or toggle persistent hookd settings (fail_closed)")
+    p_cfg.add_argument("--fail-closed", dest="fail_closed", choices=["on", "off", "status"],
+                       default="status")
     for name, why in (("convert", "fold command hooks into hookd http hooks"),
                       ("revert", "restore the settings saved by the first convert")):
         p = sub.add_parser(name, help=why)
         p.add_argument("settings", nargs="*", help="default: user + ./.claude settings.json")
         if name == "convert":
             p.add_argument("--write", action="store_true", help="apply (default: dry run)")
+            p.add_argument("--fail-closed", dest="fail_closed", action="store_true",
+                           help="emit fail-closed `hookd call` wrappers for PreToolUse guards (default)")
+            p.add_argument("--fail-open", dest="fail_open", action="store_true",
+                           help="opt out: emit legacy HTTP-only hooks for PreToolUse")
     a = ap.parse_args(argv)
     if a.self_test:
         return _self_test()
     if a.cmd == "serve":
-        return serve(a.port, a.workers)
+        return serve(a.port, a.workers, fail_closed=bool(getattr(a, "fail_closed", False)))
     if a.cmd == "ensure":
-        return ensure(a.port, a.workers)
+        return ensure(a.port, a.workers, fail_closed=bool(getattr(a, "fail_closed", False)))
     if a.cmd == "health":
         h = health(a.port)
         print(json.dumps(h) if h else "hookd: not answering on :%d" % a.port)
         return 0 if h else 1
+    if a.cmd == "call":
+        stdin_bytes = sys.stdin.buffer.read()
+        rc, out, err = call_hookd(
+            a.port,
+            a.query,
+            stdin_bytes,
+            project_dir=os.environ.get("CLAUDE_PROJECT_DIR") or "",
+            fail_closed=True if a.fail_closed else None,
+            timeout=a.timeout,
+            auto_ensure=not a.no_ensure,
+        )
+        if out:
+            sys.stdout.write(out + ("\n" if not out.endswith("\n") else ""))
+        if err:
+            sys.stderr.write(err + ("\n" if not err.endswith("\n") else ""))
+        return rc
+    if a.cmd == "config":
+        if a.fail_closed == "on":
+            cfg = save_config({"fail_closed": True})
+        elif a.fail_closed == "off":
+            cfg = save_config({"fail_closed": False})
+        else:
+            cfg = load_config()
+        print(json.dumps({
+            "config_path": str(_config_path()),
+            "fail_closed": bool(cfg.get("fail_closed", False)),
+            "effective_fail_closed": is_fail_closed(),
+        }))
+        return 0
     if a.cmd in ("convert", "revert"):
         paths = [Path(x) for x in a.settings] or default_settings_paths()
         if not paths:
@@ -1624,7 +1896,13 @@ def main(argv=None) -> int:
             if a.cmd == "revert":
                 print("%s: %s" % (path, "restored" if revert_file(path) else "no backup"))
                 continue
-            n = convert_file(path, a.write)
+            if getattr(a, "fail_open", False):
+                fc_arg: "bool | None" = False
+            elif getattr(a, "fail_closed", False):
+                fc_arg = True
+            else:
+                fc_arg = None
+            n = convert_file(path, a.write, fail_closed=fc_arg)
             print("%s: %d hook(s) %s" % (path, n, "folded" if a.write else "foldable (dry run)"))
         if a.cmd == "convert" and a.write and ensure(PORT, 6):
             print("hookd: converted but NOT answering on :%d -- those hooks are skipped" % PORT)

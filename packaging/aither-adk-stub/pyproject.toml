@@ -3,7 +3,7 @@
 # 🚨 DO NOT let a rename sweep touch the `name` field in this file. The literal
 # string "aither-adk" here is LOAD-BEARING: it is the whole reason the package
 # exists. A tree-wide s/aither-adk/awdk/ turned this into a package named
-# "awdk" that depended on "awdk>=3.6.0" -- self-referential nonsense that
+# "awdk" that depended on "awdk>=4.0.1" -- self-referential nonsense that
 # publishes as a duplicate of the real package and redirects nobody. That
 # actually happened on 2026-08-19, during the very rename this file exists to
 # absorb, and it was caught by check_package_version_ahead_of_registry.py
@@ -34,12 +34,12 @@ build-backend = "hatchling.build"
 [project]
 # The old name. Never rewrite this line. See the header.
 name = "aither-adk"
-version = "3.6.0"
+version = "4.0.1"
 description = "Deprecated alias for awdk - installs awdk, which provides the same `adk` commands."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["awdk>=3.6.0"]
+dependencies = ["awdk>=4.0.1"]
 
 [project.urls]
 Homepage = "https://github.com/Aitherium/awdk"

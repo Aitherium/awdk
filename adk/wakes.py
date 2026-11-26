@@ -69,8 +69,23 @@ __all__ = [
 
 #: Job names accepted anywhere a name reaches a path or an argv. First character
 #: alphanumeric, so a name can never start with ``-`` (an option to the CLI) or
-#: ``.`` (a traversal segment); 64 characters at most.
+#: ``.`` (a traversal segment); 64 characters at most. When ``awrise`` is
+#: installed, :func:`valid_name` delegates directly to ``awrise.store.validate_name``
+#: (which also refuses trailing dots and Windows reserved device names); the
+#: fallback below enforces the exact same rule when ``awrise`` is absent.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+try:
+    from awrise import ledger as _awrise_ledger
+    from awrise import store as _awrise_store
+except ImportError:  # pragma: no cover - optional brick; fail-soft when absent
+    _awrise_store = None  # type: ignore[assignment]
+    _awrise_ledger = None  # type: ignore[assignment]
 
 #: The awrise CLI verbs the daemon may spawn. Anything else is refused by name.
 VERBS = ("enable", "disable", "run")
@@ -131,7 +146,17 @@ AWRISE_HOME = os.environ.get("AWRISE_HOME") or str(Path.home() / ".aither" / "aw
 
 def valid_name(name: Any) -> bool:
     """True only for a job name that may reach a path or an argv."""
-    return isinstance(name, str) and bool(_NAME_RE.match(name))
+    if _awrise_store is not None:
+        try:
+            _awrise_store.validate_name(name)
+            return True
+        except ValueError:
+            return False
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        return False
+    if name.endswith("."):
+        return False
+    return name.split(".", 1)[0].upper() not in _RESERVED_NAMES
 
 
 def awrise_home() -> Path:
@@ -281,6 +306,8 @@ def _iso(dt: datetime) -> str:
 
 def _seconds_to_every(seconds: float) -> str:
     """Render seconds the way awrise does (``2h``, ``900s``, ``1.5s``)."""
+    if _awrise_store is not None:
+        return _awrise_store._seconds_to_every(seconds)
     for unit, span in (("w", 604800.0), ("d", 86400.0), ("h", 3600.0), ("m", 60.0)):
         if seconds >= span and seconds % span == 0:
             return f"{int(seconds // span)}{unit}"
@@ -402,18 +429,29 @@ _V1_MIGRATION = "jobs.json is v1 (in-memory mapping); run `awrise list` to migra
 def read_jobs(home: Optional[Path] = None) -> dict[str, Any]:
     """Read ``jobs.json``. Never raises; never writes.
 
+    Delegates shared-read I/O (Windows ``FILE_SHARE_DELETE``) and schema
+    constants to ``awrise.store`` when ``awrise`` is installed, while staying
+    strictly read-only and preserving per-job fault isolation (unlike
+    ``awrise.store.load()``, which migrates v1 files and quarantines corrupt
+    stores on disk).
+
     Returns ``{installed, schema, migration, error, jobs}`` where ``jobs`` maps
     name -> projected job. ``installed`` is False only when the file is absent.
     """
     base = home or awrise_home()
-    path = base / "jobs.json"
+    store_name = getattr(_awrise_store, "STORE_NAME", "jobs.json")
+    schema_v2 = getattr(_awrise_store, "SCHEMA", 2)
+    path = base / store_name
     out: dict[str, Any] = {"installed": False, "schema": None, "migration": None,
                            "error": None, "jobs": {}}
     try:
         if not path.is_file():
             return out
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        if _awrise_store is not None:
+            text = _awrise_store.read_bytes(path).decode("utf-8")
+        else:
+            text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         out["installed"] = True
         out["error"] = f"jobs.json unreadable: {exc}"
         return out
@@ -426,12 +464,12 @@ def read_jobs(home: Optional[Path] = None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         out["error"] = "jobs.json unreadable: top level is not an object"
         return out
-    if raw.get("schema") == 2:
+    if raw.get("schema") == schema_v2:
         jobs = raw.get("jobs")
         if not isinstance(jobs, dict):
             out["error"] = "jobs.json unreadable: unsupported schema 2 (jobs is not an object)"
             return out
-        out["schema"] = 2
+        out["schema"] = schema_v2
         out["jobs"] = {str(n): _flag_name(_project_v2(str(n), j)) for n, j in jobs.items()}
         return out
     if "schema" in raw or "jobs" in raw or not all(isinstance(v, dict) for v in raw.values()):
@@ -449,11 +487,14 @@ def read_jobs(home: Optional[Path] = None) -> dict[str, Any]:
 def ledger_files(home: Optional[Path] = None) -> list[Path]:
     """Ledger files newest-first: ``ledger/*.jsonl``, else a flat ``ledger.jsonl``."""
     base = home or awrise_home()
-    daily = base / "ledger"
     files: list[Path] = []
     try:
-        if daily.is_dir():
-            files = sorted((p for p in daily.glob("*.jsonl") if p.is_file()), reverse=True)
+        if _awrise_ledger is not None:
+            files = list(reversed(_awrise_ledger.files(base)))
+        else:
+            daily = base / "ledger"
+            if daily.is_dir():
+                files = sorted((p for p in daily.glob("*.jsonl") if p.is_file()), reverse=True)
     except OSError:
         files = []
     if files:

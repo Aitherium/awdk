@@ -282,23 +282,23 @@ a:focus-visible, .jump a:focus-visible {
     <p class="eyebrow">An agent pack for <b>bead-space</b></p>
     <h1>bead-space</h1>
     <p class="lede">An interactive D3 work graph rendered as a tiny space universe</p>
-    <nav class="jump"><a href="https://pages.bernting.se/bead-space/">Project site</a><a href="https://github.com/wbern/bead-space">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/bead-space-4.0.0.tar.gz">Download</a></nav>
+    <nav class="jump"><a href="https://pages.bernting.se/bead-space/">Project site</a><a href="https://github.com/wbern/bead-space">Source</a><a href="https://github.com/Aitherium/aither-adk/releases/download/v4.0.1/bead-space-4.0.1.tar.gz">Download</a></nav>
   </header>
 
   <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">bead-space — install</span></div><pre class="term-body"><span class="c"># one command each; nothing else to configure</span>
-<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/bead-space-4.0.0.tar.gz
-<span class="p">$</span> tar xzf bead-space-4.0.0.tar.gz
+<span class="p">$</span> curl -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.1/bead-space-4.0.1.tar.gz
+<span class="p">$</span> tar xzf bead-space-4.0.1.tar.gz
 <span class="p">$</span> python bead-space/install.py
 <span class="o">installed bead-space -&gt; ~/.aither/packs/bead-space</span>
 <span class="o">verified: adk discovers &#x27;bead-space&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">bead-space — install</span></div><pre class="term-body"><span class="c"># PowerShell. curl.exe and tar ship with Windows 10 1803+</span>
-<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/bead-space-4.0.0.tar.gz
-<span class="p">$</span> tar -xzf bead-space-4.0.0.tar.gz
+<span class="p">$</span> curl.exe -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.1/bead-space-4.0.1.tar.gz
+<span class="p">$</span> tar -xzf bead-space-4.0.1.tar.gz
 <span class="p">$</span> python bead-space\install.py
 <span class="o">installed bead-space -&gt; ~\.aither\packs\bead-space</span>
 <span class="o">verified: adk discovers &#x27;bead-space&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>4.0.0</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>12a6453411e4230d…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>4.0.1</dd></div><div><dt>Size</dt><dd>2 KB</dd></div><div><dt>Licence</dt><dd>MIT</dd></div><div><dt>sha256</dt><dd>904b1d2f92c7138a…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,13 +314,13 @@ not affiliated with or endorsed by them.</p></div></section>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>12a6453411e4230dc712f53e4672941005c0b6c71833d1645d162525851d4162</code></p>
+    <p class="sub">sha256 <code>904b1d2f92c7138a399043e77072de38565ea8cb402df03d69f053331c1595be</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
-<span class="p">$</span> sha256sum -c bead-space-4.0.0.sha256
-<span class="o">bead-space-4.0.0.tar.gz: OK</span>
+<span class="p">$</span> sha256sum -c bead-space-4.0.1.sha256
+<span class="o">bead-space-4.0.1.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;12A6453411E4230DC712F53E4672941005C0B6C71833D1645D162525851D4162&#x27;
-<span class="p">$</span> (Get-FileHash bead-space-4.0.0.tar.gz -Algorithm SHA256).Hash -eq $want
+<span class="p">$</span> $want = &#x27;904B1D2F92C7138A399043E77072DE38565EA8CB402DF03D69F053331C1595BE&#x27;
+<span class="p">$</span> (Get-FileHash bead-space-4.0.1.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
   </section>
@@ -328,7 +328,7 @@ not affiliated with or endorsed by them.</p></div></section>
   <div class="colophon"><p><a href="https://github.com/wbern/bead-space">bead-space</a> is created by <strong>wbern</strong>. Licensed MIT. This pack is an engine that runs behind it — their application is not modified, not redistributed here, and not affiliated with us. If you like what you see, the credit belongs upstream.</p></div>
 
   <footer>
-    Built from <code>v4.0.0</code> · adk 4.0.0 ·
+    Built from <code>v4.0.1</code> · adk 4.0.1 ·
     <a href="../packs.html">All packs</a> ·
     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a><br>bead-space is an independent project. This page links to it; it does not speak for it.
   <!-- aither-about:start GENERATED from the ecosystem registry built_on -->

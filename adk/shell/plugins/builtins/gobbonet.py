@@ -255,16 +255,9 @@ class GobboNetPlugin(SlashCommand):
         capabilities. NETWORK_EGRESS defaults to NO (pack does not declare it).
         """
         try:
-            from adk.capabilities import (
-                CAPABILITY_FILE_IO,
-                CAPABILITY_LLM_INFERENCE,
-                CAPABILITY_NETWORK_EGRESS,
-                get_capability_store,
-            )
-        except Exception as exc:
+            store = _get_capability_store()
+        except Exception as exc:  # noqa: BLE001
             return f"could not load capability system: {type(exc).__name__}: {exc}"
-
-        store = get_capability_store()
 
         # 1. Report current state
         output = ["GobboNet Onboarding Setup", "=" * 50]
@@ -273,7 +266,7 @@ class GobboNetPlugin(SlashCommand):
         try:
             from adk.packs.gobbonet.launch import _find_existing
             ui = _find_existing(None)
-        except Exception:
+        except Exception:  # noqa: BLE001
             ui = None
 
         if ui:
@@ -286,9 +279,9 @@ class GobboNetPlugin(SlashCommand):
         output.append("-" * 50)
 
         for cap, name, desc in [
-            (CAPABILITY_LLM_INFERENCE, "LLM Inference", "Run language models"),
-            (CAPABILITY_FILE_IO, "File I/O", "Read/write user files"),
-            (CAPABILITY_NETWORK_EGRESS, "Network Egress", "Make external network requests"),
+            (_CAPABILITY_LLM_INFERENCE, "LLM Inference", "Run language models"),
+            (_CAPABILITY_FILE_IO, "File I/O", "Read/write user files"),
+            (_CAPABILITY_NETWORK_EGRESS, "Network Egress", "Make external network requests"),
         ]:
             is_granted = store.is_granted(cap)
             status = "✓ GRANTED" if is_granted else "✗ NOT GRANTED"
@@ -312,24 +305,18 @@ class GobboNetPlugin(SlashCommand):
           /gobbonet capabilities revoke <cap>  (deny a capability)
         """
         try:
-            from adk.capabilities import (
-                CAPABILITY_FILE_IO,
-                CAPABILITY_LLM_INFERENCE,
-                CAPABILITY_NETWORK_EGRESS,
-                get_capability_store,
-            )
-        except Exception as exc:
+            store = _get_capability_store()
+        except Exception as exc:  # noqa: BLE001
             return f"could not load capability system: {type(exc).__name__}: {exc}"
 
         if not args:
             # List all capabilities
-            store = get_capability_store()
             output = ["Capability Grants", "=" * 50]
 
             for cap, name in [
-                (CAPABILITY_LLM_INFERENCE, "LLM Inference"),
-                (CAPABILITY_FILE_IO, "File I/O"),
-                (CAPABILITY_NETWORK_EGRESS, "Network Egress"),
+                (_CAPABILITY_LLM_INFERENCE, "LLM Inference"),
+                (_CAPABILITY_FILE_IO, "File I/O"),
+                (_CAPABILITY_NETWORK_EGRESS, "Network Egress"),
             ]:
                 is_granted = store.is_granted(cap)
                 status = "GRANTED" if is_granted else "NOT GRANTED"
@@ -340,16 +327,13 @@ class GobboNetPlugin(SlashCommand):
         sub = args[0].lower()
         cap_arg = args[1].lower() if len(args) > 1 else None
 
+        cap_map = {
+            "network": _CAPABILITY_NETWORK_EGRESS,
+            "file": _CAPABILITY_FILE_IO,
+            "llm": _CAPABILITY_LLM_INFERENCE,
+        }
+
         if sub == "grant" and cap_arg:
-            store = get_capability_store()
-
-            # Map aliases to full names
-            cap_map = {
-                "network": CAPABILITY_NETWORK_EGRESS,
-                "file": CAPABILITY_FILE_IO,
-                "llm": CAPABILITY_LLM_INFERENCE,
-            }
-
             cap_name = cap_map.get(cap_arg)
             if not cap_name:
                 return (
@@ -357,18 +341,10 @@ class GobboNetPlugin(SlashCommand):
                     "  Use: network, file, or llm"
                 )
 
-            store._grant(cap_name, reason="user granted via /gobbonet capabilities")
+            store.grant(cap_name, reason="user granted via /gobbonet capabilities")
             return f"Granted: {cap_name}"
 
         if sub == "revoke" and cap_arg:
-            store = get_capability_store()
-
-            cap_map = {
-                "network": CAPABILITY_NETWORK_EGRESS,
-                "file": CAPABILITY_FILE_IO,
-                "llm": CAPABILITY_LLM_INFERENCE,
-            }
-
             cap_name = cap_map.get(cap_arg)
             if not cap_name:
                 return (
@@ -376,7 +352,7 @@ class GobboNetPlugin(SlashCommand):
                     "  Use: network, file, or llm"
                 )
 
-            store._revoke(cap_name, reason="user revoked via /gobbonet capabilities")
+            store.revoke(cap_name, reason="user revoked via /gobbonet capabilities")
             return f"Revoked: {cap_name}"
 
         return (
@@ -385,3 +361,99 @@ class GobboNetPlugin(SlashCommand):
             "  /gobbonet capabilities grant network\n"
             "  /gobbonet capabilities revoke network"
         )
+
+
+_CAPABILITY_LLM_INFERENCE = "llm_inference"
+_CAPABILITY_FILE_IO = "file_io"
+_CAPABILITY_NETWORK_EGRESS = "network_egress"
+
+_DEFAULT_GRANTS: Dict[str, bool] = {
+    _CAPABILITY_LLM_INFERENCE: True,
+    _CAPABILITY_FILE_IO: True,
+    _CAPABILITY_NETWORK_EGRESS: False,
+}
+
+
+class _GobboNetCapabilityStore:
+    """Persistent capability grant store backed by ``adk.core.capability``.
+
+    Maps GobboNet pack capabilities onto canonical ``adk.core.capability.Capability``
+    tokens and persists user opt-in/revoke choices under ``$AITHER_DATA_DIR`` (or
+    ``~/.aither``). ``network_egress`` defaults to DENIED.
+    """
+
+    def __init__(self, path: Optional[Any] = None) -> None:
+        import os
+        from pathlib import Path
+        from adk.core.capability import Capability
+
+        self._tokens = {
+            _CAPABILITY_LLM_INFERENCE: (Capability.LLM_INFERENCE,),
+            _CAPABILITY_FILE_IO: (Capability.FILE_READ, Capability.FILE_WRITE),
+            _CAPABILITY_NETWORK_EGRESS: (Capability.NET_HTTP, Capability.NET_WEB_SEARCH),
+        }
+        base = Path(os.environ.get("AITHER_DATA_DIR", str(Path.home() / ".aither")))
+        self._path = Path(path) if path is not None else base / "gobbonet_capabilities.json"
+        self._grants: Dict[str, bool] = dict(_DEFAULT_GRANTS)
+        self._load()
+
+    def _load(self) -> None:
+        import json
+
+        if not self._path.is_file():
+            return
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        grants = data.get("grants", data) if isinstance(data, dict) else {}
+        if isinstance(grants, dict):
+            for key in _DEFAULT_GRANTS:
+                if isinstance(grants.get(key), bool):
+                    self._grants[key] = grants[key]
+
+    def _save(self, reason: str = "") -> None:
+        import json
+
+        payload = {"grants": dict(self._grants), "last_reason": reason}
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+    def to_context(self) -> Any:
+        from adk.core.capability import CapabilityContext
+
+        ctx = CapabilityContext()
+        for cap_name, granted in self._grants.items():
+            if granted:
+                ctx.grant(*self._tokens.get(cap_name, ()))
+        return ctx
+
+    def is_granted(self, cap_name: str) -> bool:
+        tokens = self._tokens.get(cap_name)
+        if not tokens:
+            return False
+        ctx = self.to_context()
+        return all(ctx.has(tok) for tok in tokens)
+
+    def grant(self, cap_name: str, reason: str = "") -> None:
+        if cap_name not in self._tokens:
+            raise ValueError(f"Unknown capability: {cap_name!r}")
+        self._grants[cap_name] = True
+        self._save(reason=reason)
+
+    def revoke(self, cap_name: str, reason: str = "") -> None:
+        if cap_name not in self._tokens:
+            raise ValueError(f"Unknown capability: {cap_name!r}")
+        self._grants[cap_name] = False
+        self._save(reason=reason)
+
+    # Back-compat aliases
+    _grant = grant
+    _revoke = revoke
+
+
+def _get_capability_store() -> _GobboNetCapabilityStore:
+    return _GobboNetCapabilityStore()

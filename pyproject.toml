@@ -24,7 +24,7 @@ name = "awdk"
 #
 # Continue the existing line, never restart it: a user moving across a
 # downgrade gets a silently older package.
-version = "4.0.0"
+version = "4.0.1"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (api.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -62,22 +62,6 @@ dependencies = [
     # loss is worse than the ModuleNotFoundError the note below describes,
     # because nobody files a bug for it.
     "ddgs>=9.0",
-    # awgit — the git plane: micro-commits, semantic diff, an operation log and
-    # path leases. FIVE adk modules already import it (decisions/context,
-    # decisions/terminal, harnesses/well, node/local_tools, and the tool guards)
-    # behind soft ImportError guards, so today the behaviour depends on whether
-    # the user happens to have it: present on a monorepo checkout, absent for
-    # everyone who ran `pip install aither-adk`.
-    #
-    # That is the worst shape for a capability. The guards mean nothing errors —
-    # the features are simply skipped, and a user comparing notes with a
-    # developer sees a different product with no message explaining why.
-    # Declaring it makes the guarded paths reachable for everyone; the guards
-    # stay, because they are also what keeps adk working in a non-git directory.
-    # >=1.0 rather than >=1.1: the monorepo tree declares 1.0.0 and PyPI is at
-    # 1.1.1, so a tighter pin would force pip to replace a developer's editable
-    # checkout with the published wheel — the copy they are actively editing.
-    "awgit>=1.0",
     # A2A identity/signing. NOT optional despite a2a_client.py's "pip install
     # cryptography" hint: `adk/cli.py` imports a2a_identity, and the endpoint
     # REGISTRATION payload carries the agent's public key — so a plain
@@ -155,18 +139,10 @@ decide = ["awdecide>=0.3.0"]
 # awgit / awgraph / awrelay are HARD dependencies above: all three are published,
 # so a plain `pip install awdk` gets them and the capability is simply present.
 #
-# These four are EXTRAS, and that is a constraint rather than a preference: awm,
-# awrecover, awseal and awshare are 0.1.0 and NOT on PyPI. Declaring an unpublished
-# package as a hard dependency breaks `pip install awdk` for every stranger --
-# which is what PVR003 (check_package_version_ahead_of_registry.py) exists to catch.
-#
-# As extras they fail HONESTLY: a stranger's plain install keeps working, an agent
-# that asks for a capability we cannot ship yet gets a resolution error naming the
-# package, and in-fleet agents get them from the monorepo today. The alternative --
-# leaving them undeclared entirely -- is the awgit failure this session already paid
-# for: imported, undeclared, and silently inert (AWP105).
-#
-# PROMOTE EACH TO A HARD DEPENDENCY IN THE COMMIT THAT PUBLISHES IT, not before.
+# These packages are kept as optional EXTRAS so a plain `pip install awdk` stays
+# lean while users/agents that want scoped memory, snapshots, provenance sealing,
+# content-addressed sharing, or presence attestations opt in explicitly.
+# (`awm`, `awrecover`, `awseal`, `awshare`, and `awnest` are published on PyPI.)
 memory = ["awm>=0.1.0"]          # portable scoped agent memory (tenant:user:project)
 snapshots = ["awrecover>=0.1.0"] # labelled snapshots; restore lands fully or not at all
 seal = ["awseal>=0.1.0"]         # Ed25519 provenance a stranger can verify
@@ -180,12 +156,9 @@ senses = [  # every brick the senses toolpack imports (check_brick_symbols BSY00
 # journaled runtime. Published as `aitherium-awflow` (PyPI `awflow` is a stranger's
 # 2022 package -- never depend on that name). Import is lazy; absent = ok:false.
 flow = ["aitherium-awflow>=0.2.2"]
-# Priority-aware run queue (awrun_submit/queue/status/bump/cancel below). Same
-# reason as memory/snapshots/seal/share above: awrun is 0.1.0 and NOT on PyPI,
-# so it is an extra, never a hard dependency in [project.dependencies] -- a
-# hard pin here would break `pip install awdk` for every stranger and is
-# exactly what PVR003 (check_package_version_ahead_of_registry.py) exists to
-# catch. Promote to a hard dependency in the commit that publishes it.
+# Priority-aware run queue (awrun_submit/queue/status/bump/cancel). `awrun` is
+# published on PyPI and imported lazily; kept as an optional extra so a plain
+# `pip install awdk` stays lean.
 queue = ["awrun>=0.1.0"]
 # Give one local port a public address (`/tunnel setup` in the shell, and the
 # connector `adk up` will move onto). awtunnel 0.1.0 is on PyPI; the connector
@@ -366,12 +339,11 @@ aither-hearth = "adk.home.cli:main"
 #                         turnkey trainer in the free SDK.
 exclude = [
     "adk/identities/*.yaml",
+    # Defense-in-depth moat guard (pinned by tests/test_moat_boundary.py).
     "adk/nanogpt.py",
     "adk/formbridge/**",
     "adk/room_binaries/**",
     "adk/shell_binaries/**",
-    "adk/faculties/memory_graph.py",
-    "adk/platform/memory/**",
     "GRID_SETUP.md",
     "docker-compose.grid.yml",
     "tests/test_formbridge.py",
@@ -384,6 +356,15 @@ exclude = [
     "adk/shell/plugins/builtins/train_pipeline.py",
     "tests/test_aither_bridge.py",
     "tests/test_encounter_keying.py",
+    # Test suites and dev/example scripts that must never ship inside published wheels.
+    "adk/tests/**",
+    "adk/ods/tests/**",
+    "adk/agentdoc/tests/**",
+    "adk/ods/tools/**",
+    "adk/shell/telemetry/test_telemetry.py",
+    "adk/shell/telemetry/examples.py",
+    "adk/packs/arc_world/test_smart_policy.py",
+    "adk/shell/plugins/builtins/test_secret.py",
 ]
 artifacts = [
     "adk/identities/aither.yaml",
@@ -398,8 +379,11 @@ artifacts = [
     # The browser KV holder page + script served by `adk kvholder phone`.
     "adk/webui/kvholder/**/*",
     # Vendored ODS model catalog and hardware database (deterministic model resolution).
-    # JSON files needed at runtime by adk.ods.resolver; force-include via importlib.resources.
-    "adk/ods/**/*",
+    # Only runtime data/license assets are force-included so adk/ods/{tests,tools}/ stay excluded.
+    "adk/ods/*.json",
+    "adk/ods/LICENSE.apache2.txt",
+    "adk/ods/NOTICE",
+    "adk/ods/_upstream_classify.sh",
     # Bundled component manifests -- the mirror of AitherOS/config/addon_manifests
     # (comments stripped, generated by sync_addon_manifests_to_awdk.py, parity gated
     # by ACM007). A stranger's `pip install awdk` must know what a component IS

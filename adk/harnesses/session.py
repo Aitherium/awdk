@@ -42,7 +42,13 @@ from adk.harnesses import focus as _focus
 from adk.harnesses.events import EventKind, HarnessEvent, error, notice
 from adk.harnesses.mod import apply_to_launch as apply_mod_to_launch
 from adk.harnesses.models import ModelBinding, apply_binding
-from adk.harnesses.registry import HarnessSpec, LaunchSpec, Transport, resolve_binary
+from adk.harnesses.registry import (
+    HarnessSpec,
+    LaunchSpec,
+    Transport,
+    prompt_on_argv_forced,
+    resolve_binary,
+)
 
 #: Events kept in memory for reconnecting clients. The transcript on disk is
 #: complete; this only bounds RAM for a long-running session.
@@ -199,6 +205,33 @@ def _feed_stdin(proc: "subprocess.Popen[str]", prompt: str) -> None:
             stdin.close()
         except (OSError, ValueError) as exc:
             logging.getLogger(__name__).debug("closing the child's stdin: %s", exc)
+
+
+def _write_prompt_file(directory: Path, turn: int, prompt: str) -> Path:
+    """Write a oneshot turn prompt to a private (0600) temp file under *directory*.
+
+    Keeping prompts off argv prevents local process-table snooping (`ps`,
+    `/proc/<pid>/cmdline`). The caller always unlinks the file in ``finally``.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f".prompt-turn-{turn}-{uuid.uuid4().hex[:8]}.txt"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(str(path), flags, 0o600)
+    try:
+        if os.name != "nt":
+            try:
+                os.chmod(fd, 0o600)
+            except OSError:
+                pass
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(prompt)
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return path
 
 
 def _edited_paths(event: HarnessEvent) -> list[str]:
@@ -512,7 +545,7 @@ class HarnessSession:
             self.spec.child_env(env)
         return env
 
-    def _launch_spec(self, prompt: str = "") -> LaunchSpec:
+    def _launch_spec(self, prompt: str = "", prompt_file: str = "") -> LaunchSpec:
         return LaunchSpec(
             cwd=self.config.cwd,
             model=self.config.model,
@@ -526,6 +559,7 @@ class HarnessSession:
             allowed_tools=list(self.config.allowed_tools),
             mcp_config=self.config.mcp_config,
             prompt=prompt,
+            prompt_file=prompt_file,
             target=self.config.target,
             extra_args=apply_mod_to_launch(
                 self.spec.id, self.config.owner, {}, list(self.config.extra_args)
@@ -806,106 +840,132 @@ class HarnessSession:
             return False
 
         prompt = self._prompt_with_context(text)
-        on_stdin = bool(getattr(self.spec, "prompt_on_stdin", False))
-        argv = self.spec.argv(self._launch_spec(prompt=prompt))
+        legacy_argv = prompt_on_argv_forced()
+        on_stdin = bool(getattr(self.spec, "prompt_on_stdin", False)) and not legacy_argv
+        via_file = (
+            bool(getattr(self.spec, "prompt_via_file", False))
+            and not legacy_argv
+            and not on_stdin
+        )
+        prompt_path: Optional[Path] = None
+        if via_file:
+            try:
+                prompt_path = _write_prompt_file(self.dir, turn, prompt)
+            except OSError as exc:
+                self._emit(error(f"failed to stage prompt file for {self.spec.label}: {exc}"))
+                return False
+            argv = self.spec.argv(self._launch_spec(prompt="", prompt_file=str(prompt_path)))
+        elif on_stdin:
+            argv = self.spec.argv(self._launch_spec(prompt=""))
+        else:
+            argv = self.spec.argv(self._launch_spec(prompt=prompt))
         argv[0] = path
         self.state = SessionState.BUSY
         seq_at_start = self.last_seq
 
         def run() -> None:
             try:
-                proc = subprocess.Popen(
-                    argv,
-                    stdin=subprocess.PIPE if on_stdin else subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=self.config.cwd or os.getcwd(),
-                    env=self._child_env(),
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    bufsize=1,
-                    creationflags=_NO_WINDOW,
-                )
-            except ConnectorEnvError as exc:
-                self._emit(error(f"turn not started: {exc}", connector_env=True))
-                self.state = SessionState.IDLE
-                return
-            except (OSError, ValueError) as exc:
-                self._emit(error(f"failed to start {self.spec.label}: {exc}"))
-                self.state = SessionState.IDLE
-                return
-            self._proc = proc
-            out = threading.Thread(
-                target=self._pump, args=(proc.stdout, "stdout"), daemon=True
-            )
-            err = threading.Thread(
-                target=self._pump, args=(proc.stderr, "stderr"), daemon=True
-            )
-            out.start()
-            err.start()
-            if on_stdin:
-                # After the pumps start, so a child that writes before it reads
-                # cannot deadlock against a full stdout pipe.
-                threading.Thread(
-                    target=_feed_stdin, args=(proc, prompt), daemon=True
-                ).start()
-
-            timeout = self.config.turn_timeout or TURN_TIMEOUT_SECONDS
-            started = time.time()
-            timed_out = False
-            quiet_warned = False
-            code: Optional[int] = None
-            while True:
                 try:
-                    code = proc.wait(timeout=1.0)
-                    break
-                except subprocess.TimeoutExpired:
-                    elapsed = time.time() - started
-                    if not quiet_warned and elapsed >= TURN_QUIET_NOTICE_SECONDS:
-                        # Only say "quiet" if it really has produced nothing.
-                        if self.last_seq <= seq_at_start:
-                            quiet_warned = True
-                            self._emit(
-                                notice(
-                                    f"{self.spec.label} has produced no output in "
-                                    f"{int(elapsed)}s",
-                                    quiet_seconds=int(elapsed),
-                                )
-                            )
-                    if elapsed >= timeout:
-                        timed_out = True
-                        proc.kill()
-                        code = proc.wait(timeout=10)
-                        break
+                    proc = subprocess.Popen(
+                        argv,
+                        stdin=subprocess.PIPE if on_stdin else subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        cwd=self.config.cwd or os.getcwd(),
+                        env=self._child_env(),
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        bufsize=1,
+                        creationflags=_NO_WINDOW,
+                    )
+                except ConnectorEnvError as exc:
+                    self._emit(error(f"turn not started: {exc}", connector_env=True))
+                    self.state = SessionState.IDLE
+                    return
+                except (OSError, ValueError) as exc:
+                    self._emit(error(f"failed to start {self.spec.label}: {exc}"))
+                    self.state = SessionState.IDLE
+                    return
+                self._proc = proc
+                out = threading.Thread(
+                    target=self._pump, args=(proc.stdout, "stdout"), daemon=True
+                )
+                err = threading.Thread(
+                    target=self._pump, args=(proc.stderr, "stderr"), daemon=True
+                )
+                out.start()
+                err.start()
+                if on_stdin:
+                    # After the pumps start, so a child that writes before it reads
+                    # cannot deadlock against a full stdout pipe.
+                    threading.Thread(
+                        target=_feed_stdin, args=(proc, prompt), daemon=True
+                    ).start()
 
-            out.join(timeout=5)
-            err.join(timeout=5)
-            if timed_out:
-                # Loud, and it names the likely cause. A one-shot harness that
-                # hangs with no output is almost always waiting on auth.
+                timeout = self.config.turn_timeout or TURN_TIMEOUT_SECONDS
+                started = time.time()
+                timed_out = False
+                quiet_warned = False
+                code: Optional[int] = None
+                while True:
+                    try:
+                        code = proc.wait(timeout=1.0)
+                        break
+                    except subprocess.TimeoutExpired:
+                        elapsed = time.time() - started
+                        if not quiet_warned and elapsed >= TURN_QUIET_NOTICE_SECONDS:
+                            # Only say "quiet" if it really has produced nothing.
+                            if self.last_seq <= seq_at_start:
+                                quiet_warned = True
+                                self._emit(
+                                    notice(
+                                        f"{self.spec.label} has produced no output in "
+                                        f"{int(elapsed)}s",
+                                        quiet_seconds=int(elapsed),
+                                    )
+                                )
+                        if elapsed >= timeout:
+                            timed_out = True
+                            proc.kill()
+                            code = proc.wait(timeout=10)
+                            break
+
+                out.join(timeout=5)
+                err.join(timeout=5)
+                if timed_out:
+                    # Loud, and it names the likely cause. A one-shot harness that
+                    # hangs with no output is almost always waiting on auth.
+                    self._emit(
+                        error(
+                            f"{self.spec.label} turn exceeded {int(timeout)}s and was killed. "
+                            "A one-shot harness that produces no output is usually "
+                            "unauthenticated — run it once interactively to sign in.",
+                            timeout_seconds=int(timeout),
+                            harness=self.spec.id,
+                        )
+                    )
                 self._emit(
-                    error(
-                        f"{self.spec.label} turn exceeded {int(timeout)}s and was killed. "
-                        "A one-shot harness that produces no output is usually "
-                        "unauthenticated — run it once interactively to sign in.",
-                        timeout_seconds=int(timeout),
-                        harness=self.spec.id,
+                    HarnessEvent(
+                        kind=EventKind.TURN_COMPLETED,
+                        text="",
+                        data={
+                            "is_error": timed_out or code != 0,
+                            "exit_code": code,
+                            "timed_out": timed_out,
+                        },
+                        turn=turn,
                     )
                 )
-            self._emit(
-                HarnessEvent(
-                    kind=EventKind.TURN_COMPLETED,
-                    text="",
-                    data={
-                        "is_error": timed_out or code != 0,
-                        "exit_code": code,
-                        "timed_out": timed_out,
-                    },
-                    turn=turn,
-                )
-            )
-            self.state = SessionState.IDLE
+                self.state = SessionState.IDLE
+            finally:
+                if prompt_path is not None:
+                    try:
+                        prompt_path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        sys.stderr.write(
+                            f"[harness {self.id}] prompt file cleanup failed: {exc}\n"
+                        )
 
         thread = threading.Thread(target=run, name=f"harness-turn-{self.id}", daemon=True)
         thread.start()

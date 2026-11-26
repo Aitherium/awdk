@@ -204,4 +204,158 @@ def test_antigravity_toolpack_and_bundled_mod(tmp_path: Path, monkeypatch):
     for fname in ("plugin.json", "mcp_config.json", "hooks.json"):
         doc = json.loads((mod_dir / fname).read_text(encoding="utf-8"))
         assert isinstance(doc, dict)
+    mod_hooks = json.loads((mod_dir / "hooks.json").read_text(encoding="utf-8"))["awdk-bridge"]
+    assert mod_hooks["PreToolUse"][0]["matcher"] != "*"
+    assert "call_mcp_tool" in mod_hooks["PreToolUse"][0]["matcher"]
+    assert mod_hooks["PostToolUse"][0]["matcher"] != "*"
+
+
+def test_mcp_tool_translation_unwraps_routed_aither_call():
+    name, inp = agh.translate_tool_input(
+        "call_mcp_tool",
+        {
+            "ServerName": "aitheros_aitheros",
+            "ToolName": "aither_call",
+            "Arguments": {"tool": "set_secret", "arguments": {"name": "FOO"}},
+        },
+    )
+    assert name == "mcp__aitheros__set_secret"
+    assert inp == {"name": "FOO"}
+
+    direct_name, direct_inp = agh.translate_tool_input(
+        "call_mcp_tool",
+        {"ServerName": "aitheros_aither-local", "ToolName": "research", "Arguments": {"q": "x"}},
+    )
+    assert direct_name == "mcp__aither-local__research"
+    assert direct_inp == {"q": "x"}
+
+
+def test_setup_defaults_to_routed_mcp_and_scoped_hooks_and_doctor_warns_flat(tmp_path: Path):
+    from adk.antigravity_setup import build_mcp_config
+
+    bridge = tmp_path / "mcp_stdio_bridge.py"
+    bridge.write_text("# stub\n", encoding="utf-8")
+
+    # Default setup enables --routed and scoped hook matchers -> no AGD007 warnings.
+    cfg = tmp_path / "cfg"
+    res = setup_antigravity(cfg, mcp_bridge_script=str(bridge), include_bundled_skills=False)
+    assert res["ok"] is True
+    pdir = cfg / "plugins" / DEFAULT_PLUGIN_NAME
+    mcp_doc = json.loads((pdir / "mcp_config.json").read_text(encoding="utf-8"))
+    assert "--routed" in mcp_doc["mcpServers"]["aitheros"]["args"]
+    hooks_doc = json.loads((pdir / "hooks.json").read_text(encoding="utf-8"))["aitheros-bridge"]
+    assert hooks_doc["PreToolUse"][0]["matcher"] == "run_command|edit_file|write_file|call_mcp_tool"
+    assert hooks_doc["PostToolUse"][0]["matcher"] == "run_command|edit_file|write_file"
+
+    rep = doctor_antigravity(cfg, run_live=False)
+    assert not any(f.code == "AGD007" for f in rep.findings)
+
+    # Flat bridge without --routed trips AGD007 warning.
+    flat = build_mcp_config(python_exe="python3", mcp_bridge_script=str(bridge), routed_mcp=False)
+    assert "--routed" not in flat["mcpServers"]["aitheros"]["args"]
+    (pdir / "mcp_config.json").write_text(json.dumps(flat), encoding="utf-8")
+    rep_flat = doctor_antigravity(cfg, run_live=False)
+    assert any(f.code == "AGD007" for f in rep_flat.findings)
+
+
+def test_fast_allow_skips_pretooluse_overhead(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+    called = []
+    monkeypatch.setattr(agh, "_hookd_post", lambda *a, **kw: called.append(a) or None)
+    ans = agh.handle_event(
+        "PreToolUse",
+        {"conversationId": "c-fast", "toolCall": {"name": "read_file", "args": {"Path": "/tmp/a"}}},
+    )
+    assert ans == {"decision": "allow"}
+    assert called == []
+
+
+def test_sync_routed_mcp_all_harnesses_and_claude_runner_default(tmp_path: Path, monkeypatch):
+    from adk.claude_runner import _default_mcp_config
+    from adk.mcp_setup import sync_routed_mcp_all_harnesses
+
+    # Seed every harness config with pre-existing user entries that must be preserved.
+    (tmp_path / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"aitherium": {"type": "http", "url": "https://mcp.aitherium.com/mcp"}}}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text(
+        'model = "gpt-5.3-codex"\n\n[mcp_servers.awdecide]\ncommand = "awdecide"\nargs = ["mcp"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / ".gemini").mkdir()
+    (tmp_path / ".gemini" / "settings.json").write_text(
+        json.dumps({"ide": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".cursor").mkdir()
+    (tmp_path / ".cursor" / "mcp.json").write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+    (tmp_path / ".config" / "opencode" / "opencode.jsonc").write_text(
+        '{\n  // comment\n  "model": "aither/bonsai2-27b-5090"\n}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "AppData" / "Roaming" / "Code" / "User").mkdir(parents=True)
+    (tmp_path / "AppData" / "Roaming" / "Code" / "User" / "mcp.json").write_text(
+        json.dumps({"servers": {"Roboflow": {"url": "https://example.test/mcp", "type": "http"}}}),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"aitheros": {"type": "stdio", "command": "python", "args": ["old"]}}}),
+        encoding="utf-8",
+    )
+
+    # Run twice to assert idempotency.
+    for _ in range(2):
+        res = sync_routed_mcp_all_harnesses(
+            home=tmp_path,
+            repo_root=repo,
+            python_exe=r"C:\Python312\python.exe",
+            bridge_script=r"C:\Repo\AitherOS\dev\tools\mcp_stdio_bridge.py",
+            awdelegate_script=r"C:\Repo\tools\claude-backend\awdelegate.py",
+            routed=True,
+            win_style=True,
+        )
+    assert res["ok"] is True
+    assert set(res["harnesses"].keys()) == {
+        "claude-code", "repo", "codex", "gemini", "cursor", "opencode", "vscode",
+    }
+
+    claude_doc = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
+    assert "--routed" in claude_doc["mcpServers"]["aitheros"]["args"]
+    assert "aitherium" in claude_doc["mcpServers"]
+    assert "aither-local" in claude_doc["mcpServers"]
+
+    codex_txt = (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert codex_txt.count("[mcp_servers.aitheros]") == 1
+    assert "[mcp_servers.awdecide]" in codex_txt
+    assert '"--routed"' in codex_txt
+
+    gemini_doc = json.loads((tmp_path / ".gemini" / "settings.json").read_text(encoding="utf-8"))
+    assert gemini_doc["ide"]["enabled"] is True
+    assert "--routed" in gemini_doc["mcpServers"]["aitheros"]["args"]
+
+    cursor_doc = json.loads((tmp_path / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
+    assert "--routed" in cursor_doc["mcpServers"]["aitheros"]["args"]
+
+    oc_doc = json.loads((tmp_path / ".config" / "opencode" / "opencode.jsonc").read_text(encoding="utf-8"))
+    assert oc_doc["model"] == "aither/bonsai2-27b-5090"
+    assert oc_doc["mcp"]["aitheros"]["type"] == "local"
+    assert "--routed" in oc_doc["mcp"]["aitheros"]["command"]
+
+    vscode_doc = json.loads((tmp_path / "AppData" / "Roaming" / "Code" / "User" / "mcp.json").read_text(encoding="utf-8"))
+    assert "Roboflow" in vscode_doc["servers"]
+    assert "--routed" in vscode_doc["servers"]["aitheros"]["args"]
+
+    # claude_runner._default_mcp_config() includes --routed by default and honors opt-out.
+    monkeypatch.delenv("AITHER_CLAUDE_RUNNER_FLAT_MCP", raising=False)
+    default_cfg = _default_mcp_config()
+    if default_cfg.get("mcpServers"):
+        assert "--routed" in default_cfg["mcpServers"]["aitheros"]["args"]
+        monkeypatch.setenv("AITHER_CLAUDE_RUNNER_FLAT_MCP", "1")
+        assert "--routed" not in _default_mcp_config()["mcpServers"]["aitheros"]["args"]
+
 

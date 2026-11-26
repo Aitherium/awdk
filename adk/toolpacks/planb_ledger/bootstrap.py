@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import ledger
 
-MIRROR = "https://bonsai-weights.alexander-parkhurst.workers.dev"
+MIRROR = "https://bonsai-weights.aithernet.workers.dev"
 HF_BASE = "https://huggingface.co/prism-ml/{repo}/resolve/main/{fname}"
 RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 

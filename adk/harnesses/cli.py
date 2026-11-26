@@ -16,8 +16,14 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from adk.harnesses.daemon import DEFAULT_HOST, DEFAULT_PORT, resolve_token
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+DEFAULT_AUTOSTART_TIMEOUT_S = float(
+    os.environ.get("AITHER_HARNESS_AUTOSTART_TIMEOUT", "20.0") or "20.0"
+)
 
 
 def _base_url(args: Any) -> str:
@@ -27,31 +33,108 @@ def _base_url(args: Any) -> str:
     return f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 
 
+def is_local_loopback_url(url: str) -> bool:
+    """True only when *url* targets a local loopback host (never auto-start remote hosts)."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").strip().lower()
+    return parts.scheme in ("http", "https") and host in _LOOPBACK_HOSTS
+
+
+def _autostart_enabled(args: Any) -> bool:
+    """Whether a local loopback daemon may be reconciled on cold start."""
+    if getattr(args, "no_auto_start", False):
+        return False
+    if getattr(args, "auto_start", False):
+        return True
+    no_env = (os.environ.get("AITHER_HARNESS_NO_AUTOSTART") or "").strip().lower()
+    if no_env in ("1", "true", "yes", "on"):
+        return False
+    env = (os.environ.get("AITHER_HARNESS_AUTOSTART") or "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def ensure_local_daemon(args: Any, *, timeout_s: float = DEFAULT_AUTOSTART_TIMEOUT_S) -> tuple[bool, str]:
+    """Ensure the local loopback harness daemon is running via the native ``adk.up`` lane.
+
+    Refuses to spawn when ``--url`` / ``AITHER_HARNESS_URL`` points off loopback.
+    Zero hand-rolled shell scripts: delegates spawn + health wait to ``adk.up``.
+    """
+    base = _base_url(args)
+    if not is_local_loopback_url(base):
+        return False, f"refusing to auto-start non-loopback daemon URL: {base}"
+    parts = urlsplit(base)
+    host = parts.hostname or DEFAULT_HOST
+    port = parts.port or DEFAULT_PORT
+    health_url = f"{base}/health"
+
+    from adk.up import _run_dir, _spawn_detached, _wait_health, probe_http
+
+    ok, detail = probe_http(health_url, timeout=1.0)
+    if ok:
+        return True, f"already running ({detail})"
+
+    argv = [
+        sys.executable,
+        "-m",
+        "adk.harnesses.daemon",
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
+    pid_path = _run_dir() / ("awsh-daemon.pid" if port == DEFAULT_PORT else f"awsh-daemon-{port}.pid")
+    spawned, spawn_detail = _spawn_detached(argv, pid_path)
+    if not spawned:
+        return False, f"failed to spawn harness daemon: {spawn_detail}"
+    up_now, wait_detail = _wait_health(health_url, timeout_s=timeout_s)
+    if up_now:
+        return True, f"started ({spawn_detail}; {wait_detail})"
+    return False, f"daemon did not become healthy within {timeout_s:.1f}s ({spawn_detail}; {wait_detail})"
+
+
 def _request(
-    args: Any, path: str, method: str = "GET", body: Optional[dict[str, Any]] = None,
+    args: Any,
+    path: str,
+    method: str = "GET",
+    body: Optional[dict[str, Any]] = None,
     timeout: float = 60.0,
+    *,
+    allow_autostart: bool = True,
 ) -> tuple[int, Any]:
-    url = _base_url(args) + path
-    req = urllib.request.Request(url, method=method)
-    req.add_header("Authorization", f"Bearer {resolve_token(getattr(args, 'token', ''))}")
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, data, timeout=timeout) as response:
-            return response.status, json.loads(response.read() or b"{}")
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace")
-    except urllib.error.URLError as exc:
-        return 0, f"cannot reach harness daemon at {url}: {exc.reason}"
+    base = _base_url(args)
+    url = base + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+
+    def _once() -> tuple[int, Any]:
+        req = urllib.request.Request(url, method=method)
+        req.add_header("Authorization", f"Bearer {resolve_token(getattr(args, 'token', ''))}")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, data, timeout=timeout) as response:
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace")
+        except urllib.error.URLError as exc:
+            return 0, f"cannot reach harness daemon at {url}: {exc.reason}"
+
+    status, payload = _once()
+    if status == 0 and allow_autostart and _autostart_enabled(args) and is_local_loopback_url(base):
+        started, detail = ensure_local_daemon(args)
+        if started:
+            print(f"[adk harness] {detail} on {base}", file=sys.stderr)
+            return _once()
+        payload = f"{payload} (auto-start failed: {detail})"
+    return status, payload
 
 
 def _die_if_down(status: int, payload: Any) -> None:
     """A dead daemon must say so, not print an empty list that reads as 'none'."""
     if status == 0:
         print(payload, file=sys.stderr)
-        print("Start it with:  adk harness serve", file=sys.stderr)
+        print("Start it with:  adk harness ensure  (or: adk harness up / adk harness serve)", file=sys.stderr)
         raise SystemExit(2)
     if status >= 400:
         print(f"HTTP {status}: {payload}", file=sys.stderr)
@@ -65,6 +148,9 @@ def cmd_shell(args: Any) -> int:
         return 0
     handler = {
         "serve": _cmd_serve,
+        "ensure": _cmd_ensure,
+        "health": _cmd_health,
+        "status": _cmd_health,
         "harnesses": _cmd_harnesses,
         "agents": _cmd_agents,
         "skills": _cmd_skills,
@@ -86,6 +172,39 @@ def cmd_shell(args: Any) -> int:
         _print_help()
         return 2
     return handler(args)
+
+
+def _cmd_ensure(args: Any) -> int:
+    """Idempotently start and verify the local loopback harness daemon."""
+    timeout_s = float(getattr(args, "timeout", DEFAULT_AUTOSTART_TIMEOUT_S) or DEFAULT_AUTOSTART_TIMEOUT_S)
+    ok, detail = ensure_local_daemon(args, timeout_s=timeout_s)
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": ok, "url": _base_url(args), "detail": detail}, indent=2))
+    else:
+        print(f"harness daemon ({_base_url(args)}): {'UP' if ok else 'DOWN'} — {detail}")
+    return 0 if ok else 2
+
+
+def _cmd_health(args: Any) -> int:
+    """Read-only probe of the harness daemon (never auto-starts; exits 2 when unreachable)."""
+    base = _base_url(args)
+    status, payload = _request(args, "/health", timeout=3.0, allow_autostart=False)
+    ok = status == 200
+    if getattr(args, "json", False):
+        out = {
+            "ok": ok,
+            "url": base,
+            "status": status,
+            "health": payload if isinstance(payload, dict) else None,
+            "error": None if ok else str(payload),
+        }
+        print(json.dumps(out, indent=2))
+    elif ok:
+        print(f"harness daemon UP at {base}")
+    else:
+        print(f"harness daemon DOWN at {base}: {payload}", file=sys.stderr)
+        print("Start it with:  adk harness ensure  (or: adk harness up)", file=sys.stderr)
+    return 0 if ok else 2
 
 
 def _cmd_parts(args: Any) -> int:
@@ -346,7 +465,9 @@ def _print_help() -> None:
         """adk shell — one shell that drives every coding shell
 
   adk harness serve [--host H] [--port P]     run the harness daemon
-  adk harness harnesses [--versions]          what this box can drive
+  adk harness ensure [--timeout S] [--json]   start local loopback daemon if down
+  adk harness health [--json]                 read-only probe of the daemon (exit 0/2)
+  adk harness harnesses [--versions]          what this box can drive (auto-starts loopback daemon)
   adk harness agents                          sovereign agent roster
   adk harness profiles                        model profiles (per-session)
   adk harness list                            live sessions

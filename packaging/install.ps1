@@ -1,61 +1,53 @@
-# AitherADK installer -- irm https://aitherium.com/install.ps1 | iex
-$ErrorActionPreference = "Stop"
+﻿#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Aither installer (Windows) -- thin delegator to the ONE installer door.
 
-Write-Host "AitherADK Installer" -ForegroundColor Cyan
-Write-Host "==================="
-Write-Host
+.DESCRIPTION
+    The real installer (every profile, every mode, AitherZero provisioning) lives in
+    exactly one place: https://aitherium.com/install.ps1. This file only fetches it and
+    forwards every argument, so an old link to this copy keeps working and there is
+    still one source of truth.
 
-# Check Python
-$python = $null
-foreach ($cmd in @("python", "python3", "py")) {
-    try {
-        $ver = & $cmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-        $major = & $cmd -c "import sys; print(sys.version_info.major)" 2>$null
-        $minor = & $cmd -c "import sys; print(sys.version_info.minor)" 2>$null
-        if ([int]$major -ge 3 -and [int]$minor -ge 10) {
-            $python = $cmd
-            Write-Host "[OK] Python $ver" -ForegroundColor Green
-            break
-        }
-    } catch {}
+.EXAMPLE
+    irm https://aitherium.com/install.ps1 | iex
+
+.EXAMPLE
+    .\install.ps1 -Profile harness
+
+.EXAMPLE
+    .\install.ps1 -Profile team -AitherZero
+
+.NOTES
+    -SkipWizard (this file's old switch) is accepted and ignored.
+#>
+[CmdletBinding()]
+param(
+    [switch]$SkipWizard,
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$DoorArgs
+)
+
+$ErrorActionPreference = 'Stop'
+$base = if ($env:AITHER_INSTALL_BASE) { $env:AITHER_INSTALL_BASE } else { 'https://aitherium.com' }
+try {
+    $door = Invoke-RestMethod "$base/install.ps1"
+} catch {
+    Write-Host "  [XX] could not fetch $base/install.ps1 -- $($_.Exception.Message)" -ForegroundColor Red
+    if ($PSCommandPath) { exit 2 }
+    throw
 }
 
-if (-not $python) {
-    Write-Host "[!!] Python >= 3.10 required" -ForegroundColor Yellow
-    Write-Host
-    # Try uv
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if ($uv) {
-        Write-Host "Installing Python via uv..."
-        uv python install 3.12
-        $python = "uv run python"
+# Forward by NAME: array splatting would bind '-Profile' as a positional string.
+$named = @{}
+$rest = @($DoorArgs | Where-Object { $_ -ne $null })
+for ($i = 0; $i -lt $rest.Count; $i++) {
+    $tok = [string]$rest[$i]
+    if ($tok -notmatch '^-') { continue }
+    $name = $tok.TrimStart('-')
+    if (($i + 1) -lt $rest.Count -and ([string]$rest[$i + 1]) -notmatch '^-') {
+        $named[$name] = [string]$rest[$i + 1]; $i++
     } else {
-        Write-Host "Installing uv first..."
-        irm https://astral.sh/uv/install.ps1 | iex
-        uv python install 3.12
-        $python = "uv run python"
+        $named[$name] = $true
     }
 }
-
-# Install awdk
-Write-Host
-Write-Host "Installing awdk..."
-& $python -m pip install --upgrade awdk
-
-Write-Host
-Write-Host "[OK] awdk installed" -ForegroundColor Green
-Write-Host
-
-# Run doctor
-try {
-    adk doctor
-} catch {
-    & $python -m adk.cli doctor 2>$null
-}
-
-Write-Host
-Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  adk init my-agent    # Create an agent"
-Write-Host "  adk setup            # Set up GPU inference"
-Write-Host "  adk doctor           # Check system health"
-Write-Host
+& ([scriptblock]::Create($door)) @named

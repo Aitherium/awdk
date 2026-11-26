@@ -211,10 +211,7 @@ def check(token: str, identity: str, tools_module: str | None = None) -> int:
     print("    open it, pick a server, Authorize. Then come back and --run.")
 
     # Identity + tools gate.
-    try:
-        from adk.identity import load_identity
-    except ImportError:  # pragma: no cover
-        from adk.identities import load_identity  # type: ignore[attr-defined]
+    from adk.identity import load_identity
     ident = load_identity(identity)
     resolved = bool(ident.description or ident.system_prompt or ident.skills)
     print(f"  identity: {ident.name} | role: {ident.role}"

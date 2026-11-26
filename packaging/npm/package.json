@@ -1,6 +1,6 @@
 {
   "name": "aither-adk",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "AitherADK CLI \u2014 build AI agent fleets with any LLM backend",
   "bin": {
     "aither": "bin/aither.js"

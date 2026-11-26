@@ -479,7 +479,7 @@ def ensure_local_ca_trust() -> str:
         # Absolute path
         Path(os.environ.get("AITHER_ROOT", "")) / "Library" / "Data" / "secrets" / "ca",
         # Relative to cwd
-        Path("AitherOS/config/certs"),
+        Path("AitherOS") / "config" / "certs",
     ]
 
     root_crt = None
@@ -550,3 +550,302 @@ def ensure_local_ca_trust() -> str:
             return "set"
         except Exception:
             return f"Add to your shell profile: {export_line}"
+
+
+# ── Multi-harness routed stdio bridge sync ───────────────────────────────
+
+
+def routed_bridge_args(
+    bridge_script: str,
+    *,
+    gateway_url: str = "http://127.0.0.1:8182/mcp",
+    desk_url: Optional[str] = "http://127.0.0.1:47931/mcp",
+    hub: bool = True,
+    routed: bool = True,
+) -> list[str]:
+    """Canonical argv for ``mcp_stdio_bridge.py`` across every coding harness."""
+    args = [bridge_script, "--name", "aitheros", "--mount", f"aitheros={gateway_url}"]
+    if desk_url:
+        args.extend(["--mount", f"desk={desk_url}"])
+    if hub:
+        args.append("--hub")
+    if routed:
+        args.append("--routed")
+    return args
+
+
+def _strip_jsonc_comments(text: str) -> str:
+    """Strip ``//`` and ``/* ... */`` comments outside JSON strings."""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_str = False
+    esc = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _upsert_toml_mcp_section(text: str, section: str, command: str, args: list[str]) -> str:
+    """Insert or replace ``[mcp_servers.<section>]`` in a Codex TOML file."""
+    import re as _re
+
+    block = (
+        f"[mcp_servers.{section}]\n"
+        f"command = {json.dumps(command)}\n"
+        f"args = {json.dumps(args)}\n"
+    )
+    pattern = _re.compile(
+        rf"(?ms)^\[mcp_servers\.{_re.escape(section)}\]\r?\n.*?(?=^\[|\Z)"
+    )
+    if pattern.search(text):
+        updated = pattern.sub(block + "\n", text, count=1)
+        return updated.rstrip() + "\n"
+    base = text.rstrip()
+    if base:
+        return base + "\n\n" + block
+    return block
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def sync_routed_mcp_all_harnesses(
+    *,
+    home: Optional[Path] = None,
+    repo_root: Optional[Path] = None,
+    python_exe: Optional[str] = None,
+    bridge_script: Optional[str] = None,
+    awdelegate_script: Optional[str] = None,
+    routed: bool = True,
+    win_style: Optional[bool] = None,
+    targets: Optional[list[str]] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Wire the routed AitherOS stdio bridge into every detected coding harness.
+
+    Supported targets: ``claude-code``, ``repo``, ``codex``, ``gemini``,
+    ``cursor``, ``opencode``, ``vscode``, ``antigravity``.
+    When ``targets`` is omitted, only harnesses whose config file or directory
+    already exists under ``home`` (plus ``repo`` if ``repo_root`` is given) are
+    updated, keeping unrelated IDEs untouched.
+    """
+    home_dir = Path(home) if home is not None else Path.home()
+    is_win = (sys.platform == "win32") if win_style is None else bool(win_style)
+    py = python_exe or sys.executable
+    if not bridge_script:
+        cand = Path(__file__).resolve().parents[2] / "AitherOS" / "dev" / "tools" / "mcp_stdio_bridge.py"
+        bridge_script = str(cand)
+    bridge_args = routed_bridge_args(bridge_script, routed=routed)
+
+    wanted = set(targets) if targets else None
+    results: dict[str, dict[str, Any]] = {}
+
+    def _want(name: str, exists: bool) -> bool:
+        if wanted is not None:
+            return name in wanted
+        return exists
+
+    # 1. Claude Code user global (~/.claude.json)
+    claude_json = home_dir / ".claude.json"
+    if _want("claude-code", claude_json.is_file()):
+        doc: dict[str, Any] = {}
+        if claude_json.is_file():
+            doc = json.loads(claude_json.read_text(encoding="utf-8-sig") or "{}")
+        servers = doc.setdefault("mcpServers", {})
+        if isinstance(servers, dict):
+            existing_cmd = (servers.get("aitheros") or {}).get("command") if isinstance(servers.get("aitheros"), dict) else None
+            servers["aitheros"] = {
+                "type": "stdio",
+                "command": existing_cmd or py,
+                "args": list(bridge_args),
+                "env": {},
+            }
+            if awdelegate_script and "aither-local" not in servers:
+                servers["aither-local"] = {
+                    "type": "stdio",
+                    "command": py,
+                    "args": ["-S", awdelegate_script, "--mcp"],
+                    "env": {},
+                }
+            if not dry_run:
+                _atomic_write_text(claude_json, json.dumps(doc, indent=2) + "\n")
+            results["claude-code"] = {"path": str(claude_json), "routed": routed, "status": "would_update" if dry_run else "updated"}
+
+    # 2. Repo .mcp.json (Claude Code / Cursor / generic project MCP)
+    if repo_root is not None:
+        repo_mcp = Path(repo_root) / ".mcp.json"
+        if _want("repo", repo_mcp.is_file()):
+            doc = json.loads(repo_mcp.read_text(encoding="utf-8-sig") or "{}") if repo_mcp.is_file() else {}
+            servers = doc.setdefault("mcpServers", {})
+            if isinstance(servers, dict):
+                prev = servers.get("aitheros") if isinstance(servers.get("aitheros"), dict) else {}
+                rel_bridge = "AitherOS/dev/tools/mcp_stdio_bridge.py"
+                entry = {
+                    "type": "stdio",
+                    "command": prev.get("command") or "python",
+                    "args": routed_bridge_args(rel_bridge, routed=routed),
+                }
+                if "_comment" in prev:
+                    entry["_comment"] = prev["_comment"]
+                servers["aitheros"] = entry
+                if not dry_run:
+                    _atomic_write_text(repo_mcp, json.dumps(doc, indent=2) + "\n")
+                results["repo"] = {"path": str(repo_mcp), "routed": routed, "status": "would_update" if dry_run else "updated"}
+
+    # 3. Codex (~/.codex/config.toml)
+    codex_toml = home_dir / ".codex" / "config.toml"
+    if _want("codex", codex_toml.is_file() or codex_toml.parent.is_dir()):
+        raw = codex_toml.read_text(encoding="utf-8-sig") if codex_toml.is_file() else ""
+        updated = _upsert_toml_mcp_section(raw, "aitheros", py, list(bridge_args))
+        if not dry_run:
+            _atomic_write_text(codex_toml, updated)
+        results["codex"] = {"path": str(codex_toml), "routed": routed, "status": "would_update" if dry_run else "updated"}
+
+    # 4. Gemini CLI (~/.gemini/settings.json)
+    gemini_json = home_dir / ".gemini" / "settings.json"
+    if _want("gemini", gemini_json.is_file()):
+        doc = json.loads(gemini_json.read_text(encoding="utf-8-sig") or "{}") if gemini_json.is_file() else {}
+        servers = doc.setdefault("mcpServers", {})
+        if isinstance(servers, dict):
+            servers["aitheros"] = {
+                "command": py,
+                "args": list(bridge_args),
+            }
+            if awdelegate_script:
+                servers["aither-local"] = {
+                    "command": py,
+                    "args": ["-S", awdelegate_script, "--mcp"],
+                }
+            if not dry_run:
+                _atomic_write_text(gemini_json, json.dumps(doc, indent=2) + "\n")
+            results["gemini"] = {"path": str(gemini_json), "routed": routed, "status": "would_update" if dry_run else "updated"}
+
+    # 5. Cursor (~/.cursor/mcp.json)
+    cursor_json = home_dir / ".cursor" / "mcp.json"
+    if _want("cursor", cursor_json.is_file() or cursor_json.parent.is_dir()):
+        doc = json.loads(cursor_json.read_text(encoding="utf-8-sig") or "{}") if cursor_json.is_file() else {}
+        servers = doc.setdefault("mcpServers", {})
+        if isinstance(servers, dict):
+            servers["aitheros"] = {
+                "type": "stdio",
+                "command": py,
+                "args": list(bridge_args),
+            }
+            if awdelegate_script:
+                servers["aither-local"] = {
+                    "type": "stdio",
+                    "command": py,
+                    "args": ["-S", awdelegate_script, "--mcp"],
+                }
+            if not dry_run:
+                _atomic_write_text(cursor_json, json.dumps(doc, indent=2) + "\n")
+            results["cursor"] = {"path": str(cursor_json), "routed": routed, "status": "would_update" if dry_run else "updated"}
+
+    # 6. OpenCode (~/.config/opencode/opencode.jsonc or opencode.json)
+    oc_dir = home_dir / ".config" / "opencode"
+    oc_file = oc_dir / "opencode.jsonc"
+    if not oc_file.is_file() and (oc_dir / "opencode.json").is_file():
+        oc_file = oc_dir / "opencode.json"
+    if _want("opencode", oc_file.is_file()):
+        raw = oc_file.read_text(encoding="utf-8-sig") if oc_file.is_file() else "{}"
+        doc = json.loads(_strip_jsonc_comments(raw) or "{}")
+        mcp = doc.setdefault("mcp", {})
+        if isinstance(mcp, dict):
+            mcp["aitheros"] = {
+                "type": "local",
+                "command": [py, *bridge_args],
+                "enabled": True,
+            }
+            if awdelegate_script:
+                mcp["aither-local"] = {
+                    "type": "local",
+                    "command": [py, "-S", awdelegate_script, "--mcp"],
+                    "enabled": True,
+                }
+            if not dry_run:
+                _atomic_write_text(oc_file, json.dumps(doc, indent=2) + "\n")
+            results["opencode"] = {"path": str(oc_file), "routed": routed, "status": "would_update" if dry_run else "updated"}
+
+    # 7. VS Code user mcp.json
+    vscode_mcp = (
+        home_dir / "AppData" / "Roaming" / "Code" / "User" / "mcp.json"
+        if is_win
+        else home_dir / ".config" / "Code" / "User" / "mcp.json"
+    )
+    if _want("vscode", vscode_mcp.is_file()):
+        doc = json.loads(vscode_mcp.read_text(encoding="utf-8-sig") or "{}") if vscode_mcp.is_file() else {}
+        servers = doc.setdefault("servers", {})
+        if isinstance(servers, dict):
+            servers["aitheros"] = {
+                "type": "stdio",
+                "command": py,
+                "args": list(bridge_args),
+            }
+            if not dry_run:
+                _atomic_write_text(vscode_mcp, json.dumps(doc, indent=2) + "\n")
+            results["vscode"] = {"path": str(vscode_mcp), "routed": routed, "status": "would_update" if dry_run else "updated"}
+
+    # 8. Antigravity plugin (~/.gemini/config/plugins/aitheros)
+    ag_cfg = home_dir / ".gemini" / "config"
+    if _want("antigravity", (ag_cfg / "plugins" / "aitheros").is_dir()):
+        from adk.antigravity_setup import setup_antigravity
+
+        ag_bridge = (
+            str(Path(bridge_script).parents[3] / "awdk" / "adk" / "harnesses" / "antigravity_hooks.py")
+            if not is_win
+            else bridge_script.replace(
+                "AitherOS\\dev\\tools\\mcp_stdio_bridge.py",
+                "awdk\\adk\\harnesses\\antigravity_hooks.py",
+            )
+        )
+        ag_res = setup_antigravity(
+            config_dir=ag_cfg,
+            python_exe=py,
+            bridge_script=ag_bridge,
+            mcp_bridge_script=bridge_script,
+            awdelegate_script=awdelegate_script,
+            include_bundled_skills=False,
+            routed_mcp=routed,
+            win_style=is_win,
+            dry_run=dry_run,
+        )
+        results["antigravity"] = {
+            "path": str(ag_cfg / "plugins" / "aitheros" / "mcp_config.json"),
+            "routed": routed,
+            "status": "would_update" if dry_run else "updated",
+            "ok": ag_res.get("ok", True),
+        }
+
+    return {"ok": True, "routed": routed, "dry_run": dry_run, "harnesses": results}

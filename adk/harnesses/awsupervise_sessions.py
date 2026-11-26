@@ -417,6 +417,7 @@ class ReadOnlySubscriptions:
             sys.stderr.write(f"awsupervise: thread subscriptions unreadable: {exc}\n")
             return []
         try:
+            conn.execute("PRAGMA busy_timeout=5000")
             cur = conn.execute(
                 "SELECT surface, thread_id, title, created, last_seen, delivered FROM subs "
                 "WHERE subscriber=? ORDER BY last_seen DESC", (sid,))

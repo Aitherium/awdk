@@ -97,13 +97,13 @@ agents = await ely.discover_agents(capability="code")
 ## Part of the harness
 
 <!-- aither-harness:start GENERATED from ecosystem.yaml `harness:` by gen_brick_map.py. Edits between these markers are overwritten; change the registry. -->
-> **`awdk` is part of `awharness` — the super agent harness.** One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.
+> **`awdk` is part of `awharness` — the super agent harness.** One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Google Antigravity, Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.
 >
-> **Today:** There is no single install. `pip install awdk` and `npm i -g @aitherium/awsh` are two commands, and each other brick installs on its own line. `adk harness parts` reads this list and reports which parts this machine has, at what version, and the install line for each one it lacks.
+> **Today:** Turnkey one-line installers (`curl -fsSL https://aitherium.com/install.sh | sh` on macOS/Linux, `irm https://aitherium.com/install.ps1 | iex` on Windows, or zero-Python `uv` via `awdk/install/install.{sh,ps1}`) install `awdk`, wire the wizard, and `adk harness up` brings up the local harness daemons (`hookd`, `awsh`, `aw-hub`), checks installed bricks (`adk harness parts`), and auto-wires detected coding agents (`adk antigravity setup`, `adk claude setup`). Individual optional bricks also install standalone (`pip install awdk`, `npm i -g @aitherium/awsh`).
 >
-> **Planned, not built:** One install command that brings the composed bricks up together, and one process that starts them. Neither exists; nothing by this name is published.
+> **Planned, not built:** One umbrella installer package that installs every composed brick together under the `awharness` name. Nothing by that package name is published yet.
 >
-> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 99 bricks, in layers: https://aitherium.github.io/#map
+> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 96 bricks, in layers: https://aitherium.github.io/#map
 <!-- aither-harness:end -->
 
 What the harness adds to a bare agent loop, with the command that shows it:

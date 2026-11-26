@@ -38,6 +38,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
 import httpx
+from awrelay.envelope import Envelope, Kind
+from awrelay.inbox import addressed_to as _awrelay_addressed_to
 
 from ._tls import tls_verify
 
@@ -45,58 +47,49 @@ logger = logging.getLogger("adk.relay_client")
 
 _DEFAULT_POLL_S = 4.0
 
-#: awrelay's wire format: a human line, then the structured body in a fenced
-#: block. Parsed here rather than imported -- adk ships standalone, and a hard
-#: dependency on the awrelay package would make this module unimportable for
-#: every customer agent that has only adk.
-_FENCE_RE = re.compile(r"```awrelay\s*\n(?P<body>.*?)\n```", re.S)
 #: Newest N channel rows read per pass. A channel this agent is mentioned in
 #: rarely moves faster than this between polls, and a bigger window only costs
 #: the relay work for rows the seen-set drops.
 _CHANNEL_WINDOW = 30
+_KIND_PREFIX_RE = re.compile(r"^\[(finding|alert|request|steer|ack)\]\s*")
+
+
+def _parse_envelope(content: str) -> Optional[Envelope]:
+    """Parse ``content`` using ``awrelay.envelope.Envelope.from_relay_content``."""
+    return Envelope.from_relay_content((content or "").replace("\r\n", "\n"))
 
 
 def _envelope_payload(content: str) -> dict[str, Any]:
     """The structured half of an awrelay message, or {} for ordinary chat."""
-    m = _FENCE_RE.search(content or "")
-    if not m:
+    env = _parse_envelope(content)
+    if env is None:
         return {}
-    try:
-        data = json.loads(m.group("body"))
-    except (TypeError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return {
+        "kind": env.kind.value,
+        "sender": env.sender,
+        "payload": env.payload,
+        "correlation_id": env.correlation_id,
+        "sent_at": env.sent_at,
+    }
 
 
 def addressed_to_me(content: str, nick: str) -> bool:
     """True when a CHANNEL message names this agent.
 
-    Same rule the Claude-session side uses (`awrelay.inbox.addressed_to`), so a
-    session that writes `--to lyra` and an agent that answers agree on what
-    "addressed" means: the envelope's ``payload.to`` carries the nick or its
-    session suffix, or the text @-mentions it. Everything else is broadcast --
-    an agent that replies to broadcast turns a shared channel into noise.
+    Delegates directly to ``awrelay.inbox.addressed_to`` so a session writing
+    ``--to lyra`` and an agent answering share one single addressing rule.
     """
     if not nick:
         return False
-    low = nick.lower()
-    suffix = low.split("+", 1)[1] if "+" in low else ""
-    payload = (_envelope_payload(content).get("payload") or {})
-    to = payload.get("to") if isinstance(payload, dict) else None
-    if isinstance(to, str):
-        to = [to]
-    for t in (to or []):
-        t = str(t).strip().lower()
-        if t == low or (suffix and (t == suffix or (len(t) >= 6 and suffix.startswith(t)))):
-            return True
-    return ("@" + low) in (content or "").lower()
+    return _awrelay_addressed_to(_parse_envelope(content), content or "", nick)
 
 
 def strip_envelope(content: str) -> str:
     """The human-readable half, without the fence and the kind prefix."""
-    m = _FENCE_RE.search(content or "")
-    text = (content or "")[: m.start()] if m else (content or "")
-    return re.sub(r"^\[(finding|alert|request|steer|ack)\]\s*", "", text.strip())
+    env = _parse_envelope(content)
+    if env is not None:
+        return env.text
+    return _KIND_PREFIX_RE.sub("", (content or "").strip())
 
 
 def home_room(
@@ -405,13 +398,14 @@ class RelayClient:
         """Post into the channel, ADDRESSED back at the sender, in awrelay's wire
         format -- so the reply reaches that session in-turn (its PostToolUse drain
         selects addressed rows) instead of waiting for its owner to type."""
-        body = json.dumps({
-            "kind": "ack", "sender": self.nick,
-            "payload": {"to": [to_nick]},
-            "correlation_id": correlation_id or "",
-            "sent_at": "",
-        }, ensure_ascii=False, sort_keys=True)
-        content = f"[ack] {text}\n```awrelay\n{body}\n```"
+        content = Envelope(
+            kind=Kind.ACK,
+            sender=self.nick,
+            text=text,
+            payload={"to": [to_nick]},
+            correlation_id=correlation_id or "",
+            sent_at="",
+        ).to_relay_content()
         url = f"{self.base_url}/channels/{self.channel.lstrip('#')}/messages"
         payload = {"channel": self.channel, "nick": self.nick,
                    "content": content, "agent": True}

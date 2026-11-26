@@ -242,6 +242,8 @@ async def register_user(
                 cap_data = cap.json()
                 if not cap_data.get("available", True):
                     raise AuthError("Registration is currently closed (alpha capacity reached)")
+        except AuthError:
+            raise
         except Exception:
             pass  # Identity may not have this endpoint; proceed anyway
 

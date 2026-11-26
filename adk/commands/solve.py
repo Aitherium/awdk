@@ -188,7 +188,7 @@ def cmd_solve(args: Any) -> int:
     except ImportError as exc:
         return cannot(
             "env",
-            ImportError("%s -- install the extra: pip install 'aither-adk[reason,arc]'" % exc),
+            ImportError("%s -- install the extra: pip install 'awdk[reason,arc]'" % exc),
         )
     except Exception as exc:  # noqa: BLE001 - ArcUnavailableError, held-out seed, bad args
         return cannot("env", exc)

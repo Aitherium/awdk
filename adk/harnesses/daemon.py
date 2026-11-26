@@ -27,10 +27,13 @@ treated as a privileged surface:
 from __future__ import annotations
 
 import asyncio
+import base64
+import dataclasses as _dataclasses
 import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -40,6 +43,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from adk.desk_bridge import get_bridge_url
 from adk.harnesses.character_recall import register as register_character_recall
@@ -1442,6 +1446,241 @@ def _work_item_view(item: Any) -> dict:
     }
 
 
+_DPOP_ALLOWED_ALGS = frozenset({"ES256", "EdDSA", "RS256"})
+_DPOP_PRIVATE_JWK_FIELDS = frozenset({"d", "p", "q", "dp", "dq", "qi", "oth", "k"})
+_DPOP_B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_DPOP_MAX_AGE_S = 60
+_DPOP_CLOCK_SKEW_S = 5
+
+
+class DPoPVerificationError(ValueError):
+    """Raised when an RFC 9449 DPoP proof fails verification."""
+
+
+@_dataclasses.dataclass(frozen=True)
+class DPoPProof:
+    """Verified RFC 9449 DPoP proof claims + RFC 7638 JWK thumbprint."""
+
+    jkt: str
+    jti: str
+    htm: str
+    htu: str
+    iat: float
+    alg: str
+
+
+class _DPoPReplayCache:
+    """Bounded, thread-safe TTL cache rejecting replayed DPoP ``jti`` values."""
+
+    def __init__(self, ttl_s: float = 120.0, max_entries: int = 10_000) -> None:
+        self._ttl_s = float(ttl_s)
+        self._max_entries = int(max_entries)
+        self._lock = threading.Lock()
+        self._seen: dict[str, float] = {}
+
+    def check_and_store(self, jti: str, now: float) -> bool:
+        """Return True and record ``jti`` if unseen; return False on replay."""
+        with self._lock:
+            expired = [k for k, exp in self._seen.items() if exp <= now]
+            for k in expired:
+                del self._seen[k]
+            if jti in self._seen:
+                return False
+            if len(self._seen) >= self._max_entries:
+                oldest = min(self._seen, key=self._seen.__getitem__)
+                del self._seen[oldest]
+            self._seen[jti] = now + self._ttl_s
+            return True
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(segment: str) -> bytes:
+    if not isinstance(segment, str) or not segment or not _DPOP_B64URL_RE.match(segment):
+        raise DPoPVerificationError("malformed base64url segment")
+    pad = "=" * (-len(segment) % 4)
+    try:
+        return base64.urlsafe_b64decode(segment + pad)
+    except Exception as exc:
+        raise DPoPVerificationError(f"invalid base64url encoding: {exc}") from exc
+
+
+def _normalize_htu(url: str) -> str:
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        raise DPoPVerificationError("invalid request URL for htu")
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path}"
+
+
+def _dpop_jwk_thumbprint(jwk: dict[str, Any]) -> str:
+    """Compute RFC 7638 SHA-256 JWK thumbprint (base64url without padding)."""
+    kty = jwk.get("kty")
+    if kty == "EC":
+        required = ("crv", "kty", "x", "y")
+    elif kty == "OKP":
+        required = ("crv", "kty", "x")
+    elif kty == "RSA":
+        required = ("e", "kty", "n")
+    else:
+        raise DPoPVerificationError(f"unsupported JWK kty: {kty!r}")
+    canonical: dict[str, str] = {}
+    for key in required:
+        val = jwk.get(key)
+        if not isinstance(val, str) or not val:
+            raise DPoPVerificationError(f"missing JWK field {key!r}")
+        canonical[key] = val
+    encoded = json.dumps(canonical, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return _b64url_encode(hashlib.sha256(encoded).digest())
+
+
+def _verify_dpop_jws_signature(
+    alg: str,
+    jwk: dict[str, Any],
+    signing_input: bytes,
+    signature: bytes,
+) -> None:
+    """Verify JWS signature using the embedded public JWK via ``cryptography``."""
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+    except ImportError as exc:  # pragma: no cover - cryptography is a core dep
+        raise DPoPVerificationError(f"cryptography unavailable: {exc}") from exc
+
+    kty = jwk.get("kty")
+    try:
+        if alg == "ES256":
+            if kty != "EC" or jwk.get("crv") != "P-256":
+                raise DPoPVerificationError("ES256 requires EC P-256 JWK")
+            x_bytes = _b64url_decode(jwk.get("x", ""))
+            y_bytes = _b64url_decode(jwk.get("y", ""))
+            if len(x_bytes) != 32 or len(y_bytes) != 32:
+                raise DPoPVerificationError("invalid P-256 coordinate length")
+            if len(signature) != 64:
+                raise DPoPVerificationError("ES256 signature must be 64 bytes (r||s)")
+            pub = ec.EllipticCurvePublicNumbers(
+                int.from_bytes(x_bytes, "big"),
+                int.from_bytes(y_bytes, "big"),
+                ec.SECP256R1(),
+            ).public_key()
+            der_sig = encode_dss_signature(
+                int.from_bytes(signature[:32], "big"),
+                int.from_bytes(signature[32:], "big"),
+            )
+            pub.verify(der_sig, signing_input, ec.ECDSA(hashes.SHA256()))
+        elif alg == "EdDSA":
+            if kty != "OKP" or jwk.get("crv") != "Ed25519":
+                raise DPoPVerificationError("EdDSA requires OKP Ed25519 JWK")
+            x_bytes = _b64url_decode(jwk.get("x", ""))
+            if len(x_bytes) != 32:
+                raise DPoPVerificationError("invalid Ed25519 public key length")
+            pub = ed25519.Ed25519PublicKey.from_public_bytes(x_bytes)
+            pub.verify(signature, signing_input)
+        elif alg == "RS256":
+            if kty != "RSA":
+                raise DPoPVerificationError("RS256 requires RSA JWK")
+            n_bytes = _b64url_decode(jwk.get("n", ""))
+            e_bytes = _b64url_decode(jwk.get("e", ""))
+            pub = rsa.RSAPublicNumbers(
+                int.from_bytes(e_bytes, "big"),
+                int.from_bytes(n_bytes, "big"),
+            ).public_key()
+            if pub.key_size < 2048:
+                raise DPoPVerificationError("RSA key must be at least 2048 bits")
+            pub.verify(signature, signing_input, padding.PKCS1v15(), hashes.SHA256())
+        else:
+            raise DPoPVerificationError(f"unsupported DPoP alg: {alg!r}")
+    except DPoPVerificationError:
+        raise
+    except (InvalidSignature, ValueError, TypeError) as exc:
+        raise DPoPVerificationError(f"signature verification failed: {exc}") from exc
+
+
+def verify_dpop_proof(
+    proof_jwt: str,
+    *,
+    method: str,
+    url: str,
+    access_token: str,
+    replay_cache: Optional[_DPoPReplayCache] = None,
+    max_age_s: int = _DPOP_MAX_AGE_S,
+    clock_skew_s: int = _DPOP_CLOCK_SKEW_S,
+    now: Optional[float] = None,
+) -> DPoPProof:
+    """Verify an RFC 9449 DPoP proof JWT bound to ``access_token``, ``method``, and ``url``."""
+    if not isinstance(proof_jwt, str) or not proof_jwt.strip():
+        raise DPoPVerificationError("empty DPoP proof")
+    parts = proof_jwt.strip().split(".")
+    if len(parts) != 3:
+        raise DPoPVerificationError("DPoP proof must be a 3-part JWS")
+    header_b64, payload_b64, sig_b64 = parts
+
+    try:
+        header = json.loads(_b64url_decode(header_b64).decode("utf-8"))
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except DPoPVerificationError:
+        raise
+    except Exception as exc:
+        raise DPoPVerificationError(f"malformed JWT JSON: {exc}") from exc
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        raise DPoPVerificationError("JWT header and payload must be JSON objects")
+
+    typ = header.get("typ")
+    if not isinstance(typ, str) or typ.lower() != "dpop+jwt":
+        raise DPoPVerificationError(f"invalid typ: {typ!r}")
+
+    alg = header.get("alg")
+    if not isinstance(alg, str) or alg not in _DPOP_ALLOWED_ALGS:
+        raise DPoPVerificationError(f"unsupported alg: {alg!r}")
+
+    jwk = header.get("jwk")
+    if not isinstance(jwk, dict):
+        raise DPoPVerificationError("missing public jwk header")
+    if _DPOP_PRIVATE_JWK_FIELDS.intersection(jwk):
+        raise DPoPVerificationError("jwk must not include private key parameters")
+
+    signature = _b64url_decode(sig_b64)
+    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    _verify_dpop_jws_signature(alg, jwk, signing_input, signature)
+    jkt = _dpop_jwk_thumbprint(jwk)
+
+    htm = payload.get("htm")
+    expected_method = method.upper()
+    if not isinstance(htm, str) or htm != expected_method:
+        raise DPoPVerificationError(f"htm mismatch: got {htm!r}, expected {expected_method!r}")
+
+    htu = payload.get("htu")
+    if not isinstance(htu, str) or not htu or "?" in htu or "#" in htu:
+        raise DPoPVerificationError("invalid htu claim")
+    expected_htu = _normalize_htu(url)
+    if _normalize_htu(htu) != expected_htu:
+        raise DPoPVerificationError(f"htu mismatch: got {htu!r}, expected {expected_htu!r}")
+
+    iat = payload.get("iat")
+    if isinstance(iat, bool) or not isinstance(iat, (int, float)) or not math.isfinite(iat):
+        raise DPoPVerificationError("invalid iat claim")
+    ts = time.time() if now is None else float(now)
+    if iat < ts - max_age_s or iat > ts + clock_skew_s:
+        raise DPoPVerificationError("iat outside allowed freshness window")
+
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti.strip() or len(jti) > 256:
+        raise DPoPVerificationError("invalid jti claim")
+
+    ath = payload.get("ath")
+    expected_ath = _b64url_encode(hashlib.sha256(access_token.encode("utf-8")).digest())
+    if not isinstance(ath, str) or not hmac.compare_digest(ath, expected_ath):
+        raise DPoPVerificationError("ath access token hash mismatch")
+
+    if replay_cache is not None and not replay_cache.check_and_store(jti, ts):
+        raise DPoPVerificationError("replayed DPoP jti")
+
+    return DPoPProof(jkt=jkt, jti=jti, htm=htm, htu=expected_htu, iat=float(iat), alg=alg)
+
+
 def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     """Build the FastAPI app. Raises if no token can be resolved (fail-closed)."""
     if BaseModel is None:
@@ -1456,6 +1695,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     if not bearer:
         raise RuntimeError("harness daemon refuses to start without a bearer token")
     origins = allowed_origins()
+    dpop_replay_cache = _DPoPReplayCache()
 
     app = FastAPI(title="AitherShell Harness Daemon", version="1.0")
     app.add_middleware(
@@ -1463,7 +1703,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         allow_origins=origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "DPoP"],
         # PRIVATE NETWORK ACCESS (2026-09-29). An https:// page (aitherium.com's
         # "This device" panel) probing http://127.0.0.1:8362 makes Chrome send
         # `Access-Control-Request-Private-Network: true` on the preflight, and
@@ -1476,8 +1716,16 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         **_pna_kwargs(),
     )
 
-    def auth(request: Request, authorization: str = Header(default="")) -> Principal:
+    def auth(
+        request: Request,
+        authorization: str = Header(default=""),
+        dpop: str = Header(default="", alias="DPoP"),
+    ) -> Principal:
         """Authenticate, and RETURN who it was.
+
+        Accepts ``Authorization: Bearer <token>`` (default) and RFC 9449
+        ``Authorization: DPoP <token>`` paired with a ``DPoP: <JWT>`` proof
+        header. Set ``AITHER_REQUIRE_DPOP=1`` to reject plain Bearer tokens.
 
         Returns a Principal rather than None so a route can ask "who is this"
         without a second lookup. Existing routes use
@@ -1486,15 +1734,42 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         wants the subject declares ``principal: Principal = Depends(auth)``.
 
         Status codes are deliberately unchanged: 401 for missing/malformed
-        credentials, 403 for a token that is well-formed but not accepted. The
-        browser client refreshes on 401 (see the hub token comment below), so
-        turning a rejected token into a 401 would put it into a refresh loop
-        against a token that will never work.
+        credentials or invalid DPoP proof, 403 for a token that is well-formed
+        but not accepted. The browser client refreshes on 401 (see the hub token
+        comment below), so turning a rejected token into a 401 would put it into
+        a refresh loop against a token that will never work.
         """
         if not authorization:
             raise HTTPException(status_code=401, detail="missing bearer token")
         scheme, _, value = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not value:
+        scheme_lower = scheme.lower()
+        require_dpop = os.environ.get("AITHER_REQUIRE_DPOP", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if scheme_lower == "bearer":
+            if not value:
+                raise HTTPException(status_code=401, detail="malformed Authorization header")
+            if require_dpop:
+                raise HTTPException(status_code=401, detail="DPoP authentication required")
+        elif scheme_lower == "dpop":
+            if not value:
+                raise HTTPException(status_code=401, detail="malformed Authorization header")
+            if not dpop:
+                raise HTTPException(status_code=401, detail="missing DPoP proof header")
+            try:
+                proof = verify_dpop_proof(
+                    dpop,
+                    method=request.method,
+                    url=str(request.url),
+                    access_token=value,
+                    replay_cache=dpop_replay_cache,
+                )
+            except DPoPVerificationError as exc:
+                raise HTTPException(status_code=401, detail=f"invalid DPoP proof: {exc}")
+            request.state.dpop_jkt = proof.jkt
+        else:
             raise HTTPException(status_code=401, detail="malformed Authorization header")
         principal = resolve_principal(value, bearer)
         if principal is None:
@@ -2731,67 +3006,6 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     # Route order matters — FastAPI matches in registration order, so the static
     # `/decisions/count` MUST precede `/decisions/{card_id}` or the parameterised
     # handler swallows it and returns "no such card: count".
-
-    # ── images ──────────────────────────────────────────────────────────────
-    # An agent that can write and run code but cannot draw a picture is missing
-    # a sense. These route to whatever image server is ALREADY on loopback and
-    # start nothing; see adk/images.py for why the probe asks the generation
-    # route rather than /health.
-    #
-    # The path is the OpenAI shape on purpose: it is what every client already
-    # speaks, including GobboNet's awdk lane, so the capability arrives without
-    # anyone writing a bespoke client. Before this route existed that lane
-    # probed /v1/images/generations, got 404, and correctly reported the daemon
-    # as "running, but no image route" -- which is exactly what it was.
-
-    @app.get("/v1/images/backends", dependencies=[Depends(auth)])
-    async def image_backends() -> dict[str, Any]:
-        from adk import images as _img
-
-        lanes = await _img.discover()
-        return {
-            "backends": [ln.as_dict() for ln in lanes],
-            "usable": [ln.id for ln in lanes if ln.up],
-        }
-
-    @app.post("/v1/images/generations", dependencies=[Depends(auth)])
-    async def image_generate(body: dict[str, Any]) -> dict[str, Any]:
-        from fastapi import HTTPException
-
-        from adk import images as _img
-
-        size = str(body.get("size") or "768x768")
-        try:
-            w_s, h_s = size.lower().split("x", 1)
-            width, height = int(w_s), int(h_s)
-        except (ValueError, AttributeError):
-            raise HTTPException(400, f"size must look like 768x768, got {size!r}")
-
-        req = _img.ImageRequest(
-            prompt=str(body.get("prompt") or ""),
-            negative=str(body.get("negative_prompt") or ""),
-            width=width, height=height,
-            steps=int(body.get("steps") or 20),
-            cfg=float(body.get("cfg") or 6.0),
-            seed=body.get("seed"),
-            model=str(body.get("model") or ""),
-            backend=str(body.get("backend") or ""),
-        )
-        try:
-            out = await _img.generate(req)
-        except _img.ImageError as e:
-            # 503, not 500: every ImageError here means "no local backend can
-            # do this right now", which is a service-availability answer and
-            # the message is written to be shown to a person. A 500 would read
-            # as a bug in the daemon and send them to the wrong logs.
-            raise HTTPException(503, str(e))
-
-        return {
-            "created": 0,
-            "data": [{"b64_json": b} for b in out["images_b64"]],
-            "backend": out["backend"],
-            "model": out["model"],
-        }
 
     # ── images ──────────────────────────────────────────────────────────────
     # An agent that can write and run code but cannot draw a picture is missing
@@ -5271,6 +5485,11 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     # The host posture (shop / after / game / auto), for the gateway and the phone;
     # the set is owner-gated the same way (adk.harnesses.posture_routes).
     mount_posture(app, auth, owner_verifier)
+    # Fleet model postures (awmodels status/plan/use), delegated from Genesis containers
+    # so Genesis never needs raw host systemd/podman or Spark SSH keys.
+    from adk.harnesses.model_posture_routes import mount as mount_model_postures
+
+    mount_model_postures(app, auth)
     # The Windows desktop tools (adk.desktop.tools.DESKTOP_TOOLS), for the gateway's
     # mcp_desktop proxy; write-class tools act only with confirm=true.
     from adk.harnesses.desktop_routes import mount as mount_desktop

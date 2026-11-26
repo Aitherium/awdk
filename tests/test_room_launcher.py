@@ -120,7 +120,6 @@ class TestBundledBinarySelection:
             ("Windows", "AMD64", "win-x64"),
             ("Windows", "x86_64", "win-x64"),
             ("Linux", "x86_64", "linux-x64"),
-            ("Linux", "aarch64", "linux-x64"),
             ("Darwin", "arm64", "mac-arm64"),
             ("Darwin", "x86_64", "mac-x64"),
         ],
@@ -355,7 +354,6 @@ class TestPlatformBinaryNames:
             ("Windows", "AMD64", "aither-room-win64.exe"),
             ("Windows", "x86_64", "aither-room-win64.exe"),
             ("Linux", "x86_64", "aither-room-linux-x64"),
-            ("Linux", "aarch64", "aither-room-linux-x64"),
             ("Darwin", "arm64", "aither-room-macos-arm64"),
             ("Darwin", "x86_64", "aither-room-macos-x64"),
         ],
@@ -366,10 +364,15 @@ class TestPlatformBinaryNames:
             with patch("platform.machine", return_value=machine):
                 assert room_launcher._get_binary_name() == expected_name
 
-    def test_get_binary_name_unsupported_exits(self):
-        """Unsupported platforms cause SystemExit."""
-        with patch("platform.system", return_value="Obscure"):
-            with patch("platform.machine", return_value="unknown"):
-                with patch("sys.exit") as mock_exit:
+    @pytest.mark.parametrize("system,machine", [("Linux", "aarch64"), ("Obscure", "unknown")])
+    def test_get_binary_name_unsupported_exits(self, system: str, machine: str, capsys):
+        """Unsupported platforms/architectures fail closed with actionable error."""
+        with patch("platform.system", return_value=system):
+            with patch("platform.machine", return_value=machine):
+                assert room_launcher._get_platform_dir_name() == ""
+                assert room_launcher._get_bundled_binary() is None
+                with pytest.raises(SystemExit) as exc:
                     room_launcher._get_binary_name()
-                    mock_exit.assert_called_once_with(1)
+                assert exc.value.code == 1
+                err = capsys.readouterr().err
+                assert "Unsupported platform/architecture" in err

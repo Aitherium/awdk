@@ -14,7 +14,7 @@ def _resolve_version() -> str:
     try:
         return _pkg_version("awdk")
     except PackageNotFoundError:  # running from a source checkout without install
-        __version__ = "4.0.0"  # kept in sync by packaging/sync_versions.py
+        __version__ = "4.0.1"  # kept in sync by packaging/sync_versions.py
         return __version__
 
 
@@ -76,7 +76,6 @@ __all__ = [
     "PlacementMemory",
     "LocalInferenceDiscovery",
     "measure_node_latencies",
-    "NanoGPT",
     "NeuronPool",
     "AutoNeuronFire",
     "DegenerationDetector",
@@ -287,17 +286,6 @@ def __getattr__(name):
     if name == "measure_node_latencies":
         from adk.latency_probe import measure_node_latencies
         return measure_node_latencies
-    if name == "NanoGPT":
-        # On-device training (NanoGPT) is proprietary IP and is NOT shipped in
-        # the published open SDK. It lives in the internal AitherOS runtime.
-        try:
-            from adk.nanogpt import NanoGPT
-            return NanoGPT
-        except ImportError as exc:
-            raise ImportError(
-                "NanoGPT (on-device training) is not available in the open "
-                "awdk SDK. It is part of the internal AitherOS runtime."
-            ) from exc
     if name == "NeuronPool":
         from adk.neurons import NeuronPool
         return NeuronPool

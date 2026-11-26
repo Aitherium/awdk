@@ -46,13 +46,45 @@ MAX_REPORT = 900
 MAX_FILES = 25
 MAX_ANNOUNCE = 600
 
+# Prefix-anchored fallback matching awreport.redact.Redactor.PATTERNS for
+# standalone `python -S` hook invocations where site-packages are unavailable.
+# When `awreport` is importable, `_redact()` delegates directly to it.
 _SECRET = re.compile(
-    r"(sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}"
-    r"|AKIA[0-9A-Z]{16}|xox[abp]-[A-Za-z0-9-]{10,}|[ps]k_live_[A-Za-z0-9]{10,}"
+    r"(-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+    r"|sk-ant-[A-Za-z0-9_-]+|aither_sk_[A-Za-z0-9._-]+|sk-(?!ant-)[A-Za-z0-9_-]{4,}"
+    r"|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+"
+    r"|\b(?:AKIA|ASIA)[0-9A-Z]{4,}|xox[abprs]-[A-Za-z0-9-]+|[ps]k_live_[A-Za-z0-9]+"
+    r"|AIza[0-9A-Za-z_-]{10,}|#k=[A-Za-z0-9._\-%]+"
     r"|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
-    r"|(?i:bearer)\s+[A-Za-z0-9._~+/=-]{16,}"
-    r"|(?i:password|passwd|pwd|secret|aws_secret_access_key)\s*[=:]\s*[^\s,;]+)"
+    r"|(?i:bearer)\s+[A-Za-z0-9._~+/=-]+"
+    r"|(?i:password|passwd|pwd|secret|token|api[_-]?key|aws_secret_access_key)\s*[=:]\s*[^\s,;]+)"
 )
+_AWREPORT_REDACTOR: object = None
+_AWREPORT_CHECKED = False
+
+
+def _redact(text: str) -> str:
+    """Redact credentials via `awreport.redact.Redactor` when importable, else `_SECRET`."""
+    global _AWREPORT_REDACTOR, _AWREPORT_CHECKED
+    if not text:
+        return ""
+    if not _AWREPORT_CHECKED:
+        _AWREPORT_CHECKED = True
+        try:
+            from awreport.redact import Redactor
+            _AWREPORT_REDACTOR = Redactor()
+        except Exception:
+            _AWREPORT_REDACTOR = None
+    out = text
+    redactor = _AWREPORT_REDACTOR
+    if redactor is not None:
+        try:
+            for pat in redactor.PATTERNS.values():
+                out = pat.sub("[REDACTED]", out)
+            out = redactor._redact_high_entropy(out)
+        except Exception:
+            pass
+    return _SECRET.sub("[REDACTED]", out)
 _TAGGED = re.compile(
     r"<(system-reminder|pasted_content|task-notification|command-[a-z-]+"
     r"|local-command-[a-z-]+)[^>]*>.*?</\1[^>]*>",
@@ -128,7 +160,7 @@ def _tail_lines(path: str, max_bytes: int) -> list:
 
 def _clean(text: str, limit: int) -> str:
     text = _TAGGED.sub(" ", text or "")
-    text = _SECRET.sub("[REDACTED]", text)
+    text = _redact(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
 

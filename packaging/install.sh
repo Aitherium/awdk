@@ -1,66 +1,31 @@
-#!/usr/bin/env sh
-# AitherADK installer -- curl -fsSL https://aitherium.com/install.sh | sh
-set -e
+#!/bin/sh
+# Aither installer -- thin delegator to the ONE installer door.
+#
+# The real installer (every profile, every mode, AitherZero provisioning) lives in
+# exactly one place: https://aitherium.com/install.sh. This file only fetches it and
+# forwards every argument, so an old link to this copy keeps working and there is
+# still one source of truth.
+#
+#   sh install.sh                              # the start console
+#   sh install.sh --profile full               # everything
+#   sh install.sh --profile harness            # + the local harness daemon
+#   sh install.sh --profile team|deck|bonsai|onprem
+#   sh install.sh --aitherzero                 # provision with AitherZero first
+#
+# --skip-wizard (this file's old flag) is accepted and ignored.
+set -eu
 
-echo "AitherADK Installer"
-echo "==================="
-echo
+BASE="${AITHER_INSTALL_BASE:-https://aitherium.com}"
+command -v curl >/dev/null 2>&1 || { echo "install.sh: curl is required" >&2; exit 2; }
+command -v bash >/dev/null 2>&1 || { echo "install.sh: bash is required" >&2; exit 2; }
 
-# Check Python
-PYTHON=""
-for cmd in python3 python; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-        ver=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
-        major=$("$cmd" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
-        minor=$("$cmd" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
-        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
-            PYTHON="$cmd"
-            echo "[OK] Python $ver"
-            break
-        fi
-    fi
+n=$#; i=0
+while [ "$i" -lt "$n" ]; do
+    a="$1"; shift; i=$((i + 1))
+    [ "$a" = "--skip-wizard" ] || set -- "$@" "$a"
 done
 
-if [ -z "$PYTHON" ]; then
-    echo "[!!] Python >= 3.10 required"
-    echo
-    # Try uv
-    if command -v uv >/dev/null 2>&1; then
-        echo "Installing Python via uv..."
-        uv python install 3.12
-        PYTHON="uv run python"
-    elif command -v curl >/dev/null 2>&1; then
-        echo "Installing uv first..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        export PATH="$HOME/.local/bin:$PATH"
-        uv python install 3.12
-        PYTHON="uv run python"
-    else
-        echo "Please install Python 3.10+ from https://python.org"
-        exit 1
-    fi
-fi
-
-# Install awdk
-echo
-echo "Installing awdk..."
-$PYTHON -m pip install --upgrade awdk 2>/dev/null || \
-    $PYTHON -m pip install --user --upgrade awdk
-
-echo
-echo "[OK] awdk installed"
-echo
-
-# Run doctor
-if command -v adk >/dev/null 2>&1; then
-    adk doctor
-else
-    $PYTHON -m adk.cli doctor 2>/dev/null || true
-fi
-
-echo
-echo "Next steps:"
-echo "  adk init my-agent    # Create an agent"
-echo "  adk setup            # Set up GPU inference"
-echo "  adk doctor           # Check system health"
-echo
+# Fetch first, then run: `curl | bash` reports bash's exit, so a 404 would install
+# nothing and still report success.
+door="$(curl -fsSL "$BASE/install.sh")" || { echo "install.sh: could not fetch $BASE/install.sh" >&2; exit 2; }
+printf '%s' "$door" | bash -s -- "$@"

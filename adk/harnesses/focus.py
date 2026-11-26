@@ -22,21 +22,14 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from adk.log_redact import redact_text
+
 MAX_ASK = 400
 MAX_REPORT = 900
 MAX_FILES = 25
 #: How old a record may be and still be offered to a new session.
 RECENT_SECONDS = 24 * 3600
 
-# Kept in step with .claude/hooks/session-focus.py (that script is not importable
-# from the installed package, so the few lines it shares are repeated here).
-_SECRET = re.compile(
-    r"(sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}"
-    r"|AKIA[0-9A-Z]{16}|xox[abp]-[A-Za-z0-9-]{10,}|[ps]k_live_[A-Za-z0-9]{10,}"
-    r"|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
-    r"|(?i:bearer)\s+[A-Za-z0-9._~+/=-]{16,}"
-    r"|(?i:password|passwd|pwd|secret|aws_secret_access_key)\s*[=:]\s*[^\s,;]+)"
-)
 _NEXT = re.compile(r"(?im)^[ \t>*_-]*next[ *_]*:[ *_]*(\S.*)$|^#+[ \t]*next[ \t]*\n+[ \t-]*(\S.*)$")
 _CONTEXT_FRAME = re.compile(r"<session-context>.*?</session-context>", re.S)
 
@@ -54,7 +47,7 @@ def project_key(project_dir: str) -> str:
 def clean(text: str, limit: int) -> str:
     """Collapse whitespace, drop a framed session context, redact secrets, cap length."""
     text = _CONTEXT_FRAME.sub(" ", text or "")
-    text = _SECRET.sub("[REDACTED]", text)
+    text = redact_text(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
 

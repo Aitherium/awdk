@@ -25,7 +25,6 @@ _PLATFORM_BINARY = {
     ("Windows", "AMD64"): "aither-room-win64.exe",
     ("Windows", "x86_64"): "aither-room-win64.exe",
     ("Linux", "x86_64"): "aither-room-linux-x64",
-    ("Linux", "aarch64"): "aither-room-linux-x64",  # fallback — no ARM build yet
     ("Darwin", "arm64"): "aither-room-macos-arm64",
     ("Darwin", "x86_64"): "aither-room-macos-x64",
 }
@@ -34,7 +33,6 @@ _PLATFORM_DIR_NAMES = {
     ("Windows", "AMD64"): "win-x64",
     ("Windows", "x86_64"): "win-x64",
     ("Linux", "x86_64"): "linux-x64",
-    ("Linux", "aarch64"): "linux-x64",
     ("Darwin", "arm64"): "mac-arm64",
     ("Darwin", "x86_64"): "mac-x64",
 }
@@ -44,7 +42,15 @@ def _get_binary_name() -> str:
     key = (platform.system(), platform.machine())
     name = _PLATFORM_BINARY.get(key)
     if not name:
-        print(f"Unsupported platform: {key[0]} {key[1]}")
+        print(
+            f"Unsupported platform/architecture for prebuilt AitherRoom binary: "
+            f"{key[0]} {key[1]}.\n"
+            "No native prebuilt binary is available for this architecture — refusing to "
+            "download a foreign-architecture binary.\n"
+            "Run from Python (`pip install awdk`) or use a supported prebuilt platform "
+            "(Windows x86_64/AMD64, Linux x86_64, macOS arm64/x86_64).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return name
 

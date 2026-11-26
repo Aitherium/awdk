@@ -124,7 +124,7 @@ class AitherNetRelay:
         if (not relay_hub_url and not os.getenv("AITHERNET_RELAY_URL")
                 and not os.getenv("AITHERNET_HUB_URL")):
             try:
-                from adk.config import load_saved_config  # noqa: lazy import
+                from adk.config import load_saved_config  # noqa: PLC0415
                 saved = load_saved_config()
                 elysium_relay = saved.get("elysium_relay_url", "")
                 if elysium_relay:

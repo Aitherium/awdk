@@ -1,12 +1,12 @@
 # Iris Visual Artisan
 
-`iris` · version `4.0.0` · 8.2 KB
+`iris` · version `4.0.1` · 8.2 KB
 
-**[Download iris-4.0.0.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/iris-4.0.0.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/iris-4.0.0.sha256)
+**[Download iris-4.0.1.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v4.0.1/iris-4.0.1.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v4.0.1/iris-4.0.1.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.0/iris-4.0.0.tar.gz
-tar xzf iris-4.0.0.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v4.0.1/iris-4.0.1.tar.gz
+tar xzf iris-4.0.1.tar.gz
 python iris/install.py
 ```
 
@@ -42,5 +42,5 @@ skills/image-generation.md
 
 ---
 
-sha256 `9c06a954feca326db878317453e5374ff9f7e5420d9cb1612851d088dab575d5`  
-Built from `v4.0.0` (adk 4.0.0). [All packs](../packs.md)
+sha256 `86cb1d37d74e45a7510452ec381c832f40aec0445a727203c8d010fa262a0201`  
+Built from `v4.0.1` (adk 4.0.1). [All packs](../packs.md)

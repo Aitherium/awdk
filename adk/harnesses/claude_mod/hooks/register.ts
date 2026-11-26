@@ -105,10 +105,15 @@ export type Run = {
   usage: { i: number; o: number; cr: number; cw: number }
 }
 
+/** PreToolUse hookd routes default to fail-closed (deny on guard crash/timeout/down). */
+export const HOOKD_PRETOOLUSE_FAIL_CLOSED = true
+
 /**
- * Claude Code's http hooks fail OPEN: when hookd (awdk's resident hook runner) is down,
- * every hook routed through it is skipped without a word. A session whose settings route
- * hooks through it starts it when it is not answering. Never throws.
+ * Claude Code's http hooks fail OPEN when hookd (awdk's resident hook runner) is down.
+ * `adk claude hookd convert` now wraps PreToolUse guards in fail-closed `hookd call --fail-closed`
+ * by default while keeping PostToolUse/Stop on fast `type: http`. A session whose settings route
+ * hooks through hookd (either http `/run`|`/pdp` or `hookd call --port <N>`) ensures it is up
+ * with `--fail-closed` enabled by default. Never throws.
  *
  * @param $ the engine interface
  * @returns what it found or did, for the debug log
@@ -116,17 +121,21 @@ export type Run = {
 export async function keepHookd($: EngineInterface): Promise<string> {
   try {
     const hooks = JSON.stringify(((await $.settings.read()) as { hooks?: unknown }).hooks ?? {})
-    const port = /127\.0\.0\.1:(\d+)\/run\?/.exec(hooks)?.[1]
+    const httpPort = /127\.0\.0\.1:(\d+)\/(?:run|pdp)\?/.exec(hooks)?.[1]
+    const callPort =
+      hooks.includes('hookd') && hooks.includes('"call"')
+        ? /"--port"\s*,\s*"(\d+)"/.exec(hooks)?.[1]
+        : undefined
+    const port = httpPort ?? callPort
     if (!port) return 'hookd: not routed'
     try {
       if ((await $.http.fetch(`http://127.0.0.1:${port}/health`)).ok) return 'hookd: up'
     } catch {
       // not answering: start it below
     }
-    const r = await $.process.run(
-      ['python', '-m', 'adk.harnesses.hookd', 'ensure', '--port', port],
-      { timeoutMs: 20000 },
-    )
+    const ensureArgs = ['python', '-m', 'adk.harnesses.hookd', 'ensure', '--port', port]
+    if (HOOKD_PRETOOLUSE_FAIL_CLOSED) ensureArgs.push('--fail-closed')
+    const r = await $.process.run(ensureArgs, { timeoutMs: 20000 })
     return r.exitCode === 0 ? 'hookd: started' : `hookd: ensure exited ${r.exitCode}`
   } catch (err) {
     return `hookd: ${String(err).slice(0, 200)}`

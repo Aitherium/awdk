@@ -29,7 +29,6 @@ import os
 import subprocess
 import sys
 import webbrowser
-from typing import Any, Dict, List
 
 from adk.shell.plugins import SlashCommand
 

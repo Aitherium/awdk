@@ -4,7 +4,7 @@
 
 **[Docs](https://aitherium.github.io/awdk/)**  ·  [Source](https://github.com/Aitherium/awdk)  ·  `pip install awdk`  ·  Windows: `$env:AITHER_INSTALL='toolkit'; irm https://aitherium.com/install.ps1 | iex`  ·  [The Aither World](https://aitherium.github.io/)
 
-> **The Aither World** is an operating system for agents — a Linux you can hand to one, the runtimes it works in, and the tools it works with. [awnix](https://github.com/Aitherium/awnix) is the Linux underneath it; **awdk** is one of its 72 bricks — each installs on its own, runs offline, and needs no account. 6 more are in development and 19 are planned.
+> **The Aither World** is an operating system for agents — a Linux you can hand to one, the runtimes it works in, and the tools it works with. [awnix](https://github.com/Aitherium/awnix) is the Linux underneath it; **awdk** is one of its 72 bricks — each installs on its own, runs offline, and needs no account. 6 more are in development and 23 are planned.
 >
 > **Start here:** Point it at a backend you already pay for and run one agent loop.
 
@@ -56,11 +56,11 @@ $s = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 <!-- aither-harness:start GENERATED from ecosystem.yaml `harness:` by gen_brick_map.py. Edits between these markers are overwritten; change the registry. -->
 > **`awdk` is part of `awharness` — the super agent harness.** One name for the kit, the shell and the bricks an agent works with, taken together. It is a harness that sits above other harnesses: the shell drives Google Antigravity, Claude Code, Codex and the rest as real products, and the bricks give every one of them the same memory, jobs, leases, permits and tools.
 >
-> **Today:** `adk harness up` brings up the local harness daemons (`hookd`, `awsh`, `aw-hub`), checks installed bricks (`adk harness parts`), and auto-wires detected coding agents (`adk antigravity setup`, `adk claude setup`). Each optional brick still installs on its own line (`pip install awdk`, `npm i -g @aitherium/awsh`).
+> **Today:** Turnkey one-line installers (`curl -fsSL https://aitherium.com/install.sh | sh` on macOS/Linux, `irm https://aitherium.com/install.ps1 | iex` on Windows, or zero-Python `uv` via `awdk/install/install.{sh,ps1}`) install `awdk`, wire the wizard, and `adk harness up` brings up the local harness daemons (`hookd`, `awsh`, `aw-hub`), checks installed bricks (`adk harness parts`), and auto-wires detected coding agents (`adk antigravity setup`, `adk claude setup`). Individual optional bricks also install standalone (`pip install awdk`, `npm i -g @aitherium/awsh`).
 >
 > **Planned, not built:** One umbrella installer package that installs every composed brick together under the `awharness` name. Nothing by that package name is published yet.
 >
-> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 99 bricks, in layers: https://aitherium.github.io/#map
+> The other 10 composed bricks: `awsh` `awskills` `awm` `awgraph` `awrun` `awrise` `awgit` `awpermit` `awrelay` `awnode`. All 96 bricks, in layers: https://aitherium.github.io/#map
 <!-- aither-harness:end -->
 
 A bare agent loop is a model, a prompt and a `while` over tool calls. This is what
@@ -120,7 +120,7 @@ adk doctor         # something wrong? this names it
 
 - [New here? The five concepts](#new-here-the-five-concepts)
 - [Documentation map](#documentation-map) — every guide, linked
-- [Subagents — drive Claude Code, Codex, and eight more](#subagents--drive-claude-code-codex-and-eight-more) — real binaries, scoped, torn down
+- [Subagents — drive Claude Code, Codex, Antigravity, and more](#subagents--drive-claude-code-codex-antigravity-and-more) — real binaries, scoped, torn down
 - [Quick Start](#quick-start)
 - [Aither Hearth: your agent, on your phone](#aither-hearth-your-agent-on-your-phone) — serve, channels, approvals, receipts
 - [Bonsai: an agent on literally anything](#bonsai-an-agent-on-literally-anything)
@@ -162,7 +162,7 @@ If you only remember one thing: **`agent.chat()` is the agent.** Everything else
 | Connect agents across machines (relay) | [docs/AITHERRELAY_GUIDE.md](docs/AITHERRELAY_GUIDE.md) |
 | Run a private, local-only companion | [PRIVATE_COMPANION.md](PRIVATE_COMPANION.md) |
 | Reach my own agent from my phone (Aither Hearth) | [docs/agent-home.md](docs/agent-home.md) — `adk home serve`, channels, approvals, receipts |
-| See working code | [`examples/`](examples/) — five runnable scripts |
+| See working code | [`examples/`](examples/) — runnable scripts and multi-agent demos |
 | See what changed | [CHANGELOG.md](CHANGELOG.md) |
 | Browse rendered docs | [aitherium.github.io/awdk](https://aitherium.github.io/awdk/) |
 
@@ -177,9 +177,9 @@ Connect your agent to JetBrains, Zed, VS Code, or any ACP-compatible editor over
 adk acp serve                          # Serve your agent to an editor
 ```
 
-- **Harness ID**: `acp` (registered in `adk.harnesses.registry`)
-- **Transport**: STRUCTURED_BIDI (JSON-RPC 2.0)
-- **Usage**: Agents appear as room participants in AitherShell, driven by editors that speak ACP v2
+- **CLI & modules**: `adk acp serve` (`adk.acp_server`) for editor-facing stdio; `adk acp connect` / `adk backend add acp` (`adk.llm.acp_provider`) to drive an external ACP agent
+- **Transport**: JSON-RPC 2.0 over stdio
+- **Usage**: Expose AitherOS agents to editors that speak ACP, or connect to external ACP agents from the CLI and backend router
 
 ### 2. **A2A (Agent-to-Agent)** — Remote Agent Integration
 Map remote A2A agents (Google A2A v0.3.0 compatible) as room participants with full task lifecycle visibility.
@@ -214,7 +214,7 @@ uri = server.from_agent_response("reviewer", "task_123", blocks)
 ```
 
 - **Module**: `adk.mcp_ui_resources.RenderBlocksMCPServer`
-- **Block types**: 24 primitives (markdown, header, table, code, form, approve, slider, file_upload, etc.)
+- **Block types**: 23 primitives (markdown, header, table, code, form, approve, slider, file_upload, etc.)
 - **Schema validation**: Block schemas are kept at parity with the AitherOS RenderBlocks protocol, so a block emitted here renders identically in any AitherOS surface
 - **MIME type**: `application/vnd.aitheros.renderblocks+json`
 - **Integration**: Mount into FastAPI, use in MCP clients that understand `ui://`
@@ -252,7 +252,7 @@ as unknown rather than silently disappearing:
 
 ---
 
-## Subagents — drive Claude Code, Codex, and eight more
+## Subagents — drive Claude Code, Codex, Antigravity, and more
 
 > **Just want it working?** → **[AWSH-OMNISHELL-PLAYBOOK.md](AWSH-OMNISHELL-PLAYBOOK.md)**.
 > Install → detect → start the daemon → use it, with verified output at each step.
@@ -273,23 +273,23 @@ concurrent subagents can't corrupt one another's state, and tears down the
 process tree on timeout.
 
 ```bash
-adk shell harnesses          # what can this machine drive, and how to get the rest
-adk shell new --harness claude
-adk shell send  <id> "refactor the retry logic in billing/"
-adk shell attach <id>        # watch it work
-adk shell kill  <id>         # teardown
+adk harness harnesses        # what can this machine drive, and how to get the rest
+adk harness new --harness claude
+adk harness send  <id> "refactor the retry logic in billing/"
+adk harness attach <id>      # watch it work
+adk harness kill  <id>       # teardown
 ```
 
-`adk shell harnesses` on a typical box:
+`adk harness harnesses` on a typical box (representative subset):
 
 ```
 ID           INSTALLED  TRANSPORT         DESCRIPTION
 claude       yes        structured-bidi   Anthropic Claude Code — bidirectional stream-json, full tool use
 gemini       yes        oneshot-per-turn  Google Gemini CLI — one process per turn, stream-json output
+antigravity  yes        oneshot-per-turn  Google Antigravity — coding agent sessions
 terminal     yes        pty-stream        A real shell on this host behind a pseudo-terminal (pwsh/bash)
 sandbox      NO         pty-stream        A real Linux TTY inside a dev-workspace container
                                           -> Install Docker Desktop
-acp          yes        structured-bidi   JSON-RPC 2.0 stdio harness for JetBrains/Zed/VS Code editors
 codex        NO         oneshot-per-turn  OpenAI Codex CLI — one process per turn (codex exec --json)
                                           -> npm i -g @openai/codex
 aider        NO         oneshot-per-turn  Aider — pair-programming CLI (one process per turn)
@@ -298,7 +298,7 @@ opencode     NO         oneshot-per-turn  OpenCode — open-source coding agent 
                                           -> npm i -g opencode-ai
 ```
 
-Ten harnesses are declared; the ones you haven't installed say so and tell you
+Sixteen harnesses are declared in `adk/harnesses/registry.py` (`claude`, `claude-tty`, `gemini`, `antigravity`, `terminal`, `sandbox`, `aither`, `awdk`, `group`, `codex`, `aider`, `opencode`, `openclaw`, `hades`, `hermes`, `harness2`); the ones you haven't installed say so and tell you
 the command. **It never silently pretends the world is Claude-only** — a harness
 you don't have is a missing install, not a missing feature, and the difference is
 printed rather than guessed at.
@@ -324,7 +324,7 @@ HarnessSpec(
 Four transports cover every agent CLI shipping today: `structured-bidi` (a
 persistent bidirectional stream-json session), `oneshot-per-turn` (a fresh
 process per turn), `pty-stream` (a real TTY behind a pseudo-terminal), and
-`http-stream` (a remote agent over SSE). Adding an eleventh harness is a table
+`http-stream` (a remote agent over SSE). Adding another harness is a table
 entry, not a new module.
 
 ### Scoped by construction
@@ -812,18 +812,6 @@ async for chunk in agent.chat_stream("Tell me a story"):
     print(chunk, end="", flush=True)
 ```
 
-### Local fine-tuning (NanoGPT)
-
-Zero-dependency character-level transformer (pure-Python autograd, no PyTorch). Good for topic classification, anomaly detection, and per-document LoRA memory.
-
-```python
-from adk.nanogpt import NanoGPT
-
-model = NanoGPT(n_layer=1, n_embd=16, block_size=16, n_head=4)
-await model.train(["hello world", "training data here"], num_steps=500)
-samples = await model.generate(num_samples=5, temperature=0.5)
-```
-
 ---
 
 ## Agent Fleets
@@ -1009,7 +997,7 @@ anyway and you want it in-process with no subprocess.
 
 ## CLI Reference
 
-> **Every command:** [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) — all 95,
+> **Every command:** [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) — all 146,
 > generated from the parser itself, so it cannot describe a command that does
 > not exist or omit one that does. The tour below is the opinionated subset.
 
@@ -1117,8 +1105,8 @@ adk backend test                           # is the current backend actually ans
 Then:
 
 ```bash
-aither-bug "description of the issue"      # file a report from the CLI
-aither-bug --dry-run                       # preview what would be sent
+adk-bug "description of the issue"         # file a report from the CLI
+adk-bug --dry-run                          # preview what would be sent
 ```
 
 ## Community
@@ -1201,7 +1189,7 @@ Each installs on its own, works offline, and needs no account.
 | [awsettings](https://github.com/Aitherium/awsettings) | that you will remember to re-approve the same thing on every box you work from | one profile, unioned rather than overwritten, with the credentials left behind |
 | [awavatar](https://github.com/Aitherium/awavatar) | a cloud 3D vendor's opaque task id | a manifest with a sha256, a licence and a rig-audit verdict per file |
 
-[**awnix**](https://github.com/Aitherium/awnix) is the ground floor — A Linux you can hand to an agent — immutable base, capabilities included.
+[**awnix**](https://github.com/Aitherium/awnix) is the ground floor — A Linux you can hand to an agent — immutable x86_64 & ARM64 (aarch64) base, capabilities included.
 
 ## The Aitherium ecosystem
 
@@ -1235,7 +1223,7 @@ Every repository here is public. Each publishes an `aither-manifest.json` beside
 | [awnest](https://github.com/Aitherium/awnest) | Prove there is a human before you let them into the nest | [docs](https://aitherium.github.io/awnest/) |
 | [awrena](https://github.com/Aitherium/awrena) | Put two agents head to head and get a verdict you can check | [docs](https://aitherium.github.io/awrena/) |
 | [awnboard](https://github.com/Aitherium/awnboard) | A front gate you can put in front of anything, and hand someone the key to | [docs](https://aitherium.github.io/awnboard/) |
-| [awnix](https://github.com/Aitherium/awnix) | A Linux you can hand to an agent — immutable base, capabilities included | [docs](https://aitherium.github.io/awnix/) |
+| [awnix](https://github.com/Aitherium/awnix) | A Linux you can hand to an agent — immutable x86_64 & ARM64 (aarch64) base, capabilities included | [docs](https://aitherium.github.io/awnix/) |
 | [awrecover](https://github.com/Aitherium/awrecover) | Labelled snapshots with an all-or-nothing restore | [docs](https://aitherium.github.io/awrecover/) |
 | [awstorage](https://github.com/Aitherium/awstorage) | Every drive on every node, indexed, classified and diffed -- so you can see what you own before you delete it | [docs](https://aitherium.github.io/awstorage/) |
 | [awrelay](https://github.com/Aitherium/awrelay) | Portable agent messaging — findings, alerts, coordination | [docs](https://aitherium.github.io/awrelay/) |
@@ -1298,8 +1286,8 @@ Every repository here is public. Each publishes an `aither-manifest.json` beside
 **awdk** is one of several open repositories cut from the same system. They
 share one set of engineering rules, published as the Developer Codex.
 
-**New here? → [Read the Codex](https://aitherium.github.io/awskills/codex.html)** — eighteen laws for building software
-that tells you when it is wrong, plus a four-chapter ramp if you have never
+**New here? → [Read the Codex](https://aitherium.github.io/awskills/codex.html)** — thirty-two laws for building software
+that tells you when it is wrong, plus a thirteen-chapter ramp if you have never
 worked with a coding agent. **Contributing? → [CONTRIBUTING.md](CONTRIBUTING.md)**
 
 - **[aitherium.com](https://aitherium.com)** — the system these repos are cut from

@@ -95,10 +95,41 @@ def trace_dir() -> Path:
 # ---------------------------------------------------------------- translation
 
 
+#: Antigravity read-only/UI tools that never require PreToolUse PDP/guard subprocesses.
+_FAST_ALLOW_TOOLS: frozenset[str] = frozenset({
+    "read_file",
+    "update_focus",
+    "update_steps",
+    "list_plugin_accounts",
+})
+
+
+def _normalize_mcp_server(server: str) -> str:
+    """Map plugin-prefixed server names (e.g. ``aitheros_aitheros``) to canonical awgov prefixes."""
+    s = re.sub(r"[^A-Za-z0-9_-]+", "_", (server or "").strip()).strip("_")
+    if s in ("aitheros_aitheros", "aitheros"):
+        return "aitheros"
+    if s.startswith("aitheros_") and len(s) > len("aitheros_"):
+        return s[len("aitheros_"):]
+    return s or "mcp"
+
+
 def translate_tool_input(ag_tool: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Map an Antigravity tool call to Claude's (tool_name, tool_input)."""
     if not isinstance(args, dict):
         args = {}
+    if ag_tool == "call_mcp_tool":
+        server = _normalize_mcp_server(str(args.get("ServerName") or args.get("server_name") or ""))
+        tool = str(args.get("ToolName") or args.get("tool_name") or "").strip()
+        inner_args = args.get("Arguments") if isinstance(args.get("Arguments"), dict) else {}
+        # Unwrap routed meta-dispatcher calls (`aither_call`) so awgov PDP evaluates
+        # the real underlying tool (e.g. `mcp__aitheros__set_secret`).
+        if tool == "aither_call" and isinstance(inner_args.get("tool"), str) and inner_args["tool"].strip():
+            tool = inner_args["tool"].strip()
+            routed_args = inner_args.get("arguments")
+            inner_args = routed_args if isinstance(routed_args, dict) else {}
+        claude_name = f"mcp__{server}__{tool}" if tool else f"mcp__{server}"
+        return claude_name, dict(inner_args)
     claude_name = TOOL_MAP.get(ag_tool, ag_tool)
     if ag_tool == "run_command":
         out = dict(args)
@@ -259,9 +290,18 @@ def record_session(ag_payload: dict[str, Any], status: str) -> None:
             except (OSError, ValueError):
                 prior = {}
         now_ts = time.time()
-        now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
         cwd = resolve_cwd(ag_payload)
         prompt = str(ag_payload.get("lastUserInput") or prior.get("lastPrompt") or "")[:400]
+        # Debounce redundant writes during rapid tool-call bursts (same status/prompt within 5s).
+        if (
+            prior
+            and prior.get("status") == status
+            and prior.get("lastPrompt") == prompt
+            and prior.get("cwd") == cwd
+            and (now_ts - float(prior.get("updatedTs") or 0.0)) < 5.0
+        ):
+            return
+        now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
         rec = {
             "sessionId": cid,
             "id": cid,
@@ -543,7 +583,8 @@ def handle_event(event: str, ag_payload: dict[str, Any], *, repo_mode: bool = Fa
         _ensure_hookd()
         extra: list[str] = []
         if not settings_disabled and shutil.which("awsettings"):
-            _run_cmd(["awsettings", "--quiet", "--never-fail", "pull"], timeout=8.0)
+            _run_cmd(["awsettings", "--quiet", "--never-fail", "pull"], timeout=6.0)
+            _run_cmd(["awsettings", "--domain", "antigravity", "--quiet", "--never-fail", "pull"], timeout=6.0)
         if not relay_disabled and shutil.which("awrelay"):
             _, out, _ = _run_cmd(["awrelay", "inbox", "--claude-hook"], json.dumps(claude_payload), timeout=6.0)
             if out.strip():
@@ -598,9 +639,14 @@ def handle_event(event: str, ag_payload: dict[str, Any], *, repo_mode: bool = Fa
         return from_claude_response(event, repo_resp, extra_context=extra)
 
     if event == "PreToolUse":
+        tc = ag_payload.get("toolCall") if isinstance(ag_payload.get("toolCall"), dict) else {}
+        ag_tool_name = str(tc.get("name") or "")
+        if ag_tool_name in _FAST_ALLOW_TOOLS:
+            return {"decision": "allow"}
         record_session(ag_payload, "busy")
-        # 1. awgov PDP via hookd (enforced if hookd is up).
-        pdp = _hookd_post("/pdp?mode=enforce", claude_payload, cwd, timeout=5.0)
+        # 1. awgov PDP via hookd (enforced if hookd is up; bounded timeout so a
+        #    busy hookd never hits Antigravity's 15s hook kill ceiling).
+        pdp = _hookd_post("/pdp?mode=enforce", claude_payload, cwd, timeout=2.5)
         if pdp:
             hso = pdp.get("hookSpecificOutput") or {}
             if hso.get("permissionDecision") in ("deny", "ask", "force_ask"):
@@ -646,7 +692,14 @@ def handle_event(event: str, ag_payload: dict[str, Any], *, repo_mode: bool = Fa
     if event == "PostToolUse":
         record_session(ag_payload, "busy")
         if not settings_disabled and shutil.which("awsettings"):
-            _run_cmd(["awsettings", "--quiet", "--never-fail", "push", "--debounce"], timeout=5.0)
+            # Skip subprocess spawn when awsettings pushed recently (debounce stamp < 15s).
+            stamp = Path.home() / ".awsettings" / "last-push-antigravity"
+            try:
+                recently_pushed = (time.time() - stamp.stat().st_mtime) < 15.0
+            except OSError:
+                recently_pushed = False
+            if not recently_pushed:
+                _run_cmd(["awsettings", "--domain", "antigravity", "--quiet", "--never-fail", "push", "--debounce"], timeout=5.0)
         if not relay_disabled:
             gate = _hookgate_path()
             if gate:

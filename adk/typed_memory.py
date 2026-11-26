@@ -31,7 +31,7 @@ import re
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Any
 
 from adk.memory import Memory, MemoryEntry
@@ -224,30 +224,43 @@ def infer_role(content: str, metadata: dict[str, Any] | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Typed view over a MemoryEntry (reads the reserved metadata keys)
+# Typed view over a MemoryEntry or MemoryRecord (reads reserved metadata keys)
 # ---------------------------------------------------------------------------
 
 
-def _md(entry: MemoryEntry) -> dict[str, Any]:
-    return entry.metadata if isinstance(entry.metadata, dict) else {}
+def _md(entry: Any) -> dict[str, Any]:
+    md = getattr(entry, "metadata", None)
+    return md if isinstance(md, dict) else {}
 
 
-def role_of(entry: MemoryEntry) -> str:
+def _entry_id(entry: Any) -> str:
+    if hasattr(entry, "key"):
+        return str(entry.key)
+    return str(getattr(entry, "id", ""))
+
+
+def _entry_text(entry: Any) -> str:
+    if hasattr(entry, "value"):
+        return str(entry.value)
+    return str(getattr(entry, "content", ""))
+
+
+def role_of(entry: Any) -> str:
     return str(_md(entry).get(_K_ROLE) or Role.FACT)
 
 
-def tier_of(entry: MemoryEntry) -> str:
+def tier_of(entry: Any) -> str:
     md = _md(entry)
     return str(md.get(_K_TIER) or default_tier_for(role_of(entry)))
 
 
-def created_at_of(entry: MemoryEntry) -> float:
+def created_at_of(entry: Any) -> float:
     md = _md(entry)
-    v = md.get(_K_LAST_REINF) or md.get(_K_CREATED) or entry.timestamp
+    v = md.get(_K_LAST_REINF) or md.get(_K_CREATED) or getattr(entry, "timestamp", None)
     return float(v) if v else time.time()
 
 
-def freshness(entry: MemoryEntry, now: float | None = None) -> float:
+def freshness(entry: Any, now: float | None = None) -> float:
     """``exp(-ln2 · age / half_life)`` for the entry's tier. 1.0 = brand new."""
     now = time.time() if now is None else now
     hl = TIER_HALF_LIFE.get(tier_of(entry), 7 * _DAY)
@@ -257,7 +270,7 @@ def freshness(entry: MemoryEntry, now: float | None = None) -> float:
     return math.exp(-math.log(2.0) * age / hl)
 
 
-def is_expired(entry: MemoryEntry, now: float | None = None) -> bool:
+def is_expired(entry: Any, now: float | None = None) -> bool:
     now = time.time() if now is None else now
     ttl = TIER_TTL.get(tier_of(entry), math.inf)
     if ttl == math.inf:
@@ -277,7 +290,7 @@ class ScoreBreakdown:
 
 
 def score(
-    entry: MemoryEntry,
+    entry: Any,
     *,
     activation: float = 0.0,
     base: float = 1.0,
@@ -326,7 +339,7 @@ _NOTABLE_ROLE_LABELS = {
 }
 
 
-def labels(entry: MemoryEntry, now: float | None = None) -> list[str]:
+def labels(entry: Any, now: float | None = None) -> list[str]:
     """Authority labels the LLM reads, e.g. ``['CORRECTION', 'REINFORCED:3']``."""
     now = time.time() if now is None else now
     md = _md(entry)
@@ -350,6 +363,12 @@ def labels(entry: MemoryEntry, now: float | None = None) -> list[str]:
     return out
 
 
+def label_content(entry: Any, now: float | None = None) -> str:
+    """Bake the labels into the content string the LLM actually reads."""
+    tags = "".join(f"[{lbl}] " for lbl in labels(entry, now))
+    return f"{tags}{_entry_text(entry)}".strip()
+
+
 # ---------------------------------------------------------------------------
 # RecalledItem
 # ---------------------------------------------------------------------------
@@ -357,19 +376,28 @@ def labels(entry: MemoryEntry, now: float | None = None) -> list[str]:
 
 @dataclass(slots=True)
 class RecalledItem:
-    """A recalled entry with its authority score and labels."""
+    """A recalled entry/record with its authority score and labels."""
 
-    entry: MemoryEntry
-    score: float
+    entry: Any = None
+    score: float = 0.0
     labels: list[str] = field(default_factory=list)
+    record: InitVar[Any] = None
+
+    def __post_init__(self, record: Any) -> None:
+        if self.entry is None and record is not None:
+            self.entry = record
+
+    @property
+    def record(self) -> Any:  # type: ignore[override]
+        return self.entry
 
     @property
     def id(self) -> str:
-        return self.entry.key
+        return _entry_id(self.entry)
 
     @property
     def content(self) -> str:
-        return self.entry.value
+        return _entry_text(self.entry)
 
     @property
     def role(self) -> str:
@@ -377,14 +405,14 @@ class RecalledItem:
 
     def labelled_content(self) -> str:
         tags = "".join(f"[{lbl}] " for lbl in self.labels)
-        return f"{tags}{self.entry.value}".strip()
+        return f"{tags}{_entry_text(self.entry)}".strip()
 
 
 #: How many next-hop ids a context line carries (Chain of Recall).
 REF_RELATED_MAX = 3
 
 
-def _ref_tag(entry: MemoryEntry) -> str:
+def _ref_tag(entry: Any) -> str:
     """``[id=tm_x →a,b] `` -- the record's own id and up to 3 next-hop ids.
 
     Kept short and placed FIRST so clipping a long value never cuts the id off;
@@ -392,7 +420,7 @@ def _ref_tag(entry: MemoryEntry) -> str:
     """
     related = [str(r) for r in (_md(entry).get(_K_RELATED, []) or [])][:REF_RELATED_MAX]
     hop = f" →{','.join(related)}" if related else ""
-    return f"[id={entry.key}{hop}] "
+    return f"[id={_entry_id(entry)}{hop}] "
 
 
 # ---------------------------------------------------------------------------
@@ -431,16 +459,45 @@ def parse_constraint(content: str) -> str | None:
 
 
 class TypedMemory:
-    """Authority/activation layer over :class:`adk.memory.Memory`.
+    """Authority/activation layer over :class:`adk.memory.Memory` or any
+    :class:`adk.core.memory.Memory` backend.
 
     Delegates persistence to ``backing`` (a fresh :class:`~adk.memory.Memory` by
     default); adds typed roles, decay, authority-ranked recall, decision
     constraints, and supersession.  Typed records are stored under generated ids
-    so they coexist with plain ``remember(key, value)`` entries.
+    so they coexist with plain ``remember(key, value)`` entries.  Implements
+    ``put``/``get``/``search``/``recent`` so it also satisfies the
+    :class:`adk.core.memory.Memory` protocol directly.
     """
 
-    def __init__(self, backing: Memory | None = None) -> None:
-        self._mem: Memory = backing if backing is not None else Memory()
+    def __init__(self, backing: Any = None) -> None:
+        self._mem: Any = backing if backing is not None else Memory()
+
+    @property
+    def _is_core_backend(self) -> bool:
+        return hasattr(self._mem, "put") and not hasattr(self._mem, "get_entry")
+
+    async def _persist_metadata(self, id_: str, entry: Any, md: dict[str, Any]) -> None:
+        if self._is_core_backend:
+            if isinstance(getattr(entry, "metadata", None), dict):
+                entry.metadata.update(md)
+        else:
+            await self._mem.remember(id_, entry.value, category=entry.category, metadata=md)
+
+    # ----- adk.core.memory.Memory protocol --------------------------------
+
+    async def put(self, content: str, *, metadata: dict[str, Any] | None = None) -> str:
+        return await self.remember(content, metadata=metadata)
+
+    async def search(self, query: str, *, limit: int = 10) -> list[Any]:
+        items = await self.recall(query, limit=limit)
+        return [it.entry for it in items]
+
+    async def recent(self, *, limit: int = 10) -> list[Any]:
+        return await self._mem.recent(limit=limit)
+
+    def __len__(self) -> int:  # pragma: no cover - convenience
+        return len(self._mem) if hasattr(self._mem, "__len__") else 0
 
     # ----- write ----------------------------------------------------------
 
@@ -476,13 +533,17 @@ class TypedMemory:
             _K_LAST_REINF: now,
             _K_RELATED: list(related_ids) or list(md.get(_K_RELATED, []) or []),
         })
+        if self._is_core_backend and id_ is None:
+            return await self._mem.put(content, metadata=md)
         rec_id = id_ or f"tm_{uuid.uuid4().hex[:16]}"
         await self._mem.remember(rec_id, content, category=resolved_role, metadata=md)
         return rec_id
 
     # ----- read -----------------------------------------------------------
 
-    async def get(self, id_: str) -> MemoryEntry | None:
+    async def get(self, id_: str) -> Any:
+        if self._is_core_backend:
+            return await self._mem.get(id_)
         return await self._mem.get_entry(id_)
 
     async def recall(
@@ -509,7 +570,7 @@ class TypedMemory:
             return []
 
         n = max(1, len(entries))
-        rank_base = {e.key: 1.0 - RANK_DECAY * (i / n) for i, e in enumerate(entries)}
+        rank_base = {id(e): 1.0 - RANK_DECAY * (i / n) for i, e in enumerate(entries)}
 
         # 1-hop activation: an entry gains a bonus if a higher-ranked seed lists
         # it in related_ids (cheap co-occurrence proxy).
@@ -525,11 +586,11 @@ class TypedMemory:
                     continue
                 if bool(md.get(_K_STALE, False)) and freshness(e, now) < STALE_FRESHNESS_THRESHOLD:
                     continue
-            activation = 1.0 if e.key in seed_related else 0.0
-            bd = score(e, activation=activation, base=rank_base[e.key], now=now)
+            activation = 1.0 if _entry_id(e) in seed_related else 0.0
+            bd = score(e, activation=activation, base=rank_base[id(e)], now=now)
             out.append(RecalledItem(entry=e, score=bd.combined, labels=labels(e, now)))
 
-        out.sort(key=lambda it: (-it.score, rank_base.get(it.entry.key, 0.0)))
+        out.sort(key=lambda it: (-it.score, rank_base.get(id(it.entry), 0.0)))
         return out[:limit]
 
     # ----- update ---------------------------------------------------------
@@ -537,14 +598,16 @@ class TypedMemory:
     async def reinforce(self, id_: str, *, now: float | None = None) -> bool:
         """Strengthen a record on confirmation (bumps reinforcement + confidence)."""
         now = time.time() if now is None else now
-        entry = await self._mem.get_entry(id_)
+        entry = await self.get(id_)
         if entry is None:
+            return False
+        if self._is_core_backend and not isinstance(getattr(entry, "metadata", None), dict):
             return False
         md = dict(entry.metadata or {})
         md[_K_REINF] = int(md.get(_K_REINF, 0) or 0) + 1
         md[_K_LAST_REINF] = now
         md[_K_CONF] = min(1.0, float(md.get(_K_CONF, 0.7) or 0.7) + 0.05)
-        await self._mem.remember(id_, entry.value, category=entry.category, metadata=md)
+        await self._persist_metadata(id_, entry, md)
         return True
 
     async def supersede(
@@ -562,7 +625,7 @@ class TypedMemory:
         immediate ``related_ids`` neighbours one hop.  Returns the new id.
         """
         now = time.time() if now is None else now
-        old = await self._mem.get_entry(old_id)
+        old = await self.get(old_id)
         related: list[str] = []
         if old is not None and isinstance(old.metadata, dict):
             related = list(old.metadata.get(_K_RELATED, []) or [])
@@ -575,18 +638,18 @@ class TypedMemory:
             md = dict(old.metadata or {})
             md[_K_SUPERSEDED] = new_id
             md[_K_STALE] = True
-            await self._mem.remember(old_id, old.value, category=old.category, metadata=md)
+            await self._persist_metadata(old_id, old, md)
 
         if cascade:
             for nid in related[:8]:  # 1 hop, bounded
-                neighbour = await self._mem.get_entry(nid)
+                neighbour = await self.get(nid)
                 if neighbour is None:
                     continue
                 nmd = dict(neighbour.metadata or {})
                 nmd[_K_CONF] = float(nmd.get(_K_CONF, 0.7) or 0.7) * 0.7
                 if freshness(neighbour, now) < 0.2:
                     nmd[_K_STALE] = True
-                await self._mem.remember(nid, neighbour.value, category=neighbour.category, metadata=nmd)
+                await self._persist_metadata(nid, neighbour, nmd)
         return new_id
 
     # ----- constraints ----------------------------------------------------
@@ -604,7 +667,7 @@ class TypedMemory:
                 continue
             if _md(e).get(_K_SUPERSEDED):
                 continue
-            c = parse_constraint(e.value)
+            c = parse_constraint(_entry_text(e))
             if c and c not in seen:
                 seen.add(c)
                 out.append(c)
@@ -660,12 +723,12 @@ class TypedMemory:
         entry = await self.get(id_)
         if entry is None:
             return ""
-        lines = [f"# MEMORY {id_}", f"{_ref_tag(entry)}{entry.value}"]
+        lines = [f"# MEMORY {id_}", f"{_ref_tag(entry)}{_entry_text(entry)}"]
         for rid in list(_md(entry).get(_K_RELATED, []) or [])[: max(0, limit)]:
             neighbour = await self.get(str(rid))
             if neighbour is None:
                 continue
-            text = " ".join(str(neighbour.value).split())
+            text = " ".join(_entry_text(neighbour).split())
             room = max(16, max_item_chars - len(_ref_tag(neighbour)))
             if len(text) > room:
                 text = text[: room - 1].rstrip() + "…"
@@ -681,7 +744,7 @@ class TypedMemory:
         return f"# DECISIONS / CORRECTIONS — you MUST respect these\n{lines}"
 
 
-def as_typed(memory: Memory | TypedMemory | None) -> TypedMemory:
+def as_typed(memory: Any = None) -> TypedMemory:
     """Wrap ``memory`` in a :class:`TypedMemory` if it isn't already one."""
     if isinstance(memory, TypedMemory):
         return memory
@@ -693,6 +756,7 @@ __all__ = [
     "Tier",
     "ROLE_AUTHORITY",
     "TIER_HALF_LIFE",
+    "TIER_TTL",
     "RecalledItem",
     "ScoreBreakdown",
     "TypedMemory",
@@ -701,7 +765,9 @@ __all__ = [
     "freshness",
     "infer_role",
     "is_expired",
+    "label_content",
     "labels",
+    "make_metadata",
     "parse_constraint",
     "role_of",
     "score",

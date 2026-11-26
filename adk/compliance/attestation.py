@@ -65,6 +65,8 @@ class AttestationReport:
     air_gap_enforced: bool = False
     air_gap_mode: str = "disabled"
     air_gap_activated_at: Optional[str] = None
+    air_gap_verified: bool = True
+    air_gap_error: Optional[str] = None
     llm_summary: LLMCallSummary = field(default_factory=LLMCallSummary)
     violations: List[Dict[str, Any]] = field(default_factory=list)
     outbound_connections: List[Dict[str, Any]] = field(default_factory=list)
@@ -74,16 +76,20 @@ class AttestationReport:
     signature: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
+        air_gap_dict: Dict[str, Any] = {
+            "enforced": self.air_gap_enforced,
+            "mode": self.air_gap_mode,
+            "activated_at": self.air_gap_activated_at,
+            "verified": self.air_gap_verified,
+        }
+        if self.air_gap_error is not None:
+            air_gap_dict["error"] = self.air_gap_error
         return {
             "report_id": self.report_id,
             "generated_at": self.generated_at,
             "window_start": self.window_start,
             "window_end": self.window_end,
-            "air_gap": {
-                "enforced": self.air_gap_enforced,
-                "mode": self.air_gap_mode,
-                "activated_at": self.air_gap_activated_at,
-            },
+            "air_gap": air_gap_dict,
             "llm_summary": self.llm_summary.to_dict(),
             "violations": self.violations,
             "outbound_connections": self.outbound_connections,
@@ -108,7 +114,8 @@ def _sign_report(report: AttestationReport) -> AttestationReport:
     payload = (
         f"{report.report_id}:{report.window_start}:{report.window_end}:"
         f"{report.llm_summary.total_calls}:{report.llm_summary.cloud_calls}:"
-        f"{len(report.violations)}:{report.air_gap_enforced}"
+        f"{len(report.violations)}:{report.air_gap_enforced}:"
+        f"{report.air_gap_mode}:{report.air_gap_verified}:{report.air_gap_error or ''}"
     )
     report.content_hash = hashlib.sha256(payload.encode()).hexdigest()
     report.signature = hmac_mod.new(
@@ -244,7 +251,7 @@ async def generate_attestation_report(
         node_id=_get_node_id(),
     )
 
-    # Air-gap state
+    # Air-gap state — never silently downgrade an enforcer error to "disabled"
     try:
         from adk.compliance.air_gap import get_air_gap_enforcer
         enforcer = get_air_gap_enforcer()
@@ -252,8 +259,19 @@ async def generate_attestation_report(
         report.air_gap_enforced = att.enforced
         report.air_gap_mode = att.mode
         report.air_gap_activated_at = att.activated_at
-    except Exception:
-        pass
+        report.air_gap_verified = True
+        report.air_gap_error = None
+    except Exception as exc:
+        logger.error(
+            "[Attestation] Failed to query air-gap state; recording unverified state: %s",
+            exc,
+            exc_info=True,
+        )
+        report.air_gap_enforced = False
+        report.air_gap_mode = "unverified"
+        report.air_gap_activated_at = None
+        report.air_gap_verified = False
+        report.air_gap_error = f"{type(exc).__name__}: {exc}"
 
     # LLM call summary
     report.llm_summary = _collect_llm_summary(start, end, call_log or [])

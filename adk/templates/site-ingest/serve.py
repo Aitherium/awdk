@@ -253,7 +253,7 @@ def build_agent():
 
 def _create_llm_router(provider: str, api_key: str, model: str | None):
     """Create the LLM router (metering + provider selection)."""
-    from adk.llm.router import LLMRouter
+    from adk.llm import LLMRouter
     return LLMRouter(provider=provider, api_key=api_key, model=model)
 
 

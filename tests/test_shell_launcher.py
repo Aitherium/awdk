@@ -120,9 +120,7 @@ class TestBundledBinarySelection:
             ("Windows", "AMD64", "win-x64"),
             ("Windows", "x86_64", "win-x64"),
             ("Linux", "x86_64", "linux-x64"),
-            ("Linux", "aarch64", "linux-x64"),
             ("Darwin", "arm64", "mac-arm64"),
-            ("Darwin", "x86_64", "mac-x64"),
         ],
     )
     def test_get_platform_dir_name(self, system: str, machine: str, expected_dir: str):
@@ -130,6 +128,27 @@ class TestBundledBinarySelection:
         with patch("platform.system", return_value=system):
             with patch("platform.machine", return_value=machine):
                 assert shell_launcher._get_platform_dir_name() == expected_dir
+
+    @pytest.mark.parametrize(
+        "system,machine",
+        [
+            ("Linux", "aarch64"),
+            ("Darwin", "x86_64"),
+            ("Obscure", "unknown"),
+        ],
+    )
+    def test_unsupported_arch_fails_closed(self, system: str, machine: str, capsys):
+        """Unsupported arches return empty dir and exit with actionable error instead of wrong-arch binary."""
+        with patch("platform.system", return_value=system):
+            with patch("platform.machine", return_value=machine):
+                assert shell_launcher._get_platform_dir_name() == ""
+                assert shell_launcher._get_bundled_binary() is None
+                with pytest.raises(SystemExit) as exc:
+                    shell_launcher._get_binary_name()
+                assert exc.value.code == 1
+                err = capsys.readouterr().err
+                assert "Unsupported platform/architecture" in err
+                assert "@aitherium/awsh" in err
 
     def test_get_platform_dir_name_unsupported(self):
         """Unsupported platforms return empty string."""

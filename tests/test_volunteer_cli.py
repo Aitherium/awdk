@@ -288,7 +288,6 @@ class TestEnrollTenantDefault:
         assert vol._saved_tenant() == "tnt_dgg"
 
     def test_enroll_refuses_without_any_tenant(self, monkeypatch, capsys):
-        import asyncio
         from types import SimpleNamespace
 
         from adk.commands import volunteer as vol

@@ -183,7 +183,7 @@ def run_bounded_solve(
     if "No module named adk" in stderr:
         return {
             "exit_code": 2,
-            "error": "adk is not installed for %s: pip install 'aither-adk[reason]'" % argv[0],
+            "error": "adk is not installed for %s: pip install 'awdk[reason]'" % argv[0],
         }
     doc = _last_json_object(stdout)
     if doc is None:

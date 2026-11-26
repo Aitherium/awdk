@@ -46,6 +46,8 @@ if not os.path.exists(INFERENCE_PATH):
         allow_module_level=True,
     )
 
+pytest.importorskip("aiohttp")
+
 # Stub the auth module dependency
 _auth_mock = MagicMock()
 _auth_mock.TenantContext = MockTenantContext

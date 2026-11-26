@@ -349,8 +349,10 @@ class WorkItems:
             str(self._path), check_same_thread=False, timeout=5)
         self._conn.row_factory = sqlite3.Row
         with self._lock, self._conn:
+            self._conn.execute("PRAGMA busy_timeout=5000")
             try:
                 self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
             except sqlite3.DatabaseError as exc:
                 sys.stderr.write(
                     f"[work_items] WAL unavailable, using rollback: {exc}\n")

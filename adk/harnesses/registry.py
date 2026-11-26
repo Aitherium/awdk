@@ -64,6 +64,9 @@ class LaunchSpec:
     mcp_config: str = ""
     #: For ONESHOT_PER_TURN: the prompt for THIS turn.
     prompt: str = ""
+    #: For ONESHOT_PER_TURN with ``prompt_via_file=True``: path to a private
+    #: (0600) temp file holding the prompt so prompt text never rides in argv.
+    prompt_file: str = ""
     #: For RAW_STREAM/exec: target container or host.
     target: str = ""
     extra_args: list[str] = field(default_factory=list)
@@ -104,6 +107,11 @@ class HarnessSpec:
     #: (/proc/<pid>/cmdline, `ps`); stdin is not. ``build_argv`` must then leave
     #: ``launch.prompt`` out.
     prompt_on_stdin: bool = False
+    #: ONESHOT_PER_TURN only: the turn prompt is written to a private (0600)
+    #: per-turn file passed via ``launch.prompt_file`` and unlinked on turn exit,
+    #: for CLIs that accept a file flag (``aider --message-file``, ``opencode run
+    #: --file``) rather than reading the prompt from stdin.
+    prompt_via_file: bool = False
     #: Builds argv for a launch. Receives the spec itself for defaults.
     build_argv: Optional[Callable[["HarnessSpec", LaunchSpec], list[str]]] = None
     #: Encodes a user turn for STRUCTURED_BIDI stdin. Returns a line WITHOUT "\n".
@@ -256,37 +264,34 @@ def gemini_home() -> Path:
     return Path(raw) if raw else Path.home() / ".aither" / "harness-homes" / "gemini"
 
 
-def _gemini_home_key(home: Path) -> str:
-    """``GEMINI_API_KEY`` from the harness home's ``.gemini/.env`` ("" when absent)."""
-    try:
-        lines = (home / ".gemini" / ".env").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ""
-    for line in lines:
-        name, sep, value = line.strip().partition("=")
-        if sep and name.strip() == "GEMINI_API_KEY":
-            return value.strip().strip("\"'")
-    return ""
-
-
 def _gemini_env(env: dict[str, str]) -> None:
     if env.get("GEMINI_CLI_HOME") or env.get("GEMINI_API_KEY"):
         return  # the caller chose an auth path; respect it
     home = gemini_home()
     if (home / ".gemini" / "settings.json").is_file():
         env["GEMINI_CLI_HOME"] = str(home)
-        # Gemini CLI loads the FIRST .env it finds walking up from the working
-        # directory and never reaches the home's. A project .env without the key
-        # therefore shadows it and the turn exits 41 "must specify GEMINI_API_KEY".
-        # Hand the key to the child directly so the session's cwd cannot matter.
-        key = _gemini_home_key(home)
-        if key:
-            env["GEMINI_API_KEY"] = key
+
+
+def prompt_on_argv_forced() -> bool:
+    """Legacy opt-out: force oneshot harnesses to pass prompts via argv.
+
+    Default is False so user prompts, recalled memory and potential credentials
+    travel over stdin or a 0600 temp file rather than appearing in ``ps`` /
+    ``/proc/<pid>/cmdline``.
+    """
+    return (os.environ.get("AITHER_HARNESS_PROMPT_ON_ARGV") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _gemini_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
     # --skip-trust: headless runs exit 55 in any folder not trusted interactively.
-    argv = [spec.binary, "--skip-trust", "-o", "stream-json", "-p", launch.prompt]
+    # Default pipes the prompt on stdin (`-p ""`) so it never appears in argv/ps.
+    prompt_arg = launch.prompt if prompt_on_argv_forced() else ""
+    argv = [spec.binary, "--skip-trust", "-o", "stream-json", "-p", prompt_arg]
     if launch.model:
         argv += ["-m", launch.model]
     if launch.resume_session_id:
@@ -385,6 +390,7 @@ register(
     HarnessSpec(
         id="gemini",
         prompt_carries_context=True,
+        prompt_on_stdin=True,
         label="Gemini CLI",
         description="Google Gemini CLI — one process per turn, stream-json output",
         transport=Transport.ONESHOT_PER_TURN,
@@ -495,6 +501,11 @@ def _openclaw_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
     ``--local`` runs the embedded agent in this process tree; without it the turn goes
     through OpenClaw's Gateway daemon, which most boxes are not running. Set
     AITHER_HARNESS_OPENCLAW_GATEWAY=1 to route through the Gateway instead.
+
+    Upstream CLI note (verified 2026-11-26 against OpenClaw docs & ``agent --help``):
+    ``openclaw agent`` only accepts ``--message`` / ``-m`` (no stdin sentinel or
+    message-file flag exists upstream). When ``sandbox="openclaw"`` is running, the
+    argv lives inside the isolated ``sbx-openclaw-openclaw`` podman container namespace.
     """
     gateway = (os.environ.get("AITHER_HARNESS_OPENCLAW_GATEWAY") or "").strip().lower()
     argv = [spec.binary, "agent"]
@@ -586,14 +597,45 @@ def _hades_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
 
 
 def _hermes_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
-    """``hermes chat -q <prompt>``: one non-interactive query (Nous Research hermes-agent).
+    """``hermes chat --query-file -`` reads the prompt from stdin (never argv).
 
     Bare ``hermes`` opens its interactive TUI, which a one-shot turn cannot drive.
+    Nous Research ``hermes-agent`` documents ``--query-file -`` to read verbatim
+    from stdin (mutually exclusive with ``-q``). Set ``AITHER_HARNESS_PROMPT_ON_ARGV=1``
+    to fall back to legacy ``-q <prompt>``.
     """
     argv = [spec.binary, "chat"]
     if launch.model:
         argv += ["--model", launch.model]
-    return [*argv, "-q", launch.prompt]
+    if prompt_on_argv_forced():
+        return [*argv, "-q", launch.prompt]
+    return [*argv, "--query-file", "-"]
+
+
+def _codex_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """``codex exec --json -`` reads the turn prompt from stdin (never argv)."""
+    prompt_arg = launch.prompt if prompt_on_argv_forced() else "-"
+    return [spec.binary, "exec", "--json", prompt_arg]
+
+
+def _aider_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """``aider --message-file <0600-tmp>`` keeps the prompt out of argv/ps."""
+    if launch.prompt_file and not prompt_on_argv_forced():
+        return [spec.binary, "--no-pretty", "--yes", "--message-file", launch.prompt_file]
+    return [spec.binary, "--no-pretty", "--yes", "--message", launch.prompt]
+
+
+def _opencode_argv(spec: HarnessSpec, launch: LaunchSpec) -> list[str]:
+    """``opencode run --file <0600-tmp>`` keeps the prompt text out of argv/ps."""
+    base = [spec.binary, "run", *_opencode_format_argv()]
+    if launch.prompt_file and not prompt_on_argv_forced():
+        return [
+            *base,
+            "--file",
+            launch.prompt_file,
+            "Follow the instructions in the attached prompt file.",
+        ]
+    return [*base, launch.prompt]
 
 
 # Harnesses declared but not installed on every box. Declaring them means
@@ -603,6 +645,7 @@ for _late in (
     HarnessSpec(
         id="codex",
         prompt_carries_context=True,
+        prompt_on_stdin=True,
         label="OpenAI Codex CLI",
         description="OpenAI Codex CLI — one process per turn (codex exec --json)",
         transport=Transport.ONESHOT_PER_TURN,
@@ -613,11 +656,12 @@ for _late in (
         # under "text" every JSON line fell through to RAW and no call was harvestable
         adapter="codex",
         json_lines=True,
-        build_argv=lambda spec, launch: [spec.binary, "exec", "--json", launch.prompt],
+        build_argv=_codex_argv,
     ),
     HarnessSpec(
         id="aider",
         prompt_carries_context=True,
+        prompt_via_file=True,
         label="Aider",
         description="Aider — pair-programming CLI (one process per turn)",
         transport=Transport.ONESHOT_PER_TURN,
@@ -625,13 +669,12 @@ for _late in (
         version_argv=["--version"],
         install_hint="pip install aider-install && aider-install",
         adapter="text",
-        build_argv=lambda spec, launch: [
-            spec.binary, "--no-pretty", "--yes", "--message", launch.prompt,
-        ],
+        build_argv=_aider_argv,
     ),
     HarnessSpec(
         id="opencode",
         prompt_carries_context=True,
+        prompt_via_file=True,
         label="OpenCode",
         description="OpenCode — open-source coding agent (one process per turn)",
         transport=Transport.ONESHOT_PER_TURN,
@@ -642,8 +685,7 @@ for _late in (
         # non-JSON line is still assistant text, so AITHER_HARNESS_OPENCODE_FORMAT=default
         # (an old binary without --format) degrades to the previous plain-text session
         adapter="opencode",
-        build_argv=lambda spec, launch: [spec.binary, "run", *_opencode_format_argv(),
-                                         launch.prompt],
+        build_argv=_opencode_argv,
     ),
     HarnessSpec(
         id="openclaw",
@@ -678,6 +720,7 @@ for _late in (
     HarnessSpec(
         id="hermes",
         prompt_carries_context=True,
+        prompt_on_stdin=True,
         label="Hermes Agent",
         description="Nous Research Hermes agent — one non-interactive query per turn",
         transport=Transport.ONESHOT_PER_TURN,
