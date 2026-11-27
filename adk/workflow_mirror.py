@@ -61,6 +61,15 @@ DEFAULT_GATEWAY = "http://127.0.0.1:8182"
 RESULT_CAP = 16_000
 QUIET_SECONDS = 600
 ORPHAN_SECONDS = 6 * QUIET_SECONDS
+# An agent still open with no write to the journal OR its own transcript for this long is
+# taken as killed (#19402). The transcript is appended on every turn and tool result, so a
+# long build stays live; the verdict is also undone if the journal moves again.
+OPEN_AGENT_ORPHAN_SECONDS = 6 * 3600
+# A fleet mirror of THIS host, active, silent this long and absent from the tailer's
+# state, is closed as abandoned. Swept at most once per REAP_INTERVAL_SECONDS.
+ABANDON_SECONDS = 24 * 3600
+REAP_INTERVAL_SECONDS = 3600
+MIRROR_ID_PREFIX = f"mirror-{SOURCE}-"
 PROTOCOL_VERSION = "2025-06-18"
 JOURNAL_TYPES = ("launched", "started", "result", "failed")
 
@@ -429,6 +438,9 @@ class RunState:
     failed: int = 0
     finished: str = ""
     last_error: str = ""
+    # True when ``finished`` is the open-agent orphan verdict, which is undone if the
+    # journal grows again (the agent was slow, not dead).
+    orphaned: bool = False
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RunState":
@@ -502,16 +514,48 @@ def journal_to_events(entries: List[Dict[str, Any]], state: RunState) -> List[Di
     return events
 
 
+def run_activity_mtime(run_dir: Path) -> float:
+    """Newest write anywhere in the run: the journal or any agent's own transcript
+    (``agent-<id>.jsonl``, appended on every turn and tool result). 0.0 when none."""
+    newest = 0.0
+    run_dir = Path(run_dir)
+    for path in [run_dir / "journal.jsonl", *run_dir.glob("agent-*.jsonl")]:
+        try:
+            newest = max(newest, path.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
 def infer_terminal(
     state: RunState, journal_mtime: float, now: Optional[float] = None,
-    quiet: float = QUIET_SECONDS,
+    quiet: float = QUIET_SECONDS, activity_mtime: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """The terminal event a quiet journal implies, or None while the run may
-    still be going. Never called for a run already marked finished."""
-    if state.finished or state.open_agents:
+    still be going. Never called for a run already marked finished.
+
+    An agent that is killed writes no ``failed`` line, so a run whose agents never
+    all report back used to wait forever (wf_0233d88b-cc9: three open agents, 726 h
+    "active", #19402). The journal is written only when an agent starts or ends, so
+    it says nothing about an agent mid-build; ``activity_mtime`` (the newest agent
+    transcript write, see ``run_activity_mtime``) does. Open agents with no activity
+    for ``OPEN_AGENT_ORPHAN_SECONDS`` is a ``failed`` terminal that names them."""
+    if state.finished:
         return None
     now = time.time() if now is None else now
     age = now - journal_mtime
+    if state.open_agents:
+        idle = now - max(journal_mtime, activity_mtime or 0.0)
+        if idle < OPEN_AGENT_ORPHAN_SECONDS:
+            return None
+        labels = sorted(set(state.open_agents.values()))
+        named = ", ".join(labels[:10]) + (f" (+{len(labels) - 10} more)"
+                                          if len(labels) > 10 else "")
+        return {"type": "failed",
+                "message": (f"{len(state.open_agents)} agent(s) never reported back "
+                            f"({named}); {state.completed} completed, {state.failed} "
+                            f"failed; no journal or transcript write for {int(idle)}s, "
+                            f"run orphaned")}
     if state.started == 0:
         if state.failed > 0 and age >= quiet:
             return {"type": "failed", "message": "workflow failed before any agent started"}
@@ -638,6 +682,11 @@ def save_states(states: Dict[str, RunState]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def host_name() -> str:
+    """The host a mirror is stamped with (``mirror_host``); the sweep judges only these."""
+    return os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "localhost"
+
+
 def ensure_expedition(client: GatewayClient, run_id: str, record: Optional[Dict[str, Any]],
                       transcript_dir: str = "") -> str:
     meta = (record or {}).get("meta") or {}
@@ -652,7 +701,7 @@ def ensure_expedition(client: GatewayClient, run_id: str, record: Optional[Dict[
         "phases_json": json.dumps(normalize_phases(meta.get("phases"))),
         "script_sha256": str((record or {}).get("sha") or ""),
         "transcript_dir": transcript_dir or str((record or {}).get("transcript_dir") or ""),
-        "host": os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "localhost",
+        "host": host_name(),
     })
     exp_id = str(res.get("expedition_id") or "")
     if not exp_id:
@@ -688,10 +737,19 @@ def bind_run(run_id: str, session_id: str, transcript_dir: str,
 
 def mirror_run(client: GatewayClient, run_dir: Path, state: RunState,
                record: Optional[Dict[str, Any]], now: Optional[float] = None) -> int:
-    """Post everything new for one run. Returns the number of events posted."""
-    if state.finished:
+    """Post everything new for one run. Returns the number of events posted.
+
+    A run closed by the orphan verdict is reopened when its journal grows again: the
+    agent was slow, not dead. ``expedition_mirror_create`` reopens a FAILED mirror in
+    place, so the later events land on a live expedition instead of a closed one."""
+    if state.finished and not state.orphaned:
         return 0
     entries = read_journal(run_dir)
+    if state.finished:
+        if len(entries) <= state.cursor:
+            return 0
+        state.finished, state.orphaned = "", False
+        state.expedition_id = ensure_expedition(client, state.run_id, record)
     if not entries and state.cursor == 0:
         return 0
     if not state.expedition_id:
@@ -704,20 +762,99 @@ def mirror_run(client: GatewayClient, run_dir: Path, state: RunState,
         mtime = (Path(run_dir) / "journal.jsonl").stat().st_mtime
     except OSError:
         mtime = time.time() if now is None else now
-    terminal = infer_terminal(state, mtime, now)
+    terminal = infer_terminal(state, mtime, now, activity_mtime=run_activity_mtime(run_dir))
     if terminal:
         client.call("expedition_mirror_event",
                     {"run_id": state.run_id, "source": SOURCE, "ts": utc_now(), **terminal})
+        state.orphaned = bool(state.open_agents)
         state.finished = terminal["type"]
         posted += 1
     return posted
 
 
+def _parse_ts(value: Any) -> Optional[float]:
+    """An ISO timestamp as epoch seconds; a naive one is UTC (the fleet writes
+    ``datetime.utcnow().isoformat()``). None when it will not parse."""
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.timestamp()
+
+
+def reap_lost_mirrors(client: GatewayClient, states: Dict[str, RunState],
+                      now: Optional[float] = None, host: Optional[str] = None,
+                      abandon_s: float = ABANDON_SECONDS) -> Dict[str, Any]:
+    """Close this host's fleet mirrors that the tailer has lost (#19402).
+
+    A mirror is closed as ``failed`` ("abandoned") only when ALL hold: it is active,
+    its ``mirror_host`` is this host, its run is not one the tailer still follows
+    (``states``, unfinished), and it has shown no sign of life -- event stamp, create
+    stamp, row update -- for ``abandon_s``. The state file being quarantined or the
+    journal deleted (wf_0233d88b-cc9) is exactly the case where only this join can
+    see the row. Uses the 12-character run-id prefix the expedition id carries; the
+    fleet resolves events and status by it. Returns {reaped, kept, foreign}.
+    """
+    clock = time.time() if now is None else now
+    me = host_name() if host is None else host
+    live = {rid[:12] for rid, st in states.items() if not st.finished}
+    listing = client.call("expedition_list", {"status": "active", "limit": 1000})
+    out: Dict[str, Any] = {"reaped": [], "kept": 0, "foreign": 0}
+    for row in listing.get("expeditions") or []:
+        exp_id = str((row or {}).get("id") or "")
+        if not exp_id.startswith(MIRROR_ID_PREFIX):
+            continue
+        prefix = exp_id[len(MIRROR_ID_PREFIX):]
+        if prefix in live:
+            out["kept"] += 1
+            continue
+        status = client.call("expedition_mirror_status", {"run_id": prefix, "source": SOURCE})
+        meta = status.get("metadata") or {}
+        if str(meta.get("mirror_host") or "") != me:
+            out["foreign"] += 1
+            continue
+        seen = [t for t in (_parse_ts(meta.get("mirror_last_event_at")),
+                            _parse_ts(meta.get("mirror_created_at")),
+                            _parse_ts(row.get("updated_at")),
+                            _parse_ts(row.get("created_at"))) if t is not None]
+        if not seen or clock - max(seen) < abandon_s:
+            out["kept"] += 1
+            continue
+        idle_h = int((clock - max(seen)) // 3600)
+        run_id = str(meta.get("mirror_run_id") or prefix)
+        client.call("expedition_mirror_event", {
+            "run_id": prefix, "source": SOURCE, "ts": utc_now(), "type": "failed",
+            "message": (f"abandoned: no mirror event for {idle_h} h and the {me} tailer "
+                        f"no longer follows run {run_id}"),
+        })
+        out["reaped"].append(run_id)
+    return out
+
+
+def reap_path() -> Path:
+    return state_dir() / "reap.json"
+
+
+def _reap_enabled(reap: Optional[bool]) -> bool:
+    if reap is not None:
+        return reap
+    return os.environ.get("AITHER_WORKFLOW_MIRROR_REAP", "1") not in ("0", "false", "no")
+
+
 def scan_and_mirror(root: Optional[Path] = None, gateway_url: str = DEFAULT_GATEWAY,
                     client: Optional[GatewayClient] = None,
-                    now: Optional[float] = None) -> Dict[str, Any]:
+                    now: Optional[float] = None,
+                    reap: Optional[bool] = None) -> Dict[str, Any]:
     """One pass over every run under ``root``. Never raises; the summary names
-    each run that failed and why, so a dark mirror is visible in the log."""
+    each run that failed and why, so a dark mirror is visible in the log.
+
+    At most once per ``REAP_INTERVAL_SECONDS`` the pass also sweeps this host's lost
+    mirrors (``reap_lost_mirrors``); ``reap=False`` or
+    ``AITHER_WORKFLOW_MIRROR_REAP=0`` turns that off."""
     summary: Dict[str, Any] = {"runs": 0, "events": 0, "errors": {}}
     states = load_states()
     runs = read_runs()
@@ -739,7 +876,7 @@ def scan_and_mirror(root: Optional[Path] = None, gateway_url: str = DEFAULT_GATE
         summary["runs"] += 1
         state = states.get(run_id) or RunState(run_id=run_id)
         states[run_id] = state
-        if state.finished:
+        if state.finished and not state.orphaned:
             continue
         try:
             if cli is None:
@@ -751,6 +888,22 @@ def scan_and_mirror(root: Optional[Path] = None, gateway_url: str = DEFAULT_GATE
             summary["errors"][run_id] = state.last_error
             log.warning("mirror %s: %s", run_id, exc)
             if isinstance(exc, MirrorError) and "bearer" in str(exc):
+                summary["bearer_refused"] = True
                 break  # every further call would fail the same way
     save_states(states)
+    last_reap = float((_read_json(reap_path(), {}) or {}).get("last") or 0.0)
+    if (_reap_enabled(reap) and not summary.get("bearer_refused")
+            and clock - last_reap >= REAP_INTERVAL_SECONDS):
+        record: Dict[str, Any] = {"last": clock}
+        try:
+            if cli is None:
+                cli = GatewayClient(gateway_url)
+            swept = reap_lost_mirrors(cli, states, now=clock)
+            summary["reaped"] = swept["reaped"]
+            record.update(swept)
+        except (MirrorError, OSError, ValueError) as exc:
+            # Stamped either way: a fleet without the tools must not be asked every pass.
+            record["error"] = summary["errors"]["reap"] = str(exc)[:300]
+            log.warning("mirror reap: %s", exc)
+        _write_json(reap_path(), record)
     return summary

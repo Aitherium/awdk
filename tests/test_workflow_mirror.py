@@ -31,6 +31,8 @@ const x = 1
 def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv("AITHER_WORKFLOW_MIRROR_DIR", str(tmp_path / "mirror-state"))
     monkeypatch.setattr(wm, "read_bearer", lambda: "test-bearer")
+    # The lost-mirror sweep is exercised by its own tests with reap=True.
+    monkeypatch.setenv("AITHER_WORKFLOW_MIRROR_REAP", "0")
 
 
 class FakeGateway(wm.GatewayClient):
@@ -162,9 +164,159 @@ def test_unknown_journal_type_becomes_log_not_silence():
 
 def test_infer_terminal_waits_while_agents_open_or_journal_fresh():
     st = wm.RunState(run_id="r", started=1, open_agents={"k": "l"})
-    assert wm.infer_terminal(st, journal_mtime=0, now=10_000) is None
+    assert wm.infer_terminal(st, journal_mtime=0,
+                             now=wm.OPEN_AGENT_ORPHAN_SECONDS - 1) is None
     st = wm.RunState(run_id="r", started=1, completed=1)
     assert wm.infer_terminal(st, journal_mtime=10_000 - 5, now=10_000) is None
+
+
+def test_infer_terminal_fails_an_orphaned_run_and_names_open_agents():
+    # #19402: three agents killed without a "failed" line kept wf_0233d88b-cc9 active 726 h.
+    st = wm.RunState(run_id="r", started=11, completed=1, failed=6,
+                     open_agents={"v2:a": "build:edge-stretch", "v2:b": "build:cc5-look",
+                                  "v2:c": "verify:cc5-look"})
+    ev = wm.infer_terminal(st, journal_mtime=0, now=wm.OPEN_AGENT_ORPHAN_SECONDS + 1)
+    assert ev["type"] == "failed"
+    for label in ("build:edge-stretch", "build:cc5-look", "verify:cc5-look"):
+        assert label in ev["message"]
+    assert "3 agent(s) never reported back" in ev["message"]
+
+
+def test_infer_terminal_keeps_a_long_agent_alive_by_its_transcript():
+    # Review #19408: the journal is silent while an agent builds for hours; its own
+    # transcript is not. A day-old journal with a fresh transcript is still running.
+    st = wm.RunState(run_id="r", started=1, open_agents={"v2:a": "build:long"})
+    now = 10 * wm.OPEN_AGENT_ORPHAN_SECONDS
+    assert wm.infer_terminal(st, journal_mtime=0, now=now, activity_mtime=now - 60) is None
+    assert wm.infer_terminal(st, journal_mtime=0, now=now,
+                             activity_mtime=now - wm.OPEN_AGENT_ORPHAN_SECONDS - 1)["type"] \
+        == "failed"
+
+
+def test_run_activity_mtime_reads_agent_transcripts(tmp_path):
+    run_dir = tmp_path / "wf_act_123456"
+    _journal(run_dir, [{"type": "launched"}], mtime=1_000)
+    assert wm.run_activity_mtime(run_dir) == 1_000
+    t = run_dir / "agent-a1.jsonl"
+    t.write_text("{}\n", encoding="utf-8")
+    import os
+    os.utime(t, (5_000, 5_000))
+    assert wm.run_activity_mtime(run_dir) == 5_000
+    assert wm.run_activity_mtime(tmp_path / "missing") == 0.0
+
+
+def _two_agent_run(run_dir, mtime):
+    return _journal(run_dir, [
+        {"type": "launched"},
+        {"type": "started", "key": "v2:a", "agentId": "a1", "label": "build:x"},
+    ], mtime=mtime)
+
+
+def test_mirror_run_posts_orphan_terminal_and_reopens_when_the_journal_moves(tmp_path):
+    run_dir = tmp_path / "wf_orphan_1234"
+    _two_agent_run(run_dir, mtime=1_000)
+    gw = FakeGateway()
+    st = wm.RunState(run_id="wf_orphan_1234")
+    wm.mirror_run(gw, run_dir, st, None, now=1_000 + wm.OPEN_AGENT_ORPHAN_SECONDS + 5)
+    terminal = [a for n, a in gw.calls if n == "expedition_mirror_event"][-1]
+    assert terminal["type"] == "failed" and "build:x" in terminal["message"]
+    assert st.finished == "failed" and st.orphaned is True
+
+    # Nothing new: stays closed, nothing posted.
+    gw.calls.clear()
+    assert wm.mirror_run(gw, run_dir, st, None, now=2 * wm.OPEN_AGENT_ORPHAN_SECONDS) == 0
+    assert gw.calls == []
+
+    # The "dead" agent reports after all: the mirror is reopened and the result lands.
+    j = run_dir / "journal.jsonl"
+    with open(j, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "result", "key": "v2:a", "agentId": "a1",
+                             "result": "built"}) + "\n")
+    now = j.stat().st_mtime + 1
+    wm.mirror_run(gw, run_dir, st, None, now=now)
+    names = [n for n, _ in gw.calls]
+    assert names[0] == "expedition_mirror_create"
+    assert [a["type"] for n, a in gw.calls if n == "expedition_mirror_event"] == ["agent_result"]
+    assert st.finished == "" and st.orphaned is False and st.open_agents == {}
+
+
+class SweepGateway(FakeGateway):
+    """Answers expedition_list / expedition_mirror_status from a fixed fleet view."""
+
+    def __init__(self, rows, statuses):
+        super().__init__()
+        self.rows = rows
+        self.statuses = statuses
+
+    def call(self, name, arguments):
+        if name == "expedition_list":
+            self.calls.append((name, arguments))
+            return {"expeditions": self.rows}
+        if name == "expedition_mirror_status":
+            self.calls.append((name, arguments))
+            return self.statuses[arguments["run_id"]]
+        return super().call(name, arguments)
+
+
+def _row(prefix, updated="2026-10-28T01:42:00"):
+    return {"id": wm.MIRROR_ID_PREFIX + prefix, "status": "active",
+            "created_at": updated, "updated_at": updated}
+
+
+def _status(run_id, host, last=None):
+    meta = {"mirror_host": host, "mirror_run_id": run_id,
+            "mirror_created_at": "2026-10-28T01:42:00"}
+    if last:
+        meta["mirror_last_event_at"] = last
+    return {"metadata": meta}
+
+
+NOW = 1795770000.0  # 2026-11-27, 726 h after the wf_0233d88b-cc9 create
+
+
+def test_reap_closes_only_this_hosts_lost_and_silent_mirrors():
+    # Expedition ids carry run_id[:12]; every prefix here is 12 characters.
+    lost, live, foreign, fresh = "wf_0233d88b-", "wf_live0000-", "wf_othe0000-", "wf_fres0000-"
+    assert {len(p) for p in (lost, live, foreign, fresh)} == {12}
+    gw = SweepGateway(
+        rows=[_row(lost), _row(live), _row(foreign), _row(fresh),
+              {"id": "exp-not-a-mirror", "status": "active"}],
+        statuses={lost: _status("wf_0233d88b-cc9", "HOST-A"),
+                  foreign: _status("wf_othe0000-1", "HOST-B"),
+                  fresh: _status("wf_fres0000-1", "HOST-A",
+                                 last=time.strftime("%Y-%m-%dT%H:%M:%S",
+                                                    time.gmtime(NOW - 3600)))})
+    states = {"wf_live0000-abc": wm.RunState(run_id="wf_live0000-abc")}
+    out = wm.reap_lost_mirrors(gw, states, now=NOW, host="HOST-A")
+    assert out == {"reaped": ["wf_0233d88b-cc9"], "kept": 2, "foreign": 1}
+    posted = [a for n, a in gw.calls if n == "expedition_mirror_event"]
+    assert len(posted) == 1 and posted[0]["run_id"] == lost
+    assert posted[0]["type"] == "failed" and posted[0]["message"].startswith("abandoned:")
+    # The live run is never even looked up: the tailer still owns it.
+    assert ("expedition_mirror_status", {"run_id": live, "source": wm.SOURCE}) not in gw.calls
+
+
+def test_scan_sweeps_at_most_once_per_interval(tmp_path):
+    lost = "wf_0233d88b-"
+    gw = SweepGateway(rows=[_row(lost)],
+                      statuses={lost: _status("wf_0233d88b-cc9", wm.host_name())})
+    root = tmp_path / "projects"
+    root.mkdir()
+    s1 = wm.scan_and_mirror(root=root, client=gw, now=NOW, reap=True)
+    assert s1["reaped"] == ["wf_0233d88b-cc9"]
+    gw.calls.clear()
+    s2 = wm.scan_and_mirror(root=root, client=gw, now=NOW + 60, reap=True)
+    assert "reaped" not in s2 and gw.calls == []
+    s3 = wm.scan_and_mirror(root=root, client=gw, now=NOW + wm.REAP_INTERVAL_SECONDS, reap=True)
+    assert s3["reaped"] == ["wf_0233d88b-cc9"]
+
+
+def test_scan_reap_failure_is_reported_not_raised(tmp_path):
+    root = tmp_path / "projects"
+    root.mkdir()
+    gw = FakeGateway(unknown_tools=("expedition_list",))
+    out = wm.scan_and_mirror(root=root, client=gw, now=NOW, reap=True)
+    assert "Unknown tool" in out["errors"]["reap"]
 
 
 def test_infer_terminal_completed_and_failed_shapes():

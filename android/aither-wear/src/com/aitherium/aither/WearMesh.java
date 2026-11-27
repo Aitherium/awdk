@@ -73,10 +73,12 @@ final class WearMesh {
         byte[] audio;
     }
 
+    private final Context ctx;
     private final SharedPreferences p;
 
     WearMesh(Context c) {
-        p = c.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        ctx = c.getApplicationContext();
+        p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     String hub() {
@@ -93,8 +95,24 @@ final class WearMesh {
         return p.getString("token", "");
     }
 
-    boolean paired() {
+    boolean directPaired() {
         return !hub().isEmpty() && MeshRemote.validToken(token());
+    }
+
+    private String wearBearer() {
+        try {
+            return new WearApi(ctx).token();
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    boolean cloudSignedIn() {
+        return !wearBearer().isEmpty();
+    }
+
+    boolean paired() {
+        return directPaired() || cloudSignedIn();
     }
 
     /** "cloud" | "auto" | "dgx-spark" | "pc" | "optiplex". */
@@ -142,27 +160,50 @@ final class WearMesh {
         return list;
     }
 
+    private static List<Node> parseNodes(String body) throws Exception {
+        List<Node> out = new ArrayList<>();
+        JSONObject j = new JSONObject(body);
+        JSONArray arr = j.optJSONArray("nodes");
+        if (arr == null) arr = j.optJSONArray("peers");
+        for (int i = 0; arr != null && i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            out.add(new Node(o.optString("id", ""), o.optString("name", o.optString("label", o.optString("id", ""))),
+                    o.optBoolean("online", false), o.optString("posture", ""),
+                    o.optString("llm_model", o.optString("model", ""))));
+        }
+        return out;
+    }
+
     List<Node> nodes(String[] errOut) {
         List<Node> out = new ArrayList<>();
         if (!paired()) {
-            if (errOut != null && errOut.length > 0) errOut[0] = "Pair a mesh token first.";
+            if (errOut != null && errOut.length > 0) errOut[0] = "Sign in on watch or pair a mesh token first.";
             return out;
         }
         String last = "No mesh hub answered.";
-        for (String h : hubs()) {
-            try {
-                Resp r = call("GET", h + "/api/nodes", null, 4000, 8000);
-                if (r.code != 200) { last = "Hub answered " + r.code; continue; }
-                JSONArray arr = new JSONObject(r.body).optJSONArray("nodes");
-                for (int i = 0; arr != null && i < arr.length(); i++) {
-                    JSONObject o = arr.optJSONObject(i);
-                    if (o == null) continue;
-                    out.add(new Node(o.optString("id", ""), o.optString("name", o.optString("id", "")),
-                            o.optBoolean("online", false), o.optString("posture", ""),
-                            o.optString("llm_model", o.optString("model", ""))));
+        if (directPaired()) {
+            for (String h : hubs()) {
+                try {
+                    Resp r = call("GET", h + "/api/nodes", null, 4000, 8000);
+                    if (r.code != 200) { last = "Hub answered " + r.code; continue; }
+                    out = parseNodes(r.body);
+                    if (errOut != null && errOut.length > 0) errOut[0] = "";
+                    return out;
+                } catch (Exception e) {
+                    last = e.getClass().getSimpleName();
                 }
-                if (errOut != null && errOut.length > 0) errOut[0] = "";
-                return out;
+            }
+        }
+        if (cloudSignedIn()) {
+            try {
+                Resp r = cloudCall("GET", WearApi.API + "/api/ecosystem/voice-remote/nodes", null, 6000, 15000);
+                if (r.code == 200) {
+                    out = parseNodes(r.body);
+                    if (errOut != null && errOut.length > 0) errOut[0] = "";
+                    return out;
+                }
+                last = "Relay answered " + r.code;
             } catch (Exception e) {
                 last = e.getClass().getSimpleName();
             }
@@ -173,23 +214,45 @@ final class WearMesh {
 
     Reply chat(String text, String node, boolean speak) {
         Reply out = new Reply();
-        if (!paired()) { out.error = "Mesh not paired."; return out; }
+        if (!paired()) { out.error = "Sign in on watch or pair mesh."; return out; }
         String body = MeshRemote.chatBody(text, node, speak);
         String last = "No mesh hub answered.";
-        for (String h : hubs()) {
-            try {
-                Resp r = call("POST", h + "/api/chat", body, 4000, 60000);
-                if (r.code != 200) { last = "Mesh answered " + r.code; continue; }
-                JSONObject j = new JSONObject(r.body);
-                out.ok = true;
-                out.reply = j.optString("reply", "").trim();
-                out.node = j.optString("node", node);
-                out.model = j.optString("model", "");
-                String b64 = j.optString("audio_b64", "");
-                if (!b64.isEmpty()) {
-                    try { out.audio = Base64.decode(b64, Base64.DEFAULT); } catch (Exception ignored) {}
+        if (directPaired()) {
+            for (String h : hubs()) {
+                try {
+                    Resp r = call("POST", h + "/api/chat", body, 4000, 60000);
+                    if (r.code != 200) { last = "Mesh answered " + r.code; continue; }
+                    JSONObject j = new JSONObject(r.body);
+                    out.ok = true;
+                    out.reply = j.optString("reply", "").trim();
+                    out.node = j.optString("node", j.optString("target", node));
+                    out.model = j.optString("model", "");
+                    String b64 = j.optString("audio_b64", j.optString("audio_wav_b64", ""));
+                    if (!b64.isEmpty()) {
+                        try { out.audio = Base64.decode(b64, Base64.DEFAULT); } catch (Exception ignored) {}
+                    }
+                    return out;
+                } catch (Exception e) {
+                    last = e.getClass().getSimpleName();
                 }
-                return out;
+            }
+        }
+        if (cloudSignedIn()) {
+            try {
+                Resp r = cloudCall("POST", WearApi.API + "/api/ecosystem/voice-remote/ask", body, 6000, 60000);
+                if (r.code == 200) {
+                    JSONObject j = new JSONObject(r.body);
+                    out.ok = true;
+                    out.reply = j.optString("reply", "").trim();
+                    out.node = j.optString("target", j.optString("node", node));
+                    out.model = j.optString("model", "");
+                    String b64 = j.optString("audio_wav_b64", j.optString("audio_b64", ""));
+                    if (!b64.isEmpty()) {
+                        try { out.audio = Base64.decode(b64, Base64.DEFAULT); } catch (Exception ignored) {}
+                    }
+                    return out;
+                }
+                last = "Relay answered " + r.code;
             } catch (Exception e) {
                 last = e.getClass().getSimpleName();
             }
@@ -199,23 +262,73 @@ final class WearMesh {
     }
 
     String setPosture(String posture, String node) {
-        if (!paired()) return "Pair a mesh token first.";
+        if (!paired()) return "Sign in on watch or pair mesh first.";
         String body = MeshRemote.postureBody(posture, node);
         if (body.isEmpty()) return "Unknown posture.";
         String last = "No mesh hub answered.";
-        for (String h : hubs()) {
+        if (directPaired()) {
+            for (String h : hubs()) {
+                try {
+                    Resp r = call("POST", h + "/api/posture", body, 4000, 45000);
+                    if (r.code == 200) {
+                        JSONObject j = new JSONObject(r.body);
+                        return j.optString("message", j.optString("detail", posture + " applied"));
+                    }
+                    last = "Mesh answered " + r.code;
+                } catch (Exception e) {
+                    last = e.getClass().getSimpleName();
+                }
+            }
+        }
+        if (cloudSignedIn()) {
             try {
-                Resp r = call("POST", h + "/api/posture", body, 4000, 45000);
+                Resp r = cloudCall("POST", WearApi.API + "/api/ecosystem/voice-remote/posture", body, 6000, 65000);
                 if (r.code == 200) {
                     JSONObject j = new JSONObject(r.body);
                     return j.optString("message", j.optString("detail", posture + " applied"));
                 }
-                last = "Mesh answered " + r.code;
+                last = "Relay answered " + r.code;
             } catch (Exception e) {
                 last = e.getClass().getSimpleName();
             }
         }
         return last;
+    }
+
+    private Resp cloudCall(String method, String urlStr, String jsonBody, int connMs, int readMs) throws Exception {
+        URL u = new URL(urlStr);
+        HttpsURLConnection c = (HttpsURLConnection) u.openConnection();
+        c.setRequestMethod(method);
+        c.setConnectTimeout(connMs);
+        c.setReadTimeout(readMs);
+        c.setInstanceFollowRedirects(false);
+        c.setRequestProperty("Authorization", "Bearer " + wearBearer());
+        c.setRequestProperty("Accept", "application/json");
+        try {
+            if (jsonBody != null) {
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                byte[] bytes = jsonBody.getBytes(StandardCharsets.UTF_8);
+                c.setFixedLengthStreamingMode(bytes.length);
+                try (OutputStream o = c.getOutputStream()) { o.write(bytes); }
+            }
+            int code = c.getResponseCode();
+            InputStream in = code < 400 ? c.getInputStream() : c.getErrorStream();
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            if (in != null) {
+                try (InputStream i = in) {
+                    byte[] b = new byte[16384];
+                    int n;
+                    while ((n = i.read(b)) > 0) {
+                        if (buf.size() + n > (12 << 20)) throw new IOException("too large");
+                        buf.write(b, 0, n);
+                    }
+                }
+            }
+            return new Resp(code, buf.toString("UTF-8"));
+        } finally {
+            c.disconnect();
+        }
     }
 
     private static final class Resp {

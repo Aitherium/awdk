@@ -935,6 +935,37 @@ def _entry_matches(
     return False, man
 
 
+def _swarm_status_snapshot(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Read-only local Swarm + awsh harness readiness advertised in ``awconnect status``."""
+    e = os.environ if env is None else env
+    harness_url = (e.get("AITHER_HARNESS_URL") or "http://127.0.0.1:8362").strip().rstrip("/")
+    genesis_url = (e.get("AITHER_SWARM_API_URL") or e.get("AITHER_GENESIS_URL") or "").strip().rstrip("/")
+    if not genesis_url:
+        try:
+            from adk.control_plane import genesis_data_base  # noqa: PLC0415
+
+            genesis_url = genesis_data_base().rstrip("/")
+        except Exception:  # noqa: BLE001
+            genesis_url = "https://api.aitherium.com/api/bridge/genesis"
+    ui_url = (e.get("AITHER_SWARM_UI_URL") or "https://app.aitherium.com/swarm").strip()
+    harnesses: List[str] = []
+    try:
+        from adk.harnesses.registry import detect as _detect_harness
+
+        for hid in ("claude", "codex", "gemini", "aither", "awdk"):
+            if _detect_harness(hid).get("available"):
+                harnesses.append(hid)
+    except Exception:  # noqa: BLE001
+        harnesses = []
+    return {
+        "ui_url": ui_url,
+        "swarms_endpoint": f"{genesis_url}/swarms",
+        "harness_url": harness_url,
+        "local_harnesses": harnesses,
+        "swarm_ready": bool(harnesses),
+    }
+
+
 def status(
     env: Optional[Dict[str, str]] = None, browsers: Optional[List[Browser]] = None
 ) -> Dict[str, Any]:
@@ -1006,6 +1037,7 @@ def status(
             }
             for b in browsers
         ],
+        "swarm": _swarm_status_snapshot(env),
     }
 
 
