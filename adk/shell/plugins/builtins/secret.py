@@ -93,6 +93,10 @@ def _parse_flags(args: List[str]) -> tuple[List[str], Dict[str, Any]]:
                 flags["overwrite"] = True
                 i += 1
                 continue
+            if key in ("dry-run", "keep-old"):
+                flags[key.replace("-", "_")] = True
+                i += 1
+                continue
             # Value flags
             if i + 1 < len(args):
                 flags[key] = args[i + 1]
@@ -122,12 +126,19 @@ _HELP = """\
   /secret ls
       List all secret names (no values).
 
+  /secret drivers
+      List managed external API key rotation drivers (auto & assisted).
+
+  /secret rotate <NAME> --driver <gcp_apikey|cloudflare_token|discord_bot|deepseek|github_pat> [--project <ID>] [--dry-run] [--keep-old]
+      Run managed rotation (mint -> live-verify -> store -> revoke old).
+
 Examples:
   /secret gen GITHUB_WEBHOOK_SECRET
   /secret gen GITHUB_WEBHOOK_SECRET --rotate
   /secret gen JWT_KEY --length 64 --format hex
   /secret set GITHUB_APP_ID 1234567
   /secret get GITHUB_WEBHOOK_SECRET
+  /secret rotate GEMINI_API_KEY --driver gcp_apikey --project gen-lang-client-0770506509 --dry-run
 """
 
 
@@ -167,6 +178,10 @@ class Secret(SlashCommand):
                 return await self._get(url, rest)
             if sub in ("ls", "list"):
                 return await self._list(url)
+            if sub in ("drivers", "rotation-drivers"):
+                return await self._drivers(url)
+            if sub in ("rotate", "rot"):
+                return await self._rotate(url, rest, flags)
             return f"Unknown subcommand: {sub}\n\n{_HELP}"
         except httpx.HTTPError as e:
             return f"[!!] AitherSecrets request failed: {e}\n     URL: {url}"
@@ -311,3 +326,64 @@ class Secret(SlashCommand):
         if names and isinstance(names[0], dict):
             names = [n.get("name", str(n)) for n in names]
         return "Secrets in vault:\n" + "\n".join(f"  - {n}" for n in sorted(names))
+
+    async def _drivers(self, url: str) -> str:
+        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
+            resp = await client.get(f"{url}/v1/rotation/drivers", headers=_headers())
+            resp.raise_for_status()
+            data = resp.json()
+        drivers = data.get("drivers", []) if isinstance(data, dict) else []
+        if not drivers:
+            return "(no rotation drivers registered)"
+        lines = ["Managed rotation drivers:"]
+        for d in drivers:
+            lines.append(
+                f"  - {d.get('name')} [{d.get('tier')}]: {d.get('description', '')}"
+            )
+        return "\n".join(lines)
+
+    async def _rotate(self, url: str, rest: List[str], flags: Dict[str, Any]) -> str:
+        if not rest or not flags.get("driver"):
+            return (
+                "Usage: /secret rotate <NAME> --driver <driver> "
+                "[--project <gcp_project_id>] [--dry-run] [--keep-old]"
+            )
+        name = rest[0]
+        driver = str(flags["driver"])
+        dry_run = bool(flags.get("dry_run", False))
+        revoke_old = not bool(flags.get("keep_old", False))
+        config: Dict[str, Any] = {}
+        if flags.get("project"):
+            config["project_id"] = str(flags["project"])
+        if flags.get("old-key-id"):
+            config["old_key_id"] = str(flags["old-key-id"])
+
+        async with httpx.AsyncClient(timeout=60.0, verify=tls_verify()) as client:
+            resp = await client.post(
+                f"{url}/v1/rotation/rotate/{name}",
+                json={
+                    "driver": driver,
+                    "dry_run": dry_run,
+                    "revoke_old": revoke_old,
+                    "config": config,
+                },
+                headers=_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        status = "[OK]" if data.get("ok") else "[!!]"
+        lines = [
+            f"{status} Rotation {name} ({driver} / {data.get('tier')}) -> phase={data.get('phase')}",
+        ]
+        if data.get("old_fingerprint") or data.get("new_fingerprint"):
+            lines.append(
+                f"  fingerprints: {data.get('old_fingerprint') or 'none'} -> {data.get('new_fingerprint') or 'none'}"
+            )
+        if data.get("portal_url") and data.get("phase") == "assisted_required":
+            lines.append(f"  portal: {data['portal_url']}")
+        for step in data.get("next_steps") or data.get("steps") or []:
+            lines.append(f"  • {step}")
+        if data.get("error"):
+            lines.append(f"  error: {data['error']}")
+        return "\n".join(lines)
