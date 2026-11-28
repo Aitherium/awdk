@@ -225,6 +225,37 @@ class SpawnRequest:
     #: flag is intent, not a mention, so it is not "addressed"; the admission gate
     #: treats the two differently.
     addressed: bool = True
+    #: Optional SwarmBoard slot/pool/scope/worktree metadata (M1.2).
+    slot_id: str = ""
+    member_id: str = ""
+    pool: str = ""
+    owns: Tuple[str, ...] = ()
+    must_not_touch: Tuple[str, ...] = ()
+    sibling_digests: Tuple[str, ...] = ()
+    worktree_path: str = ""
+    lease_ids: Tuple[str, ...] = ()
+
+
+def _tuple_strs(raw: Any) -> Tuple[str, ...]:
+    if not raw:
+        return ()
+    if isinstance(raw, str):
+        s = raw.strip()
+        return (s,) if s else ()
+    out: List[str] = []
+    if isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            if isinstance(item, dict):
+                slot = str(item.get("slot_id") or item.get("owner") or item.get("thread_id") or "").strip()
+                title = str(item.get("title") or item.get("summary") or "").strip()
+                owns = item.get("owns") or []
+                owns_txt = f" owns={','.join(str(x) for x in owns)}" if owns else ""
+                txt = f"{slot}: {title}{owns_txt}".strip(": ").strip()
+            else:
+                txt = str(item or "").strip()
+            if txt:
+                out.append(txt)
+    return tuple(out)
 
 
 class ThreadRouter:
@@ -256,6 +287,8 @@ class ThreadRouter:
         lru_size: int = DEFAULT_LRU_SIZE,
         now: Callable[[], float] = time.time,
         status_file: Optional[Path] = None,
+        swarm_registry: Any = None,
+        swarm_owned_predicate: Optional[Callable[[Dict[str, Any]], bool]] = None,
     ) -> None:
         if thread_subscriptions is None:
             raise ValueError("ThreadRouter needs a ThreadSubscriptions table")
@@ -291,6 +324,8 @@ class ThreadRouter:
         self._lru_size = max(1, int(lru_size))
         self._now = now
         self._status_file = status_file or status_path()
+        self._swarm_registry = swarm_registry
+        self._swarm_owned_predicate = swarm_owned_predicate
 
         self._lock = threading.Lock()
         #: Serializes the check-spawn-subscribe sequence so two events racing on one
@@ -306,6 +341,8 @@ class ThreadRouter:
         #: subscription write for did NOT land. Without this the thread looks unowned
         #: on the next event and a burst would spawn a worker per event up to the cap.
         self._claimed_threads: Dict[Tuple[str, str], str] = {}
+        #: ``(surface, thread_id, slot_id) -> worker_id`` for multi-worker/slot threads.
+        self._spawned_slots: Dict[Tuple[str, str, str], str] = {}
 
         self._routed_count = 0
         self._refused_count = 0
@@ -355,6 +392,41 @@ class ThreadRouter:
         if outcome is not None:
             self._publish_receipt(room, event, outcome)
 
+    def _is_swarm_owned(
+        self,
+        event: Dict[str, Any],
+        surface: str,
+        thread_id: str,
+        slot_id: str,
+        swarm_id: str,
+    ) -> bool:
+        if self._swarm_owned_predicate is not None:
+            try:
+                if self._swarm_owned_predicate(event):
+                    return True
+            except Exception as exc:  # noqa: BLE001
+                self._note_error(
+                    f"swarm_owned_predicate failed: {type(exc).__name__}: {exc}"
+                )
+        if self._swarm_registry is not None and (
+            surface == "swarm" or swarm_id or slot_id
+        ):
+            checker = getattr(self._swarm_registry, "is_thread_owned", None)
+            if callable(checker):
+                try:
+                    return bool(
+                        checker(
+                            swarm_id=swarm_id,
+                            thread_id=thread_id,
+                            slot_id=slot_id,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self._note_error(
+                        f"swarm_registry check failed: {type(exc).__name__}: {exc}"
+                    )
+        return False
+
     def _decide(
         self, event: Dict[str, Any], key: Tuple[str, str]
     ) -> Optional[Dict[str, Any]]:
@@ -368,6 +440,25 @@ class ThreadRouter:
         if event_id and self._already_processed(event_id):
             return None
         sender_id = str((event.get("actor") or {}).get("id") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+
+        slot_id = str(payload.get("slot_id") or "").strip().lstrip("@")
+        member_id = str(payload.get("member_id") or "").strip().lstrip("@")
+        pool = str(payload.get("pool") or "").strip()
+        swarm_id = str(payload.get("swarm_id") or "").strip()
+        allow_multi_worker = bool(payload.get("allow_multi_worker"))
+        owns = _tuple_strs(payload.get("owns"))
+        must_not_touch = _tuple_strs(payload.get("must_not_touch"))
+        sibling_digests = _tuple_strs(payload.get("sibling_digests"))
+        worktree_path = str(payload.get("worktree_path") or "").strip()
+        lease_ids = _tuple_strs(payload.get("lease_ids"))
+        is_multi_slot = bool(allow_multi_worker or slot_id or swarm_id)
+
+        # 0. Swarm-owned guard: if a registered warm swarm session already owns this
+        # slot/thread, skip spawning a duplicate cold worker.
+        if self._is_swarm_owned(event, surface, thread_id, slot_id, swarm_id):
+            self._record_skip(event, surface, thread_id)
+            return None
 
         # 1. Someone already owns this thread: that is exactly the fast path.
         try:
@@ -376,27 +467,38 @@ class ThreadRouter:
             self._note_error(f"thread lookup failed: {type(exc).__name__}: {exc}")
             return None
         if subscribers:
-            self._record_skip(event, surface, thread_id)
-            return None
+            if not is_multi_slot:
+                self._record_skip(event, surface, thread_id)
+                return None
+            if not slot_id:
+                self._record_skip(event, surface, thread_id)
+                return None
+            with self._lock:
+                existing_slot_worker = self._spawned_slots.get((surface, thread_id, slot_id))
+                slot_live = bool(existing_slot_worker and existing_slot_worker in self._spawned)
+            if slot_live:
+                self._record_skip(event, surface, thread_id)
+                return None
 
         # 1b. A previous event spawned a worker for this thread but the subscription
         # write failed, so the table still says "unowned". Without this claim every
         # follow-up would spawn another worker until the cap was reached. Retry the
         # subscription (self-healing); if it still will not land, refuse and keep the
         # existing worker -- never start a second one for the same thread.
-        claimed = self._claimed_worker(key)
-        if claimed:
-            if self._is_live_worker(claimed):
-                if self._try_subscribe(claimed, surface, thread_id, title):
-                    self._release_claim(key)
-                    self._record_skip(event, surface, thread_id)
-                    return None
-                return self._refuse(
-                    event, surface, thread_id,
-                    f"thread is claimed by worker {claimed}, whose subscription could "
-                    "not be written; not spawning a second worker for it",
-                )
-            self._release_claim(key)  # the claimant ended: the thread is free again
+        if not is_multi_slot:
+            claimed = self._claimed_worker(key)
+            if claimed:
+                if self._is_live_worker(claimed):
+                    if self._try_subscribe(claimed, surface, thread_id, title):
+                        self._release_claim(key)
+                        self._record_skip(event, surface, thread_id)
+                        return None
+                    return self._refuse(
+                        event, surface, thread_id,
+                        f"thread is claimed by worker {claimed}, whose subscription could "
+                        "not be written; not spawning a second worker for it",
+                    )
+                self._release_claim(key)  # the claimant ended: the thread is free again
 
         # 2. Loop guard: a worker this router started does not get to start more.
         if sender_id and self._was_spawned(sender_id):
@@ -427,6 +529,14 @@ class ThreadRouter:
             human=str((event.get("actor") or {}).get("kind") or "") == "human",
             addressed=_mentions(
                 _extract_text(event), self._mention_tokens),
+            slot_id=slot_id,
+            member_id=member_id,
+            pool=pool,
+            owns=owns,
+            must_not_touch=must_not_touch,
+            sibling_digests=sibling_digests,
+            worktree_path=worktree_path,
+            lease_ids=lease_ids,
         )
 
         # 3b. Admission: who may originate work on this surface, and whether inferred
@@ -436,10 +546,17 @@ class ThreadRouter:
             return self._refuse(event, surface, thread_id, refusal)
 
         # 4. Fleet cap: a burst of work requests must not become a burst of workers.
-        if self._live_worker_count() >= self._max_workers:
+        effective_cap = self._max_workers
+        if pool or allow_multi_worker or swarm_id:
+            try:
+                pool_cap = int(payload.get("pool_cap") or 32)
+            except (TypeError, ValueError):
+                pool_cap = 32
+            effective_cap = max(self._max_workers, pool_cap)
+        if self._live_worker_count() >= effective_cap:
             return self._refuse(
                 event, surface, thread_id,
-                f"worker cap reached ({self._max_workers} live); not spawning",
+                f"worker cap reached ({effective_cap} live); not spawning",
             )
 
         # 5. Spawn.
@@ -464,16 +581,19 @@ class ThreadRouter:
         # Track BEFORE subscribing: if the subscribe below fails, the worker still ran
         # and the loop guard must still recognise it.
         self._track_worker(worker_id)
+        if slot_id:
+            with self._lock:
+                self._spawned_slots[(surface, thread_id, slot_id)] = worker_id
 
         # 6. Subscribe the worker: every later event in the thread takes the fast path.
         # A failed write does NOT strand the thread: the claim above keeps this worker
         # as its owner so a follow-up cannot spawn a second one.
         subscribed = self._try_subscribe(worker_id, surface, thread_id, title)
-        if not subscribed:
+        if not subscribed and not is_multi_slot:
             self._claim_thread(key, worker_id)
 
         # 7. Deliver the triggering text to the worker's mailbox.
-        delivered = self._deliver(event, worker_id, sender_id)
+        delivered = self._deliver(event, worker_id, sender_id, request=request)
         detail = (
             f"spawned {worker_id} for {surface}:{thread_id}; "
             f"subscribed={subscribed} delivered={delivered}"
@@ -485,7 +605,7 @@ class ThreadRouter:
             )
         self._record_route(event, surface, thread_id, worker_id, detail)
         self._record_routed(request, worker_id)
-        return {
+        out: Dict[str, Any] = {
             "status": "routed",
             "surface": surface,
             "thread_id": thread_id,
@@ -493,6 +613,19 @@ class ThreadRouter:
             "event": event_id,
             "detail": detail,
         }
+        if slot_id:
+            out["slot_id"] = slot_id
+        if pool:
+            out["pool"] = pool
+        if owns:
+            out["owns"] = list(owns)
+        if must_not_touch:
+            out["must_not_touch"] = list(must_not_touch)
+        if worktree_path:
+            out["worktree_path"] = worktree_path
+        if lease_ids:
+            out["lease_ids"] = list(lease_ids)
+        return out
 
     # ── the optional admission gate ────────────────────────────────────────
 
@@ -542,13 +675,39 @@ class ThreadRouter:
     # ── the mailbox ────────────────────────────────────────────────────────
 
     def _deliver(
-        self, event: Dict[str, Any], worker_id: str, sender_id: str
+        self,
+        event: Dict[str, Any],
+        worker_id: str,
+        sender_id: str,
+        *,
+        request: Optional[SpawnRequest] = None,
     ) -> bool:
-        """Write the triggering text to the worker's steering mailbox. Never raises."""
+        """Write the triggering text (plus optional slot/scope context) to the mailbox."""
+        lines = [_extract_text(event)]
+        if request is not None:
+            scope_lines: List[str] = []
+            if request.slot_id:
+                scope_lines.append(f"slot_id: {request.slot_id}")
+            if request.pool:
+                scope_lines.append(f"pool: {request.pool}")
+            if request.owns:
+                scope_lines.append(f"owns: {', '.join(request.owns)}")
+            if request.must_not_touch:
+                scope_lines.append(f"must_not_touch: {', '.join(request.must_not_touch)}")
+            if request.worktree_path:
+                scope_lines.append(f"worktree_path: {request.worktree_path}")
+            if request.lease_ids:
+                scope_lines.append(f"lease_ids: {', '.join(request.lease_ids)}")
+            if request.sibling_digests:
+                scope_lines.append(
+                    "sibling_digests: " + " | ".join(request.sibling_digests)
+                )
+            if scope_lines:
+                lines.append("\n[Swarm Scope]\n" + "\n".join(scope_lines))
         try:
             path = self._write_steer(
                 worker_id,
-                [_extract_text(event)],
+                lines,
                 suffix="steer",
                 sender=str((event.get("actor") or {}).get("name") or sender_id or "a peer"),
                 authority="peer",
@@ -661,6 +820,9 @@ class ThreadRouter:
             for key, claimed in list(self._claimed_threads.items()):
                 if claimed == worker_id:
                     self._claimed_threads.pop(key, None)
+            for skey, sworker in list(self._spawned_slots.items()):
+                if sworker == worker_id:
+                    self._spawned_slots.pop(skey, None)
         try:
             dropped = int(self._thread_subs.unsubscribe_all(worker_id))
         except Exception as exc:  # noqa: BLE001
@@ -768,6 +930,17 @@ class ThreadRouter:
         """
         if room is None:
             return
+        payload = {
+            "status": outcome.get("status"),
+            "surface": outcome.get("surface"),
+            "thread_id": outcome.get("thread_id"),
+            "worker": outcome.get("worker"),
+            "event": outcome.get("event"),
+            "detail": outcome.get("detail"),
+        }
+        for k in ("slot_id", "pool", "owns", "must_not_touch", "worktree_path", "lease_ids"):
+            if outcome.get(k):
+                payload[k] = outcome[k]
         receipt = {
             "type": ROUTED_EVENT_TYPE,
             "pillar": "orchestration",  # thread.routed has no pillar_for() mapping
@@ -776,14 +949,7 @@ class ThreadRouter:
             },
             "correlation_id": str(event.get("correlation_id") or event.get("id") or ""),
             "causation_id": str(event.get("id") or ""),
-            "payload": {
-                "status": outcome.get("status"),
-                "surface": outcome.get("surface"),
-                "thread_id": outcome.get("thread_id"),
-                "worker": outcome.get("worker"),
-                "event": outcome.get("event"),
-                "detail": outcome.get("detail"),
-            },
+            "payload": payload,
         }
         try:
             room.publish(receipt)

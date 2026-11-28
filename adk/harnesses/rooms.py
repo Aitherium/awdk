@@ -135,9 +135,49 @@ MAX_HOPS = 2
 #: Colon is allowed because the namespaced forms (``relay:<nick>``) are already in use.
 _ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
+#: Word-boundary ``@mention`` extractor used by the Swarm/Room bridge (ignores email
+#: addresses such as ``user@example.com``).
+_SWARM_MENTION_RE = re.compile(r"(?<![A-Za-z0-9._-])@([A-Za-z0-9._:-]{1,128})")
+
 #: A publish listener, called as ``fn(room, event)`` or ``fn(event)`` — whichever its
 #: signature takes (see :func:`_listener_wants_room`).
 RoomListener = Callable[..., Any]
+
+
+def extract_swarm_mentions(
+    text: str = "", mentions: Optional[Any] = None
+) -> List[str]:
+    """Parse ``@mention`` / ``@all`` tokens from ``text`` plus explicit ``mentions``.
+
+    Normalises leading ``@`` away, validates each token against :data:`_ACTOR_ID_RE`,
+    preserves order, and deduplicates (case-insensitively on ``all``). Keeps
+    :func:`_normalise_addressing` strict while giving the Swarm/Room bridge a clean
+    list of valid target ids (with ``"all"`` for broadcast).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: Any) -> None:
+        tok = str(raw or "").strip().lstrip("@").strip()
+        if not tok or not _ACTOR_ID_RE.match(tok):
+            return
+        norm = "all" if tok.lower() == "all" else tok
+        key = norm.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(norm)
+
+    if mentions:
+        if isinstance(mentions, str):
+            _add(mentions)
+        else:
+            for item in mentions:
+                _add(item)
+    if text:
+        for match in _SWARM_MENTION_RE.finditer(str(text)):
+            _add(match.group(1))
+    return out
 
 
 class RoomError(ValueError):

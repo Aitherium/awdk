@@ -469,6 +469,13 @@ def _wait_for_answer(
     return 1
 
 
+def cmd_wait(args: argparse.Namespace, store: DecisionStore) -> int:
+    """Block until an existing decision card closes, then print its answer."""
+    return _wait_for_answer(
+        args.id, store, timeout=args.timeout or "30m", as_json=bool(args.json)
+    )
+
+
 def cmd_list(args: argparse.Namespace, store: DecisionStore) -> int:
     status = None if args.all else STATUS_OPEN
     cards = store.list(status=status, session_id=args.session or "",
@@ -1087,6 +1094,15 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--json", action="store_true")
     show.add_argument("--markdown", action="store_true")
 
+    wait = sub.add_parser(
+        "wait",
+        help="block until an existing card is answered or closed, then print the answer",
+    )
+    wait.add_argument("id", help="decision card id (e.g. d-7f3a)")
+    wait.add_argument("--timeout", default="30m", metavar="10m",
+                      help="how long to wait before exiting 1 (default: 30m)")
+    wait.add_argument("--json", action="store_true")
+
     answer = sub.add_parser("answer", help="answer a card and steer the session")
     answer.add_argument("id")
     # Optional: a credential card must NOT take a positional choice — its value
@@ -1198,6 +1214,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "ask": cmd_ask,
         "list": cmd_list,
         "show": cmd_show,
+        "wait": cmd_wait,
         "answer": cmd_answer,
         "steer": cmd_steer,
         "credential-verify": cmd_credential_verify,

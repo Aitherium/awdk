@@ -544,6 +544,245 @@ class ToolPackKind:
         return {"removed_files": _remove_marked_tree(ctx.pack_root, self._dir(ctx), ctx.plan["id"])}
 
 
+# -- declarative bots (Gemini-style AitherGem / OpenAI-style AitherGPT) ------
+
+
+BOT_TEMPLATES: dict[str, dict[str, str]] = {
+    "gemini": {
+        "brand": "AitherGem",
+        "model": "gemini-2.0-flash",
+        "instructions": (
+            "You are {name}, an AitherGem declarative Gemini-style bot. "
+            "Use attached local knowledge, grounding, and registered tools accurately."
+        ),
+    },
+    "openai": {
+        "brand": "AitherGPT",
+        "model": "gpt-4o-mini",
+        "instructions": (
+            "You are {name}, an AitherGPT declarative OpenAI-style bot. "
+            "Use instructions, file_search knowledge, capabilities, and OpenAPI actions accurately."
+        ),
+    },
+}
+
+
+class BotKind:
+    key = "bot"
+    label = "Bot"
+    executable = True
+    path = "adk.bots.manifest.scaffold_bot -> adk.bots.validator.validate_bot (the `adk bot new|validate` verbs)"
+    undo_note = "Removes exactly the bot files this plan wrote."
+
+    def _root(self, ctx: Ctx) -> Path:
+        if ctx.pack_root is not None:
+            base = Path(ctx.pack_root)
+            return base.with_name(f"{base.name}-bots")
+        env_dir = os.environ.get("AITHER_BOTS_DIR", "").strip()
+        if env_dir:
+            return Path(env_dir).expanduser()
+        raise KindError("this runtime has no bot directory configured")
+
+    def _dir(self, ctx: Ctx) -> Path:
+        root = self._root(ctx)
+        return _under(root, root / ctx.plan["slug"])
+
+    @staticmethod
+    def _resolve_options(ctx: Ctx) -> dict[str, Any]:
+        p = ctx.plan
+        opts = p.get("options") or {}
+        raw_style = str(opts.get("style") or "").strip().lower()
+        if raw_style:
+            style = raw_style
+        else:
+            haystack = f"{p.get('name', '')} {p.get('description', '')}".lower()
+            style = (
+                "openai"
+                if any(tok in haystack for tok in ("openai", "aithergpt", "gpt"))
+                else "gemini"
+            )
+        tmpl = BOT_TEMPLATES.get(style, BOT_TEMPLATES["gemini"])
+        backend = str(opts.get("backend") or "auto").strip().lower()
+        model = str(opts.get("model") or "").strip() or None
+        instructions = (
+            str(opts.get("instructions") or opts.get("soul_text") or "").strip()
+            or tmpl["instructions"].format(name=p["name"])
+        )
+        model_sha256 = str(opts.get("model_sha256") or "").strip() or None
+        shared_ro_mmap = bool(opts.get("shared_ro_mmap", False))
+        target_surface = str(opts.get("target_surface") or "standard").strip().lower()
+        return {
+            "style": style,
+            "brand": tmpl["brand"],
+            "backend": backend,
+            "model": model or tmpl["model"],
+            "instructions": instructions,
+            "model_sha256": model_sha256,
+            "shared_ro_mmap": shared_ro_mmap,
+            "target_surface": target_surface,
+        }
+
+    async def existing(self, ctx: Ctx) -> list[str]:
+        return _list_dirs(self._root(ctx))
+
+    @staticmethod
+    def _doc_filename(name: str, seen: set[str]) -> str:
+        stem = slugify(name or "doc")
+        if stem.lower() == "readme":
+            stem = "readme-doc"
+        candidate = stem
+        n = 2
+        while candidate.lower() in seen:
+            candidate = f"{stem}-{n}"
+            n += 1
+        seen.add(candidate.lower())
+        return f"{candidate}.md"
+
+    def draft(self, ctx: Ctx) -> dict[str, Any]:
+        from adk.bots.manifest import (
+            BOT_BACKENDS,
+            BOT_STYLES,
+            BOT_TARGET_SURFACES,
+            ID_RE,
+            SHA256_RE,
+        )
+
+        p = ctx.plan
+        bid = p["slug"]
+        resolved = self._resolve_options(ctx)
+        problems: list[str] = []
+        if not ID_RE.match(bid):
+            problems.append(f"bot id {bid!r} must match {ID_RE.pattern}")
+        if resolved["style"] not in BOT_STYLES:
+            problems.append(f"bot style {resolved['style']!r} must be one of {BOT_STYLES}")
+        if resolved["backend"] not in BOT_BACKENDS:
+            problems.append(f"bot backend {resolved['backend']!r} must be one of {BOT_BACKENDS}")
+        if resolved["target_surface"] not in BOT_TARGET_SURFACES:
+            problems.append(
+                f"target_surface {resolved['target_surface']!r} must be one of {BOT_TARGET_SURFACES}"
+            )
+        if resolved["model_sha256"] is not None and not SHA256_RE.match(resolved["model_sha256"]):
+            problems.append("model_sha256 must be a 64-character lowercase/uppercase hex SHA-256 digest")
+
+        files = [
+            f"{bid}/bot.yaml",
+            f"{bid}/tools.py",
+            f"{bid}/knowledge/README.md",
+            f"{bid}/actions/.gitkeep",
+            f"{bid}/.env.example",
+            f"{bid}/README.md",
+            f"{bid}/tests/test_bot.py",
+        ]
+        seen_docs = {"readme"}
+        for doc in ctx.docs:
+            if doc.get("text"):
+                files.append(f"{bid}/knowledge/{self._doc_filename(doc['name'], seen_docs)}")
+
+        return {
+            "files": files,
+            "config": {
+                "bot_id": bid,
+                "kind": "bot",
+                "style": resolved["style"],
+                "brand": resolved["brand"],
+                "backend": resolved["backend"],
+                "model": resolved["model"],
+                "instructions": resolved["instructions"],
+                "target_surface": resolved["target_surface"],
+                "shared_ro_mmap": resolved["shared_ro_mmap"],
+            },
+            "tools": [
+                "adk.bots.manifest.scaffold_bot",
+                "adk.bots.validator.validate_bot",
+            ],
+            "cost": {"usd": 0, "note": "Local declarative bot files. No live deploy or spend."},
+            "where": {
+                "runtime": p["runtime"],
+                "stores": "the bot directory of this runtime",
+                "durable_on_awnix": False,
+            },
+            "validators": [
+                "bot id rule ^[a-z][a-z0-9._-]{2,63}$",
+                "validate_bot static BOT001-BOT008 checks (zero execution)",
+            ],
+            "steps": [
+                "Scaffold declarative bot directory (bot.yaml, tools, knowledge)",
+                "Validate bot.yaml and attached knowledge with validate_bot",
+            ],
+            "problems": problems,
+        }
+
+    async def execute(self, ctx: Ctx) -> dict[str, Any]:
+        from adk.bots.manifest import load_bot_manifest, scaffold_bot
+        from adk.bots.validator import validate_bot
+
+        root = self._root(ctx)
+        root.mkdir(parents=True, exist_ok=True)
+        d = self._dir(ctx)
+        if d.exists():
+            raise KindError(f"a bot named {ctx.plan['slug']!r} already exists here")
+
+        cfg = ctx.plan["preview"]["config"]
+        opts = ctx.plan.get("options") or {}
+        try:
+            scaffold_bot(
+                ctx.plan["name"],
+                cfg["style"],
+                d,
+                backend=cfg["backend"],
+                model=cfg["model"],
+                instructions=cfg["instructions"],
+                description=ctx.plan["description"][:500],
+                bot_id=ctx.plan["slug"],
+                model_sha256=opts.get("model_sha256") or None,
+                shared_ro_mmap=bool(cfg.get("shared_ro_mmap", False)),
+                target_surface=cfg.get("target_surface", "standard"),
+            )
+        except (ValueError, FileExistsError) as exc:
+            raise KindError(str(exc))
+
+        _write(
+            d / MARKER,
+            json.dumps({"plan_id": ctx.plan["id"], "kind": "bot", "created_at": time.time()}),
+        )
+        try:
+            k_root = d / "knowledge"
+            seen_docs = {"readme"}
+            for doc in ctx.docs:
+                if doc.get("text"):
+                    doc_file = _under(k_root, k_root / self._doc_filename(doc["name"], seen_docs))
+                    _write(doc_file, doc["text"])
+            rep = validate_bot(d)
+            if not rep.ok:
+                raise KindError("bot does not validate: " + "; ".join(map(str, rep.findings)))
+            manifest = load_bot_manifest(d)
+        except Exception:
+            _remove_marked_tree(root, d, ctx.plan["id"])
+            raise
+
+        return {
+            "bot_id": manifest.id,
+            "style": manifest.style,
+            "brand": cfg["brand"],
+            "backend": manifest.backend,
+            "model": manifest.model,
+            "path": _shown(ctx, d),
+        }
+
+    async def verify(self, ctx: Ctx) -> list[dict[str, Any]]:
+        from adk.bots.validator import validate_bot
+
+        d = self._dir(ctx)
+        rep = validate_bot(d)
+        return [
+            _check("bot.yaml present", (d / "bot.yaml").is_file(), ""),
+            _check("validate_bot is clean", rep.ok, "; ".join(map(str, rep.findings))),
+        ]
+
+    async def undo(self, ctx: Ctx) -> dict[str, Any]:
+        return {"removed_files": _remove_marked_tree(self._root(ctx), self._dir(ctx), ctx.plan["id"])}
+
+
 # -- planned kinds -----------------------------------------------------------
 
 
@@ -581,6 +820,7 @@ class PlannedKind:
 KINDS: dict[str, Any] = {
     "workspace": WorkspaceKind(),
     "agent": AgentKind(),
+    "bot": BotKind(),
     "skill_pack": SkillPackKind(),
     "tool_pack": ToolPackKind(),
     "agent_pack": PlannedKind(
@@ -607,7 +847,8 @@ _KIND_WORDS = (
     ("tool_pack", re.compile(r"\btool ?packs?\b|\bmcp (server|tools?)\b", re.I)),
     ("agent_pack", re.compile(r"\bagent ?packs?\b|\bbrain ?packs?\b|\bpersona pack\b", re.I)),
     ("workflow", re.compile(r"\bworkflows?\b|\broutines?\b|\bexpeditions?\b|\bpipelines?\b", re.I)),
-    ("agent", re.compile(r"\bagents?\b|\bassistant\b|\bbot\b", re.I)),
+    ("bot", re.compile(r"\b(?:gemini|openai)[ -]?bots?\b|\baithergem\b|\baithergpt\b|\bbots?\b", re.I)),
+    ("agent", re.compile(r"\bagents?\b|\bassistant\b", re.I)),
     ("workspace", re.compile(r"\bworkspaces?\b|\bteam space\b|\bspace\b", re.I)),
 )
 

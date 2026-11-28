@@ -195,7 +195,7 @@ class CreateEngine:
         chosen = kind or inferred
         if chosen not in KINDS:
             raise PlanError(
-                "Pick what to create: workspace, agent, workflow, agent pack, "
+                "Pick what to create: workspace, agent, bot, workflow, agent pack, "
                 "tool pack or skill pack."
             )
         decision = await self._classify(description or name)
@@ -327,6 +327,7 @@ class CreateEngine:
         agent = {
             "workspace": "atlas (provisioning)",
             "agent": "demiurge (identity authoring)",
+            "bot": "demiurge (declarative bot scaffolding)",
             "skill_pack": "scribe (skill drafting)",
             "tool_pack": "demiurge (pack authoring)",
         }.get(plan["kind"], "n/a")

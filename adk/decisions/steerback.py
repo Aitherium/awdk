@@ -13,7 +13,15 @@ So there are tiers, tried in order, and the caller is told which one landed:
 2. **in-flight adk turn** — ``POST /chat/steer`` injects between tool
    iterations of a running turn (``adk.steering``), so a long-running agent
    reacts before its next LLM call.
-3. **console typing** — Windows-only, opt-in, for an interactive TUI with no
+3. **Antigravity ``agentapi send-message``** — delivers the answer directly into
+   a live Antigravity conversation. Note the verified Antigravity API boundary:
+   ``product.v1.ConversationService`` exposes only ``CreateConversation``,
+   ``ListConversations``, ``GetConversation``, ``UpdateConversation``, and
+   ``DeleteConversation`` (no endpoint to resolve a client-only ``ask_question``
+   UI modal); ``agentapi send-message`` wakes/steers the conversation cleanly,
+   while ``antigravity_hooks.py`` suppresses the duplicate ``ask_question``
+   modal when ``awdesk`` is online so the owner only clicks once.
+4. **console typing** — Windows-only, opt-in, for an interactive TUI with no
    IPC (see ``adk.decisions.terminal``).
 
 Everything here is best-effort by design and NOTHING here raises. A live tier
@@ -27,6 +35,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -153,6 +164,98 @@ def try_chat_steer(session_id: str, text: str) -> tuple[bool, str]:
     return ok, ("injected into the running turn" if ok else f"steer refused ({detail})")
 
 
+_SAFE_ANTIGRAVITY_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_ANTIGRAVITY_OFF = frozenset({"0", "false", "no", "off", "disabled"})
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _antigravity_session_exists(session_id: str) -> bool:
+    """True when ``session_id`` has a recorded Antigravity session JSON file."""
+    if not session_id or not _SAFE_ANTIGRAVITY_ID_RE.match(session_id):
+        return False
+    roots: list[Path] = []
+    explicit = os.getenv("AITHER_ANTIGRAVITY_SESSIONS_DIR", "").strip()
+    if explicit:
+        roots.append(Path(explicit))
+    aither_home = os.getenv("AITHER_HOME", "").strip()
+    if aither_home:
+        roots.append(Path(aither_home) / "antigravity_sessions")
+    else:
+        roots.append(Path.home() / ".aither" / "antigravity_sessions")
+        for users_root in (Path("/mnt/c/Users"), Path("/var/mnt/c/Users")):
+            if not users_root.is_dir():
+                continue
+            try:
+                for child in users_root.iterdir():
+                    if child.name.lower() in ("public", "default", "default user", "all users"):
+                        continue
+                    roots.append(child / ".aither" / "antigravity_sessions")
+            except OSError:
+                continue
+    for root in roots:
+        try:
+            if (root / f"{session_id}.json").is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _resolve_agentapi_binary() -> str:
+    """Locate the Antigravity ``agentapi`` binary, or ``''`` if unavailable."""
+    override = os.getenv("AITHER_ANTIGRAVITY_AGENTAPI", "").strip()
+    if override:
+        return override if Path(override).is_file() else ""
+    found = shutil.which("agentapi")
+    if found:
+        return found
+    default_bin = Path.home() / ".gemini" / "antigravity" / "bin" / "agentapi"
+    try:
+        if default_bin.is_file():
+            return str(default_bin)
+    except OSError:
+        pass
+    return ""
+
+
+def try_antigravity(session_id: str, text: str, *, agent: str = "") -> tuple[bool, str]:
+    """Deliver ``text`` to an Antigravity conversation via ``agentapi send-message``.
+
+    Returns ``(landed, why)``. Never raises; any miss falls back cleanly to the
+    steering mailbox.
+    """
+    sid = (session_id or "").strip()
+    if not sid or not _SAFE_ANTIGRAVITY_ID_RE.match(sid):
+        return False, "no valid session id"
+    if os.getenv("AITHER_DECISIONS_ANTIGRAVITY_STEER", "1").strip().lower() in _ANTIGRAVITY_OFF:
+        return False, "antigravity steer is off"
+    is_antigravity = (agent or "").strip().lower() == "antigravity" or _antigravity_session_exists(sid)
+    if not is_antigravity:
+        return False, "not an antigravity session"
+    binary = _resolve_agentapi_binary()
+    if not binary:
+        return False, "agentapi binary not found"
+    extra: dict[str, Any] = {"creationflags": _CREATE_NO_WINDOW} if os.name == "nt" else {}
+    try:
+        proc = subprocess.run(
+            [binary, "send-message", sid, text],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=TIMEOUT_SECONDS,
+            check=False,
+            **extra,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"antigravity send-message error ({exc})"
+    if proc.returncode == 0:
+        return True, "sent via antigravity agentapi send-message"
+    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    hint = f": {detail[0][:120]}" if detail else ""
+    return False, f"antigravity send-message failed (rc={proc.returncode}{hint})"
+
+
 def try_console(session_pid: int, text: str, transcript: str = "") -> tuple[bool, str]:
     """Type into the session's console. Opt-in; see ``adk.decisions.terminal``.
 
@@ -196,6 +299,11 @@ def deliver(card: DecisionCard, text: str) -> tuple[bool, str]:
 
     landed, why = try_chat_steer(session, text)
     attempts.append(f"chat-steer: {why}")
+    if landed:
+        return True, why
+
+    landed, why = try_antigravity(session, text, agent=card.source.agent or "")
+    attempts.append(f"antigravity: {why}")
     if landed:
         return True, why
 
@@ -463,7 +571,8 @@ def deliver_waiters(store: Any, card: DecisionCard) -> list:
             continue
         session = str(waiter.get("session_id") or "").strip()
         probe = DecisionCard(id=card.id, title=card.title, source=type(card.source)(
-            session_id=session, session_pid=int(waiter.get("session_pid") or 0)))
+            session_id=session, session_pid=int(waiter.get("session_pid") or 0),
+            agent=str(waiter.get("agent") or card.source.agent or "")))
         if test_answer:
             # No live tier for a test answer — not even resuming an ended
             # session, which is a live action too. The mailbox is the only

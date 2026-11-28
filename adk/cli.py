@@ -696,8 +696,9 @@ def cmd_run(args):
     from adk.project import ProjectAgentError, load_project_agent, project_agent_path
     from adk.server import main as server_main
 
+    bot_dir = getattr(args, "bot", None)
     project_agent = None
-    if not args.fleet and not args.agents and project_agent_path() is not None:
+    if not bot_dir and not args.fleet and not args.agents and project_agent_path() is not None:
         # The project agent builds its own Config at import, so the overrides have
         # to be in the environment before agent.py runs.
         if args.backend:
@@ -734,6 +735,12 @@ def cmd_run(args):
         sys_args += ["--fleet", args.fleet]
     if args.agents:
         sys_args += ["--agents", args.agents]
+    if bot_dir:
+        sys_args += ["--bot", str(bot_dir)]
+    if getattr(args, "bot_backend", None):
+        sys_args += ["--bot-backend", str(args.bot_backend)]
+    if getattr(args, "bot_prefix", None):
+        sys_args += ["--bot-prefix", str(args.bot_prefix)]
     _export_crystal_env(args)
 
     sys.argv = sys_args
@@ -785,21 +792,27 @@ def _sync_entitled_packs_quiet() -> None:
 
 
 def cmd_stack(args):
-    """Start the consumer stack (Room + local llama.cpp) as native processes.
+    """Unified AitherOS local stack setup/sync/status, plus legacy consumer stack.
 
-    Supervises AitherRoom (:8350) and, when `adk setup llamacpp` installed it, the
-    local llama-server, as foreground processes with health checks, crash
-    restarts, and graceful shutdown on Ctrl+C.
-
-    (Formerly ``adk up``; that name now brings up a connected agent — see cmd_up.
-    This behaviour lives under ``adk stack``.)
-
-    Services:
-    - default: Room + llama.cpp (default)
+    Subcommands:
+    - up: Sync packages/CLI/hooks, start local daemons (:8362/:8090), rebalance personas
+    - sync: Sync editable packages, awsh dist/, awconnect check, and hooks
+    - status: Read-only health & parity table across the full local stack
+    - default (or bare `adk stack`): Supervise AitherRoom (:8350) + local llama.cpp
     - qdrant: Local Qdrant for graph memory (requires Docker)
     """
-    # Handle "adk stack qdrant" for Qdrant provisioning
-    service = getattr(args, "service", "default") or "default"
+    stack_cmd = getattr(args, "stack_command", None)
+    if isinstance(stack_cmd, str) and stack_cmd in ("up", "sync", "status"):
+        from adk.stack_setup import cmd_stack_setup
+        return cmd_stack_setup(args)
+
+    # Handle "adk stack qdrant" for Qdrant provisioning (supports both subparser
+    # `stack_command == "qdrant"` and legacy `args.service == "qdrant"`).
+    service = (
+        stack_cmd
+        if isinstance(stack_cmd, str) and stack_cmd
+        else (getattr(args, "service", "default") or "default")
+    )
     if service == "qdrant":
         print()
         print("Provisioning local Qdrant for graph memory...")
@@ -4637,6 +4650,92 @@ def _onboard_quick(args) -> int:
     return 0
 
 
+def _onboard_bot(args) -> int:
+    """Self-setup onboarding wizard for declarative Gemini-style and OpenAI-style bots."""
+    from types import SimpleNamespace
+
+    gem = bool(getattr(args, "gemini_bot", False))
+    oai = bool(getattr(args, "openai_bot", False))
+    style_arg = getattr(args, "style", None)
+
+    if gem and oai:
+        print("error: --gemini-bot and --openai-bot cannot be combined.", file=sys.stderr)
+        return 2
+    if gem and style_arg and style_arg != "gemini":
+        print(
+            f"error: --gemini-bot conflicts with --style {style_arg!r}.",
+            file=sys.stderr,
+        )
+        return 2
+    if oai and style_arg and style_arg != "openai":
+        print(
+            f"error: --openai-bot conflicts with --style {style_arg!r}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    style = "gemini" if gem else ("openai" if oai else (style_arg or ""))
+    non_interactive = bool(getattr(args, "non_interactive", False))
+    backend_arg = getattr(args, "backend", None)
+    backend = str(backend_arg).strip() if backend_arg else ("auto" if non_interactive else "")
+    api_key = (
+        getattr(args, "provider_key", None)
+        or getattr(args, "api_key", None)
+        or ""
+    )
+
+    from adk.bots.onboard import run_bot_onboard
+
+    try:
+        res = run_bot_onboard(
+            name=getattr(args, "name", None) or "",
+            style=style,
+            target_dir=getattr(args, "bot_dir", None),
+            backend=backend,
+            model=getattr(args, "model", None) or "",
+            instructions=getattr(args, "instructions", None) or "",
+            description=getattr(args, "description", None) or "",
+            api_key=api_key,
+            non_interactive=non_interactive,
+            overwrite=bool(getattr(args, "overwrite", False)),
+            model_sha256=getattr(args, "model_sha256", None),
+            shared_ro_mmap=bool(getattr(args, "shared_ro_mmap", False)),
+            target_surface=getattr(args, "target_surface", None) or "standard",
+        )
+    except (ValueError, FileExistsError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Configured {res['style']} bot '{res['bot_id']}' at {res['bot_dir']}")
+    print(f"  backend={res['backend']}  model={res['model']}")
+    if res.get("key_saved") and res.get("keys_path"):
+        print(f"  BYOK key stored in {res['keys_path']} (not in bot.yaml)")
+    val = res.get("validation")
+    if val is not None and not val.ok:
+        for finding in val.findings:
+            print(f"  {finding}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "discord", False):
+        from adk.onboard_discord import onboard_discord
+
+        return onboard_discord(
+            SimpleNamespace(
+                bot_dir=res["bot_dir"],
+                token=getattr(args, "token", None),
+                identity=res["bot_id"],
+                tools_module=getattr(args, "tools_module", None),
+                pack=None,
+                skip_pack_install=True,
+                run=bool(getattr(args, "run", False)),
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+        )
+
+    print(f"  Next: adk bot dev {res['bot_dir']}")
+    return 0
+
+
 def cmd_onboard(args):
     """Interactive onboarding — detect products, configure, integrate."""
     import asyncio
@@ -4644,6 +4743,14 @@ def cmd_onboard(args):
 
     agent_name = getattr(args, 'agent', None) or ''
     tenant_slug = getattr(args, 'tenant', None) or os.environ.get('AITHER_TENANT_SLUG', '')
+
+    # ── Bot mode: self-setup wizard for Gemini-style / OpenAI-style bots ──
+    if (
+        getattr(args, 'bot', False)
+        or getattr(args, 'gemini_bot', False)
+        or getattr(args, 'openai_bot', False)
+    ):
+        return _onboard_bot(args)
 
     # ── Agent fleet registration mode ─────────────────────────────────
     if agent_name:
@@ -7781,6 +7888,80 @@ def _platform_secret(name: str):
         return None
 
 
+def _parse_secret_file_text(raw_text: str, explicit_name: str | None = None) -> list[tuple[str, str]]:
+    """Parse a downloaded token/secret file into ``(name, value)`` pairs.
+
+    Supports:
+    - JSON objects: ``{"OPENAW_PAT": "oaw_pat_..."}`` or ``{"token": "..."}`` (with ``explicit_name``)
+    - ``.env`` / ``export KEY=VALUE`` files (multi-key or single-key)
+    - Plain raw single-token files (when ``explicit_name`` is supplied)
+    """
+    import json as _json
+
+    stripped = raw_text.strip()
+    if not stripped:
+        return []
+
+    # 1. JSON object
+    if stripped.startswith("{"):
+        try:
+            obj = _json.loads(stripped)
+            if isinstance(obj, dict):
+                if explicit_name:
+                    if explicit_name in obj and isinstance(obj[explicit_name], str) and obj[explicit_name].strip():
+                        return [(explicit_name, obj[explicit_name].strip())]
+                    for fallback_key in ("token", "pat", "secret", "value", "api_key", "key"):
+                        val = obj.get(fallback_key)
+                        if isinstance(val, str) and val.strip():
+                            return [(explicit_name, val.strip())]
+                pairs = [
+                    (str(k).strip(), v.strip())
+                    for k, v in obj.items()
+                    if isinstance(v, str) and str(k).strip() and v.strip()
+                ]
+                if pairs:
+                    return pairs
+        except ValueError:
+            pass
+
+    # 2. KEY=VALUE / export KEY=VALUE lines
+    env_pairs: list[tuple[str, str]] = []
+    non_comment_lines = [
+        ln.strip() for ln in stripped.splitlines() if ln.strip() and not ln.strip().startswith("#")
+    ]
+    all_kv = bool(non_comment_lines)
+    for ln in non_comment_lines:
+        if ln.startswith("export "):
+            ln = ln[len("export "):].strip()
+        if "=" not in ln:
+            all_kv = False
+            break
+        k, v = ln.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k or any(ch.isspace() for ch in k):
+            all_kv = False
+            break
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        if v:
+            env_pairs.append((k, v))
+
+    if all_kv and env_pairs:
+        if explicit_name:
+            for k, v in env_pairs:
+                if k == explicit_name:
+                    return [(explicit_name, v)]
+            if len(env_pairs) == 1:
+                return [(explicit_name, env_pairs[0][1])]
+        return env_pairs
+
+    # 3. Raw token file (requires explicit_name)
+    if explicit_name:
+        return [(explicit_name, stripped)]
+    return []
+
+
 def cmd_secret(args):
     """Manage secrets in encrypted local keyring + sync with AitherSecrets vault."""
     import asyncio as _asyncio
@@ -7832,23 +8013,94 @@ def cmd_secret(args):
         return 0
 
     elif sub == "set":
-        name = getattr(args, "name", "")
-        value = getattr(args, "value", "")
-        if not name or not value:
-            print("Usage: adk secret set <name> <value>")
-            return 1
+        from pathlib import Path as _Path
         from adk.builtin_tools import secret_set
-        result = secret_set(name, value)
-        try:
-            import json
-            data = json.loads(result)
-            if data.get("success"):
-                print(f"Stored secret '{name}' in encrypted keyring")
-                return 0
-        except Exception:
-            pass
-        print(result)
-        return 1
+
+        name = (getattr(args, "name", None) or "").strip()
+        value = getattr(args, "value", None)
+        from_file = getattr(args, "from_file", None)
+        use_stdin = bool(getattr(args, "stdin", False))
+        delete_source = bool(getattr(args, "delete_source", False))
+
+        # Allow `adk secret set @path/to/file.env` or `adk secret set KEY @path/to/token.txt`
+        if not from_file and name.startswith("@") and not value:
+            from_file = name[1:]
+            name = ""
+        elif not from_file and isinstance(value, str) and value.startswith("@"):
+            from_file = value[1:]
+            value = None
+        elif isinstance(value, str) and value == "-":
+            use_stdin = True
+            value = None
+
+        pairs: list[tuple[str, str]] = []
+        src_path: _Path | None = None
+
+        if from_file:
+            src_path = _Path(from_file).expanduser()
+            if not src_path.is_file():
+                print(f"Error: secret file not found: {src_path}")
+                return 1
+            raw_text = src_path.read_text(encoding="utf-8", errors="strict").strip()
+            if not raw_text:
+                print(f"Error: secret file is empty: {src_path}")
+                return 1
+            parsed = _parse_secret_file_text(raw_text, explicit_name=name or None)
+            if not parsed:
+                print(
+                    "Error: could not determine secret name/value from file. "
+                    "Pass a secret name (`adk secret set OPENAW_PAT --from-file <file>`) "
+                    "or use KEY=VALUE / JSON format."
+                )
+                return 1
+            pairs.extend(parsed)
+        elif use_stdin:
+            if not name:
+                print("Usage: adk secret set <name> --stdin")
+                return 1
+            raw_val = sys.stdin.read().strip()
+            if not raw_val:
+                print("Error: no secret value received on stdin")
+                return 1
+            pairs.append((name, raw_val))
+        else:
+            if not name or not value:
+                print(
+                    "Usage: adk secret set <name> <value>\n"
+                    "       adk secret set <name> --from-file <path> [--delete-source]\n"
+                    "       adk secret set --from-file <path.env|path.json> [--delete-source]\n"
+                    "       adk secret set <name> @<path>   |   adk secret set <name> --stdin"
+                )
+                return 1
+            pairs.append((name, value))
+
+        stored: list[str] = []
+        for k, v in pairs:
+            result = secret_set(k, v)
+            ok = False
+            try:
+                import json
+                data = json.loads(result)
+                ok = bool(data.get("success"))
+            except Exception:
+                ok = False
+            if not ok:
+                print(result)
+                return 1
+            stored.append(k)
+
+        if delete_source and src_path is not None:
+            try:
+                src_path.unlink()
+                print(f"Deleted source file: {src_path}")
+            except OSError as exc:
+                print(f"Warning: stored secret(s) but could not delete {src_path}: {exc}")
+
+        if len(stored) == 1:
+            print(f"Stored secret '{stored[0]}' in encrypted keyring")
+        else:
+            print(f"Stored {len(stored)} secrets in encrypted keyring: {', '.join(stored)}")
+        return 0
 
     elif sub == "pull":
         secrets_url = getattr(args, "secrets_url", None) or os.environ.get("AITHER_SECRETS_URL")
@@ -10179,8 +10431,14 @@ def cmd_tools(args):
     async def _tools():
         from adk.builtin_tools import get_builtin_registry
 
-        # Local built-in tools
+        # Local built-in tools + enabled local tool packs (~/.aitheros/packs)
         reg = get_builtin_registry()
+        pack_counts: dict[str, int] = {}
+        try:
+            from adk.pack_mcp import load_enabled_pack_tools
+            pack_counts = load_enabled_pack_tools(reg)
+        except Exception as exc:
+            print(f"Warning: could not load local tool packs: {exc}", file=sys.stderr)
         local_tools = reg.list_tools()
 
         print("Local Tools")
@@ -10188,7 +10446,14 @@ def cmd_tools(args):
         for t in sorted(local_tools, key=lambda x: x.name):
             desc = (t.description or "")[:60]
             print(f"  {t.name:30s} {desc}")
-        print(f"\n  Total: {len(local_tools)} local tools")
+        loaded_packs = sorted(k for k, v in pack_counts.items() if v > 0)
+        pack_total = sum(v for v in pack_counts.values() if v > 0)
+        pack_note = (
+            f" (includes {pack_total} from enabled packs: {', '.join(loaded_packs)})"
+            if pack_total > 0
+            else ""
+        )
+        print(f"\n  Total: {len(local_tools)} local tools{pack_note}")
 
         # MCP tools (if connected)
         api_key = os.environ.get("AITHER_API_KEY", "")
@@ -11928,14 +12193,22 @@ def _connect_elysium(args):
 
 
 def cmd_admin(args):
-    """Administration commands."""
+    """Administration commands (mesh tokens + Windows ADAC-style platform CLI/scripts)."""
 
     admin_cmd = getattr(args, "admin_command", None)
 
     if admin_cmd == "create-token":
         return _admin_create_token(args)
+    if admin_cmd in {"recipes", "directory", "appliances", "workflows", "invites"}:
+        from adk.adac import dispatch_admin_adac
+
+        return dispatch_admin_adac(args)
     else:
-        print("  Usage: adk admin create-token --name <name> --url <genesis-url>")
+        print(
+            "  Usage: adk admin {recipes|directory|appliances|workflows|invites|create-token} ...\n"
+            "  Try:   adk admin recipes\n"
+            "         adk admin directory stats --dry-run --emit all"
+        )
         return 1
 
 
@@ -12675,45 +12948,483 @@ def _print_addon_result(res, as_json: bool = False) -> int:
     return 1
 
 
-def _cmd_pack_enable(pack_id: str, *, enable: bool, allow_community: bool = False) -> int:
-    """``adk pack enable|disable <id>``.
+_PACK_ALLOWED_SCHEDULE_EXECUTORS = frozenset({"session", "agent", "awrun", "http"})
 
-    Enable resolves the id across awpack, Library and awnode ext (``adk.addons``),
-    installs it through that brick when it is not installed, then turns it on: a Library
-    or awpack pack joins the agent's ``required_packs``; an awnode extension is started.
-    So the command ``adk discover`` suggests always works: search -> install -> enable.
+
+def _read_manifest_from_local_ref(pack_ref: str) -> tuple[dict | None, str | None]:
+    """Read `.toolpack.yaml` from a local `.tar.gz`/`.tgz` bundle or pack directory.
+
+    Returns ``(manifest_dict, error)``. ``(None, None)`` means *pack_ref* is not a
+    local bundle or pack directory.
     """
+    import tarfile
+    import yaml
+    from adk.pack_author import MANIFEST, is_local_bundle
+
+    path = Path(pack_ref).expanduser()
+    if is_local_bundle(pack_ref):
+        try:
+            with tarfile.open(path) as tf:
+                for member in tf.getmembers():
+                    if not member.isfile():
+                        continue
+                    parts = Path(member.name).parts
+                    if parts and parts[-1] == MANIFEST and len(parts) <= 2:
+                        fh = tf.extractfile(member)
+                        if fh is None:
+                            continue
+                        data = yaml.safe_load(fh.read().decode("utf-8"))
+                        if isinstance(data, dict):
+                            return data, None
+                        return None, f"{MANIFEST} in {path.name} is not a mapping"
+        except (OSError, tarfile.TarError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            return None, f"cannot read {path.name}: {exc}"
+        return None, f"{MANIFEST} not found in {path.name}"
+
+    if path.is_dir() and (path / MANIFEST).is_file():
+        try:
+            data = yaml.safe_load((path / MANIFEST).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            return None, f"cannot read {path / MANIFEST}: {exc}"
+        if not isinstance(data, dict):
+            return None, f"{path / MANIFEST} is not a mapping"
+        return data, None
+
+    return None, None
+
+
+def _find_pack_manifest_path(pack_id: str, installed_dir: Path | None = None) -> Path | None:
+    """Locate the installed `.toolpack.yaml` for *pack_id*, or None."""
+    from adk.pack_author import MANIFEST
+
+    if installed_dir is not None:
+        candidate = installed_dir / MANIFEST
+        if candidate.is_file():
+            return candidate
+
+    home_candidate = Path.home() / ".aitheros" / "packs" / pack_id / MANIFEST
+    if home_candidate.is_file():
+        return home_candidate
+
+    manifest_obj = _local_pack_manifests().get(pack_id)
+    if manifest_obj is not None:
+        for attr in ("source_dir", "pack_dir", "root", "path", "directory"):
+            raw = getattr(manifest_obj, attr, None)
+            if not raw:
+                continue
+            p = Path(raw)
+            if p.is_file() and p.name == MANIFEST:
+                return p
+            if p.is_dir() and (p / MANIFEST).is_file():
+                return p / MANIFEST
+    return None
+
+
+def _validate_pack_schedules(
+    pack_id: str,
+    manifest: dict | None,
+    *,
+    require_run_fields: bool = True,
+) -> tuple[list[dict], str | None]:
+    """Validate declarative `schedules:` entries in `.toolpack.yaml`.
+
+    Platform-first safety gate: refuses ``shell`` and ``python`` executors; only
+    allows ``session``, ``agent``, ``awrun``, and ``http``.
+    """
+    if not isinstance(manifest, dict):
+        return [], None
+    raw = manifest.get("schedules")
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return [], f"Pack '{pack_id}' manifest `schedules` must be a list"
+
+    validated: list[dict] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            return [], f"Pack '{pack_id}' schedule #{idx + 1} must be a mapping"
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            return [], f"Pack '{pack_id}' schedule #{idx + 1} is missing `name`"
+        executor = str(entry.get("executor") or "session").strip().lower()
+        if executor not in _PACK_ALLOWED_SCHEDULE_EXECUTORS:
+            allowed = ", ".join(sorted(_PACK_ALLOWED_SCHEDULE_EXECUTORS))
+            return [], (
+                f"Refusing schedule '{name}' in pack '{pack_id}': executor "
+                f"'{executor}' is not allowed (allowed: {allowed})"
+            )
+        if require_run_fields:
+            every = str(entry.get("every") or "").strip()
+            run_cmd = str(entry.get("run") or "").strip()
+            if not every or not run_cmd:
+                return [], (
+                    f"Pack '{pack_id}' schedule '{name}' requires non-empty `every` and `run`"
+                )
+        validated.append(entry)
+    return validated, None
+
+
+def _sync_pack_schedules(pack_id: str, schedules: list[dict], *, enable: bool) -> int:
+    """Sync declarative `.toolpack.yaml` `schedules:` into `awrise` (fail-soft if absent)."""
+    import shutil
+    import subprocess
+
+    if not schedules:
+        return 0
+
+    awrise_bin = shutil.which("awrise")
+    if not awrise_bin:
+        print(
+            f"warning: 'awrise' is not installed on PATH; skipping sync of "
+            f"{len(schedules)} schedule(s) for '{pack_id}'."
+        )
+        return 0
+
+    if not enable:
+        disabled: list[str] = []
+        for sched in schedules:
+            name = str(sched.get("name") or "").strip()
+            if not name:
+                continue
+            proc = subprocess.run(
+                [awrise_bin, "disable", "--name", name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if proc.returncode == 0:
+                disabled.append(name)
+            else:
+                detail = (proc.stderr or proc.stdout or "").strip()
+                print(f"warning: awrise disable '{name}' returned {proc.returncode}: {detail}")
+        if disabled:
+            print(
+                f"Disabled {len(disabled)} awrise schedule(s) for '{pack_id}': "
+                + ", ".join(disabled)
+            )
+        return 0
+
+    existing_jobs: set[str] = set()
+    listed = subprocess.run(
+        [awrise_bin, "list", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if listed.returncode == 0 and listed.stdout.strip():
+        try:
+            parsed = json.loads(listed.stdout)
+            if isinstance(parsed, dict):
+                existing_jobs = {str(k) for k in parsed.keys()}
+            elif isinstance(parsed, list):
+                existing_jobs = {
+                    str(item["name"])
+                    for item in parsed
+                    if isinstance(item, dict) and item.get("name")
+                }
+        except ValueError:
+            pass
+
+    synced: list[str] = []
+    for sched in schedules:
+        name = str(sched["name"]).strip()
+        every = str(sched["every"]).strip()
+        run_cmd = str(sched["run"]).strip()
+        executor = str(sched.get("executor") or "session").strip().lower()
+        permission_mode = str(sched.get("permission_mode") or "default").strip()
+        timeout_val = sched.get("timeout", sched.get("timeout_s"))
+        at_val = sched.get("at")
+        missed_val = sched.get("missed")
+        cwd_raw = sched.get("cwd")
+        cwd_val = str(Path(str(cwd_raw)).expanduser()) if cwd_raw else None
+        report_relay = sched.get("report_relay", "#decisions")
+        card_after = sched.get("card_after", 1)
+
+        bearer_raw = sched.get("bearer_file")
+        if bearer_raw:
+            bearer_file: str | None = str(Path(str(bearer_raw)).expanduser())
+        elif executor == "session":
+            default_token = Path.home() / ".aither" / "harness_token"
+            bearer_file = str(default_token) if default_token.is_file() else None
+        else:
+            bearer_file = None
+
+        def _update_existing() -> int:
+            set_args = [
+                f"every={every}",
+                f"run={run_cmd}",
+                f"executor={executor}",
+            ]
+            if executor == "session" and permission_mode:
+                set_args.append(f"permission_mode={permission_mode}")
+            if bearer_file:
+                set_args.append(f"bearer_file={bearer_file}")
+            if timeout_val is not None and str(timeout_val).strip():
+                set_args.append(f"timeout_s={int(timeout_val)}")
+            if at_val is not None and str(at_val).strip():
+                set_args.append(f"at={str(at_val).strip()}")
+            if missed_val is not None and str(missed_val).strip():
+                set_args.append(f"missed={str(missed_val).strip()}")
+            if cwd_val:
+                set_args.append(f"cwd={cwd_val}")
+            if report_relay is not None and str(report_relay).strip():
+                set_args.append(f"report.relay={str(report_relay).strip()}")
+            if card_after is not None and str(card_after).strip() != "":
+                set_args.append(f"report.card_after={int(card_after)}")
+
+            p_set = subprocess.run(
+                [awrise_bin, "set", "--name", name, *set_args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if p_set.returncode != 0:
+                detail = (p_set.stderr or p_set.stdout or "").strip()
+                print(f"error: awrise set '{name}' failed: {detail}")
+                return 1
+            p_en = subprocess.run(
+                [awrise_bin, "enable", "--name", name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if p_en.returncode != 0:
+                detail = (p_en.stderr or p_en.stdout or "").strip()
+                print(f"error: awrise enable '{name}' failed: {detail}")
+                return 1
+            return 0
+
+        if name in existing_jobs:
+            if _update_existing() != 0:
+                return 1
+            synced.append(name)
+            continue
+
+        add_cmd = [
+            awrise_bin, "add",
+            "--name", name,
+            "--every", every,
+            "--run", run_cmd,
+            "--executor", executor,
+        ]
+        if executor == "session" and permission_mode:
+            add_cmd += ["--permission-mode", permission_mode]
+        if bearer_file:
+            add_cmd += ["--bearer-file", bearer_file]
+        if timeout_val is not None and str(timeout_val).strip():
+            add_cmd += ["--timeout", str(int(timeout_val))]
+        if at_val is not None and str(at_val).strip():
+            add_cmd += ["--at", str(at_val).strip()]
+        if missed_val is not None and str(missed_val).strip():
+            add_cmd += ["--missed", str(missed_val).strip()]
+        if cwd_val:
+            add_cmd += ["--cwd", cwd_val]
+        if report_relay is not None and str(report_relay).strip():
+            add_cmd += ["--report-relay", str(report_relay).strip()]
+        if card_after is not None and str(card_after).strip() != "":
+            add_cmd += ["--card-after", str(int(card_after))]
+
+        p_add = subprocess.run(add_cmd, capture_output=True, text=True, timeout=30)
+        if p_add.returncode != 0:
+            combined = f"{p_add.stderr or ''} {p_add.stdout or ''}".lower()
+            if "already exists" in combined:
+                if _update_existing() != 0:
+                    return 1
+            else:
+                detail = (p_add.stderr or p_add.stdout or "").strip()
+                print(f"error: awrise add '{name}' failed: {detail}")
+                return 1
+        synced.append(name)
+
+    if synced:
+        print(
+            f"Armed {len(synced)} awrise schedule(s) for '{pack_id}': "
+            + ", ".join(synced)
+        )
+    return 0
+
+
+def _cmd_pack_enable(pack_id: str, *, enable: bool, allow_community: bool = False) -> int:
+    """``adk pack enable|disable <id|bundle|dir>``.
+
+    Enable supports a single-command workflow:
+    - When *pack_id* is a local ``.tar.gz``/``.tgz`` bundle or a pack directory
+      containing ``.toolpack.yaml``, installs/replaces it first and resolves its
+      canonical manifest ``id``.
+    - Otherwise resolves the id across awpack, Library and awnode ext
+      (``adk.addons``), installing it when missing.
+    - Adds/removes the pack from ``required_packs`` in ``~/.aither/config.yaml``.
+    - Syncs any declarative ``schedules:`` in ``.toolpack.yaml`` into ``awrise``
+      (arming/updating on enable, disabling on disable).
+    """
+    import tempfile
+    import yaml
     from adk.addon_lock import lookup
+    from adk.pack_author import MANIFEST, build, install_local, is_local_bundle
+
     saved = load_saved_config()
     enabled = [p for p in (saved.get("required_packs") or []) if p]
     bare = pack_id.split(":", 1)[1] if pack_id.split(":", 1)[0] in (
-        "awpack", "library", "ext", "awnode-ext") else pack_id
+        "awpack", "library", "ext", "awnode-ext", "community") else pack_id
+
     if not enable:
         if bare not in enabled:
             print(f"Pack '{bare}' is not enabled")
             return 1
+        manifest_path = _find_pack_manifest_path(bare)
+        schedules: list[dict] = []
+        if manifest_path is not None:
+            try:
+                manifest_data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+                schedules, _err = _validate_pack_schedules(
+                    bare, manifest_data, require_run_fields=False
+                )
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                schedules = []
         save_saved_config({"required_packs": [p for p in enabled if p != bare]})
-        print(f"Pack '{bare}' disabled. Restart the agent to drop its tools.")
+        _sync_pack_schedules(bare, schedules, enable=False)
+        hub_reloaded = _reload_aw_hub_toolpacks()
+        if hub_reloaded:
+            print(f"Pack '{bare}' disabled. aw-hub toolpacks reloaded.")
+        else:
+            print(f"Pack '{bare}' disabled. Restart the agent to drop its tools.")
         return 0
-    row = lookup(bare)
-    kind = (row or {}).get("kind")
-    if row is None and bare not in _local_pack_manifests():
-        print(f"'{bare}' is not installed; installing it first.")
-        res = _addons_install(pack_id, allow_community=allow_community)
-        if _print_addon_result(res):
+
+    installed_dir: Path | None = None
+    local_manifest, local_err = _read_manifest_from_local_ref(pack_id)
+    if local_err:
+        print(f"install failed: {local_err}")
+        return 1
+
+    kind: str | None = None
+    if local_manifest is not None:
+        local_id = str(local_manifest.get("id") or bare).strip()
+        tier = str(local_manifest.get("tier") or "free").strip().lower()
+        if tier == "community" and not allow_community:
+            print(
+                f"Pack '{local_id}' is a community pack. "
+                "Re-run with --allow-community to install and enable it."
+            )
             return 1
-        kind = res.kind
+        # Validate declarative schedules BEFORE modifying disk/config.
+        schedules_pre, sched_err = _validate_pack_schedules(
+            local_id, local_manifest, require_run_fields=True
+        )
+        if sched_err:
+            print(sched_err)
+            return 1
+
+        src_path = Path(pack_id).expanduser()
+        try:
+            if is_local_bundle(pack_id):
+                target = install_local(src_path)
+            else:
+                with tempfile.TemporaryDirectory() as tmp:
+                    built = build(src_path, out_dir=tmp)
+                    target = install_local(built.tarball)
+        except (OSError, ValueError) as exc:
+            print(f"install failed: {exc}")
+            return 1
+
+        bare = target.name
+        installed_dir = target
+        kind = "library"
+        _record_pack_lock(
+            target.name,
+            version=str(local_manifest.get("version") or "local"),
+            source=f"file:{src_path.name}",
+            sha256=_local_marker_sha(target),
+            trust="local",
+            hash_of="tarball",
+            dest=str(target),
+        )
+        print(f"Pack installed from {src_path.name} to {target}")
+    else:
+        row = lookup(bare)
+        kind = (row or {}).get("kind")
+        if row is None and bare not in _local_pack_manifests():
+            print(f"'{bare}' is not installed; installing it first.")
+            res = _addons_install(pack_id, allow_community=allow_community)
+            if _print_addon_result(res):
+                return 1
+            kind = res.kind
+            if getattr(res, "id", None):
+                bare = str(res.id)
+
     if kind == "awnode-ext":
         from adk.addons import _brick
         rc, out, err = _brick("awnode", ["ext", "start", bare], timeout=300)
         print((out or err).strip())
         return 0 if rc == 0 else 1
+
+    manifest_path = _find_pack_manifest_path(bare, installed_dir=installed_dir)
+    manifest_data: dict | None = local_manifest
+    if manifest_data is None and manifest_path is not None:
+        try:
+            loaded = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                manifest_data = loaded
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            print(f"warning: could not read {manifest_path}: {exc}")
+
+    schedules, sched_err = _validate_pack_schedules(
+        bare, manifest_data, require_run_fields=True
+    )
+    if sched_err:
+        print(sched_err)
+        return 1
+
     if bare not in enabled:
         enabled.append(bare)
         save_saved_config({"required_packs": enabled})
-    print(f"Pack '{bare}' enabled. Its tools load on the agent's next start or "
-          "`adk pack` reload.")
+
+    if _sync_pack_schedules(bare, schedules, enable=True) != 0:
+        return 1
+
+    hub_reloaded = _reload_aw_hub_toolpacks()
+    if hub_reloaded:
+        print(f"Pack '{bare}' enabled. aw-hub toolpacks reloaded — tools are live over MCP.")
+    else:
+        print(f"Pack '{bare}' enabled. Its tools load on the agent's next start or "
+              "`adk pack` reload.")
     return 0
+
+
+def _reload_aw_hub_toolpacks() -> bool:
+    """Best-effort reload of the local aw-hub ``toolpacks`` brick after enable/disable."""
+    import urllib.error
+    import urllib.request
+    hub_home = Path(os.environ.get("AW_HUB_HOME") or (Path.home() / ".aither" / "aw-hub"))
+    token_path = hub_home / "token"
+    if not token_path.is_file():
+        return False
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+        if not token:
+            return False
+        port = int(os.environ.get("AW_HUB_PORT", "47933"))
+        body = json.dumps({"brick": "toolpacks"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/reload",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Aw-Hub-Token": token},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:  # noqa: S310 -- loopback
+            if resp.status != 200:
+                return False
+            data = json.loads(resp.read().decode("utf-8"))
+            return (
+                isinstance(data, dict)
+                and bool(data.get("ok"))
+                and not data.get("errors")
+                and "toolpacks" in (data.get("reloaded") or [])
+            )
+    except urllib.error.URLError:
+        return False
+    except Exception as exc:
+        print(f"Warning: aw-hub toolpacks reload failed: {exc}", file=sys.stderr)
+        return False
 
 
 def _pack_info_offline(pack_id: str, genesis_url: str) -> "dict | None":
@@ -14321,7 +15032,7 @@ _CLI_HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "bonsai-local",
     )),
     ("Agents, Packs & Tools", (
-        "agent", "agents", "invoke", "aeon", "create-app", "pack", "packs",
+        "agent", "agents", "bot", "invoke", "aeon", "create-app", "pack", "packs",
         "skills", "tools", "mcp", "acp", "addon", "component", "components",
         "install", "publish", "publish-preflight", "bricks", "connectors",
         "forge", "soul", "doc", "notebook", "briefs", "contribute",
@@ -14344,7 +15055,7 @@ _CLI_HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "fleet-host", "instance", "volunteer", "intel", "ambient", "x-session",
     )),
     ("Auth, Security & Diagnostics", (
-        "login", "logout", "register", "reregister", "whoami", "keys", "secret",
+        "auth", "login", "logout", "register", "reregister", "whoami", "keys", "secret",
         "vault", "license", "balance", "wallet", "costs", "spend", "crypto",
         "tenant", "operator", "host", "admin", "status", "doctor", "upgrade",
         "autoupdate", "connect", "disconnect", "deploy", "gateway", "integrate",
@@ -14366,6 +15077,8 @@ class _GroupedArgumentParser(argparse.ArgumentParser):
     while keeping 100% flat ``adk <command>`` dispatch unchanged."""
 
     def format_help(self) -> str:
+        if self.prog != "adk":
+            return super().format_help()
         sub_action = next(
             (a for a in self._actions if isinstance(a, argparse._SubParsersAction)),
             None,
@@ -14552,6 +15265,9 @@ def _register_commands(sub):
     run_p.add_argument("-m", "--model", help="Model name")
     run_p.add_argument("-f", "--fleet", help="Fleet YAML config")
     run_p.add_argument("-a", "--agents", help="Comma-separated agent identities")
+    run_p.add_argument("--bot", default=None, help="Serve a declarative bot directory (bot.yaml)")
+    run_p.add_argument("--bot-backend", default=None, help="Override LLM backend for --bot")
+    run_p.add_argument("--bot-prefix", default="", help="Optional URL prefix for --bot")
     run_p.add_argument("--mesh", action="store_true",
                        help="Enable mesh hosting (advertise tools/inference to connected desktop)")
     run_p.add_argument("--crystal", metavar="SCOPE", default="",
@@ -14735,14 +15451,17 @@ def _register_commands(sub):
     reregister_p.add_argument("--portal", default=_control_plane(),
                               help="Portal URL (default: veil.aitherium.com)")
 
-    # adk stack — supervise the consumer stack (Room + llama.cpp); was `adk up`
-    stack_p = sub.add_parser("stack", help="Start the consumer stack (Room + llama.cpp) as native processes")
-    stack_p.add_argument("service", nargs="?", default="default",
-                         help="Service to start: default (Room+llama.cpp), qdrant (local Qdrant)")
+    # adk stack — unified AitherOS stack setup/sync/status + legacy consumer stack
+    stack_p = sub.add_parser(
+        "stack",
+        help="Sync, check, and bring up the full local AitherOS stack (up|sync|status) or supervise Room+llama.cpp",
+    )
     stack_p.add_argument("--interval", type=int, default=10,
-                         help="Health check interval in seconds (default: 10)")
+                         help="Health check interval in seconds for legacy consumer stack (default: 10)")
     stack_p.add_argument("--no-sync", action="store_true",
-                         help="Skip the license-driven pack sync before starting")
+                         help="Skip the license-driven pack sync before starting legacy consumer stack")
+    from adk.stack_setup import add_stack_subparsers as _add_stack_subparsers
+    _add_stack_subparsers(stack_p)
 
     # adk wizard — first-run setup
     wizard_p = sub.add_parser("wizard", help="First-run wizard — hardware detection, setup recommendations, auth token")
@@ -15627,6 +16346,119 @@ def _register_commands(sub):
         help="launch the Discord bot after onboarding (stays connected)")
     onboard_p.add_argument("--skip-pack-install", action="store_true",
         help="don't `adk install` the --pack (assume it's already installed)")
+    onboard_p.add_argument("--bot", action="store_true",
+        help="Self-setup wizard for Gemini-style (AitherGem) or OpenAI-style (AitherGPT) bots (supports awzeal/zero-libc)")
+    onboard_p.add_argument("--gemini-bot", action="store_true",
+        help="Shortcut for --bot --style gemini (AitherGem)")
+    onboard_p.add_argument("--openai-bot", action="store_true",
+        help="Shortcut for --bot --style openai (AitherGPT)")
+    onboard_p.add_argument("--style", choices=("gemini", "openai"), default=None,
+        help="Bot style with --bot: gemini or openai")
+    onboard_p.add_argument("--name", default=None,
+        help="Bot display name or id (with --bot)")
+    onboard_p.add_argument("--dir", dest="bot_dir", default=None,
+        help="Target directory for --bot")
+    onboard_p.add_argument(
+        "--backend",
+        choices=("auto", "aither", "gemini", "openai", "llamacpp", "vllm", "mock", "awzeal", "zero-libc"),
+        default=None,
+        help="Bot LLM backend (with --bot; includes awzeal and zero-libc)",
+    )
+    onboard_p.add_argument("--model", default=None,
+        help="Bot model override (with --bot)")
+    onboard_p.add_argument("--instructions", default=None,
+        help="System instructions / system_instruction (with --bot)")
+    onboard_p.add_argument("--description", default="",
+        help="Bot description (with --bot)")
+    onboard_p.add_argument("--provider-key", default=None,
+        help="BYOK provider API key (stored only in ~/.aither/provider_keys.json, never bot.yaml)")
+    onboard_p.add_argument("--model-sha256", default=None,
+        help="Expected SHA-256 hex digest for local/awzeal/zero-libc model weights")
+    onboard_p.add_argument("--shared-ro-mmap", action="store_true",
+        help="Enable shared read-only weight mmap (D5_shared_ro) for awzeal/zero-libc")
+    onboard_p.add_argument(
+        "--target-surface",
+        choices=("standard", "awnix", "awzeal"),
+        default="standard",
+        help="Deployment target surface for --bot",
+    )
+    onboard_p.add_argument("--overwrite", action="store_true",
+        help="Overwrite existing files in --dir when scaffolding with --bot")
+    onboard_p.add_argument("--bot-dir", dest="bot_dir", default=None,
+        help="Declarative bot directory (bot.yaml) for --discord")
+    onboard_p.add_argument("--dry-run", action="store_true",
+        help="Validate and build invite/config offline without live network calls (for --discord)")
+
+    # adk bot — declarative Gemini-style / OpenAI-style bots
+    bot_p = sub.add_parser(
+        "bot",
+        help="Scaffold, validate, dev-serve, chat, verify (awseal.json), and deploy (awzeal/zero-libc, awrun confinement) Gemini/OpenAI bots",
+    )
+    bot_sub = bot_p.add_subparsers(dest="verb")
+    _bot_styles = ("gemini", "openai")
+    _bot_backends = (
+        "auto", "aither", "gemini", "openai", "llamacpp", "vllm", "mock", "awzeal", "zero-libc"
+    )
+    _bot_surfaces = ("standard", "awnix", "awzeal")
+
+    bot_new_p = bot_sub.add_parser(
+        "new",
+        help="Scaffold a new Gemini-style or OpenAI-style bot (supports awzeal/zero-libc)",
+    )
+    bot_new_p.add_argument("name", help="Bot display name or id")
+    bot_new_p.add_argument("--style", choices=_bot_styles, default="gemini")
+    bot_new_p.add_argument("--dir", dest="target_dir", default=None, help="Output directory")
+    bot_new_p.add_argument("--backend", choices=_bot_backends, default="auto")
+    bot_new_p.add_argument("--model", default=None)
+    bot_new_p.add_argument("--instructions", default=None)
+    bot_new_p.add_argument("--description", default="")
+    bot_new_p.add_argument("--model-sha256", dest="model_sha256", default=None)
+    bot_new_p.add_argument("--shared-ro-mmap", dest="shared_ro_mmap", action="store_true")
+    bot_new_p.add_argument("--target-surface", dest="target_surface", choices=_bot_surfaces, default="standard")
+    bot_new_p.add_argument("--overwrite", action="store_true")
+
+    bot_val_p = bot_sub.add_parser("validate", help="Static zero-execution BOT001-BOT008 validation")
+    bot_val_p.add_argument("bot_dir", nargs="?", default=".")
+    bot_val_p.add_argument("--allow-local-action-urls", action="store_true")
+    bot_val_p.add_argument("--json", action="store_true", dest="as_json")
+
+    bot_dev_p = bot_sub.add_parser("dev", help="Serve the bot locally with Playground UI")
+    bot_dev_p.add_argument("bot_dir", nargs="?", default=".")
+    bot_dev_p.add_argument("--host", default="127.0.0.1")
+    bot_dev_p.add_argument("--port", type=int, default=8095)
+    bot_dev_p.add_argument("--backend", default=None)
+    bot_dev_p.add_argument("--allow-local-actions", action="store_true")
+
+    bot_chat_p = bot_sub.add_parser("chat", help="Send a single prompt to a bot directory")
+    bot_chat_p.add_argument("bot_dir", nargs="?", default=".")
+    bot_chat_p.add_argument("-m", "--message", required=True)
+    bot_chat_p.add_argument("--backend", default=None)
+    bot_chat_p.add_argument("--allow-local-actions", action="store_true")
+    bot_chat_p.add_argument("--json", action="store_true", dest="as_json")
+
+    bot_ver_p = bot_sub.add_parser(
+        "verify",
+        help="Verify an awseal.json signed bot bundle (fail-closed)",
+    )
+    bot_ver_p.add_argument("bot_dir", nargs="?", default=".")
+    bot_ver_p.add_argument("--key", default=None, help="Expected 64-hex Ed25519 publisher key")
+    bot_ver_p.add_argument("--json", action="store_true", dest="as_json")
+
+    bot_dep_p = bot_sub.add_parser(
+        "deploy",
+        help="Package or deploy a bot (local|discord|fleet|awrun confinement & awseal.json)",
+    )
+    bot_dep_p.add_argument("bot_dir", nargs="?", default=".")
+    bot_dep_p.add_argument("--target", choices=("local", "discord", "fleet", "awrun"), default="local")
+    bot_dep_p.add_argument("--out", dest="out_dir", default=None)
+    bot_dep_p.add_argument("--port", type=int, default=8095)
+    bot_dep_p.add_argument("--fleet-url", default="")
+    bot_dep_p.add_argument("--token", default="")
+    bot_dep_p.add_argument("--discord-token", default="")
+    bot_dep_p.add_argument("--dry-run", dest="dry_run", action="store_true", default=True)
+    bot_dep_p.add_argument("--no-dry-run", dest="dry_run", action="store_false")
+    bot_dep_p.add_argument("--allow-local-action-urls", action="store_true")
+    bot_dep_p.add_argument("--json", action="store_true", dest="as_json")
 
     # adk enroll — register workstation with control plane
     enroll_p = sub.add_parser("enroll", help="Register this workstation with the control plane")
@@ -15669,7 +16501,10 @@ def _register_commands(sub):
     rc_p = sub.add_parser(
         "rc",
         help="Remote control: enrol this machine and hold the link so its "
-             "sessions are reachable from your phone")
+             "sessions are reachable from your phone (supports status, off, --name)")
+    rc_p.add_argument(
+        "--name", default=None,
+        help="Custom instance slug (e.g. dev-box)")
     rc_p.add_argument(
         "--node-class", choices=["phone", "laptop", "desktop", "deck", "spark", "sovereign"],
         default=None,
@@ -15685,6 +16520,30 @@ def _register_commands(sub):
     rc_p.add_argument(
         "--once", action="store_true",
         help="Enrol, start the link and exit instead of holding the foreground")
+    rc_p.add_argument(
+        "--runtime-tier",
+        choices=("standard", "zero-libc", "awzeal"),
+        default=None,
+        help="Runtime TCB posture advertised on hello (standard|zero-libc|awzeal)")
+    rc_p.add_argument(
+        "--zero-libc",
+        action="store_true",
+        default=None,
+        help="Advertise zero-libc minimal-TCB posture")
+    rc_sub = rc_p.add_subparsers(dest="rc_command")
+    rc_status_p = rc_sub.add_parser("status", help="Show Remote Control status (--json)")
+    rc_status_p.add_argument("--json", action="store_true", help="Print JSON status")
+    rc_status_p.add_argument(
+        "--harness-url",
+        default=argparse.SUPPRESS,
+        help="Local session daemon URL",
+    )
+    rc_off_p = rc_sub.add_parser("off", help="Stop Remote Control and clear persisted state")
+    rc_off_p.add_argument(
+        "--harness-url",
+        default=argparse.SUPPRESS,
+        help="Local session daemon URL",
+    )
 
     # adk devices — the devices enrolled in your workspace (one registry)
     devices_p = sub.add_parser(
@@ -15799,14 +16658,20 @@ def _register_commands(sub):
     publish_p.add_argument("--subscription-cents", type=int, default=0,
                            help="Monthly price in cents (default 0)")
 
-    # adk admin — administration commands
-    admin_p = sub.add_parser("admin", help="Administration commands")
+    # adk admin — administration commands + Windows ADAC-style platform scripts
+    admin_p = sub.add_parser(
+        "admin",
+        help="Platform administration & ADAC script generator (directory, appliances, workflows, invites)",
+    )
     admin_sub = admin_p.add_subparsers(dest="admin_command")
     admin_token_p = admin_sub.add_parser("create-token",
                                           help="Create a node token on the desktop for mesh enrollment")
     admin_token_p.add_argument("--name", default="", help="Node name (default: hostname)")
     admin_token_p.add_argument("--url", default="http://localhost:8001",
                                help="Genesis URL (default: http://localhost:8001)")
+    from adk.adac import register_admin_adac_subparsers
+
+    register_admin_adac_subparsers(admin_sub)
 
     # adk disconnect — leave desktop mesh
     sub.add_parser("disconnect", help="Disconnect from desktop AitherOS mesh")
@@ -15928,9 +16793,12 @@ def _register_commands(sub):
     secret_sub.add_parser("list", help="List all stored secret keys (values not shown)")
     secret_get_p = secret_sub.add_parser("get", help="Get a secret value")
     secret_get_p.add_argument("name", help="Secret name")
-    secret_set_p = secret_sub.add_parser("set", help="Store a secret in encrypted keyring")
-    secret_set_p.add_argument("name", help="Secret name")
-    secret_set_p.add_argument("value", help="Secret value")
+    secret_set_p = secret_sub.add_parser("set", help="Store a secret in encrypted keyring (literal, --from-file, @path, or --stdin)")
+    secret_set_p.add_argument("name", nargs="?", help="Secret name (optional when --from-file is KEY=VALUE or JSON)")
+    secret_set_p.add_argument("value", nargs="?", help="Secret value, @<file_path>, or '-' for stdin")
+    secret_set_p.add_argument("-f", "--from-file", dest="from_file", help="Read secret(s) from a downloaded token/env/json file (never hits shell history)")
+    secret_set_p.add_argument("--stdin", action="store_true", help="Read secret value from stdin")
+    secret_set_p.add_argument("--delete-source", "--shred", dest="delete_source", action="store_true", help="Delete the source token file after storing in keyring")
     secret_pull_p = secret_sub.add_parser("pull", help="Pull secrets from platform vault")
     secret_pull_p.add_argument("--secrets-url", help="AitherSecrets URL (default: from env)")
     secret_pull_p.add_argument("--gateway-url", help="Gateway URL (fallback, default: from env)")
@@ -16752,11 +17620,13 @@ def _register_commands(sub):
     pack_neg_p.add_argument("--offer", type=int, required=True, help="Your offer in Aitherium credits")
     pack_neg_p.add_argument("--why", default="", help="Optional rationale for the Broker")
     pack_enable_p = pack_sub.add_parser(
-        "enable", help="Enable a pack on this agent (installs it first when missing)")
-    pack_enable_p.add_argument("pack_id", help="Pack ID to enable")
+        "enable", help="Enable a pack (installs bundle/id when missing and syncs schedules)")
+    pack_enable_p.add_argument(
+        "pack_id", help="Pack ID, local .tar.gz bundle, or pack directory to enable")
     pack_enable_p.add_argument("--allow-community", action="store_true",
                                help="Allow installing a community pack first")
-    pack_disable_p = pack_sub.add_parser("disable", help="Disable an enabled pack")
+    pack_disable_p = pack_sub.add_parser(
+        "disable", help="Disable an enabled pack and its declarative schedules")
     pack_disable_p.add_argument("pack_id", help="Pack ID to disable")
     pack_remove_p = pack_sub.add_parser("remove", help="Remove an installed pack")
     pack_remove_p.add_argument("pack_id", help="Pack ID to remove")
@@ -17361,6 +18231,10 @@ def _register_commands(sub):
     # adk free-cloud — FreeLLMAPI, your own free-tier keys (adk/commands/free_cloud.py)
     from adk.commands.free_cloud import register_parser as _register_free_cloud
     _register_free_cloud(sub)
+
+    # adk auth — External OAuth providers (e.g. Google AI Plan) (adk/commands/auth.py)
+    from adk.commands.auth import register_parser as _register_auth
+    _register_auth(sub)
 
     # adk crypto — self-service crypto payment settings (adk/commands/crypto.py)
     from adk.commands.crypto import register_parser as _register_crypto
@@ -18315,7 +19189,38 @@ _PASSTHROUGH_VERBS = {
     "discover": ("adk.discovery.cli", "main"),
     "catalog": ("adk.catalog", "cli_main"),
     "approvals": ("adk.approvals_cmd", "main"),
+    "bot": ("adk.bots.cli_entry", "bot_main"),
 }
+
+_RC_VALUE_FLAGS = frozenset({
+    "--name",
+    "--node-class",
+    "--harness-url",
+    "--token-ttl-days",
+    "--api-key",
+    "--runtime-tier",
+})
+
+
+def _normalize_rc_argv(raw_argv: list[str]) -> list[str]:
+    """Normalize ``adk rc`` args for ``adk.rc.main`` without rejecting unknown flags/subcommands."""
+    sub_idx: int | None = None
+    i = 0
+    while i < len(raw_argv):
+        tok = raw_argv[i]
+        if tok in _RC_VALUE_FLAGS:
+            i += 2
+            continue
+        if any(tok.startswith(f + "=") for f in _RC_VALUE_FLAGS):
+            i += 1
+            continue
+        if tok in ("status", "off"):
+            sub_idx = i
+            break
+        i += 1
+    if sub_idx is not None and sub_idx > 0:
+        return [raw_argv[sub_idx], *raw_argv[:sub_idx], *raw_argv[sub_idx + 1:]]
+    return list(raw_argv)
 
 
 def main():
@@ -18357,6 +19262,17 @@ def main():
         import importlib
         _mod, _fn = _PASSTHROUGH_VERBS[sys.argv[1]]
         sys.exit(getattr(importlib.import_module(_mod), _fn)(sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "rc":
+        _rc_raw = list(sys.argv[2:])
+        _is_rc_help = _rc_raw in (["-h"], ["--help"]) or (
+            len(_rc_raw) >= 2
+            and _rc_raw[0] in ("status", "off")
+            and set(_rc_raw[1:]).issubset({"-h", "--help"})
+        )
+        if not _is_rc_help:
+            from adk.rc import main as rc_main
+            sys.exit(rc_main(_normalize_rc_argv(_rc_raw)))
 
     parser = _GroupedArgumentParser(
         prog="adk",
@@ -18562,9 +19478,44 @@ def main():
     elif args.command == "operator":
         from adk.operator_cli import cmd_operator
         sys.exit(cmd_operator(args))
+    elif args.command == "bot":
+        from adk.bots.cli_entry import bot_main
+        bot_argv = sys.argv[2:] if (len(sys.argv) > 1 and sys.argv[1] == "bot") else (
+            [args.verb] if getattr(args, "verb", None) else []
+        )
+        sys.exit(bot_main(bot_argv))
     elif args.command == "rc":
-        from adk.rc import cmd_rc
-        sys.exit(cmd_rc(args))
+        from adk.rc import main as rc_main
+        rc_cmd = getattr(args, "rc_command", None)
+        rc_argv: list[str] = []
+        if rc_cmd == "status":
+            rc_argv.append("status")
+            if getattr(args, "json", False):
+                rc_argv.append("--json")
+            if getattr(args, "harness_url", None) is not None:
+                rc_argv += ["--harness-url", args.harness_url]
+        elif rc_cmd == "off":
+            rc_argv.append("off")
+            if getattr(args, "harness_url", None) is not None:
+                rc_argv += ["--harness-url", args.harness_url]
+        else:
+            if getattr(args, "name", None) is not None:
+                rc_argv += ["--name", args.name]
+            if getattr(args, "node_class", None) is not None:
+                rc_argv += ["--node-class", args.node_class]
+            if getattr(args, "harness_url", None) is not None:
+                rc_argv += ["--harness-url", args.harness_url]
+            if getattr(args, "token_ttl_days", 30) != 30:
+                rc_argv += ["--token-ttl-days", str(args.token_ttl_days)]
+            if getattr(args, "api_key", None) is not None:
+                rc_argv += ["--api-key", args.api_key]
+            if getattr(args, "once", False):
+                rc_argv.append("--once")
+            if getattr(args, "runtime_tier", None) is not None:
+                rc_argv += ["--runtime-tier", args.runtime_tier]
+            if getattr(args, "zero_libc", None):
+                rc_argv.append("--zero-libc")
+        sys.exit(rc_main(rc_argv))
     elif args.command == "host":
         sys.exit(cmd_host(args))
     elif args.command == "integrate":
@@ -18848,6 +19799,9 @@ def main():
     elif args.command == "free-cloud":
         from adk.commands.free_cloud import cmd_free_cloud
         sys.exit(cmd_free_cloud(args))
+    elif args.command == "auth":
+        from adk.commands.auth import cmd_auth
+        sys.exit(cmd_auth(args))
     elif args.command == "crypto":
         from adk.commands.crypto import cmd_crypto
         sys.exit(cmd_crypto(args))

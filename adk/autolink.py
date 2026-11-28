@@ -20,7 +20,7 @@ path-scoped link token is advertised (see ``adk.rc``).
 
 from __future__ import annotations
 
-__all__ = ["autolink_enabled", "start_autolink", "announce_code"]
+__all__ = ["autolink_enabled", "start_autolink", "stop_autolink", "announce_code"]
 
 import asyncio
 import json
@@ -32,6 +32,7 @@ import socket
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,7 @@ log = logging.getLogger("adk.autolink")
 
 PENDING_PATH = Path.home() / ".aither" / "pending-signin.json"
 RETRY_S = (30, 60, 120, 300)
+_STOP_EVENT = threading.Event()
 
 
 def autolink_enabled() -> bool:
@@ -103,6 +105,13 @@ def announce_code(user_code: str, uri: str, expires_in: int) -> None:
     if not awask:
         log.warning("autolink: approve %s at %s (code %s)", host, uri, user_code)
         return
+    try:
+        from adk.rc import load_rc_state
+
+        active_url = str(load_rc_state().get("rc_url") or "").strip()
+    except Exception:  # noqa: BLE001
+        active_url = ""
+    sessions_hint = active_url or "https://a30.link (alias https://tunnel.aitherium.com, web https://app.aitherium.com/code)"
     minutes = max(1, int((expires_in or 900) // 60))
     cmd = [
         awask, "ask", "--kind", "decision", "--urgency", "high",
@@ -112,7 +121,7 @@ def announce_code(user_code: str, uri: str, expires_in: int) -> None:
         "--detail", (
             f"One tap: {uri} -- signed in, it connects {host} at once; otherwise sign "
             f"in first and it connects on the way back. Its live agent sessions then "
-            f"show at https://api.aitherium.com/code. Expires in {minutes} min; a "
+            f"show at {sessions_hint}. Expires in {minutes} min; a "
             f"replacement card follows automatically and this one is withdrawn."
         ),
         f"Open the link to connect {host}",
@@ -169,6 +178,37 @@ async def _hold(harness_url: str) -> bool:
     """Enrol with the reverse link and hold it. False when enrolment was refused."""
     from adk.fleet_enroll import active_node_link, enroll_on_boot
     from adk.harnesses.daemon import mint_scoped_token
+    from adk.rc import (
+        app_code_url,
+        generate_instance_slug,
+        load_rc_state,
+        rc_url,
+        save_rc_state,
+        validate_instance_slug,
+    )
+
+    existing = load_rc_state()
+    raw_id = (
+        (os.environ.get("AITHER_RC_INSTANCE_ID") or "").strip()
+        or str(existing.get("instance_id") or "").strip()
+    )
+    try:
+        instance_id = validate_instance_slug(raw_id) if raw_id else generate_instance_slug()
+    except ValueError:
+        instance_id = generate_instance_slug()
+    started_at = str(existing.get("started_at") or "").strip() or datetime.now(
+        timezone.utc
+    ).isoformat(timespec="seconds")
+    save_rc_state({
+        "instance_id": instance_id,
+        "node_id": str(existing.get("node_id") or ""),
+        "rc_url": rc_url(instance_id),
+        "app_url": str(existing.get("app_url") or ""),
+        "pid": os.getpid(),
+        "started_at": started_at,
+        "harness_url": harness_url,
+        "rc_mode": "daemon",
+    })
 
     token = mint_scoped_token(f"node:{os.environ.get('AITHER_NODE_ID') or 'this-device'}")
     os.environ.setdefault("AITHER_FLEET_ENROLL", "1")
@@ -180,20 +220,38 @@ async def _hold(harness_url: str) -> bool:
         log.warning("autolink: enrolment refused: %s",
                     result.get("http_status") or result.get("error"))
         return False
-    log.info("autolink: enrolled as %s; holding the link", result.get("node_id"))
+    node_id = str(result.get("node_id") or "")
+    save_rc_state({
+        "instance_id": instance_id,
+        "node_id": node_id,
+        "rc_url": rc_url(instance_id),
+        "app_url": app_code_url(node_id) if node_id else "",
+        "pid": os.getpid(),
+        "started_at": started_at,
+        "harness_url": harness_url,
+        "rc_mode": "daemon",
+    })
+    link = active_node_link()
+    if link is not None:
+        link.instance_id = instance_id
+        link.rc_mode = "daemon"
+        if getattr(link, "_ws", None) is not None and hasattr(link, "send_hello"):
+            await link.send_hello()
+    log.info("autolink: enrolled as %s (%s); holding the link", node_id, instance_id)
     last: Optional[str] = None
-    while True:
+    while not _STOP_EVENT.is_set():
         await asyncio.sleep(30)
         link = active_node_link()
         now = link.reach_kind() if link is not None else "none"
         if now != last:
             log.info("autolink: reach %s", now)
             last = now
+    return True
 
 
 def _run(harness_url: str) -> None:
     attempt = 0
-    while True:
+    while not _STOP_EVENT.is_set():
         try:
             if not _signed_in() and not _sign_in():
                 time.sleep(5)  # a fresh code, right away: never leave a dead link
@@ -201,14 +259,21 @@ def _run(harness_url: str) -> None:
             asyncio.run(_hold(harness_url))
         except Exception as exc:  # noqa: BLE001 -- the daemon must outlive this thread's bugs
             log.warning("autolink: %s: %s", type(exc).__name__, exc)
-        time.sleep(RETRY_S[min(attempt, len(RETRY_S) - 1)])
+        if _STOP_EVENT.wait(RETRY_S[min(attempt, len(RETRY_S) - 1)]):
+            break
         attempt += 1
+
+
+def stop_autolink() -> None:
+    """Signal the autolink background loop to stop."""
+    _STOP_EVENT.set()
 
 
 def start_autolink(harness_url: str) -> Optional[threading.Thread]:
     """Start the autolink thread when opted in. Returns it, or None when off."""
     if not autolink_enabled():
         return None
+    _STOP_EVENT.clear()
     t = threading.Thread(target=_run, args=(harness_url,), name="adk-autolink", daemon=True)
     t.start()
     return t

@@ -22,9 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import os
 import re
 import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Awaitable, Callable
 
 DISCORD_API = "https://discord.com/api/v10"
 INVITE = "https://discord.com/oauth2/authorize"
@@ -235,11 +239,225 @@ def check(token: str, identity: str, tools_module: str | None = None) -> int:
     return 0
 
 
+# ── Declarative bot -> Discord bridge ──────────────────────────────────────
+
+
+class _BotDiscordAdapter:
+    """Adapt a :class:`adk.bots.runtime.BotRuntime` to ``agent_reply`` / ``make_discord_client``."""
+
+    def __init__(self, runtime: Any) -> None:
+        self.runtime = runtime
+        self.name = runtime.manifest.id
+
+    async def chat(self, text: str) -> SimpleNamespace:
+        from adk.llm.base import Message
+
+        turn = await self.runtime.generate([Message(role="user", content=text)])
+        return SimpleNamespace(
+            content=turn.text,
+            model=turn.model,
+            finish_reason=turn.finish_reason,
+        )
+
+
+def _run_coro_sync(coro: Awaitable[Any]) -> Any:
+    """Run an awaitable synchronously, using a worker thread if an event loop is active."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def make_bot_discord_client(runtime: Any):
+    """Construct a discord.py client backed by a declarative :class:`BotRuntime`."""
+    return make_discord_client(_BotDiscordAdapter(runtime))
+
+
+def onboard_bot_to_discord(
+    bot_dir: str | Path,
+    *,
+    token: str = "",
+    dry_run: bool = True,
+    run: bool = False,
+    backend: str | None = None,
+    allow_local_actions: bool = False,
+    out_dir: str | Path | None = None,
+    validate_token_fn: Callable[[str], Awaitable[dict[str, Any]] | dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Validate and wire a declarative ``bot.yaml`` directory for Discord.
+
+    Under R4 / ``dry_run=True`` (the default), validates ``bot.yaml`` fail-closed,
+    wires instructions + local tools/knowledge/actions into :class:`BotRuntime`,
+    computes an offline ``invite_url``, and performs ZERO live Discord HTTP or
+    gateway calls. Never writes Discord tokens into ``bot_dir``.
+    """
+    from adk.bots.deploy import export_identity_yaml
+    from adk.bots.manifest import load_bot_manifest
+    from adk.bots.runtime import BotRuntime
+    from adk.bots.validator import validate_bot
+
+    rep = validate_bot(bot_dir, allow_local_action_urls=allow_local_actions)
+    if not rep.ok:
+        return {
+            "ok": False,
+            "bot_dir": str(bot_dir),
+            "error": "; ".join(str(f) for f in rep.findings) or "Bot validation failed",
+            "findings": [{"code": f.code, "message": f.message} for f in rep.findings],
+            "dry_run": dry_run,
+            "token_validated": False,
+            "warnings": [],
+        }
+
+    manifest = load_bot_manifest(bot_dir)
+    runtime = BotRuntime(
+        bot_dir,
+        backend=backend,
+        allow_local_actions=allow_local_actions,
+    )
+    tok = (token or os.environ.get("DISCORD_BOT_TOKEN", "") or "").strip()
+
+    exported = export_identity_yaml(manifest, out_dir) if out_dir is not None else None
+    identity_payload = {
+        "name": manifest.id,
+        "role": "assistant",
+        "description": manifest.description or f"{manifest.name} ({manifest.style})",
+        "system_prompt": manifest.instructions,
+        "version": manifest.version,
+    }
+    inv_url = invite_url(tok) if tok else ""
+
+    warnings: list[str] = []
+    if not manifest.channels.discord:
+        warnings.append(
+            "`channels.discord` is false in bot.yaml; proceeding with Discord bridge as requested."
+        )
+    if not tok:
+        warnings.append("No Discord bot token supplied (--token or DISCORD_BOT_TOKEN).")
+
+    registered_tools = [t.name for t in runtime.registry.list_tools()]
+    token_validated = False
+    token_user: dict[str, Any] = {}
+
+    if not dry_run:
+        if not tok:
+            return {
+                "ok": False,
+                "bot_id": manifest.id,
+                "style": manifest.style,
+                "error": "No Discord bot token — pass --token or set DISCORD_BOT_TOKEN.",
+                "dry_run": False,
+                "token_validated": False,
+                "warnings": warnings,
+            }
+        validator_fn = validate_token_fn or validate_token
+        raw_res = validator_fn(tok)
+        res = _run_coro_sync(raw_res) if inspect.isawaitable(raw_res) else raw_res
+        if not isinstance(res, dict) or not res.get("ok"):
+            status = res.get("status", 0) if isinstance(res, dict) else 0
+            err_msg = res.get("error", str(res)) if isinstance(res, dict) else str(res)
+            return {
+                "ok": False,
+                "bot_id": manifest.id,
+                "style": manifest.style,
+                "status": status,
+                "error": f"Discord rejected the token (HTTP {status}): {err_msg}",
+                "dry_run": False,
+                "token_validated": False,
+                "warnings": warnings,
+            }
+        token_validated = True
+        token_user = {
+            "id": res.get("id"),
+            "username": res.get("username"),
+            "bot": bool(res.get("bot")),
+        }
+        if run:
+            client = make_bot_discord_client(runtime)
+
+            async def _run_client() -> None:
+                try:
+                    await client.start(tok)
+                finally:
+                    await client.close()
+
+            try:
+                _run_coro_sync(_run_client())
+            except KeyboardInterrupt:
+                pass
+            except Exception as exc:  # noqa: BLE001 — fail closed without leaking token
+                return {
+                    "ok": False,
+                    "bot_id": manifest.id,
+                    "style": manifest.style,
+                    "error": f"Could not connect to Discord ({type(exc).__name__}): {exc}",
+                    "dry_run": False,
+                    "token_validated": True,
+                    "warnings": warnings,
+                }
+
+    return {
+        "ok": True,
+        "bot_id": manifest.id,
+        "style": manifest.style,
+        "name": manifest.name,
+        "model": manifest.model,
+        "backend": manifest.backend,
+        "instructions": manifest.instructions,
+        "channels": manifest.channels.model_dump(),
+        "tools_declared": manifest.tools.model_dump(),
+        "registered_tools": registered_tools,
+        "invite_url": inv_url,
+        "identity": identity_payload,
+        "identity_path": str(exported) if exported else "",
+        "dry_run": dry_run,
+        "token_validated": token_validated,
+        "token_user": token_user,
+        "warnings": warnings,
+    }
+
+
 # ── CLI entry (used by ``adk onboard --discord``) ───────────────────────────
 
 
 def onboard_discord(args) -> int:
     """``adk onboard --discord`` — the automated onboarding chain."""
+    bot_dir = getattr(args, "bot_dir", None)
+    if bot_dir:
+        token = getattr(args, "token", None) or os.environ.get("DISCORD_BOT_TOKEN", "")
+        dry_run = bool(getattr(args, "dry_run", False))
+        do_run = bool(getattr(args, "run", False)) and not dry_run
+        print("\n  Deploy your declarative bot as a Discord bot\n")
+        res = onboard_bot_to_discord(
+            bot_dir,
+            token=token,
+            dry_run=dry_run,
+            run=do_run,
+            backend=getattr(args, "backend", None),
+            allow_local_actions=bool(getattr(args, "allow_local_actions", False)),
+        )
+        if not res.get("ok"):
+            print(f"✗ {res.get('error', 'Discord bot onboarding failed')}", file=sys.stderr)
+            return 2 if res.get("status") == 401 else 1
+        print(f"  bot: {res['bot_id']} ({res['style']}) | model: {res['model']}")
+        tools = res.get("registered_tools") or []
+        print(
+            f"  tools: {', '.join(tools[:12]) if tools else '(none registered)'}"
+            + (f" ({len(tools)} total)" if tools else "")
+        )
+        if res.get("invite_url"):
+            print(f"  invite link:  {res['invite_url']}")
+        for w in res.get("warnings") or []:
+            print(f"  ⚠ {w}")
+        if dry_run:
+            print("  (dry-run: skipped live Discord API validation and gateway launch)")
+        elif not do_run:
+            print(f"\n  Next: adk onboard --discord --bot-dir {bot_dir} --run")
+        return 0
+
     identity = getattr(args, "identity", None) or os.environ.get("ADK_AGENT", "aither")
     token = getattr(args, "token", None) or os.environ.get("DISCORD_BOT_TOKEN", "")
     tools_module = getattr(args, "tools_module", None)

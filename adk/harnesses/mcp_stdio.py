@@ -93,7 +93,7 @@ AGENT_TOKEN_FILE_ENV = "AITHER_HARNESS_AGENT_TOKEN_FILE"
 #: ``/posture`` follows ``/kvholder``: a read for any scoped caller, a set only with the
 #: owner's signed assertion (adk.harnesses.posture_routes), so the token alone flips nothing.
 AGENT_TOKEN_PATHS = ("/sessions", "/events", "/rooms", "/harnesses", "/steer",
-                     "/profiles", "/health", "/kvholder", "/posture")
+                     "/profiles", "/health", "/kvholder", "/posture", "/swarms")
 
 #: Hosts where minting is meaningful: the token lands in THIS machine's registry, so
 #: a daemon elsewhere would never know it and every call would 403.
@@ -1556,6 +1556,217 @@ TOOLS: list = [
                 "properties": {"run_id": {"type": "string"}},
                 "required": ["run_id"]},
      "fn": lambda a: _req("POST", "/awrun/cancel/%s" % a["run_id"], {})},
+
+    {"name": "awsh_swarm_list",
+     "description": ("List live and recent multi-agent Swarms from Genesis SwarmBoard "
+                     "along with this machine's local awsh harness capacity and Swarm UI URL."),
+     "schema": {"type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "optional filter: live|stalled|paused|done"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                }},
+     "fn": lambda a: _req(
+         "GET",
+         "/swarms?" + "&".join(
+             p for p in (
+                 ("status=%s" % quote(str(a["status"]), safe="")) if a.get("status") else "",
+                 ("limit=%d" % int(a["limit"])) if a.get("limit") else "",
+             ) if p
+         ) if (a.get("status") or a.get("limit")) else "/swarms",
+     )},
+
+    {"name": "awsh_swarm_status",
+     "description": ("Inspect one SwarmBoard session (Overview, Board, Members, Graph, "
+                     "stall alerts, and live UI URL). Omit swarm_id to inspect local "
+                     "Swarm + awsh harness capacity."),
+     "schema": {"type": "object",
+                "properties": {
+                    "swarm_id": {"type": "string", "description": "Swarm id (e.g. swm_1a2b3c4d)"},
+                    "probe": {"type": "boolean", "description": "When swarm_id is omitted, probe Genesis reachability"},
+                }},
+     "fn": lambda a: (
+         _req("GET", "/swarms/%s" % quote(str(a["swarm_id"]).strip(), safe=""))
+         if str(a.get("swarm_id") or "").strip()
+         else _req("GET", "/swarms/capacity?probe=true" if a.get("probe") else "/swarms/capacity")
+     )},
+
+    {"name": "awsh_swarm_launch",
+     "description": ("Launch a multi-agent SwarmBoard session (Genesis or local Room-backed). "
+                     "Supports named/pooled worker slots (fix-1..fix-N), owns/must_not_touch, "
+                     "awgit worktree/lease isolation, awrun confinement, and zero-libc/awzeal "
+                     "shared-RO weight metadata. OWNER-ONLY on the daemon."),
+     "schema": {"type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "Primary swarm goal"},
+                    "title": {"type": "string", "description": "Optional short swarm title"},
+                    "coordinator": {"type": "string", "description": "Lead acting as coordinator (default: aither)"},
+                    "leads": {"type": "array", "items": {"type": "string"},
+                              "description": "Optional slot/lead roster (auto-decomposed if omitted)"},
+                    "tasks": {"type": "array", "items": {"type": "object"},
+                              "description": "Optional explicit task/pool specs ({slot_id, pool, count, agent, title, goal, owns, must_not_touch, execution_mode, limits, egress, inference_runtime, shared_ro_mmap, model_path, model_sha256, cpu_pin})"},
+                    "effort": {"type": "integer", "minimum": 6, "maximum": 10},
+                    "local_only": {"type": "boolean"},
+                    "local_room": {"type": "boolean", "description": "Coordinate locally via Room-backed SwarmBoard without Genesis"},
+                    "use_worktree": {"type": "boolean"},
+                    "use_leases": {"type": "boolean"},
+                    "stall_timeout_s": {"type": "number", "minimum": 5},
+                    "execution_mode": {"type": "string", "enum": ["standard", "awrun"]},
+                    "limits": {"type": "object"},
+                    "egress": {"type": "object"},
+                    "isolation": {"type": "object"},
+                    "inference_runtime": {"type": "string", "enum": ["standard", "asm-llm", "awzeal"]},
+                    "shared_ro_mmap": {"type": "boolean", "description": "D5_shared_ro shared read-only weight mapping across pooled workers"},
+                    "model_path": {"type": "string"},
+                    "model_sha256": {"type": "string"},
+                    "cpu_pin": {"type": "string"},
+                },
+                "required": ["goal"]},
+     "fn": lambda a: _req("POST", "/swarms", {k: v for k, v in a.items() if v is not None})},
+
+    {"name": "awsh_swarm_steer",
+     "description": "Post an attributed steering directive onto a live SwarmBoard session.",
+     "schema": {"type": "object",
+                "properties": {
+                    "swarm_id": {"type": "string"},
+                    "message": {"type": "string"},
+                    "user": {"type": "string"},
+                },
+                "required": ["swarm_id", "message"]},
+     "fn": lambda a: _req(
+         "POST",
+         "/swarms/%s/steer" % quote(str(a["swarm_id"]).strip(), safe=""),
+         {"message": str(a["message"]), "user": str(a.get("user") or SENDER)},
+     )},
+
+    {"name": "awsh_swarm_pause",
+     "description": ("Pause, resume, cancel, or export runs of a SwarmBoard session. OWNER-ONLY on the daemon."),
+     "schema": {"type": "object",
+                "properties": {
+                    "swarm_id": {"type": "string"},
+                    "action": {"type": "string", "enum": ["pause", "resume", "cancel", "export"]},
+                    "reason": {"type": "string"},
+                    "export_runs": {"type": "boolean"},
+                    "export_dir": {"type": "string"},
+                },
+                "required": ["swarm_id"]},
+     "fn": lambda a: (
+         _req("POST", "/swarms/%s/pause" % quote(str(a["swarm_id"]).strip(), safe=""),
+              {
+                  "action": "pause",
+                  "reason": str(a.get("reason") or ""),
+                  **({"export_runs": bool(a["export_runs"])} if a.get("export_runs") is not None else {}),
+                  **({"export_dir": str(a["export_dir"])} if a.get("export_dir") else {}),
+              })
+         if str(a.get("action") or "pause").lower() == "pause"
+         else _req("POST", "/swarms/%s/control" % quote(str(a["swarm_id"]).strip(), safe=""),
+                   {
+                       "action": str(a["action"]).lower(),
+                       "reason": str(a.get("reason") or ""),
+                       **({"export_runs": bool(a["export_runs"])} if a.get("export_runs") is not None else {}),
+                       **({"export_dir": str(a["export_dir"])} if a.get("export_dir") else {}),
+                   })
+     )},
+
+    {"name": "awsh_swarm_board",
+     "description": ("Read the incremental numbered board feed for a SwarmBoard session "
+                     "(supports local Room-backed and Genesis swarms)."),
+     "schema": {"type": "object",
+                "properties": {
+                    "swarm_id": {"type": "string"},
+                    "since": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
+                "required": ["swarm_id"]},
+     "fn": lambda a: _req(
+         "GET",
+         "/swarms/%s/board" % quote(str(a["swarm_id"]).strip(), safe="")
+         + (
+             "?" + "&".join(
+                 p for p in (
+                     ("since=%d" % int(a["since"])) if a.get("since") is not None else "",
+                     ("limit=%d" % int(a["limit"])) if a.get("limit") is not None else "",
+                 ) if p
+             )
+             if (a.get("since") is not None or a.get("limit") is not None)
+             else ""
+         ),
+     )},
+
+    {"name": "awsh_swarm_post",
+     "description": ("Post a message onto a SwarmBoard session (e.g. @verifier [done], "
+                     "@peer Q&A, @all broadcast, or @monitor stall) and wake targeted "
+                     "warm awsh sessions. Supports awseal artifact sealing/verification."),
+     "schema": {"type": "object",
+                "properties": {
+                    "swarm_id": {"type": "string"},
+                    "text": {"type": "string"},
+                    "agent": {"type": "string"},
+                    "slot_id": {"type": "string"},
+                    "kind": {"type": "string", "description": "update|done|bounce|stall|question|answer|steer"},
+                    "mentions": {"type": "array", "items": {"type": "string"}},
+                    "artifacts": {"type": "array", "items": {"type": "object"}},
+                    "thread_id": {"type": "string"},
+                    "keep_warm": {"type": "boolean"},
+                    "local_only": {"type": "boolean"},
+                    "artifact_dir": {"type": "string"},
+                    "seal_artifacts": {"type": "boolean"},
+                    "expect_key": {"type": "string"},
+                    "key_path": {"type": "string"},
+                },
+                "required": ["swarm_id", "text"]},
+     "fn": lambda a: _req(
+         "POST",
+         "/swarms/%s/post" % quote(str(a["swarm_id"]).strip(), safe=""),
+         {
+             "agent": str(a.get("agent") or SENDER),
+             **{k: v for k, v in a.items() if k != "swarm_id" and v is not None},
+         },
+     )},
+
+    {"name": "awsh_swarm_delegate_harness",
+     "description": ("Delegate a SwarmBoard worker slot directly to a local awsh harness "
+                     "session (claude, codex, gemini, aither, awdk) with optional slot/pool, "
+                     "owns/must_not_touch scope, awgit worktree/leases, awrun confinement, "
+                     "zero-libc/awzeal shared-RO metadata, and warm waiting wakeup lifecycle. OWNER-ONLY."),
+     "schema": {"type": "object",
+                "properties": {
+                    "swarm_id": {"type": "string"},
+                    "harness": {"type": "string", "enum": ["claude", "codex", "gemini", "aither", "awdk"]},
+                    "prompt": {"type": "string"},
+                    "agent": {"type": "string", "description": "Swarm agent identity (default: demiurge)"},
+                    "slot_id": {"type": "string", "description": "Explicit worker slot id (e.g. fix-1, verifier)"},
+                    "member_id": {"type": "string"},
+                    "pool": {"type": "string", "description": "Pool name (e.g. fix)"},
+                    "owns": {"type": "array", "items": {"type": "string"}},
+                    "must_not_touch": {"type": "array", "items": {"type": "string"}},
+                    "sibling_digests": {"type": "array", "items": {"type": "object"}},
+                    "cwd": {"type": "string"},
+                    "model_profile": {"type": "string"},
+                    "thread_id": {"type": "string"},
+                    "report_to": {"type": "string"},
+                    "use_worktree": {"type": "boolean"},
+                    "use_leases": {"type": "boolean"},
+                    "allow_peer_input": {"type": "boolean"},
+                    "keep_warm": {"type": "boolean"},
+                    "local_only": {"type": "boolean"},
+                    "wait": {"type": "boolean"},
+                    "timeout_s": {"type": "number"},
+                    "execution_mode": {"type": "string", "enum": ["standard", "awrun"]},
+                    "limits": {"type": "object"},
+                    "egress": {"type": "object"},
+                    "isolation": {"type": "object"},
+                    "inference_runtime": {"type": "string", "enum": ["standard", "asm-llm", "awzeal"]},
+                    "shared_ro_mmap": {"type": "boolean", "description": "D5_shared_ro shared read-only weight mapping"},
+                    "model_path": {"type": "string"},
+                    "model_sha256": {"type": "string"},
+                    "cpu_pin": {"type": "string"},
+                },
+                "required": ["swarm_id", "harness", "prompt"]},
+     "fn": lambda a: _req(
+         "POST",
+         "/swarms/%s/delegate-harness" % quote(str(a["swarm_id"]).strip(), safe=""),
+         {k: v for k, v in a.items() if k != "swarm_id" and v is not None},
+     )},
 ]
 
 from adk.harnesses.kvholder_tools import TOOLS as _KVHOLDER_TOOLS  # noqa: E402

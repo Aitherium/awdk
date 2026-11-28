@@ -18,13 +18,13 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**146 commands.**
+**147 commands.**
 
 | command | what it does |
 |---|---|
 | [`adk acp`](#adk-acp) | Agent Client Protocol: serve an agent to ACP editors, or drive an external ACP agent |
 | [`adk addon`](#adk-addon) | Manage self-hosted addons / components (Qdrant, RAG, awgym, awdesk, ...) |
-| [`adk admin`](#adk-admin) | Administration commands |
+| [`adk admin`](#adk-admin) | Platform administration & ADAC script generator (directory, appliances, workflows, invites) |
 | [`adk aeon`](#adk-aeon) | Multi-agent group chat |
 | [`adk agent`](#adk-agent) | Run/manage host-tier agent loops (run, list, status, stop) |
 | [`adk agent-prompt`](#adk-agent-prompt) | Print the setup prompt for AI coding agents |
@@ -40,6 +40,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk baseline`](#adk-baseline) | Report the ready-to-code component baseline (--json, --sync) |
 | [`adk bonsai`](#adk-bonsai) | Small on-device Bonsai model (llama.cpp, CPU; phone-friendly) |
 | [`adk bonsai-local`](#adk-bonsai-local) | Run a Bonsai model on your own computer (:8090), natively — any size, GPU or CPU, no container needed |
+| [`adk bot`](#adk-bot) | Scaffold, validate, dev-serve, chat, verify (awseal.json), and deploy (awzeal/zero-libc, awrun confinement) Gemini/OpenAI bots |
 | [`adk bricks`](#adk-bricks) | Aither World bricks and the awnix OS — list, outdated, upgrade (tested, auto-rollback), rollback |
 | [`adk briefs`](#adk-briefs) | List and read executive briefs |
 | [`adk catalog`](#adk-catalog) | Browse and install catalog entries: packs, agents, bundles (list \| get \| install) |
@@ -127,7 +128,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk publish-preflight`](#adk-publish-preflight) | Check a package can actually be published: an interpreter that meets requires-python, and a wheel that installs AND imports |
 | [`adk quickstart`](#adk-quickstart) | Sign in, enrol this device and show it in your fleet (--cloud: BYOK provider keys) |
 | [`adk quickstart-local`](#adk-quickstart-local) | Local inference quickstart (no cloud required) |
-| [`adk rc`](#adk-rc) | Remote control: enrol this machine and hold the link so its sessions are reachable from your phone |
+| [`adk rc`](#adk-rc) | Remote control: enrol this machine and hold the link so its sessions are reachable from your phone (supports status, off, --name) |
 | [`adk register`](#adk-register) | Create a new Aitherium account |
 | [`adk relay`](#adk-relay) | Connect this agent to AitherRelay chat (join + serve DMs) |
 | [`adk reregister`](#adk-reregister) | Re-register endpoint(s) with A2A public keys (backfill for existing endpoints) |
@@ -145,7 +146,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk spend`](#adk-spend) | Cloud LLM spend: totals, per provider/model, top callers, DeepSeek balance |
 | [`adk ssh`](#adk-ssh) | Open a remote terminal into a prod/dev environment via the tunnel |
 | [`adk ssh-cert`](#adk-ssh-cert) | Fetch a short-lived SSH certificate from the AitherCert SSH CA (GitHub org SSH) |
-| [`adk stack`](#adk-stack) | Start the consumer stack (Room + llama.cpp) as native processes |
+| [`adk stack`](#adk-stack) | Sync, check, and bring up the full local AitherOS stack (up\|sync\|status) or supervise Room+llama.cpp |
 | [`adk start`](#adk-start) | Start chatting with your codebase (zero config) |
 | [`adk status`](#adk-status) | Show backend and service status |
 | [`adk storage`](#adk-storage) | Storage inventory — scan a drive, rank what fills it, diff, propose, apply |
@@ -199,11 +200,16 @@ Manage self-hosted addons / components (Qdrant, RAG, awgym, awdesk, ...)
 
 ## `adk admin`
 
-Administration commands
+Platform administration & ADAC script generator (directory, appliances, workflows, invites)
 
 **Subcommands**
 
 - `adk admin create-token` — Create a node token on the desktop for mesh enrollment
+- `adk admin recipes` — List or render Windows ADAC-style platform scripts (adk, PowerShell, curl, awflow)
+- `adk admin directory` — Enterprise Directory (LDAP/DIT) queries, user/role/tenant lookups, and sync
+- `adk admin appliances` — Sovereign awnix Appliance twins: list, provision, or dispatch a managed turn
+- `adk admin workflows` — Genesis workflows & multi-seat awflow governance audits
+- `adk admin invites` — List or mint role-scoped workspace collaborator invites on Genesis
 
 ## `adk aeon`
 
@@ -269,6 +275,7 @@ Install and audit the Google Antigravity AitherOS integration (setup/doctor)
 
 - `adk antigravity setup` — Install the AitherOS Antigravity plugin (MCP, hooks, rules, skills)
 - `adk antigravity doctor` — Audit the Antigravity AitherOS plugin and hook bridge
+- `adk antigravity local` — Configure & run the local multi-protocol bridge (Gemini v1beta + Anthropic + OpenAI) for agy/SDK/awsh/awharness
 
 ## `adk approvals`
 
@@ -377,6 +384,19 @@ Run a Bonsai model on your own computer (:8090), natively — any size, GPU or C
 | `--container` | str |  | `false` | Run the Docker image instead (bonsai2-27b, bonsai-27b or ling-tiny-8b); the pre-native path |
 | `--dry-run` | str |  | `false` | Show what would run without starting anything |
 | `--stop` | str |  | `false` | Stop the local model (with --container: remove the container) |
+
+## `adk bot`
+
+Scaffold, validate, dev-serve, chat, verify (awseal.json), and deploy (awzeal/zero-libc, awrun confinement) Gemini/OpenAI bots
+
+**Subcommands**
+
+- `adk bot new` — Scaffold a new Gemini-style or OpenAI-style bot (supports awzeal/zero-libc)
+- `adk bot validate` — Static zero-execution BOT001-BOT008 validation
+- `adk bot dev` — Serve the bot locally with Playground UI
+- `adk bot chat` — Send a single prompt to a bot directory
+- `adk bot verify` — Verify an awseal.json signed bot bundle (fail-closed)
+- `adk bot deploy` — Package or deploy a bot (local\|discord\|fleet\|awrun confinement & awseal.json)
 
 ## `adk bricks`
 
@@ -1322,6 +1342,23 @@ Interactive onboarding — detect, configure, integrate
 | `--tools-module` | str |  |  | optional module path whose @tool tools register (e.g. pack.tools.shop) |
 | `--run` | str |  | `false` | launch the Discord bot after onboarding (stays connected) |
 | `--skip-pack-install` | str |  | `false` | don't `adk install` the --pack (assume it's already installed) |
+| `--bot` | str |  | `false` | Self-setup wizard for Gemini-style (AitherGem) or OpenAI-style (AitherGPT) bots (supports awzeal/zero-libc) |
+| `--gemini-bot` | str |  | `false` | Shortcut for --bot --style gemini (AitherGem) |
+| `--openai-bot` | str |  | `false` | Shortcut for --bot --style openai (AitherGPT) |
+| `--style` | str |  |  | Bot style with --bot: gemini or openai |
+| `--name` | str |  |  | Bot display name or id (with --bot) |
+| `--dir` | str |  |  | Target directory for --bot |
+| `--backend` | str |  |  | Bot LLM backend (with --bot; includes awzeal and zero-libc) |
+| `--model` | str |  |  | Bot model override (with --bot) |
+| `--instructions` | str |  |  | System instructions / system_instruction (with --bot) |
+| `--description` | str |  |  | Bot description (with --bot) |
+| `--provider-key` | str |  |  | BYOK provider API key (stored only in ~/.aither/provider_keys.json, never bot.yaml) |
+| `--model-sha256` | str |  |  | Expected SHA-256 hex digest for local/awzeal/zero-libc model weights |
+| `--shared-ro-mmap` | str |  | `false` | Enable shared read-only weight mmap (D5_shared_ro) for awzeal/zero-libc |
+| `--target-surface` | str |  | `standard` | Deployment target surface for --bot |
+| `--overwrite` | str |  | `false` | Overwrite existing files in --dir when scaffolding with --bot |
+| `--bot-dir` | str |  |  | Declarative bot directory (bot.yaml) for --discord |
+| `--dry-run` | str |  | `false` | Validate and build invite/config offline without live network calls (for --discord) |
 
 ## `adk onboard-remote`
 
@@ -1366,8 +1403,8 @@ Manage ToolPack extensions (list, search, install, enable, remove, info)
 - `adk pack sync` — Install every entitled pack not already present (license-driven)
 - `adk pack buy` — Autonomously buy a pack with Aitherium credits (no Stripe)
 - `adk pack negotiate` — Haggle with the seller Broker for a better price
-- `adk pack enable` — Enable a pack on this agent (installs it first when missing)
-- `adk pack disable` — Disable an enabled pack
+- `adk pack enable` — Enable a pack (installs bundle/id when missing and syncs schedules)
+- `adk pack disable` — Disable an enabled pack and its declarative schedules
 - `adk pack remove` — Remove an installed pack
 - `adk pack update` — Update one or all installed packs
 - `adk pack export` — Export offline bundle (.tar.gz)
@@ -1487,15 +1524,23 @@ Local inference quickstart (no cloud required)
 
 ## `adk rc`
 
-Remote control: enrol this machine and hold the link so its sessions are reachable from your phone
+Remote control: enrol this machine and hold the link so its sessions are reachable from your phone (supports status, off, --name)
+
+**Subcommands**
+
+- `adk rc status` — Show Remote Control status (--json)
+- `adk rc off` — Stop Remote Control and clear persisted state
 
 | option | type | required | default | description |
 |---|---|---|---|---|
+| `--name` | str |  |  | Custom instance slug (e.g. dev-box) |
 | `--node-class` | str |  |  | What this device is (default: detected from the hardware) |
 | `--harness-url` | str |  |  | Local session daemon to advertise (default: http://127.0.0.1:8362) |
 | `--token-ttl-days` | int |  | `30` | Lifetime of the per-node scoped harness token (default: 30) |
 | `--api-key` | str |  |  | Sign in non-interactively before enrolling |
 | `--once` | str |  | `false` | Enrol, start the link and exit instead of holding the foreground |
+| `--runtime-tier` | str |  |  | Runtime TCB posture advertised on hello (standard\|zero-libc\|awzeal) |
+| `--zero-libc` | str |  |  | Advertise zero-libc minimal-TCB posture |
 
 ## `adk register`
 
@@ -1551,6 +1596,9 @@ Start the agent server
 | `-m`, `--model` | str |  |  | Model name |
 | `-f`, `--fleet` | str |  |  | Fleet YAML config |
 | `-a`, `--agents` | str |  |  | Comma-separated agent identities |
+| `--bot` | str |  |  | Serve a declarative bot directory (bot.yaml) |
+| `--bot-backend` | str |  |  | Override LLM backend for --bot |
+| `--bot-prefix` | str |  |  | Optional URL prefix for --bot |
 | `--mesh` | str |  | `false` | Enable mesh hosting (advertise tools/inference to connected desktop) |
 | `--crystal` | str |  |  | Crystallize compacted context into awm at SCOPE and recall it every turn ({agent} = the agent name), e.g. 'aitherium:{agent}:myproject' |
 | `--crystal-db` | str |  |  | awm SQLite path for --crystal |
@@ -1575,7 +1623,7 @@ Manage secrets (list, get, set, pull, push, sync)
 
 - `adk secret list` — List all stored secret keys (values not shown)
 - `adk secret get` — Get a secret value
-- `adk secret set` — Store a secret in encrypted keyring
+- `adk secret set` — Store a secret in encrypted keyring (literal, --from-file, @path, or --stdin)
 - `adk secret pull` — Pull secrets from platform vault
 - `adk secret push` — Push a secret to the platform vault
 - `adk secret sync` — Bidirectional sync (pull + push local-only)
@@ -1722,13 +1770,20 @@ Fetch a short-lived SSH certificate from the AitherCert SSH CA (GitHub org SSH)
 
 ## `adk stack`
 
-Start the consumer stack (Room + llama.cpp) as native processes
+Sync, check, and bring up the full local AitherOS stack (up|sync|status) or supervise Room+llama.cpp
+
+**Subcommands**
+
+- `adk stack up` — Sync packages/CLI/hooks, start local daemons (:8362/:8090), and rebalance personas
+- `adk stack sync` — Sync editable Python packages, awsh dist/, awconnect check, and hooks (no daemon start)
+- `adk stack status` — Read-only health & parity table across the full local AitherOS stack
+- `adk stack qdrant` — Provision local Qdrant for graph memory (requires Docker)
+- `adk stack default` — Supervise the consumer stack (AitherRoom + local llama.cpp)
 
 | option | type | required | default | description |
 |---|---|---|---|---|
-| `<service>` | str |  | `default` | Service to start: default (Room+llama.cpp), qdrant (local Qdrant) |
-| `--interval` | int |  | `10` | Health check interval in seconds (default: 10) |
-| `--no-sync` | str |  | `false` | Skip the license-driven pack sync before starting |
+| `--interval` | int |  | `10` | Health check interval in seconds for legacy consumer stack (default: 10) |
+| `--no-sync` | str |  | `false` | Skip the license-driven pack sync before starting legacy consumer stack |
 
 ## `adk start`
 

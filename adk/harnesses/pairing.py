@@ -41,8 +41,17 @@ LABEL = "awconnect"
 #: What a paired extension may reach. "METHOD /path" entries match that method
 #: only, so the sessions list and streams are readable but
 #: /sessions/{id}/input, /submit, /message and DELETE are refused.
-#: decisions:read/write, sessions:read, rooms:read.
-AWCONNECT_PATHS = ("/decisions", "GET /sessions", "GET /rooms")
+#: /voice/route and /voice/active-target enforce principal authority inside the
+#: handler (status, active focus, and non-owner-only decision answers only —
+#: never PTY input, session messaging, interrupt, or spawn).
+#: decisions:read/write, sessions:read, rooms:read, voice:route, personas:read.
+AWCONNECT_PATHS = (
+    "/decisions", "GET /sessions", "GET /rooms",
+    "POST /voice/route", "/voice/active-target",
+    "GET /personas/homes",
+    "GET /swarms", "POST /swarms",
+    "GET /rc/status",
+)
 AWCONNECT_TTL_DAYS = 90
 
 

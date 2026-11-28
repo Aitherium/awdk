@@ -1356,14 +1356,27 @@ def create_app(
     config: Config | None = None,
     fleet_path: str | None = None,
     fleet_agents: list[str] | None = None,
+    bot_dir: str | Path | None = None,
+    bot_prefix: str = "",
+    bot_backend: Any = None,
+    bot_allow_local_actions: bool = False,
 ) -> FastAPI:
-    """Create a FastAPI app wrapping an AitherAgent or a fleet of agents.
+    """Create a FastAPI app wrapping an AitherAgent, fleet, or declarative bot.
 
     Returns a fully configured app with both OpenAI-compatible and Genesis-compatible endpoints.
     """
     config = config or Config.from_env()
 
     is_fleet = bool(fleet_path or fleet_agents)
+    clean_prefix = (bot_prefix or "").strip().rstrip("/")
+    if clean_prefix and not clean_prefix.startswith("/"):
+        clean_prefix = "/" + clean_prefix
+    dedicated_bot = (
+        (bot_dir is not None)
+        and (not clean_prefix)
+        and (agent is None)
+        and (not is_fleet)
+    )
 
     # ─── Lifespan (replaces deprecated @app.on_event("startup")) ───
 
@@ -1437,17 +1450,18 @@ def create_app(
             await _start_watch_reporter()
             await _flush_pulse_queue()
         # Eagerly detect LLM backend so /health shows the right provider
-        try:
-            a = await get_agent()
-            await a.llm.get_provider()
-        except (ImportError, RuntimeError, OSError):
-            pass
+        if not dedicated_bot:
+            try:
+                a = await get_agent()
+                await a.llm.get_provider()
+            except (ImportError, RuntimeError, OSError):
+                pass
         # Say which turn planes this daemon actually has. Measured 2026-10-12: the
         # owner's daemon ran COMMUNITY tier (unsigned license.json) with auto-neurons
         # off and, from the shipped launcher, no crystal -- and logged none of it.
         # Then hydrate the code graph in the background: a cold awgraph open costs
         # 35-55 s, which otherwise lands on the first code question's turn.
-        if not is_fleet:
+        if not is_fleet and not dedicated_bot:
             try:
                 _primary = await get_agent()
                 _planes = _turn_planes(_primary)
@@ -1767,6 +1781,44 @@ def create_app(
                         "/api/demos/community.json"}
     if not schema_routes_public(_server_api_key):
         _skip_auth_paths -= _SCHEMA_PATHS
+
+    app.state.bot_runtime = None
+    if bot_dir is not None:
+        from adk.bots.runtime import BotRuntime, mount_bot_routes
+
+        bot_runtime = BotRuntime(
+            bot_dir,
+            backend=bot_backend,
+            allow_local_actions=bot_allow_local_actions,
+        )
+        app.state.bot_runtime = bot_runtime
+        _skip_auth_paths.add(f"{clean_prefix}/bot/ui")
+        if clean_prefix:
+            _skip_auth_paths.add(clean_prefix)
+            _skip_auth_paths.add(f"{clean_prefix}/")
+            mount_bot_routes(
+                app,
+                bot_runtime,
+                prefix=clean_prefix,
+                include_openai_chat=True,
+                include_root_ui=True,
+            )
+        elif dedicated_bot:
+            mount_bot_routes(
+                app,
+                bot_runtime,
+                prefix="",
+                include_openai_chat=True,
+                include_root_ui=True,
+            )
+        else:
+            mount_bot_routes(
+                app,
+                bot_runtime,
+                prefix="",
+                include_openai_chat=False,
+                include_root_ui=False,
+            )
 
     def _is_pack_ui_asset(path: str) -> bool:
         """Pack-UI static assets are unauthenticated like the console shell at "/".
@@ -2260,13 +2312,18 @@ def create_app(
     @app.get("/health")
     async def health():
         a = None
-        try:
-            a = await get_agent()
-            provider = a.llm.provider_name or "detecting..."
-            agent_name = a.name
-        except ConnectionError:
-            provider = "none"
-            agent_name = _state["identity"]
+        _bot_rt = getattr(app.state, "bot_runtime", None)
+        if dedicated_bot and _bot_rt is not None and _state.get("agent") is None:
+            provider = _bot_rt.manifest.backend
+            agent_name = _bot_rt.manifest.id
+        else:
+            try:
+                a = await get_agent()
+                provider = a.llm.provider_name or "detecting..."
+                agent_name = a.name
+            except ConnectionError:
+                provider = "none"
+                agent_name = _state["identity"]
 
         result = {
             "status": "healthy",
@@ -2350,6 +2407,16 @@ def create_app(
                 "name": fleet.name,
                 "agents": fleet.registry.agent_names,
                 "orchestrator": fleet.orchestrator_name,
+            }
+
+        if getattr(app.state, "bot_runtime", None) is not None:
+            _br = app.state.bot_runtime
+            result["bot"] = {
+                "id": _br.manifest.id,
+                "name": _br.manifest.name,
+                "style": _br.manifest.style,
+                "backend": _br.manifest.backend,
+                "model": _br.manifest.model,
             }
 
         return result
@@ -4712,7 +4779,9 @@ def create_app(
             headers={"Cache-Control": "no-cache, must-revalidate"},
         )
 
-    @app.get("/", response_class=HTMLResponse)
+    _root_route = (lambda fn: fn) if dedicated_bot else app.get("/", response_class=HTMLResponse)
+
+    @_root_route
     async def console_page():
         # The LANDPAGE is the "switcher" pack — one grid over every surface of
         # the platform (the Local AI app, the tenant apps, the products), so a
@@ -5495,7 +5564,9 @@ def create_app(
 
     # ─── OpenAI-compatible endpoints ───
 
-    @app.post("/v1/chat/completions")
+    _chat_completions_route = (lambda fn: fn) if dedicated_bot else app.post("/v1/chat/completions")
+
+    @_chat_completions_route
     async def chat_completions(request: Request):
         body = await request.json()
         if getattr(request.state, "browser_scope", None):
@@ -5619,7 +5690,9 @@ def create_app(
     _models_cache: dict = {}
     _models_cache_s = 5.0
 
-    @app.get("/v1/models")
+    _list_models_route = (lambda fn: fn) if dedicated_bot else app.get("/v1/models")
+
+    @_list_models_route
     async def list_models_endpoint():
         import inspect as _inspect
 
@@ -9282,6 +9355,10 @@ def main(agent: "AitherAgent | None" = None):
     parser.add_argument("--invoke-url", default=None, help="Publicly reachable URL for fleet dispatch (e.g. http://192.168.1.50:8900)")
     parser.add_argument("--workspace", action="store_true", help="Workspace mode: mount portal-kit-backend routers, register with portal")
     parser.add_argument("--setup", action="store_true", help="Run first-time setup wizard (Proton auto-detect, etc.)")
+    parser.add_argument("--bot", default=None, help="Declarative bot directory (bot.yaml) to serve")
+    parser.add_argument("--bot-prefix", default="", help="Optional URL prefix when mounting --bot alongside an agent/fleet")
+    parser.add_argument("--bot-backend", default=None, help="Override LLM backend for --bot")
+    parser.add_argument("--allow-local-actions", action="store_true", help="Allow loopback/private OpenAPI action URLs for --bot")
     args = parser.parse_args()
 
     config = Config.from_env()
@@ -9338,6 +9415,10 @@ def main(agent: "AitherAgent | None" = None):
         config=config,
         fleet_path=fleet_path,
         fleet_agents=fleet_agents,
+        bot_dir=args.bot,
+        bot_prefix=args.bot_prefix,
+        bot_backend=args.bot_backend,
+        bot_allow_local_actions=bool(args.allow_local_actions),
     )
 
     # ── Workspace mode: mount portal-kit-backend routers ──
@@ -9354,7 +9435,18 @@ def main(agent: "AitherAgent | None" = None):
             "  Demo:    https://demo.aitherium.com"
         )
 
-    if is_fleet:
+    if args.bot:
+        _br = getattr(app.state, "bot_runtime", None)
+        _bot_id = _br.manifest.id if _br is not None else args.bot
+        _bot_style = _br.manifest.style if _br is not None else "bot"
+        _bot_pfx = (args.bot_prefix or "").strip().rstrip("/")
+        if _bot_pfx and not _bot_pfx.startswith("/"):
+            _bot_pfx = "/" + _bot_pfx
+        print(f"Starting AitherADK bot server — bot: {_bot_id} ({_bot_style}), port: {port}")
+        print(f"  Bot UI: http://localhost:{port}{_bot_pfx}/bot/ui")
+        print(f"  Info:   GET  http://localhost:{port}{_bot_pfx}/bot/info")
+        print(f"  Gemini: POST http://localhost:{port}{_bot_pfx}/v1beta/models/<model>:generateContent")
+    elif is_fleet:
         agents_str = fleet_agents if fleet_agents else f"from {fleet_path}"
         print(f"Starting AitherADK fleet server — agents: {agents_str}, port: {port}")
         print(f"  Fleet:  GET  http://localhost:{port}/agents")

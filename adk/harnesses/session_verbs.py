@@ -34,6 +34,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import unquote, urlsplit
 
 IS_WINDOWS = os.name == "nt"
 
@@ -47,12 +48,20 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 #: of truncating silently at delivery.
 MAX_MESSAGE_CHARS = 8000
 
-#: Harnesses whose sessions drain the steering mailbox (the prompt hook is a
-#: Claude Code hook). Another harness would leave the file unread forever.
-MAILBOX_HARNESSES = frozenset({"claude", "claude-tty"})
+#: Harnesses whose sessions drain the steering mailbox (Claude Code prompt hook and
+#: Antigravity PreInvocation/Stop hooks both drain ~/.aither/steer/<id>/*.md).
+#: Another harness would leave the file unread forever.
+MAILBOX_HARNESSES = frozenset({"claude", "claude-tty", "antigravity"})
+
+#: Harnesses that can be reopened by id with `claude --resume` in a Windows Terminal tab.
+FOCUS_RESUME_HARNESSES = frozenset({"claude", "claude-tty"})
 
 #: Where a Claude Code remote-control session is reachable from a browser.
 REMOTE_URL_BASE = "https://claude.ai/code/"
+#: Where an AitherOS Remote Control session is reachable by instance slug or node id.
+TUNNEL_RC_URL_BASE = "https://a30.link/r/"
+APP_CODE_URL_BASE = "https://app.aitherium.com/code/"
+ALLOWED_REMOTE_HOSTS = frozenset({"claude.ai", "a30.link", "tunnel.aitherium.com", "app.aitherium.com"})
 
 VERBS = ("message", "interrupt", "focus", "input")
 
@@ -66,13 +75,64 @@ def mailbox_id(row: dict[str, Any]) -> str:
     return str(row.get("harness_session_id") or row.get("id") or "")
 
 
+def safe_remote_url(url: Optional[str]) -> str:
+    """Validate an explicit remote-control URL against trusted HTTPS hosts."""
+    raw = str(url or "").strip()
+    if not raw or "#" in raw or any(ch.isspace() or ord(ch) < 32 for ch in raw):
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() != "https" or parsed.username or parsed.password or parsed.fragment:
+        return ""
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return ""
+    if host not in ALLOWED_REMOTE_HOSTS and not host.endswith(".claude.ai"):
+        return ""
+    cur = parsed.path or ""
+    for _ in range(5):
+        if "\\" in cur or "\x00" in cur or "#" in cur:
+            return ""
+        if any(seg.strip() == ".." for seg in cur.split("/")):
+            return ""
+        nxt = unquote(cur)
+        if nxt == cur:
+            break
+        cur = nxt
+    else:
+        if "\\" in cur or "\x00" in cur or "#" in cur:
+            return ""
+        if any(seg.strip() == ".." for seg in cur.split("/")):
+            return ""
+        if unquote(cur) != cur:
+            return ""
+    return raw
+
+
 def remote_url(row: dict[str, Any]) -> str:
     """The browser URL of a remote-control session, or "" when it has none."""
     extras = row.get("extras") if isinstance(row.get("extras"), dict) else {}
-    bridge = str(row.get("bridge_session_id") or (extras or {}).get("bridge_session_id") or "")
-    if not bridge or not SESSION_ID_RE.match(bridge):
-        return ""
-    return REMOTE_URL_BASE + bridge
+    for candidate in (
+        row.get("rc_url"),
+        extras.get("rc_url"),
+        row.get("remote_url"),
+        extras.get("remote_url"),
+    ):
+        cleaned = safe_remote_url(candidate if isinstance(candidate, str) else "")
+        if cleaned:
+            return cleaned
+    instance_id = str(row.get("instance_id") or extras.get("instance_id") or "").strip()
+    if instance_id and instance_id not in (".", "..") and SESSION_ID_RE.match(instance_id):
+        return TUNNEL_RC_URL_BASE + instance_id
+    bridge = str(row.get("bridge_session_id") or extras.get("bridge_session_id") or "").strip()
+    if bridge and bridge not in (".", "..") and SESSION_ID_RE.match(bridge):
+        return REMOTE_URL_BASE + bridge
+    node_id = str(row.get("node_id") or extras.get("node_id") or "").strip()
+    if node_id and node_id not in (".", "..") and SESSION_ID_RE.match(node_id):
+        return APP_CODE_URL_BASE + node_id
+    return ""
 
 
 def row_actions(row: dict[str, Any], *, local_windows: Optional[bool] = None) -> dict[str, Any]:
@@ -134,7 +194,7 @@ def row_actions(row: dict[str, Any], *, local_windows: Optional[bool] = None) ->
             "runs inside the daemon's own terminal -- there is no window to raise; "
             "watch it here"
         )
-    elif harness not in MAILBOX_HARNESSES:
+    elif harness not in FOCUS_RESUME_HARNESSES:
         why["focus"] = f"the {harness or 'unknown'} harness cannot be reopened by id"
     can_focus = "focus" not in why
 

@@ -54,7 +54,7 @@ from adk.harnesses.registry import get as get_harness
 from adk.harnesses.rooms import DEFAULT_ROOM, RoomError, default_registry
 from adk.harnesses.session import SessionConfig
 from adk.harnesses.spool import default_tailer
-from adk.harnesses.steer_dispatch import frame_peer_text
+from adk.harnesses.steer_dispatch import SwarmSlotRegistry, frame_peer_text
 from adk.harnesses.steer_dispatch import register as register_steer_dispatcher
 from adk.harnesses.thread_subs import default_thread_subscriptions
 
@@ -435,12 +435,70 @@ def startable_harnesses(rows: list, *, may_drive, relay_ok) -> list:
     return out
 
 
+#: Harnesses deferred when auto-picking a default for an omitted ``harness``
+#: (e.g. ``awrise --executor session``): single-agent harnesses win over raw
+#: shells or multi-agent rooms.
+_AUTO_HARNESS_DEFER = frozenset({"group", "terminal", "sandbox"})
+
+
+def resolve_default_harness(
+    requested: str,
+    *,
+    explicit: bool,
+    rows: list,
+    may_drive,
+    relay_ok,
+) -> tuple[str, str]:
+    """Resolve the harness id for ``POST /sessions`` -> ``(harness_id, error_detail)``.
+
+    - Explicit non-empty harness names (other than ``"auto"``) are preserved so
+      callers and tests naming a specific harness keep exact semantics.
+    - When the caller omitted ``harness`` (receiving the default ``"claude"``)
+      or passed ``""`` / ``"auto"``, keep ``"claude"`` if it is startable on this
+      host; otherwise pick the first startable harness (preferring single-agent
+      harnesses whose binary/relay actually answers). If none is startable,
+      return ``("", reason)`` so the route answers 400 instead of spawning a
+      dead default session or crashing 500.
+    """
+    raw = (requested or "").strip()
+    if explicit and raw and raw.lower() != "auto":
+        return raw, ""
+
+    startable = startable_harnesses(rows, may_drive=may_drive, relay_ok=relay_ok)
+    startable_ids = [h["id"] for h in startable]
+    if "claude" in startable_ids:
+        return "claude", ""
+    for hid in startable_ids:
+        if hid not in _AUTO_HARNESS_DEFER:
+            return hid, ""
+    if startable_ids:
+        return startable_ids[0], ""
+
+    installed_ids = [
+        str(r.get("id") or "")
+        for r in (rows or [])
+        if isinstance(r, dict) and r.get("installed") and r.get("id")
+    ]
+    if installed_ids:
+        return "", (
+            "no startable harness on this host "
+            f"(installed={installed_ids}, but none passed relay/entitlement checks; "
+            "pass an explicit harness or start a local relay)"
+        )
+    return "", (
+        "no startable harness installed on this host "
+        "(install a supported CLI harness or start a local aither/awdk relay)"
+    )
+
+
 SCOPED_LINK_PATHS = (
     "/sessions", "/decisions", "/desk/fleet/status",
+    "POST /voice/route", "/voice/active-target",
     # The OS IDE on an enrolled device (2026-10-10). Method-pinned, and the routes
     # additionally require the tunnel's owner verdict (``fs_owner`` in create_app):
     # the link may carry them only for the user who holds the link.
     "GET /fs/list", "GET /fs/read", "POST /fs/write", "GET /git/status", "GET /git/diff",
+    "GET /rc/status",
 )
 
 #: Mirrors `adk.node_link.LINK_ACTOR_*` (pinned equal by a test; not imported, so
@@ -913,6 +971,26 @@ if BaseModel is not None:
 
         text: str
 
+    class VoiceRouteRequest(BaseModel):  # type: ignore[misc]
+        """``POST /voice/route`` body: one spoken or typed utterance to route across sessions."""
+
+        text: str
+        surface: str = "voice"
+        capture: str = "push-to-talk"
+        speaker_verified: bool = False
+        media_playing: bool = False
+        context: dict[str, Any] = Field(default_factory=dict)
+
+    class ActiveTargetBody(BaseModel):  # type: ignore[misc]
+        """``POST /voice/active-target`` body: pin or clear the cross-surface voice target."""
+
+        session_id: str = ""
+        title: str = ""
+        harness: str = ""
+        cwd: str = ""
+        surface: str = "ui"
+        clear: bool = False
+
     class ResizeInput(BaseModel):  # type: ignore[misc]
         rows: int = 30
         cols: int = 100
@@ -1357,16 +1435,41 @@ def thread_router_session_config(request: Any, *, harness: str,
         "thread is in your steering mailbox; do that work, then reply in the "
         "room."
     )
+    slot_id = str(getattr(request, "slot_id", "") or "").strip()
+    pool = str(getattr(request, "pool", "") or "").strip()
+    owns = tuple(getattr(request, "owns", ()) or ())
+    must_not_touch = tuple(getattr(request, "must_not_touch", ()) or ())
+    sibling_digests = tuple(getattr(request, "sibling_digests", ()) or ())
+    worktree_path = str(getattr(request, "worktree_path", "") or "").strip()
+    scope_lines: list[str] = []
+    if slot_id:
+        scope_lines.append(f"slot_id: {slot_id}")
+    if pool:
+        scope_lines.append(f"pool: {pool}")
+    if owns:
+        scope_lines.append(f"owns: {', '.join(owns)}")
+    if must_not_touch:
+        scope_lines.append(f"must_not_touch: {', '.join(must_not_touch)}")
+    if worktree_path:
+        scope_lines.append(f"worktree_path: {worktree_path}")
+    if sibling_digests:
+        scope_lines.append("sibling_digests: " + " | ".join(sibling_digests))
+    if scope_lines:
+        system_prompt_append += "\n\n[Swarm Scope]\n" + "\n".join(scope_lines)
+
     if harness not in ("aither", "awdk", "group"):
         from adk.reasoning_doctrine import with_doctrine
 
         system_prompt_append = with_doctrine(system_prompt_append)
+    effective_cwd = validate_cwd(worktree_path) if worktree_path else validate_cwd(os.getcwd())
+    is_swarm_slot = bool(slot_id or getattr(request, "surface", "") == "swarm")
     return SessionConfig(
         harness=harness,
-        cwd=validate_cwd(os.getcwd()),
+        cwd=effective_cwd,
         title=request.title,
         system_prompt_append=system_prompt_append,
         permission_mode=permission_mode,
+        allow_peer_input=is_swarm_slot,
     )
 
 
@@ -1804,29 +1907,6 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             return principal
         return check
 
-    class CreateSession(BaseModel):
-        harness: str = "claude"
-        cwd: str = ""
-        model_profile: str = ""
-        model: str = ""
-        permission_mode: str = ""
-        resume_session_id: str = ""
-        system_prompt_append: str = ""
-        add_dirs: list[str] = Field(default_factory=list)
-        allowed_tools: list[str] = Field(default_factory=list)
-        mcp_config: str = ""
-        target: str = ""
-        extra_args: list[str] = Field(default_factory=list)
-        title: str = ""
-        owner: str = ""
-        allow_peer_input: bool = False
-
-    class SendInput(BaseModel):
-        text: str
-        #: True = deliver as a COMPLETE turn (a pty adds the Enter). False = raw
-        #: keystrokes, which is what a terminal attach forwards.
-        submit: bool = False
-
     # ── unauthenticated liveness ────────────────────────────────────────────
 
     # Which harnesses are installed is a PATH walk plus a pty probe per harness:
@@ -1895,6 +1975,15 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             # /health stays cheap; POST /sessions is where the model is checked).
             "model_required": bool(local_model_refusal("awdk", probe=lambda _u: "")),
             "model_url": (os.environ.get(MODEL_URL_ENV) or "").strip() or None,
+            "swarm_capacity": {
+                "swarms_endpoint": "/swarms",
+                "ui_url": (os.environ.get("AITHER_SWARM_UI_URL") or "https://app.aitherium.com/swarm").strip(),
+                "swarm_harnesses": [
+                    h for h in ("claude", "codex", "gemini", "aither", "awdk")
+                    if h in _installed_harness_ids()
+                ],
+                "active_sessions": len(mgr.list_sessions()),
+            },
         }
 
     # ── the HUB contract (Aither Hub — gobbonet) ───────────────────────────
@@ -2181,15 +2270,28 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 status_code=403,
                 detail="a link token may start a session only for the verified owner",
             )
+        # Resolve omitted / auto harness to a startable harness on this host
+        # (so e.g. `awrise --executor session` works on hosts without `claude`).
+        explicit_harness = "harness" in getattr(body, "model_fields_set", set())
+        harness_id, resolve_err = resolve_default_harness(
+            body.harness,
+            explicit=explicit_harness,
+            rows=mgr.harnesses(),
+            may_drive=lambda r: not r.get("requires_entitlement")
+            or principal.has(r["requires_entitlement"]),
+            relay_ok=lambda hid: _relay_reachable(_relay_base(hid)),
+        )
+        if resolve_err:
+            raise HTTPException(status_code=400, detail=resolve_err)
         # Enforce here as well as in the listing. Filtering /harnesses shapes the
         # PICKER; it is not access control, because the harness id arrives in this
         # body and a caller can name one the list never offered. A gate that only
         # runs where the UI happens to look is decoration.
         try:
-            spec = get_harness(body.harness)
+            spec = get_harness(harness_id)
         except Exception:
             spec = None
-        refusal = local_model_refusal(body.harness)
+        refusal = local_model_refusal(harness_id)
         if refusal:
             raise HTTPException(status_code=503, detail=refusal)
         needed = getattr(spec, "requires_entitlement", "") if spec else ""
@@ -2198,7 +2300,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 status_code=403,
                 detail=(
                     f"principal {principal.id!r} is not licensed for harness "
-                    f"{body.harness!r} (requires entitlement {needed!r})"
+                    f"{harness_id!r} (requires entitlement {needed!r})"
                 ),
             )
         if body.connectors:
@@ -2222,7 +2324,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         # A relay session that names an agent the roster does not know used to
         # start anyway and answer as aither. Refuse with the roster instead: a
         # wrong name is a typo the caller can fix, a silent fallback is not.
-        if body.harness in ("aither", "awdk", "group"):
+        if harness_id in ("aither", "awdk", "group"):
             from adk.harnesses.agents import AGENT_ROSTER
 
             known = [a["id"] for a in AGENT_ROSTER]
@@ -2234,10 +2336,11 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                     detail=f"unknown agent(s) {unknown}; roster: {', '.join(known)}",
                 )
         fields = body.model_dump(exclude={"skill", "skill_arguments"})
+        fields["harness"] = harness_id
         # WHO STARTED IT, from the authenticated principal -- CreateSession declares
         # no such field, so a caller cannot name someone else as the spawner.
         fields["spawned_by"] = str(principal.id)
-        if body.harness == "awdk" and body.agent:
+        if harness_id == "awdk" and body.agent:
             # adk serve has no identity store, so the roster's persona line is
             # the only way a named agent answers as itself on the local loop.
             # Measured 2026-09-21: `--agent atlas` on this harness answered as
@@ -2250,7 +2353,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 fields["system_prompt_append"] = (
                     persona + "\n\n" + (fields.get("system_prompt_append") or "").strip()
                 ).strip()
-        if body.harness not in ("aither", "awdk", "group"):
+        if harness_id not in ("aither", "awdk", "group"):
             # Every other harness (claude, codex, gemini, opencode, ...) is a
             # foreign agent: it gets the reasoning doctrine here. awdk adds it in
             # Agent._turn_system_prompt and Genesis in build_system_message, so
@@ -2294,6 +2397,11 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             session = mgr.create(config)
         except ManagerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"session storage unavailable: {exc}",
+            ) from exc
         return session.info()
 
     @app.get("/sessions", dependencies=[Depends(auth)])
@@ -4846,6 +4954,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         return tokens or DEFAULT_MENTION_TOKENS
 
     thread_subscriptions = _thread_subscriptions_or_none()
+    swarm_registry = SwarmSlotRegistry()
     steer_dispatcher = register_steer_dispatcher(
         rooms,
         list_unified_sessions=_list_unified_sessions_for_dispatch,
@@ -4858,6 +4967,8 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         # Subscription pass-through: follow-ups on a thread a session subscribed to
         # (GitHub PR, Discord thread, mail chain) reach its mailbox with no router turn.
         thread_subscriptions=thread_subscriptions,
+        swarm_registry=swarm_registry,
+        wake_session_fn=mgr.wake,
     )
 
     # ThreadRouter (the SLOW path): the one listener that decides who handles the FIRST
@@ -4932,6 +5043,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                         == "1"),
                     admission=admission,
                     on_routed=on_routed,
+                    swarm_registry=swarm_registry,
                 )
     app.state.thread_router = thread_router
 
@@ -5250,6 +5362,165 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         """
         return steer_dispatcher.status()
 
+    # ── contextual voice & session router (shared across awdesk/awsh/awconnect) ──
+    from adk.harnesses.voice_router import (
+        VoiceSessionRouter as _VoiceSessionRouter,
+        microscheduler_intent_classifier as _voice_llm_classifier,
+    )
+
+    def _voice_list_decisions() -> list[dict[str, Any]]:
+        from adk.decisions.store import get_store
+
+        return [c.to_dict() for c in get_store().list(status="open")]
+
+    def _voice_send_input(sid: str, text: str) -> dict[str, Any]:
+        sess = mgr.get_session(sid)
+        if not sess.submit(text):
+            raise RuntimeError(f"session {sess.state} cannot accept input")
+        return {"ok": True, "turn": sess.turn, "seq": sess.last_seq}
+
+    def _voice_send_message(row: dict[str, Any], text: str, authority: str, sender: str) -> dict[str, Any]:
+        from adk.harnesses.session_verbs import deliver_message
+
+        written = deliver_message(row, text, authority=authority, sender=sender)
+        if written is None:
+            raise RuntimeError("could not write steering mailbox file")
+        return {"ok": True, "file": written.name, "delivered_at": "next-prompt"}
+
+    def _voice_focus(row: dict[str, Any]) -> dict[str, Any]:
+        from adk.harnesses.session_verbs import focus_session
+
+        return focus_session(row)
+
+    def _voice_interrupt(sid: str) -> dict[str, Any]:
+        sess = mgr.get_session(sid)
+        ok = sess.interrupt()
+        return {"ok": bool(ok), "session_id": sid}
+
+    def _voice_create_session(spec: dict[str, Any]) -> dict[str, Any]:
+        harness_id = str(spec.get("harness") or "claude")
+        refusal = local_model_refusal(harness_id)
+        if refusal:
+            raise RuntimeError(refusal)
+        cfg = SessionConfig(
+            harness=harness_id,
+            cwd=str(spec.get("cwd") or ""),
+            initial_prompt=str(spec.get("prompt") or ""),
+            spawned_by="voice-router",
+        )
+        sess = mgr.create(cfg)
+        info = sess.info() if hasattr(sess, "info") else {"id": sess.id}
+        return dict(info)
+
+    def _voice_answer_decision(card_id: str, choice: str, note: str, via: str) -> dict[str, Any]:
+        from adk.decisions.store import get_store
+
+        store = get_store()
+        card = store.answer(card_id, choice, note=note, via=via, deliver=False)
+        delivered = store.deliver_answer(card)
+        return {"decision": card.to_dict(), "delivered_to_session": bool(delivered)}
+
+    # ── shared persona-to-device placement engine (used by voice_router & /personas/*) ──
+    from adk.harnesses.persona_placement import PersonaDevicePlacer as _PersonaDevicePlacer
+
+    persona_placer = _PersonaDevicePlacer()
+
+    def _voice_persona_status() -> dict[str, Any]:
+        return persona_placer.status()
+
+    def _voice_persona_rebalance() -> dict[str, Any]:
+        try:
+            from adk.harnesses.mesh_discovery import (
+                default_persona_workloads as _default_persona_workloads,
+                discover_mesh_devices as _discover_mesh_devices,
+            )
+        except ImportError:
+            snap = persona_placer.status()
+            assigned = snap.get("assignments") or {}
+            return {
+                "ok": True,
+                "plan": {
+                    "assignments": assigned,
+                    "migrations": [],
+                    "kept": sorted(assigned.keys()),
+                    "unassigned": snap.get("unassigned") or {},
+                },
+                "status": snap,
+            }
+        devices = _discover_mesh_devices()
+        personas = _default_persona_workloads()
+        plan = persona_placer.rebalance(personas, devices)
+        return {
+            "ok": True,
+            "plan": plan.to_dict(),
+            "devices": [d.to_dict() for d in devices],
+            "status": persona_placer.status(devices),
+        }
+
+    voice_router = _VoiceSessionRouter(
+        list_sessions=_unified_rows,
+        list_decisions=_voice_list_decisions,
+        send_input=_voice_send_input,
+        send_message=_voice_send_message,
+        focus_session_fn=_voice_focus,
+        interrupt_session_fn=_voice_interrupt,
+        create_session_fn=_voice_create_session,
+        answer_decision_fn=_voice_answer_decision,
+        persona_status_fn=_voice_persona_status,
+        persona_rebalance_fn=_voice_persona_rebalance,
+        llm_classifier=_voice_llm_classifier,
+    )
+
+    @app.get("/voice/active-target", dependencies=[Depends(auth)])
+    def get_voice_active_target() -> dict[str, Any]:
+        """The currently pinned cross-surface voice session target, or null."""
+        return {"active_target": voice_router.targets.get()}
+
+    @app.post("/voice/active-target", dependencies=[Depends(auth)])
+    def set_voice_active_target(body: ActiveTargetBody) -> dict[str, Any]:
+        """Pin or clear the active voice session target shared by awdesk, awsh, and awconnect."""
+        if body.clear or not (body.session_id or "").strip():
+            voice_router.targets.clear()
+            return {"ok": True, "active_target": None}
+        sid = body.session_id.strip()
+        row = next((r for r in _unified_rows() if str(r.get("id") or "") == sid), None)
+        target = voice_router.targets.set(
+            sid,
+            title=body.title or str((row or {}).get("title") or sid[:12]),
+            harness=body.harness or str((row or {}).get("harness") or ""),
+            cwd=body.cwd or str((row or {}).get("cwd") or ""),
+            surface=body.surface or "ui",
+        )
+        return {"ok": True, "active_target": target}
+
+    @app.post("/voice/route")
+    def voice_route_endpoint(
+        body: VoiceRouteRequest,
+        request: Request,
+        principal: Principal = Depends(auth),
+    ) -> dict[str, Any]:
+        """Route one voice/natural-language utterance across all unified sessions & decisions.
+
+        Authority comes strictly from the authenticated principal (never from the body):
+        only the local owner (or verified owner over the link) may steer, interrupt, or
+        spawn coding sessions; paired browser extensions can query live status, switch
+        focus metadata, and answer non-owner-only decision cards.
+        """
+        authority = "owner" if _speaks_as_owner(principal, request) else "scoped"
+        client_host = (request.client.host if request.client else "") or ""
+        can_focus = principal.plan == "owner" and client_host in LOCAL_CLIENT_HOSTS
+        return voice_router.route(
+            body.text,
+            surface=body.surface or "voice",
+            capture=body.capture or "push-to-talk",
+            speaker_verified=bool(body.speaker_verified),
+            media_playing=bool(body.media_playing),
+            authority=authority,
+            sender=str(principal.id),
+            can_focus_local=can_focus,
+            context=body.context,
+        )
+
     # ── local auth: browser sign-in via device flow ──────────────────────────────
     # The daemon is a loopback service reachable ONLY from the local machine.
     # Browser can initiate device-code flow here, and daemon relays to portal.
@@ -5500,6 +5771,34 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     from adk.harnesses.create_routes import mount as mount_create
 
     mount_create(app, auth)
+
+    # Automatic persona-to-device home placement across AitherMesh:
+    # GET /personas/homes is read-only; POST /personas/assign & /personas/rebalance are owner-only.
+    from adk.harnesses.persona_placement import mount as mount_persona_placement
+
+    mount_persona_placement(app, auth, _require_owner, placer=persona_placer)
+
+    # Live SwarmBoard bridge (/swarms/*) + local awsh harness worker delegation:
+    # GET /swarms* & POST /swarms/{id}/steer use auth; launch/pause/control/delegate-harness are owner-only.
+    from adk.harnesses.swarm_routes import mount as mount_swarms
+
+    mount_swarms(
+        app,
+        auth,
+        _require_owner,
+        mgr=mgr,
+        rooms=rooms,
+        steer_dispatcher=steer_dispatcher,
+        swarm_registry=swarm_registry,
+    )
+
+    # Remote Control status/off routes (M2: adk.harnesses.rc_routes):
+    try:
+        from adk.harnesses.rc_routes import mount as mount_rc
+
+        mount_rc(app, auth, _require_owner)
+    except ImportError:
+        pass
 
     return app
 

@@ -94,9 +94,11 @@ import re
 import sys
 import threading
 import time
+import uuid
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from adk.decisions.store import write_steer
 from adk.harnesses.autopilot import transcript_turn_end
@@ -217,6 +219,247 @@ def _tier1_refusal_detail(event: Dict[str, Any]) -> str:
     )
 
 
+@dataclass
+class SwarmSlotBinding:
+    """Live mapping from a SwarmBoard slot/member to a warm ``awsh`` session."""
+
+    swarm_id: str
+    slot_id: str
+    session_id: str
+    room_id: str = ""
+    member_id: str = ""
+    agent: str = ""
+    thread_id: str = ""
+    pool: str = ""
+    role: str = "adk_agent"
+    allow_peer_input: bool = True
+    session_state: str = "awake"  # waiting | awake | working | done | stalled | stopped
+    last_activity_ts: float = field(default_factory=time.time)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class SwarmSlotRegistry:
+    """Thread-safe registry linking swarm slots/members to warm ``awsh`` sessions.
+
+    Keyed by ``(swarm_id, slot_id)`` so distinct workers sharing a base agent/lead
+    (e.g. ``fix-1``, ``fix-2`` both running as ``demiurge``) never overwrite each
+    other. Unambiguous ``agent`` lookups are supported only when a single active
+    binding owns that name in the room/swarm.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slots: Dict[Tuple[str, str], SwarmSlotBinding] = {}
+        self._by_session: Dict[str, Tuple[str, str]] = {}
+
+    @staticmethod
+    def _norm(value: str) -> str:
+        return str(value or "").strip().lstrip("@").strip()
+
+    @staticmethod
+    def _room_matches(binding: SwarmSlotBinding, room_id: str, swarm_id: str) -> bool:
+        if swarm_id and binding.swarm_id != swarm_id:
+            return False
+        if not room_id:
+            return bool(swarm_id)
+        if binding.room_id and binding.room_id == room_id:
+            return True
+        return f"swarm-{binding.swarm_id.lower()}" == room_id.lower()
+
+    def register_slot(
+        self,
+        *,
+        swarm_id: str,
+        slot_id: str,
+        session_id: str,
+        room_id: str = "",
+        member_id: str = "",
+        agent: str = "",
+        thread_id: str = "",
+        pool: str = "",
+        role: str = "adk_agent",
+        allow_peer_input: bool = True,
+        session_state: str = "awake",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SwarmSlotBinding:
+        sid = self._norm(swarm_id)
+        slot = self._norm(slot_id) or self._norm(member_id) or self._norm(agent) or str(session_id)
+        mem = self._norm(member_id) or slot
+        ag = self._norm(agent).lower()
+        rm = str(room_id or f"swarm-{sid.lower()}").strip()
+        binding = SwarmSlotBinding(
+            swarm_id=sid,
+            slot_id=slot,
+            session_id=str(session_id).strip(),
+            room_id=rm,
+            member_id=mem,
+            agent=ag,
+            thread_id=str(thread_id or "").strip(),
+            pool=str(pool or "").strip(),
+            role=str(role or "adk_agent").strip() or "adk_agent",
+            allow_peer_input=bool(allow_peer_input),
+            session_state=str(session_state or "awake").strip().lower(),
+            last_activity_ts=time.time(),
+            metadata=dict(metadata or {}),
+        )
+        key = (sid, slot)
+        with self._lock:
+            old = self._slots.get(key)
+            if old is not None and old.session_id != binding.session_id:
+                self._by_session.pop(old.session_id, None)
+            self._slots[key] = binding
+            if binding.session_id:
+                self._by_session[binding.session_id] = key
+        return binding
+
+    def unregister_slot(self, swarm_id: str, slot_id: str) -> bool:
+        key = (self._norm(swarm_id), self._norm(slot_id))
+        with self._lock:
+            old = self._slots.pop(key, None)
+            if old is None:
+                return False
+            self._by_session.pop(old.session_id, None)
+            return True
+
+    def unregister_session(self, session_id: str) -> int:
+        sid = str(session_id or "").strip()
+        with self._lock:
+            key = self._by_session.pop(sid, None)
+            if key is None:
+                return 0
+            self._slots.pop(key, None)
+            return 1
+
+    def get_by_session(self, session_id: str) -> Optional[SwarmSlotBinding]:
+        with self._lock:
+            key = self._by_session.get(str(session_id or "").strip())
+            return self._slots.get(key) if key is not None else None
+
+    def get_by_slot(self, swarm_id: str, slot_id: str) -> Optional[SwarmSlotBinding]:
+        with self._lock:
+            return self._slots.get((self._norm(swarm_id), self._norm(slot_id)))
+
+    def set_session_state(
+        self, session_id_or_slot: str, state: str, *, swarm_id: str = ""
+    ) -> Optional[SwarmSlotBinding]:
+        needle = self._norm(session_id_or_slot)
+        norm_state = str(state or "").strip().lower()
+        with self._lock:
+            key = self._by_session.get(needle)
+            binding = self._slots.get(key) if key is not None else None
+            if binding is None and swarm_id:
+                binding = self._slots.get((self._norm(swarm_id), needle))
+            if binding is None:
+                for item in self._slots.values():
+                    if swarm_id and item.swarm_id != self._norm(swarm_id):
+                        continue
+                    if item.slot_id == needle or item.member_id == needle:
+                        binding = item
+                        break
+            if binding is None:
+                return None
+            binding.session_state = norm_state
+            binding.last_activity_ts = time.time()
+            return binding
+
+    def is_thread_owned(
+        self, swarm_id: str = "", thread_id: str = "", slot_id: str = ""
+    ) -> bool:
+        sw = self._norm(swarm_id)
+        th = str(thread_id or "").strip()
+        sl = self._norm(slot_id)
+        with self._lock:
+            for item in self._slots.values():
+                if item.session_state == "stopped":
+                    continue
+                if sw and item.swarm_id != sw:
+                    continue
+                if sl:
+                    if item.slot_id == sl and (not th or not item.thread_id or item.thread_id == th):
+                        return True
+                elif th and item.thread_id == th:
+                    return True
+        return False
+
+    def list_slots(self, swarm_id: str = "", room_id: str = "") -> List[SwarmSlotBinding]:
+        sw = self._norm(swarm_id)
+        rm = str(room_id or "").strip()
+        with self._lock:
+            if not sw and not rm:
+                return list(self._slots.values())
+            return [
+                item
+                for item in self._slots.values()
+                if self._room_matches(item, rm, sw)
+            ]
+
+    def resolve_target(
+        self, room_id: str, target: str, *, swarm_id: str = ""
+    ) -> Optional[SwarmSlotBinding]:
+        needle = self._norm(target)
+        if not needle:
+            return None
+        sw = self._norm(swarm_id)
+        rm = str(room_id or "").strip()
+        with self._lock:
+            candidates = [
+                item
+                for item in self._slots.values()
+                if item.session_state != "stopped" and self._room_matches(item, rm, sw)
+            ]
+            # 1. Exact session_id
+            for item in candidates:
+                if item.session_id == needle:
+                    return item
+            # 2. Exact slot_id (case-sensitive, then case-insensitive if unique)
+            exact_slot = [item for item in candidates if item.slot_id == needle]
+            if len(exact_slot) == 1:
+                return exact_slot[0]
+            ci_slot = [item for item in candidates if item.slot_id.lower() == needle.lower()]
+            if len(ci_slot) == 1:
+                return ci_slot[0]
+            # 3. Exact member_id
+            exact_mem = [item for item in candidates if item.member_id == needle]
+            if len(exact_mem) == 1:
+                return exact_mem[0]
+            ci_mem = [item for item in candidates if item.member_id.lower() == needle.lower()]
+            if len(ci_mem) == 1:
+                return ci_mem[0]
+            # 4. Unambiguous agent alias
+            ag_matches = [item for item in candidates if item.agent == needle.lower()]
+            if len(ag_matches) == 1:
+                return ag_matches[0]
+            return None
+
+    def expand_all(
+        self, room_id: str, *, exclude_ids: Sequence[str] = (), swarm_id: str = ""
+    ) -> List[SwarmSlotBinding]:
+        sw = self._norm(swarm_id)
+        rm = str(room_id or "").strip()
+        excluded = {self._norm(x).lower() for x in exclude_ids if self._norm(x)}
+        with self._lock:
+            candidates = [
+                item
+                for item in self._slots.values()
+                if item.session_state != "stopped" and self._room_matches(item, rm, sw)
+            ]
+        out: List[SwarmSlotBinding] = []
+        seen_sessions: set[str] = set()
+        for item in candidates:
+            ids = {
+                item.slot_id.lower(),
+                item.member_id.lower(),
+                item.session_id.lower(),
+            }
+            if ids & excluded:
+                continue
+            if item.session_id in seen_sessions:
+                continue
+            seen_sessions.add(item.session_id)
+            out.append(item)
+        return out
+
+
 def frame_peer_text(text: str, sender: str) -> str:
     """Prepend peer provenance to text that is about to land on a pty.
 
@@ -272,6 +515,9 @@ class SteerDispatcher:
             Callable[[int, str], Tuple[bool, str, Optional[int]]]] = None,
         owner_verifier: Optional[OwnerAssertionVerifier] = None,
         thread_subscriptions: Any = None,
+        swarm_registry: Optional[SwarmSlotRegistry] = None,
+        swarm_target_resolver: Optional[Callable[[str, str], Any]] = None,
+        wake_session_fn: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._list_unified_sessions = list_unified_sessions or (lambda: [])
         self._send_managed_input = send_managed_input
@@ -295,6 +541,11 @@ class SteerDispatcher:
         # Subscription pass-through (thread_subs.py). None = off: an unaddressed event
         # stays "not this dispatcher's business", exactly the pre-2026-11-01 behaviour.
         self._thread_subs = thread_subscriptions
+        # Swarm slot registry / resolver + wake fallback for warm waiting sessions.
+        # Default None preserves 100% of pre-swarm Tier-1 / mailbox semantics.
+        self._swarm_registry = swarm_registry
+        self._swarm_target_resolver = swarm_target_resolver
+        self._wake_session_fn = wake_session_fn
 
         self._lock = threading.Lock()
         self._delivered_ids: "OrderedDict[str, float]" = OrderedDict()
@@ -326,6 +577,9 @@ class SteerDispatcher:
             return
         to = event.get("to")
         if not to:
+            if self._has_swarm_mentions(event):
+                self._handle_swarm_mentions(room, event)
+                return
             self._pass_through(room, event)
             return
 
@@ -346,6 +600,7 @@ class SteerDispatcher:
         room_id = getattr(room, "id", "") or str(event.get("room") or "")
         hops = self._safe_hops(event.get("hops"))
 
+        seen_sessions: set[str] = set()
         for raw_target in to:
             target_id = raw_target.strip() if isinstance(raw_target, str) else ""
             if not target_id or not _ACTOR_ID_RE.match(target_id):
@@ -353,8 +608,55 @@ class SteerDispatcher:
                     event, target=raw_target, reason=f"not a valid actor id: {raw_target!r}"
                 )
                 continue
-            self._dispatch_one(room, room_id, event, sender_id, target_id, hops)
+            self._dispatch_one(
+                room,
+                room_id,
+                event,
+                sender_id,
+                target_id,
+                hops,
+                seen_sessions=seen_sessions,
+            )
 
+        if event_id:
+            self._mark_processed(event_id)
+
+    def _has_swarm_mentions(self, event: Dict[str, Any]) -> bool:
+        if self._swarm_registry is None and self._swarm_target_resolver is None:
+            return False
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return False
+        if not payload.get("swarm_id"):
+            return False
+        mentions = payload.get("mentions")
+        return isinstance(mentions, (list, tuple)) and len(mentions) > 0
+
+    def _handle_swarm_mentions(self, room: Any, event: Dict[str, Any]) -> None:
+        event_id = str(event.get("id") or "")
+        if event_id and self._already_processed(event_id):
+            return
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        sender_id = str((event.get("actor") or {}).get("id") or "")
+        sender_low = sender_id.lower()
+        room_id = getattr(room, "id", "") or str(event.get("room") or "")
+        hops = self._safe_hops(event.get("hops"))
+        seen_sessions: set[str] = set()
+        for raw_target in payload.get("mentions") or ():
+            target_id = str(raw_target or "").strip().lstrip("@").strip()
+            if not target_id or not _ACTOR_ID_RE.match(target_id):
+                continue
+            if sender_low and target_id.lower() == sender_low:
+                continue
+            self._dispatch_one(
+                room,
+                room_id,
+                event,
+                sender_id,
+                target_id,
+                hops,
+                seen_sessions=seen_sessions,
+            )
         if event_id:
             self._mark_processed(event_id)
 
@@ -468,12 +770,41 @@ class SteerDispatcher:
         sender_id: str,
         target_id: str,
         hops: int,
+        *,
+        seen_sessions: Optional[set[str]] = None,
     ) -> None:
         if target_id == sender_id:
             self._refuse(room, event, target_id, None, "actor cannot address itself")
             return
         if hops >= DELIVERABLE_HOPS_CEILING:
             self._refuse(room, event, target_id, None, "hop limit")
+            return
+
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        swarm_id = str(payload.get("swarm_id") or "").strip()
+
+        if target_id.lower() == "all":
+            expanded = self._expand_swarm_all(room_id, sender_id, swarm_id)
+            if expanded:
+                dedup = seen_sessions if seen_sessions is not None else set()
+                for binding in expanded:
+                    if binding.session_id in dedup:
+                        continue
+                    dedup.add(binding.session_id)
+                    self._deliver_swarm_binding(
+                        room, event, sender_id, binding, target_label=binding.slot_id
+                    )
+                return
+
+        swarm_binding = self._resolve_swarm_binding(room_id, target_id, swarm_id)
+        if swarm_binding is not None:
+            if seen_sessions is not None:
+                if swarm_binding.session_id in seen_sessions:
+                    return
+                seen_sessions.add(swarm_binding.session_id)
+            self._deliver_swarm_binding(
+                room, event, sender_id, swarm_binding, target_label=target_id
+            )
             return
 
         resolved = self._resolve(room, target_id)
@@ -535,7 +866,7 @@ class SteerDispatcher:
                 return
 
         # The owner's voice into a DISCOVERED Claude Code tab (ruling 2026-09-28).
-        if owner_steer and owner_text is not None and target_kind == "claude_code":
+        if owner_steer and owner_text is not None and target_kind in ("claude_code", "claude", "claude-tty"):
             row = self._discovered_row(target_id)
             if row is not None:
                 self._dispatch_owner_live(
@@ -547,6 +878,172 @@ class SteerDispatcher:
         self._dispatch_to_mailbox(
             room, event, sender_id, target_id, target_kind, address_label,
             detail=detail_if_queued,
+        )
+
+    # ── swarm warm-wake tier ──────────────────────────────────────────────
+
+    @staticmethod
+    def _coerce_binding(raw: Any, fallback_slot: str = "") -> Optional[SwarmSlotBinding]:
+        if raw is None:
+            return None
+        if isinstance(raw, SwarmSlotBinding):
+            return raw
+        if isinstance(raw, str):
+            sid = raw.strip()
+            if not sid:
+                return None
+            return SwarmSlotBinding(swarm_id="", slot_id=fallback_slot or sid, session_id=sid)
+        if isinstance(raw, dict):
+            sid = str(raw.get("session_id") or raw.get("id") or "").strip()
+            if not sid:
+                return None
+            return SwarmSlotBinding(
+                swarm_id=str(raw.get("swarm_id") or ""),
+                slot_id=str(raw.get("slot_id") or fallback_slot or sid),
+                session_id=sid,
+                room_id=str(raw.get("room_id") or ""),
+                member_id=str(raw.get("member_id") or raw.get("slot_id") or fallback_slot or sid),
+                agent=str(raw.get("agent") or ""),
+                thread_id=str(raw.get("thread_id") or ""),
+                pool=str(raw.get("pool") or ""),
+                role=str(raw.get("role") or "adk_agent"),
+                allow_peer_input=bool(raw.get("allow_peer_input", True)),
+                session_state=str(raw.get("session_state") or "awake"),
+            )
+        return None
+
+    def _resolve_swarm_binding(
+        self, room_id: str, target_id: str, swarm_id: str
+    ) -> Optional[SwarmSlotBinding]:
+        if self._swarm_registry is not None:
+            found = self._swarm_registry.resolve_target(
+                room_id, target_id, swarm_id=swarm_id
+            )
+            if found is not None:
+                return found
+        if self._swarm_target_resolver is not None:
+            try:
+                raw = self._swarm_target_resolver(room_id, target_id)
+            except Exception as exc:
+                self._note_error(
+                    f"swarm target resolve failed for {target_id}: {type(exc).__name__}: {exc}"
+                )
+                return None
+            if isinstance(raw, (list, tuple)):
+                raw = raw[0] if raw else None
+            return self._coerce_binding(raw, fallback_slot=target_id)
+        return None
+
+    def _expand_swarm_all(
+        self, room_id: str, sender_id: str, swarm_id: str
+    ) -> List[SwarmSlotBinding]:
+        if self._swarm_registry is not None:
+            items = self._swarm_registry.expand_all(
+                room_id, exclude_ids=(sender_id,), swarm_id=swarm_id
+            )
+            if items:
+                return items
+        if self._swarm_target_resolver is not None:
+            try:
+                raw = self._swarm_target_resolver(room_id, "all")
+            except Exception as exc:
+                self._note_error(f"swarm @all resolve failed: {type(exc).__name__}: {exc}")
+                return []
+            if isinstance(raw, (list, tuple)):
+                out: List[SwarmSlotBinding] = []
+                sender_low = str(sender_id or "").strip().lower()
+                for item in raw:
+                    binding = self._coerce_binding(item)
+                    if binding is not None and (
+                        not sender_low
+                        or sender_low
+                        not in (
+                            binding.slot_id.lower(),
+                            binding.member_id.lower(),
+                            binding.session_id.lower(),
+                        )
+                    ):
+                        out.append(binding)
+                return out
+        return []
+
+    def _deliver_swarm_binding(
+        self,
+        room: Any,
+        event: Dict[str, Any],
+        sender_id: str,
+        binding: SwarmSlotBinding,
+        *,
+        target_label: str,
+    ) -> None:
+        sender_low = str(sender_id or "").strip().lower()
+        if sender_low and sender_low in (
+            binding.slot_id.lower(),
+            binding.member_id.lower(),
+            binding.session_id.lower(),
+        ):
+            self._refuse(room, event, target_label, binding.role, "actor cannot address itself")
+            return
+        actor = event.get("actor") or {}
+        sender_label = str(actor.get("name") or sender_id or "swarm")
+        raw_text = _extract_text(event)
+        is_owner_human = (
+            _auth_plan(event) == TIER1_REQUIRED_PLAN
+            and str(actor.get("kind") or "") in TIER1_ACTOR_KINDS
+        )
+        deliver_text = raw_text if is_owner_human else frame_peer_text(raw_text, sender_label)
+        target_kind = binding.role or "adk_agent"
+        address_label = binding.slot_id or target_label
+
+        # Warm wake via send_managed_input (session.submit) for swarm-bound sessions
+        can_warm_wake = self._send_managed_input is not None and (
+            binding.allow_peer_input or is_owner_human
+        )
+        if can_warm_wake:
+            landed = False
+            try:
+                landed = bool(self._send_managed_input(binding.session_id, deliver_text))
+            except Exception as exc:
+                self._note_error(
+                    f"swarm warm wake failed for {binding.session_id}: {type(exc).__name__}: {exc}"
+                )
+            if not landed and self._wake_session_fn is not None:
+                try:
+                    self._wake_session_fn(binding.session_id)
+                    landed = bool(self._send_managed_input(binding.session_id, deliver_text))
+                except Exception as exc:
+                    self._note_error(
+                        f"swarm session wake retry failed for {binding.session_id}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    landed = False
+            if landed:
+                if self._swarm_registry is not None:
+                    self._swarm_registry.set_session_state(
+                        binding.session_id, "awake", swarm_id=binding.swarm_id
+                    )
+                self._deliver(
+                    room,
+                    event,
+                    binding.session_id,
+                    target_kind,
+                    address_label,
+                    channel="swarm_wake",
+                    landed_now=True,
+                    queued=False,
+                    detail=f"swarm warm wake on slot {address_label}",
+                    mailbox_pending=None,
+                )
+                return
+
+        self._dispatch_to_mailbox(
+            room,
+            event,
+            sender_id,
+            binding.session_id,
+            target_kind,
+            address_label,
+            detail="queued for swarm worker's next turn boundary",
         )
 
     # ── the owner-steer tier ───────────────────────────────────────────────
@@ -744,7 +1241,8 @@ class SteerDispatcher:
             rows = []
         for row in rows or []:
             if row.get("id") == target_id:
-                return ("claude_code", str(row.get("title") or target_id))
+                kind = str(row.get("harness") or "").strip() or "claude_code"
+                return (kind, str(row.get("title") or target_id))
         return None
 
     # ── receipts ────────────────────────────────────────────────────────────
@@ -903,7 +1401,9 @@ class SteerDispatcher:
             data = self.status()
             target = self._status_file
             target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+            tmp = target.with_name(
+                f"{target.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
+            )
             tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
             os.replace(tmp, target)
         except OSError as exc:

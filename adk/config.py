@@ -227,6 +227,21 @@ class Config:
     # Moonshot (Kimi K3 — OpenAI-compatible, api.moonshot.ai)
     moonshot_api_key: str = field(default_factory=lambda: os.getenv("MOONSHOT_API_KEY", ""))
 
+    # Google AI Plan (Desktop PKCE + RFC 9449 DPoP OAuth; zero hardcoded credentials)
+    google_ai_plan_client_id: str = field(
+        default_factory=lambda: os.getenv("AITHER_GOOGLE_AI_PLAN_CLIENT_ID", "")
+    )
+    google_ai_plan_client_secret: str = field(
+        default_factory=lambda: os.getenv("AITHER_GOOGLE_AI_PLAN_CLIENT_SECRET", "")
+    )
+    google_ai_plan_local_failover: bool = field(
+        default_factory=lambda: os.getenv("AITHER_GOOGLE_AI_PLAN_LOCAL_FAILOVER", "1").lower()
+        not in ("0", "false", "no", "off")
+    )
+    local_bridge_url: str = field(
+        default_factory=lambda: os.getenv("AITHER_LOCAL_BRIDGE_URL", "")
+    )
+
     # Reasoning backend — separate API for effort 7+ tasks (hybrid mode)
     # Values: "", "anthropic", "openai", "deepseek", "openrouter", "moonshot", "gateway"
     reasoning_backend: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_BACKEND", ""))
@@ -393,6 +408,12 @@ class Config:
             config.openrouter_api_key = saved["openrouter_api_key"]
         if not config.moonshot_api_key and saved.get("moonshot_api_key"):
             config.moonshot_api_key = saved["moonshot_api_key"]
+        if not config.google_ai_plan_client_id and saved.get("google_ai_plan_client_id"):
+            config.google_ai_plan_client_id = saved["google_ai_plan_client_id"]
+        if not config.local_bridge_url and saved.get("local_bridge_url"):
+            config.local_bridge_url = saved["local_bridge_url"]
+        if "google_ai_plan_local_failover" in saved and "AITHER_GOOGLE_AI_PLAN_LOCAL_FAILOVER" not in os.environ:
+            config.google_ai_plan_local_failover = bool(saved["google_ai_plan_local_failover"])
         if not config.dgx_url and saved.get("dgx_url"):
             config.dgx_url = saved["dgx_url"]
         if not config.cluster_backend and saved.get("cluster_backend"):

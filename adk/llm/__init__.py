@@ -124,6 +124,17 @@ _EFFORT_MODELS = {
         "medium": "aither-orchestrator",     # remote desktop
         "large": "aither-reasoning",         # remote desktop
     },
+    "google-ai-plan": {
+        "small": "gemini-3.5-flash-lite",
+        "medium": "gemini-4-hydrogen",
+        "large": "gemini-4-neon",
+        "max": "gemini-4-carbon",
+    },
+    "local-bridge": {
+        "small": "bonsai-4b",
+        "medium": "bonsai2-27b",
+        "large": "bonsai2-27b",
+    },
 }
 
 # Providers that serve models from the LOCAL machine, where an ODS
@@ -262,6 +273,8 @@ class LLMRouter:
         # Failover chain — tried in order when primary returns 429/5xx/timeout
         self._failover_providers: list[tuple[str, LLMProvider]] = []
         self._failover_cooldown: float = 0.0
+        self._primary_circuit_open_until: dict[str, float] = {}
+        self._default_failover_checked: bool = False
 
         if provider:
             provider = migrate_backend_name(provider, "LLMRouter(provider=...)")
@@ -289,6 +302,8 @@ class LLMRouter:
         "bonsai": "http://127.0.0.1:8080/v1",
         # FreeLLMAPI (BYO free-tier keys; adk.freellmapi). Docker/server default port.
         "freellmapi": "http://127.0.0.1:3001/v1",
+        # Local Antigravity/Aither RTX 5090 multi-protocol bridge (:8287).
+        "local-bridge": "http://127.0.0.1:8287/v1",
         # llama-server's own default (`llama-server -m model.gguf`).
         "llamacpp": LLAMACPP_DEFAULT_URL,
     }
@@ -305,6 +320,7 @@ class LLMRouter:
         "bonsai-local": "bonsai-27b",
         "bonsai": "bonsai-selfhost",  # the --alias install-bonsai.sh gives llama-server
         "freellmapi": "auto",  # FreeLLMAPI's own router picks among the user's free tiers
+        "local-bridge": "bonsai2-27b",
         "llamacpp": "default",  # llama-server answers for the one GGUF it serves
     }
 
@@ -364,6 +380,21 @@ class LLMRouter:
                 api_key=api_key or "",
                 default_model=self._model or "gemini-2.0-flash",
             )
+        elif name == "google-ai-plan":
+            from .google_ai_plan import DEFAULT_MODEL as _GAP_DEFAULT, GoogleAIPlanProvider
+            return GoogleAIPlanProvider(
+                default_model=self._model or _GAP_DEFAULT,
+                config=self._config,
+            )
+        elif name == "local-bridge":
+            from .openai_compat import OpenAIProvider
+            bridge_url = base_url or self._resolve_local_bridge_v1_url()
+            return OpenAIProvider(
+                base_url=bridge_url,
+                api_key=api_key or "local-aither",
+                default_model=self._model or "bonsai2-27b",
+                ctk_by_model=_DEFAULT_CTK_BY_MODEL,
+            )
         elif name == "picolm":
             from .picolm import PicoLMProvider
             return PicoLMProvider(
@@ -398,10 +429,10 @@ class LLMRouter:
         else:
             raise ValueError(
                 f"Unknown provider: {name}. "
-                "Use 'gateway', 'openai', 'anthropic', 'gemini', 'deepseek', "
-                "'openrouter', 'moonshot', 'groq', 'together', 'vllm', 'lmstudio', "
-                "'llamacpp', 'genesis', 'bonsai-local', 'bonsai', 'freellmapi', "
-                "'picolm', or 'acp'."
+                "Use 'gateway', 'openai', 'anthropic', 'gemini', 'google-ai-plan', "
+                "'local-bridge', 'deepseek', 'openrouter', 'moonshot', 'groq', "
+                "'together', 'vllm', 'lmstudio', 'llamacpp', 'genesis', "
+                "'bonsai-local', 'bonsai', 'freellmapi', 'picolm', or 'acp'."
             )
 
     async def _try_local_selfhost(self) -> LLMProvider | None:
@@ -1126,24 +1157,99 @@ class LLMRouter:
         from datetime import datetime, timezone
         from pathlib import Path
         try:
-            data_dir = self._config.data_dir if self._config else os.path.expanduser("~/.aither")
+            data_dir = (
+                self._config.data_dir
+                if self._config
+                else os.environ.get("AITHER_DATA_DIR") or os.path.expanduser("~/.aither")
+            )
             log_path = Path(data_dir) / "cloud_costs.jsonl"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             # Determine if this is a local or cloud request
             _prov = provider_name or self._provider_name
-            is_local = _prov in ("vllm", "llamacpp", "picolm", "desktop", "local")
+            is_local = _prov in ("vllm", "llamacpp", "picolm", "desktop", "local", "local-bridge")
+            is_zero_cost = is_local or _prov == "google-ai-plan"
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "provider": "local" if is_local else _prov,
                 "model": getattr(resp, "model", "") or "",
                 "input_tokens": getattr(resp, "input_tokens", 0) or 0,
                 "output_tokens": getattr(resp, "output_tokens", 0) or 0,
-                "cost_usd": 0.0 if is_local else getattr(resp, "cost_usd", 0.0) or 0.0,
+                "cost_usd": 0.0 if is_zero_cost else getattr(resp, "cost_usd", 0.0) or 0.0,
             }
             with open(log_path, "a") as f:
                 f.write(_json.dumps(entry) + "\n")
         except Exception:
             pass  # Cost logging is best-effort, never crash
+
+    def _resolve_local_bridge_v1_url(self) -> str:
+        """Resolve the local multi-protocol bridge OpenAI ``/v1`` base URL."""
+        raw = os.environ.get("AITHER_LOCAL_BRIDGE_URL", "").strip()
+        if not raw and self._config is not None:
+            raw = str(getattr(self._config, "local_bridge_url", "") or "").strip()
+        if not raw:
+            host = os.environ.get("AITHER_LOCAL_BRIDGE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+            port = os.environ.get("AITHER_LOCAL_BRIDGE_PORT", "8287").strip() or "8287"
+            raw = f"http://{host}:{port}"
+        base = raw.rstrip("/")
+        return base if base.endswith("/v1") else f"{base}/v1"
+
+    def _setup_default_failover(self) -> None:
+        """Auto-attach ``local-bridge`` (:8287) failover for ``google-ai-plan``."""
+        if self._default_failover_checked:
+            return
+        self._default_failover_checked = True
+        if self._provider_name != "google-ai-plan" or self._failover_providers:
+            return
+        env_flag = os.environ.get("AITHER_GOOGLE_AI_PLAN_LOCAL_FAILOVER", "").strip().lower()
+        if env_flag in ("0", "false", "no", "off"):
+            return
+        if self._config is not None and getattr(self._config, "google_ai_plan_local_failover", True) is False:
+            return
+        try:
+            fb = self._create_provider("local-bridge", None, None)
+            self._failover_providers.append(("local-bridge", fb))
+            logger.info("Auto-attached local-bridge failover for google-ai-plan (%s)", getattr(fb, "base_url", ""))
+        except Exception as exc:
+            logger.debug("Could not auto-attach local-bridge failover: %s", exc)
+
+    def _is_primary_circuit_open(self, model: str | None) -> bool:
+        import time as _time
+        now = _time.time()
+        if now < self._primary_circuit_open_until.get("*", 0.0):
+            return True
+        if model and now < self._primary_circuit_open_until.get(model, 0.0):
+            return True
+        return False
+
+    def _open_primary_circuit(self, err: Exception, model: str | None) -> None:
+        import time as _time
+        cooldown_s = float(getattr(err, "failover_cooldown_s", 60.0) or 60.0)
+        scope = str(getattr(err, "circuit_scope", "*") or "*")
+        if scope != "*" and not scope and model:
+            scope = model
+        until = _time.time() + max(1.0, cooldown_s)
+        self._primary_circuit_open_until[scope] = until
+        self._failover_cooldown = max(self._failover_cooldown, until)
+
+    def _clear_primary_circuit(self, model: str | None) -> None:
+        cleared = False
+        if "*" in self._primary_circuit_open_until:
+            del self._primary_circuit_open_until["*"]
+            cleared = True
+        if model and model in self._primary_circuit_open_until:
+            del self._primary_circuit_open_until[model]
+            cleared = True
+        if not self._primary_circuit_open_until:
+            self._failover_cooldown = 0.0
+        if cleared:
+            logger.info("Primary (%s) circuit closed after successful recovery", self._provider_name)
+
+    @staticmethod
+    def _failover_model_for(fb_name: str, requested_model: str | None) -> str | None:
+        """Preserve requested model for ``local-bridge`` so resolve_target() routes fast/primary tiers."""
+        if fb_name == "local-bridge":
+            return requested_model
+        return None
 
     async def get_provider(self) -> LLMProvider:
         """Return the active provider, auto-detecting if needed."""
@@ -1158,6 +1264,7 @@ class LLMRouter:
             # Set up perception backend for vision/multimodal requests
             if self._perception_provider is None:
                 self._setup_perception_backend()
+        self._setup_default_failover()
         return self._provider
 
     @property
@@ -1600,37 +1707,62 @@ class LLMRouter:
                 logger.warning("Remote desktop inference failed, falling back to local: %s", e)
                 self._remote_healthy = False
 
+        # If primary circuit is open and we have failover providers, skip primary
+        # during the cooldown window instead of hammering an exhausted quota.
+        if self._failover_providers and self._is_primary_circuit_open(model):
+            for fb_name, fb_provider in self._failover_providers:
+                try:
+                    resp = await fb_provider.chat(
+                        messages, model=self._failover_model_for(fb_name, model),
+                        tool_choice=tool_choice, top_p=top_p,
+                        repetition_penalty=repetition_penalty, **kwargs,
+                        **self._effort_kw(fb_provider, effort),
+                    )
+                    if effort is not None:
+                        resp.effort_level = effort
+                    self._log_cost(resp, fb_name)
+                    return resp
+                except Exception as fb_err:
+                    logger.warning("Failover (%s) failed while primary circuit open: %s", fb_name, fb_err)
+                    continue
+
         try:
             resp = await provider.chat(
                 messages, model=model, tool_choice=tool_choice,
                 top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
                 **self._effort_kw(provider, effort),
             )
+            self._clear_primary_circuit(model)
             if effort is not None:
                 resp.effort_level = effort
             self._log_cost(resp, self._provider_name)
             return resp
         except Exception as primary_err:
-            # Failover chain: try each backup provider in order
+            # Failover chain: open primary circuit and try each backup provider in order
             if not self._failover_providers:
                 raise
-            import time
-            if time.time() < self._failover_cooldown:
-                raise
+            self._open_primary_circuit(primary_err, model)
             for fb_name, fb_provider in self._failover_providers:
                 try:
                     logger.warning("Primary (%s) failed: %s — trying %s", self._provider_name, primary_err, fb_name)
+                    if fb_name == "local-bridge" and os.environ.get("AITHER_AUTO_START_LOCAL_BRIDGE") == "1":
+                        try:
+                            from ..antigravity_setup import ensure_local_bridge_running
+                            ensure_local_bridge_running()
+                        except Exception:
+                            pass
                     resp = await fb_provider.chat(
-                        messages, model=None, tool_choice=tool_choice,
-                        top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                        messages, model=self._failover_model_for(fb_name, model),
+                        tool_choice=tool_choice, top_p=top_p,
+                        repetition_penalty=repetition_penalty, **kwargs,
                         **self._effort_kw(fb_provider, effort),
                     )
                     if effort is not None:
                         resp.effort_level = effort
                     self._log_cost(resp, fb_name)
-                    self._failover_cooldown = time.time() + 60
                     return resp
-                except Exception:
+                except Exception as fb_err:
+                    logger.warning("Failover (%s) failed: %s", fb_name, fb_err)
                     continue
             raise primary_err
 
@@ -1693,7 +1825,16 @@ class LLMRouter:
         if effort is not None and effort >= 7 and reasoning_prov is not None:
             tiers.append((self._reasoning_provider_name or "reasoning", reasoning_prov,
                           getattr(self, "_reasoning_model", None) or model))
-        tiers.append((self._provider_name, provider, model))
+
+        failover_tiers = [
+            (fb_name, fb_prov, self._failover_model_for(fb_name, model))
+            for fb_name, fb_prov in self._failover_providers
+        ]
+        if failover_tiers and self._is_primary_circuit_open(model):
+            tiers.extend(failover_tiers)
+        else:
+            tiers.append((self._provider_name, provider, model))
+            tiers.extend(failover_tiers)
 
         detector = DegenerationDetector()
         for i, (tier_name, tier_prov, tier_model) in enumerate(tiers):
@@ -1714,8 +1855,12 @@ class LLMRouter:
                         )
                         return
                     yield chunk
+                if tier_name == self._provider_name:
+                    self._clear_primary_circuit(model)
                 return
             except Exception as e:
+                if tier_name == self._provider_name and not started and self._failover_providers:
+                    self._open_primary_circuit(e, model)
                 if started or last:
                     raise
                 logger.warning("%s stream backend failed before its first chunk, "

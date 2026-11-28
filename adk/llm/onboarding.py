@@ -92,6 +92,29 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         ],
         "aliases": ["google"],
     },
+    "google-ai-plan": {
+        "label": "Google AI Plan (Sign in with Google — personal quota + :8287 failover)",
+        "kind": "cloud",
+        "key_env": "AITHER_GOOGLE_AI_PLAN_CLIENT_ID",
+        "key_url": "https://one.google.com/ai",
+        "steps": [
+            "Set your Aitherium Desktop OAuth client env vars (AITHER_GOOGLE_AI_PLAN_CLIENT_ID / _SECRET)",
+            "Sign in:    adk auth google-ai-plan --set-default",
+            "Check:      adk auth google-ai-plan status",
+            "Test:       adk auth google-ai-plan test [--simulate-429]",
+        ],
+        "aliases": ["google-plan", "ai-plan"],
+    },
+    "local-bridge": {
+        "label": "Aither Local Bridge (:8287 — RTX 5090 bonsai2-27b / bonsai-4b)",
+        "kind": "local",
+        "steps": [
+            "Start bridge: adk antigravity local enable",
+            "Check health: curl http://127.0.0.1:8287/__local_bridge_health",
+            "Test:         adk ask \"hello\" --backend local-bridge",
+        ],
+        "aliases": ["bridge", "antigravity-bridge"],
+    },
     "groq": {
         "label": "Groq",
         "kind": "cloud",

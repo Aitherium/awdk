@@ -291,6 +291,22 @@ def _default_rules_markdown() -> str:
         "tokens, API keys, or credentials into prose, logs, or commits.\n"
         "- **Cloudflare.** When interacting with Cloudflare, use the `cf` CLI unless the "
         "project has a Wrangler configuration file.\n"
+        "- **Build on the new-stack primitives first (`zero-libc` / `awzeal` / `awseal` / "
+        "`awrun` / `awharness`).** Whenever designing or extending harnesses, tunnels, swarms, "
+        "or self-deployable bots, integrate directly with `awzeal` (zero-libc minimal-TCB "
+        "inference), `awseal` (Ed25519 signing/verification), `awrun` (execution/confinement/"
+        "tunnel lanes), and `awharness` (`adk harness up` umbrella) instead of creating parallel "
+        "shims.\n"
+        "- **Use dedicated Cloudflare zones for infra — stop stacking onto `tunnel.aitherium.com` "
+        "or `*.aitherium.com`.** Route new remote-control/pairing links to `a30.link` (keep "
+        "`tunnel.aitherium.com` only as a compatibility alias), cookie-isolated user bots/"
+        "`awrun` sandboxes to `a30.run`, M2M daemon/API infra to `a30.services`, AitherNet/mesh "
+        "nodes to `aithr.net`, hosted tenants to `aith.cloud`, OSS bricks to `aitherium.org`, "
+        "developer docs/SDKs to `aitherium.io`, and public benchmarks to `agentvs.ai`.\n"
+        "- **Never propose killing or derail an active `/teamwork` run unprompted.** After "
+        "transient 429s or server restarts, verify liveness and resume `/teamwork` cleanly; do "
+        "not spin off side-quests that touch its in-flight files or suggest aborting it unless "
+        "the owner explicitly asks to cancel.\n"
     )
 
 
@@ -787,11 +803,16 @@ def doctor_antigravity(
 
     # AGD005: live local AitherOS services (warn-only so offline laptops stay exit 0)
     if run_live:
+        bridge_url = (
+            os.environ.get("AITHER_LOCAL_BRIDGE_URL")
+            or f"http://127.0.0.1:{os.environ.get('AITHER_LOCAL_BRIDGE_PORT', '8287')}"
+        ).rstrip("/")
         for label, url in (
             ("gateway", "http://127.0.0.1:8182/health"),
             ("hookd", "http://127.0.0.1:8369/health"),
             ("aw-hub", "http://127.0.0.1:47933/health"),
             ("awsh-daemon", "http://127.0.0.1:8362/health"),
+            ("local-bridge", f"{bridge_url}/health"),
         ):
             ok, detail = _probe_http(url)
             if ok:
@@ -880,6 +901,124 @@ def self_test() -> int:
     return 0
 
 
+# ------------------------------------------------------- Local stack wiring
+
+
+def default_agy_cli_settings_path() -> Path:
+    override = os.environ.get("ANTIGRAVITY_CLI_SETTINGS", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+
+
+def configure_local_antigravity(
+    *,
+    bridge_url: str = "http://127.0.0.1:8287",
+    model: str = "bonsai2.5-27b",
+    cli_settings_path: Optional[Path] = None,
+    enable: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Configure Antigravity CLI (``agy``) & local env for the AitherOS local bridge.
+
+    When ``enable=True``:
+      - Sets ``"modelProvider": "gemini"`` in ``~/.gemini/antigravity-cli/settings.json``
+        (the documented Antigravity CLI setting that routes via ``GOOGLE_GEMINI_BASE_URL``).
+      - Returns the exact environment variables for ``agy`` (Gemini ``v1beta``),
+        ``google-antigravity`` SDK (``LocalOpenAIAgentConfig``), ``claude``/``awsh``
+        (Anthropic ``/v1/messages``), and ``awdk``/``awharness`` (OpenAI ``/v1``).
+    When ``enable=False``:
+      - Removes ``"modelProvider"`` to restore default Google account sign-in.
+    """
+    settings_file = Path(cli_settings_path) if cli_settings_path else default_agy_cli_settings_path()
+    base = bridge_url.rstrip("/")
+
+    existing: dict[str, Any] = {}
+    if settings_file.is_file():
+        try:
+            loaded = json.loads(settings_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (OSError, ValueError):
+            existing = {}
+
+    updated = dict(existing)
+    if enable:
+        updated["modelProvider"] = "gemini"
+    else:
+        updated.pop("modelProvider", None)
+
+    if not dry_run:
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = settings_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, settings_file)
+
+    env_vars = {
+        "GOOGLE_GEMINI_BASE_URL": base,
+        "GEMINI_API_KEY": "local-aither",
+        "ANTHROPIC_BASE_URL": f"{base}/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "local-aither",
+        "ANTHROPIC_MODEL": model,
+        "OPENAI_BASE_URL": f"{base}/v1",
+        "OPENAI_API_KEY": "local-aither",
+        "AITHER_LOCAL_BRIDGE_URL": base,
+    }
+    return {
+        "ok": True,
+        "enabled": bool(enable),
+        "dry_run": bool(dry_run),
+        "settings_path": str(settings_file),
+        "bridge_url": base,
+        "model": model,
+        "env": env_vars,
+        "sdk_snippet": (
+            f"LocalOpenAIAgentConfig(base_url={base + '/v1'!r}, model={model!r}).lightweight()"
+        ),
+    }
+
+
+def ensure_local_bridge_running(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8287,
+    wait_s: float = 6.0,
+) -> dict[str, Any]:
+    """Ensure ``adk.harnesses.local_bridge`` is serving on ``host:port``."""
+    client_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    base = f"http://{client_host}:{port}"
+    ok, detail = _probe_http(f"{base}/__local_bridge_health", timeout=1.5)
+    if ok:
+        return {"ok": True, "state": "running", "url": base, "detail": detail}
+
+    log_path = Path.home() / ".aither" / "logs" / "local-bridge.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "adk.harnesses.local_bridge", "serve", "--host", host, "--port", str(port)]
+    env = dict(os.environ)
+    awdk_root = str(_package_root().parent)
+    existing_pp = env.get("PYTHONPATH", "")
+    if awdk_root not in existing_pp.split(os.pathsep):
+        env["PYTHONPATH"] = f"{awdk_root}{os.pathsep}{existing_pp}" if existing_pp else awdk_root
+    kwargs: dict[str, Any] = {"env": env}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000 | 0x00000200
+    else:
+        kwargs["start_new_session"] = True
+    sink = open(log_path, "ab")  # noqa: SIM115
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, close_fds=True, **kwargs)
+    finally:
+        sink.close()
+
+    deadline = time.monotonic() + max(0.5, wait_s)
+    while time.monotonic() < deadline:
+        ok, detail = _probe_http(f"{base}/__local_bridge_health", timeout=1.0)
+        if ok:
+            return {"ok": True, "state": "started", "pid": proc.pid, "url": base, "log": str(log_path)}
+        time.sleep(0.2)
+    return {"ok": False, "state": "failed", "pid": proc.pid, "url": base, "log": str(log_path)}
+
+
 # ---------------------------------------------------------------- CLI wiring
 
 
@@ -905,9 +1044,81 @@ def add_parsers(ag_sub: Any) -> None:
     doc.add_argument("--self-test", action="store_true", help="Run doctor fixture self-test")
     doc.add_argument("--json", dest="json_output", action="store_true")
 
+    loc = ag_sub.add_parser(
+        "local",
+        help="Configure & run the local multi-protocol bridge (Gemini v1beta + Anthropic + OpenAI) for agy/SDK/awsh/awharness",
+    )
+    loc.add_argument("action", nargs="?", default="enable", choices=("enable", "disable", "serve", "status", "env"))
+    loc.add_argument("--host", default="127.0.0.1")
+    loc.add_argument("--port", type=int, default=8287)
+    loc.add_argument("--model", default="bonsai2.5-27b")
+    loc.add_argument("--cli-settings", default="", help="Override ~/.gemini/antigravity-cli/settings.json")
+    loc.add_argument("--no-start", action="store_true", help="Write config without starting the bridge daemon")
+    loc.add_argument("--dry-run", action="store_true")
+    loc.add_argument("--json", dest="json_output", action="store_true")
+
 
 def cmd_antigravity(args: Any) -> int:
     sub = getattr(args, "antigravity_command", "")
+    if sub == "local":
+        act = getattr(args, "action", "enable")
+        host = getattr(args, "host", "127.0.0.1")
+        port = int(getattr(args, "port", 8287))
+        model = getattr(args, "model", "bonsai2.5-27b")
+        client_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+        bridge_url = f"http://{client_host}:{port}"
+        cli_path = Path(args.cli_settings) if getattr(args, "cli_settings", "") else None
+
+        if act == "serve":
+            from adk.harnesses.local_bridge import main as _bridge_main
+            return _bridge_main(["serve", "--host", host, "--port", str(port)])
+
+        if act == "status":
+            from adk.harnesses.local_bridge import main as _bridge_main
+            return _bridge_main(["status", "--url", bridge_url])
+
+        if act == "disable":
+            res = configure_local_antigravity(
+                bridge_url=bridge_url,
+                model=model,
+                cli_settings_path=cli_path,
+                enable=False,
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            if getattr(args, "json_output", False):
+                print(json.dumps(res, indent=2))
+            else:
+                print(f"Restored default Antigravity CLI auth in {res['settings_path']}")
+            return 0
+
+        res = configure_local_antigravity(
+            bridge_url=bridge_url,
+            model=model,
+            cli_settings_path=cli_path,
+            enable=True,
+            dry_run=bool(getattr(args, "dry_run", False)) or act == "env",
+        )
+        if act == "env":
+            for k, v in res["env"].items():
+                print(f'export {k}="{v}"')
+            return 0
+
+        bridge_info: dict[str, Any] = {"state": "skipped"}
+        if not getattr(args, "no_start", False) and not getattr(args, "dry_run", False):
+            bridge_info = ensure_local_bridge_running(host=host, port=port)
+        res["bridge"] = bridge_info
+        if getattr(args, "json_output", False):
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"Configured Antigravity local stack ({res['settings_path']})")
+            print(f"  Bridge: {bridge_url} ({bridge_info.get('state')})")
+            print(f"  Model:  {model}")
+            print("  Shell exports for agy / claude / awsh / awharness:")
+            for k, v in res["env"].items():
+                print(f'    export {k}="{v}"')
+            print(f"  SDK:    {res['sdk_snippet']}")
+        return 0 if bridge_info.get("ok", True) else 1
+
     if sub == "setup":
         cfg = Path(args.config_dir) if getattr(args, "config_dir", "") else None
         repo = Path(args.repo) if getattr(args, "repo", "") else None

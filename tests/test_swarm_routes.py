@@ -291,6 +291,10 @@ def test_fastapi_swarm_routes_enforce_owner_vs_awconnect_scope():
     assert tc.post("/swarms/swm_demo1/control", headers=h_awc, json={"action": "cancel"}).status_code == 403
     assert tc.post("/swarms/swm_demo1/delegate-harness", headers=h_awc,
                    json={"harness": "claude", "prompt": "hack"}).status_code == 403
+    assert tc.post("/swarms/swm_demo1/post", headers=h_awc,
+                   json={"agent": "demiurge", "kind": "done", "text": "forged"}).status_code == 403
+    assert tc.post("/swarms/swm_demo1/nudge", headers=h_awc,
+                   json={"slot_id": "demiurge", "force_escalate": True}).status_code == 403
 
     # Owner token: full lifecycle works
     h_own = {"Authorization": "Bearer owner-tok"}
@@ -334,3 +338,115 @@ def test_mcp_stdio_exposes_all_six_swarm_tools(monkeypatch):
         ("POST", "/swarms/swm_demo1/pause"),
         ("POST", "/swarms/swm_demo1/delegate-harness"),
     ]
+
+
+def test_daemon_swarm_post_and_nudge_enforce_least_privilege(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import adk.harnesses.daemon as daemon
+    from adk.harnesses import rooms as rooms_mod
+    from adk.harnesses import session as session_mod
+    from adk.harnesses import session_directory as directory_mod
+    from adk.harnesses.manager import SessionManager
+
+    token = "owner-swarm-auth-token"
+    reg_path = tmp_path / "principals.json"
+    monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+    monkeypatch.setenv("AITHER_HARNESS_TOKEN", token)
+    monkeypatch.setenv("AITHER_HARNESS_PRINCIPALS", str(reg_path))
+    monkeypatch.setenv("AITHER_HARNESS_ROOMS_ROOT", str(tmp_path / "rooms"))
+    monkeypatch.setenv("AITHER_STEER_DIR", str(tmp_path / "steer"))
+    monkeypatch.setenv("AITHER_HARNESS_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AITHER_LOCAL_SWARMS_DIR", str(tmp_path / "local-swarms"))
+    monkeypatch.setattr(daemon, "PRINCIPALS_PATH", reg_path)
+    monkeypatch.setattr(
+        directory_mod, "_directory", directory_mod.SessionDirectory(discover_fn=lambda: [])
+    )
+    monkeypatch.setattr(session_mod.HarnessSession, "start", lambda self: None)
+    monkeypatch.setattr(rooms_mod, "_registry", None)
+
+    app = daemon.create_app(manager=SessionManager(root=tmp_path / "s"), token=token)
+    tc = TestClient(app)
+
+    awc_tok = daemon.mint_scoped_token(
+        principal_id="awconnect:ext-probe",
+        paths=pairing.AWCONNECT_PATHS,
+        plan="awconnect",
+        path=reg_path,
+    )
+    free_tok = daemon.mint_scoped_token(
+        principal_id="tenant:free-user",
+        paths=("/swarms",),
+        plan="free",
+        path=reg_path,
+    )
+    agent_tok = daemon.mint_scoped_token(
+        principal_id="agent:fix-1",
+        paths=mcp_stdio.AGENT_TOKEN_PATHS,
+        plan="agent",
+        path=reg_path,
+    )
+    h_own = {"Authorization": f"Bearer {token}"}
+    h_awc = {"Authorization": f"Bearer {awc_tok}"}
+    h_free = {"Authorization": f"Bearer {free_tok}"}
+    h_agent = {"Authorization": f"Bearer {agent_tok}"}
+
+    created = tc.post(
+        "/swarms",
+        headers=h_own,
+        json={"goal": "Least privilege check", "local_room": True, "leads": ["demiurge", "fix-1"]},
+    )
+    assert created.status_code == 200, created.text
+    sid = created.json()["swarm_id"]
+
+    for bad_hdrs in (h_awc, h_free):
+        r_post = tc.post(
+            f"/swarms/{sid}/post",
+            headers=bad_hdrs,
+            json={"slot_id": "demiurge", "kind": "done", "text": "forged done", "keep_warm": False},
+        )
+        assert r_post.status_code == 403, r_post.text
+        r_nudge = tc.post(
+            f"/swarms/{sid}/nudge",
+            headers=bad_hdrs,
+            json={"slot_id": "demiurge", "reason": "forged stall", "force_escalate": True},
+        )
+        assert r_nudge.status_code == 403, r_nudge.text
+
+    snap = tc.get(f"/swarms/{sid}", headers=h_own).json()
+    assert snap["status"] == "live"
+    assert [th["status"] for th in snap["threads"]] == ["queued", "queued"]
+
+    # Scoped agent token: allowed /post (defaults agent from principal id) and non-force /nudge,
+    # denied force_escalate=True (403)
+    ag_post = tc.post(
+        f"/swarms/{sid}/post",
+        headers=h_agent,
+        json={"text": "working on fix-1", "kind": "update"},
+    )
+    assert ag_post.status_code == 200, ag_post.text
+    assert ag_post.json()["post"]["agent"] == "fix-1"
+    assert ag_post.json()["post"]["principal_id"] == "agent:fix-1"
+
+    assert tc.post(
+        f"/swarms/{sid}/nudge",
+        headers=h_agent,
+        json={"slot_id": "fix-1", "reason": "forged force escalate", "force_escalate": True},
+    ).status_code == 403
+
+    ag_nudge = tc.post(
+        f"/swarms/{sid}/nudge",
+        headers=h_agent,
+        json={"slot_id": "fix-1", "reason": "gentle check", "escalate_after_s": 60.0},
+    )
+    assert ag_nudge.status_code == 200, ag_nudge.text
+    assert ag_nudge.json()["action"] == "nudged"
+
+    # Owner can force_escalate=True
+    own_nudge = tc.post(
+        f"/swarms/{sid}/nudge",
+        headers=h_own,
+        json={"slot_id": "demiurge", "reason": "owner escalation", "force_escalate": True},
+    )
+    assert own_nudge.status_code == 200, own_nudge.text
+    assert own_nudge.json()["status"] == "stalled"
